@@ -291,6 +291,8 @@ def extract_code_text(pre_soup):
 
 def clean_html(html):
     soup = BeautifulSoup(html, "html.parser")
+    for tag in soup.find_all("style"):
+        tag.decompose()
     for pre in soup.find_all("pre"):
         try:
             pre_str = pre.decode()
