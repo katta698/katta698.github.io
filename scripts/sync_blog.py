@@ -391,7 +391,6 @@ def nav_html():
   <ul class="nav-links">
     <li><a href="/">Home</a></li>
     <li><a href="/blog/" class="active">Blog</a></li>
-    <li><a href="/blog/simulator/">Simulator</a></li>
     <li><a href="/resume.html">Resume</a></li>
   </ul>
   <button class="nav-icon-btn" id="nav-search-btn" aria-label="Search" title="Search posts">
