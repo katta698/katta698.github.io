@@ -21,6 +21,17 @@
   }
 })();
 
+// ── Hamburger menu ────────────────────────────────
+(function () {
+  var btn  = document.getElementById('hamburger-btn');
+  var menu = document.getElementById('mobile-menu');
+  if (!btn || !menu) return;
+  btn.addEventListener('click', function () {
+    var open = menu.classList.toggle('open');
+    btn.classList.toggle('open', open);
+  });
+})();
+
 // ── Search icon ───────────────────────────────────
 (function () {
   var btn  = document.getElementById('nav-search-btn');

@@ -399,7 +399,15 @@ def nav_html():
   <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
     <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
   </button>
-</nav>"""
+  <button class="hamburger" id="hamburger-btn" aria-label="Menu">
+    <span></span><span></span><span></span>
+  </button>
+</nav>
+<div class="mobile-menu" id="mobile-menu">
+  <a href="/">Home</a>
+  <a href="/blog/">Blog</a>
+  <a href="/resume.html">Resume</a>
+</div>"""
 
 
 def footer_html():
