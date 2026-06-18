@@ -49,15 +49,30 @@
   var btn  = document.getElementById('nav-search-btn');
   var wrap = document.getElementById('search-bar-wrap');
   var inp  = document.getElementById('blog-search');
+
+  function openSearch() {
+    if (wrap) {
+      wrap.classList.add('open');
+      if (inp) setTimeout(function () { inp.focus(); }, 50);
+    }
+  }
+
   if (!btn) return;
   btn.addEventListener('click', function () {
     if (wrap) {
       var isOpen = wrap.classList.toggle('open');
-      if (isOpen && inp) setTimeout(function () { inp.focus(); }, 220);
+      if (isOpen && inp) setTimeout(function () { inp.focus(); }, 50);
     } else {
       window.location.href = '/blog/#search';
     }
   });
+
+  // Auto-open search if redirected from a post page
+  if (window.location.hash === '#search') {
+    openSearch();
+    history.replaceState(null, '', window.location.pathname);
+  }
+
   // Close on Escape
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && wrap && wrap.classList.contains('open')) {
