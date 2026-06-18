@@ -171,9 +171,12 @@
 (function () {
   var btn = document.getElementById('back-top');
   if (!btn) return;
-  window.addEventListener('scroll', function () {
-    btn.classList.toggle('show', window.scrollY > 400);
-  }, { passive: true });
+  function checkScroll() {
+    var scrolled = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop;
+    btn.classList.toggle('show', scrolled > 400);
+  }
+  window.addEventListener('scroll', checkScroll, { passive: true });
+  document.addEventListener('scroll', checkScroll, { passive: true });
   btn.addEventListener('click', function () {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
