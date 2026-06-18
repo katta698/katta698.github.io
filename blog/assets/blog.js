@@ -70,5 +70,14 @@
     btn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
   }
 
+  // Auto-focus search if arriving via #search hash (from post page search button)
+  if (window.location.hash === '#search' && searchInput) {
+    setTimeout(() => {
+      searchInput.focus();
+      searchInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      history.replaceState(null, '', window.location.pathname);
+    }, 300);
+  }
+
   applyFilters();
 })();
