@@ -30,6 +30,72 @@ BLOG_URL    = f"{SITE_URL}/blog"
 DISQUS_ID   = "jayanthkatta"
 API_URL     = "https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search"
 
+# ── AWS service names to detect in post content ───────────────
+AWS_SERVICES = [
+    "EC2","S3","IAM","VPC","RDS","EKS","ECS","Lambda","CloudWatch",
+    "CloudFront","Route 53","ALB","NLB","SSM","Glue","Step Functions",
+    "DynamoDB","SQS","SNS","Kinesis","Redshift","EMR","Athena",
+    "Secrets Manager","KMS","WAF","Shield","GuardDuty","Config",
+    "Organizations","Control Tower","Transit Gateway","NAT Gateway",
+    "Internet Gateway","Auto Scaling","Elastic Beanstalk","CodePipeline",
+    "CodeBuild","CodeDeploy","ECR","Fargate","API Gateway","EventBridge",
+]
+
+# ── 50 evergreen AWS quiz questions ───────────────────────────
+AWS_QUIZ_BANK = [
+    {"q":"Which AWS service provides managed relational database with automated backups and patching?","a":"RDS","opts":["RDS","DynamoDB","Redshift","Aurora"],"e":"Amazon RDS handles routine database tasks like backups, patching, and failover automatically."},
+    {"q":"What is the maximum size of a single object in Amazon S3?","a":"5 TB","opts":["5 GB","5 TB","100 GB","1 TB"],"e":"S3 supports objects up to 5 TB. For objects larger than 5 GB, you must use multipart upload."},
+    {"q":"Which IAM entity should be used to grant permissions to an EC2 instance to access S3?","a":"IAM Role","opts":["IAM User","IAM Role","IAM Group","Access Key"],"e":"IAM Roles are attached to EC2 instances via instance profiles — no hardcoded credentials needed."},
+    {"q":"What does a VPC Internet Gateway do?","a":"Enables communication between VPC and the internet","opts":["Enables communication between VPC and the internet","Connects two VPCs together","Provides private DNS resolution","Encrypts VPC traffic"],"e":"An Internet Gateway allows resources in public subnets to communicate with the internet."},
+    {"q":"Which RDS feature provides automatic failover to a standby instance in another AZ?","a":"Multi-AZ","opts":["Multi-AZ","Read Replica","Aurora Global","Cross-Region Backup"],"e":"Multi-AZ maintains a synchronous standby replica and automatically fails over during outages."},
+    {"q":"What is the difference between a Security Group and a Network ACL?","a":"Security Groups are stateful; NACLs are stateless","opts":["Security Groups are stateful; NACLs are stateless","Security Groups are stateless; NACLs are stateful","Both are stateful","Both are stateless"],"e":"Security Groups track connection state (return traffic auto-allowed). NACLs evaluate each packet independently."},
+    {"q":"Which S3 storage class is most cost-effective for data accessed less than once a year?","a":"S3 Glacier Deep Archive","opts":["S3 Standard-IA","S3 Glacier","S3 Glacier Deep Archive","S3 One Zone-IA"],"e":"Glacier Deep Archive is the lowest cost at ~$0.00099/GB/month for long-term archival."},
+    {"q":"What does an IAM explicit Deny do when combined with an Allow on the same resource?","a":"Deny always wins","opts":["Allow wins","Deny always wins","Last evaluated wins","Depends on policy type"],"e":"Explicit Deny always overrides any Allow — this is a fundamental rule of IAM policy evaluation."},
+    {"q":"Which EC2 pricing model provides the largest discount for committing to 1 or 3 years?","a":"Reserved Instances","opts":["Spot Instances","Reserved Instances","Savings Plans","On-Demand"],"e":"Reserved Instances offer up to 72% discount vs On-Demand when you commit to 1 or 3 years."},
+    {"q":"What is an AWS Availability Zone?","a":"One or more discrete data centers within a Region","opts":["A geographic region","One or more discrete data centers within a Region","A CDN edge location","A VPC subnet"],"e":"Each AZ is physically separate with independent power, cooling, and networking within a Region."},
+    {"q":"Which service distributes incoming traffic across multiple EC2 instances?","a":"Elastic Load Balancer","opts":["Auto Scaling","Elastic Load Balancer","Route 53","CloudFront"],"e":"ELB automatically distributes incoming traffic and integrates with Auto Scaling for high availability."},
+    {"q":"What is the purpose of a NAT Gateway?","a":"Allow private subnet instances to reach the internet without being reachable from it","opts":["Allow private subnet instances to reach the internet without being reachable from it","Connect two VPCs","Provide internet access to public subnets","Encrypt outbound traffic"],"e":"NAT Gateway enables outbound internet connectivity for private subnets while blocking inbound connections."},
+    {"q":"Which AWS service allows you to run containers without managing servers?","a":"AWS Fargate","opts":["AWS Fargate","EC2","ECS on EC2","Elastic Beanstalk"],"e":"Fargate is a serverless compute engine for containers — no EC2 instances to provision or manage."},
+    {"q":"What is the default limit for S3 buckets per AWS account?","a":"100","opts":["10","100","500","Unlimited"],"e":"Each AWS account can create up to 100 S3 buckets by default. You can request an increase."},
+    {"q":"Which service provides a managed Kubernetes control plane on AWS?","a":"Amazon EKS","opts":["Amazon ECS","Amazon EKS","AWS Fargate","AWS Batch"],"e":"EKS manages the Kubernetes control plane — patching, scaling, and availability are handled by AWS."},
+    {"q":"What does S3 versioning protect against?","a":"Accidental deletion and overwrites","opts":["Accidental deletion and overwrites","Unauthorized access","Data corruption at rest","Cross-region latency"],"e":"Versioning keeps all versions of an object so you can recover from accidental deletes or overwrites."},
+    {"q":"Which CloudWatch feature triggers automated actions based on metric thresholds?","a":"CloudWatch Alarms","opts":["CloudWatch Alarms","CloudWatch Logs","CloudWatch Events","CloudWatch Metrics"],"e":"Alarms watch metrics and trigger actions like Auto Scaling, SNS notifications, or EC2 actions."},
+    {"q":"Which IAM feature requires users to provide two forms of verification?","a":"Multi-Factor Authentication (MFA)","opts":["IAM Roles","Multi-Factor Authentication (MFA)","IAM Policies","Service Control Policies"],"e":"MFA adds a second layer of security requiring a physical or virtual device in addition to a password."},
+    {"q":"What is an EC2 AMI?","a":"A template containing the OS and software to launch an instance","opts":["A template containing the OS and software to launch an instance","An instance type specification","A network configuration","A billing model"],"e":"An AMI (Amazon Machine Image) is a pre-configured template used to create EC2 instances."},
+    {"q":"Which service provides a fully managed message queue for decoupling microservices?","a":"Amazon SQS","opts":["Amazon SQS","Amazon SNS","Amazon MQ","Amazon Kinesis"],"e":"SQS is a fully managed message queuing service that decouples and scales distributed systems."},
+    {"q":"What is the purpose of AWS Organizations?","a":"Centrally manage and govern multiple AWS accounts","opts":["Centrally manage and govern multiple AWS accounts","Deploy applications across regions","Monitor resource usage","Manage IAM users at scale"],"e":"AWS Organizations allows you to consolidate accounts, apply SCPs, and centralize billing."},
+    {"q":"Which EC2 instance type is best optimized for memory-intensive workloads like large databases?","a":"R-series","opts":["C-series","R-series","T-series","P-series"],"e":"R-series instances (e.g., r6i) are memory-optimized, ideal for in-memory databases and big data."},
+    {"q":"What does AWS Auto Scaling do when CPU utilization exceeds a defined threshold?","a":"Launches additional EC2 instances","opts":["Launches additional EC2 instances","Upgrades the instance type","Migrates to a different region","Sends an email only"],"e":"Auto Scaling adds instances when demand rises and removes them when demand drops to save cost."},
+    {"q":"Which S3 feature prevents objects from being deleted or overwritten for a defined period?","a":"S3 Object Lock","opts":["S3 Object Lock","Bucket Policy","S3 Versioning","Server-Side Encryption"],"e":"S3 Object Lock implements WORM (Write Once Read Many) — used for compliance and data retention."},
+    {"q":"What is the difference between horizontal and vertical scaling?","a":"Horizontal adds more instances; vertical increases instance size","opts":["Horizontal adds more instances; vertical increases instance size","Horizontal increases instance size; vertical adds more instances","Both mean adding more instances","Both mean increasing instance size"],"e":"Horizontal (scale out) adds instances. Vertical (scale up) upgrades to a larger instance type."},
+    {"q":"Which AWS service helps detect unusual activity and potential threats in your account?","a":"Amazon GuardDuty","opts":["Amazon GuardDuty","AWS Inspector","AWS Shield","AWS WAF"],"e":"GuardDuty uses ML to analyze CloudTrail, VPC Flow Logs, and DNS logs to detect threats."},
+    {"q":"What is a VPC subnet?","a":"A range of IP addresses within a VPC","opts":["A range of IP addresses within a VPC","A connection between VPCs","A firewall rule set","A route table"],"e":"Subnets partition a VPC's IP address range. Public subnets route to an IGW; private subnets don't."},
+    {"q":"Which service provides infrastructure as code with state management and plan/apply workflow?","a":"Terraform","opts":["Terraform","AWS CloudFormation","AWS CDK","Ansible"],"e":"Terraform by HashiCorp uses HCL to define infrastructure, maintains state, and previews changes before applying."},
+    {"q":"What is the purpose of an S3 bucket policy?","a":"Grant or deny access to a bucket and its objects","opts":["Grant or deny access to a bucket and its objects","Encrypt objects at rest","Enable versioning","Configure lifecycle rules"],"e":"Bucket policies are resource-based IAM policies that control who can access the bucket and how."},
+    {"q":"Which EC2 feature allows you to run scripts automatically when an instance launches?","a":"User Data","opts":["User Data","Instance Metadata","Launch Template","AMI"],"e":"User Data scripts run once at launch — used for bootstrapping, software installation, and configuration."},
+    {"q":"What does RDS Read Replica provide?","a":"A read-only copy of the database for offloading read traffic","opts":["A read-only copy of the database for offloading read traffic","Automatic failover","Cross-region backup","Point-in-time recovery"],"e":"Read Replicas serve read traffic from a copy of the primary, reducing load and improving performance."},
+    {"q":"Which AWS service stores and retrieves secrets like database passwords and API keys?","a":"AWS Secrets Manager","opts":["AWS Secrets Manager","AWS KMS","Parameter Store","IAM"],"e":"Secrets Manager stores, rotates, and retrieves secrets — with automatic rotation for RDS passwords."},
+    {"q":"What is an AWS Service Control Policy (SCP)?","a":"A policy that sets maximum permissions for accounts in AWS Organizations","opts":["A policy that sets maximum permissions for accounts in AWS Organizations","An IAM policy type","A VPC firewall rule","A CloudWatch alarm policy"],"e":"SCPs in AWS Organizations act as guardrails — they cannot grant permissions but can restrict what accounts can do."},
+    {"q":"Which service routes end users to the nearest AWS edge location for low latency?","a":"Amazon CloudFront","opts":["Amazon CloudFront","Route 53","Global Accelerator","Transit Gateway"],"e":"CloudFront is a CDN that caches content at 400+ edge locations worldwide for low-latency delivery."},
+    {"q":"What is the purpose of a Terraform state file?","a":"Track the real-world state of managed infrastructure","opts":["Track the real-world state of managed infrastructure","Store secrets and variables","Define provider configurations","Record apply history"],"e":"The state file maps Terraform config to real resources — it's how Terraform knows what already exists."},
+    {"q":"Which AWS service provides fully managed ETL (extract, transform, load) for data pipelines?","a":"AWS Glue","opts":["AWS Glue","AWS Batch","Amazon EMR","AWS Step Functions"],"e":"Glue provides a serverless ETL service with a data catalog, crawlers, and Spark-based job runs."},
+    {"q":"What does the AWS Shared Responsibility Model mean?","a":"AWS secures the cloud infrastructure; customers secure what's in the cloud","opts":["AWS secures the cloud infrastructure; customers secure what's in the cloud","AWS is responsible for all security","Customers are responsible for all security","Security is split 50/50 by cost"],"e":"AWS manages security OF the cloud (hardware, AZs, services). You manage security IN the cloud (data, IAM, configs)."},
+    {"q":"Which EC2 purchasing option is cheapest but can be interrupted by AWS?","a":"Spot Instances","opts":["Spot Instances","Reserved Instances","Dedicated Hosts","On-Demand"],"e":"Spot Instances use spare EC2 capacity at up to 90% discount but can be reclaimed with 2 minutes notice."},
+    {"q":"What is an EKS Node Group?","a":"A managed group of EC2 instances that serve as Kubernetes worker nodes","opts":["A managed group of EC2 instances that serve as Kubernetes worker nodes","The Kubernetes control plane","A namespace in Kubernetes","A Helm chart collection"],"e":"Node Groups manage the EC2 fleet that runs your pods — AWS handles provisioning, patching, and scaling."},
+    {"q":"Which AWS service orchestrates multi-step workflows as serverless state machines?","a":"AWS Step Functions","opts":["AWS Step Functions","Amazon SQS","AWS Lambda","Amazon EventBridge"],"e":"Step Functions coordinates Lambda, ECS, Glue, and other services into visual, auditable workflows."},
+    {"q":"What is the purpose of VPC Flow Logs?","a":"Capture information about IP traffic going to and from network interfaces","opts":["Capture information about IP traffic going to and from network interfaces","Monitor application performance","Log API calls to AWS services","Audit IAM policy changes"],"e":"VPC Flow Logs record accept/reject decisions for traffic — essential for network troubleshooting and security."},
+    {"q":"Which service provides DNS routing with health checks and failover?","a":"Amazon Route 53","opts":["Amazon Route 53","CloudFront","Global Accelerator","ELB"],"e":"Route 53 is AWS's DNS service with routing policies like failover, weighted, latency, and geolocation."},
+    {"q":"What is the maximum execution timeout for an AWS Lambda function?","a":"15 minutes","opts":["5 minutes","15 minutes","1 hour","30 minutes"],"e":"Lambda functions can run for up to 15 minutes (900 seconds). For longer jobs, use ECS or Step Functions."},
+    {"q":"Which Terraform command applies changes shown in a plan?","a":"terraform apply","opts":["terraform apply","terraform plan","terraform deploy","terraform push"],"e":"terraform apply executes the changes. It prompts for confirmation unless run with -auto-approve."},
+    {"q":"What is the purpose of an AWS Transit Gateway?","a":"Connect multiple VPCs and on-premises networks through a central hub","opts":["Connect multiple VPCs and on-premises networks through a central hub","Replace Internet Gateways","Provide DDoS protection","Manage IAM across accounts"],"e":"Transit Gateway acts as a cloud router — simplifying network topology by replacing complex VPC peering meshes."},
+    {"q":"Which S3 storage class automatically moves objects between tiers based on access patterns?","a":"S3 Intelligent-Tiering","opts":["S3 Intelligent-Tiering","S3 Standard","S3 Standard-IA","S3 Glacier"],"e":"Intelligent-Tiering monitors access and moves objects between frequent and infrequent tiers with no retrieval fees."},
+    {"q":"What does 'idempotent' mean in the context of Terraform?","a":"Running apply multiple times produces the same result","opts":["Running apply multiple times produces the same result","Resources are created in parallel","State is stored remotely","Plans are always accurate"],"e":"Idempotency means re-running terraform apply on unchanged config makes no changes — safe to run repeatedly."},
+    {"q":"Which AWS service provides managed Elastic MapReduce for big data processing?","a":"Amazon EMR","opts":["Amazon EMR","AWS Glue","Amazon Redshift","AWS Batch"],"e":"EMR runs Apache Spark, Hive, Presto, and other frameworks on managed clusters for big data workloads."},
+    {"q":"What is CloudWatch Logs Insights?","a":"An interactive query service for analyzing log data","opts":["An interactive query service for analyzing log data","A log streaming service","A metric dashboard","An alerting service"],"e":"Logs Insights lets you run SQL-like queries against CloudWatch log groups to find patterns and errors fast."},
+    {"q":"Which AWS service provides automated patch management for EC2 and on-premises servers?","a":"AWS Systems Manager Patch Manager","opts":["AWS Systems Manager Patch Manager","AWS Inspector","AWS Config","EC2 Image Builder"],"e":"SSM Patch Manager automates OS patching with patch baselines, maintenance windows, and compliance reporting."},
+    {"q":"What is the purpose of an AWS IAM policy condition?","a":"Add fine-grained controls like IP range, time, or MFA requirement to permissions","opts":["Add fine-grained controls like IP range, time, or MFA requirement to permissions","Define which services a role can access","Set password complexity rules","Control account spending"],"e":"Conditions allow you to restrict when a policy applies — e.g., only allow S3 access from a specific IP range."},
+]
+
 FEEDBACK_WIDGET_HTML = """
 <button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
 <div class="fb-overlay" id="fb-overlay">
@@ -320,7 +386,7 @@ def html_head(title, description, canonical, extra=""):
 
 def nav_html():
     return f"""<nav class="nav">
-  <a class="nav-logo" href="/">{NAV_SVG}<span>Jayanth Katta</span></a>
+  <a class="nav-logo" href="/blog/">{NAV_SVG}<span>Jayanth Katta</span></a>
   <div class="nav-spacer"></div>
   <ul class="nav-links">
     <li><a href="/">Home</a></li>
@@ -330,9 +396,8 @@ def nav_html():
   <button class="nav-icon-btn" id="nav-search-btn" aria-label="Search" title="Search posts">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
   </button>
-  <button class="nav-icon-btn" id="nav-theme-btn" aria-label="Toggle dark mode" title="Toggle dark mode">
-    <svg id="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-    <svg id="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
   </button>
 </nav>"""
 
@@ -479,6 +544,37 @@ def build_index_page(posts):
         for c in CATEGORY_ORDER if c != "All" and tag_counts.get(c, 0) > 0
     )
 
+    # ── AWS service mention counts ─────────────────────────────
+    service_counts = {}
+    for p in posts:
+        text = BeautifulSoup(p["body_html"], "html.parser").get_text().lower()
+        for svc in AWS_SERVICES:
+            count = text.count(svc.lower())
+            if count:
+                service_counts[svc] = service_counts.get(svc, 0) + count
+    top_services = sorted(service_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+    services_json = json.dumps([{"name": s, "count": c} for s, c in top_services])
+
+    # ── Blog-extracted quiz questions ──────────────────────────
+    blog_questions = []
+    for p in posts[:15]:
+        text = BeautifulSoup(p["body_html"], "html.parser").get_text()
+        for svc in AWS_SERVICES:
+            if svc.lower() in text.lower() and len(blog_questions) < 10:
+                title_words = p["title"].split()
+                if len(title_words) > 4:
+                    blog_questions.append({
+                        "q": f"Which AWS post covers: \"{p['title'][:60]}...\"?",
+                        "a": p["date_fmt"],
+                        "opts": [p["date_fmt"]] + ["Jan 2025", "Mar 2024", "Dec 2023"],
+                        "e": f"Published {p['date_fmt']} — {p['excerpt'][:100]}",
+                        "source": "blog"
+                    })
+                    break
+
+    all_questions = [dict(q, source="aws") for q in AWS_QUIZ_BANK] + blog_questions
+    quiz_json = json.dumps(all_questions)
+
     return f"""{html_head(
         "Blog | Jayanth Katta",
         "AWS Platform Engineer writing about cloud infrastructure, Terraform, Kubernetes, and life.",
@@ -522,10 +618,141 @@ def build_index_page(posts):
         <div class="sb-stat"><span class="sb-stat-n">{posts[0]["date_fmt"] if posts else ""}</span><span class="sb-stat-l">Latest</span></div>
       </div>
     </div>
-    <div class="sidebar-card">
-      <div class="sidebar-title">Topics</div>
-      <div class="sidebar-tags">{sb_tags}</div>
+    <div class="sidebar-card" id="services-widget">
+      <div class="sidebar-title">AWS services across all posts</div>
+      <div id="svc-bubble-area" style="position:relative;height:220px;width:100%"></div>
+      <div style="display:flex;gap:10px;margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border)">
+        <span style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--orange);opacity:.9"></span>high</span>
+        <span style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--orange);opacity:.45"></span>medium</span>
+        <span style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--orange);opacity:.2"></span>low</span>
+      </div>
     </div>
+    <div class="sidebar-card" id="quiz-widget">
+      <div class="sidebar-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>AWS quiz</span>
+        <span id="quiz-score" style="font-size:11px;color:var(--orange);font-weight:500"></span>
+      </div>
+      <div id="quiz-badge" style="display:inline-block;font-size:11px;padding:2px 10px;border-radius:20px;background:rgba(255,153,0,.12);color:#854F0B;margin-bottom:10px"></div>
+      <div style="height:3px;background:var(--border);border-radius:4px;margin-bottom:12px">
+        <div id="quiz-progress" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width .3s"></div>
+      </div>
+      <div id="quiz-qnum" style="font-size:11px;color:var(--text-muted);margin-bottom:6px"></div>
+      <div id="quiz-q" style="font-size:14px;font-weight:500;line-height:1.5;margin-bottom:14px;min-height:42px"></div>
+      <div id="quiz-opts" style="display:flex;flex-direction:column;gap:6px"></div>
+      <div id="quiz-feedback" style="display:none;margin-top:10px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5"></div>
+      <button id="quiz-next" onclick="quizNext()" style="display:none;margin-top:10px;width:100%;padding:8px;border-radius:8px;background:var(--orange);border:none;color:#fff;font-size:13px;font-weight:500;cursor:pointer">Next →</button>
+      <div id="quiz-result" style="display:none;text-align:center;padding:1rem 0">
+        <div id="quiz-result-emoji" style="font-size:32px;margin-bottom:6px"></div>
+        <div id="quiz-result-score" style="font-size:22px;font-weight:500;color:var(--text)"></div>
+        <div id="quiz-result-msg" style="font-size:12px;color:var(--text-muted);margin:4px 0 12px"></div>
+        <button onclick="quizStart()" style="padding:6px 20px;border-radius:8px;background:var(--orange);border:none;color:#fff;font-size:12px;font-weight:500;cursor:pointer">Try again</button>
+      </div>
+    </div>
+    <script>
+    (function(){{
+      var SERVICES = {services_json};
+      var area = document.getElementById('svc-bubble-area');
+      if(!area) return;
+      var W = area.offsetWidth || 240, H = 220;
+      var maxC = Math.max.apply(null, SERVICES.map(function(s){{return s.count;}}));
+      var placed = [];
+      function overlap(a,b){{var dx=a.x-b.x,dy=a.y-b.y;return Math.sqrt(dx*dx+dy*dy)<a.r+b.r+3;}}
+      SERVICES.slice().sort(function(a,b){{return b.count-a.count;}}).forEach(function(s){{
+        var r = 14 + (s.count/maxC)*28;
+        var tries=0,x,y;
+        do{{x=r+Math.random()*(W-2*r);y=r+Math.random()*(H-2*r);s.x=x;s.y=y;s.r=r;tries++;}}
+        while(tries<400 && placed.some(function(p){{return overlap(s,p);}}));
+        placed.push({{x:s.x,y:s.y,r:r}});
+        var opacity = 0.15+(s.count/maxC)*0.8;
+        var textColor = opacity>0.5?'#412402':'#854F0B';
+        var fs = r>32?12:r>22?10:9;
+        var div=document.createElement('div');
+        div.title=s.name+': ~'+s.count+' mentions';
+        div.style.cssText='position:absolute;left:'+(x-r)+'px;top:'+(y-r)+'px;width:'+(r*2)+'px;height:'+(r*2)+'px;border-radius:50%;background:rgba(255,153,0,'+opacity+');display:flex;align-items:center;justify-content:center;text-align:center;cursor:default;transition:transform .15s';
+        div.innerHTML='<span style="font-size:'+fs+'px;font-weight:500;color:'+textColor+';padding:2px;line-height:1.2">'+s.name+'</span>';
+        div.onmouseenter=function(){{div.style.transform='scale(1.08)';}};
+        div.onmouseleave=function(){{div.style.transform='scale(1)';}};
+        area.appendChild(div);
+      }});
+    }})();
+
+    var QUIZ_BANK = {quiz_json};
+    var qz = {{questions:[],current:0,score:0,answered:false}};
+    function quizShuffle(a){{return a.slice().sort(function(){{return Math.random()-.5;}});}}
+    function quizStart(){{
+      qz.questions=quizShuffle(QUIZ_BANK).slice(0,5);
+      qz.current=0;qz.score=0;qz.answered=false;
+      document.getElementById('quiz-result').style.display='none';
+      document.getElementById('quiz-q').style.display='';
+      document.getElementById('quiz-opts').style.display='';
+      document.getElementById('quiz-qnum').style.display='';
+      document.getElementById('quiz-badge').style.display='';
+      quizShow();
+    }}
+    function quizShow(){{
+      var q=qz.questions[qz.current];
+      qz.answered=false;
+      document.getElementById('quiz-feedback').style.display='none';
+      document.getElementById('quiz-next').style.display='none';
+      document.getElementById('quiz-qnum').textContent='Question '+(qz.current+1)+' of '+qz.questions.length;
+      document.getElementById('quiz-q').textContent=q.q;
+      document.getElementById('quiz-progress').style.width=((qz.current/qz.questions.length)*100)+'%';
+      document.getElementById('quiz-score').textContent=qz.score+' / '+qz.current;
+      var badge=document.getElementById('quiz-badge');
+      if(q.source==='blog'){{badge.textContent="From my blog";badge.style.background='rgba(255,153,0,.12)';badge.style.color='#854F0B';}}
+      else{{badge.textContent="AWS fundamentals";badge.style.background='rgba(55,138,221,.12)';badge.style.color='#185FA5';}}
+      var opts=document.getElementById('quiz-opts');
+      opts.innerHTML='';
+      quizShuffle(q.opts).forEach(function(opt){{
+        var btn=document.createElement('button');
+        btn.textContent=opt;
+        btn.style.cssText='width:100%;text-align:left;padding:8px 12px;border-radius:8px;border:0.5px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;transition:border-color .15s';
+        btn.onmouseenter=function(){{if(!qz.answered)btn.style.borderColor='var(--orange)';}};
+        btn.onmouseleave=function(){{if(!qz.answered)btn.style.borderColor='var(--border)';}};
+        btn.onclick=function(){{quizAnswer(opt,btn,q);}};
+        opts.appendChild(btn);
+      }});
+    }}
+    function quizAnswer(opt,btn,q){{
+      if(qz.answered)return;
+      qz.answered=true;
+      var correct=opt===q.a;
+      if(correct)qz.score++;
+      Array.from(document.getElementById('quiz-opts').children).forEach(function(b){{
+        b.style.cursor='default';
+        if(b.textContent===q.a){{b.style.background='rgba(76,175,80,.12)';b.style.borderColor='#4CAF50';b.style.color='#1B5E20';}}
+        else if(b===btn&&!correct){{b.style.background='rgba(226,75,74,.1)';b.style.borderColor='#E24B4A';b.style.color='#A32D2D';}}
+      }});
+      var fb=document.getElementById('quiz-feedback');
+      fb.style.display='';
+      fb.style.background=correct?'rgba(76,175,80,.08)':'rgba(226,75,74,.08)';
+      fb.style.borderLeft=correct?'3px solid #4CAF50':'3px solid #E24B4A';
+      fb.style.color='var(--text)';
+      fb.innerHTML='<strong>'+(correct?'Correct!':'Not quite.')+' </strong>'+q.e;
+      document.getElementById('quiz-score').textContent=qz.score+' / '+(qz.current+1);
+      if(qz.current<qz.questions.length-1){{
+        document.getElementById('quiz-next').style.display='';
+      }}else{{
+        setTimeout(quizResult,1200);
+      }}
+    }}
+    function quizNext(){{qz.current++;quizShow();}}
+    function quizResult(){{
+      document.getElementById('quiz-q').style.display='none';
+      document.getElementById('quiz-opts').style.display='none';
+      document.getElementById('quiz-qnum').style.display='none';
+      document.getElementById('quiz-feedback').style.display='none';
+      document.getElementById('quiz-next').style.display='none';
+      document.getElementById('quiz-badge').style.display='none';
+      var pct=qz.score/qz.questions.length;
+      var res=document.getElementById('quiz-result');
+      res.style.display='';
+      document.getElementById('quiz-result-emoji').textContent=pct===1?'🏆':pct>=0.8?'⭐':pct>=0.6?'👍':'💡';
+      document.getElementById('quiz-result-score').textContent=qz.score+' / '+qz.questions.length;
+      document.getElementById('quiz-result-msg').textContent=pct===1?'Perfect — you know your AWS!':pct>=0.8?'Strong work.':pct>=0.6?'Good foundation.':'Keep reading 👆';
+    }}
+    quizStart();
+    </script>
     <div class="sidebar-card ask-cta">
       <div class="ask-cta-icon">✦</div>
       <div class="ask-cta-title">Ask about Jayanth</div>
