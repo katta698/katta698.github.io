@@ -463,7 +463,13 @@ def build_post_page(post, prev_post, next_post):
 
     return f"""{html_head(title + " | Jayanth Katta Blog", post["excerpt"], post_url, extra)}
 <body>
-{nav_html(show_search=False)}
+{nav_html(show_search=True)}
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
 <main class="post-page-layout">
   <div class="post-breadcrumb">
     <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>

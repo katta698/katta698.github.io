@@ -49,35 +49,56 @@
   var btn  = document.getElementById('nav-search-btn');
   var wrap = document.getElementById('search-bar-wrap');
   var inp  = document.getElementById('blog-search');
-
-  function openSearch() {
-    if (wrap) {
-      wrap.classList.add('open');
-      if (inp) setTimeout(function () { inp.focus(); }, 50);
-    }
-  }
+  var isPostPage = !wrap;
 
   if (!btn) return;
+
   btn.addEventListener('click', function () {
     if (wrap) {
       var isOpen = wrap.classList.toggle('open');
       if (isOpen && inp) setTimeout(function () { inp.focus(); }, 50);
     } else {
-      window.location.href = '/blog/#search';
+      // On post pages: show inline search bar in nav area
+      var postSearch = document.getElementById('post-search-bar');
+      if (postSearch) {
+        postSearch.classList.toggle('open');
+        var pi = document.getElementById('post-search-input');
+        if (pi) setTimeout(function () { pi.focus(); }, 50);
+      }
     }
   });
 
-  // Auto-open search if redirected from a post page
-  if (window.location.hash === '#search') {
-    openSearch();
-    history.replaceState(null, '', window.location.pathname);
+  // On blog index: pre-fill search from ?q= param
+  var params = new URLSearchParams(window.location.search);
+  var q = params.get('q');
+  if (q && inp && wrap) {
+    wrap.classList.add('open');
+    inp.value = q;
+    inp.dispatchEvent(new Event('input'));
   }
 
   // Close on Escape
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && wrap && wrap.classList.contains('open')) {
-      wrap.classList.remove('open');
-      if (inp) inp.value = '';
+    if (e.key === 'Escape') {
+      if (wrap && wrap.classList.contains('open')) {
+        wrap.classList.remove('open');
+        if (inp) inp.value = '';
+      }
+      var postSearch = document.getElementById('post-search-bar');
+      if (postSearch && postSearch.classList.contains('open')) {
+        postSearch.classList.remove('open');
+      }
+    }
+  });
+})();
+
+// ── Post-page inline search ───────────────────────
+(function () {
+  var pi = document.getElementById('post-search-input');
+  if (!pi) return;
+  pi.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && pi.value.trim()) {
+      window.location.href = '/blog/?q=' + encodeURIComponent(pi.value.trim());
     }
   });
 })();
