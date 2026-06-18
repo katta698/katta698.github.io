@@ -10,11 +10,11 @@
     if (moon) moon.style.display = dark ? 'none' : '';
     if (sun)  sun.style.display  = dark ? '' : 'none';
   }
-  applyTheme(localStorage.getItem('blog-theme') === 'dark');
+  applyTheme(localStorage.getItem('theme') === 'dark');
   if (themeBtn) {
     themeBtn.addEventListener('click', function () {
       var isDark = document.body.classList.toggle('dark');
-      localStorage.setItem('blog-theme', isDark ? 'dark' : 'light');
+      localStorage.setItem('theme', isDark ? 'dark' : 'light');
       if (moon) moon.style.display = isDark ? 'none' : '';
       if (sun)  sun.style.display  = isDark ? '' : 'none';
     });
