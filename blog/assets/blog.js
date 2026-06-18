@@ -2,8 +2,36 @@
 
 // ── Dark mode ─────────────────────────────────────
 (function () {
+  var POST_CARD_SELS = ['.card','.callout','.challenge-card','.tip-box','.warning-box','[class*="callout"','[class*="box"]','.container'];
+
+  function applyPostBodyDark(dark) {
+    var body = document.querySelector('.post-body');
+    if (!body) return;
+    var els = body.querySelectorAll('.card,.callout,.challenge-card,.tip-box,.warning-box,.stat-box,.meta,.stack-badge');
+    els.forEach(function(el) {
+      if (dark) {
+        el.style.setProperty('background', '#162230', 'important');
+        el.style.setProperty('border-color', '#2d3a4a', 'important');
+        el.style.setProperty('color', '#e6edf3', 'important');
+        el.querySelectorAll('*').forEach(function(child) {
+          child.style.setProperty('color', '#e6edf3', 'important');
+          if (!child.matches('pre,code')) child.style.setProperty('background', 'transparent', 'important');
+        });
+      } else {
+        el.style.removeProperty('background');
+        el.style.removeProperty('border-color');
+        el.style.removeProperty('color');
+        el.querySelectorAll('*').forEach(function(child) {
+          child.style.removeProperty('color');
+          child.style.removeProperty('background');
+        });
+      }
+    });
+  }
+
   function applyTheme(dark) {
     document.body.classList.toggle('dark', dark);
+    applyPostBodyDark(dark);
     var e = dark ? '☀️' : '🌙', l = dark ? 'Light' : 'Dark';
     ['theme-icon-moon','theme-icon-moon-m'].forEach(function(id) {
       var el = document.getElementById(id); if (el) el.textContent = e;
