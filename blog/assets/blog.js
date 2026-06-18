@@ -119,14 +119,17 @@
     });
   }
 
-  // Back to top
-  const btn = document.getElementById('back-top');
-  if (btn) {
-    window.addEventListener('scroll', () => {
-      btn.classList.toggle('show', window.scrollY > 400);
-    }, { passive: true });
-    btn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
-  }
-
   applyFilters();
+})();
+
+// ── Back to top ───────────────────────────────────
+(function () {
+  var btn = document.getElementById('back-top');
+  if (!btn) return;
+  window.addEventListener('scroll', function () {
+    btn.classList.toggle('show', window.scrollY > 400);
+  }, { passive: true });
+  btn.addEventListener('click', function () {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
 })();
