@@ -2,23 +2,26 @@
 
 // ── Dark mode ─────────────────────────────────────
 (function () {
-  var themeBtn = document.getElementById('nav-theme-btn');
-  var icon  = document.getElementById('theme-icon-moon');
-  var label = document.getElementById('theme-label-text');
   function applyTheme(dark) {
     document.body.classList.toggle('dark', dark);
-    if (icon)  icon.textContent  = dark ? '☀️' : '🌙';
-    if (label) label.textContent = dark ? 'Light' : 'Dark';
-  }
-  applyTheme(localStorage.getItem('theme') === 'dark');
-  if (themeBtn) {
-    themeBtn.addEventListener('click', function () {
-      var isDark = document.body.classList.toggle('dark');
-      localStorage.setItem('theme', isDark ? 'dark' : 'light');
-      if (icon)  icon.textContent  = isDark ? '☀️' : '🌙';
-      if (label) label.textContent = isDark ? 'Light' : 'Dark';
+    var e = dark ? '☀️' : '🌙', l = dark ? 'Light' : 'Dark';
+    ['theme-icon-moon','theme-icon-moon-m'].forEach(function(id) {
+      var el = document.getElementById(id); if (el) el.textContent = e;
+    });
+    ['theme-label-text','theme-label-text-m'].forEach(function(id) {
+      var el = document.getElementById(id); if (el) el.textContent = l;
     });
   }
+  function toggle() {
+    var isDark = document.body.classList.toggle('dark');
+    localStorage.setItem('theme', isDark ? 'dark' : 'light');
+    applyTheme(isDark);
+  }
+  applyTheme(localStorage.getItem('theme') === 'dark');
+  ['nav-theme-btn','nav-theme-btn-mobile'].forEach(function(id) {
+    var btn = document.getElementById(id);
+    if (btn) btn.addEventListener('click', toggle);
+  });
 })();
 
 // ── Hamburger menu ────────────────────────────────
