@@ -316,9 +316,15 @@ def clean_html(html):
             new_p = soup.new_tag("p")
             new_p.string = h2.get_text(strip=True)
             h2.replace_with(new_p)
-    for tag in soup.find_all(["h2", "h3", "p"]):
+    for tag in soup.find_all(True):
         if tag.get("style"):
             del tag["style"]
+        if tag.get("color"):
+            del tag["color"]
+        if tag.get("bgcolor"):
+            del tag["bgcolor"]
+        if tag.name == "font":
+            tag.unwrap()
     for code in soup.find_all("code"):
         for span in code.find_all("span"):
             span.unwrap()
