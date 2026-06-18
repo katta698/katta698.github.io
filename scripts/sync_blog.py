@@ -753,12 +753,6 @@ def build_index_page(posts):
     }}
     quizStart();
     </script>
-    <div class="sidebar-card ask-cta">
-      <div class="ask-cta-icon">✦</div>
-      <div class="ask-cta-title">Ask about Jayanth</div>
-      <div class="ask-cta-sub">Ask anything about his experience, projects, or career.</div>
-      <a href="/" class="ask-cta-btn">Ask away</a>
-    </div>
   </aside>
 </div>
 {FEEDBACK_WIDGET_HTML}
