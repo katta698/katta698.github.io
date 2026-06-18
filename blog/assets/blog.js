@@ -20,7 +20,16 @@
   applyTheme(localStorage.getItem('theme') === 'dark');
   ['nav-theme-btn','nav-theme-btn-mobile'].forEach(function(id) {
     var btn = document.getElementById(id);
-    if (btn) btn.addEventListener('click', toggle);
+    if (btn) btn.addEventListener('click', function() {
+      toggle();
+      // Close hamburger menu after theme toggle on mobile
+      if (id === 'nav-theme-btn-mobile') {
+        var menu = document.getElementById('mobile-menu');
+        var ham  = document.getElementById('hamburger-btn');
+        if (menu) menu.classList.remove('open');
+        if (ham)  ham.classList.remove('open');
+      }
+    });
   });
 })();
 
