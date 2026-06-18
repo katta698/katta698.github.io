@@ -3,20 +3,20 @@
 // ── Dark mode ─────────────────────────────────────
 (function () {
   var themeBtn = document.getElementById('nav-theme-btn');
-  var moon = document.getElementById('theme-icon-moon');
-  var sun  = document.getElementById('theme-icon-sun');
+  var icon  = document.getElementById('theme-icon-moon');
+  var label = document.getElementById('theme-label-text');
   function applyTheme(dark) {
     document.body.classList.toggle('dark', dark);
-    if (moon) moon.style.display = dark ? 'none' : '';
-    if (sun)  sun.style.display  = dark ? '' : 'none';
+    if (icon)  icon.textContent  = dark ? '☀️' : '🌙';
+    if (label) label.textContent = dark ? 'Light' : 'Dark';
   }
   applyTheme(localStorage.getItem('theme') === 'dark');
   if (themeBtn) {
     themeBtn.addEventListener('click', function () {
       var isDark = document.body.classList.toggle('dark');
       localStorage.setItem('theme', isDark ? 'dark' : 'light');
-      if (moon) moon.style.display = isDark ? 'none' : '';
-      if (sun)  sun.style.display  = isDark ? '' : 'none';
+      if (icon)  icon.textContent  = isDark ? '☀️' : '🌙';
+      if (label) label.textContent = isDark ? 'Light' : 'Dark';
     });
   }
 })();
