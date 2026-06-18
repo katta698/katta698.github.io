@@ -1,4 +1,36 @@
-/* Blog listing — filter, search, back-to-top */
+/* Blog — nav dark mode + search, filter, back-to-top */
+
+// ── Dark mode ─────────────────────────────────────
+(function () {
+  var themeBtn = document.getElementById('nav-theme-btn');
+  var moon = document.getElementById('theme-icon-moon');
+  var sun  = document.getElementById('theme-icon-sun');
+  function applyTheme(dark) {
+    document.body.classList.toggle('dark', dark);
+    if (moon) moon.style.display = dark ? 'none' : '';
+    if (sun)  sun.style.display  = dark ? '' : 'none';
+  }
+  applyTheme(localStorage.getItem('blog-theme') === 'dark');
+  if (themeBtn) {
+    themeBtn.addEventListener('click', function () {
+      var isDark = document.body.classList.toggle('dark');
+      localStorage.setItem('blog-theme', isDark ? 'dark' : 'light');
+      if (moon) moon.style.display = isDark ? 'none' : '';
+      if (sun)  sun.style.display  = isDark ? '' : 'none';
+    });
+  }
+})();
+
+// ── Search icon ───────────────────────────────────
+(function () {
+  var btn = document.getElementById('nav-search-btn');
+  if (!btn) return;
+  btn.addEventListener('click', function () {
+    var inp = document.getElementById('blog-search');
+    if (inp) { inp.focus(); inp.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    else { window.location.href = '/blog/#search'; }
+  });
+})();
 
 (function () {
   const cards = Array.from(document.querySelectorAll('.post-card'));
