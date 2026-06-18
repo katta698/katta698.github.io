@@ -817,6 +817,20 @@ def main():
         )
 
     (BLOG_DIR / "index.html").write_text(build_index_page(posts), encoding="utf-8")
+
+    # posts.json — used by portfolio homepage to render latest posts
+    posts_json = [
+        {
+            "title":   p["title"],
+            "url":     f"/blog/{p['slug']}/",
+            "date":    p["date"].strftime("%b %d, %Y").replace(" 0", " "),
+            "tags":    " · ".join(p["tags"][:2]) if p["tags"] else "",
+            "excerpt": p["excerpt"],
+        }
+        for p in posts[:6]
+    ]
+    (BLOG_DIR / "posts.json").write_text(json.dumps(posts_json, indent=2), encoding="utf-8")
+
     print(f"Done — {len(posts)} posts built at blog/")
 
 
