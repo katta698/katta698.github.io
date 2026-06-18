@@ -753,6 +753,16 @@ def build_index_page(posts):
     }}
     quizStart();
     </script>
+    <div class="sidebar-card" style="border-color:rgba(226,75,74,.3)">
+      <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.6rem">
+        <span style="width:8px;height:8px;border-radius:50%;background:#E24B4A;display:inline-block;animation:sb-pulse 1s infinite"></span>
+        <span style="font-size:.68rem;font-weight:600;letter-spacing:.08em;color:#E24B4A">INCIDENT SIMULATOR</span>
+      </div>
+      <div style="font-size:.88rem;font-weight:600;color:var(--text);margin-bottom:.4rem">Production is down.</div>
+      <div style="font-size:.78rem;color:var(--text-muted);line-height:1.55;margin-bottom:.85rem">12,500 users impacted. Can you find the root cause before it costs thousands? 50 real AWS incidents.</div>
+      <a href="/blog/simulator/" class="ask-cta-btn" style="display:block;text-align:center;background:#E24B4A;text-decoration:none">Respond to incident →</a>
+    </div>
+    <style>@keyframes sb-pulse{{0%,100%{{opacity:1}}50%{{opacity:.3}}}}</style>
   </aside>
 </div>
 {FEEDBACK_WIDGET_HTML}
