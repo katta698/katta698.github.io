@@ -23,12 +23,24 @@
 
 // ── Search icon ───────────────────────────────────
 (function () {
-  var btn = document.getElementById('nav-search-btn');
+  var btn  = document.getElementById('nav-search-btn');
+  var wrap = document.getElementById('search-bar-wrap');
+  var inp  = document.getElementById('blog-search');
   if (!btn) return;
   btn.addEventListener('click', function () {
-    var inp = document.getElementById('blog-search');
-    if (inp) { inp.focus(); inp.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
-    else { window.location.href = '/blog/#search'; }
+    if (wrap) {
+      var isOpen = wrap.classList.toggle('open');
+      if (isOpen && inp) setTimeout(function () { inp.focus(); }, 220);
+    } else {
+      window.location.href = '/blog/#search';
+    }
+  });
+  // Close on Escape
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && wrap && wrap.classList.contains('open')) {
+      wrap.classList.remove('open');
+      if (inp) inp.value = '';
+    }
   });
 })();
 
@@ -100,15 +112,6 @@
       btn.classList.toggle('show', window.scrollY > 400);
     }, { passive: true });
     btn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
-  }
-
-  // Auto-focus search if arriving via #search hash (from post page search button)
-  if (window.location.hash === '#search' && searchInput) {
-    setTimeout(() => {
-      searchInput.focus();
-      searchInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      history.replaceState(null, '', window.location.pathname);
-    }, 300);
   }
 
   applyFilters();

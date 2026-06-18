@@ -496,13 +496,11 @@ def build_index_page(posts):
     <div class="hero-stat"><span class="hero-stat-n">{total_mins}</span><span class="hero-stat-l">Min of reading</span></div>
   </div>
 </section>
+<div class="search-bar-wrap" id="search-bar-wrap">
+  <input id="blog-search" type="search" placeholder="Search posts…" autocomplete="off"/>
+</div>
 <div class="filters">
   {filter_pills}
-  <div style="flex:1"></div>
-  <div class="nav-search" style="position:relative">
-    <svg class="nav-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    <input id="blog-search" type="search" placeholder="Search posts…" style="background:#f6f8fa;border:1.5px solid #e8edf2;color:#1a1a2e;"/>
-  </div>
 </div>
 <div class="results-count" id="results-count">{total_posts} posts</div>
 <div class="layout">
@@ -536,6 +534,7 @@ def build_index_page(posts):
     </div>
   </aside>
 </div>
+{FEEDBACK_WIDGET_HTML}
 {ASK_WIDGET_HTML}
 {back_top_html()}
 {footer_html()}
