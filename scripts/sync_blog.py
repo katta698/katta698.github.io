@@ -496,11 +496,9 @@ def build_post_page(post, prev_post, next_post):
 {back_top_html()}
 {footer_html()}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="{ASSETS_URL}/blog.js"></script>
 <script>
   hljs.highlightAll();
-  var btn=document.getElementById('back-top');
-  window.addEventListener('scroll',function(){{btn.classList.toggle('show',window.scrollY>400);}},{{passive:true}});
-  btn.addEventListener('click',function(){{window.scrollTo({{top:0,behavior:'smooth'}});}});
 </script>
 </body></html>"""
 
