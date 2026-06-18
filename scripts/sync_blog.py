@@ -380,7 +380,10 @@ def html_head(title, description, canonical, extra=""):
 </head>"""
 
 
-def nav_html():
+def nav_html(show_search=True):
+    search_btn = """  <button class="nav-icon-btn" id="nav-search-btn" aria-label="Search" title="Search posts">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+  </button>""" if show_search else ""
     return f"""<nav class="nav">
   <a class="nav-logo" href="/blog/">{NAV_SVG}<span>Jayanth Katta</span></a>
   <div class="nav-spacer"></div>
@@ -389,9 +392,7 @@ def nav_html():
     <li><a href="/blog/" class="active">Blog</a></li>
     <li><a href="/resume.html">Resume</a></li>
   </ul>
-  <button class="nav-icon-btn" id="nav-search-btn" aria-label="Search" title="Search posts">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-  </button>
+{search_btn}
   <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
     <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
   </button>
@@ -462,7 +463,7 @@ def build_post_page(post, prev_post, next_post):
 
     return f"""{html_head(title + " | Jayanth Katta Blog", post["excerpt"], post_url, extra)}
 <body>
-{nav_html()}
+{nav_html(show_search=False)}
 <main class="post-page-layout">
   <div class="post-breadcrumb">
     <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
