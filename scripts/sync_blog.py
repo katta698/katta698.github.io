@@ -28,6 +28,75 @@ FEED_BASE   = "https://blog.jayanthkatta.com/feeds/posts/default"
 SITE_URL    = "https://jayanthkatta.com"
 BLOG_URL    = f"{SITE_URL}/blog"
 DISQUS_ID   = "jayanthkatta"
+API_URL     = "https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search"
+
+ASK_WIDGET_HTML = f"""
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){{
+  var API_URL = '{API_URL}';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){{overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){{input.focus();}},220);}}
+  function closeModal(){{overlay.classList.remove('open');document.body.style.overflow='';}}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){{if(e.target===overlay)closeModal();}});
+  document.addEventListener('keydown',function(e){{if(e.key==='Escape')closeModal();}});
+  input.addEventListener('input',function(){{this.style.height='auto';this.style.height=this.scrollHeight+'px';}});
+  input.addEventListener('keydown',function(e){{if(e.key==='Enter'&&!e.shiftKey){{e.preventDefault();form.dispatchEvent(new Event('submit'));}}}});
+  form.addEventListener('submit',function(e){{
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{question:q}})}})
+      .then(function(r){{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}})
+      .then(function(data){{
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){{
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){{return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}}).join('')+'</div>';
+        }}
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      }})
+      .catch(function(){{output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';}})
+      .finally(function(){{sendBtn.disabled=false;}});
+  }});
+  function esc(str){{return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}}
+}})();
+</script>"""
 
 # ── ChatGPT CodeMirror markers ────────────────────────────────
 CHATGPT_MARKERS = [
@@ -296,6 +365,7 @@ def build_post_page(post, prev_post, next_post):
   </article>
   {disqus}
 </main>
+{ASK_WIDGET_HTML}
 {back_top_html()}
 {footer_html()}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -410,6 +480,7 @@ def build_index_page(posts):
     </div>
   </aside>
 </div>
+{ASK_WIDGET_HTML}
 {back_top_html()}
 {footer_html()}
 <script src="{ASSETS_URL}/blog.js"></script>
