@@ -5,28 +5,31 @@
   var POST_CARD_SELS = ['.card','.callout','.challenge-card','.tip-box','.warning-box','[class*="callout"','[class*="box"]','.container'];
 
   function applyPostBodyDark(dark) {
-    var body = document.querySelector('.post-body');
-    if (!body) return;
-    var els = body.querySelectorAll('.card,.callout,.challenge-card,.challenge-header,.challenge-body,.tip-box,.warning-box,.stat-box,.meta,.stack-badge,.flow-step,.flow,.flow-content,.section,.toc,.week-badge,.subtitle,.grid-2,.code-block,.code-header,.container');
-    els.forEach(function(el) {
-      if (dark) {
-        el.style.setProperty('background', '#162230', 'important');
-        el.style.setProperty('border-color', '#2d3a4a', 'important');
-        el.style.setProperty('color', '#e6edf3', 'important');
-        el.querySelectorAll('*').forEach(function(child) {
-          child.style.setProperty('color', '#e6edf3', 'important');
-          if (!child.matches('pre,code')) child.style.setProperty('background', 'transparent', 'important');
-        });
-      } else {
+    var jkPost = document.getElementById('jk-post');
+    if (!jkPost) return;
+    if (dark) {
+      jkPost.style.setProperty('background', 'transparent', 'important');
+      jkPost.style.setProperty('color', '#e6edf3', 'important');
+      jkPost.querySelectorAll('*').forEach(function(el) {
+        if (!el.matches('pre,code,img,svg,span.val')) {
+          el.style.setProperty('background', 'transparent', 'important');
+          el.style.setProperty('color', '#e6edf3', 'important');
+          el.style.setProperty('border-color', '#2d3a4a', 'important');
+        }
+      });
+      // Keep links orange
+      jkPost.querySelectorAll('a').forEach(function(a) {
+        a.style.setProperty('color', '#FF9900', 'important');
+      });
+    } else {
+      jkPost.style.removeProperty('background');
+      jkPost.style.removeProperty('color');
+      jkPost.querySelectorAll('*').forEach(function(el) {
         el.style.removeProperty('background');
-        el.style.removeProperty('border-color');
         el.style.removeProperty('color');
-        el.querySelectorAll('*').forEach(function(child) {
-          child.style.removeProperty('color');
-          child.style.removeProperty('background');
-        });
-      }
-    });
+        el.style.removeProperty('border-color');
+      });
+    }
   }
 
   function applyTheme(dark) {
