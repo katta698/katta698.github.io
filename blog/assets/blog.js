@@ -123,6 +123,15 @@
   });
 })();
 
+// ── Mobile grid-2 stack ───────────────────────────
+(function () {
+  if (window.innerWidth > 640) return;
+  var grids = document.querySelectorAll('#jk-post .grid-2');
+  grids.forEach(function(el) {
+    el.style.setProperty('grid-template-columns', '1fr', 'important');
+  });
+})();
+
 // ── Post-page inline search ───────────────────────
 (function () {
   var pi = document.getElementById('post-search-input');
