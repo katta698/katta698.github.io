@@ -7,7 +7,7 @@
   function applyPostBodyDark(dark) {
     var body = document.querySelector('.post-body');
     if (!body) return;
-    var els = body.querySelectorAll('.card,.callout,.challenge-card,.tip-box,.warning-box,.stat-box,.meta,.stack-badge');
+    var els = body.querySelectorAll('.card,.callout,.challenge-card,.tip-box,.warning-box,.stat-box,.meta,.stack-badge,.flow-step');
     els.forEach(function(el) {
       if (dark) {
         el.style.setProperty('background', '#162230', 'important');
