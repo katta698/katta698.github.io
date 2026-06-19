@@ -126,7 +126,7 @@
 // ── Mobile grid-2 stack ───────────────────────────
 (function () {
   if (window.innerWidth > 640) return;
-  var grids = document.querySelectorAll('#jk-post .grid-2');
+  var grids = document.querySelectorAll('#jk-post .grid-2, #jk-post .before-after');
   grids.forEach(function(el) {
     el.style.setProperty('grid-template-columns', '1fr', 'important');
   });
