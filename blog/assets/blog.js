@@ -7,7 +7,7 @@
   function applyPostBodyDark(dark) {
     var body = document.querySelector('.post-body');
     if (!body) return;
-    var els = body.querySelectorAll('.card,.callout,.challenge-card,.tip-box,.warning-box,.stat-box,.meta,.stack-badge,.flow-step');
+    var els = body.querySelectorAll('.card,.callout,.challenge-card,.challenge-header,.challenge-body,.tip-box,.warning-box,.stat-box,.meta,.stack-badge,.flow-step,.flow,.flow-content,.section,.toc,.week-badge,.subtitle,.grid-2,.code-block,.code-header,.container');
     els.forEach(function(el) {
       if (dark) {
         el.style.setProperty('background', '#162230', 'important');
