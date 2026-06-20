@@ -265,7 +265,8 @@ def fetch_all_posts():
             )
             title = entry.get("title", {}).get("$t", "Untitled")
             content_html = entry.get("content", {}).get("$t", "")
-            posts.append({"title": title, "url": link, "html": content_html})
+            published = entry.get("published", {}).get("$t", "")
+            posts.append({"title": title, "url": link, "html": content_html, "published": published})
         next_link = next(
             (l["href"] for l in feed.get("link", []) if l.get("rel") == "next"), None
         )
@@ -358,7 +359,12 @@ def excerpt(html, max_chars=160):
     return text[:max_chars].rstrip() + "…"
 
 
-def parse_date(url):
+def parse_date(url, published=None):
+    if published:
+        try:
+            return datetime.fromisoformat(published.replace("Z", "+00:00")).replace(tzinfo=None)
+        except (ValueError, AttributeError):
+            pass
     m = re.search(r"/(\d{4})/(\d{2})/", url or "")
     if m:
         return datetime(int(m.group(1)), int(m.group(2)), 1)
@@ -806,7 +812,7 @@ def main():
         body_html = clean_html(entry["html"])
         plain_text = BeautifulSoup(body_html, "html.parser").get_text()
         tags     = detect_tags(title + " " + plain_text)
-        dt       = parse_date(url)
+        dt       = parse_date(url, entry.get("published"))
         slug     = slugify(title)
 
         posts.append({
