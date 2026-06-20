@@ -847,7 +847,7 @@ def main():
             "tags":    " · ".join(p["tags"][:2]) if p["tags"] else "",
             "excerpt": p["excerpt"],
         }
-        for p in posts[:6]
+        for p in posts[:7]
     ]
     (BLOG_DIR / "posts.json").write_text(json.dumps(posts_json, indent=2), encoding="utf-8")
 
