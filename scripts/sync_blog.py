@@ -851,6 +851,15 @@ def main():
     ]
     (BLOG_DIR / "posts.json").write_text(json.dumps(posts_json, indent=2), encoding="utf-8")
 
+    # stats.json — used by portfolio homepage for the writing streak counter
+    dates = [p["date"] for p in posts]
+    stats_json = {
+        "total_posts": len(posts),
+        "first_post_date": min(dates).strftime("%Y-%m-%d") if dates else None,
+        "latest_post_date": max(dates).strftime("%Y-%m-%d") if dates else None,
+    }
+    (BLOG_DIR / "stats.json").write_text(json.dumps(stats_json, indent=2), encoding="utf-8")
+
     print(f"Done — {len(posts)} posts built at blog/")
 
 
