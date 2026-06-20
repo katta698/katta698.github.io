@@ -204,7 +204,14 @@
     });
   }
 
-  applyFilters();
+  // Pre-select tag filter from ?tag= param (set by portfolio teaser links)
+  var urlParams = new URLSearchParams(window.location.search);
+  var tagParam = urlParams.get('tag');
+  if (tagParam) {
+    setTag(tagParam.toLowerCase());
+  } else {
+    applyFilters();
+  }
 })();
 
 // ── Back to top ───────────────────────────────────
