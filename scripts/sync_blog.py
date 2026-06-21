@@ -423,7 +423,7 @@ def extract_code_text(pre_soup):
     return code_el.get_text()
 
 
-def clean_html(html):
+def clean_html(html, title=None):
     soup = BeautifulSoup(html, "html.parser")
     # Standardize the #jk-post theme to the current canonical version, so all
     # posts look consistent. Posts without a #jk-post wrapper get one added
@@ -444,6 +444,27 @@ def clean_html(html):
         new_style = soup.new_tag("style")
         new_style.string = JK_POST_THEME_CSS
         jk_post_div.insert_before(new_style)
+    # Posts with a hero block (.post-header/.meta/.stack-badge) sometimes have
+    # their own embedded title/subtitle, written as a catchier headline than
+    # the metadata title. Pull it out and use it as THE displayed title
+    # (consistently, in the standard header position for every post), and
+    # strip it from the body so it doesn't also show there.
+    embedded_title = None
+    embedded_subtitle = None
+    has_hero_marker = (
+        jk_post_div.find(class_="post-header")
+        or jk_post_div.find(class_="meta")
+        or jk_post_div.find(class_="stack-badge")
+    )
+    if title and has_hero_marker:
+        title_el = jk_post_div.find("h1") or jk_post_div.find(class_="post-title")
+        if title_el and title_el.get_text(strip=True):
+            embedded_title = title_el.get_text(strip=True)
+            subtitle_el = jk_post_div.find(class_="post-subtitle")
+            if subtitle_el:
+                embedded_subtitle = subtitle_el.get_text(strip=True)
+                subtitle_el.decompose()
+            title_el.decompose()
     # Strip empty <p> tags and stray top-level <br> left over from Blogger
     # copy-paste — they carry no content, just unwanted vertical whitespace.
     for p in soup.find_all("p"):
@@ -498,7 +519,7 @@ def clean_html(html):
             span.unwrap()
         for br in code.find_all("br"):
             br.replace_with("\n")
-    return str(soup)
+    return str(soup), embedded_title, embedded_subtitle
 
 
 # ── Post metadata helpers ─────────────────────────────────────
@@ -602,25 +623,13 @@ def back_top_html():
 
 # ── Build individual post page ────────────────────────────────
 def build_post_page(post, prev_post, next_post):
-    slug     = post["slug"]
-    title    = post["title"]
-    tags     = post["tags"]
+    slug          = post["slug"]
+    title         = post["title"]
+    display_title = post["display_title"]
+    tags          = post["tags"]
     post_url = f"{BLOG_URL}/{slug}/"
 
     tags_html = " ".join(f'<span class="tag-badge">{t}</span>' for t in tags)
-    # Posts with their own embedded hero already show the title prominently —
-    # skip the generic h1 to avoid showing the same title twice. Only do this
-    # when the embedded content actually HAS a title element (h1 or
-    # .post-title) — some posts have .meta/.stack-badge pills but no title
-    # of their own, and removing the generic h1 there would leave no title
-    # at all.
-    body = post["body_html"]
-    has_own_title_element = "<h1" in body or 'class="post-title"' in body
-    has_embedded_hero = has_own_title_element and (
-        'class="post-header"' in body
-        or 'class="meta"' in body
-        or 'class="stack-badge"' in body
-    )
 
     prev_link = (
         f'<a href="/blog/{prev_post["slug"]}/" class="post-nav-link prev">'
@@ -673,7 +682,8 @@ def build_post_page(post, prev_post, next_post):
   <article>
     <header class="post-header">
       <div class="post-header-meta">{tags_html}</div>
-      {"" if has_embedded_hero else f"<h1>{escape(title)}</h1>"}
+      <h1>{escape(display_title)}</h1>
+      <p class="post-description">{escape(post["description"])}</p>
       <div class="post-info">
         <span>{post["date_fmt"]}</span>
         <span class="post-info-dot"></span>
@@ -991,21 +1001,24 @@ def main():
     for entry in raw_posts:
         title    = entry["title"]
         url      = entry.get("url", "")
-        body_html = clean_html(entry["html"])
+        body_html, embedded_title, embedded_subtitle = clean_html(entry["html"], title)
         plain_text = BeautifulSoup(body_html, "html.parser").get_text()
         tags     = detect_tags(title + " " + plain_text)
         dt       = parse_date(url, entry.get("published"))
         slug     = slugify(title)
+        description = embedded_subtitle or excerpt(body_html)
 
         posts.append({
-            "slug":      slug,
-            "title":     title,
-            "url":       url,
-            "date":      dt,
-            "date_fmt":  dt.strftime("%b %Y"),
-            "tags":      tags,
-            "read_time": reading_time(body_html),
-            "excerpt":   excerpt(body_html),
+            "slug":          slug,
+            "title":         title,
+            "display_title": embedded_title or title,
+            "url":           url,
+            "date":          dt,
+            "date_fmt":      dt.strftime("%b %Y"),
+            "tags":          tags,
+            "read_time":     reading_time(body_html),
+            "excerpt":       excerpt(body_html),
+            "description":   description,
             "body_html": body_html,
         })
 
