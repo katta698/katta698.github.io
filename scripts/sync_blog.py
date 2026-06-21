@@ -608,13 +608,18 @@ def build_post_page(post, prev_post, next_post):
     post_url = f"{BLOG_URL}/{slug}/"
 
     tags_html = " ".join(f'<span class="tag-badge">{t}</span>' for t in tags)
-    # Posts with their own embedded hero (class="post-header" inside the
-    # themed #jk-post content) already show the title prominently — skip the
-    # generic h1/date line here to avoid showing the same title twice.
-    has_embedded_hero = (
-        'class="post-header"' in post["body_html"]
-        or 'class="meta"' in post["body_html"]
-        or 'class="stack-badge"' in post["body_html"]
+    # Posts with their own embedded hero already show the title prominently —
+    # skip the generic h1 to avoid showing the same title twice. Only do this
+    # when the embedded content actually HAS a title element (h1 or
+    # .post-title) — some posts have .meta/.stack-badge pills but no title
+    # of their own, and removing the generic h1 there would leave no title
+    # at all.
+    body = post["body_html"]
+    has_own_title_element = "<h1" in body or 'class="post-title"' in body
+    has_embedded_hero = has_own_title_element and (
+        'class="post-header"' in body
+        or 'class="meta"' in body
+        or 'class="stack-badge"' in body
     )
 
     prev_link = (
