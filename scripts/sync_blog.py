@@ -449,6 +449,9 @@ def clean_html(html):
     for p in soup.find_all("p"):
         if not p.get_text(strip=True) and not p.find(["img", "iframe"]):
             p.decompose()
+    for bq in soup.find_all("blockquote"):
+        if not bq.get_text(strip=True) and not bq.find(["img", "iframe"]):
+            bq.decompose()
     for br in jk_post_div.find_all("br", recursive=False):
         br.decompose()
     for pre in soup.find_all("pre"):
@@ -600,6 +603,14 @@ def build_post_page(post, prev_post, next_post):
     post_url = f"{BLOG_URL}/{slug}/"
 
     tags_html = " ".join(f'<span class="tag-badge">{t}</span>' for t in tags)
+    # Posts with their own embedded hero (class="post-header" inside the
+    # themed #jk-post content) already show the title prominently — skip the
+    # generic h1/date line here to avoid showing the same title twice.
+    has_embedded_hero = (
+        'class="post-header"' in post["body_html"]
+        or 'class="meta"' in post["body_html"]
+        or 'class="stack-badge"' in post["body_html"]
+    )
 
     prev_link = (
         f'<a href="/blog/{prev_post["slug"]}/" class="post-nav-link prev">'
@@ -652,7 +663,7 @@ def build_post_page(post, prev_post, next_post):
   <article>
     <header class="post-header">
       <div class="post-header-meta">{tags_html}</div>
-      <h1>{escape(title)}</h1>
+      {"" if has_embedded_hero else f"<h1>{escape(title)}</h1>"}
       <div class="post-info">
         <span>{post["date_fmt"]}</span>
         <span class="post-info-dot"></span>
