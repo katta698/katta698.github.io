@@ -683,7 +683,7 @@ def build_post_page(post, prev_post, next_post):
     <header class="post-header">
       <div class="post-header-meta">{tags_html}</div>
       <h1>{escape(display_title)}</h1>
-      <p class="post-description">{escape(post["description"])}</p>
+      {f'<p class="post-description">{escape(post["description"])}</p>' if post["description"] else ""}
       <div class="post-info">
         <span>{post["date_fmt"]}</span>
         <span class="post-info-dot"></span>
@@ -1006,7 +1006,10 @@ def main():
         tags     = detect_tags(title + " " + plain_text)
         dt       = parse_date(url, entry.get("published"))
         slug     = slugify(title)
-        description = embedded_subtitle or excerpt(body_html)
+        # Only show a description when there's a genuinely separate embedded
+        # subtitle — falling back to the excerpt would just repeat the post's
+        # own opening line right below the title.
+        description = embedded_subtitle
 
         posts.append({
             "slug":          slug,
