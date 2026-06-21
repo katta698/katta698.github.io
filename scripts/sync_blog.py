@@ -264,7 +264,7 @@ JK_POST_THEME_CSS = """
   color: #0f1111;
   max-width: 860px;
   margin: 0 auto;
-  background: #fff;
+  background: transparent;
 }
 #jk-post * { box-sizing: border-box; }
 
@@ -444,6 +444,13 @@ def clean_html(html):
         new_style = soup.new_tag("style")
         new_style.string = JK_POST_THEME_CSS
         jk_post_div.insert_before(new_style)
+    # Strip empty <p> tags and stray top-level <br> left over from Blogger
+    # copy-paste — they carry no content, just unwanted vertical whitespace.
+    for p in soup.find_all("p"):
+        if not p.get_text(strip=True) and not p.find(["img", "iframe"]):
+            p.decompose()
+    for br in jk_post_div.find_all("br", recursive=False):
+        br.decompose()
     for pre in soup.find_all("pre"):
         try:
             pre_str = pre.decode()
