@@ -450,8 +450,13 @@ def clean_html(html):
         if not p.get_text(strip=True) and not p.find(["img", "iframe"]):
             p.decompose()
     for bq in soup.find_all("blockquote"):
-        if not bq.get_text(strip=True) and not bq.find(["img", "iframe"]):
+        has_media = bq.find(["img", "iframe"])
+        if not bq.get_text(strip=True) and not has_media:
             bq.decompose()
+        elif has_media and not bq.get_text(strip=True):
+            # Blogger wraps centered images in <blockquote> purely for layout —
+            # unwrap so they don't inherit quote styling (cream bg, orange border).
+            bq.unwrap()
     for br in jk_post_div.find_all("br", recursive=False):
         br.decompose()
     for pre in soup.find_all("pre"):
