@@ -425,19 +425,25 @@ def extract_code_text(pre_soup):
 
 def clean_html(html):
     soup = BeautifulSoup(html, "html.parser")
-    # Standardize any embedded #jk-post theme to the current canonical version,
-    # so all themed posts look consistent regardless of which version they were
-    # originally written with. Posts without a #jk-post block are untouched.
-    if soup.find(id="jk-post"):
-        for style_tag in soup.find_all("style"):
-            if "#jk-post" in style_tag.get_text():
-                style_tag.string = JK_POST_THEME_CSS
-                break
-        else:
-            new_style = soup.new_tag("style")
-            new_style.string = JK_POST_THEME_CSS
-            jk_post_div = soup.find(id="jk-post")
-            jk_post_div.insert_before(new_style)
+    # Standardize the #jk-post theme to the current canonical version, so all
+    # posts look consistent. Posts without a #jk-post wrapper get one added
+    # around their existing content — this brings the canonical theme's base
+    # typography (headings, links, code, tables) to older plain posts too,
+    # without altering any of their actual content or structure.
+    jk_post_div = soup.find(id="jk-post")
+    if jk_post_div is None:
+        jk_post_div = soup.new_tag("div", id="jk-post")
+        for child in list(soup.contents):
+            jk_post_div.append(child.extract())
+        soup.append(jk_post_div)
+    for style_tag in soup.find_all("style"):
+        if "#jk-post" in style_tag.get_text():
+            style_tag.string = JK_POST_THEME_CSS
+            break
+    else:
+        new_style = soup.new_tag("style")
+        new_style.string = JK_POST_THEME_CSS
+        jk_post_div.insert_before(new_style)
     for pre in soup.find_all("pre"):
         try:
             pre_str = pre.decode()
