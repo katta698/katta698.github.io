@@ -466,6 +466,13 @@ def clean_html(html, title=None):
                 embedded_subtitle = subtitle_el.get_text(strip=True)
                 subtitle_el.decompose()
             title_el.decompose()
+    # Strip any embedded self-link footer (e.g. "Week 05 of 52 ·
+    # blog.jayanthkatta.com · github.com/katta698") — redundant with the
+    # "Originally on Blogger" link the site already shows, and not present
+    # on any other post, so removing it keeps every post consistent.
+    footer_el = jk_post_div.find(class_="post-footer")
+    if footer_el and (footer_el.find("a", href=re.compile(r"blog\.jayanthkatta\.com|github\.com/katta698"))):
+        footer_el.decompose()
     # Strip empty <p> tags and stray top-level <br> left over from Blogger
     # copy-paste — they carry no content, just unwanted vertical whitespace.
     for p in soup.find_all("p"):
