@@ -220,26 +220,6 @@ CHATGPT_MARKERS = [
 ]
 
 # ── Tag detection ─────────────────────────────────────────────
-TAG_RULES = [
-    ("AI",         ["rag", "bedrock", "llm", "amazon nova", "titan embed",
-                    "vector embed", "semantic search"]),
-    ("Kubernetes", ["kubernetes", "k8s", "helm", "kubectl", "pod manifest",
-                    "namespace", "eks cluster"]),
-    ("GitOps",     ["gitops", "argocd", "flux", "git ops", "drift detection"]),
-    ("Terraform",  ["terraform", "hcl", "tfstate", "workspace", "terraform module",
-                    "terraform import", "terraform cloud"]),
-    ("AWS",        ["aws", "ec2", "s3 bucket", "rds mysql", "iam role", "lambda",
-                    "cloudwatch", "cloudfront", "route 53", "vpc", "beanstalk",
-                    "ssm", "glue", "fleet intelligence", "servicenow", "eks"]),
-    ("Health",     ["sugar", "wheat", "longevity", "turning 40", "diet ",
-                    "refined carbs", "i reduced"]),
-    ("Career",     ["platform engineer", "enterprise platform", "self-service",
-                    "ticket to ec2", "postgresql provisioning"]),
-    ("Life",       ["daughter", "my child", "patience", "quiet promise",
-                    "the conversations", "i stopped competing", "beautiful"]),
-    ("Tech",       ["oracle", "mariadb", "mongodb", "azure log", "ansible",
-                    "studio 3t", "asm integrity", "lock tables"]),
-]
 MAX_TAGS = 3
 CATEGORY_ORDER = ["All", "AWS", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
 
@@ -535,26 +515,20 @@ KNOWN_CATEGORIES = [c for c in CATEGORY_ORDER if c != "All"]
 
 
 def detect_tags(text, labels=None):
-    # Prefer Jayanth's actual Blogger labels — far more accurate than
+    # Use Jayanth's actual Blogger labels only — far more reliable than
     # guessing from content. Only keep ones matching the site's fixed filter
     # taxonomy (posts have many generic labels like "Technology"/"DevOps"
-    # that don't have a filter pill). Fall back to keyword detection only
-    # when a post has no labels matching any known category.
+    # that don't have a filter pill). No keyword-based fallback — content
+    # guessing repeatedly produced false positives (e.g. "rag" matching
+    # inside "storage", "eks" matching inside "weeks", "beautiful" matching
+    # inside "beautifully"). If a post's labels don't match anything known,
+    # it defaults to "Tech" — add a real, accurate label in Blogger for any
+    # post that deserves better than that.
     if labels:
         matched = [c for c in KNOWN_CATEGORIES if c.lower() in {l.lower() for l in labels}]
         if matched:
             return matched[:MAX_TAGS]
-
-    text_lower = text.lower()
-    tags = []
-    for tag, keywords in TAG_RULES:
-        # Boundary only at the START of the match — plain substring matching
-        # let short keywords like "rag" false-positive inside unrelated words
-        # (e.g. "storage"). No trailing boundary, so "s3 bucket" still matches
-        # "s3 buckets" (plural) etc.
-        if any(re.search(r"\b" + re.escape(kw.strip()), text_lower) for kw in keywords):
-            tags.append(tag)
-    return (tags or ["Tech"])[:MAX_TAGS]
+    return ["Tech"]
 
 
 def reading_time(html):
@@ -713,8 +687,6 @@ def build_post_page(post, prev_post, next_post):
         <span>{post["date_fmt"]}</span>
         <span class="post-info-dot"></span>
         <span>{post["read_time"]} min read</span>
-        <span class="post-info-dot"></span>
-        <a href="https://blog.jayanthkatta.com" target="_blank" rel="noopener" style="color:inherit;opacity:.6;font-size:.72rem;">Originally on Blogger</a>
       </div>
     </header>
     <div class="post-divider"></div>
