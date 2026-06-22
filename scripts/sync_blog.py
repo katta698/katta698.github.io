@@ -527,7 +527,11 @@ def detect_tags(text):
     text_lower = text.lower()
     tags = []
     for tag, keywords in TAG_RULES:
-        if any(kw in text_lower for kw in keywords):
+        # Boundary only at the START of the match — plain substring matching
+        # let short keywords like "rag" false-positive inside unrelated words
+        # (e.g. "storage"). No trailing boundary, so "s3 bucket" still matches
+        # "s3 buckets" (plural) etc.
+        if any(re.search(r"\b" + re.escape(kw.strip()), text_lower) for kw in keywords):
             tags.append(tag)
     return (tags or ["Tech"])[:MAX_TAGS]
 
