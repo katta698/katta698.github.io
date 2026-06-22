@@ -399,7 +399,8 @@ def fetch_all_posts():
             title = entry.get("title", {}).get("$t", "Untitled")
             content_html = entry.get("content", {}).get("$t", "")
             published = entry.get("published", {}).get("$t", "")
-            posts.append({"title": title, "url": link, "html": content_html, "published": published})
+            labels = [c.get("term", "") for c in entry.get("category", [])]
+            posts.append({"title": title, "url": link, "html": content_html, "published": published, "labels": labels})
         next_link = next(
             (l["href"] for l in feed.get("link", []) if l.get("rel") == "next"), None
         )
@@ -523,7 +524,20 @@ def clean_html(html, title=None):
 
 
 # ── Post metadata helpers ─────────────────────────────────────
-def detect_tags(text):
+KNOWN_CATEGORIES = [c for c in CATEGORY_ORDER if c != "All"]
+
+
+def detect_tags(text, labels=None):
+    # Prefer Jayanth's actual Blogger labels — far more accurate than
+    # guessing from content. Only keep ones matching the site's fixed filter
+    # taxonomy (posts have many generic labels like "Technology"/"DevOps"
+    # that don't have a filter pill). Fall back to keyword detection only
+    # when a post has no labels matching any known category.
+    if labels:
+        matched = [c for c in KNOWN_CATEGORIES if c.lower() in {l.lower() for l in labels}]
+        if matched:
+            return matched[:MAX_TAGS]
+
     text_lower = text.lower()
     tags = []
     for tag, keywords in TAG_RULES:
@@ -1007,7 +1021,7 @@ def main():
         url      = entry.get("url", "")
         body_html, embedded_title, embedded_subtitle = clean_html(entry["html"], title)
         plain_text = BeautifulSoup(body_html, "html.parser").get_text()
-        tags     = detect_tags(title + " " + plain_text)
+        tags     = detect_tags(title + " " + plain_text, entry.get("labels"))
         dt       = parse_date(url, entry.get("published"))
         slug     = slugify(title)
         # Only show a description when there's a genuinely separate embedded
