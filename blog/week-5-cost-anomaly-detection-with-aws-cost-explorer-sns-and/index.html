@@ -62,7 +62,7 @@
       <div class="post-info">
         <span>Jun 2026</span>
         <span class="post-info-dot"></span>
-        <span>12 min read</span>
+        <span>13 min read</span>
       </div>
     </header>
     <div class="post-divider"></div>
@@ -395,27 +395,19 @@
 <!-- ── 5. How to Implement ────────────────────────────────────────────── -->
 <div class="section" id="how">
 <h2>5. How to Implement — Step by Step</h2>
-<h3>Step 1 — Set up HCP Terraform workspace</h3>
-<p>Previous weeks used an S3 backend. This week switches to HCP Terraform — a managed backend with VCS integration and a cleaner OIDC credential story.</p>
-<table>
-<tr><th></th><th>S3 Backend + GitHub Actions</th><th>HCP Terraform</th></tr>
-<tr><td>State storage</td><td>S3 bucket (you manage)</td><td>HCP manages it</td></tr>
-<tr><td>State locking</td><td>DynamoDB table</td><td>Built-in</td></tr>
-<tr><td>CI/CD</td><td>GitHub Actions workflow</td><td>HCP VCS-driven</td></tr>
-<tr><td>AWS credentials</td><td>OIDC via GitHub Actions</td><td>OIDC via HCP workspace</td></tr>
-<tr><td>Free tier</td><td>~$0</td><td>Free ≤500 resources</td></tr>
-</table>
-<p>Create the workspace in <a href="https://app.terraform.io">app.terraform.io</a>: org <strong>Katta</strong> → New Workspace → Version Control Workflow → connect <code>katta698/AWS-Platform-Engineering-Lab</code> → working directory <code>week-05-cost-anomaly-detection/terraform/environments/dev</code> → name it <code>week-05-dev</code>.</p>
-<figure>
-<img alt="HCP Terraform run applied" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-05-cost-anomaly-detection/docs/blog/screenshots/01-hcp-run-applied.png"/>
-<figcaption>HCP Terraform workspace week-05-dev — VCS-connected run, applied successfully</figcaption>
-</figure>
-<h3>Step 2 — Configure OIDC dynamic credentials</h3>
-<p>Two workspace environment variables replace the entire AWS credential setup. HCP mints short-lived tokens per run via <code>sts:AssumeRoleWithWebIdentity</code> — no static keys stored anywhere.</p>
-<div class="code-label">HCP Workspace Environment Variables</div>
-<pre>TFC_AWS_PROVIDER_AUTH  = true
-TFC_AWS_RUN_ROLE_ARN   = arn:aws:iam::&lt;ACCOUNT_ID&gt;:role/hcp-terraform-role</pre>
-<div class="code-label">JSON — IAM Trust Policy (scoped to workspace)</div>
+<h3>Step 1 — Create the AWS OIDC provider and IAM role</h3>
+<p>Before HCP can authenticate to AWS, AWS needs to trust HCP. This is a one-time, manual bootstrap — it can’t be created by the same Terraform run that depends on it.</p>
+<p>Register <code>app.terraform.io</code> as an OIDC identity provider, then create the role HCP will assume:</p>
+<div class="code-label">AWS CLI — one-time bootstrap</div>
+<pre>aws iam create-open-id-connect-provider \
+  --url https://app.terraform.io \
+  --client-id-list aws.workload.identity \
+  --thumbprint-list &lt;thumbprint&gt;
+
+aws iam create-role \
+  --role-name hcp-terraform-role \
+  --assume-role-policy-document file://trust-policy.json</pre>
+<div class="code-label">JSON — trust-policy.json (scoped to this workspace)</div>
 <pre>{
   "Version": "2012-10-17",
   "Statement": [{
@@ -439,6 +431,17 @@ TFC_AWS_RUN_ROLE_ARN   = arn:aws:iam::&lt;ACCOUNT_ID&gt;:role/hcp-terraform-role
 <div class="callout-label">Gotcha — org slug is case-sensitive</div>
 <p>The org shows as <strong>Katta</strong> in the HCP UI, but the actual slug used in the OIDC <code>sub</code> claim is lowercase <code>katta</code> (visible in API URLs like <code>/api/v2/organizations/katta/...</code>). IAM’s <code>StringLike</code> condition is case-sensitive — a capital letter here causes <code>AccessDenied: Not authorized to perform sts:AssumeRoleWithWebIdentity</code> with no other clue as to why.</p>
 </div>
+<h3>Step 2 — Set up HCP Terraform workspace</h3>
+<p>Previous weeks used an S3 backend. This week switches to HCP Terraform — a managed backend with VCS integration and a cleaner OIDC credential story.</p>
+<table>
+<tr><th></th><th>S3 Backend + GitHub Actions</th><th>HCP Terraform</th></tr>
+<tr><td>State storage</td><td>S3 bucket (you manage)</td><td>HCP manages it</td></tr>
+<tr><td>State locking</td><td>DynamoDB table</td><td>Built-in</td></tr>
+<tr><td>CI/CD</td><td>GitHub Actions workflow</td><td>HCP VCS-driven</td></tr>
+<tr><td>AWS credentials</td><td>OIDC via GitHub Actions</td><td>OIDC via HCP workspace</td></tr>
+<tr><td>Free tier</td><td>~$0</td><td>Free ≤500 resources</td></tr>
+</table>
+<p>Create the workspace in <a href="https://app.terraform.io">app.terraform.io</a>: org <strong>Katta</strong> → New Workspace → Version Control Workflow → connect <code>katta698/AWS-Platform-Engineering-Lab</code> → working directory <code>week-05-cost-anomaly-detection/terraform/environments/dev</code> → name it <code>week-05-dev</code>.</p>
 <h3>Step 3 — Terraform backend and module composition</h3>
 <div class="code-label">HCL — terraform/environments/dev/main.tf</div>
 <pre>terraform {
@@ -469,10 +472,6 @@ module "cost_anomaly"  { source = "../../modules/cost_anomaly"   ... }</pre>
     }]
   })
 }</pre>
-<figure>
-<img alt="SNS topics in AWS console" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-05-cost-anomaly-detection/docs/blog/screenshots/04-sns-topics.png"/>
-<figcaption>Both SNS topics created — raw-anomaly (AWS-to-Lambda) and cost-alert (Lambda-to-email)</figcaption>
-</figure>
 <h3>Step 5 — Cost Anomaly Monitor and Subscription</h3>
 <div class="code-label">HCL — modules/cost_anomaly/main.tf</div>
 <pre>resource "aws_ce_anomaly_monitor" "this" {
@@ -495,10 +494,6 @@ resource "aws_ce_anomaly_subscription" "this" {
     }
   }
 }</pre>
-<figure>
-<img alt="Cost Anomaly Detection alert subscription" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-05-cost-anomaly-detection/docs/blog/screenshots/03-anomaly-subscription.png"/>
-<figcaption>Alert subscription — IMMEDIATE frequency, $10 absolute impact threshold</figcaption>
-</figure>
 <h3>Step 6 — Lambda alert formatter</h3>
 <p>Lambda transforms the raw Cost Anomaly Detection JSON payload into a plain-text email showing the service, expected vs. actual spend, and the top 5 root causes.</p>
 <div class="code-label">Python — lambda/cost_alerter/handler.py</div>
@@ -516,7 +511,26 @@ resource "aws_ce_anomaly_subscription" "this" {
     )
     subject = f"[DEV] Cost Anomaly: ${overage:.2f} above expected - {service}"
     return subject, body</pre>
-<h3>Step 7 — Test immediately after deploy</h3>
+<h3>Step 7 — Configure OIDC dynamic credentials</h3>
+<p>Two workspace environment variables replace the entire AWS credential setup, pointing at the role created in Step 1. HCP mints short-lived tokens per run via <code>sts:AssumeRoleWithWebIdentity</code> — no static keys stored anywhere.</p>
+<div class="code-label">HCP Workspace Environment Variables</div>
+<pre>TFC_AWS_PROVIDER_AUTH  = true
+TFC_AWS_RUN_ROLE_ARN   = arn:aws:iam::&lt;ACCOUNT_ID&gt;:role/hcp-terraform-role</pre>
+<h3>Step 8 — Push to GitHub and apply via HCP</h3>
+<p>A <code>git push</code> to the connected branch automatically queues a plan in HCP — no manual trigger needed for that part. But a VCS-connected workspace blocks <code>terraform apply</code> from local CLI or CI entirely (<code>Error: Apply not allowed for workspaces with a VCS connection</code>). The actual resource creation only happens once you open the run in the HCP UI and click <strong>Confirm &amp; Apply</strong>.</p>
+<figure>
+<img alt="HCP Terraform run applied" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-05-cost-anomaly-detection/docs/blog/screenshots/01-hcp-run-applied.png"/>
+<figcaption>HCP Terraform workspace week-05-dev — VCS-connected run, applied successfully</figcaption>
+</figure>
+<figure>
+<img alt="SNS topics in AWS console" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-05-cost-anomaly-detection/docs/blog/screenshots/04-sns-topics.png"/>
+<figcaption>Both SNS topics created — raw-anomaly (AWS-to-Lambda) and cost-alert (Lambda-to-email)</figcaption>
+</figure>
+<figure>
+<img alt="Cost Anomaly Detection alert subscription" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-05-cost-anomaly-detection/docs/blog/screenshots/03-anomaly-subscription.png"/>
+<figcaption>Alert subscription — IMMEDIATE frequency, $10 absolute impact threshold</figcaption>
+</figure>
+<h3>Step 9 — Test immediately after deploy</h3>
 <p>Don’t wait for a real anomaly. Use the Lambda test console with a mock payload to verify the full pipeline:</p>
 <div class="code-label">JSON — Lambda test event</div>
 <pre>{
@@ -632,12 +646,17 @@ resource "aws_ce_anomaly_subscription" "this" {
 <tr><td>HCP Terraform</td><td>Free ≤500 managed resources</td><td>$0.00</td></tr>
 <tr><td><strong>Total</strong></td><td></td><td><strong>$0.00</strong></td></tr>
 </table>
-<div class="code-label">Cleanup</div>
-<pre># Via GitHub Actions
-# Run week-05-destroy.yml workflow, type DESTROY to confirm
-
-# Or via HCP Terraform
-# Workspace → Actions → Start new run → Plan and destroy</pre>
+<div class="callout">
+<div class="callout-label">Cleanup must go through HCP, not GitHub Actions</div>
+<p>This workspace is VCS-connected, which blocks <code>terraform apply</code>/<code>destroy</code> from any CLI or CI context — including a GitHub Actions workflow, even with a valid HCP API token. The only working path is the HCP UI:</p>
+</div>
+<div class="code-label">Cleanup — via HCP Terraform UI</div>
+<pre>Workspace (week-05-dev) → Actions → Start new run → Plan and destroy
+→ review the plan → Confirm &amp; Apply</pre>
+<figure>
+<img alt="HCP Terraform destroy run completed" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-05-cost-anomaly-detection/docs/blog/screenshots/07-destroy-confirmed.png"/>
+<figcaption>Destroy run triggered from the HCP UI — 12 resources destroyed, $0 remaining</figcaption>
+</figure>
 </div>
 <!-- ── 9. References ───────────────────────────────────────────────────── -->
 <div class="section" id="references">
