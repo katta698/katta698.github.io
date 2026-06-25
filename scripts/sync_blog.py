@@ -15,12 +15,15 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
+import markdown
 import requests
+import yaml
 from bs4 import BeautifulSoup
 
 # ── Paths (relative to repo root) ─────────────────────────────
 REPO_ROOT   = Path(__file__).parent.parent
 BLOG_DIR    = REPO_ROOT / "blog"
+POSTS_DIR   = REPO_ROOT / "posts"
 ASSETS_URL  = "/blog/assets"
 
 # ── Blogger config ────────────────────────────────────────────
@@ -385,6 +388,48 @@ def fetch_all_posts():
             (l["href"] for l in feed.get("link", []) if l.get("rel") == "next"), None
         )
         url = next_link
+    return posts
+
+
+# ── Local posts (written directly in this repo, no Blogger) ────
+MD_EXTENSIONS = ["fenced_code", "tables", "sane_lists", "nl2br"]
+
+
+def fetch_local_posts():
+    """Posts written as Markdown + YAML front matter in posts/*.md.
+    Front matter fields: title (required), date (YYYY-MM-DD, required),
+    labels (list, optional), slug (optional — defaults to slugify(title)).
+    The Markdown body is converted to HTML and run through the same
+    clean_html() pipeline as Blogger posts, so the canonical theme,
+    image handling, and lightbox all apply identically — write the body
+    using the same component classes (.callout, .flow, figure.screenshot,
+    etc.) documented in [[project-blog-sync-arch]].
+    """
+    posts = []
+    if not POSTS_DIR.exists():
+        return posts
+    for md_file in sorted(POSTS_DIR.glob("*.md")):
+        raw = md_file.read_text(encoding="utf-8")
+        if raw.startswith("---"):
+            _, fm_text, body_md = raw.split("---", 2)
+            front_matter = yaml.safe_load(fm_text) or {}
+        else:
+            front_matter, body_md = {}, raw
+        title = front_matter.get("title")
+        date = front_matter.get("date")
+        if not title or not date:
+            print(f"  Skipping {md_file.name}: missing required 'title' or 'date' front matter")
+            continue
+        body_html = markdown.markdown(body_md, extensions=MD_EXTENSIONS)
+        published = date.isoformat() if hasattr(date, "isoformat") else str(date)
+        posts.append({
+            "title": title,
+            "url": "",
+            "html": body_html,
+            "published": published,
+            "labels": front_matter.get("labels", []),
+            "slug": front_matter.get("slug"),
+        })
     return posts
 
 
@@ -1025,6 +1070,11 @@ def main():
     raw_posts = fetch_all_posts()
     print(f"  {len(raw_posts)} posts found")
 
+    local_posts = fetch_local_posts()
+    if local_posts:
+        print(f"  {len(local_posts)} local post(s) found in posts/")
+    raw_posts += local_posts
+
     posts = []
     for entry in raw_posts:
         title    = entry["title"]
@@ -1033,7 +1083,7 @@ def main():
         plain_text = BeautifulSoup(body_html, "html.parser").get_text()
         tags     = detect_tags(title + " " + plain_text, entry.get("labels"))
         dt       = parse_date(url, entry.get("published"))
-        slug     = slugify(title)
+        slug     = entry.get("slug") or slugify(title)
         # Only show a description when there's a genuinely separate embedded
         # subtitle — falling back to the excerpt would just repeat the post's
         # own opening line right below the title.
