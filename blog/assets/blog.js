@@ -238,11 +238,20 @@
   var lbImg = overlay.querySelector('.lightbox-img');
   var lbSvg = overlay.querySelector('.lightbox-svg');
 
+  // Blogger serves a resized thumbnail in <img src> (e.g. "/s600/" or
+  // "=w640-h156") — fine for the inline post, but blurry once stretched
+  // to fill the lightbox. Swap in Blogger's "s0" marker (original,
+  // unscaled size) so the zoomed view is actually sharp.
+  function fullResSrc(src) {
+    if (!src || src.indexOf('googleusercontent.com') === -1) return src;
+    return src.replace(/\/s\d+\//, '/s0/').replace(/=([a-zA-Z])\d+(-[a-zA-Z]\d+)?$/, '=s0');
+  }
+
   function openImg(src, alt) {
     lbSvg.style.display = 'none';
     lbSvg.innerHTML = '';
     lbImg.style.display = '';
-    lbImg.src = src;
+    lbImg.src = fullResSrc(src);
     lbImg.alt = alt || '';
     overlay.classList.add('open');
   }
