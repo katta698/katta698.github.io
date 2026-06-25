@@ -1,6 +1,7 @@
 """
-Sync blog: fetch from Blogger → clean → build static pages at blog/
-Run locally or via GitHub Actions (nightly cron).
+Build the blog: read posts/*.md and posts/*.html → clean → build static
+pages at blog/. No Blogger dependency — every post lives locally in this
+repo. (One-time Blogger migration: scripts/migrate_from_blogger.py.)
 
 Usage:
   python scripts/sync_blog.py
@@ -16,7 +17,6 @@ from html import escape
 from pathlib import Path
 
 import markdown
-import requests
 import yaml
 from bs4 import BeautifulSoup
 
@@ -26,8 +26,6 @@ BLOG_DIR    = REPO_ROOT / "blog"
 POSTS_DIR   = REPO_ROOT / "posts"
 ASSETS_URL  = "/blog/assets"
 
-# ── Blogger config ────────────────────────────────────────────
-FEED_BASE   = "https://blog.jayanthkatta.com/feeds/posts/default"
 SITE_URL    = "https://jayanthkatta.com"
 BLOG_URL    = f"{SITE_URL}/blog"
 DISQUS_ID   = "jayanthkatta"
@@ -366,61 +364,49 @@ JK_POST_THEME_CSS = """
 """
 
 
-# ── Blogger fetch ─────────────────────────────────────────────
-def fetch_all_posts():
-    posts = []
-    url = f"{FEED_BASE}?alt=json&max-results=50"
-    while url:
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        feed = data.get("feed", {})
-        for entry in feed.get("entry", []):
-            link = next(
-                (l["href"] for l in entry.get("link", []) if l.get("rel") == "alternate"), None
-            )
-            title = entry.get("title", {}).get("$t", "Untitled")
-            content_html = entry.get("content", {}).get("$t", "")
-            published = entry.get("published", {}).get("$t", "")
-            labels = [c.get("term", "") for c in entry.get("category", [])]
-            posts.append({"title": title, "url": link, "html": content_html, "published": published, "labels": labels})
-        next_link = next(
-            (l["href"] for l in feed.get("link", []) if l.get("rel") == "next"), None
-        )
-        url = next_link
-    return posts
-
 
 # ── Local posts (written directly in this repo, no Blogger) ────
 MD_EXTENSIONS = ["fenced_code", "tables", "sane_lists", "nl2br"]
 
 
+def _parse_front_matter(raw):
+    if raw.startswith("---"):
+        _, fm_text, body = raw.split("---", 2)
+        # The "---\n" delimiter's trailing newline ends up attached to the
+        # body half of the split — strip it so HTML-source posts come out
+        # byte-identical to their pre-migration content (a leading blank
+        # line is otherwise harmless, but makes every diff noisy).
+        return yaml.safe_load(fm_text) or {}, body.lstrip("\n")
+    return {}, raw
+
+
 def fetch_local_posts():
-    """Posts written as Markdown + YAML front matter in posts/*.md.
-    Front matter fields: title (required), date (YYYY-MM-DD, required),
-    labels (list, optional), slug (optional — defaults to slugify(title)).
-    The Markdown body is converted to HTML and run through the same
-    clean_html() pipeline as Blogger posts, so the canonical theme,
-    image handling, and lightbox all apply identically — write the body
-    using the same component classes (.callout, .flow, figure.screenshot,
-    etc.) documented in [[project-blog-sync-arch]].
+    """Posts written directly in this repo, no Blogger involved.
+    Two source formats in posts/, both with YAML front matter (title and
+    date required; labels and slug optional — slug defaults to
+    slugify(title)):
+      - posts/*.md   — Markdown body, converted to HTML here.
+      - posts/*.html — body is already HTML (e.g. content migrated from
+        Blogger) and is used as-is, with no Markdown conversion.
+    Either way, the body is run through the exact same clean_html()
+    pipeline as posts used to go through from Blogger, so the canonical
+    theme, image handling, and lightbox all apply identically — write new
+    posts using the same component classes (.callout, .flow,
+    figure.screenshot, etc.) documented in [[project-blog-sync-arch]].
     """
     posts = []
     if not POSTS_DIR.exists():
         return posts
-    for md_file in sorted(POSTS_DIR.glob("*.md")):
-        raw = md_file.read_text(encoding="utf-8")
-        if raw.startswith("---"):
-            _, fm_text, body_md = raw.split("---", 2)
-            front_matter = yaml.safe_load(fm_text) or {}
-        else:
-            front_matter, body_md = {}, raw
+    files = sorted(POSTS_DIR.glob("*.md")) + sorted(POSTS_DIR.glob("*.html"))
+    for post_file in files:
+        raw = post_file.read_text(encoding="utf-8")
+        front_matter, body = _parse_front_matter(raw)
         title = front_matter.get("title")
         date = front_matter.get("date")
         if not title or not date:
-            print(f"  Skipping {md_file.name}: missing required 'title' or 'date' front matter")
+            print(f"  Skipping {post_file.name}: missing required 'title' or 'date' front matter")
             continue
-        body_html = markdown.markdown(body_md, extensions=MD_EXTENSIONS)
+        body_html = body if post_file.suffix == ".html" else markdown.markdown(body, extensions=MD_EXTENSIONS)
         published = date.isoformat() if hasattr(date, "isoformat") else str(date)
         posts.append({
             "title": title,
@@ -1066,14 +1052,9 @@ def build_index_page(posts):
 
 # ── Main ──────────────────────────────────────────────────────
 def main():
-    print("Fetching posts from Blogger...")
-    raw_posts = fetch_all_posts()
+    print("Reading posts from posts/...")
+    raw_posts = fetch_local_posts()
     print(f"  {len(raw_posts)} posts found")
-
-    local_posts = fetch_local_posts()
-    if local_posts:
-        print(f"  {len(local_posts)} local post(s) found in posts/")
-    raw_posts += local_posts
 
     posts = []
     for entry in raw_posts:
