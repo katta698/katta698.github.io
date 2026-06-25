@@ -531,6 +531,21 @@ def clean_html(html, title=None):
             _strip_blogger_size(parent_link.get("href")) == _strip_blogger_size(img.get("src"))
         ):
             parent_link.unwrap()
+    # Blogger's inline <img src> defaults to a small resize (often 600px
+    # wide) — fine for its own editor, but blurry once stretched across the
+    # post's ~700px-wide column on a retina display. Bump every Blogger
+    # image to its "s1600" size so the inline screenshot itself is sharp,
+    # not just the lightbox's full-res view.
+    def _upsize_blogger_src(url, size=1600):
+        if not url or "googleusercontent.com" not in url:
+            return url
+        url = re.sub(r"/s\d+/", f"/s{size}/", url)
+        url = re.sub(r"=[a-zA-Z]\d+(-[a-zA-Z]\d+)?$", f"=s{size}", url)
+        return url
+
+    for img in jk_post_div.find_all("img"):
+        if img.get("src"):
+            img["src"] = _upsize_blogger_src(img["src"])
     return str(soup), embedded_title, embedded_subtitle
 
 
