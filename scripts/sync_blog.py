@@ -507,6 +507,16 @@ def clean_html(html, title=None):
             span.unwrap()
         for br in code.find_all("br"):
             br.replace_with("\n")
+    # Make every screenshot clickable to open full-size in a new tab. Older
+    # posts pasted directly into Blogger got this for free (Blogger
+    # auto-wraps images in a link to the full-size original); posts using
+    # the canonical figure.screenshot markup didn't, since that markup is
+    # just an <img> with no wrapper. Wrap any bare <img> (not already
+    # linked) so the behavior is consistent across every post.
+    for img in jk_post_div.find_all("img"):
+        if img.find_parent("a") is None and img.get("src"):
+            link = soup.new_tag("a", href=img["src"], target="_blank", rel="noopener")
+            img.wrap(link)
     return str(soup), embedded_title, embedded_subtitle
 
 
