@@ -874,6 +874,7 @@ def build_index_page(posts):
     <div class="hero-stat"><span class="hero-stat-n">{total_mins}</span><span class="hero-stat-l">Min of reading</span></div>
     <div class="hero-stat"><span class="hero-stat-n">{posts[0]["date_fmt"] if posts else ""}</span><span class="hero-stat-l">Latest</span></div>
   </div>
+  <div class="hero-typer">$ <span id="hero-typer-text"></span><span class="hero-typer-cursor">|</span></div>
 </section>
 <div class="search-bar-wrap" id="search-bar-wrap">
   <div class="search-bar-inner">

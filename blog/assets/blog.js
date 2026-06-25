@@ -1,5 +1,35 @@
 /* Blog — nav dark mode + search, filter, back-to-top */
 
+// ── Hero typer (homepage only) ─────────────────────
+(function () {
+  var el = document.getElementById('hero-typer-text');
+  if (!el) return;
+  var lines = ['deploying ideas...', 'terraform apply --auto-approve', 'still debugging life, one day at a time'];
+  var li = 0, ci = 0;
+  function type() {
+    var line = lines[li];
+    if (ci <= line.length) {
+      el.textContent = line.slice(0, ci);
+      ci++;
+      setTimeout(type, 70);
+    } else {
+      setTimeout(erase, 1600);
+    }
+  }
+  function erase() {
+    var line = lines[li];
+    if (ci > 0) {
+      ci--;
+      el.textContent = line.slice(0, ci);
+      setTimeout(erase, 30);
+    } else {
+      li = (li + 1) % lines.length;
+      setTimeout(type, 400);
+    }
+  }
+  type();
+})();
+
 // ── Dark mode ─────────────────────────────────────
 (function () {
   var POST_CARD_SELS = ['.card','.callout','.challenge-card','.tip-box','.warning-box','[class*="callout"','[class*="box"]','.container'];
