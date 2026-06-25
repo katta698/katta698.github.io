@@ -214,6 +214,90 @@
   }
 })();
 
+// ── Screenshot / diagram lightbox ───────────────────
+(function () {
+  var jkPost = document.getElementById('jk-post');
+  if (!jkPost) return;
+  var imgs = Array.prototype.slice.call(jkPost.querySelectorAll('img'));
+  // Top-level inline SVG diagrams (architecture/flow diagrams authored
+  // directly in a post). Excludes any SVG nested inside one we've already
+  // wrapped, so re-running this logic never double-wraps.
+  var svgs = Array.prototype.slice.call(jkPost.querySelectorAll('svg')).filter(function (svg) {
+    return !svg.closest('.zoomable-img');
+  });
+  if (!imgs.length && !svgs.length) return;
+
+  var overlay = document.createElement('div');
+  overlay.className = 'lightbox-overlay';
+  overlay.innerHTML =
+    '<button class="lightbox-x" aria-label="Close">&times;</button>' +
+    '<img class="lightbox-img" alt=""/>' +
+    '<div class="lightbox-svg"></div>' +
+    '<button class="lightbox-close" aria-label="Close">Close</button>';
+  document.body.appendChild(overlay);
+  var lbImg = overlay.querySelector('.lightbox-img');
+  var lbSvg = overlay.querySelector('.lightbox-svg');
+
+  function openImg(src, alt) {
+    lbSvg.style.display = 'none';
+    lbSvg.innerHTML = '';
+    lbImg.style.display = '';
+    lbImg.src = src;
+    lbImg.alt = alt || '';
+    overlay.classList.add('open');
+  }
+  function openSvg(svg) {
+    lbImg.style.display = 'none';
+    lbImg.src = '';
+    lbSvg.style.display = '';
+    lbSvg.innerHTML = '';
+    var clone = svg.cloneNode(true);
+    clone.removeAttribute('width');
+    clone.removeAttribute('height');
+    clone.style.width = 'min(900px, 90vw)';
+    clone.style.height = 'auto';
+    lbSvg.appendChild(clone);
+    overlay.classList.add('open');
+  }
+  function close() {
+    overlay.classList.remove('open');
+    lbImg.src = '';
+    lbSvg.innerHTML = '';
+  }
+
+  function addTrigger(el, onClick) {
+    var wrap = document.createElement('span');
+    wrap.className = 'zoomable-img';
+    el.parentNode.insertBefore(wrap, el);
+    wrap.appendChild(el);
+    var btn = document.createElement('button');
+    btn.className = 'zoom-trigger';
+    btn.setAttribute('aria-label', 'Zoom image');
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H5a1 1 0 0 0-1 1v4"/><path d="M15 4h4a1 1 0 0 1 1 1v4"/><path d="M4 15v4a1 1 0 0 0 1 1h4"/><path d="M20 15v4a1 1 0 0 1-1 1h-4"/></svg>';
+    wrap.appendChild(btn);
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      onClick();
+    });
+  }
+
+  imgs.forEach(function (img) {
+    addTrigger(img, function () { openImg(img.currentSrc || img.src, img.alt); });
+  });
+  svgs.forEach(function (svg) {
+    addTrigger(svg, function () { openSvg(svg); });
+  });
+
+  overlay.querySelector('.lightbox-x').addEventListener('click', close);
+  overlay.querySelector('.lightbox-close').addEventListener('click', close);
+  overlay.addEventListener('click', function (e) {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && overlay.classList.contains('open')) close();
+  });
+})();
+
 // ── Back to top ───────────────────────────────────
 (function () {
   var btn = document.getElementById('back-top');
