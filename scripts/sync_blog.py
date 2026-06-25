@@ -802,6 +802,7 @@ def build_index_page(posts):
     <div class="hero-stat"><span class="hero-stat-n">{total_posts}</span><span class="hero-stat-l">Posts</span></div>
     <div class="hero-stat"><span class="hero-stat-n">{unique_tags}</span><span class="hero-stat-l">Topics</span></div>
     <div class="hero-stat"><span class="hero-stat-n">{total_mins}</span><span class="hero-stat-l">Min of reading</span></div>
+    <div class="hero-stat"><span class="hero-stat-n">{posts[0]["date_fmt"] if posts else ""}</span><span class="hero-stat-l">Latest</span></div>
   </div>
 </section>
 <div class="search-bar-wrap" id="search-bar-wrap">
@@ -824,15 +825,6 @@ def build_index_page(posts):
     </div>
   </div>
   <aside class="sidebar">
-    <div class="sidebar-card">
-      <div class="sidebar-title">Stats</div>
-      <div class="sidebar-stats">
-        <div class="sb-stat"><span class="sb-stat-n">{total_posts}</span><span class="sb-stat-l">Posts</span></div>
-        <div class="sb-stat"><span class="sb-stat-n">{unique_tags}</span><span class="sb-stat-l">Topics</span></div>
-        <div class="sb-stat"><span class="sb-stat-n">{total_mins}</span><span class="sb-stat-l">Min</span></div>
-        <div class="sb-stat"><span class="sb-stat-n">{posts[0]["date_fmt"] if posts else ""}</span><span class="sb-stat-l">Latest</span></div>
-      </div>
-    </div>
     <div class="sidebar-card" id="services-widget">
       <div class="sidebar-title">AWS services across all posts</div>
       <div id="svc-bubble-area" style="position:relative;height:220px;width:100%"></div>
