@@ -513,9 +513,23 @@ def clean_html(html, title=None):
     # screenshot behaves the same: blog.js's lightbox (triggered by the
     # magnifier button it injects) is the only way to view a screenshot
     # full-size, consistently across every post.
+    #
+    # Blogger's <img src> carries a resize marker the <a href> doesn't have —
+    # either a "=w640-h156" query-style suffix, or a "/s600/" path segment
+    # (older posts) — so comparing the raw strings never matches. Strip
+    # both forms from each side before comparing.
+    def _strip_blogger_size(url):
+        if not url or "googleusercontent.com" not in url:
+            return url
+        url = re.sub(r"/s\d+/", "/", url)
+        url = re.sub(r"=[a-zA-Z]\d+(-[a-zA-Z]\d+)?$", "", url)
+        return url
+
     for img in jk_post_div.find_all("img"):
         parent_link = img.find_parent("a")
-        if parent_link is not None and parent_link.get("href") == img.get("src"):
+        if parent_link is not None and parent_link.get("href") and (
+            _strip_blogger_size(parent_link.get("href")) == _strip_blogger_size(img.get("src"))
+        ):
             parent_link.unwrap()
     return str(soup), embedded_title, embedded_subtitle
 
