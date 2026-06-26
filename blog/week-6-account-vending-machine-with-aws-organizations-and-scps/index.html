@@ -62,7 +62,7 @@
       <div class="post-info">
         <span>Jun 2026</span>
         <span class="post-info-dot"></span>
-        <span>13 min read</span>
+        <span>14 min read</span>
       </div>
     </header>
     <div class="post-divider"></div>
@@ -211,8 +211,8 @@
 <li><a href="#what">What You Need to Know — Skills &amp; Tools</a></li>
 <li><a href="#architecture">Architecture — How It Fits Together</a></li>
 <li><a href="#how">How We Built It — Step by Step</a></li>
-<li><a href="#challenges">Challenges &amp; Real Errors Encountered</a></li>
-<li><a href="#security">Security Considerations</a></li>
+<li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
+<li><a href="#security">Security — Controls at Every Layer</a></li>
 <li><a href="#cost">Cost</a></li>
 <li><a href="#cleanup">Cleanup</a></li>
 <li><a href="#references">References</a></li>
@@ -375,10 +375,6 @@
 <text fill="#1d8102" font-size="9" font-weight="700" text-anchor="middle" x="731" y="220">closes ticket</text>
 <text fill="#666" font-size="10.5" font-style="italic" text-anchor="middle" x="380" y="612">Figure 1: Simulated Account Vending Machine — Organizations + SCPs + Step Functions, no Control Tower</text>
 </svg>
-<figure class="screenshot">
-<img alt="Sandbox OU nested under Workloads-OU in AWS Organizations console" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-06-account-vending-machine/docs/blog/screenshots/02-ous-created.jpg"/>
-<figcaption>The Sandbox OU, reached via Root → Workloads-OU → Sandbox — nested inside the existing structure rather than sitting at root</figcaption>
-</figure>
 <h3>Why Nest Under an Existing OU Instead of the Root?</h3>
 <p>This Organization already had real, active accounts and Control-Tower-style OUs (<code class="inline">Core-OU</code>, <code class="inline">Archived-Accounts</code>, <code class="inline">Workloads-OU</code>) sitting at the root — leftovers from a Landing Zone that had been enabled and later decommissioned. Rather than scatter new <code class="inline">Sandbox</code>/<code class="inline">Production</code> OUs alongside that existing structure, this project nests them inside the existing <code class="inline">Workloads-OU</code>, as siblings of the existing <code class="inline">Dev</code> OU. Always read the current state of a shared resource like an Organization before assuming it's a blank slate.</p>
 <h3>Why a Separate Lambda per Pipeline Step?</h3>
@@ -411,6 +407,22 @@ module "organizations" {
 }</pre>
 </div>
 <h3>Step 2: Service Control Policy</h3>
+<div class="callout amber">
+<strong>Prerequisite — Enable the SCP Policy Type First</strong>
+<p>Service Control Policies are a policy <em>type</em> that has to be switched on for the Organization's root before any SCP can attach — a one-time, manual, root-level setting with no Terraform resource for it in the AWS provider. Run this once before applying anything below:</p>
+</div>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">AWS CLI — One-Time Root Setup</span>
+<div class="code-dots"><div class="code-dot"></div><div class="code-dot"></div><div class="code-dot"></div></div>
+</div>
+<pre>aws organizations enable-policy-type \
+  --root-id &lt;root-id&gt; \
+  --policy-type SERVICE_CONTROL_POLICY
+
+# verify it took effect
+aws organizations list-roots</pre>
+</div>
 <p>The <code class="inline">Sandbox</code> OU gets a guardrail SCP denying large/expensive EC2 instance types and restricting activity to allowed regions — attached once, inherited by every account that ever lands in that OU:</p>
 <div class="code-block">
 <div class="code-header">
@@ -440,11 +452,23 @@ resource "aws_organizations_policy_attachment" "sandbox_guardrail" {
   target_id = var.sandbox_ou_id
 }</pre>
 </div>
+<h3>Step 3: Deploying via HCP Terraform (VCS-Driven)</h3>
+<p>State lives in HCP Terraform, same as Week 5 — but this week's workspace required getting the execution model right. A CLI-driven (non-VCS) HCP workspace only uploads the directory you run <code class="inline">terraform</code> from, which breaks relative module sources like <code class="inline">../../modules/organizations</code> that reach outside that directory. Connecting the workspace to the GitHub repo (matching Week 5's pattern) fixes it: HCP checks out the full repo, so every module path resolves, and applies are confirmed in the HCP UI run page rather than via local CLI.</p>
+<figure class="screenshot">
+<img alt="HCP Terraform apply run for week-06-dev showing resources created" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-06-account-vending-machine/docs/blog/screenshots/00-hcp-apply.jpg"/>
+<figcaption>HCP Terraform — week-06-dev apply run, confirmed via the HCP UI run page (VCS-connected workspace, no local CLI apply)</figcaption>
+</figure>
+<p>The OUs now exist, nested under the existing structure rather than sitting at root:</p>
+<figure class="screenshot">
+<img alt="Sandbox OU nested under Workloads-OU in AWS Organizations console" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-06-account-vending-machine/docs/blog/screenshots/02-ous-created.jpg"/>
+<figcaption>The Sandbox OU, reached via Root → Workloads-OU → Sandbox — nested inside the existing structure rather than sitting at root</figcaption>
+</figure>
+<p>With the apply complete, the SCP is live and inherited by anything that lands in the Sandbox OU:</p>
 <figure class="screenshot">
 <img alt="sandbox-guardrail-scp attached directly to the Sandbox OU" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-06-account-vending-machine/docs/blog/screenshots/03-scp-attached.png"/>
 <figcaption>Sandbox OU — Policies tab showing sandbox-guardrail-scp "Attached directly", alongside the inherited FullAWSAccess defaults</figcaption>
 </figure>
-<h3>Step 3: The Vending Pipeline (Lambda + Step Functions)</h3>
+<h3>Step 4: The Vending Pipeline (Lambda + Step Functions)</h3>
 <p>Account creation is asynchronous — <code class="inline">organizations:CreateAccount</code> returns a request ID immediately, and the real account takes 1–3 minutes to provision. Step Functions polls it with the same Wait → Check → Choice pattern from Week 4:</p>
 <div class="flow">
 <div class="flow-step"><div class="flow-icon">1</div><div><strong>CreateAccount</strong><br/>account_creator Lambda submits the CreateAccount request</div></div>
@@ -457,11 +481,10 @@ resource "aws_organizations_policy_attachment" "sandbox_guardrail" {
 <img alt="API Gateway /webhook POST method execution diagram showing Lambda integration" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-06-account-vending-machine/docs/blog/screenshots/05-api-gateway-webhook.jpg"/>
 <figcaption>API Gateway /webhook POST method — Client → Method request → Integration request → webhook_receiver Lambda</figcaption>
 </figure>
-<h3>Step 4: Deploying via HCP Terraform (VCS-Driven)</h3>
-<p>State lives in HCP Terraform, same as Week 5 — but this week's workspace required getting the execution model right. A CLI-driven (non-VCS) HCP workspace only uploads the directory you run <code class="inline">terraform</code> from, which breaks relative module sources like <code class="inline">../../modules/organizations</code> that reach outside that directory. Connecting the workspace to the GitHub repo (matching Week 5's pattern) fixes it: HCP checks out the full repo, so every module path resolves, and applies are confirmed in the HCP UI run page rather than via local CLI.</p>
+<p>No live ServiceNow instance needed to test this — a small script crafts the same signed webhook payload a real ServiceNow Business Rule would send:</p>
 <figure class="screenshot">
-<img alt="HCP Terraform apply run for week-06-dev showing resources created" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-06-account-vending-machine/docs/blog/screenshots/00-hcp-apply.jpg"/>
-<figcaption>HCP Terraform — week-06-dev apply run, confirmed via the HCP UI run page (VCS-connected workspace, no local CLI apply)</figcaption>
+<img alt="Terminal output showing a simulated ServiceNow webhook call returning 200 OK with an execution ARN" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-06-account-vending-machine/docs/blog/screenshots/06-test-webhook.jpg"/>
+<figcaption>Simulated ServiceNow webhook via scripts/test_webhook.sh — HMAC-signed POST returns 200 OK with the Step Functions execution ARN, confirming the pipeline started</figcaption>
 </figure>
 </div>
 <div class="section" id="challenges">
