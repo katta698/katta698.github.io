@@ -1052,6 +1052,35 @@ def build_index_page(posts):
 
 
 # ── Main ──────────────────────────────────────────────────────
+def build_rss_feed(posts, max_items=20):
+    from email.utils import format_datetime
+    from datetime import timezone
+
+    items = []
+    for p in posts[:max_items]:
+        link = f"{BLOG_URL}/{p['slug']}/"
+        pub_date = format_datetime(p["date"].replace(tzinfo=timezone.utc))
+        items.append(f"""    <item>
+      <title>{escape(p['title'])}</title>
+      <link>{escape(link)}</link>
+      <guid>{escape(link)}</guid>
+      <pubDate>{pub_date}</pubDate>
+      <description>{escape(p['excerpt'])}</description>
+    </item>""")
+
+    items_xml = "\n".join(items)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Jayanth Katta — Blog</title>
+    <link>{BLOG_URL}/</link>
+    <description>AWS Platform Engineering Lab — building one production-grade AWS pattern every week.</description>
+{items_xml}
+  </channel>
+</rss>
+"""
+
+
 def main():
     print("Reading posts from posts/...")
     raw_posts = fetch_local_posts()
@@ -1123,6 +1152,11 @@ def main():
         "latest_post_date": max(dates).strftime("%Y-%m-%d") if dates else None,
     }
     (BLOG_DIR / "stats.json").write_text(json.dumps(stats_json, indent=2), encoding="utf-8")
+
+    # rss.xml — feed for external consumers (e.g. the GitHub profile README's
+    # blog-post-workflow action, which needs a feed since the old Blogger one
+    # was retired)
+    (BLOG_DIR / "rss.xml").write_text(build_rss_feed(posts), encoding="utf-8")
 
     print(f"Done — {len(posts)} posts built at blog/")
 
