@@ -1052,12 +1052,18 @@ def build_index_page(posts):
 
 
 # ── Main ──────────────────────────────────────────────────────
-def build_rss_feed(posts, max_items=20):
+def build_rss_feed(posts, max_items=None):
+    # max_items=None means "all posts" — this feed is also the only source
+    # the blog-search RAG indexer reads from (see blog-search/README.md), so
+    # capping it silently makes older posts unsearchable, not just absent
+    # from a "latest posts" list. The profile README's blog-posts.yml action
+    # already applies its own max_post_count limit independently, so there's
+    # no downstream reason to truncate here too.
     from email.utils import format_datetime
     from datetime import timezone
 
     items = []
-    for p in posts[:max_items]:
+    for p in posts[:max_items] if max_items else posts:
         link = f"{BLOG_URL}/{p['slug']}/"
         pub_date = format_datetime(p["date"].replace(tzinfo=timezone.utc))
         items.append(f"""    <item>
