@@ -225,9 +225,9 @@ MAX_TAGS = 3
 CATEGORY_ORDER = ["All", "AWS", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
 
 NAV_SVG = """<svg width="30" height="30" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
-  <rect width="80" height="80" rx="16" fill="#0f1923"/>
-  <text x="36" y="52" font-family="monospace" font-size="36" font-weight="700" fill="#FF9900" text-anchor="middle">J</text>
-  <polygon points="54,12 46,28 52,28 44,44" fill="#FF9900" opacity="0.9"/>
+  <rect width="80" height="80" rx="16" fill="#11140F"/>
+  <text x="36" y="52" font-family="monospace" font-size="36" font-weight="700" fill="#C4A484" text-anchor="middle">J</text>
+  <polygon points="54,12 46,28 52,28 44,44" fill="#C4A484" opacity="0.9"/>
 </svg>"""
 
 # ── Unified #jk-post theme ──────────────────────────────────────
@@ -250,7 +250,7 @@ JK_POST_THEME_CSS = """
 #jk-post * { box-sizing: border-box; }
 
 /* ── Post header ── */
-#jk-post .post-header { border-bottom: 3px solid #FF9900; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
 #jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
 #jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
 #jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
@@ -262,7 +262,7 @@ JK_POST_THEME_CSS = """
 #jk-post .container { padding: 0; }
 #jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
 #jk-post .section:last-child { border-bottom: none; }
-#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #FF9900; display: inline-block; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
 #jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
 #jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
 #jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
@@ -270,7 +270,7 @@ JK_POST_THEME_CSS = """
 #jk-post li { margin-bottom: 6px; }
 
 /* ── TOC ── */
-#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #FF9900; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
 #jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
 #jk-post .toc ol { margin: 0; padding-left: 20px; }
 #jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
@@ -278,7 +278,7 @@ JK_POST_THEME_CSS = """
 #jk-post .toc a:hover { text-decoration: underline; }
 
 /* ── Callouts ── */
-#jk-post .callout { border-left: 3px solid #FF9900; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
 #jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
 #jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
 #jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
@@ -288,7 +288,7 @@ JK_POST_THEME_CSS = """
 /* ── Flow steps ── */
 #jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
 #jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
-#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #FF9900; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
 #jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
 #jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
 
@@ -336,17 +336,17 @@ JK_POST_THEME_CSS = """
 #jk-post tr:nth-child(even) td { background: #fafafa; }
 
 /* ── Footer ── */
-#jk-post .post-footer { background: #fafafa; border-top: 2px solid #FF9900; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
 #jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
 #jk-post .post-footer p + p { margin-top: 6px; }
 
 /* ── Compatibility: older post markup (Week 1-3, RAG-search post) ── */
 #jk-post .meta { color: #6c757d; font-size: 0.9em; margin-bottom: 24px; }
 #jk-post .meta span { background: #fafafa; border: 1px solid #e5e5e5; padding: 4px 12px; border-radius: 20px; margin-right: 6px; display: inline-block; margin-bottom: 6px; font-size: .85em; }
-#jk-post .stack-badge { background: #FF9900; color: #0f1111; padding: 10px 18px; border-radius: 4px; font-size: 0.85em; font-weight: 700; display: inline-block; margin-bottom: 20px; }
+#jk-post .stack-badge { background: #C4A484; color: #0f1111; padding: 10px 18px; border-radius: 4px; font-size: 0.85em; font-weight: 700; display: inline-block; margin-bottom: 20px; }
 #jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
 #jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
-#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #FF9900; display: block; line-height: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
 #jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
 #jk-post .warning-box { background: #fffbeb; border: 1px solid #fde68a; border-radius: 4px; padding: 14px 20px; margin: 18px 0; color: #0f1111; }
 #jk-post .warning-box strong { color: #d97706; }
@@ -910,7 +910,7 @@ def build_index_page(posts):
         <span>AWS quiz</span>
         <span id="quiz-score" style="font-size:11px;color:var(--orange);font-weight:500"></span>
       </div>
-      <div id="quiz-badge" style="display:inline-block;font-size:11px;padding:2px 10px;border-radius:20px;background:rgba(255,153,0,.12);color:#854F0B;margin-bottom:10px"></div>
+      <div id="quiz-badge" style="display:inline-block;font-size:11px;padding:2px 10px;border-radius:20px;background:rgba(196,164,132,.12);color:#7A5C3E;margin-bottom:10px"></div>
       <div style="height:3px;background:var(--border);border-radius:4px;margin-bottom:12px">
         <div id="quiz-progress" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width .3s"></div>
       </div>
@@ -942,11 +942,11 @@ def build_index_page(posts):
         while(tries<400 && placed.some(function(p){{return overlap(s,p);}}));
         placed.push({{x:s.x,y:s.y,r:r}});
         var opacity = 0.15+(s.count/maxC)*0.8;
-        var textColor = opacity>0.5?'#412402':'#854F0B';
+        var textColor = opacity>0.5?'#2E2113':'#7A5C3E';
         var fs = r>32?12:r>22?10:9;
         var div=document.createElement('div');
         div.title=s.name+': ~'+s.count+' mentions';
-        div.style.cssText='position:absolute;left:'+(x-r)+'px;top:'+(y-r)+'px;width:'+(r*2)+'px;height:'+(r*2)+'px;border-radius:50%;background:rgba(255,153,0,'+opacity+');display:flex;align-items:center;justify-content:center;text-align:center;cursor:default;transition:transform .15s';
+        div.style.cssText='position:absolute;left:'+(x-r)+'px;top:'+(y-r)+'px;width:'+(r*2)+'px;height:'+(r*2)+'px;border-radius:50%;background:rgba(196,164,132,'+opacity+');display:flex;align-items:center;justify-content:center;text-align:center;cursor:default;transition:transform .15s';
         div.innerHTML='<span style="font-size:'+fs+'px;font-weight:500;color:'+textColor+';padding:2px;line-height:1.2">'+s.name+'</span>';
         div.onmouseenter=function(){{div.style.transform='scale(1.08)';}};
         div.onmouseleave=function(){{div.style.transform='scale(1)';}};
@@ -977,7 +977,7 @@ def build_index_page(posts):
       document.getElementById('quiz-progress').style.width=((qz.current/qz.questions.length)*100)+'%';
       document.getElementById('quiz-score').textContent=qz.score+' / '+qz.current;
       var badge=document.getElementById('quiz-badge');
-      if(q.source==='blog'){{badge.textContent="From my blog";badge.style.background='rgba(255,153,0,.12)';badge.style.color='#854F0B';}}
+      if(q.source==='blog'){{badge.textContent="From my blog";badge.style.background='rgba(196,164,132,.12)';badge.style.color='#7A5C3E';}}
       else{{badge.textContent="AWS fundamentals";badge.style.background='rgba(55,138,221,.12)';badge.style.color='#185FA5';}}
       var opts=document.getElementById('quiz-opts');
       opts.innerHTML='';
