@@ -41,6 +41,7 @@
       jkPost.style.setProperty('background', 'transparent', 'important');
       jkPost.style.setProperty('color', '#e6edf3', 'important');
       jkPost.querySelectorAll('*').forEach(function(el) {
+        if (el.closest('.zoom-trigger')) return;
         if (!el.matches('pre,code,img,svg,span.val')) {
           el.style.setProperty('background', 'transparent', 'important');
           el.style.setProperty('color', '#e6edf3', 'important');
