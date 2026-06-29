@@ -7,6 +7,7 @@ Usage:
   python scripts/sync_blog.py
 """
 
+import hashlib
 import json
 import math
 import os
@@ -25,6 +26,15 @@ REPO_ROOT   = Path(__file__).parent.parent
 BLOG_DIR    = REPO_ROOT / "blog"
 POSTS_DIR   = REPO_ROOT / "posts"
 ASSETS_URL  = "/blog/assets"
+
+# Cache-bust blog.css with a short content hash, so a CSS change is
+# guaranteed to bypass any stale browser/CDN cache instead of relying on
+# everyone hitting a hard refresh.
+def _css_version():
+    css_path = REPO_ROOT / "blog" / "assets" / "blog.css"
+    return hashlib.md5(css_path.read_bytes()).hexdigest()[:8]
+
+CSS_VERSION = _css_version()
 
 SITE_URL    = "https://jayanthkatta.com"
 BLOG_URL    = f"{SITE_URL}/blog"
@@ -415,6 +425,8 @@ def fetch_local_posts():
             "published": published,
             "labels": front_matter.get("labels", []),
             "slug": front_matter.get("slug"),
+            "summary": front_matter.get("summary"),
+            "takeaway": front_matter.get("takeaway"),
         })
     return posts
 
@@ -616,6 +628,157 @@ def excerpt(html, max_chars=160):
     return text[:max_chars].rstrip() + "…"
 
 
+SUMMARY_STOP_WORDS = {
+    "about", "after", "again", "also", "and", "are", "because", "been",
+    "before", "being", "between", "both", "but", "can", "could", "does",
+    "each", "from", "have", "into", "just", "more", "most", "not", "only",
+    "other", "our", "over", "same", "should", "some", "such", "than", "that",
+    "the", "their", "then", "there", "these", "they", "this", "those", "through",
+    "under", "using", "very", "was", "were", "what", "when", "where", "which",
+    "while", "will", "with", "would", "you", "your",
+}
+
+
+def _summary_sentences(body_html):
+    """Return readable prose sentences while ignoring code and page furniture."""
+    soup = BeautifulSoup(body_html, "html.parser")
+    for tag in soup.find_all(["style", "script", "pre", "code", "nav", "table"]):
+        tag.decompose()
+
+    candidates = []
+    seen = set()
+    for element in soup.find_all(["p", "li"]):
+        text = re.sub(r"\s+", " ", element.get_text(" ", strip=True)).strip()
+        if not text:
+            continue
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            sentence = sentence.strip(" -•\t")
+            words = sentence.split()
+            if not 7 <= len(words) <= 44 or not 45 <= len(sentence) <= 300:
+                continue
+            if sentence.endswith(":") or sentence.endswith("?"):
+                continue
+            if "http://" in sentence or "https://" in sentence:
+                continue
+            key = re.sub(r"\W+", "", sentence).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(sentence)
+    return candidates
+
+
+def generate_summary(title, body_html, custom_summary=None, custom_takeaway=None):
+    """Create a stable extractive summary, with optional front-matter overrides."""
+    if custom_summary:
+        if isinstance(custom_summary, str):
+            bullets = [s.strip() for s in re.split(r"(?<=[.!?])\s+", custom_summary) if s.strip()]
+        else:
+            bullets = [str(s).strip() for s in custom_summary if str(s).strip()]
+        bullets = bullets[:3]
+    else:
+        sentences = _summary_sentences(body_html)
+        if not sentences:
+            fallback = excerpt(body_html, 240).rstrip("…")
+            return [fallback], custom_takeaway or fallback
+
+        title_terms = {
+            w for w in re.findall(r"[a-z][a-z0-9+#.-]{2,}", title.lower())
+            if w not in SUMMARY_STOP_WORDS
+        }
+        frequencies = {}
+        for sentence in sentences:
+            for word in re.findall(r"[a-z][a-z0-9+#.-]{2,}", sentence.lower()):
+                if word not in SUMMARY_STOP_WORDS:
+                    frequencies[word] = frequencies.get(word, 0) + 1
+
+        ranked = []
+        for index, sentence in enumerate(sentences):
+            words = {
+                w for w in re.findall(r"[a-z][a-z0-9+#.-]{2,}", sentence.lower())
+                if w not in SUMMARY_STOP_WORDS
+            }
+            topical = sum(min(frequencies.get(w, 0), 5) for w in words) / max(1, len(words) ** .5)
+            title_overlap = len(words & title_terms) * 2.2
+            position_bonus = max(0, 2.25 - index * .08)
+            ranked.append((topical + title_overlap + position_bonus, index, sentence))
+
+        cue_words = (
+            "result", "solution", "lesson", "means", "allows", "helps", "approach",
+            "instead", "important", "responsibility", "the key", "the goal", "confirms",
+            "usually", "root cause", "fixed", "prevents",
+        )
+        takeaway_candidates = [
+            item for item in ranked
+            if any(cue in item[2].lower() for cue in cue_words)
+        ]
+        if takeaway_candidates:
+            _, takeaway_index, takeaway = max(
+                takeaway_candidates,
+                key=lambda item: item[0] + (item[1] / max(1, len(sentences))) * 2,
+            )
+        else:
+            _, takeaway_index, takeaway = max(ranked, key=lambda item: item[0])
+
+        def best_in_range(start, end, excluded):
+            pool = [item for item in ranked if start <= item[1] < end and item[1] not in excluded]
+            return max(pool, default=None, key=lambda item: item[0])
+
+        count = len(sentences)
+        chosen = []
+        excluded = {takeaway_index}
+        # Context, implementation, and outcome give a more useful overview
+        # than three sentences selected from the same keyword-heavy section.
+        ranges = [(0, max(1, count // 3)), (count // 3, max(count // 3 + 1, 2 * count // 3)), (2 * count // 3, count)]
+        for start, end in ranges:
+            item = best_in_range(start, end, excluded)
+            if item:
+                chosen.append((item[1], item[2]))
+                excluded.add(item[1])
+        for _, index, sentence in sorted(ranked, reverse=True):
+            if len(chosen) == 3:
+                break
+            if index not in excluded:
+                chosen.append((index, sentence))
+                excluded.add(index)
+        bullets = [sentence for _, sentence in sorted(chosen)]
+
+    if not bullets:
+        bullets = [excerpt(body_html, 240).rstrip("…")]
+
+    if custom_takeaway:
+        takeaway = str(custom_takeaway).strip()
+    elif custom_summary:
+        remaining = [s for s in _summary_sentences(body_html) if s not in bullets]
+        cue_words = ("result", "solution", "lesson", "means", "allows", "helps", "approach", "instead")
+        takeaway = next(
+            (s for s in reversed(remaining) if any(cue in s.lower() for cue in cue_words)),
+            bullets[0],
+        )
+    return bullets, takeaway
+
+
+def summary_html(post):
+    bullets = "".join(f"<li>{escape(item)}</li>" for item in post["summary"])
+    topics = "".join(f'<span class="quick-summary-topic">{escape(tag)}</span>' for tag in post["tags"])
+    return f"""<details class="quick-summary" open>
+      <summary>
+        <span class="quick-summary-icon" aria-hidden="true">&#10022;</span>
+        <span class="quick-summary-heading"><strong>Quick summary</strong><small>Understand this post in 30 seconds</small></span>
+        <span class="quick-summary-toggle" aria-hidden="true"></span>
+      </summary>
+      <div class="quick-summary-content">
+        <div class="quick-summary-label">In 30 seconds</div>
+        <ul>{bullets}</ul>
+        <div class="quick-summary-takeaway">
+          <span>Main takeaway</span>
+          <p>{escape(post["takeaway"])}</p>
+        </div>
+        <div class="quick-summary-topics">{topics}</div>
+      </div>
+    </details>"""
+
+
 def parse_date(url, published=None):
     if published:
         try:
@@ -644,7 +807,7 @@ def html_head(title, description, canonical, extra=""):
 <meta name="description" content="{escape(description)}"/>
 <link rel="canonical" href="{canonical}"/>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml"/>
-<link rel="stylesheet" href="{ASSETS_URL}/blog.css"/>
+<link rel="stylesheet" href="{ASSETS_URL}/blog.css?v={CSS_VERSION}"/>
 {extra}
 </head>"""
 
@@ -699,6 +862,7 @@ def build_post_page(post, prev_post, next_post):
     post_url = f"{BLOG_URL}/{slug}/"
 
     tags_html = " ".join(f'<span class="tag-badge">{t}</span>' for t in tags)
+    quick_summary = summary_html(post)
 
     prev_link = (
         f'<a href="/blog/{prev_post["slug"]}/" class="post-nav-link prev">'
@@ -759,6 +923,7 @@ def build_post_page(post, prev_post, next_post):
         <span>{post["read_time"]} min read</span>
       </div>
     </header>
+    {quick_summary}
     <div class="post-divider"></div>
     <div class="post-body">{post["body_html"]}</div>
     <div class="post-tags">
@@ -1106,6 +1271,13 @@ def main():
         # own opening line right below the title.
         description = embedded_subtitle
 
+        summary, takeaway = generate_summary(
+            title,
+            body_html,
+            entry.get("summary"),
+            entry.get("takeaway"),
+        )
+
         posts.append({
             "slug":          slug,
             "title":         title,
@@ -1117,6 +1289,8 @@ def main():
             "read_time":     reading_time(body_html),
             "excerpt":       excerpt(body_html),
             "description":   description,
+            "summary":       summary,
+            "takeaway":      takeaway,
             "body_html": body_html,
         })
 
