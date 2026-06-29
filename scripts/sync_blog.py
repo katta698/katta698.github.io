@@ -806,7 +806,7 @@ def html_head(title, description, canonical, extra=""):
 <title>{escape(title)}</title>
 <meta name="description" content="{escape(description)}"/>
 <link rel="canonical" href="{canonical}"/>
-<link rel="icon" href="/favicon.svg" type="image/svg+xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
 <link rel="stylesheet" href="{ASSETS_URL}/blog.css?v={CSS_VERSION}"/>
 {extra}
 </head>"""
@@ -817,7 +817,7 @@ def nav_html(show_search=True):
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
   </button>""" if show_search else ""
     return f"""<nav class="nav">
-  <a class="nav-logo" href="/blog/">{NAV_SVG}<span>Jayanth Katta</span></a>
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
   <div class="nav-spacer"></div>
   <ul class="nav-links">
     <li><a href="/">Home</a></li>
