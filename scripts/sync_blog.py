@@ -845,7 +845,7 @@ def nav_html(show_search=True):
 
 def footer_html():
     return f"""<footer class="footer">
-  <p>&copy; {datetime.now().year} Jayanth Katta &mdash; <a href="{SITE_URL}">jayanthkatta.com</a></p>
+  <p>&copy; <span data-current-year>{datetime.now().year}</span> Jayanth Katta &mdash; <a href="{SITE_URL}/">jayanthkatta.com</a></p>
 </footer>"""
 
 

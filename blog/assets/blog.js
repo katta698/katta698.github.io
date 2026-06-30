@@ -352,3 +352,12 @@
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 })();
+
+// Load the shared automatic copyright footer on every blog surface.
+(function () {
+  if (document.querySelector('script[data-site-footer]')) return;
+  var script = document.createElement('script');
+  script.src = '/blog/assets/site-footer.js';
+  script.setAttribute('data-site-footer', '');
+  document.body.appendChild(script);
+})();
