@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>EBS Savings Dashboard — Phase 1: Turning CUR 2.0 Billing Data Into a Live Cost Intelligence Platform | Jayanth Katta Blog</title>
+<meta name="description" content="EBS volumes are one of the most reliably wasteful line items in any AWS bill — not because engineers are careless, but because the cost is invisible until someo…"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/ebs-savings-dashboard-phase1/"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=024f0d49"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Home</a></li>
+    <li><a href="/blog/" class="active">Blog</a></li>
+    <li><a href="/blog/digests/">Digests</a></li>
+    <li><a href="/resume.html">Resume</a></li>
+  </ul>
+
+
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+  <button class="hamburger" id="hamburger-btn" aria-label="Menu">
+    <span></span><span></span><span></span>
+  </button>
+</nav>
+<div class="mobile-menu" id="mobile-menu">
+  <a href="/">Home</a>
+  <a href="/blog/digests/">Digests</a>
+  <a href="/resume.html">Resume</a>
+  <button class="theme-toggle" id="nav-theme-btn-mobile" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon-m">🌙</span><span id="theme-label-text-m">Dark</span>
+  </button>
+</div>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>EBS Savings Dashboard — Phase 1: Turning CUR 2.0 B…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Terraform</span></div>
+      <h1>EBS Savings Dashboard — Phase 1: Turning CUR 2.0 Billing Data Into a Live Cost Intelligence Platform</h1>
+      <p class="post-description">A permanent, serverless dashboard that reads AWS Cost &amp; Usage Report Parquet data, surfaces EBS savings opportunities across hundreds of accounts, and costs less than a coffee per month to run.</p>
+      <div class="post-info">
+        <span>Jul 2026</span>
+        <span class="post-info-dot"></span>
+        <span>13 min read</span>
+      </div>
+    </header>
+    <details class="quick-summary" open>
+      <summary>
+        <span class="quick-summary-icon" aria-hidden="true">&#10022;</span>
+        <span class="quick-summary-heading"><strong>Quick summary</strong><small>Understand this post in 30 seconds</small></span>
+        <span class="quick-summary-toggle" aria-hidden="true"></span>
+      </summary>
+      <div class="quick-summary-content">
+        <div class="quick-summary-label">In 30 seconds</div>
+        <ul><li>This post covers Phase 1 only — CUR billing data, no live EC2 API calls.</li><li>This skips EC2 instances, RDS, and every other service in the same CUR file — returning only EBS volume cost rows.</li><li>At enterprise scale (real CUR, 500 accounts, 50 engineers opening the dashboard daily), Athena cost rises to ~$2–5/month due to larger Parquet files.</li></ul>
+        <div class="quick-summary-takeaway">
+          <span>Main takeaway</span>
+          <p>The right pattern is: EventBridge daily pre-warm at 06:00 UTC (Lambda warms the Athena cache before anyone opens the dashboard) + Athena Query Result Reuse (7-day cache, $0 for repeat queries) + CloudFront API cache (5-min TTL).</p>
+        </div>
+        <div class="quick-summary-topics"><span class="quick-summary-topic">AWS</span><span class="quick-summary-topic">Terraform</span></div>
+      </div>
+    </details>
+    <div class="post-divider"></div>
+    <div class="post-body"><style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+
+/* ── Post header ── */
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+
+/* ── Layout ── */
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+
+/* ── TOC ── */
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+
+/* ── Callouts ── */
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+
+/* ── Flow steps ── */
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+
+/* ── Code blocks ── */
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post code.inline { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+
+/* ── Skill tags ── */
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+
+/* ── Grid cards ── */
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+
+/* ── Challenge cards ── */
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+
+/* ── Screenshots ── */
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+
+/* ── Tables ── */
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+
+/* ── Footer ── */
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+
+/* ── Compatibility: older post markup (Week 1-3, RAG-search post) ── */
+#jk-post .meta { color: #6c757d; font-size: 0.9em; margin-bottom: 24px; }
+#jk-post .meta span { background: #fafafa; border: 1px solid #e5e5e5; padding: 4px 12px; border-radius: 20px; margin-right: 6px; display: inline-block; margin-bottom: 6px; font-size: .85em; }
+#jk-post .stack-badge { background: #C4A484; color: #0f1111; padding: 10px 18px; border-radius: 4px; font-size: 0.85em; font-weight: 700; display: inline-block; margin-bottom: 20px; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+#jk-post .warning-box { background: #fffbeb; border: 1px solid #fde68a; border-radius: 4px; padding: 14px 20px; margin: 18px 0; color: #0f1111; }
+#jk-post .warning-box strong { color: #d97706; }
+#jk-post .tip-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 4px; padding: 14px 20px; margin: 18px 0; color: #0f1111; }
+#jk-post .tip-box strong { color: #1d4ed8; }
+#jk-post .bug-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .bug-label { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 10px 16px; display: block; font-size: 11px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: #cc0c39; }
+#jk-post .bug-title { padding: 12px 16px 0; font-size: 14px; font-weight: 700; color: #0f1111; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .arch-container { margin: 20px 0; border: 1px solid #e5e5e5; border-radius: 4px; overflow: hidden; }
+#jk-post .before-after { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .before-card, #jk-post .after-card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 16px; background: #fafafa; }
+#jk-post .ba-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: #6c757d; margin-bottom: 8px; display: block; }
+#jk-post .ba-item { font-size: 14px; color: #3d3d3d; margin-bottom: 6px; }
+</style>
+<div id="jk-post">
+<div class="post-header">
+<div class="post-eyebrow">AWS Platform Engineering Lab · EBS Savings Dashboard — Phase 1</div>
+
+
+<div class="post-meta">
+<span>7 AWS Services</span>
+<span>500 Simulated Accounts</span>
+<span>18 Months of Billing Data</span>
+<span>100% IaC — Terraform</span>
+<span>~$0–2 / month</span>
+</div>
+</div>
+<div class="container">
+<div class="toc">
+<h3>📋 In This Post</h3>
+<ol>
+<li><a href="#why">Why — The Problem This Solves</a></li>
+<li><a href="#approach">Choosing the Right Approach</a></li>
+<li><a href="#architecture">Architecture — How It Fits Together</a></li>
+<li><a href="#cur-setup">Step 1 — Enable CUR 2.0 Export</a></li>
+<li><a href="#pipeline">Step 2 — Data Pipeline: S3, Glue, Athena</a></li>
+<li><a href="#identity">Step 3 — Identity &amp; Security (No IAM Users)</a></li>
+<li><a href="#lambda">Step 4 — Lambda &amp; API Gateway</a></li>
+<li><a href="#frontend">Step 5 — React Dashboard on CloudFront</a></li>
+<li><a href="#dashboard">What the Dashboard Shows</a></li>
+<li><a href="#challenges">Challenges &amp; Real Bugs Fixed</a></li>
+<li><a href="#cost">Cost to Run</a></li>
+<li><a href="#real-cur">Connecting Real CUR Data at Work</a></li>
+<li><a href="#phase2">What Phase 2 Adds</a></li>
+<li><a href="#takeaways">Key Takeaways</a></li>
+</ol>
+</div>
+<!-- ── WHY ─────────────────────────────────────────────────────────────── -->
+<div class="section" id="why">
+<h2>Why — The Problem This Solves</h2>
+<p>EBS volumes are one of the most reliably wasteful line items in any AWS bill — not because engineers are careless, but because the cost is invisible until someone actively looks for it.</p>
+<p>In a typical enterprise AWS org with 500 accounts:</p>
+<ul>
+<li>Unattached volumes keep billing after the EC2 instance they served is terminated</li>
+<li>gp2 volumes never migrated to gp3 cost 20% more for identical throughput</li>
+<li>io1 volumes provisioned for peak workloads sit idle at $0.125/GB-month</li>
+<li>Snapshots pile up automatically and are never reviewed</li>
+</ul>
+<div class="callout amber">
+<strong>The Gap in Existing Tooling</strong>
+<p>QuickSight and Cost Explorer show you what you <em>spent</em> — not what you <em>could stop spending</em>. They cannot cross-reference which volumes are unattached right now, or project savings if you take action today. QuickSight also requires per-user licensing starting at $18/user/month.</p>
+</div>
+<p>I wanted a single dashboard that answers three questions at once:</p>
+<ol>
+<li>How much are we spending on EBS across the entire org right now?</li>
+<li>Which accounts and regions are the biggest offenders?</li>
+<li>What is the projected saving if we clean up unused volumes and migrate gp2 → gp3?</li>
+</ol>
+<div class="callout green">
+<strong>Who Benefits</strong>
+<p>FinOps teams get a monthly savings target with account-level breakdown. Platform teams get evidence to justify cleanup automation. Engineers get out of the loop — the data is always current, no one needs to run a script to answer a cost question.</p>
+</div>
+</div>
+<!-- ── APPROACH ──────────────────────────────────────────────────────────── -->
+<div class="section" id="approach">
+<h2>Choosing the Right Approach</h2>
+<p>There are several ways to build cost visibility tooling on AWS. Here is how the main options compare:</p>
+<div class="grid-2">
+<div class="card">
+<strong>📈 AWS Cost Explorer / QuickSight</strong>
+<p>Shows billing history well. Cannot cross-reference live EC2 inventory or project savings. QuickSight licensing starts at $18/user/month.</p>
+</div>
+<div class="card">
+<strong>💵 Third-Party Tools (CloudHealth, Apptio)</strong>
+<p>Comprehensive but $10k–$100k+/year. Adds external vendor dependency with data egress. Overkill for a focused EBS workflow.</p>
+</div>
+<div class="card">
+<strong>✅ CUR 2.0 → Athena → Lambda → React</strong>
+<p>Reads your own billing data from your own S3 bucket. No licensing. Permanent CloudFront URL. ~$0–2/month. Fully customisable. Phase 2 adds live EC2 inventory on top.</p>
+</div>
+<div class="card">
+<strong>📊 Custom QuickSight Dashboard</strong>
+<p>Billing data only — cannot call EC2 APIs to check attachment status. Per-user licensing still applies.</p>
+</div>
+</div>
+<p>The CUR 2.0 → Athena path wins because the data is already in your S3 bucket (AWS delivers it daily), Athena charges only for columns scanned ($5/TB), and the whole pipeline is serverless — nothing running when nobody is using it.</p>
+<div class="callout amber">
+<strong>Phase 1 Scope</strong>
+<p>This post covers Phase 1 only — CUR billing data, no live EC2 API calls. Phase 2 will add cross-account <code class="inline">EC2:DescribeVolumes</code> via STS AssumeRole to show live attachment status per volume.</p>
+</div>
+</div>
+<!-- ── ARCHITECTURE ────────────────────────────────────────────────────── -->
+<div class="section" id="architecture">
+<h2>Architecture — How It Fits Together</h2>
+<svg viewbox="0 0 1000 460" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<marker id="marr" markerheight="6" markerwidth="8" orient="auto" refx="8" refy="3"><polygon fill="#545B64" points="0 0,8 3,0 6"></polygon></marker>
+<marker id="mblue" markerheight="6" markerwidth="8" orient="auto" refx="8" refy="3"><polygon fill="#0972D3" points="0 0,8 3,0 6"></polygon></marker>
+<marker id="mgreen" markerheight="6" markerwidth="8" orient="auto" refx="8" refy="3"><polygon fill="#1d8102" points="0 0,8 3,0 6"></polygon></marker>
+</defs>
+<!-- Lane backgrounds -->
+<rect fill="#E8F4FD" height="110" opacity="0.55" rx="6" width="1000" x="0" y="40"></rect>
+<rect fill="#FFF4E5" height="110" opacity="0.55" rx="6" width="1000" x="0" y="160"></rect>
+<rect fill="#F0F7FF" height="110" opacity="0.55" rx="6" width="1000" x="0" y="280"></rect>
+<!-- Lane labels -->
+<text fill="#0972D3" font-size="11" font-weight="700" x="10" y="100">① DATA PIPELINE</text>
+<text fill="#C45500" font-size="11" font-weight="700" x="10" y="220">② API LAYER</text>
+<text fill="#0972D3" font-size="11" font-weight="700" x="10" y="340">③ FRONTEND</text>
+<!-- ── PIPELINE NODES ── -->
+<!-- CUR 2.0 -->
+<rect fill="#FCEEF8" height="76" rx="6" stroke="#CD2264" stroke-width="2" width="110" x="90" y="55"></rect>
+<text font-size="20" text-anchor="middle" x="145" y="90">📊</text>
+<text fill="#0f1111" font-size="10" font-weight="700" text-anchor="middle" x="145" y="108">CUR 2.0</text>
+<text fill="#6c757d" font-size="9" text-anchor="middle" x="145" y="122">Parquet · Daily</text>
+<!-- S3 CUR -->
+<rect fill="#E8F5E9" height="76" rx="6" stroke="#3F8624" stroke-width="2" width="110" x="240" y="55"></rect>
+<text font-size="20" text-anchor="middle" x="295" y="90">🪣</text>
+<text fill="#0f1111" font-size="10" font-weight="700" text-anchor="middle" x="295" y="108">S3 Bucket</text>
+<text fill="#6c757d" font-size="9" text-anchor="middle" x="295" y="122">ebsp1-cur-*</text>
+<!-- Glue Catalog -->
+<rect fill="#EDE8FD" height="76" rx="6" stroke="#8C4FFF" stroke-width="2" width="130" x="390" y="55"></rect>
+<text font-size="20" text-anchor="middle" x="455" y="90">🔍</text>
+<text fill="#0f1111" font-size="10" font-weight="700" text-anchor="middle" x="455" y="108">Glue Catalog</text>
+<text fill="#6c757d" font-size="9" text-anchor="middle" x="455" y="122">AWS-managed in prod</text>
+<!-- Athena -->
+<rect fill="#EDE8FD" height="76" rx="6" stroke="#8C4FFF" stroke-width="2" width="130" x="560" y="55"></rect>
+<text font-size="20" text-anchor="middle" x="625" y="90">⚡</text>
+<text fill="#0f1111" font-size="10" font-weight="700" text-anchor="middle" x="625" y="108">Amazon Athena</text>
+<text fill="#6c757d" font-size="9" text-anchor="middle" x="625" y="122">Engine v3 · Result Reuse</text>
+<!-- S3 Results -->
+<rect fill="#E8F5E9" height="76" rx="6" stroke="#3F8624" stroke-width="2" width="120" x="730" y="55"></rect>
+<text font-size="20" text-anchor="middle" x="790" y="90">🪣</text>
+<text fill="#0f1111" font-size="10" font-weight="700" text-anchor="middle" x="790" y="108">S3 Results</text>
+<text fill="#6c757d" font-size="9" text-anchor="middle" x="790" y="122">3-day TTL</text>
+<!-- Pipeline arrows -->
+<line marker-end="url(#marr)" stroke="#545B64" stroke-width="2" x1="200" x2="238" y1="93" y2="93"></line>
+<line marker-end="url(#marr)" stroke="#545B64" stroke-width="2" x1="350" x2="388" y1="93" y2="93"></line>
+<line marker-end="url(#marr)" stroke="#545B64" stroke-width="2" x1="520" x2="558" y1="93" y2="93"></line>
+<line marker-end="url(#marr)" stroke="#545B64" stroke-width="2" x1="690" x2="728" y1="93" y2="93"></line>
+<!-- ── API LAYER NODES ── -->
+<!-- API Gateway -->
+<rect fill="#FFF4E5" height="76" rx="6" stroke="#E7742A" stroke-width="2" width="120" x="90" y="175"></rect>
+<text font-size="20" text-anchor="middle" x="150" y="210">🔌</text>
+<text fill="#0f1111" font-size="10" font-weight="700" text-anchor="middle" x="150" y="228">API Gateway</text>
+<text fill="#6c757d" font-size="9" text-anchor="middle" x="150" y="242">HTTP · /ebs-savings</text>
+<!-- Lambda -->
+<rect fill="#FFF4E5" height="76" rx="6" stroke="#E7742A" stroke-width="2" width="120" x="260" y="175"></rect>
+<text fill="#232F3E" font-size="22" font-weight="900" text-anchor="middle" x="320" y="207">λ</text>
+<text fill="#0f1111" font-size="10" font-weight="700" text-anchor="middle" x="320" y="228">AWS Lambda</text>
+<text fill="#6c757d" font-size="9" text-anchor="middle" x="320" y="242">handler_phase1.py</text>
+<!-- IAM Role -->
+<rect fill="#FDE8E8" height="76" rx="6" stroke="#DD344C" stroke-width="2" width="120" x="430" y="175"></rect>
+<text font-size="20" text-anchor="middle" x="490" y="210">🔐</text>
+<text fill="#0f1111" font-size="10" font-weight="700" text-anchor="middle" x="490" y="228">IAM Role</text>
+<text fill="#6c757d" font-size="9" text-anchor="middle" x="490" y="242">ebsp1-lambda-role</text>
+<!-- API arrows -->
+<line marker-end="url(#marr)" stroke="#545B64" stroke-width="2" x1="210" x2="258" y1="213" y2="213"></line>
+<line marker-end="url(#marr)" stroke="#DD344C" stroke-dasharray="5,3" stroke-width="2" x1="380" x2="428" y1="213" y2="213"></line>
+<!-- Lambda up to Athena -->
+<line stroke="#545B64" stroke-width="2" x1="320" x2="320" y1="175" y2="148"></line>
+<line stroke="#545B64" stroke-width="2" x1="320" x2="625" y1="148" y2="148"></line>
+<line marker-end="url(#marr)" stroke="#545B64" stroke-width="2" x1="625" x2="625" y1="148" y2="133"></line>
+<text fill="#545B64" font-size="9" text-anchor="middle" x="473" y="143">StartQueryExecution</text>
+<!-- ── FRONTEND NODES ── -->
+<!-- S3 Frontend -->
+<rect fill="#E8F5E9" height="76" rx="6" stroke="#3F8624" stroke-width="2" width="120" x="90" y="295"></rect>
+<text font-size="20" text-anchor="middle" x="150" y="330">🪣</text>
+<text fill="#0f1111" font-size="10" font-weight="700" text-anchor="middle" x="150" y="348">S3 Frontend</text>
+<text fill="#6c757d" font-size="9" text-anchor="middle" x="150" y="362">Private · OAC</text>
+<!-- CloudFront -->
+<rect fill="#F3E8FD" height="76" rx="6" stroke="#8C29BB" stroke-width="2" width="130" x="270" y="295"></rect>
+<text font-size="20" text-anchor="middle" x="335" y="330">⚡</text>
+<text fill="#0f1111" font-size="10" font-weight="700" text-anchor="middle" x="335" y="348">CloudFront</text>
+<text fill="#6c757d" font-size="9" text-anchor="middle" x="335" y="362">d2gop1c7y82ckf</text>
+<!-- Browser/User -->
+<rect fill="#E8F4FD" height="76" rx="6" stroke="#0972D3" stroke-width="2" width="130" x="460" y="295"></rect>
+<text font-size="22" text-anchor="middle" x="525" y="327">👤</text>
+<text fill="#0f1111" font-size="10" font-weight="700" text-anchor="middle" x="525" y="348">Browser</text>
+<text fill="#6c757d" font-size="9" text-anchor="middle" x="525" y="362">Engineer / FinOps</text>
+<!-- Frontend arrows -->
+<line marker-end="url(#marr)" stroke="#545B64" stroke-width="2" x1="210" x2="268" y1="333" y2="333"></line>
+<line marker-end="url(#mblue)" stroke="#0972D3" stroke-width="2" x1="400" x2="458" y1="333" y2="333"></line>
+<text fill="#0972D3" font-size="9" text-anchor="middle" x="429" y="325">HTTPS</text>
+<!-- Browser → API GW (dashed request) -->
+<line stroke="#0972D3" stroke-dasharray="5,3" stroke-width="2" x1="525" x2="525" y1="295" y2="268"></line>
+<line stroke="#0972D3" stroke-dasharray="5,3" stroke-width="2" x1="525" x2="150" y1="268" y2="268"></line>
+<line marker-end="url(#mblue)" stroke="#0972D3" stroke-dasharray="5,3" stroke-width="2" x1="150" x2="150" y1="268" y2="253"></line>
+<text fill="#0972D3" font-size="9" text-anchor="middle" x="338" y="263">fetch /ebs-savings?months=18&amp;region=all</text>
+<!-- JSON response -->
+<line stroke="#1d8102" stroke-width="2" x1="210" x2="525" y1="258" y2="258"></line>
+<line marker-end="url(#mgreen)" stroke="#1d8102" stroke-width="2" x1="525" x2="525" y1="258" y2="295"></line>
+<text fill="#1d8102" font-size="9" text-anchor="middle" x="368" y="252">JSON response (KPIs · trends · savings)</text>
+<!-- ── LEGEND ── -->
+<rect fill="#fafafa" height="180" rx="6" stroke="#e5e5e5" stroke-width="1" width="290" x="680" y="175"></rect>
+<text fill="#0f1111" font-size="11" font-weight="700" x="696" y="196">Legend</text>
+<rect fill="#3F8624" height="12" rx="2" width="12" x="696" y="204"></rect>
+<text fill="#3d3d3d" font-size="10" x="714" y="215">Storage (S3)</text>
+<rect fill="#8C4FFF" height="12" rx="2" width="12" x="696" y="222"></rect>
+<text fill="#3d3d3d" font-size="10" x="714" y="233">Analytics (Glue / Athena)</text>
+<rect fill="#E7742A" height="12" rx="2" width="12" x="696" y="240"></rect>
+<text fill="#3d3d3d" font-size="10" x="714" y="251">Compute (Lambda / API GW)</text>
+<rect fill="#8C29BB" height="12" rx="2" width="12" x="696" y="258"></rect>
+<text fill="#3d3d3d" font-size="10" x="714" y="269">Networking (CloudFront)</text>
+<rect fill="#DD344C" height="12" rx="2" width="12" x="696" y="276"></rect>
+<text fill="#3d3d3d" font-size="10" x="714" y="287">Security (IAM Role)</text>
+<line marker-end="url(#marr)" stroke="#545B64" stroke-width="2" x1="696" x2="718" y1="301" y2="301"></line>
+<text fill="#3d3d3d" font-size="10" x="724" y="305">Data / service flow</text>
+<line marker-end="url(#mblue)" stroke="#0972D3" stroke-dasharray="5,3" stroke-width="2" x1="696" x2="718" y1="319" y2="319"></line>
+<text fill="#3d3d3d" font-size="10" x="724" y="323">Browser request</text>
+<line marker-end="url(#mgreen)" stroke="#1d8102" stroke-width="2" x1="696" x2="718" y1="337" y2="337"></line>
+<text fill="#3d3d3d" font-size="10" x="724" y="341">API JSON response</text>
+</svg>
+<p>Three swim lanes, entirely serverless, no persistent compute:</p>
+<ul>
+<li><strong>① Data Pipeline</strong> — CUR 2.0 Parquet lands in S3. Glue Catalog provides the schema. Athena queries the data. Results cached in a second S3 bucket for 3 days.</li>
+<li><strong>② API Layer</strong> — API Gateway triggers Lambda on every dashboard load. Lambda runs as an IAM Role with least-privilege permissions — no IAM users, no access keys anywhere.</li>
+<li><strong>③ Frontend</strong> — React app compiled and synced to a private S3 bucket. CloudFront serves it globally via OAC. Permanent HTTPS URL, free <code class="inline">*.cloudfront.net</code> certificate.</li>
+</ul>
+</div>
+<!-- ── STEP 1: CUR SETUP ──────────────────────────────────────────────── -->
+<div class="section" id="cur-setup">
+<h2>Step 1 — Enable CUR 2.0 Export</h2>
+<p>Everything starts here. CUR 2.0 is the billing export AWS delivers daily to an S3 bucket in Parquet format. It must be enabled from the <strong>management (payer) account</strong> — not a member account. Go to Billing → Data Exports → Create export.</p>
+<figure class="screenshot">
+<img alt="AWS CUR 2.0 export creation screen showing Daily granularity, Parquet format, and Amazon Athena integration checked" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/ebs-savings-dashboard/docs/blog/screenshots/01-cur-export-setup.png"/>
+<figcaption>CUR 2.0 export setup — key selections: Daily granularity, Include Resource IDs, Create new file (not overwrite), Amazon Athena checked, Parquet format</figcaption>
+</figure>
+<p>The critical selections:</p>
+<ul>
+<li><strong>Include Resource IDs</strong> — required. This is the EBS volume ID (<code class="inline">vol-xxxxxxxx</code>)</li>
+<li><strong>Time granularity: Daily</strong> — not Hourly (24x more rows with zero benefit for monthly savings tracking)</li>
+<li><strong>File versioning: Create new file</strong> — not Overwrite. You want historical months preserved so the trend chart has data to show</li>
+<li><strong>Amazon Athena checked</strong> — AWS auto-creates the Glue Catalog table and Hive partitions. No Glue Crawler needed in production</li>
+<li><strong>Parquet format</strong> — columnar, Snappy-compressed. Athena scans only the columns your SQL touches, not all 116</li>
+</ul>
+<div class="callout">
+<strong>All 116 columns? Yes — keep them all</strong>
+<p>Athena only charges for columns it actually scans. Your SQL selects ~8 columns. The other 108 cost nothing. Removing columns now means you can't add them back later without losing historical data.</p>
+</div>
+</div>
+<!-- ── STEP 2: DATA PIPELINE ──────────────────────────────────────────── -->
+<div class="section" id="pipeline">
+<h2>Step 2 — Data Pipeline: S3, Glue, Athena</h2>
+<p>Once CUR is configured, AWS delivers one Parquet file per billing period to your S3 bucket. For Phase 1 testing I generated 18 months of synthetic data using <code class="inline">generate_mock_cur.py</code> — simulating 500 accounts, 6 regions, and ~5,000 EBS volumes. This lets the full pipeline be validated before waiting 24 hours for real CUR delivery.</p>
+<figure class="screenshot">
+<img alt="S3 bucket showing 18 Parquet files named cur_2025-01.parquet through cur_2026-06.parquet" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/ebs-savings-dashboard/docs/blog/screenshots/02-s3-parquet-files.png"/>
+<figcaption>S3 bucket with 18 synthetic Parquet files — one per month, Jan 2025 to Jun 2026 — totalling ~7 MB compressed</figcaption>
+</figure>
+<p>A Glue Crawler reads the bucket and registers the schema in the Glue Data Catalog. Athena then uses that catalog to query the files with SQL — without needing to know the physical file paths.</p>
+<figure class="screenshot">
+<img alt="Athena query editor showing SELECT * FROM ebsp1_cur_db.synthetic_report LIMIT 5 with column names and sample rows" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/ebs-savings-dashboard/docs/blog/screenshots/03-athena-query-result.png"/>
+<figcaption>Athena query editor — the <code>synthetic_report</code> table is visible in the left panel. Running a LIMIT 5 query shows the actual column names and data your Lambda reads</figcaption>
+</figure>
+<div class="callout green">
+<strong>CUR schema is universal</strong>
+<p>Column names like <code class="inline">line_item_usage_account_id</code>, <code class="inline">line_item_unblended_cost</code>, and <code class="inline">product_regioncode</code> are standardised by AWS — identical across every company, every account, every region worldwide. Write the SQL once and it works in any AWS org.</p>
+</div>
+<p>The Lambda filters to EBS-only rows using:</p>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">SQL — EBS filter in Athena</span>
+<div class="code-dots"><div class="code-dot"></div><div class="code-dot"></div><div class="code-dot"></div></div>
+</div>
+<pre>WHERE line_item_product_code = 'AmazonEC2'
+  AND line_item_usage_type LIKE '%EBS:VolumeUsage%'</pre>
+</div>
+<p>This skips EC2 instances, RDS, and every other service in the same CUR file — returning only EBS volume cost rows.</p>
+<h3>Athena Query Result Reuse</h3>
+<p>CUR data only updates once per day. Running a fresh Athena scan every time someone opens the dashboard is wasteful. Athena's Query Result Reuse returns cached results at $0 cost if the same query ran within the last 7 days. The first user each day pays ~$0.01 for the scan. Everyone else that day gets sub-second responses from cache.</p>
+</div>
+<!-- ── STEP 3: IDENTITY ────────────────────────────────────────────────── -->
+<div class="section" id="identity">
+<h2>Step 3 — Identity &amp; Security (No IAM Users)</h2>
+<p>One design principle held throughout: <strong>no IAM users anywhere</strong>. Every action is performed by IAM Roles with temporary STS credentials that auto-expire in 15 minutes.</p>
+<div class="flow">
+<div class="flow-step">
+<div class="flow-icon">1</div>
+<div class="flow-content">
+<h4>Browser Opens URL</h4>
+<p>User navigates to the CloudFront URL. No AWS identity, no login, no VPN required.</p>
+</div>
+</div>
+<div class="flow-step">
+<div class="flow-icon">2</div>
+<div class="flow-content">
+<h4>React App Calls API</h4>
+<p>The React app calls <code class="inline">fetch()</code> to API Gateway. Still no AWS identity — just an HTTPS request from the browser.</p>
+</div>
+</div>
+<div class="flow-step">
+<div class="flow-icon">3</div>
+<div class="flow-content">
+<h4>Lambda Assumes IAM Role via STS</h4>
+<p>API Gateway invokes Lambda. Lambda automatically assumes <code class="inline">ebsp1-lambda-role</code> — 15-minute temporary credentials, issued at runtime, never stored anywhere.</p>
+</div>
+</div>
+<div class="flow-step">
+<div class="flow-icon">4</div>
+<div class="flow-content">
+<h4>Athena Queries CUR Data</h4>
+<p>Lambda calls Athena with those temp credentials. Athena reads S3. Results written to the results bucket. No human credential ever touched the data.</p>
+</div>
+</div>
+<div class="flow-step">
+<div class="flow-icon">5</div>
+<div class="flow-content">
+<h4>Full Auditability for Free</h4>
+<p>CloudTrail records every Athena query attributed to the Lambda role ARN. No credential management overhead, no keys to rotate when someone leaves.</p>
+</div>
+</div>
+</div>
+<p>The IAM role policy is scoped to exactly what Phase 1 needs:</p>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">IAM Policy — Phase 1 (CUR only)</span>
+<div class="code-dots"><div class="code-dot"></div><div class="code-dot"></div><div class="code-dot"></div></div>
+</div>
+<pre>Athena:   StartQueryExecution, GetQueryExecution, GetQueryResults
+S3 CUR:   GetObject, ListBucket  (read-only)
+S3 Res:   PutObject, GetObject, DeleteObject
+Glue:     GetTable, GetDatabase, GetPartitions
+# No EC2, no STS AssumeRole, no Organizations — CUR data only</pre>
+</div>
+</div>
+<!-- ── STEP 4: LAMBDA ──────────────────────────────────────────────────── -->
+<div class="section" id="lambda">
+<h2>Step 4 — Lambda &amp; API Gateway</h2>
+<p>Lambda (<code class="inline">handler_phase1.py</code>) is the engine of the dashboard. It receives the API Gateway request, builds a parameterised Athena SQL query, polls for results, and returns a structured JSON payload to the browser.</p>
+<p>Key design decisions in the Lambda:</p>
+<ul>
+<li><strong>Region filter</strong> — <code class="inline">?region=us-east-1</code> appended to the fetch URL threads through to a <code class="inline">{region_filter}</code> placeholder in the SQL <code class="inline">WHERE</code> clause</li>
+<li><strong>Months selector</strong> — 3/6/12/18 months controls how far back the Athena query looks</li>
+<li><strong>Split-month logic</strong> — divides data into pre-cleanup and post-cleanup periods to calculate savings delta</li>
+<li><strong>Division-by-zero guard</strong> — returns zero savings (not an error) when there is no pre-cleanup data</li>
+</ul>
+<p>API Gateway is configured as an HTTP API (not REST) with CORS open for Phase 1 testing. Before connecting real CUR data at work, add IAM authorization or an API key so the endpoint is not publicly callable.</p>
+</div>
+<!-- ── STEP 5: FRONTEND ────────────────────────────────────────────────── -->
+<div class="section" id="frontend">
+<h2>Step 5 — React Dashboard on CloudFront</h2>
+<p>The React app (AWS CloudScape Design System) is compiled with <code class="inline">npm run build</code> and synced to a private S3 bucket. CloudFront sits in front of it via OAC (Origin Access Control) — the S3 bucket has no public access at all. Every request is served over HTTPS from the free <code class="inline">*.cloudfront.net</code> certificate.</p>
+<p>Deploying a new version is three commands:</p>
+<div class="code-block">
+<div class="code-header">
+<span class="code-lang">Deploy frontend</span>
+<div class="code-dots"><div class="code-dot"></div><div class="code-dot"></div><div class="code-dot"></div></div>
+</div>
+<pre>npm run build
+aws s3 sync dist/ s3://ebsp1-frontend-684346483786/ --delete --profile personal
+aws cloudfront create-invalidation \
+  --distribution-id E3W08TQPVK17E8 \
+  --paths "/*" --profile personal</pre>
+</div>
+<p>The CloudFront URL is permanent — it does not change when you redeploy. Share it once with your FinOps team and it always points to the latest version.</p>
+</div>
+<!-- ── DASHBOARD SCREENSHOTS ──────────────────────────────────────────── -->
+<div class="section" id="dashboard">
+<h2>What the Dashboard Shows</h2>
+<p>The dashboard has four tabs, all responding to a global region filter and months selector (3 / 6 / 12 / 18 months).</p>
+<figure class="screenshot">
+<img alt="EBS Savings Dashboard overview tab showing KPI strip with monthly savings and trend chart" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/ebs-savings-dashboard/docs/blog/screenshots/01-dashboard-overview.png"/>
+<figcaption>Overview tab — KPI strip at top (monthly spend before/after, savings/month, projected annual saving, volumes cleaned up) and 18-month trend chart with cleanup reference line</figcaption>
+</figure>
+<figure class="screenshot">
+<img alt="By Account tab showing bar chart ranking accounts by EBS spend" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/ebs-savings-dashboard/docs/blog/screenshots/02-by-account.png"/>
+<figcaption>By Account tab — ranks every account by EBS spend, instantly showing which account teams to contact first for cleanup</figcaption>
+</figure>
+<figure class="screenshot">
+<img alt="By Region tab showing horizontal bars with spend per AWS region" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/ebs-savings-dashboard/docs/blog/screenshots/03-by-region.png"/>
+<figcaption>By Region tab — spend distribution across us-east-1, eu-west-1, ap-southeast-1, and other regions</figcaption>
+</figure>
+<figure class="screenshot">
+<img alt="By Volume Type tab comparing gp2, gp3, io1, and st1 spend" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/ebs-savings-dashboard/docs/blog/screenshots/04-by-volume-type.png"/>
+<figcaption>By Volume Type tab — compares gp2 vs gp3 vs io1 vs st1 spend, making the gp2 → gp3 migration opportunity visible as a real dollar figure</figcaption>
+</figure>
+</div>
+<!-- ── CHALLENGES ──────────────────────────────────────────────────────── -->
+<div class="section" id="challenges">
+<h2>Challenges &amp; Real Bugs Fixed</h2>
+<div class="challenge-card">
+<div class="challenge-header">
+<div class="num">1</div>
+<strong>volumes_deleted showed 301,884 — 18× the real number</strong>
+</div>
+<div class="challenge-body">
+<p>The bug: summing <code class="inline">volume_count</code> across all 18 months instead of taking first month count minus last month count. Cross-month summation inflated the number by 18×.</p>
+<span class="fix-label">✓ Fix</span>
+<p><code class="inline">volumes_deleted = first_month_count − last_month_count</code></p>
+</div>
+</div>
+<div class="challenge-card">
+<div class="challenge-header">
+<div class="num">2</div>
+<strong>By Region bars all showed $0</strong>
+</div>
+<div class="challenge-body">
+<p>When <code class="inline">cleanup_start</code> was an empty string, all months landed in the "post" bucket — zero pre-cleanup data, zero calculated savings delta per region.</p>
+<span class="fix-label">✓ Fix</span>
+<p>Added a midpoint fallback: when <code class="inline">cleanup_start</code> is empty, use the halfway point of the date range as the split.</p>
+</div>
+</div>
+<div class="challenge-card">
+<div class="challenge-header">
+<div class="num">3</div>
+<strong>Savings showed −$16,550/month (negative)</strong>
+</div>
+<div class="challenge-body">
+<p>Mock data churn rate was 3% per month. Over 18 months this deleted more volumes than plausibly existed, making post-cleanup cost higher than pre-cleanup cost.</p>
+<span class="fix-label">✓ Fix</span>
+<p>Reduced churn rate to 0.5% — realistic for a managed enterprise environment.</p>
+</div>
+</div>
+<div class="challenge-card">
+<div class="challenge-header">
+<div class="num">4</div>
+<strong>Region filter dropdown had no effect on charts</strong>
+</div>
+<div class="challenge-body">
+<p>The selected region value was not being appended to the API URL, so Lambda received no region parameter and returned all-region data regardless of selection.</p>
+<span class="fix-label">✓ Fix</span>
+<p>Append <code class="inline">?region={selectedRegion}</code> to the fetch call and thread it to a <code class="inline">{region_filter}</code> placeholder in the Lambda SQL.</p>
+</div>
+</div>
+</div>
+<!-- ── COST ───────────────────────────────────────────────────────────── -->
+<div class="section" id="cost">
+<h2>Cost to Run</h2>
+<table>
+<thead><tr><th>Service</th><th>Usage</th><th>Monthly Cost</th></tr></thead>
+<tbody>
+<tr><td>Lambda</td><td>~30 invocations · 512 MB · 15s avg</td><td>$0.00 (free tier)</td></tr>
+<tr><td>Athena</td><td>~5 queries/day · 400 KB scanned (Parquet)</td><td>&lt;$0.01</td></tr>
+<tr><td>S3 (3 buckets)</td><td>~8 MB total stored</td><td>&lt;$0.01</td></tr>
+<tr><td>CloudFront</td><td>&lt;1 GB transfer · PriceClass_100</td><td>$0.00 (free tier)</td></tr>
+<tr><td>API Gateway</td><td>&lt;1 million requests</td><td>$0.00 (free tier)</td></tr>
+<tr><td>Glue Crawler</td><td>1 run/month · &lt;1 min</td><td>$0.00 (free tier)</td></tr>
+<tr><td><strong>Total</strong></td><td></td><td><strong>~$0–2/month</strong></td></tr>
+</tbody>
+</table>
+<p>At enterprise scale (real CUR, 500 accounts, 50 engineers opening the dashboard daily), Athena cost rises to ~$2–5/month due to larger Parquet files. Everything else stays the same.</p>
+<div class="callout">
+<strong>Production caching pattern</strong>
+<p>CUR updates once per day. The right pattern is: EventBridge daily pre-warm at 06:00 UTC (Lambda warms the Athena cache before anyone opens the dashboard) + Athena Query Result Reuse (7-day cache, $0 for repeat queries) + CloudFront API cache (5-min TTL). First user each day pays ~$0.01. Everyone else gets sub-second responses.</p>
+</div>
+</div>
+<!-- ── REAL CUR ────────────────────────────────────────────────────────── -->
+<div class="section" id="real-cur">
+<h2>Connecting Real CUR Data at Work</h2>
+<p>Phase 1 runs on synthetic data. When your platform team enables real CUR, only three things change. Lambda, API Gateway, CloudFront, and the React dashboard are untouched.</p>
+<div class="flow">
+<div class="flow-step">
+<div class="flow-icon">1</div>
+<div class="flow-content">
+<h4>Enable CUR 2.0 Export (Management Account)</h4>
+<p>Ask your FinOps or Platform team: Billing → Data Exports → Create export with the selections above. This requires management account access — not a member account.</p>
+</div>
+</div>
+<div class="flow-step">
+<div class="flow-icon">2</div>
+<div class="flow-content">
+<h4>Update Two Lambda Env Vars</h4>
+<p>In Terraform: <code class="inline">ATHENA_DATABASE</code> → the Glue database AWS auto-creates (<code class="inline">athenacurcfn</code>) and <code class="inline">CUR_TABLE</code> → your export report name. Run <code class="inline">terraform apply</code>.</p>
+</div>
+</div>
+<div class="flow-step">
+<div class="flow-icon">3</div>
+<div class="flow-content">
+<h4>Update SQL Column Names</h4>
+<p>Swap synthetic names for real CUR column names in <code class="inline">handler_phase1.py</code>: <code class="inline">line_item_usage_account_id</code>, <code class="inline">line_item_unblended_cost</code>, <code class="inline">product_regioncode</code>, etc. These are identical across every AWS org worldwide.</p>
+</div>
+</div>
+</div>
+</div>
+<!-- ── PHASE 2 ────────────────────────────────────────────────────────── -->
+<div class="section" id="phase2">
+<h2>What Phase 2 Adds</h2>
+<p>Phase 1 answers <em>"how much are we spending."</em> Phase 2 will answer <em>"which specific volumes should we delete today."</em></p>
+<p>Phase 2 adds cross-account EC2 inventory via STS AssumeRole. Lambda will temporarily assume an <code class="inline">EBSDashboardReadRole</code> in each member account and call <code class="inline">EC2:DescribeVolumes</code> to pull live attachment status, volume state, last-attached time, and tags.</p>
+<p>A CloudFormation StackSet (deployed via Terraform) automatically creates <code class="inline">EBSDashboardReadRole</code> in every member account — including new accounts added to the org in future. The trust policy uses a <code class="inline">PrincipalOrgID</code> condition so only Lambda inside the same AWS Organization can assume the role. No IAM users, no long-lived credentials — same security model as Phase 1.</p>
+<p>This unlocks a fifth tab: <strong>Volume Inventory</strong> — a sortable table of every unattached volume with size, type, region, account, last-attached date, and projected monthly saving if deleted.</p>
+</div>
+<!-- ── TAKEAWAYS ──────────────────────────────────────────────────────── -->
+<div class="section" id="takeaways">
+<h2>Key Takeaways</h2>
+<div class="callout green">
+<strong>CUR schema is universal — write SQL once, run anywhere</strong>
+<p>Column names are standardised by AWS and identical across every company, every account, every region. The SQL you write against synthetic data works against your employer's real CUR without modification — only the S3 path and table name change.</p>
+</div>
+<div class="callout green">
+<strong>No IAM users = simpler security posture</strong>
+<p>Lambda runs as an IAM Role with temporary STS credentials. No keys to rotate, no credentials to leak, no access to revoke when someone leaves the team. CloudTrail gives full auditability for free.</p>
+</div>
+<div class="callout amber">
+<strong>Validate with synthetic data before touching production billing</strong>
+<p>Building and debugging the entire pipeline against mock data meant no risk of accidentally querying real billing data, no waiting 24 hours for CUR delivery, and full control over the data shape. Every tab, filter, and edge case was proven before connecting real data.</p>
+</div>
+<h3>What’s Next</h3>
+<ul>
+<li>Add API Gateway authorization (IAM auth or API key) — current endpoint is open for testing only</li>
+<li>Add CloudWatch alarms for Lambda error rate and p99 duration</li>
+<li>Add EventBridge daily pre-warm schedule (06:00 UTC)</li>
+<li>Connect real CUR 2.0 export from management account</li>
+<li>Phase 2: StackSet deployment + live Volume Inventory tab</li>
+</ul>
+<p>Full Terraform, Lambda handler, React dashboard, and architecture draw.io diagrams are in the <a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/ebs-savings-dashboard">GitHub repo</a>.</p>
+</div>
+</div>
+
+</div>
+</div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Terraform</span>
+    </div>
+    <nav class="post-nav"><a href="/blog/week-8-s3-intelligent-storage-platform/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">Week 8 - S3 Intelligent Storage Platform: Tiering, Lifecycle, and Cost Automation</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/ebs-savings-dashboard-phase1/';
+      this.page.identifier = 'ebs-savings-dashboard-phase1';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var FORM_ID='xzdqqvqd';
+  var rating=0;
+  var btn=document.getElementById('fb-btn'),overlay=document.getElementById('fb-overlay');
+  var stars=document.querySelectorAll('.fb-star');
+  btn.addEventListener('click',function(){overlay.classList.add('open');});
+  overlay.addEventListener('click',function(e){if(e.target===overlay)overlay.classList.remove('open');});
+  document.getElementById('fb-skip').addEventListener('click',function(){overlay.classList.remove('open');});
+  stars.forEach(function(s){
+    s.addEventListener('click',function(){
+      rating=parseInt(s.getAttribute('data-v'));
+      stars.forEach(function(x){x.classList.toggle('on',parseInt(x.getAttribute('data-v'))<=rating);});
+    });
+  });
+  document.getElementById('fb-send').addEventListener('click',function(){
+    var msg=document.getElementById('fb-text').value;
+    fetch('https://formspree.io/f/'+FORM_ID,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({rating:rating,message:msg,page:window.location.pathname})
+    });
+    document.getElementById('fb-modal').innerHTML='<div class="fb-thanks"><span>&#10003;</span><strong>Thanks for your feedback!</strong><p style="color:#879196;font-size:13px;margin-top:0.35rem;">It means a lot.</p></div>';
+    setTimeout(function(){overlay.classList.remove('open');},2000);
+  });
+})();
+</script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js"></script>
+<script>
+  hljs.highlightAll();
+</script>
+</body></html>
