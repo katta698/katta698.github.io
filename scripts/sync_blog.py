@@ -826,6 +826,7 @@ def nav_html(show_search=True):
     <li><a href="/resume.html">Resume</a></li>
   </ul>
 {search_btn}
+  <button class="audio-toggle" id="audio-toggle" onclick="toggleBlogAudio()" title="Toggle beach sounds">🎻</button>
   <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
     <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
   </button>
@@ -1030,6 +1031,8 @@ def build_index_page(posts):
 <body>
 {nav_html()}
 <section class="hero">
+  <video id="hero-video" class="hero-video" autoplay muted loop playsinline></video>
+  <div class="hero-overlay"></div>
   <span class="hero-eyebrow">Engineering &amp; Life</span>
   <h1>Jayanth's Blog</h1>
   <p class="hero-sub">Thoughts on AWS, Terraform, Kubernetes, platform engineering, and the quieter things in life.</p>
@@ -1212,7 +1215,49 @@ def build_index_page(posts):
 {ASK_WIDGET_HTML}
 {back_top_html()}
 {footer_html()}
+<audio id="beach-audio" loop preload="none"></audio>
 <script src="{ASSETS_URL}/blog.js"></script>
+<script>
+(function(){{
+  var VIDEOS=[
+    '/blog/assets/videos/sun.mp4',
+    '/blog/assets/videos/mon.mp4',
+    '/blog/assets/videos/tue.mp4',
+    '/blog/assets/videos/wed.mp4',
+    '/blog/assets/videos/thu.mp4',
+    '/blog/assets/videos/fri.mp4',
+    '/blog/assets/videos/sat.mp4'
+  ];
+  var AUDIO=[
+    '/blog/assets/audio/sun.mp3',
+    '/blog/assets/audio/mon.mp3',
+    '/blog/assets/audio/tue.mp3',
+    '/blog/assets/audio/wed.mp3',
+    '/blog/assets/audio/thu.mp3',
+    '/blog/assets/audio/fri.mp3',
+    '/blog/assets/audio/sat.mp3'
+  ];
+  var day=new Date().getDay();
+  var vid=document.getElementById('hero-video');
+  var aud=document.getElementById('beach-audio');
+  if(vid)vid.src=VIDEOS[day];
+  if(aud)aud.src=AUDIO[day];
+}})();
+
+function toggleBlogAudio(){{
+  var audio=document.getElementById('beach-audio');
+  var btn=document.getElementById('audio-toggle');
+  if(!audio)return;
+  if(audio.paused){{
+    audio.play().then(function(){{
+      if(btn)btn.textContent='🔊';
+    }}).catch(function(){{}});
+  }}else{{
+    audio.pause();
+    if(btn)btn.textContent='🎻';
+  }}
+}}
+</script>
 </body></html>"""
 
 
