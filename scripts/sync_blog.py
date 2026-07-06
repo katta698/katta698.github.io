@@ -1243,15 +1243,13 @@ def build_index_page(posts):
   var aud=document.getElementById('beach-audio');
   if(vid){{
     vid.src=VIDEOS[day];
-    vid.load();
     var _tryPlay=function(){{if(vid.paused)vid.play().catch(function(){{}});}};
-    vid.addEventListener('canplay',function(){{vid.play().catch(function(){{}});}},{{once:true}});
+    vid.addEventListener('loadeddata',_tryPlay,{{once:true}});
+    vid.addEventListener('canplay',_tryPlay,{{once:true}});
     document.addEventListener('visibilitychange',function(){{if(!document.hidden)_tryPlay();}});
     window.addEventListener('pageshow',_tryPlay);
-    vid.addEventListener('stalled',function(){{vid.load();vid.play().catch(function(){{}});}});
-    vid.addEventListener('suspend',function(){{if(!document.hidden)setTimeout(_tryPlay,800);}});
     document.addEventListener('touchstart',_tryPlay,{{once:true}});
-    document.addEventListener('click',_tryPlay,{{once:true}});
+    var _n=0,_iv=setInterval(function(){{_tryPlay();if(++_n>=4||!vid.paused)clearInterval(_iv);}},2000);
   }}
   if(aud)aud.src=AUDIO[day];
 }})();
