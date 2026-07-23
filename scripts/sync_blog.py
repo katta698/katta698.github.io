@@ -427,6 +427,9 @@ def fetch_local_posts():
             "slug": front_matter.get("slug"),
             "summary": front_matter.get("summary"),
             "takeaway": front_matter.get("takeaway"),
+            "problem": front_matter.get("problem"),
+            "builds": front_matter.get("builds"),
+            "catch": front_matter.get("catch"),
         })
     return posts
 
@@ -759,21 +762,33 @@ def generate_summary(title, body_html, custom_summary=None, custom_takeaway=None
 
 
 def summary_html(post):
-    bullets = "".join(f"<li>{escape(item)}</li>" for item in post["summary"])
-    topics = "".join(f'<span class="quick-summary-topic">{escape(tag)}</span>' for tag in post["tags"])
+    # Use explicit front-matter fields when provided; fall back to auto-extracted content.
+    bullets  = post["summary"] or []
+    problem  = post.get("problem") or (bullets[0] if len(bullets) > 0 else "")
+    builds   = post.get("builds")  or (bullets[1] if len(bullets) > 1 else "")
+    catch    = post.get("catch")   or post.get("takeaway") or (bullets[2] if len(bullets) > 2 else "")
+    topics   = "".join(f'<span class="quick-summary-topic">{escape(tag)}</span>' for tag in post["tags"])
+
+    rows = [
+        ("Problem",        problem),
+        ("What you'll build", builds),
+        ("The catch",      catch),
+    ]
+    rows_html = "".join(
+        f'<div class="qs-row">'
+        f'<span class="qs-row-label">{label}</span>'
+        f'<p class="qs-row-text">{escape(text)}</p>'
+        f'</div>'
+        for label, text in rows if text
+    )
     return f"""<details class="quick-summary" open>
       <summary>
         <span class="quick-summary-icon" aria-hidden="true">&#10022;</span>
-        <span class="quick-summary-heading"><strong>Quick summary</strong><small>Understand this post in 30 seconds</small></span>
+        <span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>
         <span class="quick-summary-toggle" aria-hidden="true"></span>
       </summary>
       <div class="quick-summary-content">
-        <div class="quick-summary-label">In 30 seconds</div>
-        <ul>{bullets}</ul>
-        <div class="quick-summary-takeaway">
-          <span>Main takeaway</span>
-          <p>{escape(post["takeaway"])}</p>
-        </div>
+        <div class="qs-rows">{rows_html}</div>
         <div class="quick-summary-topics">{topics}</div>
       </div>
     </details>"""
@@ -1348,6 +1363,9 @@ def main():
             "description":   description,
             "summary":       summary,
             "takeaway":      takeaway,
+            "problem":       entry.get("problem"),
+            "builds":        entry.get("builds"),
+            "catch":         entry.get("catch"),
             "body_html": body_html,
         })
 
