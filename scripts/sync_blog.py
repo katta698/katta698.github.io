@@ -40,6 +40,7 @@ SITE_URL    = "https://jayanthkatta.com"
 BLOG_URL    = f"{SITE_URL}/blog"
 DISQUS_ID   = "jayanthkatta"
 API_URL     = "https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search"
+SUMMARY_API_URL = "https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary"
 
 # ── AWS service names to detect in post content ───────────────
 AWS_SERVICES = [
@@ -219,6 +220,54 @@ ASK_WIDGET_HTML = f"""
       .catch(function(){{output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';}})
       .finally(function(){{sendBtn.disabled=false;}});
   }});
+  function esc(str){{return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}}
+}})();
+</script>"""
+
+# "At a glance" widget (rebuilt 2026-07-24 as LLM-generated + client-side
+# fetched, replacing the old build-time keyword-extraction version removed
+# earlier the same day). Generation happens once per post in the
+# blog-search-indexer Lambda (Claude Haiku, cached by content hash — see
+# blog-search/indexer/handler.py); this script only fetches and renders the
+# already-generated result, same "static page, one opt-in API call" shape as
+# ASK_WIDGET_HTML. A post with no cached summary yet (brand new, indexer
+# hasn't run since) just renders nothing — the mount stays empty, no error
+# shown, no broken box. Topics come from this page's own tags (server-side,
+# no API round trip needed for those).
+SUMMARY_WIDGET_JS = f"""<script>
+(function(){{
+  var SUMMARY_API_URL = '{SUMMARY_API_URL}';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){{ if(!r.ok) throw new Error('no summary'); return r.json(); }})
+    .then(function(data){{
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){{ return r[1]; }});
+      if (!rows.length) return;
+      var rowsHtml = rows.map(function(r){{
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }}).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){{
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }}).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    }})
+    .catch(function(){{ /* no cached summary yet — leave the mount empty, no visible error */ }});
+
   function esc(str){{return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}}
 }})();
 </script>"""
@@ -762,18 +811,34 @@ def generate_summary(title, body_html, custom_summary=None, custom_takeaway=None
 
 
 def summary_html(post):
-    # Retired 2026-07-23 (Week 11 review): the "At a glance" box either
-    # auto-extracted 3 sentences and stamped fixed Problem/Build/Catch labels
-    # on them regardless of fit (mislabeled rows, and inline-code content
-    # dropped mid-sentence produced broken text like "routes it to ,"), or
-    # required hand-authoring per post. The 65-post back catalog has no
-    # consistent structure (11 weekly build posts vs. troubleshooting posts,
-    # a day-N tutorial series, migrated posts, career/misc) so no single
-    # label set or extraction heuristic fits all of it - a wrong box is worse
-    # than no box. Not deleting generate_summary()/the problem/builds/catch
-    # front-matter fields in case a per-post-type authored version is
-    # designed later; this just stops rendering the widget.
-    return ""
+    # Retired 2026-07-23 (Week 11 review) as a BUILD-TIME extraction/labeling
+    # box: it either auto-extracted 3 sentences and stamped fixed
+    # Problem/Build/Catch labels on them regardless of fit (mislabeled rows,
+    # inline-code content dropped mid-sentence producing broken text like
+    # "routes it to ,"), or required hand-authoring per post. The 65-post
+    # back catalog has no consistent structure (11 weekly build posts vs.
+    # troubleshooting posts, a day-N tutorial series, migrated/career posts)
+    # so no single label set or extraction heuristic fit all of it.
+    #
+    # Rebuilt 2026-07-24 as a CLIENT-SIDE fetch instead: this just emits an
+    # empty mount point; SUMMARY_WIDGET_JS fetches the real summary at page
+    # load from blog-search's new GET /summary endpoint (generated once per
+    # post by Claude Haiku in the indexer Lambda, universal Overview/Key
+    # detail/Takeaway labels that fit any post shape — see
+    # blog-search/indexer/handler.py). A post with no cached summary yet
+    # (indexer hasn't run since it was published) just renders nothing.
+    #
+    # Excluded on Health/Life posts (Jay's call, 2026-07-24): the box is a
+    # "scan fast, decide if this solves my problem" utility frame — a fit
+    # for technical/build/troubleshooting posts, not for a personal,
+    # first-person reflection where the box would flatten the piece into
+    # a spoiler-summary instead of an entry point. Both categories were
+    # verified to generate coherent, accurate summaries (the model handles
+    # them fine) — this exclusion is about tone/fit, not a quality problem.
+    if {"Health", "Life"} & set(post["tags"]):
+        return ""
+    topics = ",".join(post["tags"])
+    return f'<div class="quick-summary-mount" data-slug="{escape(post["slug"])}" data-topics="{escape(topics)}"></div>'
 
 
 def parse_date(url, published=None):
@@ -937,6 +1002,7 @@ def build_post_page(post, prev_post, next_post):
 </main>
 {FEEDBACK_WIDGET_HTML}
 {ASK_WIDGET_HTML}
+{SUMMARY_WIDGET_JS}
 {back_top_html()}
 {footer_html()}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>

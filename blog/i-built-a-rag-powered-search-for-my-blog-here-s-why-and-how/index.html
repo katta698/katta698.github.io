@@ -59,10 +59,10 @@
       <div class="post-info">
         <span>Jun 2026</span>
         <span class="post-info-dot"></span>
-        <span>6 min read</span>
+        <span>10 min read</span>
       </div>
     </header>
-    
+    <div class="quick-summary-mount" data-slug="i-built-a-rag-powered-search-for-my-blog-here-s-why-and-how" data-topics="AWS,Terraform"></div>
     <div class="post-divider"></div>
     <div class="post-body"><style>
 #jk-post {
@@ -198,13 +198,13 @@
 <span>💰 ~$0/month</span>
 </div>
 <div class="stack-badge">RSS Feed → Lambda → S3 → Titan Embed v2 → Nova Lite → jayanthkatta.com</div>
-<p>I have been writing on this blog for a while now. Posts about AWS, Terraform, GitOps, investing, health, and life in general. Over time the archive has grown to 58 posts — and I started running into a problem I didn't expect.</p>
+<p>I have been writing on this blog for a while now. Posts about AWS, Terraform, GitOps, investing, health, and life in general. Over time the archive has grown to 64 posts — and I started running into a problem I didn't expect.</p>
 <p>I couldn't find my own content.</p>
 <p>If I wanted to reference something I wrote about S3 six months ago, I had to scroll. If someone asked me what I'd written about a topic, I had to think. A search bar would have helped, but Blogger's built-in search is basic at best.</p>
 <p>So I built something better. A question-answering widget powered by RAG — Retrieval Augmented Generation — running entirely on AWS, embedded on my portfolio at <a href="https://jayanthkatta.com" target="_blank">jayanthkatta.com</a>.</p>
 <p>This post is about why I built it, what I had to learn, and how I put it together.</p>
 <div class="stat-row">
-<div class="stat-box"><span class="stat-val">58</span><span class="stat-lbl">blog posts indexed</span></div>
+<div class="stat-box"><span class="stat-val">64</span><span class="stat-lbl">blog posts indexed</span></div>
 <div class="stat-box"><span class="stat-val">~$0</span><span class="stat-lbl">monthly cost</span></div>
 <div class="stat-box"><span class="stat-val">&lt;2s</span><span class="stat-lbl">query response</span></div>
 <div class="stat-box"><span class="stat-val">30s</span><span class="stat-lbl">daily index job</span></div>
@@ -223,7 +223,7 @@
 <li><strong>An embedding model</strong> — converts text into a list of numbers that captures the meaning of that text. Two pieces of text about the same topic will produce similar numbers.</li>
 <li><strong>A language model</strong> — reads the relevant chunks and generates a plain-English answer.</li>
 </ul>
-<p>I used <strong>Amazon Titan Embed v2</strong> for embeddings and <strong>Amazon Nova Lite</strong> on Bedrock for answer generation. Both are Amazon's own models — instantly available, no third-party access forms required.</p>
+<p>I used <strong>Amazon Titan Embed v2</strong> for embeddings and <strong>Amazon Nova Lite</strong> on Bedrock for answer generation — the two models behind the search widget itself. (A third model joined the pipeline later for a different job — see the update below.) Both are Amazon's own models — instantly available, no third-party access forms required.</p>
 <h3>Vector Similarity</h3>
 <p>Once text is converted to numbers, finding the most relevant chunks comes down to <strong>cosine similarity</strong> — think of it like comparing directions. If your question and a blog chunk are pointing in the same direction in a mathematical space, they're about the same thing. The closer they are, the more relevant the chunk. I implemented this in plain Python in the Lambda function — no numpy needed at this scale — comparing the question's numbers against every chunk's numbers and returning the top 4 matches.</p>
 <h3>Serverless Pipeline Design</h3>
@@ -245,15 +245,29 @@
 <p>The architecture has two flows — one that runs daily automatically, and one that runs on demand when someone asks a question.</p>
 <h3>Daily Indexing — Automatic</h3>
 <p>An <strong>EventBridge</strong> rule fires every day and triggers the indexer Lambda. It fetches the current post list from my site's RSS feed, visits each post's actual page for the full text, breaks it into chunks of around 400 words with a 50-word overlap, sends each chunk to <strong>Titan Embed v2</strong> to get a vector, and writes the full index — chunks plus vectors — to an <strong>S3 bucket</strong> as a single JSON file.</p>
-<p>The whole job takes about 30 seconds. New posts I publish show up in search automatically within 24 hours — no manual steps.</p>
+<p>The whole job normally finishes in under a minute (it only gets slower the one time it has to back-fill something for every post at once — see the summary update below). In practice I don't wait for the daily schedule — I invoke the indexer manually right after every publish, so a new post is searchable within minutes, not up to a day later. The daily EventBridge run is the safety net in case I forget, not the primary path.</p>
 <h3>Query Flow — On Demand</h3>
 <p>When someone types a question on <a href="https://jayanthkatta.com" target="_blank">jayanthkatta.com</a>, a POST request goes to <strong>API Gateway</strong>, which triggers the query Lambda. The Lambda loads the index from S3 into memory on cold start, embeds the question using Titan Embed v2, runs cosine similarity to find the 4 most relevant chunks, and passes them to <strong>Nova Lite on Bedrock</strong> with a prompt that says: answer only from this context. The response comes back with an answer and links to the source posts.</p>
 <p>The whole round trip takes under 2 seconds.</p>
 <div class="tip-box">
-<strong>Why not a vector database?</strong> With 58 posts and a few hundred chunks, cosine similarity on a JSON file in Lambda memory is fast enough and costs nothing. A vector DB like Pinecone or pgvector adds cost and complexity that isn't justified at this scale.
+<strong>Why not a vector database?</strong> With 64 posts and a few hundred chunks, cosine similarity on a JSON file in Lambda memory is fast enough and costs nothing. A vector DB like Pinecone or pgvector adds cost and complexity that isn't justified at this scale.
 </div>
 <h3>Infrastructure</h3>
 <p>Everything is <strong>Terraform</strong>. The S3 bucket, both Lambdas, API Gateway, IAM roles, EventBridge rule, and CloudWatch logs — all defined as code, reproducible from scratch with a single <code>terraform apply</code>. No console clicks involved in the setup.</p>
+<hr class="section-divider"/>
+<h2>Update (July 2026): A Third Model, for a Different Job</h2>
+<p>My blog used to have an "at a glance" summary box at the top of every post — three lines under fixed labels: Problem, What you'll build, The catch. It was built by keyword-frequency extraction: pick the most keyword-dense sentences out of the post and stamp those labels on them regardless of whether they actually fit. It worked passably on my weekly AWS build posts. It broke everywhere else — mislabeled rows, and on one post it even chopped a sentence mid-<code>&lt;code&gt;</code>-tag and printed something like "routes it to ," in public. Of my 64 posts, only 11 are actually shaped like "Problem → Build → Catch." The other 53 — troubleshooting writeups, a day-by-day Terraform series, personal reflections — don't fit that mold, and no keyword heuristic was going to fix that.</p>
+<p>So I killed the box, and then rebuilt it properly using the RAG infrastructure I already had running.</p>
+<div class="tip-box">
+<strong>The insight:</strong> retrieval and summarization are different jobs. My search widget's whole point is retrieval — find the 4 chunks most relevant to a question. A per-post summary doesn't need retrieval at all, since the indexer already has each post's <em>full</em> text in hand while building the index. What it needed was a model that could actually <em>read</em> a post and describe it well — something a frequency-count heuristic was never going to do.
+</div>
+<p>I added <strong>Claude Haiku 4.5</strong> on Bedrock as a third model, used for exactly one job: once per post, the indexer Lambda sends the full post text to Haiku and asks for three generic, universal lines — Overview, Key detail, Takeaway — not the old fixed Problem/Build/Catch labels. Generic labels turned out to be the actual fix: they read naturally whether the post is a build walkthrough, a root-cause writeup, or a tutorial, because the <em>model</em> decides what's worth saying about that specific post instead of a heuristic forcing every post into the same shape.</p>
+<p>Two things I had to get right that weren't obvious going in:</p>
+<ul>
+<li><strong>Claude Haiku 4.5 on Bedrock requires an inference profile, not a direct model ID.</strong> Calling <code>anthropic.claude-haiku-4-5-20251001-v1:0</code> directly returned a <code>ValidationException</code> telling me to use an inference profile instead. The fix was straightforward once I knew to look for it — call <code>us.anthropic.claude-haiku-4-5-20251001-v1:0</code> instead, and grant IAM permission on <em>both</em> the inference-profile ARN and the underlying foundation-model ARNs in every region the profile can route through.</li>
+<li><strong>Generation and serving needed to be decoupled from the site build.</strong> My static site builds locally, before I push — but the indexer (which has the full post text and generates the summary) only runs against the <em>live</em> site, after a push. Baking the summary into the static HTML at build time would mean a brand-new post's summary is never available for its own first build. Instead the summary is fetched <strong>client-side</strong>: the indexer writes it to S3, a new <code>GET /summary</code> route on the same API Gateway serves it by slug, and a small script on each post page fetches it on load — same shape as the search widget itself, just a different endpoint. A post with no cached summary yet (indexer hasn't run since it published) just renders nothing. No error, no broken box.</li>
+</ul>
+<p>One judgment call, not a technical one: I excluded my Health and Life posts from the box entirely. Haiku's summaries for them were accurate — but a "scan this fast and decide if it's relevant" utility frame felt wrong on a personal reflection. That one's a post-category filter in the build script, not a model limitation.</p>
 <hr class="section-divider"/>
 <h2>What It Looks Like</h2>
 <p>A floating terminal-style button sits in the bottom-right corner of <a href="https://jayanthkatta.com" target="_blank">jayanthkatta.com</a>. Click it and a dark terminal overlay opens. Type a question, press Run, and the answer appears with source links back to the original posts.</p>
@@ -264,7 +278,7 @@
 <p>If you're looking to build something similar, the full stack is: <strong>Lambda + S3 + API Gateway + EventBridge + Bedrock</strong>. All serverless. All pay-per-use. Monthly cost at my traffic: effectively zero.</p>
 <div class="stat-row">
 <div class="stat-box"><span class="stat-val">2</span><span class="stat-lbl">Lambda functions</span></div>
-<div class="stat-box"><span class="stat-val">2</span><span class="stat-lbl">Bedrock models</span></div>
+<div class="stat-box"><span class="stat-val">3</span><span class="stat-lbl">Bedrock models</span></div>
 <div class="stat-box"><span class="stat-val">100%</span><span class="stat-lbl">Terraform IaC</span></div>
 <div class="stat-box"><span class="stat-val">0</span><span class="stat-lbl">servers to manage</span></div>
 </div>
@@ -276,6 +290,7 @@
 <span class="label-pill">Amazon Bedrock</span>
 <span class="label-pill">Titan Embed v2</span>
 <span class="label-pill">Nova Lite</span>
+<span class="label-pill">Claude Haiku 4.5</span>
 <span class="label-pill">Terraform</span>
 <span class="label-pill">RAG</span>
 <span class="label-pill">Serverless</span>
@@ -417,6 +432,43 @@
       .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
       .finally(function(){sendBtn.disabled=false;});
   });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){ if(!r.ok) throw new Error('no summary'); return r.json(); })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) return;
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(){ /* no cached summary yet — leave the mount empty, no visible error */ });
+
   function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 })();
 </script>
