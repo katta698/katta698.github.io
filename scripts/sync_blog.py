@@ -762,36 +762,18 @@ def generate_summary(title, body_html, custom_summary=None, custom_takeaway=None
 
 
 def summary_html(post):
-    # Use explicit front-matter fields when provided; fall back to auto-extracted content.
-    bullets  = post["summary"] or []
-    problem  = post.get("problem") or (bullets[0] if len(bullets) > 0 else "")
-    builds   = post.get("builds")  or (bullets[1] if len(bullets) > 1 else "")
-    catch    = post.get("catch")   or post.get("takeaway") or (bullets[2] if len(bullets) > 2 else "")
-    topics   = "".join(f'<span class="quick-summary-topic">{escape(tag)}</span>' for tag in post["tags"])
-
-    rows = [
-        ("Problem",        problem),
-        ("What you'll build", builds),
-        ("The catch",      catch),
-    ]
-    rows_html = "".join(
-        f'<div class="qs-row">'
-        f'<span class="qs-row-label">{label}</span>'
-        f'<p class="qs-row-text">{escape(text)}</p>'
-        f'</div>'
-        for label, text in rows if text
-    )
-    return f"""<details class="quick-summary" open>
-      <summary>
-        <span class="quick-summary-icon" aria-hidden="true">&#10022;</span>
-        <span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>
-        <span class="quick-summary-toggle" aria-hidden="true"></span>
-      </summary>
-      <div class="quick-summary-content">
-        <div class="qs-rows">{rows_html}</div>
-        <div class="quick-summary-topics">{topics}</div>
-      </div>
-    </details>"""
+    # Retired 2026-07-23 (Week 11 review): the "At a glance" box either
+    # auto-extracted 3 sentences and stamped fixed Problem/Build/Catch labels
+    # on them regardless of fit (mislabeled rows, and inline-code content
+    # dropped mid-sentence produced broken text like "routes it to ,"), or
+    # required hand-authoring per post. The 65-post back catalog has no
+    # consistent structure (11 weekly build posts vs. troubleshooting posts,
+    # a day-N tutorial series, migrated posts, career/misc) so no single
+    # label set or extraction heuristic fits all of it - a wrong box is worse
+    # than no box. Not deleting generate_summary()/the problem/builds/catch
+    # front-matter fields in case a per-post-type authored version is
+    # designed later; this just stops rendering the widget.
+    return ""
 
 
 def parse_date(url, published=None):
