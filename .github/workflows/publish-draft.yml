@@ -1,0 +1,116 @@
+name: Publish Draft Post
+
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: Draft slug (e.g. arch-003-draft)
+        required: true
+      token:
+        description: Draft approval token
+        required: true
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PROFILE_PAT }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::684346483786:role/github-actions-blog-publish
+          aws-region: us-east-1
+
+      - name: Download draft from S3
+        run: |
+          aws s3 cp s3://jay-blog-search-index-v2/drafts/${{ inputs.slug }}.json draft.json
+          # Extract html_content field and write to file
+          python3 -c "
+          import json, sys
+          d = json.load(open('draft.json'))
+          print(d['slug'])
+          print(d['num'])
+          open('draft_body.html', 'w').write(d['html_content'])
+          "
+
+      - name: Build post HTML files
+        run: |
+          python3 - <<'EOF'
+          import json, os, re
+          from datetime import datetime
+
+          d = json.load(open('draft.json'))
+          slug_full = d['slug'].replace('-draft', '')  # arch-003
+          topic = d['topic']
+          num = d['num']
+          body = open('draft_body.html').read()
+
+          # Extract title from first <h2> in body
+          m = re.search(r'<h2[^>]*>(.*?)</h2>', body, re.DOTALL)
+          title = re.sub(r'<[^>]+>', '', m.group(1)).strip() if m else f"AWS Architecture Series #{num}"
+
+          today = datetime.now().strftime('%b %Y')
+
+          # Read template from existing arch post
+          template = open('posts/aws-architecture-iam-identity-center.html').read()
+
+          # Replace key fields in template
+          post_html = template
+
+          # Replace title tag
+          post_html = re.sub(r'<title>[^<]+</title>', f'<title>{title} | Jayanth Katta Blog</title>', post_html)
+
+          # Replace og:title
+          post_html = re.sub(r'<meta property="og:title"[^>]+>', f'<meta property="og:title" content="{title}">', post_html)
+
+          # Replace the main article content between markers
+          post_html = re.sub(
+              r'(<article[^>]*>).*?(</article>)',
+              r'\1\n' + body + r'\n\2',
+              post_html, flags=re.DOTALL
+          )
+
+          os.makedirs(f'blog/{slug_full}', exist_ok=True)
+          open(f'posts/{slug_full}.html', 'w').write(post_html)
+          open(f'blog/{slug_full}/index.html', 'w').write(post_html)
+
+          print(f"Written: posts/{slug_full}.html")
+          print(f"Written: blog/{slug_full}/index.html")
+          EOF
+
+      - name: Commit and push
+        run: |
+          SLUG_FULL="${{ inputs.slug }}"
+          SLUG_FULL="${SLUG_FULL%-draft}"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add "posts/${SLUG_FULL}.html" "blog/${SLUG_FULL}/"
+          git commit -m "Publish ${SLUG_FULL} via mobile approve"
+          git push
+
+      - name: Wait for Pages to deploy
+        run: sleep 90
+
+      - name: Re-index RAG search
+        run: |
+          aws lambda invoke \
+            --function-name blog-search-indexer \
+            --region us-east-1 \
+            --payload '{}' \
+            --cli-binary-format raw-in-base64-out \
+            response.json
+          cat response.json
+
+      - name: Update GitHub README
+        run: |
+          gh workflow run blog-posts.yml --repo katta698/katta698
+        env:
+          GH_TOKEN: ${{ secrets.PROFILE_PAT }}
