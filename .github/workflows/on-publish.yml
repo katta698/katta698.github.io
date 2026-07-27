@@ -1,4 +1,4 @@
-name: On Publish — Update RAG index and GitHub README
+name: On Publish — Update posts.json, RAG index, and GitHub README
 
 on:
   workflow_dispatch:
@@ -6,15 +6,109 @@ on:
     branches: [main]
     paths:
       - 'blog/rss.xml'
+      - 'blog/index.html'
 
 permissions:
   id-token: write
-  contents: read
+  contents: write
 
 jobs:
   update:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Regenerate posts.json from blog/index.html
+        run: |
+          python3 - <<'PYEOF'
+          import re, json, html
+
+          text = open('blog/index.html').read()
+
+          # Extract post cards: <a href="..." class="post-card" data-title="..." data-excerpt="..." data-tags="...">
+          card_pattern = re.compile(
+              r'<a\s+href="([^"]+)"\s+class="post-card[^"]*"[^>]*'
+              r'data-title="([^"]*)"[^>]*'
+              r'data-excerpt="([^"]*)"[^>]*'
+              r'data-tags="([^"]*)"',
+              re.DOTALL
+          )
+          # Also try reversed attribute order
+          card_pattern2 = re.compile(
+              r'<a\s[^>]*class="post-card[^"]*"[^>]*href="([^"]+)"[^>]*'
+              r'data-title="([^"]*)"[^>]*'
+              r'data-excerpt="([^"]*)"[^>]*'
+              r'data-tags="([^"]*)"',
+              re.DOTALL
+          )
+
+          # More flexible: extract each post-card block then parse attributes
+          block_pattern = re.compile(r'<a\s[^>]*class="post-card[^"]*"[^>]*>(.*?)</a>', re.DOTALL)
+          attr_href = re.compile(r'href="([^"]+)"')
+          attr_title = re.compile(r'data-title="([^"]*)"')
+          attr_excerpt = re.compile(r'data-excerpt="([^"]*)"')
+          attr_tags = re.compile(r'data-tags="([^"]*)"')
+          date_pattern = re.compile(r'class="post-date[^"]*"[^>]*>\s*([^<]+)<')
+
+          posts = []
+          seen = set()
+          # Find all <a ... > opening tags that contain class="post-card"
+          tag_pattern = re.compile(r'<a\s[^>]*class="[^"]*post-card[^"]*"[^>]*>', re.DOTALL)
+          for tag_match in tag_pattern.finditer(text):
+              tag = tag_match.group(0)
+              href_m = attr_href.search(tag)
+              title_m = attr_title.search(tag)
+              if not href_m or not title_m:
+                  continue
+              url = href_m.group(1)
+              if url in seen:
+                  continue
+              seen.add(url)
+
+              title = html.unescape(title_m.group(1))
+              excerpt_m = attr_excerpt.search(tag)
+              excerpt = html.unescape(excerpt_m.group(1)) if excerpt_m else ''
+              tags_m = attr_tags.search(tag)
+              raw_tags = tags_m.group(1) if tags_m else ''
+              tags = ' · '.join(w.capitalize() for w in raw_tags.split()) if raw_tags else ''
+
+              # Find the date in the block following this tag
+              block_start = tag_match.start()
+              block_end = text.find('</a>', block_start)
+              block = text[block_start:block_end] if block_end > 0 else ''
+              date_m = date_pattern.search(block)
+              date = date_m.group(1).strip() if date_m else ''
+
+              posts.append({
+                  'title': title,
+                  'url': url,
+                  'date': date,
+                  'tags': tags,
+                  'excerpt': excerpt,
+              })
+              if len(posts) >= 7:
+                  break
+
+          with open('blog/posts.json', 'w') as f:
+              json.dump(posts, f, indent=2, ensure_ascii=False)
+          print(f"Wrote {len(posts)} posts to blog/posts.json")
+          for p in posts:
+              print(f"  {p['date']}  {p['title'][:60]}")
+          PYEOF
+
+      - name: Commit posts.json if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add blog/posts.json
+          if git diff --cached --quiet; then
+            echo "posts.json unchanged, skipping commit"
+          else
+            git commit -m "Auto-update posts.json [skip ci]"
+            git push
+          fi
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
