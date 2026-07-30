@@ -443,7 +443,8 @@ def fetch_local_posts():
     """Posts written directly in this repo, no Blogger involved.
     Two source formats in posts/, both with YAML front matter (title and
     date required; labels and slug optional — slug defaults to
-    slugify(title)):
+    slugify(title); draft optional, defaults to false — see the draft-mode
+    note above main() for what setting it does):
       - posts/*.md   — Markdown body, converted to HTML here.
       - posts/*.html — body is already HTML (e.g. content migrated from
         Blogger) and is used as-is, with no Markdown conversion.
@@ -479,6 +480,7 @@ def fetch_local_posts():
             "problem": front_matter.get("problem"),
             "builds": front_matter.get("builds"),
             "catch": front_matter.get("catch"),
+            "draft": bool(front_matter.get("draft", False)),
         })
     return posts
 
@@ -962,6 +964,12 @@ def build_post_page(post, prev_post, next_post):
 </div>"""
 
     extra = '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>'
+    if post.get("draft"):
+        # Belt-and-suspenders: the page is already excluded from every listing
+        # (index, rss, posts.json) so nothing links here, but noindex also
+        # stops a search engine from surfacing it if it ever gets crawled
+        # directly (e.g. via an external link someone shared).
+        extra += '\n<meta name="robots" content="noindex,nofollow"/>'
 
     return f"""{html_head(title + " | Jayanth Katta Blog", post["excerpt"], post_url, extra)}
 <body>
@@ -1415,24 +1423,41 @@ def main():
             "builds":        entry.get("builds"),
             "catch":         entry.get("catch"),
             "body_html": body_html,
+            "draft":         entry.get("draft", False),
         })
 
     posts.sort(key=lambda p: p["date"], reverse=True)
 
-    print(f"Building {len(posts)} post pages...")
-    for i, post in enumerate(posts):
+    # Draft mode: a post with `draft: true` in its front matter still gets a
+    # real page built at its normal URL (so the author can preview/share the
+    # exact link), but is left out of everything that makes a post
+    # discoverable — the homepage list, posts.json, stats.json, and rss.xml
+    # (which is also what the separate blog-search RAG indexer reads, so
+    # drafts are automatically excluded from "Ask my blog" too). Its page
+    # also gets a noindex meta tag (see build_post_page) so search engines
+    # don't pick it up even if crawled directly. Flip `draft: true` to
+    # `draft: false` (or remove the field) and re-run this script to publish
+    # it everywhere at once — same one-line toggle every time.
+    visible_posts = [p for p in posts if not p.get("draft")]
+    for i, post in enumerate(visible_posts):
+        post["_prev"] = visible_posts[i + 1] if i + 1 < len(visible_posts) else None
+        post["_next"] = visible_posts[i - 1] if i > 0 else None
+
+    draft_count = len(posts) - len(visible_posts)
+    print(f"Building {len(posts)} post pages ({draft_count} draft, unlisted)...")
+    for post in posts:
         out_dir = BLOG_DIR / post["slug"]
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "index.html").write_text(
             build_post_page(
                 post,
-                prev_post=posts[i + 1] if i + 1 < len(posts) else None,
-                next_post=posts[i - 1] if i > 0 else None,
+                prev_post=post.get("_prev"),
+                next_post=post.get("_next"),
             ),
             encoding="utf-8",
         )
 
-    (BLOG_DIR / "index.html").write_text(build_index_page(posts), encoding="utf-8")
+    (BLOG_DIR / "index.html").write_text(build_index_page(visible_posts), encoding="utf-8")
 
     # posts.json — used by portfolio homepage to render latest posts
     posts_json = [
@@ -1443,14 +1468,14 @@ def main():
             "tags":    " · ".join(p["tags"][:2]) if p["tags"] else "",
             "excerpt": p["excerpt"],
         }
-        for p in posts[:7]
+        for p in visible_posts[:7]
     ]
     (BLOG_DIR / "posts.json").write_text(json.dumps(posts_json, indent=2), encoding="utf-8")
 
     # stats.json — used by portfolio homepage for the writing streak counter
-    dates = [p["date"] for p in posts]
+    dates = [p["date"] for p in visible_posts]
     stats_json = {
-        "total_posts": len(posts),
+        "total_posts": len(visible_posts),
         "first_post_date": min(dates).strftime("%Y-%m-%d") if dates else None,
         "latest_post_date": max(dates).strftime("%Y-%m-%d") if dates else None,
     }
@@ -1458,10 +1483,10 @@ def main():
 
     # rss.xml — feed for external consumers (e.g. the GitHub profile README's
     # blog-post-workflow action, which needs a feed since the old Blogger one
-    # was retired)
-    (BLOG_DIR / "rss.xml").write_text(build_rss_feed(posts), encoding="utf-8")
+    # was retired) — and the blog-search RAG indexer, so drafts must stay out
+    (BLOG_DIR / "rss.xml").write_text(build_rss_feed(visible_posts), encoding="utf-8")
 
-    print(f"Done — {len(posts)} posts built at blog/")
+    print(f"Done — {len(visible_posts)} public posts built at blog/ ({draft_count} draft)")
 
 
 if __name__ == "__main__":
