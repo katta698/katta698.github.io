@@ -481,6 +481,16 @@ def fetch_local_posts():
             "builds": front_matter.get("builds"),
             "catch": front_matter.get("catch"),
             "draft": bool(front_matter.get("draft", False)),
+            # Architecture Series posts (arch-NNN-*.html) are built by a
+            # completely separate pipeline (.github/workflows/publish-draft.yml),
+            # which uses its own template-substitution logic, not this script's
+            # clean_html()/generate_summary()/excerpt(). Reprocessing them here
+            # produces genuinely different card text/excerpts than what's live
+            # (confirmed live 2026-07-30) -- so main() must treat them as
+            # read-only pass-through: never rewrite their individual page, never
+            # recompute their display metadata, just reuse whatever's already
+            # committed in blog/posts.json for their card.
+            "externally_built": post_file.name.startswith("arch-"),
         })
     return posts
 
@@ -1344,6 +1354,41 @@ function toggleBlogAudio(){{
 </body></html>"""
 
 
+# ── Build drafts index page ────────────────────────────────────
+def build_drafts_page(draft_posts):
+    """A small, itself-unlisted page at /blog/drafts/ that just links to
+    whatever posts currently have draft: true — a single memorable URL so
+    the author doesn't need to remember/type each draft's own slug on every
+    device. Not linked from anywhere public (nav, homepage, sitemap) and
+    noindex'd, same unlisted principle as the individual draft posts."""
+    if draft_posts:
+        rows = "\n".join(
+            f'<li><a href="/blog/{p["slug"]}/">{escape(p["title"])}</a> '
+            f'<span style="color:#6c757d;font-size:0.85rem">— {p["date_fmt"]}</span></li>'
+            for p in draft_posts
+        )
+        body = f'<ul style="line-height:2;">{rows}</ul>'
+    else:
+        body = '<p style="color:#6c757d;">No drafts pending right now.</p>'
+
+    extra = '<meta name="robots" content="noindex,nofollow"/>'
+    return f"""{html_head("Drafts | Jayanth Katta Blog", "Pending draft posts, not publicly listed.", f"{BLOG_URL}/drafts/", extra)}
+<body>
+{nav_html(show_search=False)}
+<main class="post-page-layout">
+  <article>
+    <header class="post-header">
+      <h1>Pending Drafts</h1>
+      <p class="post-description">Not linked anywhere public — bookmark this page's URL for a quick way back in.</p>
+    </header>
+    <div class="post-divider"></div>
+    <div class="post-body">{body}</div>
+  </article>
+</main>
+{footer_html()}
+</body></html>"""
+
+
 # ── Main ──────────────────────────────────────────────────────
 def build_rss_feed(posts, max_items=None):
     # max_items=None means "all posts" — this feed is also the only source
@@ -1385,6 +1430,20 @@ def main():
     raw_posts = fetch_local_posts()
     print(f"  {len(raw_posts)} posts found")
 
+    # Architecture Series posts are built by a separate pipeline
+    # (publish-draft.yml) — load whatever's already committed for them so
+    # this script can reuse it verbatim instead of recomputing (and thereby
+    # drifting from) their live card text. See fetch_local_posts()'s
+    # "externally_built" note for the full story.
+    existing_posts_json = {}
+    posts_json_path = BLOG_DIR / "posts.json"
+    if posts_json_path.exists():
+        try:
+            for item in json.loads(posts_json_path.read_text(encoding="utf-8")):
+                existing_posts_json[item["url"]] = item
+        except (json.JSONDecodeError, KeyError):
+            pass
+
     posts = []
     for entry in raw_posts:
         title    = entry["title"]
@@ -1406,6 +1465,14 @@ def main():
             entry.get("takeaway"),
         )
 
+        cached = existing_posts_json.get(f"/blog/{slug}/") if entry.get("externally_built") else None
+        if cached:
+            title = cached.get("title", title)
+            tags = cached["tags"].split(" · ") if cached.get("tags") else tags
+            excerpt_text = cached.get("excerpt") or excerpt(body_html)
+        else:
+            excerpt_text = excerpt(body_html)
+
         posts.append({
             "slug":          slug,
             "title":         title,
@@ -1415,7 +1482,7 @@ def main():
             "date_fmt":      dt.strftime("%b %Y"),
             "tags":          tags,
             "read_time":     reading_time(body_html),
-            "excerpt":       excerpt(body_html),
+            "excerpt":       excerpt_text,
             "description":   description,
             "summary":       summary,
             "takeaway":      takeaway,
@@ -1424,6 +1491,7 @@ def main():
             "catch":         entry.get("catch"),
             "body_html": body_html,
             "draft":         entry.get("draft", False),
+            "externally_built": entry.get("externally_built", False),
         })
 
     posts.sort(key=lambda p: p["date"], reverse=True)
@@ -1444,8 +1512,13 @@ def main():
         post["_next"] = visible_posts[i - 1] if i > 0 else None
 
     draft_count = len(posts) - len(visible_posts)
-    print(f"Building {len(posts)} post pages ({draft_count} draft, unlisted)...")
-    for post in posts:
+    externally_built_count = sum(1 for p in posts if p.get("externally_built"))
+    own_pages = [p for p in posts if not p.get("externally_built")]
+    print(
+        f"Building {len(own_pages)} post pages ({draft_count} draft, unlisted; "
+        f"{externally_built_count} Architecture Series pages left untouched, built by publish-draft.yml)..."
+    )
+    for post in own_pages:
         out_dir = BLOG_DIR / post["slug"]
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "index.html").write_text(
@@ -1458,6 +1531,13 @@ def main():
         )
 
     (BLOG_DIR / "index.html").write_text(build_index_page(visible_posts), encoding="utf-8")
+
+    # /blog/drafts/ — unlisted index of currently-pending drafts, so there's
+    # one memorable URL instead of needing each draft's own slug on hand.
+    draft_posts = [p for p in posts if p.get("draft")]
+    drafts_dir = BLOG_DIR / "drafts"
+    drafts_dir.mkdir(parents=True, exist_ok=True)
+    (drafts_dir / "index.html").write_text(build_drafts_page(draft_posts), encoding="utf-8")
 
     # posts.json — used by portfolio homepage to render latest posts
     posts_json = [
