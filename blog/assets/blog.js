@@ -183,8 +183,11 @@
   const grid = document.getElementById('posts-grid');
   const emptyEl = document.getElementById('empty-state');
 
+  var MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
   let activeTag = 'all';
   let activeYear = 'all';
+  let activeMonth = 'all';
   let searchTerm = '';
 
   function normalize(s) {
@@ -206,10 +209,12 @@
     let visible = 0;
     cards.forEach(card => {
       const tags = (card.dataset.tags || '').toLowerCase();
+      const d = card.dataset.date || '';
       const tagMatch = activeTag === 'all' || tags.includes(activeTag.toLowerCase());
-      const yearMatch = activeYear === 'all' || (card.dataset.date || '').startsWith(activeYear);
+      const yearMatch = activeYear === 'all' || d.startsWith(activeYear);
+      const monthMatch = activeMonth === 'all' || d.slice(5, 7) === activeMonth;
       const searchMatch = matchSearch(card, normalize(searchTerm));
-      const show = tagMatch && yearMatch && searchMatch;
+      const show = tagMatch && yearMatch && monthMatch && searchMatch;
       card.style.display = show ? '' : 'none';
       if (show) visible++;
     });
@@ -230,8 +235,53 @@
 
   function setYear(year) {
     activeYear = year;
+    activeMonth = 'all';
     yearPills.forEach(p => p.classList.toggle('active', p.dataset.year === year));
+    rebuildMonthRow();
     applyFilters();
+  }
+
+  function setMonth(month) {
+    activeMonth = month;
+    monthPills.forEach(p => p.classList.toggle('active', p.dataset.month === month));
+    applyFilters();
+  }
+
+  // Month row — rebuilt whenever year changes
+  var monthRow = document.createElement('div');
+  monthRow.className = 'filters month-filters';
+  monthRow.style.display = 'none';
+  var monthPills = [];
+
+  function rebuildMonthRow() {
+    monthRow.innerHTML = '';
+    monthPills = [];
+    if (activeYear === 'all') { monthRow.style.display = 'none'; return; }
+    var months = [];
+    var seenM = {};
+    cards.forEach(function(c) {
+      var d = c.dataset.date || '';
+      if (!d.startsWith(activeYear)) return;
+      var m = d.slice(5, 7);
+      if (m && !seenM[m]) { seenM[m] = true; months.push(m); }
+    });
+    months.sort();
+    if (months.length < 2) { monthRow.style.display = 'none'; return; }
+    var allM = document.createElement('button');
+    allM.className = 'filter-pill active';
+    allM.dataset.month = 'all';
+    allM.textContent = 'All months';
+    monthRow.appendChild(allM);
+    months.forEach(function(m) {
+      var btn = document.createElement('button');
+      btn.className = 'filter-pill';
+      btn.dataset.month = m;
+      btn.textContent = MONTH_NAMES[parseInt(m, 10) - 1];
+      monthRow.appendChild(btn);
+    });
+    monthPills = Array.from(monthRow.querySelectorAll('.filter-pill'));
+    monthPills.forEach(function(p) { p.addEventListener('click', function() { setMonth(p.dataset.month); }); });
+    monthRow.style.display = '';
   }
 
   // Build year filter pills dynamically from data-date on cards
@@ -258,7 +308,10 @@
     yearRow.appendChild(btn);
   });
   var filtersEl = document.querySelector('.filters');
-  if (filtersEl && years.length > 1) filtersEl.after(yearRow);
+  if (filtersEl && years.length > 1) {
+    filtersEl.after(monthRow);
+    filtersEl.after(yearRow);
+  }
 
   var yearPills = Array.from(yearRow.querySelectorAll('.filter-pill'));
   yearPills.forEach(function(p) { p.addEventListener('click', function() { setYear(p.dataset.year); }); });
