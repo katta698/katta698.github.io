@@ -184,6 +184,7 @@
   const emptyEl = document.getElementById('empty-state');
 
   let activeTag = 'all';
+  let activeYear = 'all';
   let searchTerm = '';
 
   function normalize(s) {
@@ -196,6 +197,7 @@
       card.dataset.title || '',
       card.dataset.excerpt || '',
       card.dataset.tags || '',
+      card.dataset.date || '',
     ].join(' ').toLowerCase();
     return term.split(/\s+/).every(w => haystack.includes(w));
   }
@@ -205,8 +207,9 @@
     cards.forEach(card => {
       const tags = (card.dataset.tags || '').toLowerCase();
       const tagMatch = activeTag === 'all' || tags.includes(activeTag.toLowerCase());
+      const yearMatch = activeYear === 'all' || (card.dataset.date || '').startsWith(activeYear);
       const searchMatch = matchSearch(card, normalize(searchTerm));
-      const show = tagMatch && searchMatch;
+      const show = tagMatch && yearMatch && searchMatch;
       card.style.display = show ? '' : 'none';
       if (show) visible++;
     });
@@ -224,6 +227,41 @@
     sbTags.forEach(t => t.classList.toggle('active', t.dataset.tag === tag));
     applyFilters();
   }
+
+  function setYear(year) {
+    activeYear = year;
+    yearPills.forEach(p => p.classList.toggle('active', p.dataset.year === year));
+    applyFilters();
+  }
+
+  // Build year filter pills dynamically from data-date on cards
+  var years = [];
+  var seenYears = {};
+  cards.forEach(function(c) {
+    var y = (c.dataset.date || '').slice(0, 4);
+    if (y && !seenYears[y]) { seenYears[y] = true; years.push(y); }
+  });
+  years.sort(function(a, b) { return b - a; });
+
+  var yearRow = document.createElement('div');
+  yearRow.className = 'filters year-filters';
+  var allYearBtn = document.createElement('button');
+  allYearBtn.className = 'filter-pill active';
+  allYearBtn.dataset.year = 'all';
+  allYearBtn.textContent = 'All years';
+  yearRow.appendChild(allYearBtn);
+  years.forEach(function(yr) {
+    var btn = document.createElement('button');
+    btn.className = 'filter-pill';
+    btn.dataset.year = yr;
+    btn.textContent = yr;
+    yearRow.appendChild(btn);
+  });
+  var filtersEl = document.querySelector('.filters');
+  if (filtersEl && years.length > 1) filtersEl.after(yearRow);
+
+  var yearPills = Array.from(yearRow.querySelectorAll('.filter-pill'));
+  yearPills.forEach(function(p) { p.addEventListener('click', function() { setYear(p.dataset.year); }); });
 
   pills.forEach(p => p.addEventListener('click', () => setTag(p.dataset.tag)));
   sbTags.forEach(t => t.addEventListener('click', () => setTag(t.dataset.tag)));

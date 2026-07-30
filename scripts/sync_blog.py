@@ -1059,7 +1059,8 @@ def build_index_page(posts):
             f'<a href="/blog/{p["slug"]}/" class="post-card"'
             f' data-title="{escape(p["title"])}"'
             f' data-excerpt="{escape(p["excerpt"])}"'
-            f' data-tags="{escape(tags_data)}">'
+            f' data-tags="{escape(tags_data)}"'
+            f' data-date="{p["date"].strftime("%Y-%m-%d")}">'
             f'<div class="post-card-body">'
             f'<div class="post-meta"><span class="tag-badge">{tag1}</span>'
             f'<span class="post-date">{p["date_fmt"]}</span></div>'
@@ -1479,7 +1480,7 @@ def main():
             "display_title": embedded_title or title,
             "url":           url,
             "date":          dt,
-            "date_fmt":      dt.strftime("%b %Y"),
+            "date_fmt":      dt.strftime("%b %d, %Y").replace(" 0", " "),
             "tags":          tags,
             "read_time":     reading_time(body_html),
             "excerpt":       excerpt_text,
