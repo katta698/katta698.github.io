@@ -326,6 +326,31 @@
     });
   }
 
+  // Sort toggle — inject next to results count
+  var sortAsc = false;
+  var sortBtn = document.createElement('button');
+  sortBtn.className = 'sort-btn';
+  sortBtn.title = 'Toggle sort order';
+  sortBtn.innerHTML = '<span class="sort-icon">↓</span> Newest';
+  if (countEl) countEl.after(sortBtn);
+
+  function applySort() {
+    var sorted = Array.from(grid.querySelectorAll('.post-card')).sort(function(a, b) {
+      var da = a.dataset.date || '';
+      var db = b.dataset.date || '';
+      return sortAsc ? da.localeCompare(db) : db.localeCompare(da);
+    });
+    sorted.forEach(function(c) { grid.appendChild(c); });
+  }
+
+  sortBtn.addEventListener('click', function() {
+    sortAsc = !sortAsc;
+    sortBtn.innerHTML = sortAsc
+      ? '<span class="sort-icon">↑</span> Oldest'
+      : '<span class="sort-icon">↓</span> Newest';
+    applySort();
+  });
+
   // Pre-select tag filter from ?tag= param (set by portfolio teaser links)
   var urlParams = new URLSearchParams(window.location.search);
   var tagParam = urlParams.get('tag');
