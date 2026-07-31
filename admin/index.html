@@ -15,6 +15,8 @@
   .badge { font-size: 11px; padding: 3px 8px; border-radius: 4px; flex-shrink: 0; }
   .badge.draft { background: #fff3cd; color: #7a5a00; }
   .badge.published { background: #d4edda; color: #155724; }
+  .badge.alarms { background: #f8d7da; color: #842029; }
+  .badge.clean { background: #d4edda; color: #155724; }
   .title { flex: 1; font-size: 14px; }
   .date { font-size: 12px; color: #6c757d; }
   #status { font-size: 13px; color: #6c757d; margin-top: 12px; }
@@ -24,6 +26,21 @@
   a.view-link:hover { background: #f5f5f5; }
   a.header-link { font-size: 13px; text-decoration: none; color: #0f1111; border: 1px solid #d0d0d0; border-radius: 6px; padding: 10px 18px; }
   a.header-link:hover { background: #f5f5f5; }
+  .clickable-row { cursor: pointer; }
+  .clickable-row:hover { background: #f9f9f9; }
+  .stat-cards { display: flex; gap: 12px; margin: 16px 0; flex-wrap: wrap; }
+  .stat-card { flex: 1; min-width: 130px; background: #f9f9f9; border: 1px solid #e5e5e5; border-radius: 8px; padding: 12px; }
+  .stat-label { font-size: 11px; color: #6c757d; margin: 0 0 4px; }
+  .stat-value { font-size: 18px; font-weight: 700; margin: 0; }
+  .bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .bar-name { font-size: 13px; width: 150px; flex-shrink: 0; }
+  .bar-track { flex: 1; height: 6px; background: #e5e5e5; border-radius: 4px; }
+  .bar-fill { height: 6px; background: #d97706; border-radius: 4px; }
+  .bar-cost { font-size: 13px; color: #6c757d; width: 70px; text-align: right; flex-shrink: 0; }
+  .alarm-item { background: #fdecea; border-left: 3px solid #dc3545; padding: 10px 14px; margin-bottom: 8px; border-radius: 4px; }
+  .alarm-item strong { font-size: 13px; }
+  .alarm-item .meta { font-size: 12px; color: #6c757d; }
+  h2.section-title { font-size: 14px; margin: 20px 0 10px; }
 </style>
 </head>
 <body>
@@ -38,12 +55,31 @@
   <div class="dash-header">
     <h1>Posts</h1>
     <div class="dash-header-actions">
-      <a class="header-link" href="https://jayanthkatta.com/blog/digests/" target="_blank" rel="noopener">Digests</a>
+      <button id="btn-digests">Digests</button>
       <button id="btn-logout">Sign out</button>
     </div>
   </div>
   <div id="post-list"></div>
   <div id="status"></div>
+</div>
+
+<div id="digests-list-view" style="display:none;">
+  <div class="dash-header">
+    <h1>Digests</h1>
+    <div class="dash-header-actions">
+      <button id="btn-digests-back">Back to Posts</button>
+      <button id="btn-logout-2">Sign out</button>
+    </div>
+  </div>
+  <div id="digest-weeks-list"></div>
+</div>
+
+<div id="digest-detail-view" style="display:none;">
+  <div class="dash-header">
+    <h1 id="digest-detail-title">Digest</h1>
+    <button id="btn-digest-detail-back">Back to Digests</button>
+  </div>
+  <div id="digest-detail-body"></div>
 </div>
 
 <script src="config.js"></script>
@@ -78,11 +114,15 @@
     sessionStorage.setItem(TOKEN_KEY, data.id_token);
   }
 
-  async function loadPosts() {
+  async function authedFetch(path) {
     const token = sessionStorage.getItem(TOKEN_KEY);
-    const resp = await fetch(`${CONFIG.adminApiUrl}/posts`, {
+    return fetch(`${CONFIG.adminApiUrl}${path}`, {
       headers: { Authorization: token },
     });
+  }
+
+  async function loadPosts() {
+    const resp = await authedFetch("/posts");
     if (!resp.ok) {
       showLogin();
       return;
@@ -121,15 +161,120 @@
       : `Failed to trigger publish for ${slug}.`;
   }
 
+  async function loadDigestWeeks() {
+    const resp = await authedFetch("/digests");
+    if (!resp.ok) {
+      showLogin();
+      return;
+    }
+    const { weeks } = await resp.json();
+    const list = document.getElementById("digest-weeks-list");
+    list.innerHTML = "";
+    if (!weeks.length) {
+      list.innerHTML = '<p style="color:#6c757d;">No digests yet -- the next weekly run will populate this.</p>';
+      return;
+    }
+    weeks.forEach((w) => {
+      const row = document.createElement("div");
+      row.className = "post-row clickable-row";
+      const alarmBadgeClass = w.alarm_count > 0 ? "alarms" : "clean";
+      row.innerHTML = `
+        <span class="badge ${alarmBadgeClass}">${w.alarm_count} alarm${w.alarm_count === 1 ? "" : "s"}</span>
+        <span class="title">${w.week_label}</span>
+        <span class="date">$${Math.round(w.total).toLocaleString()}</span>
+      `;
+      row.addEventListener("click", () => showDigestDetail(w.slug));
+      list.appendChild(row);
+    });
+  }
+
+  function renderBarRows(breakdown, limit = 5) {
+    const entries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]).slice(0, limit);
+    if (!entries.length) return '<p style="color:#6c757d;font-size:13px;">No data.</p>';
+    const max = Math.max(...entries.map(([, v]) => v)) || 1;
+    return entries.map(([name, cost]) => `
+      <div class="bar-row">
+        <span class="bar-name">${name}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${(cost / max) * 100}%"></div></div>
+        <span class="bar-cost">$${Math.round(cost).toLocaleString()}</span>
+      </div>
+    `).join("");
+  }
+
+  async function showDigestDetail(slug) {
+    const resp = await authedFetch(`/digests/${slug}`);
+    if (!resp.ok) {
+      showLogin();
+      return;
+    }
+    const d = await resp.json();
+    document.getElementById("digest-detail-title").textContent = `Digest — ${d.week_label}`;
+
+    const deltaPct = d.prev_week_total ? ((d.this_week_total - d.prev_week_total) / d.prev_week_total) * 100 : 0;
+    const deltaLabel = `${deltaPct >= 0 ? "↑" : "↓"} ${Math.abs(deltaPct).toFixed(0)}% vs last week`;
+
+    const alarmsHtml = d.alarm_events.length
+      ? d.alarm_events.map((e) => `
+          <div class="alarm-item">
+            <strong>${e.alarm}</strong>
+            <div class="meta">${e.region} &middot; ${e.time}${e.summary ? " &middot; " + e.summary : ""}</div>
+          </div>
+        `).join("")
+      : '<p style="color:#6c757d;font-size:13px;">No alarms fired this week.</p>';
+
+    document.getElementById("digest-detail-body").innerHTML = `
+      <div class="stat-cards">
+        <div class="stat-card">
+          <p class="stat-label">TOTAL SPEND</p>
+          <p class="stat-value">$${Math.round(d.this_week_total).toLocaleString()}</p>
+          <p style="font-size:12px;color:#6c757d;margin:4px 0 0;">${deltaLabel}</p>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">ALARMS FIRED</p>
+          <p class="stat-value">${d.alarm_events.length}</p>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">MONTH TO DATE</p>
+          <p class="stat-value">$${Math.round(d.month_to_date).toLocaleString()}</p>
+        </div>
+      </div>
+      <h2 class="section-title">Spend by service</h2>
+      ${renderBarRows(d.by_service)}
+      <h2 class="section-title">Spend by region</h2>
+      ${renderBarRows(d.by_region)}
+      <h2 class="section-title">Alarms this week</h2>
+      ${alarmsHtml}
+    `;
+    showView("digest-detail-view");
+  }
+
+  function showView(id) {
+    ["login-view", "dashboard-view", "digests-list-view", "digest-detail-view"].forEach((v) => {
+      document.getElementById(v).style.display = v === id ? "block" : "none";
+    });
+  }
+
   function showLogin() {
-    document.getElementById("login-view").style.display = "block";
-    document.getElementById("dashboard-view").style.display = "none";
+    showView("login-view");
   }
 
   function showDashboard() {
-    document.getElementById("login-view").style.display = "none";
-    document.getElementById("dashboard-view").style.display = "block";
+    showView("dashboard-view");
     loadPosts();
+  }
+
+  function showDigestsList() {
+    showView("digests-list-view");
+    loadDigestWeeks();
+  }
+
+  function signOut() {
+    sessionStorage.removeItem(TOKEN_KEY);
+    const params = new URLSearchParams({
+      client_id: CONFIG.appClientId,
+      logout_uri: CONFIG.redirectUri,
+    });
+    window.location.href = `${CONFIG.hostedUiDomain}/logout?${params}`;
   }
 
   document.getElementById("btn-google").addEventListener("click", () => {
@@ -138,14 +283,11 @@
   document.getElementById("btn-github").addEventListener("click", () => {
     window.location.href = hostedUiUrl("GitHubViaBridge");
   });
-  document.getElementById("btn-logout").addEventListener("click", () => {
-    sessionStorage.removeItem(TOKEN_KEY);
-    const params = new URLSearchParams({
-      client_id: CONFIG.appClientId,
-      logout_uri: CONFIG.redirectUri,
-    });
-    window.location.href = `${CONFIG.hostedUiDomain}/logout?${params}`;
-  });
+  document.getElementById("btn-logout").addEventListener("click", signOut);
+  document.getElementById("btn-logout-2").addEventListener("click", signOut);
+  document.getElementById("btn-digests").addEventListener("click", showDigestsList);
+  document.getElementById("btn-digests-back").addEventListener("click", showDashboard);
+  document.getElementById("btn-digest-detail-back").addEventListener("click", showDigestsList);
 
   (async function init() {
     const params = new URLSearchParams(window.location.search);
