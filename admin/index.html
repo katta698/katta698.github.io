@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="robots" content="noindex,nofollow"/>
+<title>Admin</title>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; max-width: 640px; margin: 60px auto; padding: 0 20px; color: #0f1111; }
+  h1 { font-size: 20px; }
+  .login-card { text-align: center; padding: 40px 20px; }
+  button { font-size: 14px; padding: 10px 18px; border-radius: 6px; border: 1px solid #d0d0d0; background: #fff; cursor: pointer; margin: 6px; }
+  button:hover { background: #f5f5f5; }
+  .post-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border: 1px solid #e5e5e5; border-radius: 6px; margin-bottom: 8px; }
+  .badge { font-size: 11px; padding: 3px 8px; border-radius: 4px; flex-shrink: 0; }
+  .badge.draft { background: #fff3cd; color: #7a5a00; }
+  .badge.published { background: #d4edda; color: #155724; }
+  .title { flex: 1; font-size: 14px; }
+  .date { font-size: 12px; color: #6c757d; }
+  #status { font-size: 13px; color: #6c757d; margin-top: 12px; }
+</style>
+</head>
+<body>
+
+<div id="login-view" class="login-card" style="display:none;">
+  <h1>Sign in</h1>
+  <button id="btn-google">Continue with Google</button>
+  <button id="btn-github">Continue with GitHub</button>
+</div>
+
+<div id="dashboard-view" style="display:none;">
+  <h1>Posts</h1>
+  <div id="post-list"></div>
+  <div id="status"></div>
+</div>
+
+<script src="config.js"></script>
+<script>
+  const TOKEN_KEY = "admin_id_token";
+
+  function hostedUiUrl(identityProvider) {
+    const params = new URLSearchParams({
+      client_id: CONFIG.appClientId,
+      response_type: "code",
+      scope: "openid email profile",
+      redirect_uri: CONFIG.redirectUri,
+      identity_provider: identityProvider,
+    });
+    return `${CONFIG.hostedUiDomain}/oauth2/authorize?${params}`;
+  }
+
+  async function exchangeCodeForToken(code) {
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: CONFIG.appClientId,
+      code,
+      redirect_uri: CONFIG.redirectUri,
+    });
+    const resp = await fetch(`${CONFIG.hostedUiDomain}/oauth2/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (!resp.ok) throw new Error("token exchange failed");
+    const data = await resp.json();
+    sessionStorage.setItem(TOKEN_KEY, data.id_token);
+  }
+
+  async function loadPosts() {
+    const token = sessionStorage.getItem(TOKEN_KEY);
+    const resp = await fetch(`${CONFIG.adminApiUrl}/posts`, {
+      headers: { Authorization: token },
+    });
+    if (!resp.ok) {
+      showLogin();
+      return;
+    }
+    const { posts } = await resp.json();
+    const list = document.getElementById("post-list");
+    list.innerHTML = "";
+    posts.forEach((p) => {
+      const row = document.createElement("div");
+      row.className = "post-row";
+      row.innerHTML = `
+        <span class="badge ${p.status}">${p.status}</span>
+        <span class="title">${p.title}</span>
+        <span class="date">${p.date}</span>
+        ${p.status === "draft" ? `<button data-slug="${p.slug}" class="publish-btn">Publish</button>` : ""}
+      `;
+      list.appendChild(row);
+    });
+    document.querySelectorAll(".publish-btn").forEach((btn) => {
+      btn.addEventListener("click", () => publish(btn.dataset.slug));
+    });
+  }
+
+  async function publish(slug) {
+    const token = sessionStorage.getItem(TOKEN_KEY);
+    const status = document.getElementById("status");
+    status.textContent = `Publishing ${slug}...`;
+    const resp = await fetch(`${CONFIG.adminApiUrl}/publish`, {
+      method: "POST",
+      headers: { Authorization: token, "Content-Type": "application/json" },
+      body: JSON.stringify({ slug }),
+    });
+    status.textContent = resp.ok
+      ? `Publish triggered for ${slug}. Check GitHub Actions for progress.`
+      : `Failed to trigger publish for ${slug}.`;
+  }
+
+  function showLogin() {
+    document.getElementById("login-view").style.display = "block";
+    document.getElementById("dashboard-view").style.display = "none";
+  }
+
+  function showDashboard() {
+    document.getElementById("login-view").style.display = "none";
+    document.getElementById("dashboard-view").style.display = "block";
+    loadPosts();
+  }
+
+  document.getElementById("btn-google").addEventListener("click", () => {
+    window.location.href = hostedUiUrl("Google");
+  });
+  document.getElementById("btn-github").addEventListener("click", () => {
+    window.location.href = hostedUiUrl("GitHubViaBridge");
+  });
+
+  (async function init() {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    if (code) {
+      await exchangeCodeForToken(code);
+      window.history.replaceState({}, "", CONFIG.redirectUri);
+      showDashboard();
+    } else if (sessionStorage.getItem(TOKEN_KEY)) {
+      showDashboard();
+    } else {
+      showLogin();
+    }
+  })();
+</script>
+</body>
+</html>
