@@ -897,7 +897,6 @@ def nav_html(show_search=True, show_audio=False):
   <ul class="nav-links">
     <li><a href="/">Home</a></li>
     <li><a href="/blog/" class="active">Blog</a></li>
-    <li><a href="/blog/digests/">Digests</a></li>
     <li><a href="/resume.html">Resume</a></li>
   </ul>
 {search_btn}
@@ -911,7 +910,6 @@ def nav_html(show_search=True, show_audio=False):
 </nav>
 <div class="mobile-menu" id="mobile-menu">
   <a href="/">Home</a>
-  <a href="/blog/digests/">Digests</a>
   <a href="/resume.html">Resume</a>
   <button class="theme-toggle" id="nav-theme-btn-mobile" aria-label="Toggle dark mode">
     <span id="theme-icon-moon-m">🌙</span><span id="theme-label-text-m">Dark</span>
