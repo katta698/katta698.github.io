@@ -1,10 +1,10 @@
 ---
-title: "AWS Architecture Series #4 â€” EventBridge: The Enterprise Event Bus Enterprises Get Wrong"
+title: "AWS Architecture Series #4 — EventBridge: The Enterprise Event Bus Enterprises Get Wrong"
 date: 2026-07-28
 slug: aws-architecture-eventbridge-event-driven
 labels: [AWS, Architecture, "AWS Architecture Series"]
-problem: "Engineering teams bolt on EventBridge as a notification layer rather than a decoupling layer â€” services still call each other synchronously, then fire an event as an afterthought. The tight coupling remains; they have only added a second communication channel to debug."
-builds: "arch-003-eventbridge event-driven architecture: custom event bus, rules, schema registry, archive/replay, DLQ, and cross-account routing â€” the complete pattern that actually removes coupling instead of masking it."
+problem: "Engineering teams bolt on EventBridge as a notification layer rather than a decoupling layer — services still call each other synchronously, then fire an event as an afterthought. The tight coupling remains; they have only added a second communication channel to debug."
+builds: "arch-003-eventbridge event-driven architecture: custom event bus, rules, schema registry, archive/replay, DLQ, and cross-account routing — the complete pattern that actually removes coupling instead of masking it."
 catch: "The order in which you introduce EventBridge matters more than whether you introduce it. Putting PutEvents after your synchronous calls leaves the blast radius intact. Putting it instead of them is the architecture."
 ---
 <div id="jk-post">
@@ -102,67 +102,67 @@ catch: "The order in which you introduce EventBridge matters more than whether y
       An e-commerce platform processes orders through a monolithic Order Service. When a customer places an order, the service makes four synchronous HTTP calls: reserve inventory, send a confirmation email, write an analytics event, and trigger fulfilment. Four calls, four failure modes, four teams whose uptime directly affects checkout conversion.
     </p>
     <p>
-      The Notifications team deploys a buggy release on Black Friday. Checkout fails for 40 minutes. The Analytics team's Kinesis stream backs up during a flash sale; every checkout request slows by 800ms waiting for a write that a customer never sees. Adding a fifth consumer â€” a fraud scoring service â€” requires a code change in Order Service, a new HTTP client, a new retry policy, and a coordinated deploy with the fraud team.
+      The Notifications team deploys a buggy release on Black Friday. Checkout fails for 40 minutes. The Analytics team's Kinesis stream backs up during a flash sale; every checkout request slows by 800ms waiting for a write that a customer never sees. Adding a fifth consumer — a fraud scoring service — requires a code change in Order Service, a new HTTP client, a new retry policy, and a coordinated deploy with the fraud team.
     </p>
     <p>
-      The team decides to adopt Amazon EventBridge. They add <code class="inline">events.PutEvents()</code> at the end of the order handler. Now the order saves to the database, calls Inventory synchronously, calls Notifications synchronously, calls Analytics synchronously â€” and then also fires an event. They have <strong>added a sixth communication channel</strong> without removing any of the original five. The blast radius is unchanged.
+      The team decides to adopt Amazon EventBridge. They add <code class="inline">events.PutEvents()</code> at the end of the order handler. Now the order saves to the database, calls Inventory synchronously, calls Notifications synchronously, calls Analytics synchronously — and then also fires an event. They have <strong>added a sixth communication channel</strong> without removing any of the original five. The blast radius is unchanged.
     </p>
 
     <div class="callout amber">
       <strong>EventBridge does not reduce coupling by being present</strong>
-      <p>EventBridge reduces coupling when services that previously received direct calls now only receive events â€” and the producer has no knowledge of who those consumers are. Adding PutEvents alongside existing synchronous calls is instrumentation, not architecture. The decoupling happens when you replace the calls, not supplement them.</p>
+      <p>EventBridge reduces coupling when services that previously received direct calls now only receive events — and the producer has no knowledge of who those consumers are. Adding PutEvents alongside existing synchronous calls is instrumentation, not architecture. The decoupling happens when you replace the calls, not supplement them.</p>
     </div>
   </div>
 
   <div class="section" id="architecture">
     <h2>Architecture</h2>
     <p>
-      EventBridge routes events from producers to consumers through rules on an event bus. The producer calls <code class="inline">PutEvents</code> with a structured JSON payload; EventBridge evaluates every rule on the target bus in parallel and delivers matching events to each rule's targets. The producer is finished at the point of <code class="inline">PutEvents</code> â€” it does not wait for consumers, does not know which rules matched, and does not know which targets received the event.
+      EventBridge routes events from producers to consumers through rules on an event bus. The producer calls <code class="inline">PutEvents</code> with a structured JSON payload; EventBridge evaluates every rule on the target bus in parallel and delivers matching events to each rule's targets. The producer is finished at the point of <code class="inline">PutEvents</code> — it does not wait for consumers, does not know which rules matched, and does not know which targets received the event.
     </p>
 
     <figure class="screenshot">
       <img src="/blog/assets/diagrams/arch-004-before-after.svg" alt="Diagram showing the before state (Order Service making four synchronous HTTP calls to Inventory, Notifications, Analytics, and Fulfilment) versus the after state (Order Service publishing one event to EventBridge which routes to four independent targets via rules)" />
-      <figcaption>Before/after: synchronous fan-out versus EventBridge fan-out. The topology looks similar, but the dependency direction reverses. In the before state, Order Service depends on all four consumers. In the after state, the four consumers depend on EventBridge â€” Order Service depends on nothing downstream.</figcaption>
+      <figcaption>Before/after: synchronous fan-out versus EventBridge fan-out. The topology looks similar, but the dependency direction reverses. In the before state, Order Service depends on all four consumers. In the after state, the four consumers depend on EventBridge — Order Service depends on nothing downstream.</figcaption>
     </figure>
 
     <h3>Event bus and event structure</h3>
     <p>
-      EventBridge has a default event bus that receives events from AWS services (EC2 state changes, S3 object operations, CloudTrail API calls, and more than 200 other sources). For application events, create a <strong>custom event bus</strong>. Custom buses are isolated from the default bus, support resource-based policies for cross-account access, and have cleaner rule namespacing. One bus per domain boundary â€” Orders, Auth, Inventory â€” is a reasonable starting point.
+      EventBridge has a default event bus that receives events from AWS services (EC2 state changes, S3 object operations, CloudTrail API calls, and more than 200 other sources). For application events, create a <strong>custom event bus</strong>. Custom buses are isolated from the default bus, support resource-based policies for cross-account access, and have cleaner rule namespacing. One bus per domain boundary — Orders, Auth, Inventory — is a reasonable starting point.
     </p>
     <p>
-      Every event has a fixed envelope: <code class="inline">source</code> (who produced it), <code class="inline">detail-type</code> (what happened), and <code class="inline">detail</code> (the payload, up to 256 KB as JSON). Rules match on <code class="inline">source</code>, <code class="inline">detail-type</code>, and fields inside <code class="inline">detail</code>. The schema of the <code class="inline">detail</code> object is yours to define â€” EventBridge does not validate it unless you enable schema discovery.
+      Every event has a fixed envelope: <code class="inline">source</code> (who produced it), <code class="inline">detail-type</code> (what happened), and <code class="inline">detail</code> (the payload, up to 256 KB as JSON). Rules match on <code class="inline">source</code>, <code class="inline">detail-type</code>, and fields inside <code class="inline">detail</code>. The schema of the <code class="inline">detail</code> object is yours to define — EventBridge does not validate it unless you enable schema discovery.
     </p>
 
     <figure class="screenshot">
       <img src="/blog/assets/diagrams/arch-004-components.svg" alt="Diagram showing the full EventBridge component architecture: producers (Order Service, Auth Service, AWS Services) sending events to a custom event bus, which routes through rules to targets (SQS, Lambda, Kinesis, Step Functions), with Schema Registry above the bus and Event Archive below, and DLQ on each target" />
-      <figcaption>Full component architecture. The custom event bus is the centre. Schema Registry validates and documents what flows through it. Event Archive persists everything for replay. Rules route to targets â€” each target has its own DLQ so a consumer failure does not affect other consumers.</figcaption>
+      <figcaption>Full component architecture. The custom event bus is the centre. Schema Registry validates and documents what flows through it. Event Archive persists everything for replay. Rules route to targets — each target has its own DLQ so a consumer failure does not affect other consumers.</figcaption>
     </figure>
 
     <h3>Rules and targets</h3>
     <p>
-      A rule is a filter plus a target list. The filter is an event pattern â€” a JSON object that specifies values to match on fields in the event envelope. EventBridge evaluates all rules on the bus whenever an event arrives; there is no concept of routing priority. An event that matches three rules is delivered to all three independently.
+      A rule is a filter plus a target list. The filter is an event pattern — a JSON object that specifies values to match on fields in the event envelope. EventBridge evaluates all rules on the bus whenever an event arrives; there is no concept of routing priority. An event that matches three rules is delivered to all three independently.
     </p>
     <p>
-      Each rule can route to up to five targets. Targets include Lambda functions, SQS queues, SNS topics, Kinesis Data Streams, Step Functions state machines, API destinations (arbitrary HTTPS endpoints), and other EventBridge buses. EventBridge delivers events to each target with at-least-once semantics â€” if delivery fails, EventBridge retries for up to 24 hours before routing to the rule's dead-letter queue (if configured).
+      Each rule can route to up to five targets. Targets include Lambda functions, SQS queues, SNS topics, Kinesis Data Streams, Step Functions state machines, API destinations (arbitrary HTTPS endpoints), and other EventBridge buses. EventBridge delivers events to each target with at-least-once semantics — if delivery fails, EventBridge retries for up to 24 hours before routing to the rule's dead-letter queue (if configured).
     </p>
 
     <div class="callout">
       <strong>Input transformation: decouple event shape from consumer shape</strong>
-      <p>Each target can have an input transformer that reshapes the event before delivery. A Lambda function expecting a specific payload schema does not need to know the EventBridge envelope format â€” the transformer extracts the fields it needs. This lets you evolve the event schema without changing consumer code, and lets consumers with different expected formats subscribe to the same event.</p>
+      <p>Each target can have an input transformer that reshapes the event before delivery. A Lambda function expecting a specific payload schema does not need to know the EventBridge envelope format — the transformer extracts the fields it needs. This lets you evolve the event schema without changing consumer code, and lets consumers with different expected formats subscribe to the same event.</p>
     </div>
 
     <div class="grid-2">
       <div class="card">
         <h4>Schema Registry</h4>
-        <p>EventBridge can auto-discover schemas from events flowing through a bus and store them as OpenAPI 3.0 documents. Once discovered, you generate typed code bindings (Java, Python, TypeScript, Go) directly from the console or CLI â€” no manual schema maintenance. Teams consuming an event import the generated types rather than parsing untyped JSON. Schema versioning is tracked automatically.</p>
+        <p>EventBridge can auto-discover schemas from events flowing through a bus and store them as OpenAPI 3.0 documents. Once discovered, you generate typed code bindings (Java, Python, TypeScript, Go) directly from the console or CLI — no manual schema maintenance. Teams consuming an event import the generated types rather than parsing untyped JSON. Schema versioning is tracked automatically.</p>
       </div>
       <div class="card">
         <h4>Event Archive and Replay</h4>
-        <p>An archive captures all events matching a filter pattern, with configurable retention from 1 day to indefinite. Replay reprocesses archived events through the current rules â€” useful for backfilling a new consumer, recovering from a consumer bug without needing the producer to resend, or reproducing a production incident in a test environment against real event data.</p>
+        <p>An archive captures all events matching a filter pattern, with configurable retention from 1 day to indefinite. Replay reprocesses archived events through the current rules — useful for backfilling a new consumer, recovering from a consumer bug without needing the producer to resend, or reproducing a production incident in a test environment against real event data.</p>
       </div>
       <div class="card">
         <h4>Dead-Letter Queues</h4>
-        <p>Configure a DLQ (SQS queue) on each target, not on the bus. When EventBridge exhausts retries for a specific target, it routes the failed event to that target's DLQ with metadata about the failure. Each consumer has its own failure queue â€” a Lambda DLQ filling up does not affect SQS or Kinesis targets on the same rule.</p>
+        <p>Configure a DLQ (SQS queue) on each target, not on the bus. When EventBridge exhausts retries for a specific target, it routes the failed event to that target's DLQ with metadata about the failure. Each consumer has its own failure queue — a Lambda DLQ filling up does not affect SQS or Kinesis targets on the same rule.</p>
       </div>
       <div class="card">
         <h4>Cross-Account Routing</h4>
@@ -199,7 +199,7 @@ catch: "The order in which you introduce EventBridge matters more than whether y
         <strong>One event bus per domain boundary, not one per service</strong>
       </div>
       <div class="challenge-body">
-        <p>A common mistake is creating one bus per microservice â€” an OrderService bus, a PaymentService bus, an InventoryService bus. This recreates the coupling in bus form: consumers must know which service bus to subscribe to, and moving logic between services requires migrating bus subscriptions. Bus per domain â€” Orders, Fulfilment, Platform â€” keeps the event namespace stable even as services are split, merged, or renamed.</p>
+        <p>A common mistake is creating one bus per microservice — an OrderService bus, a PaymentService bus, an InventoryService bus. This recreates the coupling in bus form: consumers must know which service bus to subscribe to, and moving logic between services requires migrating bus subscriptions. Bus per domain — Orders, Fulfilment, Platform — keeps the event namespace stable even as services are split, merged, or renamed.</p>
         <span class="fix-label">Rule</span>
         <p>Name the bus after the domain, not the producer. If two services both emit events that consumers treat as part of the same business domain, they belong on the same bus. If an event could plausibly come from either service and consumers should not care which, the domain boundary is the right granularity.</p>
       </div>
@@ -211,9 +211,9 @@ catch: "The order in which you introduce EventBridge matters more than whether y
         <strong>Event-carried state transfer vs event notification</strong>
       </div>
       <div class="challenge-body">
-        <p>An event notification tells consumers something happened: <code class="inline">{"source": "orders", "detail-type": "order.placed", "detail": {"orderId": "abc123"}}</code>. A consumer that needs the order contents must call the Orders API to fetch them â€” now there is a synchronous dependency through the back door. Event-carried state transfer includes the data consumers need: <code class="inline">{"orderId": "abc123", "customerId": "...", "items": [...], "total": 142.50}</code>. Consumers are truly independent.</p>
+        <p>An event notification tells consumers something happened: <code class="inline">{"source": "orders", "detail-type": "order.placed", "detail": {"orderId": "abc123"}}</code>. A consumer that needs the order contents must call the Orders API to fetch them — now there is a synchronous dependency through the back door. Event-carried state transfer includes the data consumers need: <code class="inline">{"orderId": "abc123", "customerId": "...", "items": [...], "total": 142.50}</code>. Consumers are truly independent.</p>
         <span class="fix-label">Decision signal</span>
-        <p>If more than one consumer would need to call the producer's API after receiving the event, add that data to the event payload. The 256 KB limit is generous for most transactional events. For large payloads (document content, images, large arrays), put the object in S3 and include the S3 key in the event â€” consumers fetch the object directly rather than through the producer.</p>
+        <p>If more than one consumer would need to call the producer's API after receiving the event, add that data to the event payload. The 256 KB limit is generous for most transactional events. For large payloads (document content, images, large arrays), put the object in S3 and include the S3 key in the event — consumers fetch the object directly rather than through the producer.</p>
       </div>
     </div>
 
@@ -223,9 +223,9 @@ catch: "The order in which you introduce EventBridge matters more than whether y
         <strong>Ordering guarantees and idempotency</strong>
       </div>
       <div class="challenge-body">
-        <p>EventBridge provides at-least-once delivery â€” duplicates are possible, especially during retries. There is no guaranteed ordering between events: two events published milliseconds apart may arrive at a Lambda target in either order. If your consumer logic is not idempotent (processing an event twice produces a different result than processing it once), EventBridge will cause subtle bugs that are hard to reproduce because they only appear under retry conditions.</p>
+        <p>EventBridge provides at-least-once delivery — duplicates are possible, especially during retries. There is no guaranteed ordering between events: two events published milliseconds apart may arrive at a Lambda target in either order. If your consumer logic is not idempotent (processing an event twice produces a different result than processing it once), EventBridge will cause subtle bugs that are hard to reproduce because they only appear under retry conditions.</p>
         <span class="fix-label">Required pattern</span>
-        <p>Consumers must be idempotent. The standard approach is to include a unique event ID in the payload and use a DynamoDB conditional write â€” if the ID already exists in a processed-events table, skip the business logic and return success. For ordered processing (inventory reservation must precede fulfilment), use a Step Functions workflow triggered by the event rather than multiple Lambda consumers on the same event.</p>
+        <p>Consumers must be idempotent. The standard approach is to include a unique event ID in the payload and use a DynamoDB conditional write — if the ID already exists in a processed-events table, skip the business logic and return success. For ordered processing (inventory reservation must precede fulfilment), use a Step Functions workflow triggered by the event rather than multiple Lambda consumers on the same event.</p>
       </div>
     </div>
 
@@ -235,9 +235,9 @@ catch: "The order in which you introduce EventBridge matters more than whether y
         <strong>Schema governance across teams</strong>
       </div>
       <div class="challenge-body">
-        <p>EventBridge schema discovery is opt-in per bus. Without it, event schemas live in team wikis, Slack messages, and the institutional memory of the engineer who wrote the producer. Two consumers that both parse the same event diverge silently when the producer changes field names. Schema Registry with auto-discovery gives you a central, versioned source of truth â€” but discovery only captures schemas of events that actually flowed through the bus, which means a low-volume event type may not have a registered schema when a new consumer team needs it.</p>
+        <p>EventBridge schema discovery is opt-in per bus. Without it, event schemas live in team wikis, Slack messages, and the institutional memory of the engineer who wrote the producer. Two consumers that both parse the same event diverge silently when the producer changes field names. Schema Registry with auto-discovery gives you a central, versioned source of truth — but discovery only captures schemas of events that actually flowed through the bus, which means a low-volume event type may not have a registered schema when a new consumer team needs it.</p>
         <span class="fix-label">Governance pattern</span>
-        <p>Enable schema discovery on all custom buses. Supplement it with explicit schema registration for event types that are part of your platform contract â€” events that cross team or account boundaries. Treat the EventBridge Schema Registry as the API contract between teams: if it is not in the registry, it is not a supported event type.</p>
+        <p>Enable schema discovery on all custom buses. Supplement it with explicit schema registration for event types that are part of your platform contract — events that cross team or account boundaries. Treat the EventBridge Schema Registry as the API contract between teams: if it is not in the registry, it is not a supported event type.</p>
       </div>
     </div>
   </div>
@@ -281,7 +281,7 @@ catch: "The order in which you introduce EventBridge matters more than whether y
     <h2>Reference: EventBridge Rule with SQS Target and DLQ</h2>
     <p>A Terraform configuration that creates an EventBridge rule matching <code class="inline">order.placed</code> events, routes them to an SQS queue for the Inventory service, and configures a DLQ for failed deliveries:</p>
     <div class="code-block">
-      <div class="code-header"><span class="code-lang">Terraform â€” EventBridge Rule â†’ SQS with DLQ</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <div class="code-header"><span class="code-lang">Terraform — EventBridge Rule â†’ SQS with DLQ</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
       <pre><code>resource "aws_cloudwatch_event_bus" "orders" {
   name = "orders"
 }
@@ -328,18 +328,18 @@ resource "aws_cloudwatch_event_target" "inventory_sqs" {
   <div class="section" id="closing">
     <h2>Closing Thought</h2>
     <p>
-      Tight coupling is not a code problem. It is a <strong>deployment problem</strong>, an operational problem, and a team coordination problem. EventBridge solves it structurally â€” not by making failures invisible, but by making them bounded. A consumer failing affects only that consumer's DLQ, not the producer and not other consumers. A consumer team deploying does not require a joint release with the producer team.
+      Tight coupling is not a code problem. It is a <strong>deployment problem</strong>, an operational problem, and a team coordination problem. EventBridge solves it structurally — not by making failures invisible, but by making them bounded. A consumer failing affects only that consumer's DLQ, not the producer and not other consumers. A consumer team deploying does not require a joint release with the producer team.
     </p>
     <p>
       The common mistake is treating EventBridge as a notification layer added on top of an existing synchronous architecture. That pattern doubles the communication channels without reducing the blast radius of any one of them. The useful pattern is substitution: replace the synchronous call with an event, let the consumer subscribe, and resist the urge to add a synchronous fallback "just in case." The fallback recreates the coupling you are trying to remove.
     </p>
     <p>
-      <strong>Start with one domain boundary.</strong> Pick the downstream call that causes the most deployment friction â€” the one that forces joint releases, the one whose outages affect upstream conversion, the one where adding a new consumer requires a producer code change. Replace that call with an EventBridge event. Validate the pattern at one boundary before expanding. The architecture compounds; you do not need to do it all at once.
+      <strong>Start with one domain boundary.</strong> Pick the downstream call that causes the most deployment friction — the one that forces joint releases, the one whose outages affect upstream conversion, the one where adding a new consumer requires a producer code change. Replace that call with an EventBridge event. Validate the pattern at one boundary before expanding. The architecture compounds; you do not need to do it all at once.
     </p>
 
     <div class="callout">
       <strong>Next in this series</strong>
-      <p>Security â€” KMS key hierarchy for multi-account encryption: how to design Customer Managed Keys, key policies, and grants so that encryption is a platform service rather than a per-team implementation detail that drifts across accounts.</p>
+      <p>Security — KMS key hierarchy for multi-account encryption: how to design Customer Managed Keys, key policies, and grants so that encryption is a platform service rather than a per-team implementation detail that drifts across accounts.</p>
     </div>
   </div>
 
@@ -347,9 +347,9 @@ resource "aws_cloudwatch_event_target" "inventory_sqs" {
     <h2>Official AWS Reference</h2>
     <p>
       <a href="https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-what-is.html" target="_blank" rel="noopener">
-        AWS Documentation â€” Amazon EventBridge User Guide
+        AWS Documentation — Amazon EventBridge User Guide
       </a>
-      â€” covers event buses, rules, targets, event patterns, schema registry, archive and replay, and cross-account event routing. The event pattern syntax reference is particularly useful when building precise rule filters.
+      — covers event buses, rules, targets, event patterns, schema registry, archive and replay, and cross-account event routing. The event pattern syntax reference is particularly useful when building precise rule filters.
     </p>
   </div>
 
