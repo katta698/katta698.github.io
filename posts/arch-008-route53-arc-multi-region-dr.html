@@ -1,0 +1,197 @@
+---
+title: "AWS Architecture Series #8 — Route 53 ARC: Multi-Region DR That Actually Holds Up Under Pressure"
+date: 2026-08-01
+slug: aws-architecture-route53-arc-multi-region-dr
+labels: [AWS, Architecture, "AWS Architecture Series"]
+problem: "A payments platform runs active-passive across us-east-1 and us-west-2. During a regional impairment, their Route 53 failover took 8 minutes. Finance lost $2.4M. The post-mortem revealed the root cause: health checks that assumed the passive region was ready, and no mechanism to safely flip traffic without risking a split-brain state."
+builds: "A multi-region DR architecture using Route 53 ARC routing controls with safety rules and zonal autoshift for AZ-level isolation, with a clear separation between the control plane (cluster endpoints) and the data plane (your application traffic), so failover is fast, safe, and observable."
+catch: "ARC readiness checks are no longer available to new customers. If you were planning to use them for DR readiness monitoring, you need an alternative strategy — CloudWatch cross-region alarms, AWS Health events, and Synthetics canaries covering the same ground."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series · #008 · Resilience</div>
+  <h1 class="post-title">Route 53 ARC: Multi-Region DR That Actually Holds Up Under Pressure</h1>
+  <p class="post-subtitle">Routing controls give you a deterministic on/off switch for regional traffic. The hard part is designing the safety rules so a bad failover does not replace your regional problem with a global one.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>AWS Well-Architected · Resilience · Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A payments platform processes card authorisations across two AWS regions: us-east-1 (active) and us-west-2 (passive). Their RTO target is 3 minutes, RPO is 30 seconds. They have Aurora Global Database with sub-second replication, DynamoDB global tables, and Route 53 failover records. On paper it works. In the last regional impairment it took 8 minutes to complete failover — three times their SLA — and finance calculated $300K per minute in lost transaction volume.
+    </p>
+    <p>
+      The post-mortem found three failure modes stacked on top of each other. First, Route 53 health checks with a 30-second evaluation period meant the DNS change did not propagate until after clients had already started timing out. Second, the passive region was configured for 30% of production capacity — nobody had updated the Auto Scaling group targets in six months. Third, there was no mechanism to prevent both regions from being set to active simultaneously if an engineer ran the wrong runbook.
+    </p>
+    <p>
+      Each failure was real, but they had the same root cause: their multi-region architecture was a collection of independent components with no coordination layer. Route 53 ARC (Application Recovery Controller) is that coordination layer.
+    </p>
+
+    <div class="callout amber">
+      <strong>Health checks alone are not a failover strategy</strong>
+      <p>Standard Route 53 health checks react to what the DNS layer observes. ARC routing controls are proactive — an on/off switch you control directly, with safety rules that prevent unsafe states. Health checks tell you something broke. Routing controls give you a lever you trust in a crisis.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      ARC has two distinct recovery surfaces: multi-region recovery via routing controls, and multi-AZ recovery via zonal shift and zonal autoshift. They solve different problems and are operated independently.
+    </p>
+
+    <h3>Routing controls: the multi-region layer</h3>
+    <p>
+      A routing control is a simple boolean switch — ON or OFF. Each control is tied to a Route 53 routing control health check, which in turn drives a DNS record (typically a failover or weighted record). You flip the control through the ARC API; Route 53 updates the health check state, and DNS propagates.
+    </p>
+    <p>
+      The critical design point: routing control state is stored in an ARC <strong>cluster</strong> — a set of five regional endpoints spread across five AWS regions. Even if three of those five regional endpoints are unreachable, you can still read and write routing control state from the remaining two. This means your control plane survives a regional impairment, which is exactly when you need it most.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-008-arc-routing-controls.svg" alt="Diagram showing ARC cluster with 5 regional endpoints, routing control health checks tied to Route 53 DNS failover records, and traffic flowing from clients through Route 53 to active region application, with passive region standby" />
+      <figcaption>ARC routing control architecture. The cluster's five-region endpoint spread means control plane availability survives the regional impairment you're trying to recover from. State changes propagate to Route 53 health checks, which drive DNS failover records.</figcaption>
+    </figure>
+
+    <h3>Safety rules: preventing the worse outcome</h3>
+    <p>
+      The feature that turns ARC from "fast DNS switch" into "safe failover mechanism" is safety rules. There are two types:
+    </p>
+
+    <div class="grid-2">
+      <div class="card">
+        <h4>Assertion rules</h4>
+        <p>Assert that a minimum or maximum number of controls in a group are ON. Example: at least one region must always be active. This prevents you from accidentally turning off both regions. You define it as <em>"minimum 1 of 2 routing controls must be ON"</em> and ARC blocks any state change that would violate it.</p>
+      </div>
+      <div class="card">
+        <h4>Gating rules</h4>
+        <p>Gate a state change on a prerequisite condition. Example: the standby region's routing control can only be turned ON if a gating control (representing passive region health) is also ON. This prevents flipping traffic to a region that isn't ready to serve it.</p>
+      </div>
+    </div>
+
+    <p>
+      For the payments platform, the critical safety rule is: <strong>exactly one of the two regional routing controls can be ON at any time</strong>. This makes split-brain impossible by design rather than by convention.
+    </p>
+
+    <div class="callout green">
+      <strong>Safety rules are enforced at the cluster level</strong>
+      <p>Safety rule evaluation happens inside the ARC cluster, not in your application code. You cannot bypass a safety rule by calling the API directly — the cluster rejects the state change. This makes them genuinely reliable during a high-stress incident when engineers are most likely to make mistakes.</p>
+    </div>
+
+    <h3>Zonal shift and zonal autoshift: the AZ layer</h3>
+    <p>
+      Not every impairment is regional. A bad deployment, a noisy-neighbour compute issue, or an isolated AZ network event should not require a full region failover. ARC's zonal shift addresses this with a separate mechanism.
+    </p>
+    <p>
+      A <strong>zonal shift</strong> temporarily moves traffic away from a specific AZ to the remaining healthy AZs in the same region. You initiate it manually with an expiration you set (up to 3 days, extendable). The shift works at the load balancer level — ARC integrates with ALB and NLB to mark an AZ unhealthy, causing the load balancer to stop routing to targets in that AZ.
+    </p>
+    <p>
+      <strong>Zonal autoshift</strong> is the same mechanism but automated: AWS uses internal telemetry — network metrics, EC2 data, ELB signals — to detect AZ-level impairments before they become customer-visible. When it detects a potential issue, it automatically initiates a zonal shift on your behalf. No human action required. You opt in per resource.
+    </p>
+
+    <div class="callout amber">
+      <strong>Zonal shift is temporary by design</strong>
+      <p>When you start a zonal shift, you must set an expiration. If you forget to extend it, traffic returns to the impaired AZ when the expiration passes. Build an extension step into your runbook, or use zonal autoshift (which AWS manages end-to-end) for AZ-level events.</p>
+    </div>
+
+    <h3>What about readiness checks?</h3>
+    <p>
+      ARC historically included readiness checks — a feature that continually monitored whether your passive region's resource capacity, quotas, and routing configuration matched production. As of 2025, readiness checks are <strong>no longer available to new customers</strong>. Existing customers can continue using them, but new architectures cannot rely on them.
+    </p>
+    <p>
+      For new deployments, cover the same ground with:
+    </p>
+    <ul>
+      <li><strong>CloudWatch cross-region alarms</strong> — monitor Auto Scaling group sizes, ALB target group healthy host count, and RDS replica lag in the passive region</li>
+      <li><strong>AWS Health events</strong> (via EventBridge) — detect service quota exhaustion or capacity signals in the passive region before you need it</li>
+      <li><strong>CloudWatch Synthetics canaries</strong> — smoke-test the passive region's endpoints on a schedule so you know it responds before you flip traffic to it</li>
+      <li><strong>Infrastructure parity checks in CI</strong> — Terraform plan drift detection or AWS Config conformance packs to catch configuration skew between regions before an incident</li>
+    </ul>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <p>
+      The payments platform's 8-minute failover had nothing to do with DNS propagation speed. It had everything to do with the absence of a control plane that was independent of the data plane failure. When us-east-1 was impaired, the tools they needed to execute recovery were themselves partially impaired. ARC's cluster design solves this directly: the five-region endpoint spread means the control plane operates even when the region you're failing away from is unavailable.
+    </p>
+
+    <div class="grid-2">
+      <div class="card">
+        <h4>Control plane availability</h4>
+        <p>ARC cluster endpoints span five AWS regions. The cluster uses a quorum model — two of five endpoints are sufficient to read and write routing control state. A single-region impairment takes out at most one endpoint, leaving four available. You can always execute failover.</p>
+      </div>
+      <div class="card">
+        <h4>Deterministic state transitions</h4>
+        <p>Routing controls are ON or OFF with no intermediate states. Combined with safety rules, every possible state change either succeeds (and is safe by rule definition) or is rejected. No partially-flipped DNS configurations, no ambiguous health check states, no race conditions between engineers running concurrent runbook steps.</p>
+      </div>
+      <div class="card">
+        <h4>Separation of concerns</h4>
+        <p>Zonal shift handles AZ-level events without touching your multi-region routing. Regional failover via routing controls handles region-level events without affecting AZ-level configuration. The two layers compose cleanly — an AZ shift in your passive region doesn't block you from flipping regional traffic to it.</p>
+      </div>
+      <div class="card">
+        <h4>Observability over hope</h4>
+        <p>ARC publishes routing control state changes to CloudWatch Events. You can build a dashboard that shows current routing state across regions, when the last state change happened, and who made it. Failover history becomes auditable.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <h3>1. One cluster per environment, not one per application</h3>
+    <p>
+      An ARC cluster is a regional control plane, not an application-scoped resource. Create one cluster per environment (production, staging) and put all your application routing controls on it. Multiple control panels on a single cluster give you logical separation without the operational overhead of managing multiple clusters. A cluster costs approximately $2.50/hour — shared across all applications in that environment.
+    </p>
+
+    <h3>2. Safety rules before routing controls</h3>
+    <p>
+      Design your safety rules before you create routing controls. The canonical rule for active-passive DR is an assertion rule with <code>MinimumControls: 1</code> and <code>MaximumControls: 1</code> — exactly one region active at any time. Add a second assertion with <code>MinimumControls: 1</code> to ensure you cannot accidentally deactivate all regions. These two rules together eliminate both split-brain and complete blackout.
+    </p>
+
+    <h3>3. Region switch for orchestrated failover</h3>
+    <p>
+      ARC's Region switch feature (added after the original routing controls) provides a higher-level abstraction: you define a recovery plan that captures the correct sequence of steps — stop writes to primary, promote Aurora replica, flip routing controls, validate canary — and Region switch executes them in order. For complex applications with multiple dependencies, Region switch reduces the risk of runbook step ordering errors during a high-pressure incident.
+    </p>
+
+    <h3>4. Opt into zonal autoshift selectively</h3>
+    <p>
+      Zonal autoshift is powerful but has implications: it can shift traffic automatically without human approval. For most workloads this is the right default. For workloads with strict compliance requirements where any topology change must go through a change management process, opt out and use manual zonal shift instead. The configuration is per resource.
+    </p>
+
+    <h3>5. Passive region capacity is a process problem, not a tool problem</h3>
+    <p>
+      ARC cannot ensure your passive region has enough capacity to handle production load. That is your infrastructure parity process. Common patterns: run passive at 100% of active capacity (expensive, but eliminates cold-start scaling risk), use a scheduled warm-up that scales passive to production size 15 minutes into a regional event, or accept a gradual scale-out as part of your RTO budget. The payments platform's 8-minute failover was partially caused by a 6-minute Auto Scaling warmup period. ARC cut the routing time to under 60 seconds; the remaining 5 minutes was capacity.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Multi-region DR is not primarily a networking problem. It is a coordination problem: how do you execute a state change across two regions, under partial failure conditions, without introducing a worse failure? Route 53 ARC's routing controls and safety rules give you a control plane that is explicitly designed for this. The cluster's five-region spread means it works when you need it. Safety rules mean the state machine only allows valid transitions.
+    </p>
+    <p>
+      The tool does not remove the hard parts — passive region capacity management, database promotion sequencing, cache warming, downstream dependency cutover. Those are still yours to design. What ARC removes is the risk that the traffic flip itself goes wrong: that you end up with both regions active, or neither, or a half-propagated DNS state that you can't observe. For a $300K-per-minute workload, that certainty is worth the operational overhead of setting it up.
+    </p>
+
+    <div class="callout blue">
+      <strong>Test your runbook before you need it</strong>
+      <p>ARC includes a practice runbook feature. Run a failover drill quarterly — flip traffic to the passive region, validate the application, flip back. Each drill surfaces capacity gaps, runbook errors, and configuration drift you cannot find any other way. The payments platform now drills monthly; their last tested failover time was 94 seconds.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/r53recovery/latest/dg/what-is-route53-recovery.html" target="_blank" rel="noopener">Amazon Application Recovery Controller (ARC) — Developer Guide</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
