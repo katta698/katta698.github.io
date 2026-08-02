@@ -1118,6 +1118,19 @@ def build_index_page(posts):
 
     # 3. Arch series for progress tracker + mini-feed
     arch_posts = [p for p in posts if "AWS Architecture Series" in p["tags"]]
+
+    # Lab series for progress tracker — extract week number from slug
+    import re as _re
+    def _week_num(p):
+        m = _re.search(r'week-(\d+)', p["slug"])
+        return int(m.group(1)) if m else 999
+    lab_posts = sorted([p for p in posts if "AWS Weekly Lab" in p["tags"]], key=_week_num)
+    lab_series_json = json.dumps([
+        {"n": _week_num(p), "slug": p["slug"],
+         "title": _re.sub(r'^Week \d+\s*[-–—]\s*', '', p["title"]),
+         "date": p["date_fmt"]}
+        for p in lab_posts
+    ])
     arch_series_json = json.dumps([
         {"n": i+1, "slug": p["slug"], "title": p["title"].split(" — ", 1)[-1] if " — " in p["title"] else p["title"], "date": p["date_fmt"]}
         for i, p in enumerate(reversed(arch_posts))
@@ -1395,6 +1408,58 @@ def build_index_page(posts):
         for(var i=0;i<ARCH.length;i++){{ if(!read.includes(ARCH[i].n)){{ next=ARCH[i]; break; }} }}
         var el = document.getElementById('sp-next');
         if(next){{ el.href='/blog/'+next.slug+'/'; el.textContent='#'+next.n+' Next →'; }}
+        else{{ el.textContent='✓ All done!'; el.removeAttribute('href'); }}
+      }}
+      render();
+    }})();
+    </script>
+
+    <!-- ① Lab Series Progress -->
+    <div class="sidebar-card" id="lab-progress-widget">
+      <div class="sidebar-title">Weekly lab progress</div>
+      <div id="lp-dots" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
+      <div style="height:4px;background:var(--border);border-radius:4px;margin-bottom:9px;overflow:hidden">
+        <div id="lp-bar" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width .4s ease"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--text-muted)">
+        <span><strong id="lp-count" style="color:var(--text)">0</strong> of {len(lab_posts)} weeks done</span>
+        <a id="lp-next" href="#" style="color:var(--orange);text-decoration:none;font-size:11px"></a>
+      </div>
+      <div style="font-size:10.5px;color:var(--text-muted);margin-top:9px;padding-top:9px;border-top:0.5px solid var(--border)">Stored in your browser · picks up where you left off</div>
+    </div>
+    <script>
+    (function(){{
+      var LAB = {lab_series_json};
+      var KEY = 'lab-read-v1';
+      function load(){{ try{{ return JSON.parse(localStorage.getItem(KEY)||'[]'); }}catch(e){{ return []; }} }}
+      function save(r){{ try{{ localStorage.setItem(KEY,JSON.stringify(r)); }}catch(e){{}} }}
+      function render(){{
+        var read = load();
+        var wrap = document.getElementById('lp-dots');
+        if(!wrap) return;
+        wrap.innerHTML = '';
+        LAB.forEach(function(p){{
+          var d = document.createElement('a');
+          d.href = '/blog/'+p.slug+'/';
+          d.title = 'Week '+p.n+': '+p.title;
+          var isRead = read.includes(p.n);
+          d.style.cssText = 'width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:1.5px solid '+(isRead?'var(--orange)':'var(--border)')+';color:'+(isRead?'#1D2322':'var(--text-muted)')+';background:'+(isRead?'var(--orange)':'transparent')+';text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
+          d.textContent = p.n;
+          d.addEventListener('click',function(e){{
+            e.preventDefault();
+            var r=load(); var i=r.indexOf(p.n);
+            if(i>-1)r.splice(i,1); else r.push(p.n);
+            save(r); render();
+          }});
+          wrap.appendChild(d);
+        }});
+        var pct = Math.round(read.length/LAB.length*100);
+        document.getElementById('lp-bar').style.width = pct+'%';
+        document.getElementById('lp-count').textContent = read.length;
+        var next = null;
+        for(var i=0;i<LAB.length;i++){{ if(!read.includes(LAB[i].n)){{ next=LAB[i]; break; }} }}
+        var el = document.getElementById('lp-next');
+        if(next){{ el.href='/blog/'+next.slug+'/'; el.textContent='Wk '+next.n+' Next →'; }}
         else{{ el.textContent='✓ All done!'; el.removeAttribute('href'); }}
       }}
       render();
