@@ -1465,7 +1465,11 @@ def main():
         cached = existing_posts_json.get(f"/blog/{slug}/") if entry.get("externally_built") else None
         if cached:
             title = cached.get("title", title)
-            tags = cached["tags"].split(" · ") if cached.get("tags") else tags
+            # Always re-derive tags from labels in the source file so the pill
+            # counts stay accurate if labels are added or corrected later.
+            # Only fall back to cached tags if the source file has no labels.
+            if not entry.get("labels"):
+                tags = cached["tags"].split(" · ") if cached.get("tags") else tags
             excerpt_text = cached.get("excerpt") or excerpt(body_html)
         else:
             excerpt_text = excerpt(body_html)
