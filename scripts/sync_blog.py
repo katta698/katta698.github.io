@@ -281,32 +281,6 @@ CHATGPT_MARKERS = [
 
 # ── Tag detection ─────────────────────────────────────────────
 MAX_TAGS = 3
-
-# ── Post card thumbnail SVG by topic ──────────────────────────────────────
-THUMB_CONFIG = {
-    "AWS Architecture Series": ("#1a2040", "#2d3a6e", "🏗", "Arch Series"),
-    "AWS Weekly Lab":          ("#0f2a1e", "#1a4a30", "🧪", "Weekly Lab"),
-    "AWS":                     ("#1a1a2e", "#2a2a4e", "☁", "AWS"),
-    "Terraform":               ("#1f1228", "#3a1f50", "🔧", "Terraform"),
-    "Kubernetes":              ("#0d2233", "#1a3a55", "⎈",  "Kubernetes"),
-    "Tech":                    ("#1a1f2e", "#2a2f4e", "💻", "Tech"),
-    "Career":                  ("#1a1a1a", "#2f2f2f", "📈", "Career"),
-    "Health":                  ("#0f2018", "#1a3828", "🌱", "Health"),
-    "Life":                    ("#1a1510", "#2f2318", "✨", "Life"),
-}
-
-def card_thumb(tags, post_num=None):
-    tag = next((t for t in tags if t in THUMB_CONFIG), "Tech")
-    c1, c2, icon, label = THUMB_CONFIG[tag]
-    num_html = f'<div style="font-size:13px;font-weight:800;color:#fff;margin-top:2px">#{post_num}</div>' if post_num else ''
-    return (
-        f'<div class="post-thumb" style="background:linear-gradient(135deg,{c1} 0%,{c2} 100%)">'
-        f'<div style="text-align:center;padding:10px;position:relative;z-index:1">'
-        f'<div style="font-size:26px;line-height:1">{icon}</div>'
-        f'<div style="font-size:8.5px;font-weight:700;color:rgba(255,255,255,.55);letter-spacing:.07em;text-transform:uppercase;margin-top:4px">{label}</div>'
-        f'{num_html}</div></div>'
-    )
-
 CATEGORY_ORDER = ["All", "AWS Architecture Series", "AWS Weekly Lab", "AWS", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
 
 NAV_SVG = """<svg width="30" height="30" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
@@ -1077,19 +1051,12 @@ def build_index_page(posts):
     for p in posts:
         tag1 = p["tags"][0] if p["tags"] else "Tech"
         tags_data = " ".join(p["tags"]).lower()
-        # extract arch/lab series number for the thumbnail
-        import re as _re2
-        arch_m = _re2.search(r'#(\d+)', p["title"])
-        lab_m  = _re2.search(r'week[- ](\d+)', p["title"], _re2.IGNORECASE)
-        post_num = arch_m.group(1) if arch_m else (lab_m.group(1) if lab_m else None)
-        thumb_html = card_thumb(p["tags"], post_num)
         cards_html.append(
             f'<a href="/blog/{p["slug"]}/" class="post-card"'
             f' data-title="{escape(p["title"])}"'
             f' data-excerpt="{escape(p["excerpt"])}"'
             f' data-tags="{escape(tags_data)}"'
             f' data-date="{p["date"].strftime("%Y-%m-%d")}">'
-            f'{thumb_html}'
             f'<div class="post-card-body">'
             f'<div class="post-meta"><span class="tag-badge">{tag1}</span>'
             f'<span class="post-date">{p["date_fmt"]}</span></div>'
@@ -1229,33 +1196,6 @@ def build_index_page(posts):
   </div>
   <div class="hero-typer">$ <span id="hero-typer-text"></span><span class="hero-typer-cursor">|</span></div>
 </section>
-<div class="newsletter-bar" id="newsletter-bar">
-  <div class="nl-left">
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 7l10 7 10-7"/></svg>
-    <div>
-      <strong>Get new posts in your inbox</strong>
-      <span>AWS, Terraform &amp; platform engineering — no spam.</span>
-    </div>
-  </div>
-  <form class="nl-form" onsubmit="nlSubmit(event)">
-    <input id="nl-email" type="email" placeholder="your@email.com" required autocomplete="email"/>
-    <button type="submit">Subscribe</button>
-  </form>
-  <button class="nl-close" onclick="document.getElementById('newsletter-bar').style.display='none';try{{localStorage.setItem('nl-dismissed','1')}}catch(e){{}}" title="Dismiss">✕</button>
-</div>
-<script>
-(function(){{
-  try{{ if(localStorage.getItem('nl-dismissed')||localStorage.getItem('nl-subscribed')) document.getElementById('newsletter-bar').style.display='none'; }}catch(e){{}}
-}})();
-function nlSubmit(e){{
-  e.preventDefault();
-  var email=document.getElementById('nl-email').value;
-  // TODO: replace with your newsletter provider URL (Buttondown, ConvertKit, etc.)
-  window.open('https://buttondown.com/jayanthkatta','_blank');
-  document.getElementById('newsletter-bar').innerHTML='<div class="nl-thanks">✓ Thanks! Check your inbox to confirm.</div>';
-  try{{localStorage.setItem('nl-subscribed','1');}}catch(e){{}}
-}}
-</script>
 <div class="search-bar-wrap" id="search-bar-wrap">
   <div class="search-bar-inner">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -1276,29 +1216,6 @@ function nlSubmit(e){{
     </div>
   </div>
   <aside class="sidebar">
-    <!-- Author bio -->
-    <div class="sidebar-card" id="author-bio-card">
-      <div style="text-align:center">
-        <img src="https://github.com/katta698.png" alt="Jayanth Katta" style="width:56px;height:56px;border-radius:50%;border:2px solid var(--border);margin:0 auto 10px;display:block;object-fit:cover"/>
-        <div style="font-weight:700;font-size:14px;color:var(--text)">Jayanth Katta</div>
-        <div style="font-size:11px;color:var(--orange);margin-bottom:8px">AWS Platform Engineer</div>
-        <div style="font-size:11.5px;color:var(--text-muted);line-height:1.55;margin-bottom:12px">Writing about AWS, Terraform, Kubernetes, and platform engineering. 74 posts and counting.</div>
-        <div style="display:flex;justify-content:center;gap:8px">
-          <a href="https://www.linkedin.com/in/jayanthkatta/" target="_blank" rel="noopener" style="font-size:11px;color:var(--orange);text-decoration:none;background:rgba(196,164,132,.1);border-radius:6px;padding:3px 10px;border:1px solid var(--border)">LinkedIn</a>
-          <a href="https://github.com/katta698" target="_blank" rel="noopener" style="font-size:11px;color:var(--orange);text-decoration:none;background:rgba(196,164,132,.1);border-radius:6px;padding:3px 10px;border:1px solid var(--border)">GitHub</a>
-          <a href="/blog/rss.xml" target="_blank" rel="noopener" style="font-size:11px;color:var(--orange);text-decoration:none;background:rgba(196,164,132,.1);border-radius:6px;padding:3px 10px;border:1px solid var(--border)">RSS</a>
-        </div>
-      </div>
-    </div>
-    <!-- Newsletter sidebar -->
-    <div class="sidebar-card" id="nl-sidebar-card" style="border-color:rgba(196,164,132,.3)">
-      <div class="sidebar-title">Stay in the loop</div>
-      <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.5">New posts weekly. No spam, unsubscribe anytime.</p>
-      <form onsubmit="nlSubmit(event);this.closest('.sidebar-card').innerHTML='<div style=&quot;font-size:12px;color:var(--orange);text-align:center;padding:8px&quot;>✓ Check your inbox!</div>';return false">
-        <input type="email" placeholder="your@email.com" required style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:13px;color:var(--text);margin-bottom:8px;outline:none"/>
-        <button type="submit" style="width:100%;background:var(--orange);color:#1D2322;border:none;border-radius:8px;padding:8px;font-size:13px;font-weight:700;cursor:pointer">Subscribe →</button>
-      </form>
-    </div>
     <div class="sidebar-card" id="services-widget">
       <div class="sidebar-title">AWS services across all posts</div>
       <div id="svc-bubble-area" style="position:relative;height:220px;width:100%"></div>
