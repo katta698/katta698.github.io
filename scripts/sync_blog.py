@@ -1084,6 +1084,64 @@ def build_index_page(posts):
     top_services = sorted(service_counts.items(), key=lambda x: x[1], reverse=True)[:20]
     services_json = json.dumps([{"name": s, "count": c} for s, c in top_services])
 
+    # ── Widget data ───────────────────────────────────────────
+
+    # 1. Reading stats
+    avg_mins = round(total_mins / total_posts, 1) if total_posts else 0
+    total_hrs = round(total_mins / 60, 1)
+
+    # 2. Domain donut — keyword mapping on title + tags
+    DOMAIN_KEYWORDS = {
+        "Networking":    ["vpc","transit gateway","route 53","alb","nlb","cloudfront","nat","network","dns","arc","subnet","peering"],
+        "Security":      ["iam","kms","waf","shield","guardduty","scp","identity","encryption","secret","control tower","aft","organization"],
+        "Compute":       ["ec2","ecs","eks","fargate","lambda","auto scaling","graviton","spot","container","kubernetes","serverless"],
+        "Data":          ["rds","aurora","dynamodb","s3","glue","athena","redshift","kinesis","emr","database","analytics","cur","cost"],
+        "Observability": ["cloudwatch","config","x-ray","monitoring","logging","compliance","drift","alert"],
+    }
+    domain_counts = {d: 0 for d in DOMAIN_KEYWORDS}
+    for p in posts:
+        combined = (p["title"] + " " + " ".join(p["tags"])).lower()
+        matched = False
+        for domain, kws in DOMAIN_KEYWORDS.items():
+            if any(k in combined for k in kws):
+                domain_counts[domain] += 1
+                matched = True
+                break
+        if not matched:
+            domain_counts.setdefault("Other", 0)
+            domain_counts["Other"] += 1
+    domain_total = sum(domain_counts.values()) or 1
+    domain_json = json.dumps([
+        {"name": d, "count": c, "pct": round(c / domain_total * 100)}
+        for d, c in domain_counts.items() if c > 0
+    ])
+
+    # 3. Arch series for progress tracker + mini-feed
+    arch_posts = [p for p in posts if "AWS Architecture Series" in p["tags"]]
+    arch_series_json = json.dumps([
+        {"n": i+1, "slug": p["slug"], "title": p["title"].split(" — ", 1)[-1] if " — " in p["title"] else p["title"], "date": p["date_fmt"]}
+        for i, p in enumerate(reversed(arch_posts))
+    ])
+    arch_feed_json = json.dumps([
+        {"n": len(arch_posts)-i, "slug": p["slug"],
+         "title": p["title"].split(" — ", 1)[-1] if " — " in p["title"] else p["title"],
+         "date": p["date_fmt"], "rt": p["read_time"]}
+        for i, p in enumerate(arch_posts[:3])
+    ])
+
+    # 4. Publishing heatmap — posts per month per year
+    from collections import defaultdict
+    import calendar
+    hm_data = defaultdict(lambda: defaultdict(int))
+    for p in posts:
+        hm_data[p["date"].year][p["date"].month] += 1
+    MONTH_ABBR = [calendar.month_abbr[m] for m in range(1, 13)]
+    heatmap_json = json.dumps({
+        str(yr): [{"m": MONTH_ABBR[mo-1], "n": hm_data[yr].get(mo, 0)} for mo in range(1, 13)]
+        for yr in sorted(hm_data.keys(), reverse=True)
+    })
+    heatmap_years_json = json.dumps(sorted(hm_data.keys(), reverse=True))
+
     # ── Blog-extracted quiz questions ──────────────────────────
     blog_questions = []
     for p in posts[:15]:
@@ -1289,6 +1347,225 @@ def build_index_page(posts):
       <div style="font-size:.78rem;color:var(--text-muted);line-height:1.55;margin-bottom:.85rem">12,500 users impacted. Can you find the root cause before it costs thousands? 50 real AWS incidents.</div>
       <a href="/blog/simulator/" class="ask-cta-btn" style="display:block;text-align:center;background:#E24B4A;text-decoration:none">Respond to incident →</a>
     </div>
+    <style>@keyframes sb-pulse{{0%,100%{{opacity:1}}50%{{opacity:.3}}}}</style>
+
+    <!-- ① Series Progress -->
+    <div class="sidebar-card" id="series-progress-widget">
+      <div class="sidebar-title">Architecture series progress</div>
+      <div id="sp-dots" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
+      <div style="height:4px;background:var(--border);border-radius:4px;margin-bottom:9px;overflow:hidden">
+        <div id="sp-bar" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width .4s ease"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--text-muted)">
+        <span><strong id="sp-count" style="color:var(--text)">0</strong> of {len(arch_posts)} posts read</span>
+        <a id="sp-next" href="#" style="color:var(--orange);text-decoration:none;font-size:11px"></a>
+      </div>
+      <div style="font-size:10.5px;color:var(--text-muted);margin-top:9px;padding-top:9px;border-top:0.5px solid var(--border)">Stored in your browser · picks up where you left off</div>
+    </div>
+    <script>
+    (function(){{
+      var ARCH = {arch_series_json};
+      var KEY = 'arch-read-v1';
+      function load(){{ try{{ return JSON.parse(localStorage.getItem(KEY)||'[]'); }}catch(e){{ return []; }} }}
+      function save(r){{ try{{ localStorage.setItem(KEY,JSON.stringify(r)); }}catch(e){{}} }}
+      function render(){{
+        var read = load();
+        var wrap = document.getElementById('sp-dots');
+        if(!wrap) return;
+        wrap.innerHTML = '';
+        ARCH.forEach(function(p){{
+          var d = document.createElement('a');
+          d.href = '/blog/'+p.slug+'/';
+          d.title = p.title;
+          var isRead = read.includes(p.n);
+          d.style.cssText = 'width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:1.5px solid '+(isRead?'var(--orange)':'var(--border)')+';color:'+(isRead?'#1D2322':'var(--text-muted)')+';background:'+(isRead?'var(--orange)':'transparent')+';text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
+          d.textContent = p.n;
+          d.addEventListener('click',function(e){{
+            e.preventDefault();
+            var r=load(); var i=r.indexOf(p.n);
+            if(i>-1)r.splice(i,1); else r.push(p.n);
+            save(r); render();
+          }});
+          wrap.appendChild(d);
+        }});
+        var pct = Math.round(read.length/ARCH.length*100);
+        document.getElementById('sp-bar').style.width = pct+'%';
+        document.getElementById('sp-count').textContent = read.length;
+        var next = null;
+        for(var i=0;i<ARCH.length;i++){{ if(!read.includes(ARCH[i].n)){{ next=ARCH[i]; break; }} }}
+        var el = document.getElementById('sp-next');
+        if(next){{ el.href='/blog/'+next.slug+'/'; el.textContent='#'+next.n+' Next →'; }}
+        else{{ el.textContent='✓ All done!'; el.removeAttribute('href'); }}
+      }}
+      render();
+    }})();
+    </script>
+
+    <!-- ② Domain Donut -->
+    <div class="sidebar-card" id="domain-donut-widget">
+      <div class="sidebar-title">Posts by AWS domain</div>
+      <div style="display:flex;gap:16px;align-items:center">
+        <svg id="dd-svg" width="88" height="88" viewBox="0 0 88 88" style="flex-shrink:0"></svg>
+        <div id="dd-legend" style="flex:1;display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+    </div>
+    <script>
+    (function(){{
+      var DATA = {domain_json};
+      var COLORS = ['#4A90D9','#C4A484','#3D9970','#8E6DBE','#E24B4A','#C4A484'];
+      var svg = document.getElementById('dd-svg');
+      var legend = document.getElementById('dd-legend');
+      if(!svg||!legend) return;
+      var total = DATA.reduce(function(s,d){{return s+d.count;}},0);
+      var R=32, cx=44, cy=44, stroke=13;
+      var circ = 2*Math.PI*R;
+      var offset = 0;
+      DATA.forEach(function(d,i){{
+        var len = (d.count/total)*circ;
+        var c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        c.setAttribute('cx',cx); c.setAttribute('cy',cy); c.setAttribute('r',R);
+        c.setAttribute('fill','none'); c.setAttribute('stroke',COLORS[i%COLORS.length]);
+        c.setAttribute('stroke-width',stroke);
+        c.setAttribute('stroke-dasharray',len+' '+(circ-len));
+        c.setAttribute('stroke-dashoffset',-offset);
+        c.setAttribute('transform','rotate(-90 '+cx+' '+cy+')');
+        svg.appendChild(c);
+        offset += len;
+        var row = document.createElement('div');
+        row.style.cssText='display:flex;align-items:center;gap:6px;font-size:11.5px';
+        row.innerHTML='<span style="width:8px;height:8px;border-radius:50%;background:'+COLORS[i%COLORS.length]+';flex-shrink:0"></span>'
+          +'<span style="flex:1;color:var(--text)">'+d.name+'</span>'
+          +'<span style="color:var(--text-muted);font-variant-numeric:tabular-nums">'+d.pct+'%</span>';
+        legend.appendChild(row);
+      }});
+      var txt1=document.createElementNS('http://www.w3.org/2000/svg','text');
+      txt1.setAttribute('x',cx);txt1.setAttribute('y',cy-3);txt1.setAttribute('text-anchor','middle');
+      txt1.setAttribute('font-size','13');txt1.setAttribute('font-weight','700');txt1.setAttribute('fill','var(--text)');
+      txt1.textContent=total;
+      var txt2=document.createElementNS('http://www.w3.org/2000/svg','text');
+      txt2.setAttribute('x',cx);txt2.setAttribute('y',cy+10);txt2.setAttribute('text-anchor','middle');
+      txt2.setAttribute('font-size','8');txt2.setAttribute('fill','var(--text-muted)');
+      txt2.textContent='posts';
+      svg.appendChild(txt1);svg.appendChild(txt2);
+    }})();
+    </script>
+
+    <!-- ③ Reading Stats -->
+    <div class="sidebar-card" id="reading-stats-widget">
+      <div class="sidebar-title">Reading stats</div>
+      <div style="display:flex;gap:10px;margin-bottom:12px">
+        <div style="flex:1;background:rgba(196,164,132,.1);border-radius:8px;padding:11px;text-align:center">
+          <div style="font-size:26px;font-weight:800;color:var(--orange);line-height:1;letter-spacing:-1px">{total_posts}</div>
+          <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-top:3px">posts</div>
+        </div>
+        <div style="flex:1;background:rgba(196,164,132,.1);border-radius:8px;padding:11px;text-align:center">
+          <div style="font-size:26px;font-weight:800;color:var(--orange);line-height:1;letter-spacing:-1px">{total_hrs}</div>
+          <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-top:3px">hrs total</div>
+        </div>
+        <div style="flex:1;background:rgba(196,164,132,.1);border-radius:8px;padding:11px;text-align:center">
+          <div style="font-size:26px;font-weight:800;color:var(--orange);line-height:1;letter-spacing:-1px">{avg_mins}</div>
+          <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-top:3px">min avg</div>
+        </div>
+      </div>
+      <div id="rs-personal" style="font-size:11px;color:var(--text-muted);text-align:center;min-height:16px"></div>
+    </div>
+    <script>
+    (function(){{
+      var read = (function(){{ try{{ return JSON.parse(localStorage.getItem('arch-read-v1')||'[]'); }}catch(e){{ return []; }} }})();
+      var el = document.getElementById('rs-personal');
+      if(el && read.length>0){{
+        var mins = read.length * {avg_mins};
+        el.innerHTML = 'You’ve read <strong style="color:var(--text)">'+read.length+' post'+(read.length!==1?'s':'')+
+          '</strong> · <span style="color:var(--orange)">~'+Math.round(mins)+' min</span> invested';
+      }}
+    }})();
+    </script>
+
+    <!-- ④ Series Mini-Feed -->
+    <div class="sidebar-card" id="series-feed-widget">
+      <div class="sidebar-title">Latest in the series</div>
+      <div id="sf-list"></div>
+      <a href="/blog/?tag=aws+architecture+series" style="display:block;margin-top:10px;font-size:11.5px;color:var(--orange);text-decoration:none;text-align:right">See all {len(arch_posts)} posts →</a>
+    </div>
+    <script>
+    (function(){{
+      var FEED = {arch_feed_json};
+      var list = document.getElementById('sf-list');
+      if(!list) return;
+      FEED.forEach(function(p,i){{
+        var row = document.createElement('a');
+        row.href = '/blog/'+p.slug+'/';
+        row.style.cssText='display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:0.5px solid var(--border);text-decoration:none;'+(i===FEED.length-1?'border-bottom:none;padding-bottom:0':'');
+        row.innerHTML='<div style="width:22px;height:22px;border-radius:50%;background:rgba(196,164,132,.12);color:var(--orange);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px">#'+p.n+'</div>'
+          +'<div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--text);line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+p.title+'</div>'
+          +'<div style="font-size:10.5px;color:var(--text-muted);margin-top:2px">'+p.date+' · '+p.rt+' min</div></div>'
+          +'<div style="color:var(--orange);font-size:14px;margin-top:2px">›</div>';
+        list.appendChild(row);
+      }});
+    }})();
+    </script>
+
+    <!-- ⑤ Publishing Heatmap -->
+    <div class="sidebar-card" id="heatmap-widget">
+      <div class="sidebar-title">Publishing activity</div>
+      <div id="hm-yr-tabs" style="display:flex;gap:4px;margin-bottom:10px"></div>
+      <div style="overflow-x:auto">
+        <div id="hm-grid" style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;min-width:220px"></div>
+      </div>
+      <div id="hm-tip" style="font-size:10.5px;color:var(--text-muted);margin-top:6px;min-height:15px">Hover a month</div>
+      <div style="display:flex;align-items:center;gap:4px;margin-top:8px;font-size:10px;color:var(--text-muted)">
+        <span>Less</span>
+        <span style="width:10px;height:10px;border-radius:2px;background:var(--border);display:inline-block"></span>
+        <span style="width:10px;height:10px;border-radius:2px;background:rgba(196,164,132,.25);display:inline-block"></span>
+        <span style="width:10px;height:10px;border-radius:2px;background:rgba(196,164,132,.55);display:inline-block"></span>
+        <span style="width:10px;height:10px;border-radius:2px;background:var(--orange);display:inline-block"></span>
+        <span>More</span>
+      </div>
+    </div>
+    <script>
+    (function(){{
+      var HM = {heatmap_json};
+      var YEARS = {heatmap_years_json};
+      var tabWrap = document.getElementById('hm-yr-tabs');
+      var grid = document.getElementById('hm-grid');
+      var tip = document.getElementById('hm-tip');
+      if(!tabWrap||!grid) return;
+      function showYear(yr){{
+        var data = HM[yr];
+        var max = Math.max.apply(null,data.map(function(d){{return d.n;}}));
+        grid.innerHTML='';
+        data.forEach(function(d){{
+          var col=document.createElement('div');
+          col.style.cssText='display:flex;flex-direction:column;gap:3px';
+          var lbl=document.createElement('div');
+          lbl.style.cssText='font-size:8.5px;color:var(--text-muted);text-align:center;margin-bottom:2px';
+          lbl.textContent=d.m;
+          var cell=document.createElement('div');
+          var lvl=d.n===0?0:d.n<=max*.25?1:d.n<=max*.6?2:3;
+          var bg=['var(--border)','rgba(196,164,132,.25)','rgba(196,164,132,.55)','var(--orange)'][lvl];
+          cell.style.cssText='aspect-ratio:1;border-radius:3px;background:'+bg+';cursor:default;transition:transform .1s';
+          cell.onmouseenter=function(){{tip.textContent=d.m+' '+yr+' — '+(d.n===0?'no posts':d.n+' post'+(d.n!==1?'s':''));cell.style.transform='scale(1.2)';}};
+          cell.onmouseleave=function(){{tip.textContent='Hover a month';cell.style.transform='';}};
+          col.appendChild(lbl);col.appendChild(cell);grid.appendChild(col);
+        }});
+        tabWrap.querySelectorAll('button').forEach(function(b){{
+          b.style.background=b.dataset.yr==yr?'var(--orange)':'transparent';
+          b.style.color=b.dataset.yr==yr?'#1D2322':'var(--text-muted)';
+          b.style.borderColor=b.dataset.yr==yr?'var(--orange)':'var(--border)';
+          b.style.fontWeight=b.dataset.yr==yr?'600':'400';
+        }});
+      }}
+      YEARS.forEach(function(yr,i){{
+        var btn=document.createElement('button');
+        btn.textContent=yr; btn.dataset.yr=yr;
+        btn.style.cssText='font-size:10.5px;padding:2px 8px;border-radius:10px;border:1px solid var(--border);cursor:pointer;background:transparent;color:var(--text-muted)';
+        btn.onclick=function(){{showYear(yr);}};
+        tabWrap.appendChild(btn);
+        if(i===0) showYear(yr);
+      }});
+    }})();
+    </script>
+
     <style>@keyframes sb-pulse{{0%,100%{{opacity:1}}50%{{opacity:.3}}}}</style>
   </aside>
 </div>
