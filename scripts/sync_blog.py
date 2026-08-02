@@ -281,7 +281,7 @@ CHATGPT_MARKERS = [
 
 # ── Tag detection ─────────────────────────────────────────────
 MAX_TAGS = 3
-CATEGORY_ORDER = ["All", "AWS Architecture Series", "AWS Weekly Lab", "AWS", "Architecture", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
+CATEGORY_ORDER = ["All", "AWS Architecture Series", "AWS Weekly Lab", "AWS", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
 
 NAV_SVG = """<svg width="30" height="30" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
   <rect width="80" height="80" rx="16" fill="#11140F"/>
