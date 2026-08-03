@@ -281,7 +281,7 @@ CHATGPT_MARKERS = [
 
 # ── Tag detection ─────────────────────────────────────────────
 MAX_TAGS = 3
-CATEGORY_ORDER = ["All", "AWS Architecture Series", "AWS Weekly Lab", "AWS", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
+CATEGORY_ORDER = ["All", "AWS Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
 
 NAV_SVG = """<svg width="30" height="30" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
   <rect width="80" height="80" rx="16" fill="#11140F"/>
@@ -388,6 +388,14 @@ JK_POST_THEME_CSS = """
 #jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
 
 /* ── Tables ── */
+/* clean_html() strips every inline style attribute, so the overflow-x:auto
+   wrapper documented in CLAUDE.md silently becomes a bare div on any
+   sync-built post, and wide tables clip on mobile with no way to scroll.
+   Wrap wide tables in the table-scroll class instead: class attributes
+   survive cleaning, inline styles do not. (Arch posts are unaffected —
+   they bypass clean_html entirely, so inline styles still work there.) */
+#jk-post .table-scroll { overflow-x: auto; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
 #jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
 #jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
 #jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }

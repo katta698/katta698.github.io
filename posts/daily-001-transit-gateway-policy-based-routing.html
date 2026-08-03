@@ -1,0 +1,383 @@
+---
+title: 'AWS Daily Intelligence #1 - Policy-Based Routing on AWS Transit Gateway'
+date: '2026-08-03T09:00:00'
+labels:
+- AWS
+- AWS Daily Intelligence
+slug: aws-daily-intelligence-transit-gateway-policy-based-routing
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Daily Intelligence &middot; 3 August 2026</div>
+  <div class="post-title">Policy-Based Routing on AWS Transit Gateway: What Changes in Your Network Architecture</div>
+  <div class="post-subtitle">Transit Gateway has forwarded on the destination prefix alone since it launched. As of 30 July 2026 it can classify traffic on source IP, destination IP, port, and protocol, and send each class to a different route table. This is a genuinely architectural change, and it ships with two behaviours that will take traffic down if you meet them by surprise.</div>
+  <div class="post-meta">
+    <span>General Availability</span>
+    <span>All commercial Regions</span>
+    <span>No additional charge</span>
+    <span>Announced 30 July 2026</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="toc">
+    <h3>In This Post</h3>
+    <ol>
+      <li><a href="#what-changed">What changed</a></li>
+      <li><a href="#why">Why AWS introduced it</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#value">Business value</a></li>
+      <li><a href="#security">Security considerations</a></li>
+      <li><a href="#cost">Cost considerations</a></li>
+      <li><a href="#operations">Operational considerations</a></li>
+      <li><a href="#tradeoffs">Tradeoffs</a></li>
+      <li><a href="#implementation">Implementation guidance</a></li>
+      <li><a href="#practices">Best practices</a></li>
+      <li><a href="#adopt">Who should adopt, who should wait</a></li>
+      <li><a href="#bgp">The limitation most likely to cause an outage</a></li>
+      <li><a href="#takeaways">Key takeaways</a></li>
+      <li><a href="#references">Official AWS references</a></li>
+    </ol>
+  </div>
+
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>On 30 July 2026, AWS announced general availability of Policy-Based Routing (PBR) on AWS Transit Gateway. Since Transit Gateway launched, a forwarding decision has been a function of one variable: the destination prefix. PBR adds a second mechanism. You can now classify traffic on source CIDR, destination CIDR, source port, destination port, and protocol, and send each class to a different transit gateway route table.</p>
+    <p>The mechanism is a new resource, the <strong>transit gateway policy table</strong>. It is an ordered list of rules that you associate with an attachment. It does not sit alongside the route table on that attachment - it replaces it.</p>
+    <p>PBR is available in all AWS Regions where Transit Gateway is available, at no additional charge beyond standard Transit Gateway fees. It is enabled on all transit gateways by default; there is no feature flag to set.</p>
+    <p>Two consequences will surprise anyone who deploys it casually: <strong>unmatched traffic is dropped</strong>, and <strong>associating a policy table with a BGP-speaking attachment stops route advertisement to that peer</strong>. Both are covered below.</p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>Before this launch, a transit gateway attachment was associated with exactly one route table, and that route table performed a longest-prefix-match lookup on the destination address. Two flows leaving the same VPC for the same destination were, by definition, treated identically. There was no supported way to make the transit gateway itself distinguish them.</p>
+
+    <h3>A new resource: the policy table</h3>
+    <p>A policy table contains an ordered set of rules. Each rule has match criteria and a target route table.</p>
+
+    <h3>Five match attributes, all optional</h3>
+    <p>Any attribute you omit defaults to Any (<code>*</code>):</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Attribute</th><th>Valid values</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>SourceCidrBlock</code></td><td>IPv4 or IPv6 CIDR</td><td>for example <code>10.0.0.0/16</code></td></tr>
+        <tr><td><code>DestinationCidrBlock</code></td><td>IPv4 or IPv6 CIDR</td><td></td></tr>
+        <tr><td><code>Protocol</code></td><td><code>1</code> ICMPv4, <code>6</code> TCP, <code>17</code> UDP, <code>47</code> GRE, or <code>*</code></td><td>IANA protocol number</td></tr>
+        <tr><td><code>SourcePortRange</code></td><td>Single port or range, 0-65535</td><td>Only evaluated for TCP and UDP</td></tr>
+        <tr><td><code>DestinationPortRange</code></td><td>Single port or range, 0-65535</td><td>Only evaluated for TCP and UDP</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>Port ranges are only supported for TCP (<code>6</code>) and UDP (<code>17</code>). For ICMPv4, GRE, or Any, port ranges are automatically set to <code>*</code> and cannot be configured. Both IPv4 and IPv6 CIDR formats are supported.</p>
+
+    <h3>First-match-wins evaluation</h3>
+    <p>Customer-managed rules are numbered 1 to 50,000 and evaluated in ascending numeric order. The first rule that matches is applied and evaluation stops.</p>
+
+    <h3>Two entry types</h3>
+    <p>Customer-managed entries are the ones you create. System-managed entries are created and maintained by AWS to support internal routing functions such as AWS Cloud WAN segment isolation. System-managed entries display a rule number of <code>*</code>, are read-only, and are <strong>evaluated before all customer-managed entries</strong>. Both types are returned together by <code>GetTransitGatewayPolicyTableEntries</code>.</p>
+
+    <h3>Attachment exclusivity</h3>
+    <p>An attachment can be associated with either a policy table or a route table, never both. If the attachment already has a route table associated, the association request fails until you disassociate it.</p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why AWS introduced it</h2>
+    <p>The honest answer is that customers had been building this behaviour themselves, badly.</p>
+    <p>Consider the recurring requirement: inspect traffic from the PCI subnet with a firewall, but let everything else take the direct path. With destination-only routing, the transit gateway cannot express that rule, because both flows may share a destination. The workarounds were all structural:</p>
+    <ul>
+      <li><strong>Split the VPC.</strong> Move the sensitive workload into its own VPC so it gets its own attachment and therefore its own route table. This is a network design change forced by a routing limitation.</li>
+      <li><strong>Proliferate route tables and attachments.</strong> Multiply attachments to create the granularity the route table could not provide. You run into design complexity long before you run into the quota of 20 route tables per transit gateway.</li>
+      <li><strong>Push the decision down into the VPC.</strong> Use subnet route tables and Gateway Load Balancer endpoints to steer inside the VPC before traffic reaches the transit gateway. This works, but it distributes security policy across every VPC in the estate, which is what a centralised inspection architecture was meant to avoid.</li>
+      <li><strong>Inspect everything.</strong> The most common resolution in practice. Send all traffic through the firewall because you cannot selectively send some of it. You pay for inspection capacity you do not need and add latency to flows that did not require it.</li>
+    </ul>
+    <p>Each of these trades network design cleanliness, cost, or operational surface for a capability the routing layer should have provided. PBR moves the classification decision to the transit gateway, which is where traffic already converges and where the policy is easiest to audit.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>The mental model that matters: <strong>a policy table does not route traffic. It selects the route table that will.</strong></p>
+    <p>Evaluation on an attachment associated with a policy table proceeds in three stages. System-managed entries are evaluated first, and if one matches it is applied regardless of any customer rule you configured. Customer-managed entries are evaluated next, in ascending rule number order, first match wins. If nothing matches, the packet is dropped.</p>
+
+<svg viewBox="0 0 1000 780" xmlns="http://www.w3.org/2000/svg" role="img" style="width:100%;max-width:880px;display:block;margin:24px auto;border:1px solid #e5e5e5;border-radius:6px;background:#ffffff;" font-family="'Segoe UI',Arial,sans-serif">
+<title>How a transit gateway evaluates a packet on an attachment associated with a policy table: system-managed entries are checked first, then customer entries in ascending rule number order, and any packet matching nothing is dropped by implicit deny.</title>
+<defs>
+  <marker id="pbr-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 0 0 L 10 5 L 0 10 z" fill="#6c757d"/>
+  </marker>
+</defs>
+<g stroke="#6c757d" stroke-width="1.6" marker-end="url(#pbr-arrow)" fill="none">
+  <line x1="500" y1="106" x2="500" y2="148"/>
+  <line x1="500" y1="216" x2="500" y2="258"/>
+  <line x1="500" y1="320" x2="500" y2="362"/>
+  <line x1="500" y1="424" x2="500" y2="466"/>
+  <line x1="500" y1="534" x2="500" y2="576"/>
+  <line x1="500" y1="628" x2="500" y2="670"/>
+  <path d="M 300 181 L 160 181 L 160 256"/>
+  <path d="M 700 499 L 718 499"/>
+  <path d="M 160 320 L 160 697 L 296 697"/>
+</g>
+<g fill="#0f1111" font-size="14">
+  <rect x="300" y="52" width="400" height="54" rx="4" fill="#fafafa" stroke="#e5e5e5"/>
+  <text x="500" y="84" text-anchor="middle">Packet arrives on a transit gateway attachment</text>
+
+  <rect x="300" y="148" width="400" height="68" rx="4" fill="#fff8f0" stroke="#C4A484" stroke-width="1.6"/>
+  <text x="500" y="176" text-anchor="middle">Is the attachment associated</text>
+  <text x="500" y="196" text-anchor="middle">with a policy table?</text>
+
+  <rect x="40" y="256" width="240" height="64" rx="4" fill="#fafafa" stroke="#e5e5e5"/>
+  <text x="160" y="282" text-anchor="middle" font-size="13">Standard destination-based</text>
+  <text x="160" y="300" text-anchor="middle" font-size="13">lookup on the route table</text>
+
+  <rect x="300" y="258" width="400" height="62" rx="4" fill="#fafafa" stroke="#e5e5e5"/>
+  <text x="500" y="283" text-anchor="middle" font-size="13">System-managed entries (rule number *)</text>
+  <text x="500" y="303" text-anchor="middle" font-size="13">are evaluated first and are read-only</text>
+
+  <rect x="300" y="362" width="400" height="62" rx="4" fill="#fafafa" stroke="#e5e5e5"/>
+  <text x="500" y="387" text-anchor="middle" font-size="13">Customer entries, ascending rule number</text>
+  <text x="500" y="407" text-anchor="middle" font-size="13">Match on source, destination, protocol, ports</text>
+
+  <rect x="300" y="466" width="400" height="68" rx="4" fill="#fff8f0" stroke="#C4A484" stroke-width="1.6"/>
+  <text x="500" y="494" text-anchor="middle">Did any entry match?</text>
+  <text x="500" y="514" text-anchor="middle" font-size="13">First match wins, evaluation stops</text>
+
+  <rect x="718" y="466" width="252" height="68" rx="4" fill="#fdf2f2" stroke="#cc0c39" stroke-width="1.6"/>
+  <text x="844" y="494" text-anchor="middle" font-size="13" fill="#cc0c39" font-weight="700">Implicit deny</text>
+  <text x="844" y="514" text-anchor="middle" font-size="13" fill="#cc0c39">the packet is dropped</text>
+
+  <rect x="300" y="576" width="400" height="52" rx="4" fill="#fafafa" stroke="#e5e5e5"/>
+  <text x="500" y="607" text-anchor="middle">Target route table selected</text>
+
+  <rect x="296" y="670" width="408" height="54" rx="4" fill="#f6f9f4" stroke="#1d8102"/>
+  <text x="500" y="694" text-anchor="middle" font-size="13">Destination-based lookup in that route table</text>
+  <text x="500" y="712" text-anchor="middle" font-size="13">Forward to the target attachment</text>
+</g>
+<g font-size="12" fill="#6c757d">
+  <text x="188" y="174">No</text>
+  <text x="512" y="240">Yes</text>
+  <text x="512" y="558">Yes</text>
+  <text x="706" y="490">No</text>
+</g>
+</svg>
+
+    <p>Once a rule matches, the selected route table performs an ordinary destination-based lookup. PBR classifies; the route table forwards. Nothing about route table semantics changes.</p>
+
+    <h3>The return path deserves attention</h3>
+    <p>In the AWS worked example, traffic from a sensitive subnet is steered to a firewall route table, the firewall inspects it, and forwards it back to the transit gateway. On return, the transit gateway re-evaluates the traffic using destination-based lookup on the route table associated with the firewall VPC attachment.</p>
+    <p>Read that again, because it is the single most important operational detail in the feature. The forward path is policy-classified. The return path is a normal route table lookup on a different attachment. You are responsible for making those two halves agree.</p>
+    <p>If you steer a flow through inspection in one direction but the return path takes the direct route, a stateful firewall will see half a conversation and drop it. Asymmetric routing was already the classic failure mode in centralised inspection designs; PBR gives you a much finer instrument, and therefore many more ways to create asymmetry. Design both directions deliberately, and treat "which route table does the return traffic hit" as a required question in every review.</p>
+  </div>
+
+  <div class="section" id="value">
+    <h2>Business value</h2>
+    <p><strong>Inspect selectively instead of universally.</strong> The clearest financial argument. If you are running all east-west traffic through a firewall fleet because you could not express a narrower rule, PBR lets you scope inspection to the flows that actually require it. Firewall throughput is one of the more expensive resources in an enterprise landing zone.</p>
+    <p><strong>Stop deforming network design to satisfy routing constraints.</strong> VPCs that exist only because a workload needed its own route table are pure overhead: extra attachments, extra CIDR management, extra Terraform. PBR removes the reason they existed.</p>
+    <p><strong>Express policy where it is auditable.</strong> A policy table associated with an attachment is a short, ordered, greppable list. A compliance reviewer can read it. The equivalent behaviour expressed across a dozen subnet route tables and Gateway Load Balancer endpoints cannot be reviewed with any confidence.</p>
+    <p><strong>Differentiated paths for differentiated traffic.</strong> Routing a specific application over Direct Connect while general traffic uses VPN, based on source and port, is now a rule rather than a project.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <div class="warning-box">
+      <p><strong>Implicit deny is a security property and an availability risk.</strong> If no rule matches, the packet is dropped silently. This is the correct default for a security control and a genuine hazard during migration. AWS guidance is explicit: always include a catch-all rule at a high rule number if you want unmatched traffic to reach a route table rather than be dropped. Add the catch-all first, then add specific rules above it.</p>
+    </div>
+    <p><strong>Rule ordering is the control.</strong> A broad rule at a low number shadows every more specific rule beneath it. A rule 10 of <code>{}</code> matching everything renders rules 20 through 50,000 dead. There is no analyser that will warn you. Order is reviewed by humans, so keep tables short and comment them in your IaC.</p>
+    <p><strong>Match criteria are packet attributes, not identity.</strong> Source CIDR is not a principal. PBR is a traffic steering mechanism, not an authorization mechanism. It complements security groups, NACLs, and Network Firewall; it does not replace any of them. Do not let a policy table become the only thing standing between two segments.</p>
+    <p><strong>System-managed entries can pre-empt your policy.</strong> If your policy table carries Cloud WAN segmentation entries, those are evaluated first and are read-only. Your rules apply only to traffic that does not match one. Verify the full table with <code>GetTransitGatewayPolicyTableEntries</code> rather than assuming the console shows only what you created.</p>
+    <p><strong>Scope the IAM actions.</strong> PBR introduces a distinct set of <code>ec2:*TransitGatewayPolicyTable*</code> actions. Whoever can call <code>ec2:CreateTransitGatewayPolicyTableEntry</code> or <code>ec2:AssociateTransitGatewayPolicyTable</code> can redirect production traffic. These belong with your network administration role, not in a general developer policy.</p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p><strong>The feature is free.</strong> PBR incurs no additional charge beyond standard Transit Gateway fees. There is no per-rule or per-policy-table cost.</p>
+    <p><strong>The traffic patterns it enables are not.</strong> Transit Gateway bills two ways: <strong>$0.05 per attachment-hour</strong> and <strong>$0.02 per GB of data processed</strong>. Both figures are US East (Ohio) as published on the Transit Gateway pricing page; rates vary by Region, so confirm your own before modelling.</p>
+    <p>The attachment charge is unaffected by PBR, since you are not adding attachments. The data processing charge is where steering shows up, and the billing model is the part worth understanding.</p>
+    <p>Data processing is charged per GB <strong>entering</strong> the transit gateway from a VPC, Direct Connect, VPN, or Network Firewall attachment. Traffic arriving from a peering attachment is not charged. Because the charge is per ingress rather than per flow, an inspection detour is billed twice: once when the packet enters from the source VPC, and again when the firewall VPC hands it back.</p>
+    <p>That doubling is exactly what PBR lets you stop paying on traffic that never needed inspecting. Take 100,000 GB per month of east-west traffic:</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Approach</th><th>GB processed by TGW</th><th>Data processing cost</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Inspect everything (the pre-PBR default)</td><td>200,000</td><td>$4,000 / month</td></tr>
+        <tr><td>Inspect 10%, steer the rest directly</td><td>110,000</td><td>$2,200 / month</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>Roughly $1,800 per month on this line item alone, at one Region's rates, before you count the firewall capacity you no longer need to provision. Scale it to your actual volume.</p>
+    <p>Three caveats on that arithmetic. It counts one direction, so add the return path. It excludes AWS Network Firewall's own endpoint-hour and per-GB charges, or your appliance fleet's cost, which is usually the larger number and moves the same direction. And it assumes your inspection VPC returns traffic to the transit gateway; a design that egresses directly from the inspection VPC bills differently.</p>
+    <p><strong>Quota headroom is a design input, not a billing one.</strong> Policy table entries are capped at 200 per transit gateway across all policy tables (adjustable), and policy tables at 20 per transit gateway (not adjustable). A design that needs a rule per application will exhaust the entry quota in a large estate. Classify by CIDR range and port, not by individual workload.</p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p><strong>Migration is a cutover, not a rollout.</strong> Because an attachment cannot hold both a route table and a policy table, moving an attachment to PBR means disassociating the route table and associating the policy table. There is no side-by-side period and no shadow mode. Build and validate the policy table fully before you disassociate anything, and rehearse the reverse operation.</p>
+    <p><strong>Verify before you route live traffic.</strong> After every change, read the table back with <code>GetTransitGatewayPolicyTableEntries</code> and confirm rule numbers and match conditions, including system entries you did not create.</p>
+    <p><strong>Number with gaps.</strong> AWS recommends increments of 10 or 100 so you can insert rules later without renumbering. Renumbering an ordered ruleset under change control is unpleasant, and the customer range is 1 to 50,000, so there is no reason to be frugal.</p>
+    <p><strong>Your existing troubleshooting instincts are now incomplete.</strong> "Which route table is this attachment associated with, and what does it say about this destination?" is no longer a sufficient diagnosis. The new question is which rule matched. Update runbooks accordingly - this is the kind of change where a 3 a.m. responder loses an hour to a model that no longer fits.</p>
+    <p><strong>Direct Connect BGP visibility pairs well with this.</strong> AWS also shipped BGP route visibility on Direct Connect Virtual Interfaces on 30 July, exposing accepted and advertised routes with AS path and community values through the console and the <code>ListVirtualInterfaceRoutes</code> API. If you are steering traffic across Direct Connect with PBR, that is the tool that tells you what the other side actually received.</p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <p><strong>Against Gateway Load Balancer with VPC-level steering.</strong> GWLB steers inside the VPC and is transparent to the transit gateway. It remains the right tool when inspection must happen close to the workload, or when the appliance must see traffic that never reaches the transit gateway. PBR centralises the decision at the transit gateway, which is better for estate-wide policy and worse for VPC-local nuance. They compose; this is not an either/or.</p>
+    <p><strong>Against AWS Cloud WAN.</strong> Cloud WAN expresses intent as segments and policy documents across a global network. PBR is per-attachment and per-Region. If you are already running Cloud WAN, its segmentation model should remain primary - and note that on TGW-to-Cloud WAN peering attachments, customer-managed PBR entries are not supported at all.</p>
+    <p><strong>Against splitting VPCs.</strong> A separate VPC gives hard isolation, its own security group namespace, and its own blast radius. A PBR rule gives routing differentiation only. If the requirement is genuine isolation, the VPC split is still the right answer.</p>
+    <p><strong>Complexity is relocated, not eliminated.</strong> You are trading a large number of simple objects (route tables, attachments) for a smaller number of ordered, stateful rulesets. Ordered rulesets are compact and expressive, and they fail in ways that are harder to see. Anyone who has debugged a long firewall ruleset knows the shape of the problem.</p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+
+    <h3>Prerequisites</h3>
+    <ul>
+      <li>An existing transit gateway. PBR is enabled on all transit gateways by default; no activation step is required.</li>
+      <li>The target transit gateway route tables must already exist.</li>
+      <li>If the attachment is currently associated with a route table, disassociate it first.</li>
+      <li>IAM permissions for the PBR actions: <code>ec2:CreateTransitGatewayPolicyTable</code>, <code>ec2:DescribeTransitGatewayPolicyTables</code>, <code>ec2:DeleteTransitGatewayPolicyTable</code>, <code>ec2:AssociateTransitGatewayPolicyTable</code>, <code>ec2:DisassociateTransitGatewayPolicyTable</code>, <code>ec2:GetTransitGatewayPolicyTableAssociations</code>, <code>ec2:GetTransitGatewayPolicyTableEntries</code>, <code>ec2:CreateTransitGatewayPolicyTableEntry</code>, <code>ec2:ModifyTransitGatewayPolicyTableEntry</code>, <code>ec2:DeleteTransitGatewayPolicyTableEntry</code>.</li>
+    </ul>
+
+    <h3>Worked example: steer one subnet through inspection</h3>
+    <p>Requirement: traffic from <code>10.1.10.0/24</code> must pass through a firewall VPC; everything else forwards normally.</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Rule #</th><th>Source CIDR</th><th>Dest CIDR</th><th>Protocol</th><th>Src port</th><th>Dst port</th><th>Target route table</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>100</td><td><code>10.1.10.0/24</code></td><td>Any</td><td>Any</td><td>Any</td><td>Any</td><td><code>tgw-rtb-firewall</code></td></tr>
+        <tr><td>200</td><td>Any</td><td>Any</td><td>Any</td><td>Any</td><td>Any</td><td><code>tgw-rtb-default</code></td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>Create the policy table:</p>
+<pre><code>aws ec2 create-transit-gateway-policy-table \
+    --transit-gateway-id tgw-0bc994abffEXAMPLE</code></pre>
+
+    <p>Add the catch-all first, so the table is never in a state where it drops everything:</p>
+<pre><code>aws ec2 create-transit-gateway-policy-table-entry \
+    --transit-gateway-policy-table-id tgw-ptb-0ca78a549EXAMPLE \
+    --policy-rule-number 200 \
+    --policy-rule '{}' \
+    --target-route-table-id tgw-rtb-default</code></pre>
+
+    <p>Add the specific steering rule above it:</p>
+<pre><code>aws ec2 create-transit-gateway-policy-table-entry \
+    --transit-gateway-policy-table-id tgw-ptb-0ca78a549EXAMPLE \
+    --policy-rule-number 100 \
+    --policy-rule '{"SourceCidrBlock": "10.1.10.0/24"}' \
+    --target-route-table-id tgw-rtb-firewall</code></pre>
+
+    <p>Verify the full table, including any system-managed entries:</p>
+<pre><code>aws ec2 get-transit-gateway-policy-table-entries \
+    --transit-gateway-policy-table-id tgw-ptb-0ca78a549EXAMPLE</code></pre>
+
+    <p>Only then associate it with the attachment:</p>
+<pre><code>aws ec2 associate-transit-gateway-policy-table \
+    --transit-gateway-policy-table-id tgw-ptb-0ca78a549EXAMPLE \
+    --transit-gateway-attachment-id tgw-attach-0def6EXAMPLE</code></pre>
+
+    <p>A rule matching HTTPS to a specific destination looks like this:</p>
+<pre><code>aws ec2 create-transit-gateway-policy-table-entry \
+    --transit-gateway-policy-table-id tgw-ptb-0ca78a549EXAMPLE \
+    --policy-rule-number 100 \
+    --policy-rule '{"SourceCidrBlock": "10.100.0.0/16", "Protocol": "6", "DestinationPortRange": "443"}' \
+    --target-route-table-id tgw-rtb-0a823edbdeEXAMPLE</code></pre>
+
+    <div class="tip-box">
+      <p><strong>Easy to get wrong.</strong> <code>Protocol</code> must be <code>6</code> or <code>17</code> for the port range fields to be evaluated at all. A rule specifying a destination port with <code>Protocol</code> omitted will not behave the way its author intended.</p>
+    </div>
+  </div>
+
+  <div class="section" id="practices">
+    <h2>Best practices</h2>
+    <ol>
+      <li><strong>Always include a catch-all rule</strong> at a high rule number unless silent drop is the behaviour you want. Create it before the specific rules.</li>
+      <li><strong>Leave gaps between rule numbers</strong>, in increments of 10 or 100.</li>
+      <li><strong>Most specific rules at the lowest numbers.</strong> A broad rule at a low number shadows everything below it.</li>
+      <li><strong>Set protocol before configuring port ranges.</strong> Port ranges are only active for TCP (<code>6</code>) and UDP (<code>17</code>).</li>
+      <li><strong>Read the table back after every change</strong> with <code>GetTransitGatewayPolicyTableEntries</code>, and account for system-managed entries.</li>
+      <li><strong>Design the return path explicitly.</strong> Return traffic is re-evaluated by destination lookup on the route table associated with the inspection attachment, not by your policy table.</li>
+      <li><strong>Keep policy tables short.</strong> The 200-entry-per-transit-gateway quota and human reviewability both point the same direction.</li>
+      <li><strong>Manage policy tables in IaC with comments explaining rule order.</strong> Rule numbers encode intent that the API does not capture.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt, who should wait</h2>
+
+    <h3>Adopt</h3>
+    <ul>
+      <li>Teams running <strong>centralised inspection architectures</strong> who currently inspect everything because they cannot inspect selectively. This is the primary case, and the cost argument is usually immediate.</li>
+      <li>Organisations that have <strong>created VPCs or attachments purely to obtain routing granularity</strong>.</li>
+      <li>Teams with <strong>hybrid connectivity</strong> needing to route specific applications over Direct Connect and everything else over VPN, differentiated by source or port.</li>
+      <li><strong>Regulated environments</strong> that must demonstrate a specific traffic class is inspected, and want that assertion to live in one reviewable ordered list.</li>
+    </ul>
+
+    <h3>Wait</h3>
+    <ul>
+      <li>Anyone whose <strong>destination-based routing already expresses their requirements</strong>. PBR adds ordered-ruleset complexity that is a liability with no offsetting benefit.</li>
+      <li>Teams <strong>without an asymmetric-routing testing capability</strong>. If you cannot verify both directions of a flow in a non-production environment, do not put this in front of production traffic.</li>
+      <li><strong>Site-to-Site VPN and Transit Gateway Connect attachments that depend on TGW-advertised BGP routes.</strong> See the next section - this is a hard blocker, not a caution.</li>
+      <li><strong>AWS Cloud WAN peering attachments</strong>, where customer-managed PBR entries are not supported.</li>
+      <li>Anyone who would deploy it <strong>without updating runbooks</strong>.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="bgp">
+    <h2>The limitation most likely to cause an outage</h2>
+    <p>This deserves its own section because it is easy to miss and expensive to discover in production.</p>
+    <div class="warning-box">
+      <p><strong>Associate a policy table with a Site-to-Site VPN or Transit Gateway Connect attachment, and the transit gateway stops advertising routes to that peer entirely.</strong> Not a reduced set, not a filtered subset - the attachment advertises nothing.</p>
+      <p>If your on-premises router or SD-WAN appliance learns AWS prefixes dynamically from the transit gateway, associating a policy table with that attachment will silently remove them. The attachment stays up. BGP stays established. The routes stop arriving.</p>
+    </div>
+    <p>Direct Connect is the exception, and the reason is worth understanding rather than memorising. What a transit gateway advertises to your customer gateway over Direct Connect is determined by the allowed-prefixes list on the Direct Connect gateway association, a different mechanism entirely from the attachment-level advertisement that a policy table suppresses. Associating a policy table leaves those advertisements untouched.</p>
+    <p>Turn this into a review gate. Any change that associates a policy table with a dynamically-routed attachment should require evidence that the peer does not depend on transit gateway BGP advertisement, captured before the change rather than discovered after it. AWS documents the same precondition in its limitations page.</p>
+    <p>Two further launch limitations. <strong>TGW-to-Cloud WAN peering attachments</strong> do not support customer-managed entries; traffic on those attachments is controlled exclusively by system-managed entries, though you can still add customer entries to the same policy table for use with other attachment types. And <strong>system-managed entries cannot be modified or deleted</strong> by customers at this time.</p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ol>
+      <li>Transit Gateway forwarding is no longer destination-only. Policy tables classify on source CIDR, destination CIDR, protocol, source port, and destination port, then select a route table.</li>
+      <li>A policy table <strong>replaces</strong> the route table on an attachment. There is no side-by-side mode, so migration is a cutover.</li>
+      <li><strong>Unmatched traffic is dropped.</strong> Create the catch-all rule first.</li>
+      <li><strong>Associating a policy table with a VPN or Connect attachment stops BGP advertisement to that peer.</strong> Direct Connect is unaffected.</li>
+      <li>Return traffic is re-evaluated by ordinary destination lookup on the inspection attachment's route table. Asymmetry is now easier to create.</li>
+      <li>System-managed entries are evaluated before yours and are read-only.</li>
+      <li>GA in all Regions where Transit Gateway is available, enabled by default, no additional charge. The traffic patterns it enables do carry data processing costs.</li>
+      <li>Quotas: 20 policy tables per transit gateway (not adjustable), 200 entries per transit gateway across all policy tables (adjustable), rule numbers 1 to 50,000.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/07/aws-transit-gateway-policy-based-routing/">AWS announces general availability of Policy-Based Routing on AWS Transit Gateway</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/tgw/tgw-policy-tables.html">Transit gateway policy tables in AWS Transit Gateway</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/tgw/tgw-policy-tables-concepts.html">Policy table concepts</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/tgw/tgw-policy-tables-prerequisites.html">Prerequisites for transit gateway policy tables</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/tgw/tgw-policy-tables-entry-create.html">Create a policy table entry</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/tgw/tgw-policy-tables-example.html">Example: Steering traffic to a security appliance</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/tgw/tgw-policy-tables-limitations.html">Transit gateway policy table limitations</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/tgw/transit-gateway-quotas.html">AWS Transit Gateway quotas</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/tgw/tgw-route-tables.html">Transit gateway route tables</a></li>
+      <li><a href="https://aws.amazon.com/transit-gateway/pricing/">AWS Transit Gateway pricing</a></li>
+      <li><a href="https://docs.aws.amazon.com/cli/latest/reference/ec2/create-transit-gateway-policy-table-entry.html">create-transit-gateway-policy-table-entry, AWS CLI Reference</a></li>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/07/aws-direct-connect-bgp-visibility/">AWS Direct Connect now supports BGP route visibility on Virtual Interfaces</a></li>
+    </ul>
+  </div>
+
+  <div class="post-footer">
+    <p>AWS Daily Intelligence tracks meaningful AWS changes from official sources and explains what they mean for enterprise architecture.</p>
+    <p>Every technical claim in this post is sourced from the AWS documentation linked above. Feature status: General Availability, announced 30 July 2026.</p>
+  </div>
+
+</div>
+</div>
