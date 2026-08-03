@@ -2086,12 +2086,49 @@ def main():
     ]
     (BLOG_DIR / "posts.json").write_text(json.dumps(posts_json, indent=2), encoding="utf-8")
 
-    # stats.json — used by portfolio homepage for the writing streak counter
+    # stats.json — used by portfolio homepage for the writing streak counter,
+    # the writing-section filter pills, and the "currently writing" cards.
+    # SERIES/TOP TAGS are emitted so the homepage never hardcodes a taxonomy
+    # that drifts every time a new series starts.
     dates = [p["date"] for p in visible_posts]
+
+    def _series_entry(label, short, tag_url, total=None):
+        members = [p for p in visible_posts if label in p["tags"]]
+        latest = max((p["date"] for p in members), default=None)
+        entry = {
+            "label": label,
+            "short": short,
+            "count": len(members),
+            "href": "/blog/?tag=" + tag_url,
+            "latest_post_date": latest.strftime("%Y-%m-%d") if latest else None,
+        }
+        if total:
+            entry["total"] = total
+        return entry
+
+    series = [
+        _series_entry("AWS Architecture Series", "Architecture Series", "aws+architecture+series"),
+        _series_entry("AWS Weekly Lab", "Weekly Lab", "aws+weekly+lab", total=52),
+        _series_entry("AWS Daily Intelligence", "Daily Intelligence", "aws+daily+intelligence"),
+    ]
+
+    series_labels = {s["label"] for s in series}
+    tag_counts = {}
+    for p in visible_posts:
+        for t in p["tags"]:
+            if t not in series_labels:
+                tag_counts[t] = tag_counts.get(t, 0) + 1
+    top_tags = [
+        {"name": t, "count": c, "href": "/blog/?tag=" + t.lower().replace(" ", "+")}
+        for t, c in sorted(tag_counts.items(), key=lambda kv: -kv[1])
+    ]
+
     stats_json = {
         "total_posts": len(visible_posts),
         "first_post_date": min(dates).strftime("%Y-%m-%d") if dates else None,
         "latest_post_date": max(dates).strftime("%Y-%m-%d") if dates else None,
+        "series": [s for s in series if s["count"]],
+        "top_tags": top_tags,
     }
     (BLOG_DIR / "stats.json").write_text(json.dumps(stats_json, indent=2), encoding="utf-8")
 
