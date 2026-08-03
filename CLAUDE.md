@@ -100,9 +100,17 @@ it runs.** Decide up front:
 
 ## After publishing a new arch post
 
-1. Run `python scripts/sync_blog.py`
-2. `git add blog/ scripts/sync_blog.py` (broad add — picks up all regenerated pages)
-3. Commit and ask Jayanth to push
+1. Run `python scripts/validate_arch_post.py` — **must report 0 errors.**
+   It checks for unclosed comments (which silently swallow the entire post
+   body), unresolved `{{PLACEHOLDER}}`s, missing sections, empty nav boxes,
+   broken/invalid diagram SVGs, missing alt text, wrong labels, and a missing
+   `posts/` source file (which would leave the post out of RAG).
+2. Run `python scripts/sync_blog.py`
+3. `git add blog/ posts/ scripts/` (broad add — picks up all regenerated pages)
+4. Commit and ask Jayanth to push
+
+Do not hand-inspect for these problems — the validator exists because every
+check in it corresponds to a bug that shipped or nearly shipped.
 
 ## Post count and stats
 
