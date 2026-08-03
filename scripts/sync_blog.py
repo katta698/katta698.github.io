@@ -2172,7 +2172,14 @@ def main():
         "Drift Detection":  (["drift"],                                   "IaC & Delivery"),
         # Operations & Cost
         "CloudWatch":       (["cloudwatch", "logging", "observability"],  "Operations & Cost"),
-        "EventBridge":      (["eventbridge", "event-driven"],             "Operations & Cost"),
+        # Messaging & Events — aliases kept tight on purpose. "sqs"/"sns" are
+        # safe letter combinations; avoid loose words like "queue" or
+        # "notification" that appear in unrelated posts. See the "arc" note
+        # below for what loose matching costs.
+        "EventBridge":      (["eventbridge", "event-driven"],             "Messaging & Events"),
+        "SQS":              (["sqs"],                                     "Messaging & Events"),
+        "SNS":              (["sns"],                                     "Messaging & Events"),
+        "Step Functions":   (["step function"],                           "Messaging & Events"),
         "Cost & FinOps":    (["cost", "finops", "cur", "savings", "billing"], "Operations & Cost"),
         "Systems Manager":  (["systems manager", "ssm", "patch"],         "Operations & Cost"),
         # NB: no bare "arc" alias — it matches "Architecture" in every arch title.
