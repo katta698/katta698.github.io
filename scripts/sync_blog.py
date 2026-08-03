@@ -1128,11 +1128,11 @@ def build_index_page(posts):
     lab_series_json = json.dumps([
         {"n": _week_num(p), "slug": p["slug"],
          "title": _re.sub(r'^Week \d+\s*[-–—]\s*', '', p["title"]),
-         "date": p["date_fmt"]}
+         "date": p["date_fmt"], "y": p["date"].year}
         for p in lab_posts
     ])
     arch_series_json = json.dumps([
-        {"n": i+1, "slug": p["slug"], "title": p["title"].split(" — ", 1)[-1] if " — " in p["title"] else p["title"], "date": p["date_fmt"]}
+        {"n": i+1, "slug": p["slug"], "title": p["title"].split(" — ", 1)[-1] if " — " in p["title"] else p["title"], "date": p["date_fmt"], "y": p["date"].year}
         for i, p in enumerate(reversed(arch_posts))
     ])
     def _feed_item(p, n=None, title=None):
@@ -1382,12 +1382,13 @@ def build_index_page(posts):
     <!-- ① Series Progress -->
     <div class="sidebar-card" id="series-progress-widget">
       <div class="sidebar-title">Architecture series progress</div>
+      <div id="sp-years" style="display:none;gap:4px;margin-bottom:10px;flex-wrap:wrap"></div>
       <div id="sp-dots" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
       <div style="height:4px;background:var(--border);border-radius:4px;margin-bottom:9px;overflow:hidden">
         <div id="sp-bar" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width .4s ease"></div>
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--text-muted)">
-        <span><strong id="sp-count" style="color:var(--text)">0</strong> of {len(arch_posts)} posts read</span>
+        <span><strong id="sp-count" style="color:var(--text)">0</strong> of <span id="sp-total">{len(arch_posts)}</span> <span id="sp-unit">posts read</span></span>
         <a id="sp-next" href="#" style="color:var(--orange);text-decoration:none;font-size:11px"></a>
       </div>
       <div style="font-size:10.5px;color:var(--text-muted);margin-top:9px;padding-top:9px;border-top:0.5px solid var(--border)">Stored in your browser · picks up where you left off</div>
@@ -1413,14 +1414,51 @@ def build_index_page(posts):
           +'background:'+(isRead?'var(--orange)':'transparent')+';'
           +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
       }}
+      var YEARS = (function(){{
+        var seen = {{}}, out = [];
+        ARCH.forEach(function(p){{ if(!seen[p.y]){{ seen[p.y]=1; out.push(String(p.y)); }} }});
+        return out.sort().reverse();
+      }})();
+      var useTabs = YEARS.length > 1 && ARCH.length > COMPACT_AT;
+      var curYear = YEARS[0];
+      function maxYearCount(){{
+        var c = {{}}, m = 0;
+        ARCH.forEach(function(p){{ c[p.y] = (c[p.y]||0)+1; if(c[p.y] > m) m = c[p.y]; }});
+        return m;
+      }}
+      function renderTabs(){{
+        var tw = document.getElementById('sp-years');
+        if(!tw) return;
+        if(!useTabs){{ tw.style.display = 'none'; return; }}
+        tw.style.display = 'flex';
+        if(!tw.dataset.built){{
+          YEARS.forEach(function(y){{
+            var b = document.createElement('button');
+            b.textContent = y; b.dataset.y = y;
+            b.style.cssText = 'font-size:10.5px;padding:2px 8px;border-radius:10px;border:1px solid var(--border);cursor:pointer;background:transparent;color:var(--text-muted)';
+            b.onclick = function(){{ curYear = y; render(); }};
+            tw.appendChild(b);
+          }});
+          tw.dataset.built = '1';
+        }}
+        tw.querySelectorAll('button').forEach(function(b){{
+          var on = String(b.dataset.y) === String(curYear);
+          b.style.background = on ? 'var(--orange)' : 'transparent';
+          b.style.color = on ? '#1D2322' : 'var(--text-muted)';
+          b.style.borderColor = on ? 'var(--orange)' : 'var(--border)';
+          b.style.fontWeight = on ? '600' : '400';
+        }});
+      }}
       function render(){{
         var read = load();
         var wrap = document.getElementById('sp-dots');
         if(!wrap) return;
-        var compact = ARCH.length > COMPACT_AT;
+        var shown = useTabs ? ARCH.filter(function(q){{ return String(q.y) === String(curYear); }}) : ARCH;
+        var compact = (useTabs ? maxYearCount() : ARCH.length) > COMPACT_AT;
         wrap.style.gap = compact ? '4px' : '6px';
         wrap.innerHTML = '';
-        ARCH.forEach(function(p){{
+        renderTabs();
+        shown.forEach(function(p){{
           var d = document.createElement('a');
           d.href = '/blog/'+p.slug+'/';
           d.title = p.title;
@@ -1435,9 +1473,12 @@ def build_index_page(posts):
           }});
           wrap.appendChild(d);
         }});
-        var pct = Math.round(read.length/ARCH.length*100);
+        var inScope = shown.filter(function(q){{ return read.includes(q.n); }}).length;
+        var pct = shown.length ? Math.round(inScope/shown.length*100) : 0;
         document.getElementById('sp-bar').style.width = pct+'%';
-        document.getElementById('sp-count').textContent = read.length;
+        document.getElementById('sp-count').textContent = inScope;
+        document.getElementById('sp-total').textContent = shown.length;
+        document.getElementById('sp-unit').textContent = useTabs ? ('posts in '+curYear) : 'posts read';
         var next = null;
         for(var i=0;i<ARCH.length;i++){{ if(!read.includes(ARCH[i].n)){{ next=ARCH[i]; break; }} }}
         var el = document.getElementById('sp-next');
@@ -1451,12 +1492,13 @@ def build_index_page(posts):
     <!-- ① Lab Series Progress -->
     <div class="sidebar-card" id="lab-progress-widget">
       <div class="sidebar-title">Weekly lab progress</div>
+      <div id="lp-years" style="display:none;gap:4px;margin-bottom:10px;flex-wrap:wrap"></div>
       <div id="lp-dots" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
       <div style="height:4px;background:var(--border);border-radius:4px;margin-bottom:9px;overflow:hidden">
         <div id="lp-bar" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width .4s ease"></div>
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--text-muted)">
-        <span><strong id="lp-count" style="color:var(--text)">0</strong> of {len(lab_posts)} weeks done</span>
+        <span><strong id="lp-count" style="color:var(--text)">0</strong> of <span id="lp-total">{len(lab_posts)}</span> <span id="lp-unit">weeks done</span></span>
         <a id="lp-next" href="#" style="color:var(--orange);text-decoration:none;font-size:11px"></a>
       </div>
       <div style="font-size:10.5px;color:var(--text-muted);margin-top:9px;padding-top:9px;border-top:0.5px solid var(--border)">Stored in your browser · picks up where you left off</div>
@@ -1482,14 +1524,51 @@ def build_index_page(posts):
           +'background:'+(isRead?'var(--orange)':'transparent')+';'
           +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
       }}
+      var YEARS = (function(){{
+        var seen = {{}}, out = [];
+        LAB.forEach(function(p){{ if(!seen[p.y]){{ seen[p.y]=1; out.push(String(p.y)); }} }});
+        return out.sort().reverse();
+      }})();
+      var useTabs = YEARS.length > 1 && LAB.length > COMPACT_AT;
+      var curYear = YEARS[0];
+      function maxYearCount(){{
+        var c = {{}}, m = 0;
+        LAB.forEach(function(p){{ c[p.y] = (c[p.y]||0)+1; if(c[p.y] > m) m = c[p.y]; }});
+        return m;
+      }}
+      function renderTabs(){{
+        var tw = document.getElementById('lp-years');
+        if(!tw) return;
+        if(!useTabs){{ tw.style.display = 'none'; return; }}
+        tw.style.display = 'flex';
+        if(!tw.dataset.built){{
+          YEARS.forEach(function(y){{
+            var b = document.createElement('button');
+            b.textContent = y; b.dataset.y = y;
+            b.style.cssText = 'font-size:10.5px;padding:2px 8px;border-radius:10px;border:1px solid var(--border);cursor:pointer;background:transparent;color:var(--text-muted)';
+            b.onclick = function(){{ curYear = y; render(); }};
+            tw.appendChild(b);
+          }});
+          tw.dataset.built = '1';
+        }}
+        tw.querySelectorAll('button').forEach(function(b){{
+          var on = String(b.dataset.y) === String(curYear);
+          b.style.background = on ? 'var(--orange)' : 'transparent';
+          b.style.color = on ? '#1D2322' : 'var(--text-muted)';
+          b.style.borderColor = on ? 'var(--orange)' : 'var(--border)';
+          b.style.fontWeight = on ? '600' : '400';
+        }});
+      }}
       function render(){{
         var read = load();
         var wrap = document.getElementById('lp-dots');
         if(!wrap) return;
-        var compact = LAB.length > COMPACT_AT;
+        var shown = useTabs ? LAB.filter(function(q){{ return String(q.y) === String(curYear); }}) : LAB;
+        var compact = (useTabs ? maxYearCount() : LAB.length) > COMPACT_AT;
         wrap.style.gap = compact ? '4px' : '6px';
         wrap.innerHTML = '';
-        LAB.forEach(function(p){{
+        renderTabs();
+        shown.forEach(function(p){{
           var d = document.createElement('a');
           d.href = '/blog/'+p.slug+'/';
           d.title = 'Week '+p.n+': '+p.title;
@@ -1504,9 +1583,12 @@ def build_index_page(posts):
           }});
           wrap.appendChild(d);
         }});
-        var pct = Math.round(read.length/LAB.length*100);
+        var inScope = shown.filter(function(q){{ return read.includes(q.n); }}).length;
+        var pct = shown.length ? Math.round(inScope/shown.length*100) : 0;
         document.getElementById('lp-bar').style.width = pct+'%';
-        document.getElementById('lp-count').textContent = read.length;
+        document.getElementById('lp-count').textContent = inScope;
+        document.getElementById('lp-total').textContent = shown.length;
+        document.getElementById('lp-unit').textContent = useTabs ? ('weeks in '+curYear) : 'weeks done';
         var next = null;
         for(var i=0;i<LAB.length;i++){{ if(!read.includes(LAB[i].n)){{ next=LAB[i]; break; }} }}
         var el = document.getElementById('lp-next');
