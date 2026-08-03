@@ -1135,12 +1135,29 @@ def build_index_page(posts):
         {"n": i+1, "slug": p["slug"], "title": p["title"].split(" — ", 1)[-1] if " — " in p["title"] else p["title"], "date": p["date_fmt"]}
         for i, p in enumerate(reversed(arch_posts))
     ])
-    arch_feed_json = json.dumps([
-        {"n": len(arch_posts)-i, "slug": p["slug"],
-         "title": p["title"].split(" — ", 1)[-1] if " — " in p["title"] else p["title"],
-         "date": p["date_fmt"], "rt": p["read_time"]}
+    def _feed_item(p, n=None, title=None):
+        return {"n": n, "slug": p["slug"], "title": title or p["title"],
+                "date": p["date_fmt"], "rt": p["read_time"],
+                "tag": p["tags"][0] if p["tags"] else ""}
+
+    _arch_feed = [
+        _feed_item(p, len(arch_posts)-i,
+                   p["title"].split(" — ", 1)[-1] if " — " in p["title"] else p["title"])
         for i, p in enumerate(arch_posts[:3])
-    ])
+    ]
+    _lab_feed = [
+        _feed_item(p, _week_num(p), _re.sub(r'^Week \d+\s*[-–—]\s*', '', p["title"]))
+        for p in sorted(lab_posts, key=_week_num, reverse=True)[:3]
+    ]
+    _all_feed = [_feed_item(p) for p in posts[:3]]
+
+    feed_data_json = json.dumps({
+        "arch": {"items": _arch_feed, "count": len(arch_posts),
+                 "href": "/blog/?tag=aws+architecture+series"},
+        "lab":  {"items": _lab_feed,  "count": len(lab_posts),
+                 "href": "/blog/?tag=aws+weekly+lab"},
+        "all":  {"items": _all_feed,  "count": len(posts), "href": "/blog/"},
+    })
 
     # 4. Publishing heatmap — posts per month per year
     from collections import defaultdict
@@ -1546,27 +1563,62 @@ def build_index_page(posts):
     }})();
     </script>
 
-    <!-- ④ Series Mini-Feed -->
+    <!-- ④ Latest posts feed (switchable) -->
     <div class="sidebar-card" id="series-feed-widget">
-      <div class="sidebar-title">Latest in the series</div>
+      <div class="sidebar-title">Latest posts</div>
+      <div id="sf-tabs" style="display:flex;gap:4px;margin-bottom:10px"></div>
       <div id="sf-list"></div>
-      <a href="/blog/?tag=aws+architecture+series" style="display:block;margin-top:10px;font-size:11.5px;color:var(--orange);text-decoration:none;text-align:right">See all {len(arch_posts)} posts →</a>
+      <a id="sf-all" href="/blog/" style="display:block;margin-top:10px;font-size:11.5px;color:var(--orange);text-decoration:none;text-align:right">See all posts →</a>
     </div>
     <script>
     (function(){{
-      var FEED = {arch_feed_json};
+      var FEEDS = {feed_data_json};
+      var TABS = [['arch','Arch'],['lab','Lab'],['all','All']];
       var list = document.getElementById('sf-list');
-      if(!list) return;
-      FEED.forEach(function(p,i){{
-        var row = document.createElement('a');
-        row.href = '/blog/'+p.slug+'/';
-        row.style.cssText='display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:0.5px solid var(--border);text-decoration:none;'+(i===FEED.length-1?'border-bottom:none;padding-bottom:0':'');
-        row.innerHTML='<div style="width:22px;height:22px;border-radius:50%;background:rgba(196,164,132,.12);color:var(--orange);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px">#'+p.n+'</div>'
-          +'<div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--text);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">'+p.title+'</div>'
-          +'<div style="font-size:10.5px;color:var(--text-muted);margin-top:2px">'+p.date+' · '+p.rt+' min</div></div>'
-          +'<div style="color:var(--orange);font-size:14px;margin-top:2px">›</div>';
-        list.appendChild(row);
+      var tabWrap = document.getElementById('sf-tabs');
+      var allLink = document.getElementById('sf-all');
+      if(!list||!tabWrap||!allLink) return;
+      function render(key){{
+        var f = FEEDS[key];
+        if(!f) return;
+        list.innerHTML='';
+        if(!f.items.length){{
+          list.innerHTML='<div style="font-size:11.5px;color:var(--text-muted);padding:6px 0">No posts yet.</div>';
+        }}
+        f.items.forEach(function(p,i){{
+          var row=document.createElement('a');
+          row.href='/blog/'+p.slug+'/';
+          row.style.cssText='display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:0.5px solid var(--border);text-decoration:none;'+(i===f.items.length-1?'border-bottom:none;padding-bottom:0':'');
+          var badge=p.n?('#'+p.n):'•';
+          var meta=p.date+' · '+p.rt+' min'+((!p.n&&p.tag)?(' · '+p.tag):'');
+          row.innerHTML='<div style="width:22px;height:22px;border-radius:50%;background:rgba(196,164,132,.12);color:var(--orange);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px">'+badge+'</div>'
+            +'<div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--text);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">'+p.title+'</div>'
+            +'<div style="font-size:10.5px;color:var(--text-muted);margin-top:2px">'+meta+'</div></div>'
+            +'<div style="color:var(--orange);font-size:14px;margin-top:2px">›</div>';
+          list.appendChild(row);
+        }});
+        allLink.href=f.href;
+        allLink.textContent='See all '+f.count+' posts →';
+        tabWrap.querySelectorAll('button').forEach(function(b){{
+          var on=b.dataset.k===key;
+          b.style.background=on?'var(--orange)':'transparent';
+          b.style.color=on?'#1D2322':'var(--text-muted)';
+          b.style.borderColor=on?'var(--orange)':'var(--border)';
+          b.style.fontWeight=on?'600':'400';
+        }});
+        try{{localStorage.setItem('sf-tab',key);}}catch(e){{}}
+      }}
+      TABS.forEach(function(t){{
+        var btn=document.createElement('button');
+        btn.textContent=t[1]; btn.dataset.k=t[0];
+        btn.style.cssText='font-size:10.5px;padding:2px 8px;border-radius:10px;border:1px solid var(--border);cursor:pointer;background:transparent;color:var(--text-muted)';
+        btn.onclick=function(){{render(t[0]);}};
+        tabWrap.appendChild(btn);
       }});
+      var saved='arch';
+      try{{saved=localStorage.getItem('sf-tab')||'arch';}}catch(e){{}}
+      if(!FEEDS[saved]||!FEEDS[saved].items.length) saved='arch';
+      render(saved);
     }})();
     </script>
 
@@ -1574,8 +1626,8 @@ def build_index_page(posts):
     <div class="sidebar-card" id="heatmap-widget">
       <div class="sidebar-title">Publishing activity</div>
       <div id="hm-yr-tabs" style="display:flex;gap:4px;margin-bottom:10px"></div>
-      <div style="overflow-x:auto">
-        <div id="hm-grid" style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;min-width:220px"></div>
+      <div>
+        <div id="hm-grid" style="display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:3px"></div>
       </div>
       <div id="hm-tip" style="font-size:10.5px;color:var(--text-muted);margin-top:6px;min-height:15px">Hover a month</div>
       <div style="display:flex;align-items:center;gap:4px;margin-top:8px;font-size:10px;color:var(--text-muted)">
@@ -1603,7 +1655,7 @@ def build_index_page(posts):
           var col=document.createElement('div');
           col.style.cssText='display:flex;flex-direction:column;gap:3px';
           var lbl=document.createElement('div');
-          lbl.style.cssText='font-size:8.5px;color:var(--text-muted);text-align:center;margin-bottom:2px';
+          lbl.style.cssText='font-size:8.5px;color:var(--text-muted);text-align:center;margin-bottom:2px;overflow:hidden';
           lbl.textContent=d.m;
           var cell=document.createElement('div');
           var lvl=d.n===0?0:d.n<=max*.25?1:d.n<=max*.6?2:3;
