@@ -324,6 +324,17 @@
       searchTerm = e.target.value;
       applyFilters();
     });
+
+    // ?q= deep link (used by the homepage skills section). Applied here, not
+    // where the box is pre-filled further up: that code runs before this
+    // listener is registered, so the 'input' event it dispatches is lost and
+    // the box ends up populated with nothing filtered.
+    const qDeepLink = new URLSearchParams(window.location.search).get('q');
+    if (qDeepLink) {
+      searchInput.value = qDeepLink;
+      searchTerm = qDeepLink;
+      applyFilters();
+    }
   }
 
   // Sort toggle — inject next to results count
