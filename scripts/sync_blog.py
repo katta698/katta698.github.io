@@ -16,6 +16,7 @@ import sys
 from datetime import datetime
 from html import escape
 from pathlib import Path
+from urllib.parse import quote_plus
 
 import markdown
 import yaml
@@ -2123,12 +2124,82 @@ def main():
         for t, c in sorted(tag_counts.items(), key=lambda kv: -kv[1])
     ]
 
+    # Skills are DERIVED, never curated. TOPIC_VOCAB is a recognition
+    # vocabulary, not a list of claims: a topic only reaches the homepage once
+    # a post title or tag actually mentions it, and it ranks by how much has
+    # been written. Start writing about something new and it appears on its
+    # own; stop and it falls down the list. Add vocabulary entries as the
+    # subject matter widens — never add a skill by hand.
+    #   canonical name -> (match aliases, group)
+    TOPIC_VOCAB = {
+        # Compute
+        "EC2":              (["ec2", "instance type"],                    "Compute"),
+        "Graviton":         (["graviton", "arm64"],                       "Compute"),
+        "Spot":             (["spot"],                                    "Compute"),
+        "Auto Scaling":     (["auto scaling", "autoscaling"],             "Compute"),
+        "Lambda":           (["lambda", "serverless"],                    "Compute"),
+        # Containers
+        "EKS":              (["eks"],                                     "Containers"),
+        "ECS / Fargate":    (["ecs", "fargate"],                          "Containers"),
+        "Kubernetes":       (["kubernetes", "k8s"],                       "Containers"),
+        "Docker":           (["docker"],                                  "Containers"),
+        # Networking
+        "VPC":              (["vpc"],                                     "Networking"),
+        "Transit Gateway":  (["transit gateway"],                         "Networking"),
+        "Route 53":         (["route 53", "route53", "dns"],              "Networking"),
+        "CloudFront":       (["cloudfront", "edge"],                      "Networking"),
+        "Load Balancing":   (["alb", "nlb", "load balanc"],               "Networking"),
+        "PrivateLink":      (["privatelink", "vpc endpoint"],             "Networking"),
+        # Security & Identity
+        "IAM":              (["iam"],                                     "Security & Identity"),
+        "Identity Center":  (["identity center", "sso"],                  "Security & Identity"),
+        "KMS":              (["kms", "encryption"],                       "Security & Identity"),
+        "Security Hub":     (["security hub", "guardduty"],               "Security & Identity"),
+        "Control Tower":    (["control tower", "landing zone", "aft"],    "Security & Identity"),
+        "Organizations":    (["organizations", "scp"],                    "Security & Identity"),
+        "Config":           (["config compliance", "aws config"],         "Security & Identity"),
+        # Data & Storage
+        "S3":               (["s3"],                                      "Data & Storage"),
+        "Aurora":           (["aurora"],                                  "Data & Storage"),
+        "RDS":              (["rds", "postgres", "mysql"],                "Data & Storage"),
+        "DynamoDB":         (["dynamodb"],                                "Data & Storage"),
+        "Athena":           (["athena", "glue"],                          "Data & Storage"),
+        # IaC & Delivery
+        "Terraform":        (["terraform"],                               "IaC & Delivery"),
+        "GitOps":           (["gitops", "argo"],                          "IaC & Delivery"),
+        "GitHub Actions":   (["github actions"],                          "IaC & Delivery"),
+        "CloudFormation":   (["cloudformation"],                          "IaC & Delivery"),
+        "Drift Detection":  (["drift"],                                   "IaC & Delivery"),
+        # Operations & Cost
+        "CloudWatch":       (["cloudwatch", "logging", "observability"],  "Operations & Cost"),
+        "EventBridge":      (["eventbridge", "event-driven"],             "Operations & Cost"),
+        "Cost & FinOps":    (["cost", "finops", "cur", "savings", "billing"], "Operations & Cost"),
+        "Systems Manager":  (["systems manager", "ssm", "patch"],         "Operations & Cost"),
+        # NB: no bare "arc" alias — it matches "Architecture" in every arch title.
+        "Resilience / DR":  (["disaster recovery", "multi-region", "failover",
+                              "recovery controller"],                     "Operations & Cost"),
+    }
+
+    topic_hits = {}
+    for name, (aliases, group) in TOPIC_VOCAB.items():
+        n = sum(1 for p in visible_posts
+                if any(a in (p["title"] + " " + " ".join(p["tags"])).lower() for a in aliases))
+        if n:
+            topic_hits.setdefault(group, []).append(
+                {"name": name, "count": n, "href": "/blog/?q=" + quote_plus(aliases[0].strip())})
+
+    skills = []
+    for group in sorted(topic_hits, key=lambda g: -sum(i["count"] for i in topic_hits[g])):
+        items = sorted(topic_hits[group], key=lambda i: -i["count"])[:6]
+        skills.append({"group": group, "items": items})
+
     stats_json = {
         "total_posts": len(visible_posts),
         "first_post_date": min(dates).strftime("%Y-%m-%d") if dates else None,
         "latest_post_date": max(dates).strftime("%Y-%m-%d") if dates else None,
         "series": [s for s in series if s["count"]],
         "top_tags": top_tags,
+        "skills": skills,
     }
     (BLOG_DIR / "stats.json").write_text(json.dumps(stats_json, indent=2), encoding="utf-8")
 
