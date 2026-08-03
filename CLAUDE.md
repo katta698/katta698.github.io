@@ -83,14 +83,64 @@ it runs.** Decide up front:
   encoding. Use Python `open(..., encoding='utf-8')`.
 - **SVG is XML, not HTML.** `&mdash;` and `&rarr;` are undefined entities and
   make the whole file fail to render, silently. Use `&#8212;` / `&#8594;`.
-- **Wrap wide tables** in `<div style="overflow-x:auto">` or the last column is
-  clipped on mobile with no way to scroll to it.
+- **Wrap wide tables** or the last column is clipped on mobile with no way to
+  scroll to it. **Which wrapper depends on the series:**
+  - Arch posts bypass `clean_html()`, so `<div style="overflow-x:auto">` works.
+  - **Every other series is sync-built, and `clean_html()` strips every inline
+    `style` attribute** — that wrapper silently becomes a bare `<div>` and the
+    table clips anyway. Use `<div class="table-scroll">`; class attributes
+    survive cleaning. The rule lives in `JK_POST_THEME_CSS`.
 - **Don't lead a post's first paragraph with `<code>`** — the auto-excerpt
   strips tags without adding spaces, producing "240m5.2xlargeinstances" on the
   home page widget.
 - **`posts.json` caches title/excerpt/tags for `externally_built` posts.** If a
   corrected excerpt won't take, delete that entry from `blog/posts.json` and
   re-run sync.
+
+### Diagrams — the house standard
+
+**There is no mermaid on this site.** Nothing renders it; a mermaid fence ships
+as a raw code block. Do not author diagrams in mermaid.
+
+**Standard for all series: a standalone SVG file referenced with `<img>`.**
+
+```html
+<img src="/blog/assets/diagrams/<prefix>-NNN-<topic>.svg" alt="Diagram: ...">
+```
+
+- File lives in `blog/assets/diagrams/`, named to match the post's file prefix
+  (`arch-007-*`, `daily-001-*`).
+- SVG root: `viewBox`, `style="width:100%;max-width:860px;"`, `role="img"`,
+  `aria-label`. No XML declaration. First child is a background
+  `<rect ... fill="#F8F7F5"/>`.
+- Include a `<title>` element — it is the accessible description.
+- `alt` on the `<img>` starts with `Diagram:` and describes the content, not
+  the picture.
+- **SVG is XML.** No named entities beyond the XML five (`&#8212;`, not
+  `&mdash;`) or the file fails to render, silently and completely.
+
+Why a file rather than inline SVG: `clean_html()` strips the `style` attribute
+off inline SVG, so an inline diagram loses its own sizing. An `<img>` is never
+descended into, so the file keeps its sizing — and it caches separately.
+
+Inline `<symbol>`/`<use>` with official AWS icons (Weekly Lab weeks 11-12) is
+the legacy approach. Prefer a file for anything new. If a diagram genuinely
+needs AWS service iconography, reuse the generic `i-*` symbol ids from
+week-11 rather than inventing per-post ids like week-12's `w12-*`.
+
+## AWS Daily Intelligence series
+
+- File prefix `daily-NNN-*` in `posts/`, slug prefix
+  `aws-daily-intelligence-*` (mirrors the arch two-part convention).
+- Labels: `[AWS, "AWS Daily Intelligence"]`. **`detect_tags()` keeps only
+  labels present in `CATEGORY_ORDER`** — `Cloud`, `Security`, and anything
+  else outside that list is silently dropped, so do not bother adding them.
+- Generic sync-built pages. Do **not** add `daily-` to the `externally_built`
+  check: a daily cadence cannot sustain hand-built pages, and no separate
+  pipeline builds them.
+- Title format: `AWS Daily Intelligence #N - <topic>`.
+- Every technical claim cites official AWS documentation, and the post ends
+  with an "Official AWS references" section of those links.
 
 ## CSS and design rules
 
