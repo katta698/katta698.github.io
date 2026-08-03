@@ -1398,18 +1398,35 @@ def build_index_page(posts):
       var KEY = 'arch-read-v1';
       function load(){{ try{{ return JSON.parse(localStorage.getItem(KEY)||'[]'); }}catch(e){{ return []; }} }}
       function save(r){{ try{{ localStorage.setItem(KEY,JSON.stringify(r)); }}catch(e){{}} }}
+      var COMPACT_AT = 24;
+      function dotStyle(isRead, compact){{
+        if(compact){{
+          return 'width:13px;height:13px;border-radius:3px;display:block;'
+            +'border:1px solid '+(isRead?'var(--orange)':'var(--border)')+';'
+            +'background:'+(isRead?'var(--orange)':'transparent')+';'
+            +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
+        }}
+        return 'width:26px;height:26px;border-radius:50%;display:flex;align-items:center;'
+          +'justify-content:center;font-size:10px;font-weight:700;'
+          +'border:1.5px solid '+(isRead?'var(--orange)':'var(--border)')+';'
+          +'color:'+(isRead?'#1D2322':'var(--text-muted)')+';'
+          +'background:'+(isRead?'var(--orange)':'transparent')+';'
+          +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
+      }}
       function render(){{
         var read = load();
         var wrap = document.getElementById('sp-dots');
         if(!wrap) return;
+        var compact = ARCH.length > COMPACT_AT;
+        wrap.style.gap = compact ? '4px' : '6px';
         wrap.innerHTML = '';
         ARCH.forEach(function(p){{
           var d = document.createElement('a');
           d.href = '/blog/'+p.slug+'/';
           d.title = p.title;
           var isRead = read.includes(p.n);
-          d.style.cssText = 'width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:1.5px solid '+(isRead?'var(--orange)':'var(--border)')+';color:'+(isRead?'#1D2322':'var(--text-muted)')+';background:'+(isRead?'var(--orange)':'transparent')+';text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
-          d.textContent = p.n;
+          d.style.cssText = dotStyle(isRead, compact);
+          if(!compact) d.textContent = p.n;
           d.addEventListener('click',function(e){{
             e.preventDefault();
             var r=load(); var i=r.indexOf(p.n);
@@ -1450,18 +1467,35 @@ def build_index_page(posts):
       var KEY = 'lab-read-v1';
       function load(){{ try{{ return JSON.parse(localStorage.getItem(KEY)||'[]'); }}catch(e){{ return []; }} }}
       function save(r){{ try{{ localStorage.setItem(KEY,JSON.stringify(r)); }}catch(e){{}} }}
+      var COMPACT_AT = 24;
+      function dotStyle(isRead, compact){{
+        if(compact){{
+          return 'width:13px;height:13px;border-radius:3px;display:block;'
+            +'border:1px solid '+(isRead?'var(--orange)':'var(--border)')+';'
+            +'background:'+(isRead?'var(--orange)':'transparent')+';'
+            +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
+        }}
+        return 'width:26px;height:26px;border-radius:50%;display:flex;align-items:center;'
+          +'justify-content:center;font-size:10px;font-weight:700;'
+          +'border:1.5px solid '+(isRead?'var(--orange)':'var(--border)')+';'
+          +'color:'+(isRead?'#1D2322':'var(--text-muted)')+';'
+          +'background:'+(isRead?'var(--orange)':'transparent')+';'
+          +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
+      }}
       function render(){{
         var read = load();
         var wrap = document.getElementById('lp-dots');
         if(!wrap) return;
+        var compact = LAB.length > COMPACT_AT;
+        wrap.style.gap = compact ? '4px' : '6px';
         wrap.innerHTML = '';
         LAB.forEach(function(p){{
           var d = document.createElement('a');
           d.href = '/blog/'+p.slug+'/';
           d.title = 'Week '+p.n+': '+p.title;
           var isRead = read.includes(p.n);
-          d.style.cssText = 'width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:1.5px solid '+(isRead?'var(--orange)':'var(--border)')+';color:'+(isRead?'#1D2322':'var(--text-muted)')+';background:'+(isRead?'var(--orange)':'transparent')+';text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
-          d.textContent = p.n;
+          d.style.cssText = dotStyle(isRead, compact);
+          if(!compact) d.textContent = p.n;
           d.addEventListener('click',function(e){{
             e.preventDefault();
             var r=load(); var i=r.indexOf(p.n);
