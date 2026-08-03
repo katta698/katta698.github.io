@@ -1,0 +1,401 @@
+---
+title: "AWS Architecture Series #10 — Graviton + Spot: Cutting Compute Cost Without Betting the Fleet"
+date: 2026-08-03
+slug: aws-architecture-graviton-spot-mixed-instances
+labels: [AWS, "AWS Architecture Series"]
+problem: "A SaaS company runs its API tier on 240 On-Demand x86 instances. An earlier Spot attempt collapsed during a demand surge and left an informal ban on Spot for customer-facing workloads. Compute is now the largest line item on the bill."
+builds: "A single Auto Scaling group with a mixed instances policy: two launch templates and two InstanceRequirements blocks covering both Graviton and x86, an On-Demand base capacity floor, price-capacity-optimized Spot allocation, and Capacity Rebalancing for proactive replacement."
+catch: "Attaching a per-override launch template — the mechanism that lets one group run both architectures — is available only via the CLI or SDK, not the console. Overrides are capped at four InstanceRequirements structures, and the console forces the On-Demand allocation strategy to lowest-price."
+---
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A B2B SaaS company serves its public API from 240 m5.2xlarge instances spread across three
+      Availability Zones in us-east-1. The fleet scales between 180 and 400 instances on a weekday
+      curve. Every instance is x86. Every instance is On-Demand. Every instance is billed at list
+      price.
+    </p>
+    <p>
+      Finance flagged EC2 as the largest single line item on the bill, and the platform team already
+      knows the textbook answer is Spot. They also already tried it. Eighteen months ago they added
+      four instance types to the Auto Scaling group, set the Spot allocation strategy to
+      <code>lowest-price</code>, and moved 70% of the fleet onto Spot. A regional demand surge
+      reclaimed most of that capacity inside ten minutes. The group tried to backfill with
+      On-Demand in the same instance types and could not get it. The incident review ended with an
+      informal rule: no Spot on anything a customer touches.
+    </p>
+    <p>
+      That rule is the expensive part. The outage was real, but the diagnosis was wrong — and so
+      was the remedy. Five specific configuration choices caused it, and every one of them is
+      documented as an anti-pattern.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Four instance types is not diversification</strong></div>
+      <div class="challenge-body">
+        <p>
+          A Spot capacity pool is one instance type in one Availability Zone. Four types across
+          three AZs is twelve pools — and correlated ones, since they were all from the same
+          generation and family. AWS's stated rule of thumb is to be flexible across
+          <strong>at least ten instance types</strong> per workload.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Describe the shape of the compute instead of naming instances, so the group draws from dozens of pools.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>lowest-price is the highest-risk strategy</strong></div>
+      <div class="challenge-body">
+        <p>
+          AWS does not hedge on this one: <em>"We don't recommend the <code>lowest-price</code>
+          strategy because it has the highest risk of interruption for your Spot Instances."</em>
+          The cheapest pool is frequently the thinnest pool, so the group deliberately concentrated
+          itself in the capacity most likely to be reclaimed.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Use <code>price-capacity-optimized</code>, which weighs available capacity and price together.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>There was no floor</strong></div>
+      <div class="challenge-body">
+        <p>
+          70% Spot with no guaranteed On-Demand meant a bad enough Spot event could take the
+          serving tier below the minimum needed to carry traffic. Nothing in the configuration
+          reserved a baseline that Spot conditions could not touch.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Set <code>OnDemandBaseCapacity</code> to the instance count that must exist regardless of Spot availability.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>Replacement was reactive</strong></div>
+      <div class="challenge-body">
+        <p>
+          Without Capacity Rebalancing, Auto Scaling does not replace a Spot instance until after
+          the Spot service has interrupted it and its health check has failed. The group spent the
+          surge permanently behind the interruptions rather than ahead of them.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Enable Capacity Rebalancing to act on the rebalance recommendation, which arrives ahead of the two-minute notice.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">5</span><strong>Failing over to On-Demand made it worse</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the counterintuitive one. AWS explicitly discourages failing over to On-Demand to
+          handle interruptions, because <em>"failing over to On-Demand Instances can inadvertently
+          drive interruptions for your other Spot Instances"</em> — and once a type-and-AZ
+          combination is under pressure on Spot, On-Demand in that same combination is often
+          unavailable too. The backfill attempt competed with the capacity it was trying to rescue.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Diversify wide enough that no single pool matters, rather than building an escape hatch that amplifies the failure.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The target is one Auto Scaling group that runs two CPU architectures across two purchase
+      models. Graviton instances carry the fleet when they are available, because their discount
+      compounds with the Spot discount. x86 instances exist mainly to widen the pool count. A fixed
+      slice of On-Demand underneath both guarantees the service survives a total Spot withdrawal.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-010-mixed-instances.svg" alt="Diagram showing two launch templates, one arm64 and one x86_64, feeding a single mixed instances policy that contains two InstanceRequirements blocks. The resulting fleet is Spot Graviton capacity, Spot x86 capacity, and an On-Demand base, with Capacity Rebalancing handling at-risk instances." />
+      <figcaption>One Auto Scaling group, two launch templates, two architectures. The per-override launch template is what allows arm64 and x86 instance types to coexist in a single group, because each needs a different AMI.</figcaption>
+    </figure>
+
+    <h3>The mechanism that makes this possible</h3>
+    <p>
+      A Graviton instance needs an arm64 AMI and an x86 instance needs an x86_64 AMI, so a single
+      launch template cannot serve both. The feature that resolves this is easy to miss: each entry
+      in the mixed instances policy's <code>Overrides</code> array can carry its own
+      <code>LaunchTemplateSpecification</code>. The group-level launch template is the default, and
+      any override that names its own template uses that one instead.
+    </p>
+    <p>
+      Combine that with attribute-based instance type selection and you get two blocks — one
+      selecting Graviton by CPU manufacturer, one selecting Intel and AMD — each bound to the
+      correct AMI:
+    </p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">config.json</span>
+        <div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+      </div>
+<pre>{
+  "AutoScalingGroupName": "api-tier",
+  "MixedInstancesPolicy": {
+    "LaunchTemplate": {
+      "LaunchTemplateSpecification": {
+        "LaunchTemplateName": "api-tier-arm64",
+        "Version": "$Latest"
+      },
+      "Overrides": [
+        {
+          "InstanceRequirements": {
+            "VCpuCount":  { "Min": 4, "Max": 16 },
+            "MemoryMiB":  { "Min": 8192 },
+            "CpuManufacturers": ["amazon-web-services"],
+            "BaselinePerformanceFactors": {
+              "Cpu": { "References": [{ "InstanceFamily": "c6g" }] }
+            }
+          }
+        },
+        {
+          "InstanceRequirements": {
+            "VCpuCount":  { "Min": 4, "Max": 16 },
+            "MemoryMiB":  { "Min": 8192 },
+            "CpuManufacturers": ["intel", "amd"],
+            "BaselinePerformanceFactors": {
+              "Cpu": { "References": [{ "InstanceFamily": "c6i" }] }
+            }
+          },
+          "LaunchTemplateSpecification": {
+            "LaunchTemplateName": "api-tier-x86",
+            "Version": "$Latest"
+          }
+        }
+      ]
+    },
+    "InstancesDistribution": {
+      "OnDemandBaseCapacity": 60,
+      "OnDemandPercentageAboveBaseCapacity": 20,
+      "SpotAllocationStrategy": "price-capacity-optimized"
+    }
+  },
+  "CapacityRebalance": true,
+  "MinSize": 180,
+  "MaxSize": 400,
+  "DesiredCapacity": 240,
+  "VPCZoneIdentifier": "subnet-a,subnet-b,subnet-c"
+}</pre>
+    </div>
+
+    <p>
+      Note what is <em>not</em> in that file: a list of instance types. The group is told the shape
+      of the compute it needs — 4 to 16 vCPUs, at least 8 GiB of memory, CPU performance no
+      worse than the named baseline family — and Auto Scaling resolves that to whatever
+      currently matches. New instance generations are picked up automatically as AWS releases them,
+      which is the main reason attribute-based selection beats a hand-maintained list.
+    </p>
+
+    <h3>How capacity gets filled</h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-icon">1</div>
+        <div class="flow-content">
+          <h4>The On-Demand base is satisfied first</h4>
+          <p><code>OnDemandBaseCapacity: 60</code> means the first 60 instances are On-Demand regardless of anything else. This is the floor the service is sized to survive on.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">2</div>
+        <div class="flow-content">
+          <h4>Everything above the base splits 20/80</h4>
+          <p><code>OnDemandPercentageAboveBaseCapacity: 20</code> applies only above the base. At a desired capacity of 240 that is 60 On-Demand plus 36 more On-Demand and 144 Spot.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">3</div>
+        <div class="flow-content">
+          <h4>Spot is drawn from the deepest cheap pools</h4>
+          <p><code>price-capacity-optimized</code> selects pools that are simultaneously least likely to be interrupted and lowest priced, across both the arm64 and x86 requirement blocks.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">4</div>
+        <div class="flow-content">
+          <h4>At-risk instances are replaced before they die</h4>
+          <p>Capacity Rebalancing launches a replacement on the rebalance recommendation, waits for it to pass its health check, and only then terminates the at-risk instance.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Pool count is the actual availability lever</h3>
+    <p>
+      The original design's problem was arithmetic. Four instance types across three AZs is twelve
+      pools. Two attribute blocks that each resolve to twenty-odd instance types across three AZs is
+      well over a hundred, spanning two CPU architectures and three CPU vendors. A surge that
+      drains one family no longer drains the fleet, because the group was never concentrated there.
+      This is why the fix is diversification rather than a failover path — the failover path is
+      what turned a capacity squeeze into an outage.
+    </p>
+
+    <div class="callout blue">
+      <strong>The rule of thumb worth memorising</strong>
+      <p>AWS recommends being flexible across at least ten instance types per workload, and using attribute-based selection specifically because it keeps that flexibility current as new instance types launch.</p>
+    </div>
+
+    <h3>The two discounts multiply</h3>
+    <p>
+      AWS states that Graviton-based instances cost up to 20% less than comparable x86 instances,
+      and that Spot offers savings of up to 90% against On-Demand. These are independent
+      reductions applied to the same instance-hour, so a Graviton Spot instance is discounted off an
+      already lower base price. That compounding is the reason to put Graviton first in the policy
+      rather than treating it as an equal alternative to x86.
+    </p>
+    <p>
+      It also changes the migration calculus. Teams often stall on Graviton because rebuilding for
+      arm64 feels like a project with no immediate payoff. Inside a mixed instances group the
+      payoff is immediate and the risk is bounded: if the arm64 image has a problem, those instances
+      fail their health checks and the group fills from the x86 block instead.
+    </p>
+
+    <h3>Capacity Rebalancing buys minutes instead of seconds</h3>
+    <p>
+      A Spot interruption notice gives you two minutes. The rebalance recommendation is a separate,
+      earlier signal that fires when an instance moves to elevated risk. Acting on the earlier
+      signal is what turns a scramble into an orderly drain — connections finish, the load
+      balancer deregisters the instance, and the replacement is already serving before the old one
+      stops.
+    </p>
+    <p>
+      Two behaviours are worth knowing before enabling it. Auto Scaling may temporarily exceed the
+      group's maximum size by up to 10% of desired capacity, because it launches before it
+      terminates — a group pinned at its ceiling can otherwise stall rebalancing entirely. And
+      it will only launch a replacement if that replacement has the same or better availability
+      than the instance it replaces, so it will not knowingly trade one at-risk instance for
+      another.
+    </p>
+
+    <div class="callout amber">
+      <strong>It replaces more instances, not fewer</strong>
+      <p>Capacity Rebalancing does not reduce your interruption rate. It acts earlier, which means more total replacements — you are buying graceful continuity, not fewer events. Budget for the extra churn.</p>
+    </div>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Spot allocation strategy</td>
+        <td><code>price-capacity-optimized</code></td>
+        <td>AWS's recommended default. Weighs real-time capacity alongside price, so the group avoids thin pools instead of seeking them out.</td>
+      </tr>
+      <tr>
+        <td>Instance selection</td>
+        <td>Attribute-based, two blocks</td>
+        <td>Maximises pool count and adopts new instance generations automatically. A static list goes stale and silently narrows over time.</td>
+      </tr>
+      <tr>
+        <td>Architecture mix</td>
+        <td>Graviton block first, x86 second</td>
+        <td>Graviton's price advantage compounds with the Spot discount. x86 exists to widen the pool count and as a fallback if the arm64 image regresses.</td>
+      </tr>
+      <tr>
+        <td>On-Demand floor</td>
+        <td><code>OnDemandBaseCapacity</code>, not a percentage</td>
+        <td>A percentage of a shrinking group also shrinks. An absolute base is a real floor that scaling activity cannot erode.</td>
+      </tr>
+      <tr>
+        <td>Weak-CPU protection</td>
+        <td><code>BaselinePerformanceFactors</code></td>
+        <td>Attribute matching on vCPU count alone will happily select older, slower cores. A baseline family sets a performance floor.</td>
+      </tr>
+      <tr>
+        <td>Interruption handling</td>
+        <td>Capacity Rebalancing + lifecycle hook</td>
+        <td>Acts on the rebalance recommendation rather than the two-minute notice, giving connection draining time to complete.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>Constraints to design around</h3>
+    <p>
+      Several limits in this design are not obvious until you hit them:
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h4>Per-override launch templates are CLI/SDK only</h4>
+        <p>The feature that lets one group run both architectures is not available in the console. Build this with the CLI, CloudFormation, or Terraform, and expect the console to render it incompletely.</p>
+      </div>
+      <div class="card">
+        <h4>Four InstanceRequirements blocks, maximum</h4>
+        <p>You cannot express an unlimited taxonomy of workload shapes in one group. Two architectures plus two size envelopes already exhausts the budget.</p>
+      </div>
+      <div class="card">
+        <h4>The console pins On-Demand allocation to lowest-price</h4>
+        <p>In the console the On-Demand allocation strategy is preselected as lowest price and cannot be changed. Choosing <code>prioritized</code> — which matters if you hold Reserved Instances — requires the API.</p>
+      </div>
+      <div class="card">
+        <h4>Lifecycle hooks must finish inside two minutes</h4>
+        <p>AWS is explicit that the custom action has to complete in under two minutes. A drain routine that waits on long-lived connections will be cut off mid-flight.</p>
+      </div>
+    </div>
+
+    <h3>Price protection is on whether you configure it or not</h3>
+    <p>
+      Attribute-based selection enables price protection by default, and the default On-Demand
+      threshold is 20% above the price of the lowest-priced current-generation C, M, or R instance
+      type matching your attributes. For Spot, Auto Scaling applies an optimal threshold
+      automatically unless you override it. This is usually the behaviour you want, but it means the
+      group may silently decline instance types you expected it to use. If you are debugging a group
+      that will not scale out, check price protection before assuming there is no capacity — and
+      note that you can effectively disable it by setting an absurdly high percentage such as
+      <code>999999</code>.
+    </p>
+
+    <div class="callout green">
+      <strong>Preview before you deploy</strong>
+      <p>The <code>GetInstanceTypesFromInstanceRequirements</code> API returns exactly which instance types your attributes resolve to, without launching anything. Run it against both blocks and count the results — if either returns fewer than ten types, the requirements are too narrow.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The team in this scenario did not have a Spot problem. They had a concentration problem that
+      Spot exposed. Twelve correlated capacity pools, a strategy that actively sought the thinnest
+      of them, no guaranteed floor, and a failover path that competed with its own fleet — any
+      one of those is enough to produce the outage they had, and none of them is really about Spot.
+    </p>
+    <p>
+      What makes the mixed instances policy worth the configuration effort is that it turns the
+      question from <em>"which instances do we want?"</em> into <em>"what does this workload
+      actually need, and how many different ways can AWS satisfy it?"</em> Answer the second
+      question broadly enough and the capacity math stops being fragile. The cost reduction is
+      almost a side effect — the fleet gets cheaper because it got more flexible, not the other
+      way round.
+    </p>
+    <p>
+      The honest caveat: none of this makes Spot suitable for stateful or tightly coupled
+      workloads. AWS says so directly, and no amount of diversification changes it. This pattern
+      works for the stateless serving tier, the CI fleet, and the batch pool. It does not work for
+      the database, and the discipline to keep that line clear is what makes the rest of it safe.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Messaging — SQS, SNS, and EventBridge, and the decision tree enterprises consistently get wrong. Three services with overlapping descriptions, three genuinely different delivery models, and a set of failure modes that only appear once you have picked the wrong one.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-mixed-instances-groups.html" target="_blank" rel="noopener">Auto Scaling groups with multiple instance types and purchase options</a> &mdash; the mixed instances policy, allocation strategies, attribute-based instance type selection, and the per-override launch templates that allow Graviton and x86 to share a single group.</li>
+    </ul>
+  </div>
