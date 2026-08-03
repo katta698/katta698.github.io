@@ -1157,14 +1157,29 @@ def build_index_page(posts):
         _feed_item(p, _week_num(p), _re.sub(r'^Week \d+\s*[-–—]\s*', '', p["title"]))
         for p in sorted(lab_posts, key=_week_num, reverse=True)[:3]
     ]
+    # Daily Intelligence — titles read "AWS Daily Intelligence #N - Topic"
+    # (hyphen separator, unlike the arch series' em dash).
+    daily_posts = [p for p in posts if "AWS Daily Intelligence" in p["tags"]]
+
+    def _daily_num(p):
+        m = _re.search(r'#(\d+)', p["title"])
+        return int(m.group(1)) if m else 0
+
+    _daily_feed = [
+        _feed_item(p, _daily_num(p) or None,
+                   _re.sub(r'^AWS Daily Intelligence\s*#\d+\s*[-–—]\s*', '', p["title"]))
+        for p in sorted(daily_posts, key=_daily_num, reverse=True)[:3]
+    ]
     _all_feed = [_feed_item(p) for p in posts[:3]]
 
     feed_data_json = json.dumps({
-        "arch": {"items": _arch_feed, "count": len(arch_posts),
-                 "href": "/blog/?tag=aws+architecture+series"},
-        "lab":  {"items": _lab_feed,  "count": len(lab_posts),
-                 "href": "/blog/?tag=aws+weekly+lab"},
-        "all":  {"items": _all_feed,  "count": len(posts), "href": "/blog/"},
+        "arch":  {"items": _arch_feed,  "count": len(arch_posts),
+                  "href": "/blog/?tag=aws+architecture+series"},
+        "lab":   {"items": _lab_feed,   "count": len(lab_posts),
+                  "href": "/blog/?tag=aws+weekly+lab"},
+        "daily": {"items": _daily_feed, "count": len(daily_posts),
+                  "href": "/blog/?tag=aws+daily+intelligence"},
+        "all":   {"items": _all_feed,   "count": len(posts), "href": "/blog/"},
     })
 
     # 4. Publishing heatmap — posts per month per year
@@ -1697,7 +1712,7 @@ def build_index_page(posts):
     <script>
     (function(){{
       var FEEDS = {feed_data_json};
-      var TABS = [['arch','Arch'],['lab','Lab'],['all','All']];
+      var TABS = [['arch','Arch'],['lab','Lab'],['daily','Daily'],['all','All']];
       var list = document.getElementById('sf-list');
       var tabWrap = document.getElementById('sf-tabs');
       var allLink = document.getElementById('sf-all');
@@ -1722,7 +1737,7 @@ def build_index_page(posts):
           list.appendChild(row);
         }});
         allLink.href=f.href;
-        allLink.textContent='See all '+f.count+' posts →';
+        allLink.textContent='See all '+f.count+' post'+(f.count===1?'':'s')+' →';
         tabWrap.querySelectorAll('button').forEach(function(b){{
           var on=b.dataset.k===key;
           b.style.background=on?'var(--orange)':'transparent';
