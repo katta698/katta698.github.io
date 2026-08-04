@@ -6,6 +6,38 @@
 - Never commit or push without explicit instruction. Jayanth pushes himself.
 - After `sync_blog.py` runs, stage ALL modified files under `blog/` — not just the new post's directory. Older posts get regenerated too (widgets, date format, CSS).
 
+## Publishing in parallel
+
+Posts are often written in two sessions at once. Conflicts between them are
+normal and harmless **if** you know which files are source and which are
+generated.
+
+| | Files | Conflicts? |
+| --- | --- | --- |
+| **Source** | `posts/<name>.html`, `blog/assets/diagrams/*.svg` | Never — each post is its own filename |
+| **Generated** | `blog/posts.json`, `blog/index.html`, `blog/rss.xml`, `blog/stats.json`, every rebuilt `blog/<slug>/index.html` | Every parallel publish |
+
+`sync_blog.py` rebuilds the whole site index from `posts/`, so any two people
+publishing rewrite the same generated files. The Actions bot also auto-commits
+`blog/posts.json` after every push, which is a third writer.
+
+**Resolving a conflict on a generated file — never hand-merge it:**
+
+1. `git checkout --theirs <file>` (during a rebase, `--theirs` is the commit
+   being replayed) just to clear the conflict markers.
+2. `python scripts/sync_blog.py` — regenerates every generated file from
+   `posts/`, which by then contains both people's work.
+3. Confirm both posts are present (check the filter pill counts in
+   `blog/index.html`), then `git add blog/ posts/` and `git rebase --continue`.
+
+**The failure that loses a post silently.** Do not run `sync_blog.py` and push
+from a checkout that predates someone else's post. Their `posts/` file is
+absent from your tree, so the regenerated index, `posts.json`, `rss.xml` and
+`stats.json` all come out without it. The post's own page survives on disk but
+is unlinked everywhere — no card, no filter pill count, no RSS entry, no RAG
+index entry — and nothing errors. Always `git pull --rebase` before running
+sync, not just before editing.
+
 ## Blog post structure
 
 Two files per post:
