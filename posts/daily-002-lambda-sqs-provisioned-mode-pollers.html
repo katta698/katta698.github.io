@@ -1,0 +1,302 @@
+---
+title: 'AWS Daily Intelligence #2 - Lambda Provisioned Mode for SQS Reaches 10,000 Event Pollers'
+date: '2026-08-04T09:00:00'
+labels:
+- AWS
+- AWS Daily Intelligence
+slug: aws-daily-intelligence-lambda-sqs-provisioned-mode-pollers
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Daily Intelligence &middot; 4 August 2026</div>
+  <div class="post-title">Lambda Provisioned Mode for SQS Reaches 10,000 Event Pollers: What That Actually Buys You</div>
+  <div class="post-subtitle">A single SQS event source mapping can now drive 100,000 concurrent Lambda invocations, up from 20,000. The number is the easy part. The interesting parts are the workaround it retires, the setting it silently disables, and the standing charge you take on the moment you enable it.</div>
+  <div class="post-meta">
+    <span>General Availability</span>
+    <span>All commercial Regions</span>
+    <span>Billed per EPU-hour</span>
+    <span>Announced 3 August 2026</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="toc">
+    <h3>In This Post</h3>
+    <ol>
+      <li><a href="#what-changed">What changed</a></li>
+      <li><a href="#why">Why AWS raised the cap</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#value">Business value</a></li>
+      <li><a href="#security">Security considerations</a></li>
+      <li><a href="#cost">Cost considerations</a></li>
+      <li><a href="#operations">Operational considerations</a></li>
+      <li><a href="#tradeoffs">Tradeoffs</a></li>
+      <li><a href="#implementation">Implementation guidance</a></li>
+      <li><a href="#practices">Best practices</a></li>
+      <li><a href="#adopt">Who should adopt, who should wait</a></li>
+      <li><a href="#gotcha">The setting this silently takes away</a></li>
+      <li><a href="#takeaways">Key takeaways</a></li>
+      <li><a href="#references">Official AWS references</a></li>
+    </ol>
+  </div>
+
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>On 3 August 2026, AWS raised the maximum number of event pollers on a Provisioned Mode SQS event source mapping from 2,000 to 10,000. Because each event poller supports up to 10 concurrent invocations, the ceiling on a single event source mapping moves from 20,000 concurrent Lambda invocations to 100,000.</p>
+    <p>Measured against the standard-mode ceiling of 1,250 concurrent invocations, that is 80 times the capacity from one mapping. The change is generally available in all commercial Regions and requires no migration: if you already run Provisioned Mode, you can raise <code>MaximumPollers</code> today.</p>
+    <p>Three things deserve more attention than the headline number. Provisioned Mode <strong>cannot be combined with the Maximum concurrency setting</strong> — enabling one removes the other as a control. The <strong>minimum poller count is a floor you pay for continuously</strong>, whether messages arrive or not. And each poller issues up to 10 SQS polling calls per second, which are <strong>billed as ordinary SQS API requests</strong> on top of the poller charge.</p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>One number: the upper bound of <code>MaximumPollers</code> on an SQS event source mapping configured for Provisioned Mode. It was 2,000. It is now 10,000.</p>
+
+    <h3>What an event poller actually is</h3>
+    <p>An event poller is a unit of compute that Lambda runs on your behalf, outside your function. It long-polls the queue, assembles batches, applies your filter criteria, and then invokes the function. It is the machinery between the queue and your code, and until Provisioned Mode existed you had no way to size it.</p>
+    <p>Each event poller provides, whichever limit it reaches first:</p>
+    <ul>
+      <li>up to <strong>1 MB/second</strong> of throughput,</li>
+      <li>up to <strong>10 concurrent invocations</strong>, or</li>
+      <li>up to <strong>10 SQS polling API calls per second</strong>.</li>
+    </ul>
+    <p>That "whichever comes first" matters when you size a mapping. A workload of many small messages will exhaust the polling-call limit long before the megabyte; a workload of large payloads will hit 1 MB/s while nowhere near 10 invocations. Sizing on concurrency alone will mislead you in both directions.</p>
+
+    <h3>The resulting ceilings</h3>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Mode</th><th>Scale-up rate</th><th>Concurrency ceiling per ESM</th><th>Relative to standard</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Standard (default)</td><td>+300 concurrent invokes / minute, from a start of 5</td><td>1,250</td><td>baseline</td></tr>
+        <tr><td>Provisioned Mode, before 3 Aug 2026</td><td>+1,000 concurrency / minute</td><td>20,000 (2,000 pollers)</td><td>16x</td></tr>
+        <tr><td>Provisioned Mode, now</td><td>+1,000 concurrency / minute</td><td>100,000 (10,000 pollers)</td><td>80x</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p><code>MinimumPollers</code> is unchanged: 2 to 200, defaulting to 2.</p>
+    <div class="tip-box">
+      <p><strong>Documentation lag.</strong> At the time of writing, the SQS event source mapping configuration page still describes the maximum poller range as 2 to 2,000. The announcement states 10,000. Confirm the value your account and Region actually accept before designing to the new ceiling rather than trusting either page.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why AWS raised the cap</h2>
+    <p>Because customers were sharding queues to get around it, and sharding a queue is a bad thing to do for a reason that has nothing to do with your domain.</p>
+    <p>If your workload needed 60,000 concurrent invocations and one mapping stopped at 20,000, your options were all unpleasant:</p>
+    <ul>
+      <li><strong>Split the queue.</strong> Three queues, three event source mappings, three sets of metrics, and a producer that now has to make a routing decision it should not care about. Message ordering guarantees, dead-letter handling, and redrive all fragment along the same seams.</li>
+      <li><strong>Fan out through an intermediary.</strong> Insert SNS or EventBridge purely to spread load across mappings. A component added for a scaling limit rather than a design reason, with its own failure modes and bill.</li>
+      <li><strong>Move off Lambda.</strong> Run consumers on ECS or EKS, where concurrency is yours to manage. This is a real answer, and for sustained high-throughput streaming it is often the right one — but it is a large migration to buy a number.</li>
+      <li><strong>Accept the latency.</strong> Let the backlog drain more slowly and hope the business does not notice. The most common answer, and the one that quietly becomes an incident during a peak event.</li>
+    </ul>
+    <p>All four trade architectural clarity for throughput. Raising the cap to 10,000 removes the reason the first two ever existed.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>The mental model worth holding: <strong>standard mode is Lambda guessing how much polling capacity you need; provisioned mode is you telling it.</strong> Neither changes what your function does. Both change how quickly work reaches it.</p>
+
+    <img src="/blog/assets/diagrams/daily-002-sqs-provisioned-mode.svg" alt="Diagram: standard mode starts at 5 concurrent invocations, adds up to 300 per minute and stops at 1,250. Provisioned mode holds a minimum of 2 to 200 event pollers, adds up to 1,000 concurrency per minute, and now reaches 10,000 pollers or 100,000 concurrent invocations. One event poller provides 1 MB per second of throughput, 10 concurrent invocations, or 10 SQS polling calls per second, whichever it reaches first.">
+
+    <h3>The scale-up rate matters more than the ceiling</h3>
+    <p>Most discussion of this feature fixates on the ceiling. For the majority of workloads, the rate is what you actually feel.</p>
+    <p>Standard mode begins at five concurrent invocations and adds up to 300 per minute. Reaching its own 1,250 ceiling from cold therefore takes roughly four minutes. Provisioned mode adds up to 1,000 concurrency per minute from a floor you have already paid to keep warm.</p>
+    <p>If your queue depth arrives as a spike — a batch job releasing at the top of the hour, a retail event opening, an upstream system flushing a backlog — the difference between those two ramps is the entire user-visible latency story. The ceiling only matters if you were going to reach it.</p>
+
+    <h3>Where the concurrency actually lands</h3>
+    <p>An event source mapping that can drive 100,000 concurrent invocations does not create 100,000 units of function concurrency out of nothing. It still draws on your account concurrency quota, and your function still has to be able to run at that width. A mapping sized far beyond your account quota will throttle, and throttled batches return to the queue and are retried — which increases queue traffic rather than reducing it.</p>
+    <p>Raising <code>MaximumPollers</code> without checking the account concurrency quota and the function's reserved concurrency is the most likely way to make performance worse while paying more.</p>
+  </div>
+
+  <div class="section" id="value">
+    <h2>Business value</h2>
+    <p><strong>One queue, one mapping, one set of metrics.</strong> The clearest architectural win. Queue sharding introduced complexity that had to be understood by everyone who touched the system, forever, to work around a number. That reason is gone.</p>
+    <p><strong>Latency becomes a configuration value.</strong> With a provisioned floor, drain time for a known spike is something you can size and commit to rather than something you observe afterwards. That is what makes an internal SLA on queue-processing latency defensible.</p>
+    <p><strong>A credible answer to "can Lambda handle our peak?"</strong> For event-driven architectures that previously hit a wall and migrated to containers, 100,000 concurrent invocations from a single mapping changes the analysis — with the cost caveats below.</p>
+    <p><strong>Headroom without redesign.</strong> Teams already on Provisioned Mode raise one number. No new resources, no migration, no code change.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p><strong>The blast radius of a misconfiguration scales with the cap.</strong> A mapping able to drive 100,000 concurrent invocations against a poison-message loop, or a function with a runaway downstream call, will consume account concurrency and hammer the dependency far faster than one capped at 1,250. Downstream databases and third-party APIs are the usual casualties. Size the mapping to what the downstream can absorb, not to what Lambda now permits.</p>
+    <p><strong>Dead-letter configuration stops being optional.</strong> At this width, a failing batch pattern amplifies quickly. Set <code>maxReceiveCount</code> on the source queue's redrive policy to at least 5, per AWS guidance, and make sure a dead-letter queue exists before you raise the cap.</p>
+    <p><strong>Encrypted queues need the extra permission.</strong> The <code>AWSLambdaSQSQueueExecutionRole</code> managed policy covers reading the queue. If the queue is encrypted, the execution role also needs <code>kms:Decrypt</code> — easy to miss when a mapping is created by automation rather than the console.</p>
+    <p><strong>Who can change the poller count.</strong> Whoever can call <code>UpdateEventSourceMapping</code> can now provision ten times more capacity than before, with a directly proportional cost consequence. This is a permission worth scoping deliberately rather than granting with general Lambda write access.</p>
+    <p><strong>Cross-account queues remain supported.</strong> The function and queue must be in the same Region but may be in different accounts — worth confirming the trust relationship still reflects intent when you rescale a mapping you did not originally build.</p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>This is the section to read twice. Provisioned Mode is not a free performance switch, and the change makes the upper bound of the bill ten times larger.</p>
+
+    <h3>Three charges, not one</h3>
+    <p>Enabling Provisioned Mode adds a standing charge on top of normal Lambda costs:</p>
+    <ol>
+      <li><strong>Event Poller Units.</strong> Billed in EPU-hours, at <strong>$0.00925 per EPU-hour</strong> for SQS event source mappings in US East (N. Virginia). For comparison, the Kafka and MSK rate is $0.185 per EPU-hour. Rates vary by Region.</li>
+      <li><strong>SQS API requests.</strong> Each event poller long-polls at up to 10 calls per second, and those are billed as ordinary SQS requests. At scale this is a material line item, and it is easy to overlook because it lands on the SQS bill rather than the Lambda one.</li>
+      <li><strong>Normal Lambda charges.</strong> Requests and duration, unchanged.</li>
+    </ol>
+
+    <h3>What the floor costs</h3>
+    <p>The minimum poller count is held continuously, so it bills whether or not messages arrive. At the published US East (N. Virginia) rate:</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Configuration</th><th>Pollers held</th><th>Approximate monthly EPU cost</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Default minimum</td><td>2</td><td>$13.51</td></tr>
+        <tr><td>Modest warm floor</td><td>50</td><td>$337.62</td></tr>
+        <tr><td>Maximum minimum</td><td>200</td><td>$1,350.50</td></tr>
+        <tr><td>Pinned at the new ceiling</td><td>10,000</td><td>$67,525</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>Arithmetic is pollers multiplied by $0.00925 multiplied by 730 hours, excluding SQS request charges and all normal Lambda charges. The last row is not a recommendation — it is there to show what setting minimum equal to maximum would mean, which is a mistake worth naming explicitly.</p>
+
+    <h3>How to think about it</h3>
+    <p><strong>The minimum is the spend commitment; the maximum is the risk.</strong> The minimum bills constantly, so it should reflect your steady-state floor, not your peak. The maximum bills only when Lambda scales into it, so it can be generous — but it is also the ceiling on a runaway, and the new cap makes that ceiling five times higher than yesterday.</p>
+    <p><strong>Verify current rates before modelling.</strong> The figures above are US East (N. Virginia) as published on the Lambda pricing page. Confirm your Region and confirm the EPU-to-poller relationship for your configuration rather than carrying these numbers into a business case unchecked.</p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p><strong>Raising the maximum is not a rollout.</strong> It takes effect on the mapping immediately. There is no gradual ramp and no canary. If the new ceiling is wrong, you discover it at the next traffic spike, in production, at ten times the previous width. Raise it in stages and observe.</p>
+    <p><strong>Set the visibility timeout correctly first.</strong> AWS recommends the source queue's visibility timeout be at least six times the function timeout, plus the value of <code>MaximumBatchingWindowInSeconds</code> if you use a batch window. The function timeout must be less than or equal to the queue's visibility timeout, and Lambda validates this when the mapping is created or updated. Getting this wrong at 1,250 concurrency produces duplicate processing; getting it wrong at 100,000 produces a great deal of it.</p>
+    <p><strong>Watch the downstream, not the queue.</strong> The metric that tells you the cap is too high is not queue depth — that will look excellent. It is downstream connection saturation, database CPU, and throttled dependency calls.</p>
+    <p><strong>Batch size interacts with the payload limit.</strong> A standard queue allows a batch size up to 10,000 records, and any batch size over 10 requires <code>MaximumBatchingWindowInSeconds</code> of at least 1 second. Lambda passes the whole batch in one call, subject to the 6 MB synchronous invocation payload quota, and both Lambda and SQS metadata count toward that total — so the delivered batch is often smaller than the configured size.</p>
+    <p><strong>Manage it in IaC.</strong> The CloudFormation property is <code>ProvisionedPollerConfig</code> on <code>AWS::Lambda::EventSourceMapping</code>. A poller floor changed by hand in the console is an unexplained recurring charge three months later.</p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <p><strong>Against standard mode.</strong> Standard mode costs nothing to poll, scales itself, and idles down to as few as 2 concurrent invokes. It is the right default and remains so for most queues. Provisioned Mode buys ramp speed and ceiling in exchange for a standing charge and a configuration you now own. If nobody can state the latency requirement in numbers, you do not need it yet.</p>
+    <p><strong>Against maximum concurrency.</strong> These are mutually exclusive, and the choice is really about what you are protecting. Maximum concurrency exists to stop one queue consuming the function's reserved concurrency or the account quota — a protective ceiling, free to configure. Provisioned Mode exists to guarantee throughput. You cannot have both mechanisms at once; under Provisioned Mode, <code>MaximumPollers</code> becomes your only concurrency control.</p>
+    <p><strong>Against containers.</strong> A sustained, predictable, very high-throughput consumer may still be cheaper and more controllable on ECS or EKS, where you pay for compute rather than for polling capacity plus invocations. Provisioned Mode narrows the gap considerably for spiky workloads; it does not close it for flat ones.</p>
+    <p><strong>Against FIFO queues.</strong> Raising the poller cap does little for FIFO, where concurrency is bounded by the number of message group IDs or the concurrency setting, whichever is lower. Six message groups means six concurrent invocations regardless of how many pollers you provision. If ordering is the constraint, this launch is not for you.</p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+
+    <h3>Prerequisites</h3>
+    <ul>
+      <li>An existing SQS queue and Lambda function in the same Region. Different accounts are permitted.</li>
+      <li><code>AWSLambdaSQSQueueExecutionRole</code> attached to the function's execution role, plus <code>kms:Decrypt</code> if the queue is encrypted.</li>
+      <li>A dead-letter queue with <code>maxReceiveCount</code> of at least 5 on the source queue's redrive policy.</li>
+      <li>Visibility timeout at least six times the function timeout, plus the batch window if used.</li>
+      <li>Confirmed headroom in the account concurrency quota for the concurrency the mapping can now generate.</li>
+      <li>Maximum concurrency <strong>not</strong> configured on the mapping — it cannot coexist with Provisioned Mode.</li>
+    </ul>
+
+    <h3>Sizing the mapping</h3>
+    <p>Work from the binding limit rather than from concurrency alone. For a target of 40,000 messages per second at an average 4 KB payload, throughput is roughly 160 MB/s, which needs about 160 pollers on the throughput limit. Check the same target against the other two limits — 10 concurrent invocations and 10 polling calls per second per poller — and size to whichever demands the most. Then confirm the resulting concurrency fits inside the account quota.</p>
+
+    <h3>Enabling and raising it</h3>
+    <p>Set a conservative floor and a deliberate ceiling:</p>
+<pre><code>aws lambda update-event-source-mapping \
+    --uuid a1b2c3d4-5678-90ab-cdef-11111EXAMPLE \
+    --provisioned-poller-config '{"MinimumPollers": 10, "MaximumPollers": 2000}'</code></pre>
+
+    <p>Raise the ceiling once you have observed real traffic against it:</p>
+<pre><code>aws lambda update-event-source-mapping \
+    --uuid a1b2c3d4-5678-90ab-cdef-11111EXAMPLE \
+    --provisioned-poller-config '{"MinimumPollers": 10, "MaximumPollers": 10000}'</code></pre>
+
+    <p>Confirm what is actually configured, rather than what you believe you set:</p>
+<pre><code>aws lambda get-event-source-mapping \
+    --uuid a1b2c3d4-5678-90ab-cdef-11111EXAMPLE</code></pre>
+
+    <div class="warning-box">
+      <p><strong>Do not set the minimum equal to the maximum.</strong> It looks like a way to guarantee capacity. It is a way to pay for peak capacity continuously — at 10,000 pollers, roughly $67,525 a month in EPU charges alone before a single message is processed. The minimum is a warm floor, not a reservation.</p>
+    </div>
+  </div>
+
+  <div class="section" id="practices">
+    <h2>Best practices</h2>
+    <ol>
+      <li><strong>Size on the binding limit</strong> — throughput, concurrency, or polling calls — not on concurrency by habit.</li>
+      <li><strong>Set the minimum to steady state, the maximum to peak.</strong> The minimum is a continuous charge; the maximum is only a ceiling.</li>
+      <li><strong>Check the account concurrency quota before raising the ceiling.</strong> A mapping that outruns the quota throttles, and throttled batches return to the queue.</li>
+      <li><strong>Get the visibility timeout right first</strong> — at least six times the function timeout, plus the batch window.</li>
+      <li><strong>Configure the dead-letter queue before scaling, not after.</strong></li>
+      <li><strong>Alarm on downstream saturation</strong>, not just queue depth. Queue depth looks healthy right up to the moment the database does not.</li>
+      <li><strong>Raise the ceiling in stages</strong> and observe a real spike at each step.</li>
+      <li><strong>Keep <code>ProvisionedPollerConfig</code> in IaC</strong> so the floor is reviewable and attributable.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt, who should wait</h2>
+
+    <h3>Adopt</h3>
+    <ul>
+      <li>Teams who <strong>sharded a queue across multiple event source mappings</strong> purely to clear the old ceiling. Consolidating removes real complexity.</li>
+      <li>Workloads with <strong>sharp, scheduled spikes</strong> — hourly batch releases, retail events, upstream backlog flushes — where the ramp rate is the user-visible problem.</li>
+      <li>Anyone with a <strong>stated latency objective</strong> on queue processing that standard mode's four-minute ramp cannot meet.</li>
+      <li>Teams who <strong>left Lambda for containers</strong> over the concurrency ceiling and have not revisited the decision since.</li>
+    </ul>
+
+    <h3>Wait</h3>
+    <ul>
+      <li>Anyone whose <strong>standard mode ceiling of 1,250 is not actually being reached</strong>. Provisioned Mode would add a standing charge for no gain.</li>
+      <li>Workloads that <strong>depend on the Maximum concurrency setting</strong> to protect a shared function or account quota. You cannot keep it and enable Provisioned Mode.</li>
+      <li><strong>FIFO queues</strong>, where message group count bounds concurrency regardless of pollers.</li>
+      <li>Teams <strong>without downstream capacity to match</strong>. Raising the cap in front of a database that cannot absorb it converts a queueing delay into an outage.</li>
+      <li>Anyone <strong>unable to attribute the EPU charge</strong>. If the floor cannot be explained on next month's bill, do not set it yet.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="gotcha">
+    <h2>The setting this silently takes away</h2>
+    <p>This deserves its own section because it is a mutual exclusion rather than a warning, and the thing it removes is a protective control.</p>
+    <div class="warning-box">
+      <p><strong>Provisioned Mode and the Maximum concurrency setting cannot be used together.</strong> When Provisioned Mode is enabled, <code>MaximumPollers</code> becomes the only mechanism controlling how much concurrency the mapping can consume.</p>
+    </div>
+    <p>Maximum concurrency exists for a specific defensive reason: to stop one event source consuming a function's reserved concurrency or the account's quota, starving everything else. It is free to configure and costs nothing to leave in place. If several SQS mappings feed the same function, it is often the only thing keeping one noisy queue from crowding out the others.</p>
+    <p>Enabling Provisioned Mode on such a mapping removes that guard and replaces it with a poller ceiling — which is a throughput control, not a concurrency budget. The two are related but not equivalent, and the substitution is easy to make without noticing, because nothing fails at the moment you make it. It surfaces later, when the queue that used to be politely capped saturates the function.</p>
+    <p>Before enabling Provisioned Mode on a shared function, check whether Maximum concurrency is currently doing protective work. If it is, translate that intent into <code>MaximumPollers</code> deliberately — remembering that one poller permits up to 10 concurrent invocations, so a 500-concurrency guard is roughly 50 pollers, not 500.</p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ol>
+      <li><code>MaximumPollers</code> moves from 2,000 to 10,000, raising a single SQS event source mapping from 20,000 to <strong>100,000 concurrent invocations</strong> — 80 times the standard-mode ceiling of 1,250.</li>
+      <li><code>MinimumPollers</code> is unchanged at 2 to 200, default 2.</li>
+      <li>One event poller provides up to 1 MB/s, up to 10 concurrent invocations, or up to 10 SQS polling calls per second — <strong>whichever it reaches first</strong>. Size on the binding limit.</li>
+      <li>For most workloads the <strong>+1,000 concurrency per minute ramp matters more than the ceiling</strong>, versus +300 per minute in standard mode.</li>
+      <li><strong>Provisioned Mode and Maximum concurrency are mutually exclusive.</strong> Enabling one removes the other as a control.</li>
+      <li>EPUs bill at <strong>$0.00925 per EPU-hour</strong> for SQS in US East (N. Virginia), and the minimum is held continuously. SQS polling calls bill separately as SQS requests.</li>
+      <li>Never set minimum equal to maximum. The minimum is a warm floor, not a reservation.</li>
+      <li>The mapping still draws on your account concurrency quota. Raising the ceiling past it produces throttling and retries, not throughput.</li>
+      <li>GA in all commercial Regions, no migration required.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/08/aws-Lambda-provisioned-sqs-esm-max-pollers/">AWS Lambda Provisioned Mode for Amazon SQS event source mappings now supports up to 10,000 event pollers</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/services-sqs-scaling.html">Configuring scaling behavior for SQS event source mappings</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/services-sqs-configure.html">Creating and configuring an Amazon SQS event source mapping</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html">Using Lambda with Amazon SQS</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/invocation-eventsourcemapping.html">How Lambda processes records from stream and queue-based event sources</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-properties-lambda-eventsourcemapping-provisionedpollerconfig.html">AWS::Lambda::EventSourceMapping ProvisionedPollerConfig</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/api/API_UpdateEventSourceMapping.html">UpdateEventSourceMapping API reference</a></li>
+      <li><a href="https://aws.amazon.com/lambda/pricing/">AWS Lambda pricing</a></li>
+      <li><a href="https://aws.amazon.com/sqs/pricing/">Amazon SQS pricing</a></li>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2025/11/aws-lambda-provisioned-mode-sqs-esm/">AWS Lambda announces Provisioned Mode for SQS event source mapping</a></li>
+      <li><a href="https://docs.aws.amazon.com/aws-managed-policy/latest/reference/AWSLambdaSQSQueueExecutionRole.html">AWSLambdaSQSQueueExecutionRole managed policy</a></li>
+    </ul>
+  </div>
+
+  <div class="post-footer">
+    <p>AWS Daily Intelligence tracks meaningful AWS changes from official sources and explains what they mean for enterprise architecture.</p>
+    <p>Every technical claim in this post is sourced from the AWS documentation linked above. Feature status: General Availability, announced 3 August 2026.</p>
+  </div>
+
+</div>
+</div>
