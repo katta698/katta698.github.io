@@ -1,0 +1,307 @@
+---
+title: "AWS Architecture Series #11 — SQS vs SNS vs EventBridge: The Decision Tree Enterprises Get Wrong"
+date: 2026-08-04
+slug: aws-architecture-sqs-sns-eventbridge
+labels: [AWS, "AWS Architecture Series"]
+problem: "A retail platform routes every internal message through one EventBridge bus. Peak traffic throttles PutEvents, a rule hits the five-target ceiling, and a slow consumer loses events because a router was asked to behave like a queue."
+builds: "A decision rule based on what the consumer needs — SQS where one worker owns the work, SNS where everyone must hear it, EventBridge where routing depends on the event body — and the composition that puts a queue in front of every consumer that can fall behind."
+catch: "EventBridge quotas are regional and vary by 25x: PutEvents allows 10,000/s in us-east-1 and eu-west-1 but 400/s in smaller Regions. Targets per rule is capped at 5 and cannot be raised. SQS FIFO parallelism is bounded by the number of distinct message group IDs."
+---
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A retail platform runs 40 microservices across four AWS accounts. Two years ago the team made
+      a reasonable-sounding decision: standardise on one messaging service so nobody has to argue
+      about it again. They chose EventBridge, put a single custom bus in the shared services
+      account, and routed everything through it — order events, inventory updates, email
+      triggers, cache invalidations, audit records.
+    </p>
+    <p>
+      It worked until Black Friday. Three things broke in the same hour, and each one was the same
+      mistake wearing a different mask.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The router was being used as a queue</strong></div>
+      <div class="challenge-body">
+        <p>
+          The inventory reconciliation service could handle roughly 200 events per second. Peak
+          produced 3,000. EventBridge did exactly what a router does — it delivered them as
+          fast as it matched them. There was no buffer, so the service shed load, and the retry
+          policy expired before the backlog cleared. Events were lost, and the inventory counts
+          were wrong for two days.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>A consumer that can fall behind needs a queue in front of it. That is SQS's entire job.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>A rule hit a ceiling nobody knew existed</strong></div>
+      <div class="challenge-body">
+        <p>
+          The <code>order.placed</code> rule had accumulated five targets over two years. When a
+          sixth team asked to be added, the request failed. <strong>Targets per rule is capped at
+          five, and unlike most EventBridge quotas it is not adjustable.</strong> The workaround
+          shipped under time pressure — duplicating the rule with a slightly different name
+          — doubled the invocation count against a quota they were already close to.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Fan-out beyond a handful of consumers is SNS's job, or an SNS topic as one EventBridge target.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The Region mattered and nobody had checked</strong></div>
+      <div class="challenge-body">
+        <p>
+          The platform runs in <code>eu-west-2</code>. The team had load-tested in
+          <code>eu-west-1</code>, where <code>PutEvents</code> allows 10,000 requests per second.
+          In <code>eu-west-2</code> the default is 1,200. The architecture diagram was identical in
+          both Regions; the capacity was not.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat EventBridge throughput as a per-Region number, and check it in the Region you actually deploy to.</p>
+      </div>
+    </div>
+
+    <p>
+      None of these are EventBridge failures. EventBridge did what it is built to do. The failure
+      was upstream of the code: the team chose a service by asking <em>"what should we standardise
+      on?"</em> when the question that decides it is <em>"what does the consumer need?"</em>
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      These three services get compared as if they are alternatives. They are not. They do three
+      different jobs, and the job is visible in what happens to a single message.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-011-messaging-decision.svg" alt="Diagram: SQS shown as a buffer where one message reaches exactly one consumer, SNS as a broadcast where one message reaches every subscriber, and EventBridge as a router where rules decide which targets receive the event. Below, the question that selects between them and three production constraints: SQS FIFO throughput per partition, EventBridge regional quota variation, and the pattern of composing them." />
+      <figcaption>Three jobs, not three options. The shape of the delivery — one consumer, every consumer, or selected targets — is what distinguishes them.</figcaption>
+    </figure>
+
+    <h3>SQS is a buffer</h3>
+    <p>
+      A message goes in, one consumer takes it out, and the queue holds it in between. That gap is
+      the point: it absorbs the difference between how fast work arrives and how fast it can be
+      done. Consumers compete for messages, so scaling out means adding consumers. If they all stop,
+      messages wait — up to 14 days, four by default.
+    </p>
+    <p>
+      Standard queues give at-least-once delivery and near-unlimited throughput. FIFO queues give
+      ordering and exactly-once processing, at a cost covered below. Both support dead-letter
+      queues, which is where a message goes after failing repeatedly rather than being lost or
+      retried forever.
+    </p>
+
+    <h3>SNS is a broadcast</h3>
+    <p>
+      A message goes to a topic and every subscriber gets its own copy — SQS queues, Lambda
+      functions, HTTPS endpoints, email, SMS, Firehose. Subscribers do not compete; they each
+      receive everything, unless a filter policy narrows it. Filter policies match on message
+      attributes or, if you set the policy scope accordingly, on the JSON message body.
+    </p>
+    <p>
+      The critical property: <strong>SNS does not store anything.</strong> It delivers, retries per
+      the delivery policy for that endpoint type, and then gives up. A subscriber that is down
+      misses messages. This is why the canonical production pattern is not "SNS to Lambda" but
+      "SNS to SQS to Lambda" — the queue is what makes the delivery durable.
+    </p>
+
+    <h3>EventBridge is a router</h3>
+    <p>
+      Events arrive on a bus. Rules match them against patterns — on the event body, not just
+      metadata — and matching events go to that rule's targets. Producers do not know who
+      consumes their events, and consumers subscribe by declaring what they care about. That
+      decoupling is why EventBridge suits many-producer, many-team estates where SNS's
+      topic-per-message-type sprawls.
+    </p>
+    <p>
+      It also ingests from 90-plus AWS services directly, supports archive and replay, and offers
+      Pipes for point-to-point integration with enrichment between a single source and a single
+      target. What it does not offer is a buffer with backpressure.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The question is about the consumer, not the message</h3>
+    <p>
+      Nearly every wrong choice here comes from classifying the message — "this is an event, so
+      EventBridge" — rather than asking what the receiving end needs. Three questions settle it
+      in almost every case:
+    </p>
+
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+    <table>
+      <tr>
+        <th>If the answer is yes</th>
+        <th>Use</th>
+        <th>Because</th>
+      </tr>
+      <tr>
+        <td>One worker should do this job, and work can pile up</td>
+        <td><strong>SQS</strong></td>
+        <td>Competing consumers, backpressure, retry and DLQ semantics</td>
+      </tr>
+      <tr>
+        <td>Several independent systems all need to know</td>
+        <td><strong>SNS</strong></td>
+        <td>Fan-out to many endpoint types, with per-subscription filtering</td>
+      </tr>
+      <tr>
+        <td>Who receives it depends on what is inside the event</td>
+        <td><strong>EventBridge</strong></td>
+        <td>Content-based routing, cross-account buses, AWS-native sources, replay</td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      They are not mutually exclusive, and the mature answer is usually a composition: EventBridge
+      routes by content, an SNS topic fans one route out to many teams, and each team owns an SQS
+      queue that absorbs its own load. Every consumer that can fall behind gets a queue. That single
+      rule would have prevented all three of the failures above.
+    </p>
+
+    <div class="callout blue">
+      <strong>The pattern worth memorising</strong>
+      <p>Distribution and buffering are separate concerns. EventBridge and SNS distribute. SQS buffers. Reaching for one to do the other's job is the mistake that shows up under load, never in testing.</p>
+    </div>
+
+    <h3>FIFO ordering costs more than it looks</h3>
+    <p>
+      "We need ordering" is usually said before anyone checks the price. An SQS FIFO queue is stored
+      in partitions, and each partition supports <strong>3,000 messages per second with batching, or
+      300 without</strong>. Which partition a message lands in is decided by hashing its message
+      group ID.
+    </p>
+    <p>
+      That last detail is where designs come apart. Ordering is only guaranteed <em>within</em> a
+      message group, and parallelism is bounded by how many distinct groups you have. Use the
+      customer ID and you get wide distribution. Use a single constant because "we need global
+      ordering" and the entire queue collapses onto one partition and a 300/s ceiling. AWS's own
+      guidance is to choose group IDs with a large number of distinct values.
+    </p>
+
+    <div class="callout amber">
+      <strong>Ask what actually needs ordering</strong>
+      <p>Global ordering across an entire stream is rarely the real requirement. Ordering per customer, per account, or per aggregate almost always is — and that maps directly onto a message group ID that partitions well.</p>
+    </div>
+
+    <h3>Replay is a capability, not a nice-to-have</h3>
+    <p>
+      EventBridge archive and replay is the one capability with no equivalent in the other two. When
+      a downstream consumer ships a bug that mangles a day of events, replay lets you re-drive them
+      after the fix. With SNS the messages are gone. With SQS they are gone once deleted. For
+      audit-sensitive or financially material flows, that alone can decide the choice.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Default in front of consumers</td>
+        <td>An SQS queue, always</td>
+        <td>Any consumer that can slow down needs somewhere for work to wait. Cheap insurance against the failure that only appears at peak.</td>
+      </tr>
+      <tr>
+        <td>Fan-out beyond a few targets</td>
+        <td>SNS, or SNS as an EventBridge target</td>
+        <td>EventBridge caps targets per rule at five and will not raise it. SNS fan-out has no comparable ceiling.</td>
+      </tr>
+      <tr>
+        <td>Routing on event content</td>
+        <td>EventBridge rules</td>
+        <td>SNS filter policies work on attributes or a JSON body, but rule-based routing across many producers and teams is what the bus is for.</td>
+      </tr>
+      <tr>
+        <td>Ordering</td>
+        <td>FIFO only where ordering is a business requirement</td>
+        <td>Throughput drops to per-partition limits and parallelism is bounded by distinct message group IDs. Do not buy it by default.</td>
+      </tr>
+      <tr>
+        <td>Recoverability</td>
+        <td>EventBridge archive where events are material</td>
+        <td>Replay after a downstream bug is impossible with SNS and gone-once-deleted with SQS.</td>
+      </tr>
+      <tr>
+        <td>Capacity planning</td>
+        <td>Check quotas per Region, not per service</td>
+        <td>EventBridge PutEvents ranges from 10,000/s to 400/s depending on Region. The diagram does not change; the headroom does.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>What each one is bad at</h3>
+    <div class="grid-2">
+      <div class="card">
+        <h4>SQS cannot fan out</h4>
+        <p>One message, one consumer. Needing five systems to react means five queues and something upstream to populate them — which is SNS or EventBridge.</p>
+      </div>
+      <div class="card">
+        <h4>SNS cannot wait</h4>
+        <p>No storage. A subscriber that is down misses the message once retries are exhausted. Subscribe a queue if the delivery has to survive an outage.</p>
+      </div>
+      <div class="card">
+        <h4>EventBridge cannot absorb</h4>
+        <p>No backpressure. It delivers as fast as it matches. A slow target either keeps up, is throttled, or loses events after retries expire.</p>
+      </div>
+      <div class="card">
+        <h4>None of them is a stream</h4>
+        <p>Multiple consumers reading the same ordered log at their own offsets, replayed at will, is Kinesis or MSK. Bending these three into that shape produces the worst of both.</p>
+      </div>
+    </div>
+
+    <div class="callout green">
+      <strong>A test that settles most arguments</strong>
+      <p>Ask what should happen if the consumer is down for an hour. "Work waits" means SQS. "It missed it, that's fine" means SNS. "Route it based on what it is, and I want to replay it later" means EventBridge. The answer is a business decision, not a technical preference.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The instinct to standardise on one messaging service is a good instinct applied to the wrong
+      layer. Standardising on conventions — event naming, schema versioning, where dead letters
+      go, who owns replay — pays off permanently. Standardising on the transport forces one
+      tool to cover three jobs, and the seams tear under load rather than in review.
+    </p>
+    <p>
+      What makes this decision unusually cheap to get right is that the three services compose
+      cleanly. An EventBridge rule can target an SNS topic. An SNS topic can fan out to SQS queues.
+      A queue can front a Lambda. You are not choosing one and living with it; you are assembling
+      the routing, the fan-out and the buffering from the pieces that do each job properly.
+    </p>
+    <p>
+      The team in this scenario did not need to migrate off EventBridge. They needed queues in front
+      of four consumers, an SNS topic behind one over-subscribed rule, and to read the quota page
+      for the Region they actually run in. Three weeks of work, and none of it was a rewrite.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Observability — CloudWatch, OpenTelemetry, and what centralised telemetry across a multi-account estate actually costs. Where the managed path is the right one, where it stops being affordable, and how teams end up paying twice for the same signal.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html" target="_blank" rel="noopener">What is Amazon Simple Queue Service?</a> &mdash; includes AWS's own comparison of SQS, SNS and Amazon MQ, the message lifecycle, retention limits, and the FIFO throughput and partitioning rules referenced above.</li>
+    </ul>
+  </div>
