@@ -1956,7 +1956,64 @@ def build_rss_feed(posts, max_items=None):
 """
 
 
+def check_branch_is_current():
+    """Refuse to run from a checkout that is behind origin/main.
+
+    sync_blog.py regenerates blog/index.html, posts.json, rss.xml, stats.json
+    and every post page from whatever is in posts/. Run it from a stale
+    checkout and the rebuild omits any post committed since — the post's page
+    survives on disk but is unlinked from the index, filter pills, RSS and the
+    RAG index, and nothing errors. Two worktrees publish to main, so this is
+    reachable in normal use; see "Publishing in parallel" in CLAUDE.md.
+
+    Skipped in CI (fresh checkout at the tip) and when git or the network is
+    unavailable. Override locally with --skip-freshness-check.
+    """
+    import subprocess
+
+    if "--skip-freshness-check" in sys.argv:
+        print("  Freshness check skipped (--skip-freshness-check)")
+        return
+    if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+        return
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, timeout=30
+        )
+
+    try:
+        if git("rev-parse", "--git-dir").returncode != 0:
+            return  # not a git checkout
+        git("fetch", "--quiet", "origin", "main")
+        behind = git("rev-list", "--count", "HEAD..origin/main")
+        if behind.returncode != 0:
+            return  # no origin/main to compare against
+        count = int((behind.stdout or "0").strip() or 0)
+    except Exception:
+        return  # offline, git missing, timeout — never block on the check
+
+    if count:
+        print(
+            f"\nERROR: this checkout is {count} commit(s) behind origin/main.\n"
+            "\n"
+            "Syncing now would regenerate the site index from a stale posts/\n"
+            "directory, silently unlinking any post committed since. Rebase\n"
+            "first:\n"
+            "\n"
+            "    git rebase origin/main\n"
+            "\n"
+            "Then run this again. To bypass (you almost never want to):\n"
+            "\n"
+            "    python scripts/sync_blog.py --skip-freshness-check\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def main():
+    check_branch_is_current()
+
     print("Reading posts from posts/...")
     raw_posts = fetch_local_posts()
     print(f"  {len(raw_posts)} posts found")
