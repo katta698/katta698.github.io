@@ -170,9 +170,37 @@ week-11 rather than inventing per-post ids like week-12's `w12-*`.
 - Generic sync-built pages. Do **not** add `daily-` to the `externally_built`
   check: a daily cadence cannot sustain hand-built pages, and no separate
   pipeline builds them.
-- Title format: `AWS Daily Intelligence #N - <topic>`.
+- Title format: `AWS Daily Intelligence #N - <topic>`. The sidebar widget
+  parses `#N` from the title, so the number must be present.
 - Every technical claim cites official AWS documentation, and the post ends
   with an "Official AWS references" section of those links.
+
+### The backlog is part of the workflow
+
+`DAILY-BACKLOG.md` in the repo root records **every** item ranked in a daily
+run, not just the one that became a post. It is both the to-write queue and a
+durable log of what changed and when.
+
+This exists because the AWS What's New feed only returns about a week of
+items. Roughly ten items qualify each day and one becomes a post, so anything
+not written ages out of the feed and is lost with no warning.
+
+Each daily run:
+
+1. **Read the backlog before choosing a topic.** A held item can beat the
+   day's news, and anything near a week old is about to become unwritable.
+2. **Append the day's full ranking** — every item, with service, importance,
+   status and official link.
+3. **Update the status** of the item that became a post to `#N`.
+
+Status values: `#N` shipped · `open` still worth writing · `aged out` no
+longer current, kept for reference · `skipped` deliberately filtered.
+
+Watch for topic-selection bias. Re-ranking from scratch each day favours the
+same profile — GA, all Regions, no extra cost, well documented — so Preview
+features and thinner-documented launches never win on the day. The
+"Standing candidates" section at the end of the backlog is where those are
+held so they are not lost to that bias.
 
 ## CSS and design rules
 
