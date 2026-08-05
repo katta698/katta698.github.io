@@ -6,6 +6,45 @@
 - Never commit or push without explicit instruction. Jayanth pushes himself.
 - After `sync_blog.py` runs, stage ALL modified files under `blog/` — not just the new post's directory. Older posts get regenerated too (widgets, date format, CSS).
 
+## Which folder am I in?
+
+Two worktrees share one repository. **Check before doing anything.**
+
+| Folder | Branch | Used for |
+| --- | --- | --- |
+| `C:\Projects\Engineering\katta698.github.io` | `main` | Architecture Series, Weekly Lab, site work |
+| `C:\Projects\Engineering\katta698-daily` | `daily` | AWS Daily Intelligence series |
+
+`git worktree list` confirms both. They have separate working files and
+separate staging areas but one shared history, so a commit in either is
+visible to the other immediately.
+
+Two worktrees cannot check out the same branch — that is why the daily
+worktree is on `daily` rather than `main`.
+
+### Publishing from the daily worktree
+
+`daily` is a staging branch, not a long-lived one. Rebase it onto `main` before
+writing, then push it straight to remote `main`:
+
+```
+cd C:\Projects\Engineering\katta698-daily
+git fetch origin
+git rebase origin/main          # do this BEFORE running sync
+# write the post, run scripts/sync_blog.py, commit
+git push origin daily:main      # fast-forwards remote main
+git rebase origin/main          # realign after the Actions bot commits
+```
+
+`git push origin daily:main` publishes to `main` without a merge commit,
+provided `daily` was rebased first. If it is rejected, `daily` has fallen
+behind — rebase and push again.
+
+**Rebase before running sync, not just before editing.** The daily worktree
+has its own copy of `posts/`, so it does not see a post written in the other
+worktree until it rebases. Running sync first would regenerate the whole index
+without that post. See "Publishing in parallel" below for what that breaks.
+
 ## Publishing in parallel
 
 Posts are often written in two sessions at once. Conflicts between them are
@@ -20,6 +59,10 @@ generated.
 `sync_blog.py` rebuilds the whole site index from `posts/`, so any two people
 publishing rewrite the same generated files. The Actions bot also auto-commits
 `blog/posts.json` after every push, which is a third writer.
+
+Worktrees make this *more* likely, not less: each worktree has its own `posts/`
+and cannot see the other's new post until it rebases. That is why the rule is
+rebase before **sync**, not merely before editing.
 
 **Resolving a conflict on a generated file — never hand-merge it:**
 
