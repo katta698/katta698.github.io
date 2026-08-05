@@ -1717,7 +1717,12 @@ def build_index_page(posts):
     <script>
     (function(){{
       var FEEDS = {feed_data_json};
-      var TABS = [['arch','Arch'],['lab','Lab'],['daily','Daily'],['all','All']];
+      var TABS = [
+        ['arch','Arch',   'AWS Architecture Series — one enterprise pattern at a time, with the decisions and trade-offs behind it'],
+        ['lab','Lab',     'AWS Weekly Lab — one production-grade platform capability built end to end each week'],
+        ['daily','Daily', 'AWS Daily Intelligence — what AWS shipped, and whether it actually changes anything'],
+        ['all','All',     'Every post, newest first, across all series and topics']
+      ];
       var list = document.getElementById('sf-list');
       var tabWrap = document.getElementById('sf-tabs');
       var allLink = document.getElementById('sf-all');
@@ -1755,6 +1760,8 @@ def build_index_page(posts):
       TABS.forEach(function(t){{
         var btn=document.createElement('button');
         btn.textContent=t[1]; btn.dataset.k=t[0];
+        btn.title=t[2];                 // native tooltip on hover
+        btn.setAttribute('aria-label', t[2]);
         btn.style.cssText='font-size:10.5px;padding:2px 8px;border-radius:10px;border:1px solid var(--border);cursor:pointer;background:transparent;color:var(--text-muted)';
         btn.onclick=function(){{render(t[0]);}};
         tabWrap.appendChild(btn);
