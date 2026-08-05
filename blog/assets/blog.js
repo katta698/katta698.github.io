@@ -309,8 +309,17 @@
   });
   var filtersEl = document.querySelector('.filters');
   if (filtersEl && years.length > 1) {
-    filtersEl.after(monthRow);
-    filtersEl.after(yearRow);
+    // All three rows are position:sticky with the same top offset, so as
+    // siblings they pin to the same spot and overlap — the year row lands on
+    // top of the topic row's lower half. Nesting them in one sticky wrapper
+    // makes them stack normally and pin as a single block, which also keeps
+    // working when the topic row wraps to two lines or the month row appears.
+    var stack = document.createElement('div');
+    stack.className = 'filter-stack';
+    filtersEl.parentNode.insertBefore(stack, filtersEl);
+    stack.appendChild(filtersEl);
+    stack.appendChild(yearRow);
+    stack.appendChild(monthRow);
   }
 
   var yearPills = Array.from(yearRow.querySelectorAll('.filter-pill'));
