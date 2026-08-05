@@ -1,0 +1,290 @@
+---
+title: 'AWS Daily Intelligence #3 - RFC 9151 CNSA 1.0 TLS Policies on ALB and NLB'
+date: '2026-08-05T09:00:00'
+labels:
+- AWS
+- AWS Daily Intelligence
+slug: aws-daily-intelligence-elb-rfc9151-cnsa-tls-policies
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Daily Intelligence &middot; 5 August 2026</div>
+  <div class="post-title">RFC 9151 CNSA 1.0 TLS Policies on ALB and NLB: Compliance at the Front Door Only</div>
+  <div class="post-subtitle">Application and Network Load Balancers now offer TLS security policies implementing the NSA's Commercial National Security Algorithm suite. Seven policies, a deliberate migration ladder, and one behaviour that will quietly undermine anyone who assumes selecting the strict policy makes their path end-to-end compliant.</div>
+  <div class="post-meta">
+    <span>General Availability</span>
+    <span>Commercial, GovCloud and China Regions</span>
+    <span>No additional cost</span>
+    <span>Announced 4 August 2026</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="toc">
+    <h3>In This Post</h3>
+    <ol>
+      <li><a href="#what-changed">What changed</a></li>
+      <li><a href="#why">Why AWS added these policies</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#value">Business value</a></li>
+      <li><a href="#security">Security considerations</a></li>
+      <li><a href="#cost">Cost considerations</a></li>
+      <li><a href="#operations">Operational considerations</a></li>
+      <li><a href="#tradeoffs">Tradeoffs</a></li>
+      <li><a href="#implementation">Implementation guidance</a></li>
+      <li><a href="#practices">Best practices</a></li>
+      <li><a href="#adopt">Who should adopt, who should wait</a></li>
+      <li><a href="#backend">The behaviour that breaks the compliance story</a></li>
+      <li><a href="#takeaways">Key takeaways</a></li>
+      <li><a href="#references">Official AWS references</a></li>
+    </ol>
+  </div>
+
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>On 4 August 2026, AWS announced RFC 9151 compliant TLS security policies for Application Load Balancers and Network Load Balancers. RFC 9151 defines how to use the Commercial National Security Algorithm (CNSA) 1.0 suite, specified by the US National Security Agency, with TLS 1.2 and TLS 1.3.</p>
+    <p>There are seven policies, split into two categories. <strong>Strict policies</strong> enforce RFC 9151 cipher and signature requirements outright. <strong>Interop policies</strong> — the four with <code>INTEROP</code> in the name — accept both RFC 9151 and non-compliant algorithms so you can migrate without dropping clients mid-transition.</p>
+    <p>Available in all commercial Regions, the GovCloud (US) Regions, and the China Regions, at no additional cost.</p>
+    <p>The detail that matters most is not in the announcement. <strong>When you select any RFC 9151 policy on a listener, the load balancer uses <code>ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07</code> for backend connections to your targets — regardless of which policy you chose.</strong> AWS states plainly that it cannot guarantee or enforce RFC 9151 compliance on egress connections. Choosing the strictest front-door policy does not give you an end-to-end CNSA path, and if your targets only speak TLS 1.0 or 1.1, those connections will fail.</p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>Elastic Load Balancing negotiates TLS using a <em>security policy</em>: a named combination of protocol versions and cipher suites. The change adds seven policies built to RFC 9151. Every one of them is also a FIPS policy.</p>
+
+    <h3>The strict policies</h3>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Policy</th><th>TLS 1.3</th><th>TLS 1.2</th><th>Ciphers</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>ELBSecurityPolicy-TLS13-1-3-RFC9151-FIPS-2023-07</code></td><td>Yes</td><td>No</td><td>1 — <code>TLS_AES_256_GCM_SHA384</code></td></tr>
+        <tr><td><code>ELBSecurityPolicy-TLS13-1-2-RFC9151-FIPS-2023-07</code></td><td>Yes</td><td>Yes</td><td>3</td></tr>
+        <tr><td><code>ELBSecurityPolicy-TLS13-1-2-Ext0-RFC9151-FIPS-2023-07</code></td><td>Yes</td><td>Yes</td><td>4 — adds a non-ECDHE cipher</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>The TLS 1.3-only policy is as narrow as AWS ships: a single cipher suite. The TLS 1.2 variant adds <code>ECDHE-ECDSA-AES256-GCM-SHA384</code> and <code>ECDHE-RSA-AES256-GCM-SHA384</code>.</p>
+    <p>The <code>Ext0</code> variant deserves a flag. It adds <code>AES256-GCM-SHA384</code>, which is not an ECDHE cipher and therefore <strong>does not provide forward secrecy</strong>. It exists for legacy clients that cannot do ephemeral key exchange. Reaching for it because it is "the one with the most options among the strict policies" would be a mistake.</p>
+
+    <h3>The interop policies</h3>
+    <p>Four policies widen the accepted set progressively, so you can put CNSA algorithms first while still serving clients that cannot negotiate them yet.</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Policy</th><th>Ciphers</th><th>What it adds</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>...RFC9151-INTEROP1-FIPS-2023-07</code></td><td>6</td><td>AES-128 GCM alongside AES-256 GCM</td></tr>
+        <tr><td><code>...RFC9151-INTEROP2-FIPS-2023-07</code></td><td>10</td><td>CBC ciphers with SHA-256 and SHA-384</td></tr>
+        <tr><td><code>...RFC9151-INTEROP3-FIPS-2023-07</code></td><td>broader</td><td>ECDHE ciphers using SHA-1</td></tr>
+        <tr><td><code>...RFC9151-INTEROP4-FIPS-2023-07</code></td><td>broadest</td><td>AWS-recommended starting point</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>AWS explicitly recommends starting with <code>INTEROP4</code>, which serves clients negotiating classical TLS 1.3, TLS 1.2, or strict RFC 9151, then tightening as your client population proves it can cope.</p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why AWS added these policies</h2>
+    <p>Because compliance regimes name algorithms, and until now meeting CNSA 1.0 at the edge meant not terminating TLS on a managed load balancer.</p>
+    <p>If a contract or accreditation requires CNSA 1.0, the previous options were all poor:</p>
+    <ul>
+      <li><strong>Terminate TLS on your own fleet.</strong> Run NGINX or HAProxy on EC2 with a hand-built cipher string, and take on patching, key management, and scaling — to control one configuration line.</li>
+      <li><strong>Pass TLS through the load balancer.</strong> Use an NLB in TCP passthrough and terminate on the instance. Workable, but you lose the ALB's HTTP-layer routing, WAF integration, and header handling.</li>
+      <li><strong>Pick the closest existing policy and write a justification.</strong> Choose a restrictive non-CNSA policy and argue equivalence in an audit. Common, and unpleasant, because the argument has to be made again every review cycle.</li>
+      <li><strong>Keep the workload off AWS.</strong> The answer nobody writes down.</li>
+    </ul>
+    <p>Naming the policy after the RFC changes the audit conversation from an argument about cipher equivalence into a configuration value someone can read. That is the real value, and it is worth more than the cryptography itself.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>The model to hold: <strong>a security policy governs the connection between the client and the load balancer. It is not a property of the request path.</strong> The load balancer opens a separate TLS connection to your targets, and that connection has its own policy which you do not choose.</p>
+
+    <img src="/blog/assets/diagrams/daily-003-rfc9151-tls-policies.svg" alt="Diagram: an RFC 9151 policy applies to the listener, where you choose one of seven policies, while backend connections to targets always use the INTEROP4 policy regardless of that choice. Targets supporting only TLS 1.0 or 1.1 will fail. A ladder shows the seven policies ordered from broadest interoperability to strictest compliance.">
+
+    <h3>The migration ladder is the design</h3>
+    <p>The interop policies are not a convenience. They are the intended migration path, and the reason this launch is usable rather than merely available.</p>
+    <p>A strict CNSA policy accepts one or three cipher suites. Any client that cannot negotiate them does not get a degraded connection — it gets no connection. For a public endpoint with an unknown client population, switching straight to a strict policy is indistinguishable from an outage for some fraction of users, and you will not know which fraction in advance.</p>
+    <p>The ladder inverts that risk. Start at <code>INTEROP4</code>, which is permissive. CNSA-capable clients negotiate CNSA algorithms immediately, because the server presents its list in preference order. Everyone else keeps working. You then use connection logs to observe what clients actually negotiate, and tighten one rung at a time.</p>
+    <p>This is the same pattern as the catch-all rule in a firewall ruleset: make the permissive case explicit first, then narrow with evidence.</p>
+
+    <h3>Observation is built in</h3>
+    <p>ALB connection logs carry <code>tls_protocol</code>, <code>tls_cipher</code>, and <code>tls_keyexchange</code> fields. Those three tell you exactly what your clients negotiate today, which converts "can we tighten this policy?" from a debate into a query. Enable connection logging before you change the policy, not after.</p>
+  </div>
+
+  <div class="section" id="value">
+    <h2>Business value</h2>
+    <p><strong>Managed load balancing becomes available to CNSA-bound workloads.</strong> The largest win. Teams that ran self-managed TLS termination purely to control ciphers can move to ALB or NLB and delete a fleet.</p>
+    <p><strong>The compliance claim becomes a configuration value.</strong> "The listener uses <code>ELBSecurityPolicy-TLS13-1-2-RFC9151-FIPS-2023-07</code>" is a fact an auditor can verify with one API call. It replaces a written argument that had to be re-made each cycle.</p>
+    <p><strong>Migration without an outage.</strong> The interop ladder means adopting CNSA is a staged rollout with observable checkpoints rather than a cutover with a rollback plan.</p>
+    <p><strong>Available where regulated workloads live.</strong> Commercial, GovCloud (US), and China Regions, at no additional cost — so there is no cost case to build and no Region-availability caveat to work around.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+
+    <div class="warning-box">
+      <p><strong>The strict policy does not make your path compliant end to end.</strong> Selecting any RFC 9151 policy pins backend connections to <code>INTEROP4</code>, the most permissive of the set. AWS states it cannot guarantee or enforce RFC 9151 compliance on egress connections, including to targets and to customer-configured external services such as third-party identity providers or authentication endpoints. If your compliance claim covers the whole path, the load balancer configuration alone does not substantiate it.</p>
+    </div>
+
+    <p><strong>Forward secrecy is not implied by strictness.</strong> The <code>Ext0</code> policy is an RFC 9151 policy that includes a non-ECDHE cipher. Do not treat "RFC 9151" in the name as a guarantee of ephemeral key exchange — check the cipher list.</p>
+    <p><strong>Interop policies accept weak-adjacent algorithms by design.</strong> <code>INTEROP3</code> admits ECDHE ciphers using SHA-1. That is the point — it is a transition tool — but a policy chosen for migration and then left in place for two years is a finding waiting to be written. Put an expiry date on it when you set it.</p>
+    <p><strong>Target-side compliance is your work.</strong> For strict RFC 9151 between the load balancer and targets, the targets need RFC 9151-compliant certificates and ciphers. That is a change to your instances or containers, not to the load balancer.</p>
+    <p><strong>Changing the policy is a security-relevant action.</strong> Whoever can call <code>ModifyListener</code> can loosen the negotiated cipher set for every client, silently and instantly. Treat it as a reviewable change, not routine load balancer configuration.</p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p><strong>The policies are free.</strong> AWS states no additional cost, in all commercial Regions, GovCloud (US), and China. There is no per-policy or per-connection premium, and no pricing page to model.</p>
+    <p><strong>The costs are indirect, and mostly favourable.</strong> The clearest saving is deleting a self-managed TLS termination tier: the instances, their patching, their certificates, and the on-call attached to them.</p>
+    <p><strong>Two second-order effects worth noting.</strong> Restricting to AES-256 and SHA-384 shifts a little CPU cost onto targets and clients relative to AES-128, though at load balancer scale this is not usually observable. And enabling connection logging — which you should, to drive the migration — writes to S3 and carries normal storage and request charges. Budget for the logs, not for the policy.</p>
+    <p><strong>The real cost is client attrition, if you skip the ladder.</strong> Jumping to a strict policy on a public endpoint and losing a percentage of clients is a revenue event, not an infrastructure one. It does not appear on the AWS bill at all, which is exactly why it deserves naming in the cost section.</p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+
+    <div class="tip-box">
+      <p><strong>The default policy depends on how the listener was created.</strong> An HTTPS listener created in the console defaults to <code>ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09</code>. One created by the AWS CLI, CloudFormation, or the CDK defaults to <code>ELBSecurityPolicy-2016-08</code>. If your listeners come from infrastructure as code — and they should — the ones you never set a policy on are running a 2016 default, not a modern one. This is worth auditing across the estate regardless of whether CNSA applies to you.</p>
+    </div>
+
+    <p><strong>Enable connection logging first.</strong> Without <code>tls_protocol</code>, <code>tls_cipher</code>, and <code>tls_keyexchange</code> you are tightening the policy on faith. Collect a full traffic cycle — including whatever weekly or monthly batch integrations exist — before moving a rung.</p>
+    <p><strong>Check targets before switching.</strong> If any target only supports TLS 1.0 or 1.1, connections will fail once an RFC 9151 policy is in place, because the backend policy does not permit them. Verify target-side protocol support first; this is the most likely way to cause an incident with this change.</p>
+    <p><strong>Policy changes take effect on new connections.</strong> Long-lived connections persist, so the blast radius appears gradually rather than at the moment of the change. That delay makes the change feel safer than it is — hold the observation window open well past the deploy.</p>
+    <p><strong>Pin the policy explicitly in IaC.</strong> Never rely on the default. An explicit policy name in the template is the artifact your auditor reads and your future colleague trusts.</p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <p><strong>Strict versus interop.</strong> The real decision. Strict gives a clean compliance statement and refuses non-compliant clients. Interop keeps everyone connected and makes the statement conditional. If you control every client — internal service, known partners, managed devices — go strict. If the endpoint is public, start interop and earn your way across.</p>
+    <p><strong>TLS 1.3-only versus TLS 1.2 and 1.3.</strong> The 1.3-only policy is the strongest posture available and the least forgiving: one cipher suite, and anything without TLS 1.3 is refused. Excellent for a modern internal API, wrong for anything with legacy consumers.</p>
+    <p><strong>Against terminating TLS yourself.</strong> Self-management gives complete control of the cipher string, including on the backend leg where the load balancer gives you none. If your requirement is genuinely end-to-end CNSA with no exceptions, self-managed termination remains the only way to guarantee it. You pay for that in fleet, patching, and scaling.</p>
+    <p><strong>Against a general-purpose restrictive policy.</strong> If you have no CNSA obligation, a policy such as <code>ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09</code> is likely the better default — it is modern, includes post-quantum key exchange, and does not restrict you to a small cipher set for a standard you are not being audited against. Adopt RFC 9151 because you must, not because it sounds stronger.</p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+
+    <h3>Prerequisites</h3>
+    <ul>
+      <li>An ALB or NLB with a TLS-terminating listener.</li>
+      <li>Connection logging enabled, with at least one full traffic cycle captured.</li>
+      <li>Target-side protocol support confirmed as TLS 1.2 or higher.</li>
+      <li>For strict end-to-end compliance, RFC 9151-compliant certificates and ciphers on the targets.</li>
+      <li>An inventory of which listeners were created by IaC and are therefore on the <code>ELBSecurityPolicy-2016-08</code> default.</li>
+    </ul>
+
+    <h3>Inspect the policies before choosing one</h3>
+    <p>List every RFC 9151 policy available to you:</p>
+<pre><code>aws elbv2 describe-ssl-policies \
+    --query "SslPolicies[?contains(Name,'RFC9151')].Name"</code></pre>
+
+    <p>Read the exact protocols and ciphers of a specific policy rather than trusting a summary:</p>
+<pre><code>aws elbv2 describe-ssl-policies \
+    --names "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07"</code></pre>
+
+    <p>Find every policy supporting a given cipher, which is useful when a compliance document names algorithms rather than policies:</p>
+<pre><code>aws elbv2 describe-ssl-policies \
+    --query "SslPolicies[?Ciphers[?contains(Name,'TLS_AES_256_GCM_SHA384')]].Name"</code></pre>
+
+    <h3>Move one rung</h3>
+    <p>Apply the recommended starting policy:</p>
+<pre><code>aws elbv2 modify-listener \
+    --listener-arn arn:aws:elasticloadbalancing:us-east-1:111122223333:listener/app/my-lb/50dc6c495c0c9188/f2f7dc8efc522ab2 \
+    --ssl-policy ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07</code></pre>
+
+    <p>Then watch <code>tls_cipher</code> and <code>tls_protocol</code> in connection logs across a full cycle. When no client is relying on the algorithms the next rung removes, tighten and repeat.</p>
+
+    <div class="warning-box">
+      <p><strong>Do not skip to the strict policy on a public endpoint.</strong> The strict TLS 1.3 policy accepts exactly one cipher suite. Clients that cannot negotiate it are refused outright — there is no downgrade and no warning. On an endpoint with an unknown client population, that is an outage for an unknown fraction of users, discovered from their side rather than yours.</p>
+    </div>
+  </div>
+
+  <div class="section" id="practices">
+    <h2>Best practices</h2>
+    <ol>
+      <li><strong>Start at <code>INTEROP4</code></strong>, as AWS recommends, then tighten with evidence.</li>
+      <li><strong>Enable connection logging before changing anything</strong> and use <code>tls_protocol</code>, <code>tls_cipher</code>, <code>tls_keyexchange</code> to drive each step.</li>
+      <li><strong>Audit listeners created by IaC</strong> for the <code>ELBSecurityPolicy-2016-08</code> default, whether or not CNSA applies to you.</li>
+      <li><strong>Always set the policy explicitly</strong> in templates. Never inherit a default.</li>
+      <li><strong>Verify target TLS support</strong> before switching. TLS 1.0 and 1.1 targets will fail.</li>
+      <li><strong>Do not read <code>Ext0</code> as stronger.</strong> It trades forward secrecy for legacy compatibility.</li>
+      <li><strong>Put an expiry date on any interop policy</strong> when you set it, so a migration tool does not become permanent configuration.</li>
+      <li><strong>State the backend limitation in your compliance documentation</strong> rather than letting a reviewer discover it.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt, who should wait</h2>
+
+    <h3>Adopt</h3>
+    <ul>
+      <li>Workloads with a <strong>stated CNSA 1.0 or RFC 9151 obligation</strong> — federal, defence, and their supply chains.</li>
+      <li>Teams running <strong>self-managed TLS termination purely to control ciphers</strong>. This is the case for deleting that tier.</li>
+      <li><strong>GovCloud and China Region workloads</strong>, where the policies are available at no cost.</li>
+      <li>Anyone who <strong>argued cipher equivalence in an audit</strong> and would rather cite a policy name.</li>
+    </ul>
+
+    <h3>Wait</h3>
+    <ul>
+      <li>Teams <strong>with no CNSA obligation</strong>. A modern general-purpose policy with post-quantum key exchange is probably the better default.</li>
+      <li>Public endpoints <strong>without connection logging</strong>. You cannot migrate safely blind.</li>
+      <li>Anyone whose <strong>targets are on TLS 1.0 or 1.1</strong>. Fix the targets first; the load balancer change will fail against them.</li>
+      <li>Teams needing <strong>guaranteed end-to-end CNSA</strong>. The backend leg is pinned to an interop policy and AWS does not guarantee compliance on it.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="backend">
+    <h2>The behaviour that breaks the compliance story</h2>
+    <p>This deserves its own section because it is the difference between a defensible compliance claim and one that collapses under a competent question.</p>
+    <div class="warning-box">
+      <p><strong>When you select an RFC 9151 security policy on a listener, the load balancer uses <code>ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07</code> for backend connections to targets and other services — no matter which of the seven you chose.</strong> AWS states it cannot guarantee or enforce RFC 9151 compliance on egress connections, including to targets and to customer-configured external services such as third-party identity providers or authentication endpoints.</p>
+    </div>
+    <p>The intuitive reading of "I set the strict CNSA policy on my load balancer" is that CNSA now governs traffic through it. It does not. It governs the client-facing half. The other half runs on the most permissive policy in the family, and AWS is explicit that compliance there is not something it will assert.</p>
+    <p>Three consequences follow.</p>
+    <p><strong>Your compliance evidence needs two halves.</strong> The listener policy covers ingress. Target-side certificates and cipher configuration cover egress, and that evidence comes from your instances or containers, not from an ELB API call. Document both, and say which is which.</p>
+    <p><strong>External service calls are in scope and easy to forget.</strong> ALB authentication actions that call an external identity provider go out over that same uncontrolled egress path. If your architecture uses OIDC authentication at the load balancer, that connection is inside your compliance boundary and outside AWS's assurance.</p>
+    <p><strong>TLS 1.0 and 1.1 targets stop working.</strong> Not degraded — failed. The backend policy does not include those protocols, so any target that cannot do TLS 1.2 or better drops out the moment the listener policy changes. This is the most likely way this launch causes an incident, and it is entirely preventable by checking targets first.</p>
+    <p>None of this makes the feature less useful. It makes the claim narrower than the name suggests, and narrow claims that survive scrutiny are worth more than broad ones that do not.</p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ol>
+      <li>Seven RFC 9151 policies for ALB and NLB: three strict, four interop. All are FIPS policies.</li>
+      <li>GA in all commercial Regions, GovCloud (US), and China, at <strong>no additional cost</strong>.</li>
+      <li><strong>Backend connections always use <code>INTEROP4</code></strong> regardless of the listener policy, and AWS does not guarantee RFC 9151 compliance on egress.</li>
+      <li><strong>Targets on TLS 1.0 or 1.1 will fail</strong> once an RFC 9151 policy is applied.</li>
+      <li>AWS recommends starting at <code>INTEROP4</code> and tightening as clients prove capability.</li>
+      <li>The strict TLS 1.3 policy accepts <strong>one cipher suite</strong>. There is no downgrade path for clients that cannot negotiate it.</li>
+      <li><code>Ext0</code> is an RFC 9151 policy that includes a non-ECDHE cipher, so it <strong>does not provide forward secrecy</strong>.</li>
+      <li>Connection log fields <code>tls_protocol</code>, <code>tls_cipher</code>, and <code>tls_keyexchange</code> are how you drive the migration safely.</li>
+      <li>Console-created HTTPS listeners default to <code>ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09</code>; <strong>CLI, CloudFormation and CDK default to <code>ELBSecurityPolicy-2016-08</code></strong>. Audit this regardless of CNSA.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/08/aws-application-network/">AWS Application and Network Load Balancers now support RFC 9151 compliant security policies</a></li>
+      <li><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/application/describe-ssl-policies.html">Security policies for your Application Load Balancer</a></li>
+      <li><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/network/describe-ssl-policies.html">Security policies for your Network Load Balancer</a></li>
+      <li><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-connection-logs.html">Connection logs for your Application Load Balancer</a></li>
+      <li><a href="https://docs.aws.amazon.com/cli/latest/reference/elbv2/describe-ssl-policies.html">describe-ssl-policies, AWS CLI Reference</a></li>
+      <li><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-listeners.html">Listeners for your Application Load Balancer</a></li>
+      <li><a href="https://datatracker.ietf.org/doc/html/rfc9151">RFC 9151, Commercial National Security Algorithm (CNSA) Suite Profile for TLS and DTLS 1.2 and 1.3</a></li>
+    </ul>
+  </div>
+
+  <div class="post-footer">
+    <p>AWS Daily Intelligence tracks meaningful AWS changes from official sources and explains what they mean for enterprise architecture.</p>
+    <p>Every technical claim in this post is sourced from the AWS documentation linked above. Feature status: General Availability, announced 4 August 2026.</p>
+  </div>
+
+</div>
+</div>
