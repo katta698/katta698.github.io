@@ -1,0 +1,326 @@
+---
+title: "AWS Architecture Series #12 — CloudWatch vs OpenTelemetry: What Multi-Account Observability Actually Costs"
+date: 2026-08-05
+slug: aws-architecture-cloudwatch-vs-opentelemetry
+labels: [AWS, "AWS Architecture Series"]
+problem: "A platform team ships every log to CloudWatch and forwards the same lines to a third-party SIEM, paying ingestion twice. Switching log groups to Infrequent Access to cut the bill silently breaks the forwarding, and the log class cannot be changed back."
+builds: "A three-layer model that separates collection from routing from storage: ADOT where portability matters, cross-account observability for the console layer, and a deliberate log class per log group rather than one default applied estate-wide."
+catch: "The Infrequent Access log class has no subscription filters, no metric filters and no Live Tail, and a log group's class is fixed at creation. Cross-account links also fail outright if a source account offers more telemetry types than the monitoring account accepts."
+---
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A platform team runs 60 AWS accounts across four organisational units. Observability grew the
+      way it usually does: the CloudWatch agent went onto everything because it was the default,
+      log groups were created per service with whatever settings the module happened to have, and
+      when the security team standardised on Splunk, subscription filters were added to forward
+      everything there too. Later the SRE team brought in Datadog, and a second set of forwarders
+      went in alongside.
+    </p>
+    <p>
+      Nobody designed this. Each step was reasonable. The result was an observability bill growing
+      faster than the compute it was watching, and three separate places to look when something
+      broke.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Every log line was paid for at least twice</strong></div>
+      <div class="challenge-body">
+        <p>
+          A log written by an application was ingested by CloudWatch Logs, then forwarded by a
+          subscription filter and ingested again by Splunk, and in some accounts a third time by
+          Datadog. Storage was then paid on all three. The team had never made a decision about
+          this; the forwarders were added one at a time, each justified on its own.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Decide where a given signal is <em>authoritative</em> and route it there once, rather than copying everything everywhere.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The cost fix silently broke the forwarding</strong></div>
+      <div class="challenge-body">
+        <p>
+          FinOps flagged CloudWatch ingestion, and the obvious lever was the
+          <strong>Infrequent Access</strong> log class, which has a lower ingestion price per GB.
+          New log groups were created in that class. What nobody checked first:
+          <strong>Infrequent Access does not support subscription filters</strong>. The logs kept
+          arriving in CloudWatch and quietly stopped arriving in Splunk. It was found weeks later,
+          during an investigation that needed those logs.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Read the feature matrix before changing log class. The cheaper class is a genuinely different product.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The mistake could not be undone in place</strong></div>
+      <div class="challenge-body">
+        <p>
+          <strong>A log group's class cannot be changed after it is created.</strong> Fixing it
+          meant creating replacement log groups in the Standard class, repointing every producer,
+          migrating retention settings, and accepting that the historical data stayed behind in the
+          old groups. A configuration mistake became a migration.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat log class as a create-time architectural decision, set explicitly in the module that creates the log group.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>Instrumentation was welded to one vendor</strong></div>
+      <div class="challenge-body">
+        <p>
+          When the team evaluated moving some workloads off CloudWatch, they found the CloudWatch
+          agent was installed and configured on every instance and container. Changing destination
+          meant reinstrumenting the estate, so the evaluation stopped there. The bill was not
+          negotiable because the architecture had no seam in it.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Collect through a vendor-neutral layer so that where telemetry <em>goes</em> is a configuration change, not a re-rollout.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The framing that prevents all four is to stop treating observability as one choice. It is
+      three, and they are independent: <strong>what collects the telemetry</strong>,
+      <strong>how it is routed</strong>, and <strong>where it is stored</strong>. Teams conflate
+      them, pick a vendor, and inherit all three answers at once.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-012-observability-layers.svg" alt="Diagram: observability split into three layers. Collection is either the CloudWatch agent or the AWS Distro for OpenTelemetry. Routing is subscription filters, OTLP exporters, or cross-account links. Storage is CloudWatch Logs Standard, CloudWatch Logs Infrequent Access, a third-party platform such as Datadog or Splunk, or S3. A note explains that Infrequent Access has no subscription filters and that a log group's class cannot be changed after creation." />
+      <figcaption>Three decisions, made separately. The trap at the bottom is where layers two and three interact: the cheaper storage class removes the routing mechanism that feeds everything downstream.</figcaption>
+    </figure>
+
+    <h3>Layer 1 &mdash; collection</h3>
+    <p>
+      The CloudWatch agent is the path of least resistance inside AWS and it is genuinely good at
+      what it does. Its cost is that it speaks one destination. The alternative is
+      <strong>ADOT</strong>, the AWS-supported distribution of the CNCF OpenTelemetry project. It
+      handles traces, metrics and logs, offers auto-instrumentation, and collects AWS resource
+      metadata so application performance can be correlated with the infrastructure underneath.
+    </p>
+    <p>
+      The architectural argument for ADOT is not that it is better at collection. It is that it
+      exports to Amazon Managed Service for Prometheus, CloudWatch, X-Ray, OpenSearch, MSK
+      <em>and any OTLP-compliant backend</em>. Instrument once, and the destination becomes a
+      config change rather than a fleet-wide re-rollout. That is the seam the team in this scenario
+      did not have.
+    </p>
+
+    <h3>Layer 2 &mdash; routing, and the console problem</h3>
+    <p>
+      Across 60 accounts the practical question is not only where data is stored but where an
+      engineer <em>looks</em>. <strong>CloudWatch cross-account observability</strong> answers that
+      without moving any data: designate a monitoring account, and source accounts share telemetry
+      into it through a sink.
+    </p>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-icon">1</div>
+        <div class="flow-content">
+          <h4>The monitoring account creates a sink</h4>
+          <p>A sink is the attachment point. Each account gets one per Region, and the monitoring account declares which telemetry types it will accept.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">2</div>
+        <div class="flow-content">
+          <h4>Source accounts create links</h4>
+          <p>Links are owned by the source account, which chooses what to share: metrics by namespace, log groups by filter, X-Ray traces, Application Signals services and SLOs.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">3</div>
+        <div class="flow-content">
+          <h4>Organizations makes it durable</h4>
+          <p>Linking by organisation or OU means accounts created later are onboarded automatically &mdash; the difference between a design and a chore someone has to remember.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">4</div>
+        <div class="flow-content">
+          <h4>Scale is not the constraint</h4>
+          <p>One monitoring account links up to 100,000 source accounts; a source account can share with up to five monitoring accounts, which is how security and platform teams get their own views.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout blue">
+      <strong>The asymmetry that fails the link</strong>
+      <p>If the monitoring account accepts more telemetry types than the source offers, the link succeeds and shares the intersection. If the <em>source</em> offers more than the monitoring account accepts, link creation fails outright. Widen the monitoring account first, then the sources.</p>
+    </div>
+
+    <h3>Layer 3 &mdash; storage, where the money is</h3>
+    <p>
+      CloudWatch Logs offers two classes. <strong>Standard</strong> is fully featured.
+      <strong>Infrequent Access</strong> has a lower ingestion price and is aimed at ad-hoc querying
+      and after-the-fact forensics. The critical detail is what "lower price" actually covers:
+      <strong>the classes differ in ingestion cost only</strong>. Storage and Logs Insights query
+      charges are identical.
+    </p>
+    <p>
+      So Infrequent Access is a lever on ingestion, not a general discount &mdash; and it is paid
+      for in capability.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Cross-account observability is free where it matters most</h3>
+    <p>
+      For logs and metrics, cross-account sharing carries <strong>no additional charge</strong>, and
+      the first trace copy is free. That makes the console layer close to a pure win: engineers get
+      one place to search across 60 accounts without a second ingestion bill and without building a
+      forwarding pipeline to a central account. Teams routinely build that pipeline anyway, because
+      they assume centralising means copying.
+    </p>
+
+    <h3>The log class matrix is an architecture document</h3>
+    <p>
+      It is easy to read Infrequent Access as "same thing, cheaper". It is not. What it keeps:
+      managed ingestion and storage, cross-account features, KMS encryption, most Logs Insights
+      commands, S3 export, scheduled queries, sensitive data masking.
+    </p>
+    <p>
+      What it does not have is the part that catches people:
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h4>No subscription filters</h4>
+        <p>The mechanism that forwards logs to Firehose, Lambda or a third-party SIEM. If Splunk or Datadog is downstream, this class breaks it.</p>
+      </div>
+      <div class="card">
+        <h4>No metric filters</h4>
+        <p>No turning a log pattern into a CloudWatch metric, so any alarm built on log contents stops working.</p>
+      </div>
+      <div class="card">
+        <h4>No Live Tail or field indexing</h4>
+        <p>Real-time troubleshooting and indexed lookups are gone, along with anomaly detection and embedded metric format.</p>
+      </div>
+      <div class="card">
+        <h4>No Container or Lambda Insights ingestion</h4>
+        <p>And <code>GetLogEvents</code>/<code>FilterLogEvents</code> are unsupported &mdash; anything reading logs through the API has to move to Logs Insights.</p>
+      </div>
+    </div>
+    <p>
+      Read as a whole, the split is coherent: Standard is for logs you <em>operate on</em>,
+      Infrequent Access is for logs you <em>keep and occasionally search</em>. Debug logs from a
+      chatty service, audit trails, and anything retained for compliance fit the second category
+      well. Application error logs feeding alarms do not.
+    </p>
+
+    <div class="callout amber">
+      <strong>Immutable at creation</strong>
+      <p>A log group's class is fixed once created. This belongs in the Terraform module that creates log groups, with a sensible default and an explicit override &mdash; not in a runbook someone consults later.</p>
+    </div>
+
+    <h3>Portability is the cheapest insurance you can buy</h3>
+    <p>
+      The reason to collect through OpenTelemetry is not ideology about open standards. It is that
+      observability contracts get renegotiated, vendors get acquired, and pricing models change.
+      When they do, the question is whether changing destination is a configuration change or a
+      project. ADOT makes it the former, and costs relatively little to adopt at the point where
+      you are instrumenting anyway.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Collection</td>
+        <td>ADOT for applications; CloudWatch agent for infrastructure</td>
+        <td>Applications are where lock-in hurts and where instrumentation is expensive to redo. Host metrics rarely leave AWS.</td>
+      </tr>
+      <tr>
+        <td>Central visibility</td>
+        <td>Cross-account observability, linked by Organizations</td>
+        <td>No extra charge for logs and metrics, no pipeline to build, and new accounts onboard themselves.</td>
+      </tr>
+      <tr>
+        <td>Log class</td>
+        <td>Standard by default; Infrequent Access deliberately</td>
+        <td>Set at creation and immutable. The wrong default becomes a migration rather than an edit.</td>
+      </tr>
+      <tr>
+        <td>Third-party forwarding</td>
+        <td>Route once, to whichever platform is authoritative</td>
+        <td>Copying every line to CloudWatch, Splunk and Datadog means paying ingestion three times for one event.</td>
+      </tr>
+      <tr>
+        <td>Long-term retention</td>
+        <td>Export to S3</td>
+        <td>Storage charges are identical across log classes; S3 is the actual lever for anything kept for years.</td>
+      </tr>
+      <tr>
+        <td>Alarming on log content</td>
+        <td>Keep those groups in Standard</td>
+        <td>Metric filters do not exist in Infrequent Access, so log-derived alarms silently stop being possible.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The question that orders the whole design</h3>
+    <p>
+      For each stream, ask what someone will actually do with it. Alarm on it, tail it live during
+      an incident, query it during a post-mortem, or keep it because an auditor will ask in three
+      years. Those four answers map cleanly onto Standard, Standard, Infrequent Access, and S3
+      &mdash; and they are business questions, not technical preferences.
+    </p>
+
+    <div class="callout green">
+      <strong>Audit worth running once</strong>
+      <p>List every log group with its class, retention, and whether it has a subscription filter. Nearly every estate finds groups retained forever that nobody queries, groups forwarded to two platforms for no reason, and debug logs sitting in Standard paying full ingestion. That inventory usually pays for the exercise on its own.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Observability bills grow the way this one did: not through a bad decision, but through a
+      series of individually reasonable additions that nobody ever looked at together. Another
+      forwarder, another retention default, another agent. Each one small, none of them wrong on
+      its own.
+    </p>
+    <p>
+      Splitting the problem into collection, routing and storage makes those additions visible as
+      choices. It also makes the trade-offs legible: portability is bought at layer one, central
+      visibility is nearly free at layer two, and almost all the money is spent at layer three.
+      Teams that conflate the layers end up optimising the one they can see &mdash; usually storage
+      &mdash; and breaking something in a layer they were not thinking about.
+    </p>
+    <p>
+      The honest caveat: none of this makes a third-party platform the wrong choice. Datadog and
+      Splunk earn their cost when correlation across a heterogeneous estate matters more than the
+      per-GB price, and a team that lives in one of those tools all day should not be forced into a
+      second console for AWS alone. The mistake is not choosing them. It is paying for them
+      <em>and</em> for the full-featured AWS-native path, for the same log line, without ever
+      deciding which one is authoritative.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Edge &mdash; CloudFront, Origin Shield and WAF, and how the caching layer changes what your origin has to survive. Where the edge absorbs load, where it merely relocates it, and the configuration mistakes that turn a CDN into an expensive pass-through.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch_Logs_Log_Classes.html" target="_blank" rel="noopener">CloudWatch Logs log classes</a> &mdash; the full feature matrix for Standard and Infrequent Access, the note that the classes differ in ingestion cost only, and the warning that a log group's class cannot be changed after creation.</li>
+    </ul>
+  </div>
