@@ -281,8 +281,12 @@ CHATGPT_MARKERS = [
 ]
 
 # ── Tag detection ─────────────────────────────────────────────
-MAX_TAGS = 3
-CATEGORY_ORDER = ["All", "AWS Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
+# 4, not 3: a post can legitimately belong to a series and still carry three
+# real topic tags (e.g. 30 Days of AWS Terraform + AWS + Terraform + Kubernetes).
+# At 3 the series label evicted the most specific tag, and the Kubernetes pill
+# disappeared entirely because its only three posts were all in the series.
+MAX_TAGS = 4
+CATEGORY_ORDER = ["All", "AWS Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "30 Days of AWS Terraform", "AWS", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
 
 NAV_SVG = """<svg width="30" height="30" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
   <rect width="80" height="80" rx="16" fill="#11140F"/>
