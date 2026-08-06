@@ -18,6 +18,26 @@ approaching a week old is about to become unwritable.
 
 ---
 
+## 5 August 2026 — covered by post #4
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Real-time vector search, 4096 dims, `SearchVectors` | DynamoDB | **#4** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-dynamodb-vector-search) |
+| Scalable network bandwidth, 625 Mbps at 2 GB to 3,000 Mbps at 10 GB | Lambda | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-lambda-network-bandwidth/) |
+| Serverless scales to 12 ACUs within a second, then to 256 | Aurora | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aurora-serverless-instant-12-acu-scaling) |
+| Account access management optional for new org instances | IAM Identity Center | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-identity-center-accounts-optional/) |
+| ETL anomaly detection now free, better predictions | Glue Data Quality | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-glue-data-quality-anomaly-detection-free) |
+| AI Insights for pricing on listings | Marketplace | skipped | Low | — |
+| Keyspaces in Canada West (Calgary) | Keyspaces | skipped | Low | — |
+
+**Worth revisiting:** the Lambda bandwidth item has two sharp constraints the
+headline hides — it applies only to functions **outside a VPC**, needs at least
+2 GB of memory, and must be switched on per account via Service Quotas
+("Network bandwidth per execution environment"). It is not automatic. That is a
+strong post on its own, and a close second today.
+
+---
+
 ## 4 August 2026 — covered by post #3
 
 | Item | Service | Status | Importance | Reference |
