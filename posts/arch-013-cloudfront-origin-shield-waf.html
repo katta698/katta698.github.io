@@ -1,0 +1,323 @@
+---
+title: "AWS Architecture Series #13 — CloudFront, Origin Shield and WAF: When the CDN Is Just an Expensive Proxy"
+date: 2026-08-06
+slug: aws-architecture-cloudfront-origin-shield-waf
+labels: [AWS, "AWS Architecture Series"]
+problem: "An e-commerce platform runs CloudFront in front of its API and origin load never drops. The cache key includes User-Agent and a session cookie, so almost nothing is reused. Origin Shield is switched on to relieve the origin and adds cost without adding hits."
+builds: "A cache key built from what actually changes the response, an origin request policy for values the origin needs but the cache should ignore, and Origin Shield enabled only where content is cacheable enough for request collapsing to pay for itself."
+catch: "Origin Shield bills per request where it is an incremental layer, and any GET or HEAD with a TTL under 3,600 seconds counts as dynamic. AWS states Origin Shield is a poor fit for low-cacheability content — which is exactly what an over-specified cache key creates."
+---
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      An e-commerce platform put CloudFront in front of its product pages and API eighteen months
+      ago. The origin is an ECS service behind an ALB in eu-west-1. The expectation was the usual
+      one: the CDN absorbs the reads, the origin handles the writes, and the fleet stops scaling
+      with traffic.
+    </p>
+    <p>
+      Origin request volume never dropped. During the last sale the origin scaled to the same
+      instance count it would have needed with no CDN at all, and the CloudFront bill arrived on top
+      of it. The team had bought a cache and were paying for a proxy.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The cache key had been built to be safe, not to cache</strong></div>
+      <div class="challenge-body">
+        <p>
+          When the distribution was created, someone forwarded <code>User-Agent</code> so the origin
+          could do device detection, and the session cookie so personalisation would work. Both
+          landed in the <em>cache key</em>. <code>User-Agent</code> alone has thousands of
+          variations; a session cookie is unique per user. Between them, effectively every request
+          produced a distinct cache key. The cache was full of objects with one hit each.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Only values that change the response the origin returns belong in the cache key.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The origin genuinely needed those values &mdash; but not in the key</strong></div>
+      <div class="challenge-body">
+        <p>
+          The forwarding was not wrong, only the mechanism. CloudFront has a second policy type for
+          exactly this: an <strong>origin request policy</strong> sends headers, cookies and query
+          strings to the origin <em>without</em> including them in the cache key. Analytics and
+          telemetry values reach the origin, and the cache stays whole.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Cache policy decides what varies the cached object. Origin request policy decides what the origin gets told.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Origin Shield was switched on to fix a caching problem</strong></div>
+      <div class="challenge-body">
+        <p>
+          Faced with origin load, the team enabled Origin Shield &mdash; a reasonable-sounding move,
+          since it collapses duplicate origin requests. But request collapsing only helps when many
+          requests want the <em>same</em> object, and a cache key that is unique per user produces
+          almost no duplicates to collapse. AWS says so plainly: Origin Shield is not a good fit for
+          low-cacheability or infrequently requested content.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Fix the cache key first. Origin Shield multiplies a working cache; it cannot create one.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>And the TTL made every request billable</strong></div>
+      <div class="challenge-body">
+        <p>
+          Product pages were set to a 300-second TTL to keep pricing fresh. For Origin Shield
+          billing, <strong>a GET or HEAD with a TTL below 3,600 seconds is treated as a dynamic
+          request</strong>, and dynamic requests always count Origin Shield as an incremental layer.
+          The entire read path was billed at the dynamic rate while delivering the collapsing
+          benefit of almost none of it.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Know that the 3,600-second boundary exists before choosing a TTL, not after reading the invoice.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      A CloudFront request passes through several layers, and it is tempting to reason about them
+      independently. They are not independent: <strong>one decision governs all of them.</strong>
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-013-edge-layers.svg" alt="Diagram: a viewer request passing through AWS WAF, the edge location cache, a regional edge cache, Origin Shield and finally the origin. Side panels explain that the cache key defaults to distribution domain plus URL path, that an origin request policy forwards values without adding them to the cache key, and that Origin Shield bills GET requests with a TTL under 3,600 seconds as dynamic." />
+      <figcaption>The layers are sequential, but the cache key decides how many of them can do anything. Get it wrong and each one becomes a toll booth on the way to the origin.</figcaption>
+    </figure>
+
+    <h3>The default cache key is smaller than people expect</h3>
+    <p>
+      Out of the box, the cache key is the <strong>distribution domain name and the URL path</strong>.
+      That is all. Query strings, headers and cookies are excluded until a cache policy adds them.
+      Two requests for the same path with different query strings, different <code>User-Agent</code>
+      values and different session cookies are, by default, a cache hit.
+    </p>
+    <p>
+      This matters because the default is the <em>good</em> configuration for most static content,
+      and almost every cache-hit problem is something a human added on purpose.
+    </p>
+
+    <h3>Two policies, two different questions</h3>
+    <div class="grid-2">
+      <div class="card">
+        <h4>Cache policy</h4>
+        <p>"Does this value change the response?" If yes, it belongs in the cache key &mdash; a different value should produce a different cached object.</p>
+      </div>
+      <div class="card">
+        <h4>Origin request policy</h4>
+        <p>"Does the origin need to see this?" If yes but it does not change the response, forward it without touching the cache key.</p>
+      </div>
+    </div>
+    <p>
+      Conflating the two is the single most common CloudFront mistake, and it is easy to make
+      because the safe-looking option &mdash; forward everything &mdash; is the one that destroys
+      the cache.
+    </p>
+
+    <h3>Origin Shield collapses; it does not cache into existence</h3>
+    <p>
+      With Origin Shield enabled, every origin request from every CloudFront layer funnels through a
+      single additional cache in one Region. Requests for an object that is not there are
+      <em>consolidated</em>, so a burst of identical misses can become as few as one origin request.
+      That is genuinely powerful for a live event, just-in-time packaging, or a bandwidth-constrained
+      on-premises origin.
+    </p>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-icon">1</div>
+        <div class="flow-content">
+          <h4>Choose the Region by proximity to the origin</h4>
+          <p>If the origin sits in one of the thirteen Regions where Origin Shield is offered, use that same Region. Otherwise pick the nearest from AWS's mapping table.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">2</div>
+        <div class="flow-content">
+          <h4>Same-Region requests skip it</h4>
+          <p>Requests that reach the regional edge cache in the same Region as Origin Shield bypass the extra layer, and are not billed for it.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">3</div>
+        <div class="flow-content">
+          <h4>Check the logs for what actually happened</h4>
+          <p><code>OriginShieldHit</code> appears in the <code>x-edge-detailed-result-type</code> field. A request served by the regional edge cache acting as Origin Shield logs as a plain <code>Hit</code>, so the two are not interchangeable when measuring.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">4</div>
+        <div class="flow-content">
+          <h4>Know what moves with it</h4>
+          <p>Lambda@Edge origin-facing triggers run in the Origin Shield Region. gRPC is not supported and bypasses the layer entirely.</p>
+        </div>
+      </div>
+    </div>
+
+    <h3>WAF sits in front of all of it</h3>
+    <p>
+      A web ACL associated with the distribution inspects requests before they are served from cache
+      or forwarded to the origin, so blocked traffic costs neither a cache lookup nor an origin
+      request. Worth knowing if you are on one of the newer <strong>flat-rate pricing plans</strong>:
+      those bundle CloudFront, WAF, DDoS protection, bot management, Route 53, log ingestion, TLS
+      and edge compute into a monthly price &mdash; and while on such a plan, a web ACL
+      <em>must</em> remain associated with the distribution. You can change the rules, but you
+      cannot detach it without moving back to pay-as-you-go.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Cache hit ratio is a design output, not a metric to chase</h3>
+    <p>
+      Teams treat hit ratio as something to be improved by tuning. It is mostly determined the
+      moment the cache policy is written. If the key contains a value with high cardinality, no
+      amount of TTL adjustment or extra caching layers will help, because the layers never see the
+      same key twice.
+    </p>
+    <p>
+      AWS's own example is worth internalising: <code>Accept-Language</code> arrives as
+      <code>en-US,en</code>, <code>en,en-US</code>, <code>en-US, en</code> and <code>en-US</code>.
+      Four spellings of "English", four cached copies of one object. The recommendation is not to
+      normalise the header but to <strong>put the language in the URL</strong> &mdash;
+      <code>/en-US/content/…</code> &mdash; so the path carries the variation and the cache key
+      stays clean.
+    </p>
+
+    <div class="callout blue">
+      <strong>The test for any cache key candidate</strong>
+      <p>How many distinct values will this take across real traffic? Two or three is fine. Thousands means you are not caching, you are indexing.</p>
+    </div>
+
+    <h3>The ordering matters more than the components</h3>
+    <p>
+      Every layer here is worth having, but only in sequence. WAF first, because rejecting traffic
+      early costs nothing downstream. Then a cache key narrow enough that objects are actually
+      reused. Then, and only then, Origin Shield to collapse whatever misses remain.
+    </p>
+    <p>
+      Enabled in the wrong order, Origin Shield becomes a metered pass-through: an extra network hop
+      and a per-request charge applied to traffic that was never going to hit anyway.
+    </p>
+
+    <div class="callout amber">
+      <strong>The 3,600-second line</strong>
+      <p>Below an hour, GET and HEAD are billed as dynamic through Origin Shield. Plenty of sensible TTLs sit just under it. If you need short TTLs for freshness, that is a legitimate choice &mdash; just make it knowing Origin Shield's economics change on the other side of that boundary.</p>
+    </div>
+
+    <h3>Where Origin Shield genuinely earns its cost</h3>
+    <p>
+      The cases AWS names are specific and they share a shape: many viewers wanting the same object
+      at the same time, from an origin that finds serving it expensive. Live video with
+      just-in-time packaging. On-the-fly image processing. An on-premises origin with a fixed
+      bandwidth ceiling. Multiple CDNs in front of one origin, where Origin Shield also gives you a
+      common cache key across them.
+    </p>
+    <p>
+      Notice that none of those is "our origin is under load". Origin load is a symptom; these are
+      diagnoses.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>What goes in the cache key</td>
+        <td>Only values that change the response</td>
+        <td>Every added value multiplies the objects cached. High-cardinality values turn the cache into a per-user store with one hit each.</td>
+      </tr>
+      <tr>
+        <td>Values the origin needs anyway</td>
+        <td>Origin request policy</td>
+        <td>Forwards headers, cookies and query strings to the origin without fragmenting the cache. This is the fix for "but we need User-Agent".</td>
+      </tr>
+      <tr>
+        <td>Language and locale variation</td>
+        <td>Put it in the URL path</td>
+        <td>Header spellings vary; paths do not. Moves the variation somewhere the cache key handles cleanly.</td>
+      </tr>
+      <tr>
+        <td>Origin Shield</td>
+        <td>Only once content is cacheable</td>
+        <td>It collapses duplicate requests. With a per-user cache key there are no duplicates to collapse, and the charge lands anyway.</td>
+      </tr>
+      <tr>
+        <td>Origin Shield Region</td>
+        <td>Nearest to the origin, from the supported thirteen</td>
+        <td>Same-Region requests bypass and are unbilled, and Lambda@Edge origin-facing triggers follow the Region you pick.</td>
+      </tr>
+      <tr>
+        <td>WAF placement</td>
+        <td>Web ACL on the distribution</td>
+        <td>Blocked traffic never reaches cache or origin. On flat-rate plans the association is mandatory and cannot be removed.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>What to measure before changing anything</h3>
+    <p>
+      Two numbers settle most arguments here. The first is cache hit ratio per behaviour, not per
+      distribution &mdash; an average across a static path and an API path tells you nothing. The
+      second is the number of distinct cache keys being generated, which you can approximate from
+      access logs; if it approaches your request count, the cache key is the problem and nothing
+      downstream will fix it.
+    </p>
+
+    <div class="callout green">
+      <strong>The cheapest experiment</strong>
+      <p>Create a second cache behaviour for one static path with a minimal cache policy and compare its hit ratio to the existing one. It takes minutes, changes nothing for users, and usually ends the debate about whether the cache key is at fault.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      A CDN is often described as something you put in front of an application. It is more accurate
+      to say a CDN is a bet that many requests are the same request &mdash; and the cache key is
+      where you declare what "the same" means. Everything else at the edge is machinery serving that
+      one definition.
+    </p>
+    <p>
+      Which is why the failure in this scenario was not a misconfiguration so much as a category
+      error. Forwarding <code>User-Agent</code> and a session cookie was a sensible instinct about
+      what the origin needed. It just got expressed in the one place where it silently told
+      CloudFront that no two requests are ever alike. Everything downstream then behaved perfectly
+      correctly, at considerable expense.
+    </p>
+    <p>
+      The honest caveat: some content genuinely cannot be cached, and no cache key rewrite changes
+      that. Authenticated API responses, personalised pages, anything with per-user pricing. For
+      those paths the right answer may be no caching layer at all &mdash; a separate cache behaviour
+      with caching disabled, routed straight to the origin, so the uncacheable traffic stops
+      distorting the numbers for the traffic that is.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Storage &mdash; S3 storage classes and lifecycle economics at scale. Where Intelligent-Tiering earns its monitoring fee and where it quietly does not, what retrieval actually costs when you need the data back in a hurry, and the minimum-duration charges that make "just move it to Glacier" more expensive than leaving it alone.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/understanding-the-cache-key.html" target="_blank" rel="noopener">Understand the cache key</a> &mdash; the default cache key, the effect of adding high-cardinality values, the <code>Accept-Language</code> duplication example, and the guidance to use an origin request policy for values the origin needs but the cache should ignore.</li>
+    </ul>
+  </div>
