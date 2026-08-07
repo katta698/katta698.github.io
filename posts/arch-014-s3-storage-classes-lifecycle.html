@@ -1,0 +1,312 @@
+---
+title: 'AWS Architecture Series #14 — S3 Storage Classes: Why “Just Move It to Glacier” Made the Bill Go Up'
+date: 2026-08-07
+slug: aws-architecture-s3-storage-classes-lifecycle
+labels: [AWS, "AWS Architecture Series"]
+problem: "A telemetry platform stores four billion objects averaging 20 KB. A lifecycle policy moves everything to Standard-IA at 30 days and Glacier Deep Archive at 90, and the storage bill rises rather than falls."
+builds: "A tiering decision driven by object size and count rather than age: aggregation before archival, Intelligent-Tiering where access is genuinely unpredictable, and lifecycle rules whose transitions respect each class's minimum duration."
+catch: "Standard-IA and Glacier Instant Retrieval bill a minimum of 128 KB per object. Glacier Flexible Retrieval and Deep Archive add 40 KB of metadata per object. Transitioning before a class's minimum duration is charged exactly like deleting early."
+---
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A telemetry platform writes device events to S3. Four billion objects, averaging 20 KB each
+      &mdash; roughly 80 TB. Finance asked for a storage reduction, and the team did the obvious
+      thing: a lifecycle policy moving objects to Standard-IA after 30 days, then to Glacier Deep
+      Archive after 90.
+    </p>
+    <p>
+      The next invoice was higher. Not marginally &mdash; noticeably. Nobody had done anything
+      wrong in the sense of misconfiguring a rule. The rule was exactly what the documentation
+      shows. The problem was that every cost mechanism in S3 is priced <strong>per object</strong>,
+      and this bucket had four billion of them.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>A 20 KB object is billed as 128 KB in the IA classes</strong></div>
+      <div class="challenge-body">
+        <p>
+          S3 Standard-IA, One Zone-IA and Glacier Instant Retrieval all carry a
+          <strong>128 KB minimum billable object size</strong>. Below that, you pay for 128 KB
+          regardless. At an average of 20 KB, the platform was billed for <strong>6.4&#215; the
+          bytes it actually stored</strong> the moment objects transitioned. The per-GB rate is
+          lower in IA; it is not 6.4&#215; lower.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Compare classes on billed bytes, not stored bytes. Below roughly 128 KB, S3 Standard is often cheaper than any IA class.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Deep Archive adds 40 KB of metadata to every object</strong></div>
+      <div class="challenge-body">
+        <p>
+          Glacier Flexible Retrieval and Deep Archive require <strong>40 KB of additional metadata
+          per archived object</strong> &mdash; 32 KB charged at the Glacier rate and 8 KB charged
+          at the S3 Standard rate. For a 20 KB object that is three times the object's own size,
+          and part of it is billed at the most expensive rate on the list. Four billion objects
+          means 160 TB of metadata sitting under 80 TB of data.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Deep Archive is priced for large objects. Small ones should be aggregated before they get there, or not sent at all.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The second transition triggered an early-deletion charge</strong></div>
+      <div class="challenge-body">
+        <p>
+          Standard-IA has a <strong>30-day minimum storage duration</strong>, and AWS is explicit
+          that objects <em>transitioned to a different storage class</em> before that point are
+          charged the same as objects deleted early. The policy moved objects to IA at day 30 and
+          onward at day 90, which is fine &mdash; but an earlier iteration used day 45, and every
+          object paid a pro-rated charge for IA storage it never used.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Every hop in a lifecycle chain must respect the minimum duration of the class it is leaving, not just the one it is entering.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>Intelligent-Tiering would not have saved them either</strong></div>
+      <div class="challenge-body">
+        <p>
+          The instinct after all this is to hand the problem to S3 Intelligent-Tiering and stop
+          thinking about it. But objects <strong>smaller than 128 KB are never monitored and never
+          tier</strong> &mdash; they stay in the Frequent Access tier permanently. For this bucket,
+          Intelligent-Tiering would have moved nothing at all.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Intelligent-Tiering solves unpredictable access. It does not solve small objects, because nothing does except making them bigger.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The storage class table is usually read as a ladder from expensive-and-fast to
+      cheap-and-slow. That reading is what produces bills like the one above, because it hides the
+      two columns that actually decide the cost.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-014-s3-class-economics.svg" alt="Diagram: a table of S3 storage classes showing minimum storage duration and minimum billable object size for each, followed by a worked example of a 20 KB object billed as 20 KB in S3 Standard, as 128 KB in Standard-IA, and as 20 KB plus 40 KB of metadata in Deep Archive, with notes that transitioning before the minimum duration is charged like early deletion and that every mechanism is priced per object." />
+      <figcaption>Minimum duration and minimum billable size are the columns that matter. Read the table by those two and the ladder stops looking like a ladder.</figcaption>
+    </figure>
+
+    <h3>What each class actually asks of you</h3>
+    <div class="grid-2">
+      <div class="card">
+        <h4>S3 Standard</h4>
+        <p>No minimum duration, no minimum billable size, no retrieval fee. The only class with no strings, which is why it wins more often than its headline rate suggests.</p>
+      </div>
+      <div class="card">
+        <h4>Standard-IA &amp; One Zone-IA</h4>
+        <p>30-day minimum, 128 KB minimum billable, per-GB retrieval fee. Designed for large, long-lived objects read about once a month.</p>
+      </div>
+      <div class="card">
+        <h4>Glacier Instant Retrieval</h4>
+        <p>90-day minimum, 128 KB minimum billable, retrieval fee &mdash; but millisecond access. The archive class that does not feel like an archive.</p>
+      </div>
+      <div class="card">
+        <h4>Flexible Retrieval &amp; Deep Archive</h4>
+        <p>90 and 180-day minimums, 40 KB metadata per object, and you must call <code>RestoreObject</code> before reading anything. Minutes to hours, or hours.</p>
+      </div>
+    </div>
+
+    <h3>The order to make the decisions in</h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-icon">1</div>
+        <div class="flow-content">
+          <h4>How big are the objects?</h4>
+          <p>Under 128 KB, most of the cheaper classes bill you as if they were 128 KB. This question comes first because a "no" here rules out most of the table.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">2</div>
+        <div class="flow-content">
+          <h4>How long will they live?</h4>
+          <p>Shorter than the minimum duration and you pay it anyway. Data with a 60-day life has no business in Deep Archive's 180-day minimum.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">3</div>
+        <div class="flow-content">
+          <h4>Do you know the access pattern?</h4>
+          <p>If yes, pick a class directly. If genuinely not &mdash; and the objects are over 128 KB &mdash; that is what Intelligent-Tiering is for, and it charges no retrieval fees.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">4</div>
+        <div class="flow-content">
+          <h4>How fast do you need it back?</h4>
+          <p>Only now does retrieval time matter. Instant Retrieval for milliseconds, Flexible for minutes to hours, Deep Archive for hours.</p>
+        </div>
+      </div>
+    </div>
+
+    <h3>Intelligent-Tiering, precisely</h3>
+    <p>
+      Three automatic tiers, all with millisecond access: objects start in
+      <strong>Frequent Access</strong>, move to <strong>Infrequent Access</strong> after 30
+      consecutive days without access, and to <strong>Archive Instant Access</strong> after 90.
+      Two further tiers are optional and asynchronous &mdash; Archive Access after 90 days, Deep
+      Archive Access after 180 &mdash; and objects in those must be restored before they can be
+      read.
+    </p>
+    <p>
+      There are no retrieval fees at all. You pay a per-object monitoring and automation charge
+      instead, which is the trade: predictable small cost, no penalty for guessing access wrong.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Object count is the hidden variable</h3>
+    <p>
+      Storage conversations happen in terabytes, but almost every S3 cost lever is priced per
+      object: the 128 KB minimum, the 40 KB metadata, the Intelligent-Tiering monitoring charge,
+      the lifecycle transition request itself. A petabyte in 500 MB files behaves exactly as the
+      pricing page suggests. The same petabyte in 20 KB files behaves nothing like it.
+    </p>
+    <p>
+      The most effective change available to the platform in this scenario was not a storage class
+      at all. It was aggregation &mdash; rolling those 20 KB events into hourly or daily objects
+      before they ever reach a lifecycle rule. Fewer, larger objects make every subsequent decision
+      cheaper, and they make Deep Archive behave the way people expect it to.
+    </p>
+
+    <div class="callout blue">
+      <strong>The number to look up first</strong>
+      <p>Average object size in the bucket, not total size. S3 Storage Lens reports it. If it is under 128 KB, the tiering conversation should pause until the aggregation conversation has happened.</p>
+    </div>
+
+    <h3>"Access" means something specific</h3>
+    <p>
+      Intelligent-Tiering's tiering clock is reset by access &mdash; but only by certain calls.
+      <code>GetObject</code>, <code>PutObject</code>, <code>RestoreObject</code>,
+      <code>CopyObject</code> and <code>CompleteMultipartUpload</code> count.
+      <code>HeadObject</code>, <code>ListObjects</code>, <code>GetObjectTagging</code> and
+      <code>PutObjectTagging</code> do not.
+    </p>
+    <p>
+      Which matters more than it sounds: an inventory job that lists a bucket nightly, or a
+      compliance scanner reading tags, does not keep objects warm. Meanwhile a replication job or a
+      batch copy <em>does</em> tier objects back up to Frequent Access, and can quietly undo months
+      of tiering across a whole bucket.
+    </p>
+
+    <div class="callout amber">
+      <strong>The asymmetry worth knowing</strong>
+      <p><code>SelectObjectContent</code> prevents an object tiering <em>down</em> to the archive tiers, but does not tier it back <em>up</em> to Frequent Access. It is the one call that behaves differently in each direction.</p>
+    </div>
+
+    <h3>Lifecycle rules are cheap to write and expensive to get wrong</h3>
+    <p>
+      A transition is billed as a request, per object, and moving four billion objects is a real
+      one-off cost before any saving accrues. Worse, if the destination class turns out to be the
+      wrong choice, moving them back costs again &mdash; plus early-deletion charges if the
+      minimum duration has not elapsed.
+    </p>
+    <p>
+      This asymmetry argues for restraint. It is cheap to leave data in S3 Standard while you
+      measure, and expensive to shuffle a large bucket twice because the first policy was written
+      from intuition.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Objects under 128 KB</td>
+        <td>Aggregate, or leave in S3 Standard</td>
+        <td>IA and Glacier Instant Retrieval bill a 128 KB minimum, and Intelligent-Tiering will not tier them at all.</td>
+      </tr>
+      <tr>
+        <td>Unpredictable access, large objects</td>
+        <td>Intelligent-Tiering</td>
+        <td>No retrieval fees and no minimum duration; you pay a per-object monitoring charge instead of paying for a wrong guess.</td>
+      </tr>
+      <tr>
+        <td>Known cold data, needs millisecond access</td>
+        <td>Glacier Instant Retrieval</td>
+        <td>Archive pricing without a restore step. The 90-day minimum is the price of that convenience.</td>
+      </tr>
+      <tr>
+        <td>Genuine archive, large objects</td>
+        <td>Deep Archive</td>
+        <td>Cheapest per GB by a wide margin, but only once 40 KB of per-object metadata is a rounding error rather than a multiplier.</td>
+      </tr>
+      <tr>
+        <td>Lifecycle transition timing</td>
+        <td>Respect the minimum of the class being left</td>
+        <td>Transitioning early is charged exactly like deleting early, so a fast chain pays for storage it never used.</td>
+      </tr>
+      <tr>
+        <td>Recreatable data</td>
+        <td>One Zone-IA</td>
+        <td>Cheaper than Standard-IA because it lives in a single AZ. Appropriate for replicas and derived data, not for a primary copy.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit that pays for itself</h3>
+    <p>
+      Before writing any lifecycle rule, get three numbers per bucket: average object size, object
+      count, and how much of the data has been read in the last 90 days. S3 Storage Lens gives you
+      the first two directly. Most estates discover at least one bucket where the object count is
+      enormous and the average size is tiny &mdash; and that bucket is the one where a
+      well-intentioned lifecycle policy will do the most damage.
+    </p>
+
+    <div class="callout green">
+      <strong>Test on a prefix first</strong>
+      <p>Lifecycle rules can be scoped to a prefix. Apply the policy to a representative slice, wait for a full billing period, and compare. It costs one month of patience and saves the bill from a four-billion-object mistake.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      "Move it to Glacier" is repeated so often that it has stopped sounding like a decision. It is
+      one, and the deciding input is not how old the data is or how rarely anyone reads it. It is
+      how many objects there are and how big each one is.
+    </p>
+    <p>
+      What makes this consistently surprising is that the pricing page is organised by class, so it
+      invites comparison down the per-GB column &mdash; where Deep Archive obviously wins. The
+      minimum billable size and per-object metadata sit in footnotes and a comparison table further
+      down the page. They are not hidden, exactly. They are just not where anyone looks when the
+      task is "reduce storage cost".
+    </p>
+    <p>
+      The honest caveat: none of this makes the cheaper classes a trap. For large objects with
+      genuinely cold access, Deep Archive is dramatically cheaper and the minimums are irrelevant.
+      The failure mode is not choosing archive storage &mdash; it is choosing it by age alone, on a
+      bucket whose shape makes every per-object charge land four billion times.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Networking &mdash; PrivateLink, VPC peering and Transit Gateway, and how to choose between them. Three ways to connect private networks, three different cost and blast-radius profiles, and the question about who initiates the connection that settles it faster than any comparison table.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/storage-class-intro.html" target="_blank" rel="noopener">Understanding and managing Amazon S3 storage classes</a> &mdash; the comparison table with minimum storage durations and minimum billable object sizes, the note that transitioning before the minimum is charged like early deletion, and the 40 KB per-object metadata footnotes for the Glacier classes.</li>
+    </ul>
+  </div>

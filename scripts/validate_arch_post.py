@@ -160,6 +160,25 @@ def check_source(slug):
         return
     fm = raw.split('---', 2)[1]
 
+    # Parse it the way sync_blog.py does. Front matter that looks fine to a
+    # regex can still fail YAML — a title containing double quotes inside a
+    # double-quoted scalar is the easy way in — and sync_blog.py responds by
+    # skipping the post with a console note rather than an error. The post's
+    # page still builds, so nothing looks broken; it is simply absent from the
+    # index, the pill counts, posts.json, rss.xml and the RAG index.
+    try:
+        import yaml
+        parsed = yaml.safe_load(fm)
+    except Exception as exc:
+        detail = str(exc).splitlines()[0]
+        err(slug, '%s front matter is not valid YAML (%s) — sync_blog.py will '
+                  'skip this post silently' % (name, detail))
+        return
+    if not isinstance(parsed, dict) or not parsed.get('title') or not parsed.get('date'):
+        err(slug, '%s front matter parses but has no usable title/date — '
+                  'sync_blog.py will skip this post silently' % name)
+        return
+
     for field in ('title', 'date', 'slug', 'labels'):
         if not re.search(r'^%s:' % field, fm, re.MULTILINE):
             # title/date are hard requirements; sync_blog silently skips without them
