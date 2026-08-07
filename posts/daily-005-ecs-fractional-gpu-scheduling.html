@@ -1,0 +1,289 @@
+---
+title: 'AWS Daily Intelligence #5 - ECS Fractional GPU Scheduling on G6f Instances'
+date: '2026-08-07T09:00:00'
+labels:
+- AWS
+- AWS Daily Intelligence
+slug: aws-daily-intelligence-ecs-fractional-gpu-scheduling
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Daily Intelligence &middot; 7 August 2026</div>
+  <div class="post-title">ECS Fractional GPU Scheduling: Stop Paying for a Whole L4 to Serve a Small Model</div>
+  <div class="post-subtitle">A task definition can now ask for 0.125 of a GPU and ECS will place it accordingly. The economics of container inference change considerably. The mechanism is not what most people will assume it is, and the binding constraint is not compute.</div>
+  <div class="post-meta">
+    <span>General Availability</span>
+    <span>All Regions where G6f is available</span>
+    <span>ECS on EC2 and Managed Instances</span>
+    <span>Announced 6 August 2026</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="toc">
+    <h3>In This Post</h3>
+    <ol>
+      <li><a href="#what-changed">What changed</a></li>
+      <li><a href="#why">Why AWS built this</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#value">Business value</a></li>
+      <li><a href="#security">Security considerations</a></li>
+      <li><a href="#cost">Cost considerations</a></li>
+      <li><a href="#operations">Operational considerations</a></li>
+      <li><a href="#tradeoffs">Tradeoffs</a></li>
+      <li><a href="#implementation">Implementation guidance</a></li>
+      <li><a href="#practices">Best practices</a></li>
+      <li><a href="#adopt">Who should adopt, who should wait</a></li>
+      <li><a href="#memory">The constraint that decides everything</a></li>
+      <li><a href="#takeaways">Key takeaways</a></li>
+      <li><a href="#references">Official AWS references</a></li>
+    </ol>
+  </div>
+
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>On 6 August 2026, AWS announced general availability of fractional GPU scheduling in Amazon ECS with EC2 G6f instances. A task definition can request <code>GPU=0.125</code>, <code>GPU=0.25</code>, or <code>GPU=0.5</code>, and ECS places the task on a G6f instance that provides that fraction of an NVIDIA L4 Tensor Core GPU. It works with both ECS on EC2 and ECS Managed Instances, and adds GPU metrics and automatic detection of failed hardware.</p>
+    <p>The smallest unit is one-eighth of an L4 with <strong>3 GB of GPU memory</strong>. Available in all Regions where G6f instances are available.</p>
+    <p>The important thing to understand before designing on this: <strong>the fraction is a property of the EC2 instance, not a share of a GPU handed out to containers.</strong> G6f instances are provisioned with a hardware partition of an L4 — a <code>g6f.large</code> <em>is</em> one-eighth of a GPU, with its own dedicated 3 GB. ECS has not started time-slicing one GPU between tasks; it has learned to place tasks onto instances that are already partitioned.</p>
+    <p>That distinction decides how you reason about isolation, and it means the binding constraint is GPU memory rather than compute. Three gigabytes disqualifies more models than people expect.</p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>ECS could already schedule whole GPUs: a container definition declared how many it needed, and ECS pinned physical GPUs to containers. The unit was one GPU. If your model needed a tenth of an L4, you paid for an L4.</p>
+    <p>The change is that ECS now understands fractional values and places tasks accordingly on G6f instances.</p>
+
+    <h3>The G6f family</h3>
+    <p>These are the instances that make the fractions real. The GPU column is the partition each instance size receives:</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Instance type</th><th>GPU</th><th>GPU memory (GiB)</th><th>vCPUs</th><th>Memory (GiB)</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>g6f.large</code></td><td>1/8 (0.125)</td><td>3</td><td>2</td><td>8</td></tr>
+        <tr><td><code>g6f.xlarge</code></td><td>1/8 (0.125)</td><td>3</td><td>4</td><td>16</td></tr>
+        <tr><td><code>g6f.2xlarge</code></td><td>1/4 (0.25)</td><td>6</td><td>8</td><td>32</td></tr>
+        <tr><td><code>g6f.4xlarge</code></td><td>1/2 (0.5)</td><td>12</td><td>16</td><td>64</td></tr>
+        <tr><td><code>gr6f.4xlarge</code></td><td>1/2 (0.5)</td><td>12</td><td>16</td><td>128</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>Note what the table tells you. The two 1/8 sizes differ only in vCPU and system memory — the GPU slice is identical. And <code>gr6f.4xlarge</code> is the memory-heavy variant of the same half-GPU: same 12 GB of GPU memory, double the system RAM.</p>
+
+    <h3>What ECS added</h3>
+    <ul>
+      <li>Fractional values in the task definition's GPU resource requirement — <code>0.125</code>, <code>0.25</code>, <code>0.5</code>.</li>
+      <li>Placement onto G6f instances that satisfy the requested fraction.</li>
+      <li>Support across ECS on EC2 and ECS Managed Instances.</li>
+      <li>GPU metrics and automatic health detection for failed GPU hardware.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why AWS built this</h2>
+    <p>Because the smallest GPU you could rent was far larger than the smallest GPU most inference workloads need, and every workaround was bad.</p>
+    <p>A small embedding model, a re-ranker, a moderation classifier, a speech model — these are real production workloads that use a fraction of an L4 and sit idle between requests. Before this, the options were:</p>
+    <ul>
+      <li><strong>Pay for a whole GPU per service.</strong> Simple, isolated, and mostly wasted. The usual choice, and the usual source of a surprising GPU bill.</li>
+      <li><strong>Pack several models onto one GPU by hand.</strong> ECS documents this: strip the GPU resource requirement so ECS reserves nothing, make <code>nvidia</code> the default Docker runtime through user data, and set <code>NVIDIA_VISIBLE_DEVICES</code> yourself. It works, and it gives you no memory isolation, no scheduling guarantees, and no protection from one container exhausting the GPU for the others.</li>
+      <li><strong>Batch everything behind one service.</strong> Consolidate models into a single process to amortise the GPU. This couples unrelated services into one deployment unit and one failure domain for a hardware reason.</li>
+      <li><strong>Use a serverless inference endpoint instead.</strong> Reasonable, but a different operational model — and it takes the workload out of the cluster where the rest of your platform lives.</li>
+    </ul>
+    <p>Fractional scheduling makes the granularity of the purchase match the granularity of the workload, while keeping each task in its own instance-level partition.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>The model to hold: <strong>AWS partitions the GPU at the instance level; ECS schedules against those partitions.</strong> Two different layers, and conflating them is where the misconceptions start.</p>
+
+    <img src="/blog/assets/diagrams/daily-005-ecs-fractional-gpu.svg" alt="Diagram: fractional GPU on ECS is not container-level time-slicing of one GPU. G6f instances are provisioned with a hardware partition of an NVIDIA L4, and ECS places a task on an instance whose fraction matches the task definition. GPU memory per fraction is 3 GB at one-eighth, 6 GB at one-quarter and 12 GB at one-half.">
+
+    <h3>Why the distinction matters</h3>
+    <p>If this were container-level GPU sharing, the questions would be about noisy neighbours: can another container starve mine of SM time, can it exhaust GPU memory, what happens when it leaks. Those are the questions that make people nervous about GPU sharing, and they are the reason the manual approach documented by ECS has never been popular for production.</p>
+    <p>Because the partition belongs to the instance, a <code>g6f.large</code> arrives with 3 GB of GPU memory that is yours. You are not sharing a 24 GB pool and hoping. The isolation story is the same one you already trust for CPU and RAM on EC2.</p>
+    <p>The flip side is that <strong>the fraction is fixed by the instance you launch</strong>. You cannot decide at runtime to give a task a bit more GPU. Resizing means a different instance type, which means a capacity provider or Auto Scaling group that offers it.</p>
+
+    <h3>Placement becomes a capacity design problem</h3>
+    <p>Asking for <code>0.125</code> only helps if instances offering <code>0.125</code> exist in your cluster. A cluster of <code>g6f.4xlarge</code> will not usefully serve a fleet of one-eighth tasks, and a cluster of <code>g6f.large</code> cannot run a <code>0.5</code> task at all.</p>
+    <p>So the design work moves into the capacity provider: which G6f sizes back the cluster, in what proportion, and how they scale. A mixed fleet gives flexibility and complicates scaling; a uniform fleet is simple to reason about and strands capacity when task shapes vary. This is the same shape of problem as instance right-sizing, now with a GPU dimension.</p>
+  </div>
+
+  <div class="section" id="value">
+    <h2>Business value</h2>
+    <p><strong>The purchase granularity finally matches the workload.</strong> A moderation classifier that needs a sliver of an L4 can be bought as a sliver. For teams running several small models, this is the difference between one GPU instance per service and several services per GPU's worth of spend.</p>
+    <p><strong>Isolation without the hand-rolled sharing.</strong> The manual <code>NVIDIA_VISIBLE_DEVICES</code> approach was the only prior way to pack models, and its lack of memory isolation kept it out of production for most teams. This gives packing density with instance-level separation.</p>
+    <p><strong>GPU workloads stop being a special case in the cluster.</strong> Same task definitions, same capacity providers, same deployment pipeline, plus GPU metrics and automatic detection of failed hardware. Inference becomes another workload rather than a separate platform.</p>
+    <p><strong>Smaller blast radius per model.</strong> One model per task on its own partition means an OOM or a driver fault takes down one service, not every model that happened to share a GPU.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p><strong>Instance-level partitioning is a stronger boundary than container-level sharing.</strong> This is the security argument for the feature. Under the manual sharing approach, containers on a host address the same physical GPU, and separation depends on the NVIDIA runtime and on every container behaving. A hardware partition tied to the instance is a boundary of the kind you already reason about.</p>
+    <p><strong>It is still not a tenancy boundary.</strong> If you are running untrusted or differently-classified workloads, the questions you would ask about any shared-hardware EC2 instance still apply. Fractional GPU is a packing and cost mechanism, not an isolation control you should lean on for a compliance claim without reading how the partitioning is implemented.</p>
+    <p><strong>Model weights are data, and they are now spread across more tasks.</strong> Packing more models into a cluster means more places where weights are pulled, cached, and held in memory. If any model is proprietary or licence-restricted, the image and its registry permissions are the control surface, and there are now more copies to account for.</p>
+    <p><strong>The GPU-optimized AMI is a patching obligation.</strong> GPU tasks need the ECS GPU-optimized AMI with its NVIDIA driver and container runtime. Driver updates are a distinct patch stream from your normal AMI cadence, and ECS explicitly warns that in-place NVIDIA and CUDA driver updates can cause GPU workload failures. Roll instances rather than patching drivers in place.</p>
+    <p><strong>GPUs are not supported on Windows containers.</strong> Worth stating plainly, because it removes a whole platform from consideration rather than degrading it.</p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p><strong>AWS did not publish fractional pricing in the announcement</strong>, and I have deliberately not put a rate here that I could not verify. Confirm G6f pricing for your Region before modelling anything.</p>
+    <p><strong>The saving comes from buying a smaller instance, not from a discount.</strong> There is no new billing dimension — you run <code>g6f.large</code> instead of a full-GPU instance. The question to model is how many of your GPU workloads actually fit in 3, 6 or 12 GB, because that determines how much of your GPU fleet can move down.</p>
+    <p><strong>Density is bounded by the fleet, not the fraction.</strong> Requesting <code>0.125</code> saves nothing if your capacity provider only launches <code>g6f.4xlarge</code>. The saving is realised by the instance mix, which makes capacity provider design the actual cost lever.</p>
+    <p><strong>Watch the system-memory dimension.</strong> A <code>g6f.large</code> has 2 vCPUs and 8 GiB of RAM. Inference containers often need meaningful host memory for tokenisers, request buffering and the model loading path. Being forced up to <code>g6f.xlarge</code> for CPU and RAM while using the same 3 GB GPU slice is a real and easy-to-miss outcome — and <code>gr6f.4xlarge</code> exists precisely because that pressure shows up at the half-GPU tier too.</p>
+    <p><strong>Idle fractions still cost money.</strong> This is EC2. A one-eighth GPU running at 3% utilisation is cheaper than a wasted whole GPU but is not free, and consolidating four idle small models onto four small instances is still four instances. If a workload is genuinely intermittent, a serverless inference endpoint may beat any fraction.</p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p><strong>Prerequisites are easy to miss.</strong> GPU tasks need the ECS GPU-optimized AMI, and the container agent needs <code>ECS_ENABLE_GPU_SUPPORT</code> set to <code>true</code>. ECS sets <code>NVIDIA_VISIBLE_DEVICES</code> for containers with a GPU requirement, but the other NVIDIA runtime variables are not set for you — if your image is not built from an NVIDIA or CUDA base, you must set <code>NVIDIA_DRIVER_CAPABILITIES</code> to <code>utility,compute</code> or <code>all</code> yourself.</p>
+    <p><strong>Do not mix the two sharing models.</strong> The manual approach requires <em>removing</em> the GPU resource requirement so ECS reserves nothing. Fractional scheduling requires declaring one. A cluster where some instances have been configured for manual sharing and others for fractional scheduling will behave inconsistently and be unpleasant to debug. Pick one per cluster.</p>
+    <p><strong>Use the new health detection.</strong> Automatic detection of failed GPU hardware ships with this. GPU faults have historically presented as a task that runs but produces garbage or hangs, which is far worse than a clean crash. Make sure the resulting signal actually reaches your alerting.</p>
+    <p><strong>Test on the fraction you will buy.</strong> A model benchmarked on a full L4 tells you almost nothing about its behaviour on 3 GB. Latency, batch size and concurrency all change. Benchmark on the target instance size before committing the fleet.</p>
+    <p><strong>Mixed clusters are supported and worth using.</strong> ECS clusters can contain both GPU and non-GPU container instances, so the sidecars and support services around an inference task do not need to occupy GPU capacity.</p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <p><strong>Against a full GPU.</strong> A whole L4 gives 24 GB and all the compute, with no fitting exercise. If your model needs more than 12 GB, the fractions are irrelevant. If it needs 2 GB, a whole GPU is mostly waste. The decision is a memory measurement, not a preference.</p>
+    <p><strong>Against EKS with time-slicing or MIG.</strong> EKS has supported GPU sharing through NVIDIA time-slicing for some time, and MIG on GPUs that offer it. Time-slicing gives density without memory isolation; MIG gives hardware isolation but only on MIG-capable hardware, which the L4 is not. ECS fractional scheduling lands between them: hardware-partitioned isolation with no device plugin to operate. If you are already on EKS, this is not a reason to move.</p>
+    <p><strong>Against serverless inference.</strong> An endpoint that scales to zero beats any always-on fraction for spiky or low-volume workloads. Fractions win when the workload is steady enough that per-request pricing costs more than a small instance, or when the model must live inside your cluster's network and deployment model.</p>
+    <p><strong>Against consolidating models into one service.</strong> Packing several models into one process on one GPU is still the densest option and still the most operationally coupled. Fractional instances trade a little density for independent deployment and independent failure.</p>
+    <p><strong>Flexibility is what you give up.</strong> Three fixed fractions across five instance sizes is a coarse menu. A workload needing 0.2 of a GPU buys 0.25 and wastes the remainder, or squeezes into 0.125 and risks the memory ceiling.</p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+
+    <h3>Prerequisites</h3>
+    <ul>
+      <li>ECS GPU-optimized AMI on the container instances. Retrieve the ID from Systems Manager rather than hardcoding it.</li>
+      <li><code>ECS_ENABLE_GPU_SUPPORT=true</code> in the container agent configuration.</li>
+      <li>A capacity provider or Auto Scaling group that launches the G6f sizes matching the fractions your tasks request.</li>
+      <li>Linux containers. GPUs are not supported on Windows containers.</li>
+      <li>If your image is not NVIDIA or CUDA based, <code>NVIDIA_DRIVER_CAPABILITIES</code> set to <code>utility,compute</code> or <code>all</code>.</li>
+      <li>A measured figure for your model's actual GPU memory use, including runtime overhead.</li>
+    </ul>
+
+    <h3>Get the GPU-optimized AMI</h3>
+<pre><code>aws ssm get-parameters \
+    --names /aws/service/ecs/optimized-ami/amazon-linux-2/gpu/recommended \
+    --region us-east-1</code></pre>
+
+    <h3>Size the fraction from measured memory, not from the model card</h3>
+    <p>Work out what actually has to live in GPU memory:</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Consumer</th><th>Rough scale</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Model weights</td><td>~2 GB per billion parameters at fp16</td><td>Quantisation reduces this substantially</td></tr>
+        <tr><td>KV cache</td><td>Grows with context length and concurrency</td><td>Often the reason a fitting model stops fitting</td></tr>
+        <tr><td>Activations</td><td>Grows with batch size</td><td>Scales with the concurrency you allow</td></tr>
+        <tr><td>CUDA context and runtime</td><td>Hundreds of MB</td><td>Fixed overhead per process</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>At 3 GB, a model whose weights alone are 2.5 GB will load and then fail under real concurrency. Measure at your intended batch size and context length, on the fraction you plan to buy.</p>
+
+    <h3>Constrain placement while you validate</h3>
+    <p>Pin tasks to a specific instance type during testing so you are measuring what you think you are measuring:</p>
+<pre><code>aws ecs run-task --cluster inference \
+    --task-definition small-model-inference \
+    --placement-constraints type=memberOf,expression="attribute:ecs.instance-type == g6f.large" \
+    --region us-east-1</code></pre>
+
+    <div class="warning-box">
+      <p><strong>Do not enable the manual GPU-sharing configuration on the same instances.</strong> That approach deliberately removes the GPU resource requirement so ECS reserves nothing, and makes <code>nvidia</code> the default runtime for every container. Combined with fractional scheduling on the same cluster you get two schedulers' worth of assumptions about the same hardware, and failures that are extremely hard to attribute.</p>
+    </div>
+  </div>
+
+  <div class="section" id="practices">
+    <h2>Best practices</h2>
+    <ol>
+      <li><strong>Measure GPU memory under real concurrency</strong> before choosing a fraction. Weights alone will mislead you.</li>
+      <li><strong>Design the capacity provider first.</strong> The instance mix, not the task definition, determines whether the saving is real.</li>
+      <li><strong>Benchmark on the target fraction</strong>, never on a full GPU.</li>
+      <li><strong>Pick one sharing model per cluster.</strong> Fractional scheduling or the manual approach, never both.</li>
+      <li><strong>Roll instances to update NVIDIA drivers.</strong> In-place driver updates are documented as a cause of GPU workload failures.</li>
+      <li><strong>Wire up the GPU health detection</strong> so hardware faults page someone instead of producing quiet nonsense.</li>
+      <li><strong>Check the vCPU and RAM columns</strong>, not just the GPU column. System memory often forces the size up.</li>
+      <li><strong>Retrieve the GPU AMI from Systems Manager</strong> rather than pinning an ID that goes stale.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt, who should wait</h2>
+
+    <h3>Adopt</h3>
+    <ul>
+      <li>Teams running <strong>several small models on ECS</strong>, each on its own full GPU. This is the case the feature exists for.</li>
+      <li>Workloads doing <strong>embeddings, re-ranking, classification, moderation or speech</strong> — models that comfortably fit in 3 to 12 GB.</li>
+      <li>Anyone currently using the <strong>manual GPU-sharing configuration</strong> in production and uncomfortable about the lack of memory isolation.</li>
+      <li>Platform teams who want <strong>GPU workloads to behave like everything else</strong> in the cluster.</li>
+    </ul>
+
+    <h3>Wait</h3>
+    <ul>
+      <li>Models needing <strong>more than 12 GB of GPU memory</strong>. No fraction helps; use a full GPU.</li>
+      <li><strong>Training or fine-tuning</strong> workloads. These want whole GPUs, often several.</li>
+      <li><strong>Spiky or low-volume</strong> inference where a scale-to-zero endpoint beats an always-on fraction.</li>
+      <li>Teams <strong>without a memory measurement</strong>. Choosing a fraction from a model card is guessing.</li>
+      <li><strong>Windows container</strong> workloads, which cannot use GPUs on ECS at all.</li>
+      <li>Teams on <strong>EKS</strong> with working time-slicing or MIG. Not a reason to migrate.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="memory">
+    <h2>The constraint that decides everything</h2>
+    <p>Everything about adopting this comes down to one number, and it is not the fraction of compute.</p>
+    <div class="warning-box">
+      <p><strong>One-eighth of an L4 comes with 3 GB of GPU memory.</strong> A quarter gives 6 GB, a half gives 12 GB. Compute scales with the fraction, but it is memory that determines whether a model runs at all.</p>
+    </div>
+    <p>A GPU either holds the model or it does not. There is no graceful degradation — the process fails to allocate and the task dies. So the adoption question is never "is one-eighth of an L4 fast enough?" It is "does everything that must be resident fit in 3 GB, at the concurrency I intend to serve?"</p>
+    <p>The trap is that weights are the smallest and most predictable part of the answer. At fp16, weights run to roughly 2 GB per billion parameters, so a 1B model looks like a comfortable fit in 3 GB. Then the KV cache grows with context length and with every concurrent request, activations grow with batch size, and the CUDA context takes its fixed few hundred megabytes off the top. A model that loads cleanly in testing can fail in production purely because production has more concurrent users.</p>
+    <p>This is why the practical advice is narrow and unglamorous: measure resident GPU memory on the target fraction, at your real batch size and context length, with concurrency turned up to what you intend to allow. Then leave headroom. A model sized to exactly fill 3 GB is a model that will fail on a busy afternoon.</p>
+    <p>Get that measurement right and the rest of this feature is straightforward. Get it wrong and you will have moved a fleet onto instances that cannot run your workload, discovered under load.</p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ol>
+      <li>ECS task definitions can request <code>0.125</code>, <code>0.25</code> or <code>0.5</code> of a GPU, and ECS places tasks on G6f instances providing that fraction.</li>
+      <li><strong>The fraction belongs to the instance, not the container.</strong> G6f instances arrive hardware-partitioned; this is not time-slicing one GPU between tasks.</li>
+      <li>GPU memory per fraction: <strong>3 GB at 1/8, 6 GB at 1/4, 12 GB at 1/2.</strong> Memory, not compute, is the binding constraint.</li>
+      <li>Five instance sizes. <code>g6f.large</code> and <code>g6f.xlarge</code> share the same 1/8 GPU and differ only in vCPU and RAM.</li>
+      <li>The fraction is fixed by the instance type, so <strong>capacity provider design determines whether the saving is real</strong>.</li>
+      <li>Do not combine this with the manual GPU-sharing configuration on the same cluster.</li>
+      <li>Requires the ECS GPU-optimized AMI and <code>ECS_ENABLE_GPU_SUPPORT=true</code>. In-place NVIDIA driver updates are a documented cause of failures.</li>
+      <li><strong>GPUs are not supported on Windows containers.</strong></li>
+      <li>Pricing was not published in the announcement. Verify G6f rates for your Region before modelling.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ecs-fractional-gpu/">Amazon ECS now supports fractional GPU scheduling with Amazon EC2 G6f instances</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu.html">Amazon ECS task definitions for GPU workloads</a></li>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2025/07/amazon-ec2-g6f-instances-fractional-gpus/">Announcing general availability of Amazon EC2 G6f instances with fractional GPUs</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-optimized_AMI.html">Amazon ECS-optimized Linux AMIs</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-agent-config.html">Amazon ECS container agent configuration</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-placement.html">How Amazon ECS places tasks on container instances</a></li>
+      <li><a href="https://docs.aws.amazon.com/ec2/latest/instancetypes/ac.html">Linux Accelerated Computing Instances</a></li>
+      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia-mig.html">Use multi-instance GPUs (MIG) with NVIDIA GPUs on Amazon EKS</a></li>
+      <li><a href="https://aws.amazon.com/blogs/containers/gpu-sharing-on-amazon-eks-with-nvidia-time-slicing-and-accelerated-ec2-instances/">GPU sharing on Amazon EKS with NVIDIA time-slicing</a></li>
+    </ul>
+  </div>
+
+  <div class="post-footer">
+    <p>AWS Daily Intelligence tracks meaningful AWS changes from official sources and explains what they mean for enterprise architecture.</p>
+    <p>Every technical claim in this post is sourced from the AWS documentation linked above. Feature status: General Availability, announced 6 August 2026.</p>
+  </div>
+
+</div>
+</div>

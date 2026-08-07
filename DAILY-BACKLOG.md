@@ -18,6 +18,32 @@ approaching a week old is about to become unwritable.
 
 ---
 
+## 6 August 2026 — covered by post #5
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Fractional GPU scheduling on G6f, 0.125/0.25/0.5 | ECS | **#5** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ecs-fractional-gpu/) |
+| Direct read-only access to backup data via S3 Access Points | AWS Backup for S3 | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-backup-amazon-s3-direct-access/) |
+| AgentCore runtime instances GA, sessions up to 14 days | Bedrock AgentCore | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-bedrock-agentcore-runtime-instances-generally-available/) |
+| Temporal policies and per-user rate limiting | Bedrock AgentCore | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/temporal-policies-agentcore/) |
+| Kafka Authorizer Logs — denied requests with client IP and API | MSK | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-msk-kafka-authorizer-logs/) |
+| Storage volume initialization visibility after restore | RDS | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-rds-storage-volume-initialization-visibility) |
+| Graviton4 M8g, R8g, C8gn nodes | ElastiCache | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-elasticache-graviton4-m8g-r8g-c8gn/) |
+| Console-to-IDE integration for Kiro and Cursor | Lambda | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-lambda-ide-kiro-cursor/) |
+| `isBotEvent` field distinguishes automated opens and clicks | SES | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ses-automated-email-interactions/) |
+| Post-launch actions automated via Systems Manager | AWS Transform | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-transform-for-migrations-automates-post-launch-actions) |
+| Enhanced observability metrics | WorkSpaces, WorkSpaces Applications | skipped | Low | — |
+| Schema Registry in ten more Regions; G7 in Spain; air-gapped vaults for Neptune | Glue, EC2, AWS Backup | skipped | Low | — |
+| Net payment terms on private offers; Security Agent email MFA; Quick multi-dataset | Marketplace, Security Agent, Quick | skipped | Low | — |
+
+**Worth revisiting:** AWS Backup for S3 direct access is the strongest held item
+— reading backups through `GetObject` without a restore changes DR, audit and
+forensic patterns, and it carries a subtle operational catch: while an access
+point is active the recovery point is protected from deletion, which interacts
+with vault lifecycle. Held only because it is in select Regions.
+
+---
+
 ## 5 August 2026 — covered by post #4
 
 | Item | Service | Status | Importance | Reference |
