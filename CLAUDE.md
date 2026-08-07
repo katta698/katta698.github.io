@@ -89,6 +89,42 @@ Two files per post:
 
 **Always edit `blog/<slug>/index.html` for live fixes. `posts/` is for RAG only.**
 
+## Verification badge — REQUIRED on every technical post, ALL series
+
+Applies to **every** series: AWS Weekly Lab, Architecture Series, and AWS Daily
+Intelligence. Standing instruction from Jay, 2026-08-07. Jay publishes from three
+separate Claude Code windows, so this rule lives here — in the repo every series
+publishes through — rather than being repeated per-window.
+
+**Before publishing any post containing pricing, quotas, limits, API behaviour,
+CLI flags or IaC arguments:** verify those claims against the vendor's current
+official documentation (WebSearch + WebFetch the real docs pages — not training
+data, not a blog post quoting the docs secondhand). Then add to the front matter:
+
+```yaml
+verified: '2026-08-07'    # the date you actually did the checking
+```
+
+`sync_blog.py`'s `verification_html()` renders a badge under the post header. The
+markup and wording live in that one function so they stay identical across all
+three series — do not hand-write badge HTML into a post body.
+
+**The date is the VERIFICATION date, not the publish date.** They routinely
+differ: a post checked on Friday and held for a Sunday publish should still say
+Friday. That is the point — a reader arriving a year later needs to know how
+stale the figures might be.
+
+**Do NOT make this automatic.** It is deliberately opt-in, and a future session
+should not "improve" it by defaulting it on for every post. The badge asserts
+that a human actually checked this post's figures on a specific date.
+Auto-stamping it would make that claim on posts where no check happened, which is
+worse than no badge at all — readers would be trusting something nothing backs. A
+post that skipped the check simply renders no badge, which is the correct
+outcome.
+
+Non-technical posts (Health, Life, career reflections) do not need it — there are
+no vendor facts to verify.
+
 ## Architecture Series posts
 
 Slugs follow `arch-NNN-short-topic-name`. Source: `posts/arch-NNN-*.html`.

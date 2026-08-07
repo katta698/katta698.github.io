@@ -1,0 +1,484 @@
+---
+title: 'Week 13 - AWS WAF + Shield Standard: The DDoS Protection You Already Have, and the Layer It Cannot See'
+date: '2026-08-07T09:00:00'
+labels:
+- AWS
+- Terraform
+- AWS Weekly Lab
+slug: week-13-waf-shield-protection
+verified: '2026-08-07'
+draft: true
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Platform Engineering Lab &middot; Week 13 of 52</div>
+  <div class="post-title">The DDoS protection you already have, and the layer it cannot see</div>
+  <div class="post-subtitle">AWS Shield Standard is free, always on, and has no Terraform resource. It also cannot read a single line of HTTP. This week builds the layer that can &mdash; two AWS WAF web ACLs across two scopes, deployed in Count mode first, then flipped to Block with the evidence to justify it.</div>
+  <div class="post-meta">
+    <span>7 August 2026</span>
+    <span>Terraform &middot; HCP</span>
+    <span>~$20/month if left running &middot; $0 destroyed</span>
+  </div>
+</div>
+
+<div class="section">
+  <h2>The problem</h2>
+  <p>An internet-facing endpoint receives traffic nobody wrote code for. Path scanners looking for <code>/wp-admin</code> and <code>.env</code>. Log4Shell probes in headers. A single IP sending thousands of requests a minute at an endpoint sized for dozens.</p>
+  <p>The application usually does not break. It degrades, it bills, and it logs nothing useful about who did it. The team finds out from a latency graph, not from a security signal.</p>
+  <p>The specific gap: <strong>there is no layer between the internet and the application that can say "no" before the request costs you compute.</strong> Every request that reaches Lambda is a request you pay for, and a request that gets to touch your code.</p>
+
+  <h3>Why teams do not already have this</h3>
+  <ul>
+    <li><strong>Managed rules cause false positives.</strong> Turn AWS's Core rule set on in Block mode and it will reject a legitimate file upload on day one. Teams enable it, get paged, and switch WAF off permanently.</li>
+    <li><strong>The pricing is misread.</strong> The "$1 per rule" charge is per rule <em>group</em>, not per rule inside it, which cuts both ways when estimating.</li>
+    <li><strong>Shield confusion.</strong> Teams believe DDoS protection means AWS Shield Advanced at $3,000/month, conclude it is out of budget, and do nothing at all.</li>
+  </ul>
+  <p>That last one is the misconception this week exists to correct.</p>
+</div>
+
+<div class="section">
+  <h2>Shield Standard is not something you deploy</h2>
+  <p>There is no Terraform resource for AWS Shield Standard. There is no console toggle. It is already active on every AWS account at no charge.</p>
+  <p>It protects CloudFront, Route&nbsp;53, Global Accelerator and Elastic Load Balancing against layer 3 and 4 volumetric attacks &mdash; SYN floods, UDP reflection. AWS reports mitigating over 99% of infrastructure-layer attacks in under one second.</p>
+  <p>What Shield Standard does <strong>not</strong> do is inspect HTTP. An attacker sending well-formed requests at 10,000 per minute, or a single request carrying an SQL injection payload, is invisible to it. That is layer 7, and layer 7 is AWS WAF's job.</p>
+
+  <div class="callout amber">
+    <strong>A live migration deadline, as of August 2026</strong>
+    <p>AWS is retiring Shield Advanced's <em>automatic application-layer mitigation</em> (L7AM) on <strong>1 January 2027</strong>, replacing it with the AWS WAF Anti-DDoS managed rule group. Free metrics and labels began rolling out 27 July 2026; automatic upgrades of eligible web ACLs began 1 October 2026. If you run Shield Advanced today and rely on automatic L7 mitigation, this affects you. The replacement rule group costs the standard <strong>$1/month</strong> and does not require a Shield Advanced subscription at all.</p>
+  </div>
+
+  <p>The screenshot below is this account's Shield console. Note "Status: Incomplete" against every Shield Advanced setup step &mdash; this account runs Standard only, which is the entire point. AWS's own banner at the top states the migration dates.</p>
+
+  <figure class="screenshot">
+    <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-13-waf-shield-protection/docs/blog/screenshots/19-shield-standard-always-on.png" alt="AWS Shield console showing Shield Advanced setup incomplete and the L7AM migration banner">
+    <figcaption>Shield Standard is already protecting this account. Shield Advanced is unsubscribed &mdash; and the banner states the L7AM sunset dates.</figcaption>
+  </figure>
+</div>
+
+<div class="section">
+  <h2>Architecture</h2>
+  <p>Two web ACLs, one at the edge and one at the origin, protecting a deliberately trivial application.</p>
+
+  <div class="arch-container">
+  <svg viewBox="0 0 880 660" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="w13t w13d" style="width:100%;height:auto;font-family:'Amazon Ember','Segoe UI',Arial,sans-serif">
+<title id="w13t">Week 13 architecture: two AWS WAF web ACLs protecting CloudFront and API Gateway</title>
+<desc id="w13d">A normal user reaches a CloudFront distribution protected by Shield Standard and a CloudFront-scope web ACL, which forwards to an API Gateway REST API protected by a regional-scope web ACL, which invokes a Lambda echo function. A second path bypasses CloudFront and hits API Gateway directly, where the regional web ACL still inspects it. Both web ACLs send logs to CloudWatch, which feeds an alarm and an SNS email.</desc>
+<defs>
+<symbol id="ic-waf" viewBox="0 0 64 64"><g id="Icon-Architecture/48/Arch_AWS-WAF_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd"> <g id="Icon-Architecture-BG/48/Security-Identity-Compliance" fill="#DD344C"> <rect id="Rectangle" x="0" y="0" width="64" height="64"></rect> </g> <g id="Icon-Service/48/AWS-WAF_48" transform="translate(9.999700, 10.000000)" fill="#FFFFFF"> <path d="M16.929,30.397 C17.816,31.015 18.833,31.581 19.969,32.089 C19.492,29.713 19.175,25.602 21.312,21.671 C22.905,18.743 23.168,15.417 22,12.99 C21.548,12.05 20.9,11.28 20.078,10.698 C20.84,12.457 21.268,14.997 20.116,18.27 C19.984,18.644 19.645,18.904 19.249,18.935 C18.866,18.967 18.48,18.76 18.291,18.412 C17.96,17.796 17.049,16.408 16.008,15.579 C16.416,17.455 16.675,20.262 15.335,22.367 C15.263,22.48 15.197,22.59 15.134,22.701 C13.664,25.29 14.452,28.671 16.929,30.397 L16.929,30.397 Z M24.471,14.155 C25.036,16.804 24.563,19.88 23.07,22.626 C20.905,26.607 21.707,30.945 22.161,32.651 C24.117,32.322 29.063,31.094 30.119,27.002 C31.133,23.076 30.52,20.803 29.81,19.578 C29.101,22.122 27.802,23.193 27.735,23.247 C27.411,23.506 26.963,23.539 26.606,23.333 C26.248,23.125 26.056,22.718 26.121,22.309 C26.727,18.541 25.761,15.919 24.471,14.155 L24.471,14.155 Z M13.65,21.29 C15.259,18.763 13.576,14.325 13.559,14.28 C13.441,13.973 13.481,13.626 13.667,13.354 C13.854,13.082 14.161,12.919 14.491,12.919 C16.242,12.919 17.739,14.274 18.741,15.512 C19.27,11.523 16.864,9.428 16.744,9.328 C16.4,9.036 16.291,8.546 16.484,8.137 C16.676,7.728 17.114,7.491 17.561,7.576 C19.035,7.837 20.334,8.398 21.411,9.209 C22.366,9.636 27.137,12.048 28.125,17.909 C28.153,17.733 28.176,17.549 28.197,17.359 C28.231,17.026 28.43,16.732 28.727,16.577 C29.025,16.421 29.379,16.425 29.671,16.585 C29.858,16.688 34.204,19.18 32.055,27.502 C30.38,33.99 21.875,34.729 21.514,34.757 L21.513,34.747 C21.491,34.749 21.472,34.76 21.45,34.76 C21.338,34.76 21.224,34.741 21.115,34.701 C19.061,33.967 17.268,33.071 15.785,32.038 C12.471,29.728 11.421,25.191 13.395,21.711 C13.476,21.57 13.56,21.43 13.65,21.29 L13.65,21.29 Z M5.49,33.95 L7.111,32.777 C5.03,29.902 3.86,26.538 3.676,23 L6,23 L6,21 L3.679,21 C3.871,17.483 5.04,14.14 7.111,11.281 L5.49,10.108 C3.172,13.311 1.873,17.059 1.679,21 L0,21 L0,23 L1.676,23 C1.862,26.962 3.16,30.731 5.49,33.95 L5.49,33.95 Z M32.747,36.918 C29.88,38.993 26.528,40.162 23,40.351 L23,38 L21,38 L21,40.351 C17.472,40.163 14.118,38.994 11.25,36.918 L10.078,38.539 C13.289,40.862 17.049,42.161 21,42.351 L21,44 L23,44 L23,42.351 C26.951,42.16 30.709,40.862 33.919,38.539 L32.747,36.918 Z M11.25,7.14 C14.118,5.064 17.472,3.896 21,3.708 L21,6 L23,6 L23,3.708 C26.528,3.896 29.88,5.065 32.747,7.14 L33.919,5.52 C30.709,3.196 26.951,1.897 23,1.708 L23,0 L21,0 L21,1.708 C17.048,1.897 13.289,3.196 10.078,5.52 L11.25,7.14 Z M42.32,21 C42.125,17.059 40.826,13.311 38.509,10.108 L36.888,11.281 C38.958,14.14 40.127,17.483 40.32,21 L38,21 L38,23 L40.323,23 C40.139,26.538 38.969,29.902 36.888,32.777 L38.509,33.95 C40.838,30.731 42.137,26.962 42.323,23 L44,23 L44,21 L42.32,21 Z M35.027,10.416 L41.186,4.256 L39.772,2.842 L33.613,9.002 L35.027,10.416 Z M8.972,33.642 L2.812,39.802 L4.226,41.216 L10.386,35.056 L8.972,33.642 Z M12.414,11.001 L1.586,0.173 L0.172,1.587 L11,12.415 L12.414,11.001 Z M33,31.586 L43.826,42.413 L42.412,43.827 L31.586,33 L33,31.586 Z" id="AWS-WAF_Icon_48_Squid"></path> </g> </g></symbol>
+<symbol id="ic-shield" viewBox="0 0 64 64"><g id="Icon-Architecture/48/Arch_AWS-Shield_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd"> <g id="Icon-Architecture-BG/48/Security-Identity-Compliance" fill="#DD344C"> <rect id="Rectangle" x="0" y="0" width="64" height="64"></rect> </g> <path d="M43.0022286,38.9851913 L41.0022286,38.9851913 L41.0022286,41.9851913 L38.0022286,41.9851913 L38.0022286,43.9851913 L41.0022286,43.9851913 L41.0022286,46.9851913 L43.0022286,46.9851913 L43.0022286,43.9851913 L46.0022286,43.9851913 L46.0022286,41.9851913 L43.0022286,41.9851913 L43.0022286,38.9851913 Z M48.0022286,42.9851913 C48.0022286,39.6761913 45.3112286,36.9851913 42.0022286,36.9851913 C38.6932286,36.9851913 36.0022286,39.6761913 36.0022286,42.9851913 C36.0022286,46.2941913 38.6932286,48.9851913 42.0022286,48.9851913 C45.3112286,48.9851913 48.0022286,46.2941913 48.0022286,42.9851913 L48.0022286,42.9851913 Z M50.0022286,42.9851913 C50.0022286,47.3961913 46.4132286,50.9851913 42.0022286,50.9851913 C37.5912286,50.9851913 34.0022286,47.3961913 34.0022286,42.9851913 C34.0022286,38.5741913 37.5912286,34.9851913 42.0022286,34.9851913 C46.4132286,34.9851913 50.0022286,38.5741913 50.0022286,42.9851913 L50.0022286,42.9851913 Z M28.0022286,46.2761913 L28.0022286,18.5961913 L20.0022286,22.6131913 L20.0022286,37.6441913 C20.0042286,37.9821913 20.1572286,45.6601913 28.0022286,46.2761913 L28.0022286,46.2761913 Z M39.0022286,33.4461913 L39.0022286,22.6561913 L30.0022286,18.5341913 L30.0022286,46.2981913 C30.8532286,46.2381913 31.6822286,46.1071913 32.4412286,45.9131913 C32.6412286,46.5631913 32.9042286,47.1851913 33.2252286,47.7711913 C31.9342286,48.1311913 30.4812286,48.3361913 29.0022286,48.3361913 C18.1282286,48.3361913 18.0022286,37.7511913 18.0022286,37.6441913 L18.0022286,21.9971913 C18.0022286,21.6191913 18.2152286,21.2731913 18.5542286,21.1031913 L28.5542286,16.0821913 C28.8232286,15.9471913 29.1432286,15.9401913 29.4182286,16.0671913 L40.4182286,21.1061913 C40.7742286,21.2691913 41.0022286,21.6241913 41.0022286,22.0151913 L41.0022286,33.0361913 C40.3132286,33.1051913 39.6442286,33.2441913 39.0022286,33.4461913 L39.0022286,33.4461913 Z M35.7602286,50.7851913 C36.4162286,51.3111913 37.1402286,51.7541913 37.9152286,52.1031913 C35.4782286,53.1441913 32.2172286,53.7801913 29.0022286,53.7801913 C24.5062286,53.7801913 20.8442286,52.3621913 18.1172286,49.5641913 C12.8322286,44.1411913 12.9932286,35.5281913 13.0022286,35.1641913 L13.0022286,17.9971913 C13.0022286,17.6081913 13.2282286,17.2551913 13.5792286,17.0901913 L28.5792286,10.0941913 C28.8392286,9.97219128 29.1392286,9.96819128 29.4022286,10.0851913 L45.4022286,17.0811913 C45.7672286,17.2401913 46.0022286,17.5991913 46.0022286,17.9971913 L46.0022286,33.8261913 C45.3662286,33.5471913 44.6982286,33.3291913 44.0022286,33.1871913 L44.0022286,18.6511913 L29.0162286,12.0981913 L15.0022286,18.6341913 L15.0022286,35.1901913 C15.0002286,35.2961913 14.8612286,43.3661913 19.5582286,48.1761913 C21.8922286,50.5681913 25.0692286,51.7801913 29.0022286,51.7801913 C31.3892286,51.7801913 33.7842286,51.4131913 35.7602286,50.7851913 L35.7602286,50.7851913 Z" id="AWS-Shield_Icon_48_Squid" fill="#FFFFFF"></path> </g></symbol>
+<symbol id="ic-cf" viewBox="0 0 64 64"><g id="Icon-Architecture/48/Arch_Amazon-CloudFront_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd"> <g id="Icon-Architecture-BG/48/Networking-Content-Delivery" fill="#8C4FFF"> <rect id="Rectangle" x="0" y="0" width="64" height="64"></rect> </g> <path d="M41.5,43.5 C40.397,43.5 39.5,42.603 39.5,41.5 C39.5,40.397 40.397,39.5 41.5,39.5 C42.603,39.5 43.5,40.397 43.5,41.5 C43.5,42.603 42.603,43.5 41.5,43.5 L41.5,43.5 Z M41.5,37.5 C39.294,37.5 37.5,39.294 37.5,41.5 C37.5,43.706 39.294,45.5 41.5,45.5 C43.706,45.5 45.5,43.706 45.5,41.5 C45.5,39.294 43.706,37.5 41.5,37.5 L41.5,37.5 Z M22.5,32.5 C21.397,32.5 20.5,31.603 20.5,30.5 C20.5,29.397 21.397,28.5 22.5,28.5 C23.603,28.5 24.5,29.397 24.5,30.5 C24.5,31.603 23.603,32.5 22.5,32.5 L22.5,32.5 Z M22.5,26.5 C20.294,26.5 18.5,28.294 18.5,30.5 C18.5,32.706 20.294,34.5 22.5,34.5 C24.706,34.5 26.5,32.706 26.5,30.5 C26.5,28.294 24.706,26.5 22.5,26.5 L22.5,26.5 Z M45.389,47.124 C45.168,46.607 44.936,46.094 44.685,45.591 L42.896,46.486 C43.17,47.035 43.42,47.599 43.656,48.165 C42.82,48.762 41.943,49.288 41.028,49.74 C41.384,48.865 41.694,47.975 41.974,47.012 L40.054,46.454 C39.564,48.134 38.985,49.581 38.184,51.133 C36.357,51.698 34.452,52 32.5,52 C29.465,52 26.567,51.314 23.871,49.976 C22.503,46.615 21.838,43.534 21.838,40.559 C21.838,39.267 22.063,38.196 22.322,36.956 C22.386,36.652 22.45,36.343 22.514,36.024 L20.551,35.638 C20.49,35.949 20.427,36.25 20.365,36.545 C20.094,37.838 19.838,39.06 19.838,40.559 C19.838,43.074 20.274,45.644 21.154,48.354 C16.072,44.724 13,38.854 13,32.5 C13,32.389 13.01,32.273 13.012,32.161 C14.642,31.799 16.123,31.614 17.854,31.571 L17.804,29.572 C16.169,29.612 14.694,29.779 13.163,30.084 C14.081,22.683 19.212,16.394 26.323,14.019 C27.873,14.818 29.02,15.524 30.135,16.37 L31.344,14.776 C30.646,14.248 29.934,13.771 29.146,13.299 C30.244,13.108 31.363,13 32.5,13 C35.032,13 37.532,13.494 39.849,14.439 C39.342,14.593 38.82,14.763 38.243,14.971 L38.923,16.852 C40.316,16.349 41.408,16.04 42.571,15.821 C48.399,19.341 52,25.667 52,32.5 C52,38.156 49.605,43.416 45.389,47.124 L45.389,47.124 Z M43.008,13.749 C39.826,11.95 36.192,11 32.5,11 C30.392,11 28.324,11.301 26.357,11.895 C17.723,14.464 11.568,22.23 11.045,31.196 C11.01,31.625 11,32.062 11,32.5 C11,40.444 15.352,47.707 22.354,51.455 C25.459,53.12 28.968,54 32.5,54 C34.892,54 37.229,53.61 39.437,52.843 C41.684,52.086 43.773,50.963 45.646,49.507 C50.955,45.399 54,39.2 54,32.5 C54,24.732 49.787,17.546 43.008,13.749 L43.008,13.749 Z M38.384,37.411 L37.003,38.858 C34.022,36.015 31.047,34.146 27.637,32.975 L28.287,31.083 C31.979,32.351 35.188,34.362 38.384,37.411 L38.384,37.411 Z M38.444,22.364 C41.282,26.692 42.88,31.444 43.193,36.488 L41.197,36.612 C40.905,31.919 39.417,27.495 36.772,23.46 L38.444,22.364 Z M26.451,26.797 L24.773,25.708 C26.316,23.332 27.639,21.758 29.336,20.278 L30.65,21.786 C29.103,23.135 27.886,24.587 26.451,26.797 L26.451,26.797 Z M34.5,16.5 C35.603,16.5 36.5,17.397 36.5,18.5 C36.5,19.603 35.603,20.5 34.5,20.5 C33.397,20.5 32.5,19.603 32.5,18.5 C32.5,17.397 33.397,16.5 34.5,16.5 L34.5,16.5 Z M34.5,22.5 C36.706,22.5 38.5,20.706 38.5,18.5 C38.5,16.294 36.706,14.5 34.5,14.5 C32.294,14.5 30.5,16.294 30.5,18.5 C30.5,20.706 32.294,22.5 34.5,22.5 L34.5,22.5 Z" id="Amazon-CloudFront_Icon_48_Squid" fill="#FFFFFF"></path> </g></symbol>
+<symbol id="ic-apigw" viewBox="0 0 64 64"><g id="Icon-Architecture/48/Arch_Amazon-API-Gateway_48"> <g id="Icon-Architecture-BG/48/Networking-Content-Delivery"> <rect id="Rectangle" width="64" height="64" fill="#8C4FFF"/> </g> <g id="Icon-Service/48/Amazon-API-Gateway_48"> <path id="Amazon-API-Gateway_Icon_48_Squid" fill-rule="evenodd" clip-rule="evenodd" d="M28 43.9999H31V41.9999H28V43.9999ZM33 43.9999H36V41.9999H33V43.9999ZM28 21.9998H31V19.9998H28V21.9998ZM33 21.9998H36V19.9998H33V21.9998ZM22 12.7408L12 18.5738V46.382L22 51.382V12.7408ZM24 19.9998H26V21.9998H24V41.9999H26V43.9999H24V53C24 53.347 23.82 53.668 23.525 53.851C23.365 53.95 23.183 54 23 54C22.847 54 22.694 53.965 22.553 53.895L10.553 47.895C10.214 47.725 10 47.379 10 47V17.9998C10 17.6448 10.188 17.3148 10.496 17.1358L22.496 10.1358C22.805 9.95575 23.188 9.95475 23.498 10.1328C23.809 10.3108 24 10.6418 24 10.9998V19.9998ZM52 18.5738L42 12.7408V51.382L52 46.382V18.5738ZM54 17.9998V47C54 47.379 53.786 47.725 53.447 47.895L41.447 53.895C41.306 53.965 41.153 54 41 54C40.817 54 40.635 53.95 40.475 53.851C40.18 53.668 40 53.347 40 53V43.9999H38V41.9999H40V21.9998H38V19.9998H40V10.9998C40 10.6418 40.191 10.3108 40.502 10.1328C40.812 9.95575 41.195 9.95575 41.504 10.1358L53.504 17.1358C53.812 17.3148 54 17.6448 54 17.9998ZM34.939 27.3419L33.061 26.6578L29.061 37.6579L30.939 38.3419L34.939 27.3419ZM39.707 32.7069C40.098 32.3159 40.098 31.6839 39.707 31.2929L36.707 28.2929L35.293 29.7069L37.586 31.9999L35.293 34.2929L36.707 35.7069L39.707 32.7069ZM27.293 35.7069L24.293 32.7069C23.902 32.3159 23.902 31.6839 24.293 31.2929L27.293 28.2929L28.707 29.7069L26.414 31.9999L28.707 34.2929L27.293 35.7069Z" fill="white"/> </g> </g></symbol>
+<symbol id="ic-lambda" viewBox="0 0 64 64"><g id="Icon-Architecture/48/Arch_AWS-Lambda_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd"> <g id="Icon-Architecture-BG/48/Compute" fill="#ED7100"> <rect id="Rectangle" x="0" y="0" width="64" height="64"></rect> </g> <path d="M22.6794094,52 L13.5740701,52 L23.8376189,30.41 L28.3997494,39.861 L22.6794094,52 Z M24.7269406,27.667 C24.5606285,27.321 24.2120702,27.103 23.8306478,27.103 L23.8276601,27.103 C23.4452418,27.104 23.0966835,27.325 22.9323632,27.672 L11.0973143,52.569 C10.9499239,52.879 10.9708374,53.243 11.1540795,53.534 C11.3353298,53.824 11.6540117,54 11.9955989,54 L23.309802,54 C23.695208,54 24.0447622,53.777 24.2100784,53.428 L30.4044577,40.284 C30.5329264,40.01 30.5319305,39.692 30.3994783,39.42 L24.7269406,27.667 Z M51.0082382,52 L41.985557,52 L26.9547262,19.578 C26.7914017,19.226 26.4388599,19 26.0524581,19 L20.1279625,19 L20.1349337,12 L31.8146251,12 L46.7747483,44.42 C46.9380728,44.774 47.2906147,45 47.6790082,45 L51.0082382,45 L51.0082382,52 Z M52.0041191,43 L48.3143803,43 L33.354257,10.58 C33.1909326,10.226 32.8383907,10 32.450993,10 L19.1400486,10 C18.5913182,10 18.1451636,10.447 18.1441677,10.999 L18.1362006,19.999 C18.1362006,20.265 18.2407681,20.519 18.4269979,20.707 C18.6142235,20.895 18.8671772,21 19.1310857,21 L25.4170861,21 L40.4479168,53.422 C40.6112413,53.774 40.9627873,54 41.350185,54 L52.0041191,54 C52.5548412,54 53,53.552 53,53 L53,44 C53,43.448 52.5548412,43 52.0041191,43 L52.0041191,43 Z" id="AWS-Lambda_Icon_48_Squid" fill="#FFFFFF"></path> </g></symbol>
+<symbol id="ic-cw" viewBox="0 0 64 64"><g id="Icon-Architecture/48/Arch_Amazon-CloudWatch_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd"> <g id="Icon-Architecture-BG/48/Management-Governance" fill="#E7157B"> <rect id="Rectangle" x="0" y="0" width="64" height="64"></rect> </g> <path d="M42.184,39.3811216 C42.184,37.1282698 40.347,35.2954581 38.089,35.2954581 C35.831,35.2954581 33.995,37.1282698 33.995,39.3811216 C33.995,41.6339735 35.831,43.4667852 38.089,43.4667852 C40.347,43.4667852 42.184,41.6339735 42.184,39.3811216 L42.184,39.3811216 Z M44.184,39.3811216 C44.184,42.7344587 41.45,45.4622252 38.089,45.4622252 C34.729,45.4622252 31.995,42.7344587 31.995,39.3811216 C31.995,36.0277846 34.729,33.3000181 38.089,33.3000181 C41.45,33.3000181 44.184,36.0277846 44.184,39.3811216 L44.184,39.3811216 Z M50.743,49.6157337 L45.846,45.2157884 C45.524,45.6398194 45.17,46.0379097 44.785,46.4050706 L49.671,50.8030205 C49.997,51.0953525 50.505,51.0714072 50.802,50.744155 C51.096,50.4179006 51.07,49.9110588 50.743,49.6157337 L50.743,49.6157337 Z M38.089,47.091502 C42.351,47.091502 45.818,43.6324067 45.818,39.3811216 C45.818,35.1298366 42.351,31.6707413 38.089,31.6707413 C33.829,31.6707413 30.362,35.1298366 30.362,39.3811216 C30.362,43.6324067 33.829,47.091502 38.089,47.091502 L38.089,47.091502 Z M52.081,48.1341194 C53.227,49.1667597 53.319,50.9357173 52.288,52.0801021 C51.735,52.6897091 50.971,53 50.205,53 C49.538,53 48.868,52.7655358 48.333,52.2866302 L43.172,47.6412457 C41.691,48.5521641 39.954,49.0869421 38.089,49.0869421 C32.725,49.0869421 28.362,44.7328919 28.362,39.3811216 C28.362,34.0293514 32.725,29.6753012 38.089,29.6753012 C43.454,29.6753012 47.818,34.0293514 47.818,39.3811216 C47.818,40.8447769 47.482,42.2286146 46.897,43.4757646 L52.081,48.1341194 Z M17.697,23.5383254 C17.697,23.9394088 17.72,24.3384968 17.767,24.722619 C17.802,25.0059715 17.713,25.2913194 17.524,25.5048315 C17.375,25.6714508 17.177,25.7831954 16.961,25.8241019 C15.084,26.3079961 12,27.7716514 12,32.1566309 C12,35.4800363 13.836,37.3138458 15.377,38.2676661 C16.049,38.6897017 16.64,38.9052092 17.138,38.9101978 L26.127,38.9101978 L26.127,40.9056378 L17.127,40.9056378 C16.243,40.8966584 15.3,40.577388 14.317,39.9588015 C12.708,38.9640747 10,36.6214281 10,32.1566309 C10,26.8876715 13.526,24.8642953 15.71,24.117003 C15.702,23.924443 15.697,23.7308853 15.697,23.5383254 C15.697,19.1603299 18.673,14.6217015 22.621,12.9784566 C27.232,11.0508615 32.119,12.0066773 35.687,15.5336176 C36.734,16.5672555 37.604,17.8084192 38.285,19.2361566 C39.203,18.5507229 40.304,18.1745825 41.459,18.1745825 C43.874,18.1745825 46.587,19.9684831 47.122,23.8895228 C50.58,24.7216213 54,27.27778 54,32.2174919 C54,35.1078868 52.864,37.4565197 50.713,39.0089721 L49.541,37.3926656 C51.173,36.2143583 52,34.4733368 52,32.2174919 C52,27.2388689 47.811,25.9997007 46.01,25.6983892 C45.743,25.6534918 45.505,25.5018384 45.351,25.2793468 C45.208,25.071821 45.15,24.8184001 45.186,24.5709656 C44.931,21.5319104 43.141,20.1700225 41.459,20.1700225 C40.402,20.1700225 39.409,20.6858438 38.734,21.5857873 C38.514,21.8791169 38.156,22.0297727 37.786,21.9748981 C37.422,21.9210212 37.118,21.6715912 36.993,21.3263801 C36.359,19.5743837 35.446,18.1027466 34.281,16.9513777 C32.851,15.5396039 28.933,12.506535 23.391,14.81925 C20.198,16.1492108 17.697,19.9784603 17.697,23.5383254 L17.697,23.5383254 Z" id="Amazon-CloudWatch_Icon_48_Squid" fill="#FFFFFF"></path> </g></symbol>
+<symbol id="ic-sns" viewBox="0 0 64 64"><g id="Icon-Architecture/48/Arch_Amazon-Simple-Notification-Service_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd"> <g id="Icon-Architecture-BG/48/Application-Integration" fill="#E7157B"> <rect id="Rectangle" x="0" y="0" width="64" height="64"></rect> </g> <path d="M14,31 C14.552,31 15,31.449 15,32 C15,32.551 14.552,33 14,33 C13.448,33 13,32.551 13,32 C13,31.449 13.448,31 14,31 L14,31 Z M33.396,51 C24.508,51 16.822,44.081 15.152,34.768 C15.93,34.443 16.531,33.797 16.815,33 L22,33 L22,31 L16.815,31 C16.532,30.204 15.932,29.558 15.155,29.232 C16.776,20.49 24.451,14 33.396,14 C37.587,14 40.588,14.844 43.429,16.821 L44.571,15.179 C41.411,12.98 37.965,12 33.396,12 C23.394,12 14.826,19.322 13.141,29.14 C11.907,29.512 11,30.646 11,32 C11,33.353 11.906,34.486 13.139,34.859 C14.88,45.248 23.456,53 33.396,53 C37.628,53 41.729,51.591 45.585,48.811 L44.415,47.189 C40.907,49.718 37.199,51 33.396,51 L33.396,51 Z M25.062,29.459 C26.457,29.837 28.091,30 29.434,30 C30.716,30 32.26,29.855 33.618,29.526 L30.105,36.553 C30.036,36.691 30,36.845 30,37 L30,40.501 C29.875,40.602 29.741,40.714 29.601,40.832 C29.207,41.162 28.432,41.813 28,41.974 L28,37 C28,36.873 27.976,36.747 27.929,36.628 L25.062,29.459 Z M29.434,26 C32.033,26 34.015,26.566 34.769,27 C34.015,27.434 32.033,28 29.434,28 C26.739,28 24.901,27.399 24.218,27 C24.901,26.601 26.739,26 29.434,26 L29.434,26 Z M27,44 L28,44 C28.043,44 28.086,43.997 28.128,43.992 C29.094,43.867 30.046,43.068 30.886,42.364 C31.145,42.147 31.372,41.952 31.546,41.838 C31.829,41.653 32,41.338 32,41 L32,37.236 L36.592,28.053 C36.85,27.745 37,27.396 37,27 C37,24.799 32.475,24 29.434,24 C26.445,24 22,24.799 22,27 C22,27.317 22.101,27.601 22.268,27.862 L26,37.192 L26,43 C26,43.552 26.447,44 27,44 L27,44 Z M49,43 C49.552,43 50,43.449 50,44 C50,44.551 49.552,45 49,45 C48.448,45 48,44.551 48,44 C48,43.449 48.448,43 49,43 L49,43 Z M49,19 C49.552,19 50,19.449 50,20 C50,20.551 49.552,21 49,21 C48.448,21 48,20.551 48,20 C48,19.449 48.448,19 49,19 L49,19 Z M51,31 C51.552,31 52,31.449 52,32 C52,32.551 51.552,33 51,33 C50.448,33 50,32.551 50,32 C50,31.449 50.448,31 51,31 L51,31 Z M44,33 L48.185,33 C48.599,34.162 49.698,35 51,35 C52.654,35 54,33.654 54,32 C54,30.346 52.654,29 51,29 C49.698,29 48.599,29.838 48.185,31 L44,31 L44,21 L46.185,21 C46.599,22.162 47.698,23 49,23 C50.654,23 52,21.654 52,20 C52,18.346 50.654,17 49,17 C47.698,17 46.599,17.838 46.185,19 L43,19 C42.447,19 42,19.448 42,20 L42,31 L37,31 L37,33 L42,33 L42,44 C42,44.552 42.447,45 43,45 L46.185,45 C46.599,46.162 47.698,47 49,47 C50.654,47 52,45.654 52,44 C52,42.346 50.654,41 49,41 C47.698,41 46.599,41.838 46.185,43 L44,43 L44,33 Z" id="AWS-Simple-Notification-Service_Icon_48_Squid" fill="#FFFFFF"></path> </g></symbol>
+<marker id="w13a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6c757d"/></marker>
+<marker id="w13ad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#cc0c39"/></marker>
+</defs>
+
+<rect width="880" height="660" fill="#ffffff"/>
+
+<!-- actors -->
+<rect x="30" y="30" width="210" height="46" rx="6" fill="#f7f7f7" stroke="#d5d9d9"/>
+<text x="135" y="52" text-anchor="middle" font-size="14" font-weight="700" fill="#0f1111">Normal user</text>
+<text x="135" y="68" text-anchor="middle" font-size="11.5" fill="#6c757d">via the public CloudFront URL</text>
+
+<rect x="640" y="30" width="210" height="46" rx="6" fill="#fff5f5" stroke="#cc0c39"/>
+<text x="745" y="52" text-anchor="middle" font-size="14" font-weight="700" fill="#0f1111">Someone with the origin URL</text>
+<text x="745" y="68" text-anchor="middle" font-size="11.5" fill="#cc0c39">skips the edge entirely</text>
+
+<!-- shield band -->
+<rect x="30" y="104" width="450" height="46" rx="6" fill="#fdf3f4" stroke="#DD344C" stroke-dasharray="6 4"/>
+<use href="#ic-shield" x="44" y="114" width="26" height="26"/>
+<text x="80" y="124" font-size="13.5" font-weight="700" fill="#0f1111">Shield Standard &mdash; L3/L4, free, always on</text>
+<text x="80" y="141" font-size="11.5" fill="#6c757d">no Terraform resource &middot; does not read HTTP</text>
+
+<!-- cloudfront -->
+<rect x="30" y="178" width="450" height="56" rx="6" fill="#f6f2ff" stroke="#8C4FFF"/>
+<use href="#ic-cf" x="44" y="192" width="28" height="28"/>
+<text x="82" y="202" font-size="14" font-weight="700" fill="#0f1111">CloudFront distribution</text>
+<text x="82" y="220" font-size="11.5" fill="#6c757d">the edge</text>
+
+<!-- edge waf -->
+<rect x="30" y="256" width="450" height="62" rx="6" fill="#fdf3f4" stroke="#DD344C" stroke-width="2"/>
+<use href="#ic-waf" x="44" y="272" width="28" height="28"/>
+<text x="82" y="282" font-size="14" font-weight="700" fill="#DD344C">Edge web ACL &mdash; CLOUDFRONT scope</text>
+<text x="82" y="300" font-size="11.5" fill="#6c757d">IP set &middot; rate limit &middot; Core rules &middot; Known bad inputs &middot; Anti-DDoS</text>
+
+<!-- api gateway -->
+<rect x="150" y="366" width="450" height="56" rx="6" fill="#f6f2ff" stroke="#8C4FFF"/>
+<use href="#ic-apigw" x="164" y="380" width="28" height="28"/>
+<text x="202" y="390" font-size="14" font-weight="700" fill="#0f1111">API Gateway REST API</text>
+<text x="202" y="408" font-size="11.5" fill="#6c757d">the origin &mdash; REST, not HTTP API (WAF cannot attach to HTTP APIs)</text>
+
+<!-- regional waf -->
+<rect x="150" y="444" width="450" height="62" rx="6" fill="#fdf3f4" stroke="#DD344C" stroke-width="2"/>
+<use href="#ic-waf" x="164" y="460" width="28" height="28"/>
+<text x="202" y="470" font-size="14" font-weight="700" fill="#DD344C">Origin web ACL &mdash; REGIONAL scope</text>
+<text x="202" y="488" font-size="11.5" fill="#6c757d">the same five rules &mdash; this is what makes the bypass pointless</text>
+
+<!-- lambda -->
+<rect x="255" y="548" width="240" height="54" rx="6" fill="#fff6f0" stroke="#ED7100"/>
+<use href="#ic-lambda" x="269" y="561" width="28" height="28"/>
+<text x="307" y="571" font-size="14" font-weight="700" fill="#0f1111">Lambda echo</text>
+<text x="307" y="589" font-size="11.5" fill="#6c757d">answers if it got through</text>
+
+<!-- observability column -->
+<rect x="646" y="256" width="204" height="52" rx="6" fill="#fdf1f7" stroke="#E7157B"/>
+<use href="#ic-cw" x="658" y="268" width="26" height="26"/>
+<text x="692" y="277" font-size="12.5" font-weight="700" fill="#0f1111">CloudWatch Logs</text>
+<text x="692" y="294" font-size="11" fill="#6c757d">creds redacted</text>
+
+<rect x="646" y="330" width="204" height="52" rx="6" fill="#fdf1f7" stroke="#E7157B"/>
+<use href="#ic-cw" x="658" y="342" width="26" height="26"/>
+<text x="692" y="351" font-size="12.5" font-weight="700" fill="#0f1111">Alarms</text>
+<text x="692" y="368" font-size="11" fill="#6c757d">Blocked + Counted</text>
+
+<rect x="646" y="404" width="204" height="52" rx="6" fill="#fdf1f7" stroke="#E7157B"/>
+<use href="#ic-sns" x="658" y="416" width="26" height="26"/>
+<text x="692" y="425" font-size="12.5" font-weight="700" fill="#0f1111">SNS &rarr; email</text>
+<text x="692" y="442" font-size="11" fill="#6c757d">alarm and recovery</text>
+
+<!-- flows -->
+<g stroke="#6c757d" stroke-width="1.7" fill="none" marker-end="url(#w13a)">
+  <path d="M135,76 L135,102"/>
+  <path d="M255,150 L255,176"/>
+  <path d="M255,234 L255,254"/>
+  <path d="M255,318 L255,344 L375,344 L375,364"/>
+  <path d="M375,422 L375,442"/>
+  <path d="M375,506 L375,546"/>
+  <path d="M480,287 L642,284"/>
+  <path d="M600,462 L620,462 L620,300 L642,296"/>
+  <path d="M748,308 L748,328"/>
+  <path d="M748,382 L748,402"/>
+</g>
+
+<!-- the bypass, routed around the outside so it never crosses the logging flows -->
+<path d="M745,76 L745,94 L866,94 L866,492 L604,492" stroke="#cc0c39" stroke-width="1.7" fill="none" stroke-dasharray="6 4" marker-end="url(#w13ad)"/>
+<text x="628" y="514" font-size="11" font-weight="700" fill="#cc0c39">bypasses CloudFront entirely</text>
+<text x="628" y="529" font-size="11" fill="#cc0c39">&mdash; still inspected here</text>
+
+<text x="500" y="276" font-size="11" fill="#6c757d">logs</text>
+</svg>
+  </div>
+
+  <h3>Why two web ACLs and not one</h3>
+  <p>An edge-only WAF protects only the requests that actually travel through CloudFront. The API Gateway invoke URL stays publicly reachable &mdash; CloudFront does not hide it. Anyone who discovers that URL walks straight past an edge-only firewall.</p>
+  <p>The regional web ACL is what makes that bypass pointless. The attack simulation later in this post tests <em>both</em> paths for exactly this reason.</p>
+
+  <div class="callout">
+    <strong>REST API, not HTTP API &mdash; this is a hard constraint</strong>
+    <p>AWS WAF cannot be associated with an API Gateway HTTP API at all. The supported resource types are CloudFront, API Gateway <strong>REST</strong> APIs, Application Load Balancer, AppSync, Cognito user pools, App Runner, Bedrock AgentCore Gateway, Verified Access and Amplify. Choosing an HTTP API here would have made the entire regional half of this design impossible.</p>
+  </div>
+
+  <h3>Why Lambda for the origin</h3>
+  <p>The origin is an echo function whose only job is to answer "did this request get through?". It runs only when tested, holds no state, and has effectively zero concurrency. A container or an EC2 instance would bill 24/7 to serve a few minutes of use per month. The choice follows the workload's shape, not habit.</p>
+</div>
+
+<div class="section">
+  <h2>The five rules</h2>
+  <p>AWS WAF evaluates rules in ascending priority order and stops at the first terminating action, so the cheapest and most definitive checks run first.</p>
+
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Priority</th><th>Rule</th><th>WCU</th><th>What it catches</th></tr></thead>
+    <tbody>
+      <tr><td>10</td><td>Break-glass IP set</td><td>1</td><td>Specific attacker addresses, added by hand during an incident</td></tr>
+      <tr><td>20</td><td>Rate-based, 60s window</td><td>2</td><td>Volumetric abuse of otherwise-legitimate requests</td></tr>
+      <tr><td>30</td><td><code>AWSManagedRulesCommonRuleSet</code></td><td>700</td><td>OWASP-class: XSS, LFI/RFI, SSRF to EC2 metadata, size limits</td></tr>
+      <tr><td>40</td><td><code>AWSManagedRulesKnownBadInputsRuleSet</code></td><td>200</td><td>Log4Shell, Java deserialization RCE, exploitable paths</td></tr>
+      <tr><td>50</td><td><code>AWSManagedRulesAntiDDoSRuleSet</code></td><td>50</td><td>Adaptive L7 DDoS with silent browser challenges</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p><strong>953 of the 1,500 WCUs included in the base price.</strong> This matters: exceed 1,500 and you pay $0.20 per million requests for every additional 500 WCUs. Stacking Core rule set with Bot Control would blow that budget immediately. The console reports the exact figure, and it matched the estimate.</p>
+
+  <h3>Two choices worth explaining</h3>
+
+  <h4><code>evaluation_window_sec = 60</code>, not the 300 default</h4>
+  <p>AWS WAF re-checks the request rate roughly every 10 seconds regardless of this setting &mdash; the window controls how far <em>back</em> it looks each time. A five-minute lookback averages an attacker's burst across five minutes before it crosses the threshold. A 60-second window treats a burst as a burst.</p>
+
+  <h4><code>aggregate_key_type = "IP"</code> is right here and wrong for many real applications</h4>
+  <p>Users behind a shared corporate NAT all present a single source IP, so IP aggregation throttles the entire office together. The fix is <code>CUSTOM_KEYS</code> over a session identifier. The current Terraform provider also supports ASN and JA3/JA4 TLS fingerprints as aggregation keys &mdash; both newer than most tutorials will tell you.</p>
+
+  <div class="code-block">
+    <div class="code-header"><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div><span class="code-lang">terraform</span></div>
+    <pre><code>rule {
+  name     = "rate-limit-per-ip"
+  priority = 20
+
+  action { block {} }   # or count {} during the observation phase
+
+  statement {
+    rate_based_statement {
+      limit                 = 100
+      aggregate_key_type    = "IP"
+      evaluation_window_sec = 60   # 60 | 120 | 300 (default) | 600
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "week13-waf-regional-rate-limit"
+    sampled_requests_enabled   = true
+  }
+}</code></pre>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Count mode first &mdash; the discipline that makes WAF stick</h2>
+  <p>Every rule was deployed with its action set to Count. In Count mode WAF inspects the request, records that it <em>would</em> have blocked it, and lets it through anyway.</p>
+  <p>This is not caution for its own sake. The Core rule set blocks request bodies over 8&nbsp;KB and query strings over 2,048 bytes. On a real application, a file upload or a long rich-text field trips that immediately. Count mode is how you find that out before it rejects a paying customer.</p>
+
+  <div class="callout red">
+    <strong>The trap: Count is expressed differently for custom rules and managed rule groups</strong>
+    <p>Custom rules use <code>action { count {} }</code>. Managed rule groups use <code>override_action { count {} }</code>. Critically, <code>override_action { none {} }</code> does <strong>not</strong> mean "no action" &mdash; it means "use the rule group's own configured actions", which is to say <em>enforce</em>. Misreading that is the easiest way to ship a blocking WAF while believing it is only observing.</p>
+  </div>
+
+  <h3>The four rule actions</h3>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Action</th><th>What happens to the request</th><th>Use it for</th></tr></thead>
+    <tbody>
+      <tr><td>Count</td><td>Allowed through; the match is recorded in metrics and logs</td><td>Testing and tuning</td></tr>
+      <tr><td>Block</td><td>Rejected at the edge with a 403; never reaches the application</td><td>Enforcement, once trusted</td></tr>
+      <tr><td>Challenge</td><td>A silent JavaScript challenge; real browsers solve it invisibly</td><td>Bot and DDoS traffic where false positives are expensive</td></tr>
+      <tr><td>CAPTCHA</td><td>A visible puzzle the user must solve</td><td>Last resort &mdash; it is user-hostile</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout amber">
+    <strong>A monitoring subtlety this creates</strong>
+    <p>During the Count phase, <code>BlockedRequests</code> stays flat at zero because nothing is being blocked. An alarm watching only that metric will report "all clear" while rules are matching heavily. This build ships a separate <code>CountedRequests</code> alarm for exactly that reason.</p>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Deploying</h2>
+  <p>State lives in HCP Terraform (workspace <code>week-13-dev</code>, VCS-driven). The first apply failed, and it is worth showing rather than hiding.</p>
+
+  <figure class="screenshot">
+    <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-13-waf-shield-protection/docs/blog/screenshots/01-hcp-runs.png" alt="HCP Terraform run history for week-13-dev showing five runs including one errored">
+    <figcaption>The run history, including the errored first apply. 43 resources, Terraform 1.15.8.</figcaption>
+  </figure>
+
+  <div class="callout red">
+    <strong>The first apply failed on an undocumented requirement</strong>
+    <p>Both web ACLs were rejected with <code>WAFInvalidParameterException: AWSManagedRulesAntiDDoSRuleSet managed rule group config must have at least one RegularExpression in ExemptUriRegularExpressions if UsageOfAction for Challenge is ENABLED</code>. The Terraform provider documents <code>exempt_uri_regular_expression</code> as <strong>optional</strong>. It is not. Neither <code>terraform validate</code> nor <code>terraform plan</code> catches this &mdash; only a real apply does.</p>
+  </div>
+
+  <p>The fix is to supply at least one exemption pattern, and to guard it with a variable validation so the next person fails at plan time with an explanation instead of part-way through an apply:</p>
+
+  <div class="code-block">
+    <div class="code-header"><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div><span class="code-lang">terraform</span></div>
+    <pre><code>variable "anti_ddos_challenge_exempt_uri_regexes" {
+  type    = list(string)
+  default = ["^/health$"]
+
+  validation {
+    condition     = length(var.anti_ddos_challenge_exempt_uri_regexes) &gt; 0
+    error_message = "At least one exempt URI regex is required: AWS rejects the web ACL if the Anti-DDoS challenge action is ENABLED with an empty exemption list."
+  }
+}</code></pre>
+  </div>
+
+  <p>Why the exemption exists at all is worth understanding: the Anti-DDoS challenge is a silent browser challenge. A real browser solves it transparently, but a machine-to-machine caller cannot execute JavaScript. Without an exemption list, a DDoS event would fail those legitimate callers outright.</p>
+
+  <p>With that fixed, the apply completed and the console reported exactly the predicted capacity:</p>
+
+  <figure class="screenshot">
+    <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-13-waf-shield-protection/docs/blog/screenshots/05-regional-acl-rules-count-mode.png" alt="AWS WAF console showing five rules in Count mode and 953 of 5000 WCUs used">
+    <figcaption>All five rules in Count mode. Note the two different expressions &mdash; "Count" for custom rules, "Override rule group action to count" for managed groups &mdash; and the 953/5000 WCU badge.</figcaption>
+  </figure>
+
+  <p>The regional web ACL must be attached to the API Gateway <em>stage</em> via a separate association resource. CloudFront is the exception: it takes its web ACL as an attribute on the distribution itself.</p>
+
+  <div class="callout amber">
+    <strong>A silent failure worth guarding against</strong>
+    <p>Forgetting <code>aws_wafv2_web_acl_association</code> does not produce an error. The web ACL exists, reports healthy in the console, and inspects precisely nothing.</p>
+  </div>
+
+  <div class="grid-2">
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-13-waf-shield-protection/docs/blog/screenshots/07-regional-associated-api-gateway.png" alt="Associated AWS resources tab showing the API Gateway prod stage">
+      <figcaption>Regional web ACL, associated to the API Gateway stage.</figcaption>
+    </figure>
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-13-waf-shield-protection/docs/blog/screenshots/09-cloudfront-distribution-waf-attached.png" alt="CloudFront distribution Security tab showing WAF enabled with the edge web ACL">
+      <figcaption>CloudFront takes the web ACL as a distribution attribute.</figcaption>
+    </figure>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Testing it: the attack simulation</h2>
+  <p>A shell script sends benign-but-rule-matching requests to my own endpoints. Nothing in it is an exploit &mdash; the payloads are the well-known signature strings the managed rule groups look for, sent to a Lambda that echoes its input and does nothing else.</p>
+
+  <div class="callout red">
+    <strong>In Count mode, an HTTP status code tells you almost nothing</strong>
+    <p>Every request returns 200, because nothing is being blocked by design. Worse, some non-200 responses have nothing to do with WAF at all: API Gateway returns 400 for a malformed URI path and 405 for an unsupported method, and CloudFront returns 403 for a method outside its allowed list. My first version of this script read those as WAF blocks and reported the benign baseline request as "blocked as expected". It was wrong. <strong>The only real evidence is <code>CountedRequests</code> and <code>BlockedRequests</code> in CloudWatch, or the WAF logs themselves.</strong></p>
+  </div>
+
+  <p>One consequence of that discovery changed a test: a path-traversal sequence in the <em>URI path</em> is rejected by API Gateway with a 400 before WAF is ever consulted. To actually exercise the rule, the payload has to go in a query argument.</p>
+
+  <p>In Count mode, the origin web ACL recorded <strong>13 matches</strong> and the edge <strong>7</strong> &mdash; every one an attack payload, and the benign baseline untouched. Zero false positives is the number that decides whether it is safe to enforce.</p>
+
+  <figure class="screenshot">
+    <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-13-waf-shield-protection/docs/blog/screenshots/12-sampled-requests-count-mode.png" alt="WAF sampled requests in Count mode with the CountedRequests graph">
+    <figcaption>Sampled requests during the Count phase. Every action reads ALLOW &mdash; the matches show up in the CountedRequests series, not in the HTTP response.</figcaption>
+  </figure>
+</div>
+
+<div class="section">
+  <h2>Flipping to Block</h2>
+  <p>With clean evidence, the rules were switched to enforcing. The repository default stays <code>count_mode = true</code> deliberately, so anyone reusing the module gets Count-first as the safe default; the flip was made as an HCP workspace variable, which is an operational decision rather than a code change.</p>
+
+  <figure class="screenshot">
+    <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-13-waf-shield-protection/docs/blog/screenshots/15-regional-acl-rules-block-mode.png" alt="AWS WAF console showing the same five rules now in Block mode">
+    <figcaption>The same console page after the flip: "Count" becomes "Block", and "Override rule group action to count" becomes "Use rule actions".</figcaption>
+  </figure>
+
+  <p>Then the identical simulation ran again. Same requests, same endpoints, one variable changed:</p>
+
+  <figure class="screenshot">
+    <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-13-waf-shield-protection/docs/blog/screenshots/18-count-vs-block-comparison.png" alt="Side-by-side terminal output of the attack simulation in Count mode and Block mode">
+    <figcaption>Left: Count mode, everything 200. Right: Block mode, every attack 403 &mdash; and the benign baseline still 200.</figcaption>
+  </figure>
+
+  <div class="callout green">
+    <strong>The rate-based rule finally fired</strong>
+    <p>Across the earlier runs the rate rule never triggered, because a burst of concurrent requests finishes before WAF's next rate check. In Block mode, a 200-request flood produced <strong>8 blocked requests</strong> on the origin. This is normal and worth internalising: WAF re-evaluates the rate roughly every 10 seconds, so requests sent before the next evaluation still get through even once you are over the limit. A rate rule is not an instantaneous cap.</p>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Logging, and proving the redaction works</h2>
+  <p>A WAF log records the request it inspected &mdash; which means it records credentials unless you tell it not to. Without redaction, the security control becomes the disclosure vector.</p>
+
+  <div class="code-block">
+    <div class="code-header"><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div><span class="code-lang">terraform</span></div>
+    <pre><code>resource "aws_wafv2_web_acl_logging_configuration" "this" {
+  resource_arn            = aws_wafv2_web_acl.this.arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf.arn]
+
+  redacted_fields { single_header { name = "authorization" } }
+  redacted_fields { single_header { name = "cookie" } }
+  redacted_fields { single_header { name = "x-api-key" } }
+}</code></pre>
+  </div>
+
+  <div class="callout">
+    <strong>The log group name is not a free choice</strong>
+    <p>It <strong>must</strong> start with <code>aws-waf-logs-</code>, and must live in the same Region and account as the web ACL. Get it wrong and the logging configuration is rejected with an error that does not make the reason obvious.</p>
+  </div>
+
+  <p>Configuring redaction and verifying it are different things. I sent a request carrying three fake credentials and then read the logged record back:</p>
+
+  <figure class="screenshot">
+    <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-13-waf-shield-protection/docs/blog/screenshots/22-waf-log-redaction-verified.png" alt="WAF log record showing Authorization, Cookie and X-Api-Key all REDACTED while other headers remain">
+    <figcaption>All three credential headers come back <code>REDACTED</code>; every other header is logged in full. The redaction is selective and it works.</figcaption>
+  </figure>
+</div>
+
+<div class="section">
+  <h2>Alarms: making a block something a human hears about</h2>
+  <p>A web ACL with no alarm is a control you have to remember to go and look at. Two alarms per web ACL &mdash; <code>BlockedRequests</code> for enforcement and <code>CountedRequests</code> for the observation phase &mdash; both publishing to SNS.</p>
+
+  <div class="callout red">
+    <strong>The bug that would have made every edge alarm useless</strong>
+    <p>My first version set the CloudWatch <code>Region</code> dimension to the string <code>"Global"</code> for the CloudFront-scope web ACL. That is a plausible-looking guess and it is wrong: <strong>CloudFront-scope WAF metrics carry no <code>Region</code> dimension at all</strong> &mdash; only <code>WebACL</code> and <code>Rule</code>. A dimension set that matches no metric series does not error. The alarm simply sits in <code>INSUFFICIENT_DATA</code> forever while appearing perfectly healthy. Regional metrics <em>do</em> carry <code>Region</code>. One module serving both scopes has to merge the dimension in conditionally.</p>
+    <p>A related trap in the same family: the <code>Rule</code> dimension uses the rule's <code>visibility_config.metric_name</code>, not its <code>name</code>. Querying by rule name silently returns nothing. Always confirm against <code>aws cloudwatch list-metrics --namespace AWS/WAFV2</code> before writing an alarm.</p>
+  </div>
+
+  <p>To prove the notification path end to end rather than assume it, I drove the alarm deliberately &mdash; 80 blocked requests to cross the threshold of 50:</p>
+
+  <div class="grid-2">
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-13-waf-shield-protection/docs/blog/screenshots/23-sns-alarm-email.png" alt="SNS email showing the CloudWatch alarm entering ALARM state">
+      <figcaption>Detection: WAF block &rarr; metric &rarr; alarm &rarr; SNS &rarr; inbox.</figcaption>
+    </figure>
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-13-waf-shield-protection/docs/blog/screenshots/24-sns-alarm-ok-email.png" alt="SNS email showing the CloudWatch alarm returning to OK state">
+      <figcaption>Recovery. Without <code>ok_actions</code> you get an alarm and then silence.</figcaption>
+    </figure>
+  </div>
+
+  <p>The recovery email is the half people forget to configure. An operator who receives an alert and never learns the attack stopped has to go and check manually every time.</p>
+</div>
+
+<div class="section">
+  <h2>What went wrong</h2>
+
+  <div class="challenge-card">
+    <div class="challenge-header">1. The Anti-DDoS rule group rejected both web ACLs</div>
+    <div class="challenge-body">
+      <p>The provider documents <code>exempt_uri_regular_expression</code> as optional; AWS requires at least one entry whenever the challenge action is enabled. <code>validate</code> and <code>plan</code> both passed. Only the apply caught it.</p>
+      <p><strong>Lesson:</strong> a provider doc marking a field "Optional" is not a live-tested fact.</p>
+    </div>
+  </div>
+
+  <div class="challenge-card">
+    <div class="challenge-header">2. Both edge alarms were dead and looked healthy</div>
+    <div class="challenge-body">
+      <p>CloudFront-scope metrics have no <code>Region</code> dimension. An alarm pointed at a non-existent metric series never fires and never errors.</p>
+      <p><strong>Lesson:</strong> a well-formed configuration that plans cleanly can still be completely inert. Verify against the live metric list, not the config.</p>
+    </div>
+  </div>
+
+  <div class="challenge-card">
+    <div class="challenge-header">3. My test script was misreporting its own results</div>
+    <div class="challenge-body">
+      <p>It read HTTP status as a WAF verdict, called the benign baseline "blocked as expected", and treated API Gateway's 400/405 and CloudFront's 403 as WAF blocks.</p>
+      <p><strong>Lesson:</strong> a test that cannot distinguish the thing it is testing from unrelated failures is worse than no test, because it produces confident wrong answers.</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Cost</h2>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Component</th><th>Monthly</th></tr></thead>
+    <tbody>
+      <tr><td>2 web ACLs @ $5</td><td>$10.00</td></tr>
+      <tr><td>10 rules @ $1 (5 per ACL &times; 2)</td><td>$10.00</td></tr>
+      <tr><td>WCU overage</td><td>$0 &mdash; 953 of 1,500 used</td></tr>
+      <tr><td>CloudFront, API Gateway, Lambda, logs</td><td>~$0 at demo volume</td></tr>
+      <tr><td>Shield Standard</td><td>$0 &mdash; always on</td></tr>
+      <tr><td><strong>If left running</strong></td><td><strong>~$20</strong></td></tr>
+      <tr><td><strong>Destroyed</strong></td><td><strong>$0</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout green">
+    <strong>WAF charges are prorated hourly</strong>
+    <p>The $5 per web ACL and $1 per rule are monthly <em>rates</em>, not minimums. Two web ACLs cost roughly 2.7 cents an hour, so building this, testing it thoroughly and destroying it the same day costs well under a dollar. Shield Advanced, by contrast, is $3,000/month on a one-year commitment and cannot be prorated away.</p>
+    <p>The real risk on this build is not the rate &mdash; it is forgetting it exists. Two web ACLs charge whether or not a single request ever arrives, and there is no usage signal to remind you.</p>
+  </div>
+</div>
+
+<div class="section">
+  <h2>What I would do differently in production</h2>
+  <ul>
+    <li><strong>Stay in Count mode far longer.</strong> Fourteen matches from a synthetic script is a thin sample. Real production traffic over several days is what actually surfaces false positives.</li>
+    <li><strong>Use <code>rule_action_override</code> rather than dropping a rule group.</strong> When Core rule set rejects a legitimate upload, override that single rule to Count &mdash; do not disable 700 rules to fix one.</li>
+    <li><strong>Reconsider the rate aggregation key.</strong> IP aggregation punishes shared-NAT users collectively.</li>
+    <li><strong>Add a logging filter.</strong> WAF logs one record per inspected request; at real traffic volumes the ingestion cost becomes the dominant line item, not the web ACL.</li>
+  </ul>
+</div>
+
+<div class="section">
+  <h2>Links</h2>
+  <ul>
+    <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/week-13-waf-shield-protection">Week 13 source on GitHub</a> &mdash; Terraform modules, Lambda, attack simulation script</li>
+    <li><a href="https://docs.aws.amazon.com/waf/latest/developerguide/waf-chapter.html">AWS WAF Developer Guide</a></li>
+    <li><a href="https://aws.amazon.com/blogs/security/aws-shield-advanced-is-embracing-the-aws-waf-anti-ddos-managed-rule-group-what-changes-and-how-to-prepare/">Shield Advanced and the Anti-DDoS managed rule group migration</a></li>
+    <li><a href="https://aws.amazon.com/waf/pricing/">AWS WAF pricing</a> &middot; <a href="https://aws.amazon.com/shield/pricing/">AWS Shield pricing</a></li>
+  </ul>
+</div>
+
+</div>

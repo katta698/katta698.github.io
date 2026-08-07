@@ -494,6 +494,9 @@ def fetch_local_posts():
             "builds": front_matter.get("builds"),
             "catch": front_matter.get("catch"),
             "draft": bool(front_matter.get("draft", False)),
+            # Opt-in accuracy badge. See verification_html() for why this is
+            # deliberately NOT auto-stamped on every post.
+            "verified": front_matter.get("verified"),
             # Architecture Series posts (arch-NNN-*.html) are built by a
             # completely separate pipeline (.github/workflows/publish-draft.yml),
             # which uses its own template-substitution logic, not this script's
@@ -866,6 +869,56 @@ def summary_html(post):
     return f'<div class="quick-summary-mount" data-slug="{escape(post["slug"])}" data-topics="{escape(topics)}"></div>'
 
 
+def verification_html(post):
+    """Render the "verified against current documentation" badge.
+
+    Opt-in via a `verified: 'YYYY-MM-DD'` front-matter field, and applies to
+    EVERY series (Weekly Lab, Architecture Series, Daily Intelligence) — the
+    badge markup and wording live here so they stay identical everywhere and
+    can be reworded in one place.
+
+    Why this is opt-in rather than stamped on every post automatically
+    (deliberate, do not "improve" this by defaulting it on): the badge makes a
+    factual claim that a human actually checked this post's figures against
+    current vendor documentation on a specific date. Auto-stamping it would
+    assert that verification happened on posts where it did not, which is
+    worse than having no badge at all — readers would trust a claim nothing
+    backs. A post whose author skipped the check simply renders no badge.
+
+    The date is shown verbatim and is intentionally the VERIFICATION date, not
+    the publish date. They usually differ: a post drafted and checked on one
+    day and held for a weekend publish should still say when the facts were
+    actually confirmed. Cloud pricing and APIs move fast enough that a reader
+    arriving a year later needs to know how stale the numbers might be.
+    """
+    verified = post.get("verified")
+    if not verified:
+        return ""
+    # Accept a date object (unquoted YAML) or a string. Quoted ISO dates are
+    # the common case because the rest of this repo's front matter quotes
+    # dates, so parse those into the same human-readable form rather than
+    # printing a bare "2026-08-07" at readers.
+    if hasattr(verified, "strftime"):
+        dt = verified
+    else:
+        try:
+            dt = datetime.strptime(str(verified).strip()[:10], "%Y-%m-%d")
+        except ValueError:
+            dt = None  # non-ISO value: show it verbatim rather than guessing
+    label = f"{dt.day} {dt.strftime('%B %Y')}" if dt else str(verified)
+    return (
+        '<div class="verified-badge">'
+        '<span class="verified-check" aria-hidden="true">&#10003;</span>'
+        '<span class="verified-text">'
+        f'<strong>Verified against current vendor documentation on {escape(label)}.</strong> '
+        'Pricing, limits and API behaviour in this post were checked against official '
+        'documentation on that date rather than written from memory. Cloud services change '
+        'frequently &mdash; if you are reading this much later, treat the specifics as a '
+        'starting point and re-check the linked sources.'
+        '</span></div>'
+    )
+
+
 def parse_date(url, published=None):
     if published:
         try:
@@ -979,6 +1032,7 @@ def build_post_page(post, prev_post, next_post):
 
     tags_html = " ".join(f'<span class="tag-badge">{t}</span>' for t in tags)
     quick_summary = summary_html(post)
+    verified_badge = verification_html(post)
 
     prev_link = (
         f'<a href="/blog/{prev_post["slug"]}/" class="post-nav-link prev">'
@@ -1046,6 +1100,7 @@ def build_post_page(post, prev_post, next_post):
         <span>{post["read_time"]} min read</span>
       </div>
     </header>
+    {verified_badge}
     {quick_summary}
     <div class="post-divider"></div>
     <div class="post-body">{post["body_html"]}</div>
@@ -2124,6 +2179,10 @@ def main():
             "catch":         entry.get("catch"),
             "body_html": body_html,
             "draft":         entry.get("draft", False),
+            # Carried through from the front matter so verification_html() can
+            # render the accuracy badge. This dict — not the one built during
+            # the initial posts/ scan — is what reaches build_post_page().
+            "verified":      entry.get("verified"),
             "externally_built": entry.get("externally_built", False),
         })
 
