@@ -66,6 +66,32 @@ def check_page(slug):
         err(slug, 'unbalanced HTML comments (%d open, %d close) — '
                   'body may be commented out' % (opens, closes))
 
+    # 1b. Social preview tags. Arch pages carry their own <head> and are never
+    #     rebuilt by sync_blog.py, so they do not inherit the og:*/twitter:*
+    #     tags that html_head() emits for every other series. Arch #14 shipped
+    #     without them and needed a follow-up commit; this check is here so the
+    #     next one cannot. og:image is intentionally not checked for a per-post
+    #     value — it points at the site image everywhere, because LinkedIn, X
+    #     and Facebook do not render SVG and the diagrams are all SVG.
+    for tag in ('og:type', 'og:title', 'og:description', 'og:url', 'og:image',
+                'twitter:card', 'twitter:title', 'twitter:description'):
+        if tag not in html:
+            err(slug, 'missing social preview tag %s — a shared link will '
+                      'render as a bare URL (see "Social preview tags on arch '
+                      'pages" in CLAUDE.md)' % tag)
+
+    og_title = re.search(r'<meta property="og:title" content="([^"]*)"', html)
+    if og_title and og_title.group(1).strip().endswith('| Jayanth Katta Blog'):
+        err(slug, 'og:title still carries the " | Jayanth Katta Blog" suffix — '
+                  'that belongs in <title>, not in the share card')
+
+    og_url = re.search(r'<meta property="og:url" content="([^"]*)"', html)
+    canon = re.search(r'<link rel="canonical" href="([^"]*)"', html)
+    if og_url and canon and og_url.group(1) != canon.group(1):
+        err(slug, 'og:url (%s) does not match canonical (%s) — a copied page '
+                  'kept the previous post\'s URL'
+                  % (og_url.group(1), canon.group(1)))
+
     visible = strip_comments(html)
 
     # 2. Unreplaced template placeholders.
