@@ -911,10 +911,9 @@ def verification_html(post):
         '<span class="verified-check" aria-hidden="true">&#10003;</span>'
         '<span class="verified-text">'
         f'<strong>Verified against current vendor documentation on {escape(label)}.</strong> '
-        'Pricing, limits and API behaviour in this post were checked against official '
-        'documentation on that date rather than written from memory. Cloud services change '
-        'frequently &mdash; if you are reading this much later, treat the specifics as a '
-        'starting point and re-check the linked sources.'
+        'Pricing, limits and API behaviour were checked against the official docs on that '
+        'date. Cloud services change fast &mdash; if you are reading this much later, treat '
+        'the specifics as a starting point and re-check the linked sources.'
         '</span></div>'
     )
 
