@@ -884,7 +884,26 @@ def slugify(title):
 
 
 # ── HTML templates ────────────────────────────────────────────
-def html_head(title, description, canonical, extra=""):
+# Default social preview image. Deliberately a raster file: LinkedIn, X and
+# Facebook do not render SVG for og:image, so the per-post diagrams in
+# blog/assets/diagrams cannot be used here even though they would suit.
+# twitter:card is "summary" rather than "summary_large_image" because this is a
+# logo, not a 1200x630 card — a large card would render it stretched and empty.
+# Replacing this with a real 1200x630 image (or per-post generated cards) is the
+# obvious upgrade, and only this constant and the card type need to change.
+SOCIAL_IMAGE = f"{SITE_URL}/favicon-transparent.png"
+
+
+def html_head(title, description, canonical, extra="", og_type="website",
+              og_title=None, image=None):
+    """Build the <head>.
+
+    og_title defaults to `title`, but post pages pass the bare post title so the
+    share card is not padded with the " | Jayanth Katta Blog" suffix that
+    belongs in the browser tab.
+    """
+    social_title = og_title if og_title is not None else title
+    social_image = image or SOCIAL_IMAGE
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -893,6 +912,16 @@ def html_head(title, description, canonical, extra=""):
 <title>{escape(title)}</title>
 <meta name="description" content="{escape(description)}"/>
 <link rel="canonical" href="{canonical}"/>
+<meta property="og:type" content="{og_type}"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<meta property="og:title" content="{escape(social_title)}"/>
+<meta property="og:description" content="{escape(description)}"/>
+<meta property="og:url" content="{canonical}"/>
+<meta property="og:image" content="{social_image}"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="{escape(social_title)}"/>
+<meta name="twitter:description" content="{escape(description)}"/>
+<meta name="twitter:image" content="{social_image}"/>
 <link rel="icon" href="/favicon-transparent.png" type="image/png"/>
 <link rel="stylesheet" href="{ASSETS_URL}/blog.css?v={CSS_VERSION}"/>
 {extra}
@@ -990,7 +1019,8 @@ def build_post_page(post, prev_post, next_post):
         # directly (e.g. via an external link someone shared).
         extra += '\n<meta name="robots" content="noindex,nofollow"/>'
 
-    return f"""{html_head(title + " | Jayanth Katta Blog", post["excerpt"], post_url, extra)}
+    return f"""{html_head(title + " | Jayanth Katta Blog", post["excerpt"], post_url, extra,
+                          og_type="article", og_title=title)}
 <body>
 {nav_html(show_search=False)}
 <div class="post-search-bar" id="post-search-bar">

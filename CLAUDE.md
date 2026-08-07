@@ -99,6 +99,22 @@ This pass-through is driven by a filename check in `sync_blog.py` (`externally_b
 
 When fixing an arch post page directly, edit `blog/aws-architecture-*/index.html` and commit. Use `posts/arch-*.html` as the canonical template reference (arch-003 is the canonical template — never re-read old posts when building new ones; use the template).
 
+### Social preview tags on arch pages
+
+Arch pages carry their own `<head>`, and `sync_blog.py` never rebuilds them, so
+they do not inherit head changes made in `html_head()`. Every existing arch page
+now carries `og:*` and `twitter:*` tags; a new page copied from one of them
+inherits them, but the values are per-post and must be updated:
+
+- `og:title` — the post title **without** the ` | Jayanth Katta Blog` suffix
+  that belongs in `<title>`.
+- `og:description` — same text as `<meta name="description">`.
+- `og:url` — the canonical URL.
+
+Leave `og:image` and `twitter:image` pointing at the site image. Do **not** point
+them at the post's diagram: those are SVG, and LinkedIn, X and Facebook do not
+render SVG for `og:image`, so the card would come out blank.
+
 ## Starting a new series
 
 Read this before publishing the first post of any new series (e.g. a daily
