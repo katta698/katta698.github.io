@@ -8,42 +8,56 @@
 
 ## Which folder am I in?
 
-Two worktrees share one repository. **Check before doing anything.**
+**Three worktrees share one repository. Check before doing anything.**
 
 | Folder | Branch | Used for |
 | --- | --- | --- |
 | `C:\Projects\Engineering\katta698.github.io` | `main` | Architecture Series, Weekly Lab, site work |
-| `C:\Projects\Engineering\katta698-daily` | `daily` | AWS Daily Intelligence series |
-
-`git worktree list` confirms both. They have separate working files and
-separate staging areas but one shared history, so a commit in either is
-visible to the other immediately.
-
-Two worktrees cannot check out the same branch — that is why the daily
-worktree is on `daily` rather than `main`.
-
-### Publishing from the daily worktree
-
-`daily` is a staging branch, not a long-lived one. Rebase it onto `main` before
-writing, then push it straight to remote `main`:
+| `C:\Projects\Engineering\katta698-daily` | `daily` | AWS Daily Intelligence |
+| `C:\Projects\Engineering\katta698-weekly` | `weekly` | AWS Weekly Intelligence |
 
 ```
-cd C:\Projects\Engineering\katta698-daily
+git worktree list
+```
+
+Run that if there is any doubt. Each worktree has its own working files and its
+own staging area, but they share one history — a commit made in any of them is
+visible to the others immediately.
+
+Two worktrees cannot check out the same branch. That is the only reason `daily`
+and `weekly` exist as branches; they are staging branches, not long-lived ones,
+and everything publishes to `main`.
+
+### Publishing from a series worktree
+
+Identical for `daily` and `weekly`. Rebase onto `main` first, then push straight
+to remote `main`:
+
+```
+cd C:\Projects\Engineering\katta698-daily     # or -weekly
 git fetch origin
-git rebase origin/main          # do this BEFORE running sync
+git rebase origin/main          # BEFORE running sync, not just before editing
 # write the post, run scripts/sync_blog.py, commit
-git push origin daily:main      # fast-forwards remote main
-git rebase origin/main          # realign after the Actions bot commits
+git push origin HEAD:main       # fast-forwards remote main, no merge commit
 ```
 
-`git push origin daily:main` publishes to `main` without a merge commit,
-provided `daily` was rebased first. If it is rejected, `daily` has fallen
-behind — rebase and push again.
+`git push origin HEAD:main` works from either branch and needs no merge commit,
+provided you rebased first. If it is rejected, the branch has fallen behind —
+rebase and push again.
 
-**Rebase before running sync, not just before editing.** The daily worktree
-has its own copy of `posts/`, so it does not see a post written in the other
-worktree until it rebases. Running sync first would regenerate the whole index
-without that post. See "Publishing in parallel" below for what that breaks.
+**Rebase before running sync, not just before editing.** Each worktree has its
+own copy of `posts/`, so it cannot see a post written in another worktree until
+it rebases. Running sync first regenerates the whole index without that post.
+`sync_blog.py` refuses to run when the checkout is behind `origin/main` for
+exactly this reason; do not reach for `--skip-freshness-check` to get past it.
+
+**Renaming a post: stage the deletion too.** `git add <new-name>` does not stage
+the removal of the old file. The first weekly roundup was retitled and both
+files were committed, so `posts/` carried two copies of the same post. The live
+site was fine only because the stale file was absent from the tree that ran
+sync; any clean checkout would have built a duplicate page, a doubled filter
+pill, two RSS entries and two RAG index entries. Use `git mv`, or
+`git add -A posts/`, and check `git status` shows the deletion staged.
 
 ## Publishing in parallel
 
@@ -60,9 +74,10 @@ generated.
 publishing rewrite the same generated files. The Actions bot also auto-commits
 `blog/posts.json` after every push, which is a third writer.
 
-Worktrees make this *more* likely, not less: each worktree has its own `posts/`
-and cannot see the other's new post until it rebases. That is why the rule is
-rebase before **sync**, not merely before editing.
+Worktrees make this *more* likely, not less: each of the three has its own
+`posts/` and cannot see another's new post until it rebases. With three writers
+rather than two, conflicts on generated files are routine. That is why the rule
+is rebase before **sync**, not merely before editing.
 
 **Resolving a conflict on a generated file — never hand-merge it:**
 
