@@ -3,18 +3,18 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>AWS Architecture Series #11 — SQS vs SNS vs EventBridge: The Decision Tree Enterprises Get Wrong | Jayanth Katta Blog</title>
-<meta name="description" content="SQS is a buffer, SNS is a broadcast, EventBridge is a router. Choosing by what the consumer needs rather than what the message is — with the quotas that decide it in production."/>
-<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-sqs-sns-eventbridge/"/>
+<title>AWS Architecture Series #15 — VPC Endpoints vs NAT Gateway: Paying Egress on Traffic That Never Left AWS | Jayanth Katta Blog</title>
+<meta name="description" content="A NAT gateway bills $0.045 per GB to carry traffic that never leaves the AWS network. Gateway endpoints carry S3 and DynamoDB for nothing; interface endpoints carry the rest for a price that multiplies per Availability Zone."/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-vpc-endpoints-nat-gateway/"/>
 <meta property="og:type" content="article"/>
 <meta property="og:site_name" content="Jayanth Katta"/>
-<meta property="og:title" content="AWS Architecture Series #11 — SQS vs SNS vs EventBridge: The Decision Tree Enterprises Get Wrong"/>
-<meta property="og:description" content="SQS is a buffer, SNS is a broadcast, EventBridge is a router. Choosing by what the consumer needs rather than what the message is — with the quotas that decide it in production."/>
-<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-sqs-sns-eventbridge/"/>
+<meta property="og:title" content="AWS Architecture Series #15 — VPC Endpoints vs NAT Gateway: Paying Egress on Traffic That Never Left AWS"/>
+<meta property="og:description" content="A NAT gateway bills $0.045 per GB to carry traffic that never leaves the AWS network. Gateway endpoints carry S3 and DynamoDB for nothing; interface endpoints carry the rest for a price that multiplies per Availability Zone."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-vpc-endpoints-nat-gateway/"/>
 <meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
 <meta name="twitter:card" content="summary"/>
-<meta name="twitter:title" content="AWS Architecture Series #11 — SQS vs SNS vs EventBridge: The Decision Tree Enterprises Get Wrong"/>
-<meta name="twitter:description" content="SQS is a buffer, SNS is a broadcast, EventBridge is a router. Choosing by what the consumer needs rather than what the message is — with the quotas that decide it in production."/>
+<meta name="twitter:title" content="AWS Architecture Series #15 — VPC Endpoints vs NAT Gateway: Paying Egress on Traffic That Never Left AWS"/>
+<meta name="twitter:description" content="A NAT gateway bills $0.045 per GB to carry traffic that never leaves the AWS network. Gateway endpoints carry S3 and DynamoDB for nothing; interface endpoints carry the rest for a price that multiplies per Availability Zone."/>
 <meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
 <link rel="icon" href="/favicon-transparent.png" type="image/png"/>
 <link rel="stylesheet" href="/blog/assets/blog.css?v=f9456952"/>
@@ -53,20 +53,21 @@
   <div class="post-breadcrumb">
     <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
     <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
-    <span>AWS Architecture Series #11 — SQS vs SNS vs EventBridge: The Decision Tree Enterprises Get Wrong…</span>
+    <span>AWS Architecture Series #15 — VPC Endpoints vs NAT Gateway: Paying Egress on Traffic That Never Left AWS…</span>
   </div>
   <article>
     <header class="post-header">
       <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">AWS Architecture Series</span></div>
-      <h1>AWS Architecture Series #11 — SQS vs SNS vs EventBridge: The Decision Tree Enterprises Get Wrong</h1>
-      <p class="post-description">SQS is a buffer, SNS is a broadcast, EventBridge is a router. Choosing by what the consumer needs rather than what the message is — with the quotas that decide it in production.</p>
+      <h1>AWS Architecture Series #15 — VPC Endpoints vs NAT Gateway: Paying Egress on Traffic That Never Left AWS</h1>
+      <p class="post-description">A NAT gateway bills $0.045 per GB to carry traffic that never leaves the AWS network. Gateway endpoints carry S3 and DynamoDB for nothing; interface endpoints carry the rest for a price that multiplies per Availability Zone.</p>
       <div class="post-info">
-        <span>Aug 4, 2026</span>
+        <span>Aug 8, 2026</span>
         <span class="post-info-dot"></span>
         <span>12 min read</span>
       </div>
     </header>
-    <div class="quick-summary-mount" data-slug="aws-architecture-sqs-sns-eventbridge" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 8 August 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-vpc-endpoints-nat-gateway" data-topics="AWS,Architecture,AWS Architecture Series"></div>
     <div class="post-divider"></div>
     <div class="post-body"><div id="jk-post">
 <!-- ═══════════════════════════════════════════════════════════════════════
@@ -178,196 +179,195 @@
   <div class="section" id="challenge">
     <h2>Business Challenge</h2>
     <p>
-      A retail platform runs 40 microservices across four AWS accounts. Two years ago the team made
-      a reasonable-sounding decision: standardise on one messaging service so nobody has to argue
-      about it again. They chose EventBridge, put a single custom bus in the shared services
-      account, and routed everything through it — order events, inventory updates, email
-      triggers, cache invalidations, audit records.
+      A platform team runs about 300 EC2 instances and a few dozen ECS services across three
+      Availability Zones, all in private subnets. Egress goes through NAT gateways, which is the
+      textbook layout. When Finance asked what the third-largest line on the AWS bill was, the
+      answer was NAT gateway data processing.
     </p>
     <p>
-      It worked until Black Friday. Three things broke in the same hour, and each one was the same
-      mistake wearing a different mask.
+      That number is worth pausing on, because a NAT gateway is not a service anyone deliberately
+      buys capacity from. It is plumbing. The team went looking for what was generating the
+      traffic, expecting a runaway job. What they found instead was ordinary: container images
+      from ECR, logs to CloudWatch, Systems Manager agent traffic, Secrets Manager lookups, S3
+      reads. Almost none of it was going to the internet at all. It was AWS talking to AWS, routed
+      out through a NAT gateway and billed <strong>$0.045 per GB</strong> for the privilege.
     </p>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">1</span><strong>The router was being used as a queue</strong></div>
+      <div class="challenge-header"><span class="num">1</span><strong>NAT processing is charged on traffic that never leaves AWS</strong></div>
       <div class="challenge-body">
         <p>
-          The inventory reconciliation service could handle roughly 200 events per second. Peak
-          produced 3,000. EventBridge did exactly what a router does — it delivered them as
-          fast as it matched them. There was no buffer, so the service shed load, and the retry
-          policy expired before the backlog cleared. Events were lost, and the inventory counts
-          were wrong for two days.
+          A NAT gateway bills two ways: <strong>$0.045 per hour</strong> for existing, and
+          <strong>$0.045 per GB</strong> for every gigabyte it processes. The per-GB charge does
+          not care whether the destination is a public website or an S3 bucket in the same Region.
+          A private subnet with a default route to a NAT gateway sends <em>all</em> AWS API traffic
+          through it, and pays processing on every byte.
         </p>
         <span class="fix-label">Fix</span>
-        <p>A consumer that can fall behind needs a queue in front of it. That is SQS's entire job.</p>
+        <p>Treat the default route as a fallback, not a highway. Anything with a private path to the service should be taking it.</p>
       </div>
     </div>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">2</span><strong>A rule hit a ceiling nobody knew existed</strong></div>
+      <div class="challenge-header"><span class="num">2</span><strong>The free fix covers only two services</strong></div>
       <div class="challenge-body">
         <p>
-          The <code>order.placed</code> rule had accumulated five targets over two years. When a
-          sixth team asked to be added, the request failed. <strong>Targets per rule is capped at
-          five, and unlike most EventBridge quotas it is not adjustable.</strong> The workaround
-          shipped under time pressure — duplicating the rule with a slightly different name
-          — doubled the invocation count against a quota they were already close to.
+          AWS is unambiguous: <strong>there are no data processing or hourly charges for using
+          gateway endpoints</strong>. They are free. They are also available for exactly two
+          services &mdash; <strong>Amazon S3 and DynamoDB</strong> &mdash; and they work by adding
+          a prefix-list route to your route tables rather than by using PrivateLink at all.
+        </p>
+        <p>
+          This is the single highest-return change available, and it is skipped constantly, because
+          nothing breaks without it. Traffic still works. It just costs money.
         </p>
         <span class="fix-label">Fix</span>
-        <p>Fan-out beyond a handful of consumers is SNS's job, or an SNS topic as one EventBridge target.</p>
+        <p>Add gateway endpoints for S3 and DynamoDB to every VPC, in every account, as a baseline. There is no cost case to make.</p>
       </div>
     </div>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">3</span><strong>The Region mattered and nobody had checked</strong></div>
+      <div class="challenge-header"><span class="num">3</span><strong>Interface endpoints are billed per Availability Zone</strong></div>
       <div class="challenge-body">
         <p>
-          The platform runs in <code>eu-west-2</code>. The team had load-tested in
-          <code>eu-west-1</code>, where <code>PutEvents</code> allows 10,000 requests per second.
-          In <code>eu-west-2</code> the default is 1,200. The architecture diagram was identical in
-          both Regions; the capacity was not.
+          For everything else &mdash; ECR, CloudWatch Logs, SSM, Secrets Manager, STS, KMS &mdash;
+          the private path is an interface endpoint, and those are billed. You pay for
+          <strong>each hour the endpoint remains provisioned in each Availability Zone</strong>,
+          plus data processing at <strong>$0.01 per GB</strong> for the first petabyte each month,
+          falling to $0.006 and then $0.004 per GB at higher volumes.
+        </p>
+        <p>
+          The per-AZ part is what surprises people. One endpoint across three AZs is billed as
+          three. Ten services across three AZs is thirty hourly charges, in every VPC that needs
+          them. A change made to save money can comfortably fail to.
         </p>
         <span class="fix-label">Fix</span>
-        <p>Treat EventBridge throughput as a per-Region number, and check it in the Region you actually deploy to.</p>
+        <p>Count endpoints as services &#215; AZs &#215; VPCs before committing. Below a traffic threshold, NAT processing is genuinely cheaper.</p>
       </div>
     </div>
 
-    <p>
-      None of these are EventBridge failures. EventBridge did what it is built to do. The failure
-      was upstream of the code: the team chose a service by asking <em>"what should we standardise
-      on?"</em> when the question that decides it is <em>"what does the consumer need?"</em>
-    </p>
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>Gateway endpoints do not work from on-premises</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the constraint that reshapes hybrid designs, and AWS states it plainly. In its
+          own comparison table, gateway endpoints <strong>&#8220;do not allow access from on
+          premises&#8221;</strong> and <strong>&#8220;do not allow access from another AWS
+          Region&#8221;</strong>. Interface endpoints allow both.
+        </p>
+        <p>
+          The mechanism explains the rule. A gateway endpoint is a route-table entry pointing at an
+          AWS-managed prefix list, and route tables only govern traffic originating inside the VPC.
+          Traffic arriving over Direct Connect, a VPN, or a Transit Gateway attachment never
+          consults them. It is also why traffic to the same service in a <em>different</em> Region
+          goes to the internet gateway instead: prefix lists are Region-specific.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>A hybrid estate needs an interface endpoint <em>as well as</em> the gateway endpoint, not instead of it. See the next section for why that pairing is the point.</p>
+      </div>
+    </div>
   </div>
 
   <div class="section" id="architecture">
     <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-015-endpoint-paths.svg" alt="Diagram: three paths out of a private subnet — a NAT gateway billed hourly and per gigabyte, a free gateway endpoint limited to S3 and DynamoDB, and an interface endpoint billed per Availability Zone but reachable from on-premises — followed by the order in which the choice should be made.">
+
+    <h3>The order to make the decisions in</h3>
     <p>
-      These three services get compared as if they are alternatives. They are not. They do three
-      different jobs, and the job is visible in what happens to a single message.
+      The three paths are not alternatives to choose between once. They are a sequence, and the
+      order matters because each step removes traffic from the step below it.
+    </p>
+    <p>
+      <strong>First, gateway endpoints for S3 and DynamoDB.</strong> Free, no data processing, no
+      hourly charge. For most workloads this is the largest single block of traffic and the easiest
+      to move. There is no threshold analysis to do because there is no cost.
+    </p>
+    <p>
+      <strong>Second, interface endpoints for the chatty control-plane services.</strong> ECR pulls
+      are large and constant. CloudWatch Logs is continuous. SSM, Secrets Manager and STS are small
+      per call but relentless. These are where the per-GB comparison actually favours an endpoint:
+      $0.01 per GB against NAT's $0.045, before the hourly charges on either side.
+    </p>
+    <p>
+      <strong>Third, keep a NAT gateway for what is genuinely internet-bound.</strong> OS patching,
+      package registries, third-party APIs, webhooks. The goal was never to delete the NAT gateway.
+      It was to stop routing AWS traffic through it.
     </p>
 
-    <figure class="screenshot">
-      <img src="/blog/assets/diagrams/arch-011-messaging-decision.svg" alt="Diagram: SQS shown as a buffer where one message reaches exactly one consumer, SNS as a broadcast where one message reaches every subscriber, and EventBridge as a router where rules decide which targets receive the event. Below, the question that selects between them and three production constraints: SQS FIFO throughput per partition, EventBridge regional quota variation, and the pattern of composing them." />
-      <figcaption>Three jobs, not three options. The shape of the delivery — one consumer, every consumer, or selected targets — is what distinguishes them.</figcaption>
-    </figure>
-
-    <h3>SQS is a buffer</h3>
+    <h3>The pairing that makes hybrid work</h3>
     <p>
-      A message goes in, one consumer takes it out, and the queue holds it in between. That gap is
-      the point: it absorbs the difference between how fast work arrives and how fast it can be
-      done. Consumers compete for messages, so scaling out means adding consumers. If they all stop,
-      messages wait — up to 14 days, four by default.
+      If on-premises systems also need S3, the naive reading of the constraint above is that the
+      free gateway endpoint is useless and everything must move to a billed interface endpoint.
+      That is not the case, and the option that prevents it is easy to miss.
     </p>
     <p>
-      Standard queues give at-least-once delivery and near-unlimited throughput. FIFO queues give
-      ordering and exactly-once processing, at a cost covered below. Both support dead-letter
-      queues, which is where a message goes after failing repeatedly rather than being lost or
-      retried forever.
-    </p>
-
-    <h3>SNS is a broadcast</h3>
-    <p>
-      A message goes to a topic and every subscriber gets its own copy — SQS queues, Lambda
-      functions, HTTPS endpoints, email, SMS, Firehose. Subscribers do not compete; they each
-      receive everything, unless a filter policy narrows it. Filter policies match on message
-      attributes or, if you set the policy scope accordingly, on the JSON message body.
+      When you enable private DNS on an S3 interface endpoint, AWS offers
+      <strong>Enable private DNS only for inbound endpoints</strong> &mdash; and it is
+      <em>selected by default</em>. With it on, in-VPC applications keep resolving S3 to the
+      gateway endpoint, which is free, while on-premises applications reaching the VPC through an
+      inbound Resolver endpoint use the interface endpoint, which is billed. Each class of traffic
+      takes the cheapest path that can carry it, with no client changes.
     </p>
     <p>
-      The critical property: <strong>SNS does not store anything.</strong> It delivers, retries per
-      the delivery policy for that endpoint type, and then gives up. A subscriber that is down
-      misses messages. This is why the canonical production pattern is not "SNS to Lambda" but
-      "SNS to SQS to Lambda" — the queue is what makes the delivery durable.
+      AWS enforces the dependency: the setting requires a gateway endpoint to exist in the VPC. Set
+      it without one and the API returns
+      <code>To set PrivateDnsOnlyForInboundResolverEndpoint to true, the VPC must have a gateway
+      endpoint for the service</code>. You also cannot delete the gateway endpoint while the option
+      is selected &mdash; clear the option first.
     </p>
 
-    <h3>EventBridge is a router</h3>
+    <h3>What interface endpoints for S3 will not do</h3>
     <p>
-      Events arrive on a bus. Rules match them against patterns — on the event body, not just
-      metadata — and matching events go to that rule's targets. Producers do not know who
-      consumes their events, and consumers subscribe by declaring what they care about. That
-      decoupling is why EventBridge suits many-producer, many-team estates where SNS's
-      topic-per-message-type sprawls.
-    </p>
-    <p>
-      It also ingests from 90-plus AWS services directly, supports archive and replay, and offers
-      Pipes for point-to-point integration with enrichment between a single source and a single
-      target. What it does not offer is a buffer with backpressure.
+      Before standardising on them, note the documented gaps. Interface endpoints for S3 do not
+      support FIPS endpoints, website endpoints, legacy global endpoints, or
+      <code>CopyObject</code> and <code>UploadPartCopy</code> between buckets in different Regions.
+      On the transport side they do not support TLS 1.0, TLS 1.1, <strong>TLS 1.3</strong>, or
+      hybrid post-quantum TLS. That TLS 1.3 exclusion sits oddly in the middle of the list and is
+      worth checking against your own client configuration before you find it in an incident.
     </p>
   </div>
 
   <div class="section" id="why-it-matters">
     <h2>Why This Architecture Holds Up</h2>
 
-    <h3>The question is about the consumer, not the message</h3>
+    <h3>The comparison is per-GB against per-AZ-hour</h3>
     <p>
-      Nearly every wrong choice here comes from classifying the message — "this is an event, so
-      EventBridge" — rather than asking what the receiving end needs. Three questions settle it
-      in almost every case:
-    </p>
-
-    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
-    <table>
-      <tr>
-        <th>If the answer is yes</th>
-        <th>Use</th>
-        <th>Because</th>
-      </tr>
-      <tr>
-        <td>One worker should do this job, and work can pile up</td>
-        <td><strong>SQS</strong></td>
-        <td>Competing consumers, backpressure, retry and DLQ semantics</td>
-      </tr>
-      <tr>
-        <td>Several independent systems all need to know</td>
-        <td><strong>SNS</strong></td>
-        <td>Fan-out to many endpoint types, with per-subscription filtering</td>
-      </tr>
-      <tr>
-        <td>Who receives it depends on what is inside the event</td>
-        <td><strong>EventBridge</strong></td>
-        <td>Content-based routing, cross-account buses, AWS-native sources, replay</td>
-      </tr>
-    </table>
-    </div>
-
-    <p>
-      They are not mutually exclusive, and the mature answer is usually a composition: EventBridge
-      routes by content, an SNS topic fans one route out to many teams, and each team owns an SQS
-      queue that absorbs its own load. Every consumer that can fall behind gets a queue. That single
-      rule would have prevented all three of the failures above.
-    </p>
-
-    <div class="callout blue">
-      <strong>The pattern worth memorising</strong>
-      <p>Distribution and buffering are separate concerns. EventBridge and SNS distribute. SQS buffers. Reaching for one to do the other's job is the mistake that shows up under load, never in testing.</p>
-    </div>
-
-    <h3>FIFO ordering costs more than it looks</h3>
-    <p>
-      "We need ordering" is usually said before anyone checks the price. An SQS FIFO queue is stored
-      in partitions, and each partition supports <strong>3,000 messages per second with batching, or
-      300 without</strong>. Which partition a message lands in is decided by hashing its message
-      group ID.
+      An interface endpoint is not automatically cheaper than a NAT gateway, and pretending
+      otherwise is how these projects disappoint. The endpoint replaces a $0.045 per-GB charge with
+      a $0.01 per-GB charge plus a fixed hourly charge in every AZ it lives in. The saving is
+      $0.035 per GB, and it has to cover those hourly charges before it is a saving at all.
     </p>
     <p>
-      That last detail is where designs come apart. Ordering is only guaranteed <em>within</em> a
-      message group, and parallelism is bounded by how many distinct groups you have. Use the
-      customer ID and you get wide distribution. Use a single constant because "we need global
-      ordering" and the entire queue collapses onto one partition and a 300/s ceiling. AWS's own
-      guidance is to choose group IDs with a large number of distinct values.
+      That makes traffic volume the deciding variable, per service. A service pulling terabytes
+      through NAT pays for its endpoint many times over. A service making a few thousand small API
+      calls a month may never break even, and is better left on the NAT path. The instinct to
+      &#8220;endpoint everything&#8221; produces a longer bill, not a shorter one.
     </p>
 
-    <div class="callout amber">
-      <strong>Ask what actually needs ordering</strong>
-      <p>Global ordering across an entire stream is rarely the real requirement. Ordering per customer, per account, or per aggregate almost always is — and that maps directly onto a message group ID that partitions well.</p>
-    </div>
-
-    <h3>Replay is a capability, not a nice-to-have</h3>
+    <h3>Partial hours round up, everywhere</h3>
     <p>
-      EventBridge archive and replay is the one capability with no equivalent in the other two. When
-      a downstream consumer ships a bug that mangles a day of events, replay lets you re-drive them
-      after the fix. With SNS the messages are gone. With SQS they are gone once deleted. For
-      audit-sensitive or financially material flows, that alone can decide the choice.
+      AWS bills <strong>each partial NAT gateway-hour as a full hour</strong>. The same
+      provisioned-hour model applies to interface endpoints per AZ. Neither is metered by the
+      second, so short-lived environments &mdash; ephemeral test VPCs, per-branch preview stacks,
+      anything torn down and rebuilt through the day &mdash; pay disproportionately. In those
+      environments the right answer is often a single shared NAT gateway and no endpoints, which
+      inverts the production recommendation entirely.
+    </p>
+
+    <h3>Routing is longest-prefix, so the endpoint quietly wins</h3>
+    <p>
+      A gateway endpoint adds a prefix-list route, and AWS resolves conflicts by longest prefix
+      match. With a <code>0.0.0.0/0</code> route to an internet gateway or NAT gateway in the same
+      table, the endpoint route is more specific and takes precedence for that service in that
+      Region. You do not need to remove the default route, and nothing needs reconfiguring at the
+      application layer.
+    </p>
+    <p>
+      The corollary is that this is invisible. Adding the endpoint changes the bill and not the
+      behaviour, so there is no signal that it worked and no signal when someone removes it. Verify
+      with cost data or VPC flow logs, not by whether the application still functions &mdash; it
+      will either way.
     </p>
   </div>
 
@@ -375,101 +375,81 @@
     <h2>Key Architecture Decisions</h2>
 
     <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
-    <table>
-      <tr>
-        <th>Decision</th>
-        <th>Choice</th>
-        <th>Reasoning</th>
-      </tr>
-      <tr>
-        <td>Default in front of consumers</td>
-        <td>An SQS queue, always</td>
-        <td>Any consumer that can slow down needs somewhere for work to wait. Cheap insurance against the failure that only appears at peak.</td>
-      </tr>
-      <tr>
-        <td>Fan-out beyond a few targets</td>
-        <td>SNS, or SNS as an EventBridge target</td>
-        <td>EventBridge caps targets per rule at five and will not raise it. SNS fan-out has no comparable ceiling.</td>
-      </tr>
-      <tr>
-        <td>Routing on event content</td>
-        <td>EventBridge rules</td>
-        <td>SNS filter policies work on attributes or a JSON body, but rule-based routing across many producers and teams is what the bus is for.</td>
-      </tr>
-      <tr>
-        <td>Ordering</td>
-        <td>FIFO only where ordering is a business requirement</td>
-        <td>Throughput drops to per-partition limits and parallelism is bounded by distinct message group IDs. Do not buy it by default.</td>
-      </tr>
-      <tr>
-        <td>Recoverability</td>
-        <td>EventBridge archive where events are material</td>
-        <td>Replay after a downstream bug is impossible with SNS and gone-once-deleted with SQS.</td>
-      </tr>
-      <tr>
-        <td>Capacity planning</td>
-        <td>Check quotas per Region, not per service</td>
-        <td>EventBridge PutEvents ranges from 10,000/s to 400/s depending on Region. The diagram does not change; the headroom does.</td>
-      </tr>
-    </table>
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>S3 and DynamoDB from inside the VPC</td>
+            <td>Gateway endpoint, always</td>
+            <td>No hourly charge and no data processing charge. There is no volume at which this loses.</td>
+          </tr>
+          <tr>
+            <td>S3 from on-premises</td>
+            <td>Interface endpoint, plus keep the gateway endpoint</td>
+            <td>Gateway endpoints do not allow access from on premises. Private DNS for inbound endpoints only keeps in-VPC traffic free.</td>
+          </tr>
+          <tr>
+            <td>High-volume services (ECR, CloudWatch Logs)</td>
+            <td>Interface endpoint</td>
+            <td>$0.01 per GB against $0.045 per GB clears the per-AZ hourly charge quickly at scale.</td>
+          </tr>
+          <tr>
+            <td>Low-volume services</td>
+            <td>Leave on the NAT path</td>
+            <td>Per-AZ hourly charges apply whether the endpoint carries one gigabyte or none.</td>
+          </tr>
+          <tr>
+            <td>Ephemeral or short-lived VPCs</td>
+            <td>Shared NAT gateway, minimal endpoints</td>
+            <td>Both models bill provisioned hours and round partial hours up, which punishes short lifetimes.</td>
+          </tr>
+          <tr>
+            <td>Genuine internet egress</td>
+            <td>Keep the NAT gateway</td>
+            <td>Endpoints reach AWS services only. Patching and third-party APIs still need a route out.</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
 
-    <h3>What each one is bad at</h3>
-    <div class="grid-2">
-      <div class="card">
-        <h4>SQS cannot fan out</h4>
-        <p>One message, one consumer. Needing five systems to react means five queues and something upstream to populate them — which is SNS or EventBridge.</p>
-      </div>
-      <div class="card">
-        <h4>SNS cannot wait</h4>
-        <p>No storage. A subscriber that is down misses the message once retries are exhausted. Subscribe a queue if the delivery has to survive an outage.</p>
-      </div>
-      <div class="card">
-        <h4>EventBridge cannot absorb</h4>
-        <p>No backpressure. It delivers as fast as it matches. A slow target either keeps up, is throttled, or loses events after retries expire.</p>
-      </div>
-      <div class="card">
-        <h4>None of them is a stream</h4>
-        <p>Multiple consumers reading the same ordered log at their own offsets, replayed at will, is Kinesis or MSK. Bending these three into that shape produces the worst of both.</p>
-      </div>
-    </div>
-
-    <div class="callout green">
-      <strong>A test that settles most arguments</strong>
-      <p>Ask what should happen if the consumer is down for an hour. "Work waits" means SQS. "It missed it, that's fine" means SNS. "Route it based on what it is, and I want to replay it later" means EventBridge. The answer is a business decision, not a technical preference.</p>
-    </div>
+    <h3>The audit that pays for itself</h3>
+    <p>
+      Enable VPC flow logs on the private subnets and group accepted traffic by destination prefix
+      list. The output ranks, in bytes, exactly which AWS services are currently paying NAT
+      processing. That ranking <em>is</em> the endpoint backlog, ordered by return, and it usually
+      shows two or three services carrying most of the cost. Do those, measure, and stop &mdash;
+      the tail is where endpoint charges start exceeding the traffic they displace.
+    </p>
   </div>
 
   <div class="section" id="closing">
     <h2>Closing Thought</h2>
     <p>
-      The instinct to standardise on one messaging service is a good instinct applied to the wrong
-      layer. Standardising on conventions — event naming, schema versioning, where dead letters
-      go, who owns replay — pays off permanently. Standardising on the transport forces one
-      tool to cover three jobs, and the seams tear under load rather than in review.
+      Nobody designs a NAT gateway bill. It accumulates from a default route that was correct when
+      the VPC had one workload in it, and it grows quietly because nothing ever breaks. The traffic
+      flows, the applications work, and the only symptom is a line item that looks like
+      infrastructure rather than a decision.
     </p>
     <p>
-      What makes this decision unusually cheap to get right is that the three services compose
-      cleanly. An EventBridge rule can target an SNS topic. An SNS topic can fan out to SQS queues.
-      A queue can front a Lambda. You are not choosing one and living with it; you are assembling
-      the routing, the fan-out and the buffering from the pieces that do each job properly.
+      The fix is not a migration. It is two gateway endpoints that cost nothing, a short list of
+      interface endpoints chosen on measured volume rather than instinct, and a NAT gateway kept
+      deliberately for the traffic that actually needs the internet. What makes it worth doing
+      carefully is that the wrong version &#8212; endpoints everywhere, in every AZ, in every VPC
+      &#8212; produces a bill that is larger than the one you set out to reduce, and it is just as
+      invisible.
     </p>
-    <p>
-      The team in this scenario did not need to migrate off EventBridge. They needed queues in front
-      of four consumers, an SNS topic behind one over-subscribed rule, and to read the quota page
-      for the Region they actually run in. Three weeks of work, and none of it was a rewrite.
-    </p>
-
-    <div class="callout">
-      <strong>Next in this series</strong>
-      <p>Observability — CloudWatch, OpenTelemetry, and what centralised telemetry across a multi-account estate actually costs. Where the managed path is the right one, where it stops being affordable, and how teams end up paying twice for the same signal.</p>
-    </div>
   </div>
 
   <div class="section" id="reference">
     <h2>Official AWS Reference</h2>
     <ul>
-      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html" target="_blank" rel="noopener">What is Amazon Simple Queue Service?</a> &mdash; includes AWS's own comparison of SQS, SNS and Amazon MQ, the message lifecycle, retention limits, and the FIFO throughput and partitioning rules referenced above.</li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/privatelink/gateway-endpoints.html" target="_blank" rel="noopener">Gateway endpoints &#8212; AWS PrivateLink Guide</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/privatelink-interface-endpoints.html" target="_blank" rel="noopener">AWS PrivateLink for Amazon S3 &#8212; Amazon S3 User Guide</a></li>
+      <li><a href="https://aws.amazon.com/privatelink/pricing/" target="_blank" rel="noopener">AWS PrivateLink pricing</a></li>
+      <li><a href="https://aws.amazon.com/vpc/pricing/" target="_blank" rel="noopener">Amazon VPC pricing &#8212; NAT gateway</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/working-with-aws-managed-prefix-lists.html" target="_blank" rel="noopener">AWS-managed prefix lists &#8212; Amazon VPC User Guide</a></li>
     </ul>
   </div>
 
@@ -485,15 +465,15 @@
       <span class="tag-badge">AWS</span> <span class="tag-badge">AWS Architecture Series</span>
     </div>
     <!-- post-nav: include prev and/or next links as applicable -->
-    <nav class="post-nav"><a href="/blog/aws-architecture-graviton-spot-mixed-instances/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">Graviton + Spot: Cutting Compute Cost Without Betting the Fleet</span></a></nav>
+    <nav class="post-nav"><a href="/blog/aws-architecture-s3-storage-classes-lifecycle/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">S3 Storage Classes: Why “Just Move It to Glacier” Made the Bill Go Up</span></a></nav>
   </article>
   <div class="comments-section">
   <h3>Comments</h3>
   <div id="disqus_thread"></div>
   <script>
     var disqus_config = function () {
-      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-sqs-sns-eventbridge/';
-      this.page.identifier = 'aws-architecture-sqs-sns-eventbridge';
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-vpc-endpoints-nat-gateway/';
+      this.page.identifier = 'aws-architecture-vpc-endpoints-nat-gateway';
     };
     (function() {
       var d = document, s = d.createElement('script');

@@ -1,0 +1,287 @@
+---
+title: 'AWS Architecture Series #15 — VPC Endpoints vs NAT Gateway: Paying Egress on Traffic That Never Left AWS'
+date: 2026-08-08
+slug: aws-architecture-vpc-endpoints-nat-gateway
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-08-08'
+problem: "A platform team's NAT gateway processing charge is the third-largest line on the bill, and almost none of the traffic behind it is going to the internet."
+builds: "A deliberate egress design: gateway endpoints for S3 and DynamoDB, interface endpoints for the chatty control-plane services, and a NAT gateway kept only for traffic that is genuinely internet-bound."
+catch: "Gateway endpoints are free but cannot be reached from on-premises or another Region. Interface endpoints can, but are billed per endpoint per Availability Zone — so the fix multiplies by three before it saves anything."
+---
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A platform team runs about 300 EC2 instances and a few dozen ECS services across three
+      Availability Zones, all in private subnets. Egress goes through NAT gateways, which is the
+      textbook layout. When Finance asked what the third-largest line on the AWS bill was, the
+      answer was NAT gateway data processing.
+    </p>
+    <p>
+      That number is worth pausing on, because a NAT gateway is not a service anyone deliberately
+      buys capacity from. It is plumbing. The team went looking for what was generating the
+      traffic, expecting a runaway job. What they found instead was ordinary: container images
+      from ECR, logs to CloudWatch, Systems Manager agent traffic, Secrets Manager lookups, S3
+      reads. Almost none of it was going to the internet at all. It was AWS talking to AWS, routed
+      out through a NAT gateway and billed <strong>$0.045 per GB</strong> for the privilege.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>NAT processing is charged on traffic that never leaves AWS</strong></div>
+      <div class="challenge-body">
+        <p>
+          A NAT gateway bills two ways: <strong>$0.045 per hour</strong> for existing, and
+          <strong>$0.045 per GB</strong> for every gigabyte it processes. The per-GB charge does
+          not care whether the destination is a public website or an S3 bucket in the same Region.
+          A private subnet with a default route to a NAT gateway sends <em>all</em> AWS API traffic
+          through it, and pays processing on every byte.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat the default route as a fallback, not a highway. Anything with a private path to the service should be taking it.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The free fix covers only two services</strong></div>
+      <div class="challenge-body">
+        <p>
+          AWS is unambiguous: <strong>there are no data processing or hourly charges for using
+          gateway endpoints</strong>. They are free. They are also available for exactly two
+          services &mdash; <strong>Amazon S3 and DynamoDB</strong> &mdash; and they work by adding
+          a prefix-list route to your route tables rather than by using PrivateLink at all.
+        </p>
+        <p>
+          This is the single highest-return change available, and it is skipped constantly, because
+          nothing breaks without it. Traffic still works. It just costs money.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Add gateway endpoints for S3 and DynamoDB to every VPC, in every account, as a baseline. There is no cost case to make.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Interface endpoints are billed per Availability Zone</strong></div>
+      <div class="challenge-body">
+        <p>
+          For everything else &mdash; ECR, CloudWatch Logs, SSM, Secrets Manager, STS, KMS &mdash;
+          the private path is an interface endpoint, and those are billed. You pay for
+          <strong>each hour the endpoint remains provisioned in each Availability Zone</strong>,
+          plus data processing at <strong>$0.01 per GB</strong> for the first petabyte each month,
+          falling to $0.006 and then $0.004 per GB at higher volumes.
+        </p>
+        <p>
+          The per-AZ part is what surprises people. One endpoint across three AZs is billed as
+          three. Ten services across three AZs is thirty hourly charges, in every VPC that needs
+          them. A change made to save money can comfortably fail to.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Count endpoints as services &#215; AZs &#215; VPCs before committing. Below a traffic threshold, NAT processing is genuinely cheaper.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>Gateway endpoints do not work from on-premises</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the constraint that reshapes hybrid designs, and AWS states it plainly. In its
+          own comparison table, gateway endpoints <strong>&#8220;do not allow access from on
+          premises&#8221;</strong> and <strong>&#8220;do not allow access from another AWS
+          Region&#8221;</strong>. Interface endpoints allow both.
+        </p>
+        <p>
+          The mechanism explains the rule. A gateway endpoint is a route-table entry pointing at an
+          AWS-managed prefix list, and route tables only govern traffic originating inside the VPC.
+          Traffic arriving over Direct Connect, a VPN, or a Transit Gateway attachment never
+          consults them. It is also why traffic to the same service in a <em>different</em> Region
+          goes to the internet gateway instead: prefix lists are Region-specific.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>A hybrid estate needs an interface endpoint <em>as well as</em> the gateway endpoint, not instead of it. See the next section for why that pairing is the point.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-015-endpoint-paths.svg" alt="Diagram: three paths out of a private subnet — a NAT gateway billed hourly and per gigabyte, a free gateway endpoint limited to S3 and DynamoDB, and an interface endpoint billed per Availability Zone but reachable from on-premises — followed by the order in which the choice should be made.">
+
+    <h3>The order to make the decisions in</h3>
+    <p>
+      The three paths are not alternatives to choose between once. They are a sequence, and the
+      order matters because each step removes traffic from the step below it.
+    </p>
+    <p>
+      <strong>First, gateway endpoints for S3 and DynamoDB.</strong> Free, no data processing, no
+      hourly charge. For most workloads this is the largest single block of traffic and the easiest
+      to move. There is no threshold analysis to do because there is no cost.
+    </p>
+    <p>
+      <strong>Second, interface endpoints for the chatty control-plane services.</strong> ECR pulls
+      are large and constant. CloudWatch Logs is continuous. SSM, Secrets Manager and STS are small
+      per call but relentless. These are where the per-GB comparison actually favours an endpoint:
+      $0.01 per GB against NAT's $0.045, before the hourly charges on either side.
+    </p>
+    <p>
+      <strong>Third, keep a NAT gateway for what is genuinely internet-bound.</strong> OS patching,
+      package registries, third-party APIs, webhooks. The goal was never to delete the NAT gateway.
+      It was to stop routing AWS traffic through it.
+    </p>
+
+    <h3>The pairing that makes hybrid work</h3>
+    <p>
+      If on-premises systems also need S3, the naive reading of the constraint above is that the
+      free gateway endpoint is useless and everything must move to a billed interface endpoint.
+      That is not the case, and the option that prevents it is easy to miss.
+    </p>
+    <p>
+      When you enable private DNS on an S3 interface endpoint, AWS offers
+      <strong>Enable private DNS only for inbound endpoints</strong> &mdash; and it is
+      <em>selected by default</em>. With it on, in-VPC applications keep resolving S3 to the
+      gateway endpoint, which is free, while on-premises applications reaching the VPC through an
+      inbound Resolver endpoint use the interface endpoint, which is billed. Each class of traffic
+      takes the cheapest path that can carry it, with no client changes.
+    </p>
+    <p>
+      AWS enforces the dependency: the setting requires a gateway endpoint to exist in the VPC. Set
+      it without one and the API returns
+      <code>To set PrivateDnsOnlyForInboundResolverEndpoint to true, the VPC must have a gateway
+      endpoint for the service</code>. You also cannot delete the gateway endpoint while the option
+      is selected &mdash; clear the option first.
+    </p>
+
+    <h3>What interface endpoints for S3 will not do</h3>
+    <p>
+      Before standardising on them, note the documented gaps. Interface endpoints for S3 do not
+      support FIPS endpoints, website endpoints, legacy global endpoints, or
+      <code>CopyObject</code> and <code>UploadPartCopy</code> between buckets in different Regions.
+      On the transport side they do not support TLS 1.0, TLS 1.1, <strong>TLS 1.3</strong>, or
+      hybrid post-quantum TLS. That TLS 1.3 exclusion sits oddly in the middle of the list and is
+      worth checking against your own client configuration before you find it in an incident.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The comparison is per-GB against per-AZ-hour</h3>
+    <p>
+      An interface endpoint is not automatically cheaper than a NAT gateway, and pretending
+      otherwise is how these projects disappoint. The endpoint replaces a $0.045 per-GB charge with
+      a $0.01 per-GB charge plus a fixed hourly charge in every AZ it lives in. The saving is
+      $0.035 per GB, and it has to cover those hourly charges before it is a saving at all.
+    </p>
+    <p>
+      That makes traffic volume the deciding variable, per service. A service pulling terabytes
+      through NAT pays for its endpoint many times over. A service making a few thousand small API
+      calls a month may never break even, and is better left on the NAT path. The instinct to
+      &#8220;endpoint everything&#8221; produces a longer bill, not a shorter one.
+    </p>
+
+    <h3>Partial hours round up, everywhere</h3>
+    <p>
+      AWS bills <strong>each partial NAT gateway-hour as a full hour</strong>. The same
+      provisioned-hour model applies to interface endpoints per AZ. Neither is metered by the
+      second, so short-lived environments &mdash; ephemeral test VPCs, per-branch preview stacks,
+      anything torn down and rebuilt through the day &mdash; pay disproportionately. In those
+      environments the right answer is often a single shared NAT gateway and no endpoints, which
+      inverts the production recommendation entirely.
+    </p>
+
+    <h3>Routing is longest-prefix, so the endpoint quietly wins</h3>
+    <p>
+      A gateway endpoint adds a prefix-list route, and AWS resolves conflicts by longest prefix
+      match. With a <code>0.0.0.0/0</code> route to an internet gateway or NAT gateway in the same
+      table, the endpoint route is more specific and takes precedence for that service in that
+      Region. You do not need to remove the default route, and nothing needs reconfiguring at the
+      application layer.
+    </p>
+    <p>
+      The corollary is that this is invisible. Adding the endpoint changes the bill and not the
+      behaviour, so there is no signal that it worked and no signal when someone removes it. Verify
+      with cost data or VPC flow logs, not by whether the application still functions &mdash; it
+      will either way.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>S3 and DynamoDB from inside the VPC</td>
+            <td>Gateway endpoint, always</td>
+            <td>No hourly charge and no data processing charge. There is no volume at which this loses.</td>
+          </tr>
+          <tr>
+            <td>S3 from on-premises</td>
+            <td>Interface endpoint, plus keep the gateway endpoint</td>
+            <td>Gateway endpoints do not allow access from on premises. Private DNS for inbound endpoints only keeps in-VPC traffic free.</td>
+          </tr>
+          <tr>
+            <td>High-volume services (ECR, CloudWatch Logs)</td>
+            <td>Interface endpoint</td>
+            <td>$0.01 per GB against $0.045 per GB clears the per-AZ hourly charge quickly at scale.</td>
+          </tr>
+          <tr>
+            <td>Low-volume services</td>
+            <td>Leave on the NAT path</td>
+            <td>Per-AZ hourly charges apply whether the endpoint carries one gigabyte or none.</td>
+          </tr>
+          <tr>
+            <td>Ephemeral or short-lived VPCs</td>
+            <td>Shared NAT gateway, minimal endpoints</td>
+            <td>Both models bill provisioned hours and round partial hours up, which punishes short lifetimes.</td>
+          </tr>
+          <tr>
+            <td>Genuine internet egress</td>
+            <td>Keep the NAT gateway</td>
+            <td>Endpoints reach AWS services only. Patching and third-party APIs still need a route out.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The audit that pays for itself</h3>
+    <p>
+      Enable VPC flow logs on the private subnets and group accepted traffic by destination prefix
+      list. The output ranks, in bytes, exactly which AWS services are currently paying NAT
+      processing. That ranking <em>is</em> the endpoint backlog, ordered by return, and it usually
+      shows two or three services carrying most of the cost. Do those, measure, and stop &mdash;
+      the tail is where endpoint charges start exceeding the traffic they displace.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Nobody designs a NAT gateway bill. It accumulates from a default route that was correct when
+      the VPC had one workload in it, and it grows quietly because nothing ever breaks. The traffic
+      flows, the applications work, and the only symptom is a line item that looks like
+      infrastructure rather than a decision.
+    </p>
+    <p>
+      The fix is not a migration. It is two gateway endpoints that cost nothing, a short list of
+      interface endpoints chosen on measured volume rather than instinct, and a NAT gateway kept
+      deliberately for the traffic that actually needs the internet. What makes it worth doing
+      carefully is that the wrong version &#8212; endpoints everywhere, in every AZ, in every VPC
+      &#8212; produces a bill that is larger than the one you set out to reduce, and it is just as
+      invisible.
+    </p>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/privatelink/gateway-endpoints.html" target="_blank" rel="noopener">Gateway endpoints &#8212; AWS PrivateLink Guide</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/privatelink-interface-endpoints.html" target="_blank" rel="noopener">AWS PrivateLink for Amazon S3 &#8212; Amazon S3 User Guide</a></li>
+      <li><a href="https://aws.amazon.com/privatelink/pricing/" target="_blank" rel="noopener">AWS PrivateLink pricing</a></li>
+      <li><a href="https://aws.amazon.com/vpc/pricing/" target="_blank" rel="noopener">Amazon VPC pricing &#8212; NAT gateway</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/working-with-aws-managed-prefix-lists.html" target="_blank" rel="noopener">AWS-managed prefix lists &#8212; Amazon VPC User Guide</a></li>
+    </ul>
+  </div>
