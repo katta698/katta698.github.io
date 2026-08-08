@@ -286,7 +286,7 @@ CHATGPT_MARKERS = [
 # At 3 the series label evicted the most specific tag, and the Kubernetes pill
 # disappeared entirely because its only three posts were all in the series.
 MAX_TAGS = 4
-CATEGORY_ORDER = ["All", "AWS Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "30 Days of AWS Terraform", "AWS", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
+CATEGORY_ORDER = ["All", "AWS Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS Weekly Intelligence", "30 Days of AWS Terraform", "AWS", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
 
 NAV_SVG = """<svg width="30" height="30" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
   <rect width="80" height="80" rx="16" fill="#11140F"/>
@@ -1259,16 +1259,33 @@ def build_index_page(posts):
                    _re.sub(r'^AWS Daily Intelligence\s*#\d+\s*[-–—]\s*', '', p["title"]))
         for p in sorted(daily_posts, key=_daily_num, reverse=True)[:3]
     ]
+    # Weekly Intelligence — titles read "AWS Weekly Intelligence #N - 3-9 August
+    # 2026". Same #N convention as the daily series. Note the slug deliberately
+    # avoids the pattern "week-<digits>", which _week_num() above matches when
+    # numbering Weekly Lab posts.
+    weekly_posts = [p for p in posts if "AWS Weekly Intelligence" in p["tags"]]
+
+    def _weekly_num(p):
+        m = _re.search(r'#(\d+)', p["title"])
+        return int(m.group(1)) if m else 0
+
+    _weekly_feed = [
+        _feed_item(p, _weekly_num(p) or None,
+                   _re.sub(r'^AWS Weekly Intelligence\s*#\d+\s*[-–—]\s*', '', p["title"]))
+        for p in sorted(weekly_posts, key=_weekly_num, reverse=True)[:3]
+    ]
     _all_feed = [_feed_item(p) for p in posts[:3]]
 
     feed_data_json = json.dumps({
-        "arch":  {"items": _arch_feed,  "count": len(arch_posts),
-                  "href": "/blog/?tag=aws+architecture+series"},
-        "lab":   {"items": _lab_feed,   "count": len(lab_posts),
-                  "href": "/blog/?tag=aws+weekly+lab"},
-        "daily": {"items": _daily_feed, "count": len(daily_posts),
-                  "href": "/blog/?tag=aws+daily+intelligence"},
-        "all":   {"items": _all_feed,   "count": len(posts), "href": "/blog/"},
+        "arch":   {"items": _arch_feed,   "count": len(arch_posts),
+                   "href": "/blog/?tag=aws+architecture+series"},
+        "lab":    {"items": _lab_feed,    "count": len(lab_posts),
+                   "href": "/blog/?tag=aws+weekly+lab"},
+        "daily":  {"items": _daily_feed,  "count": len(daily_posts),
+                   "href": "/blog/?tag=aws+daily+intelligence"},
+        "weekly": {"items": _weekly_feed, "count": len(weekly_posts),
+                   "href": "/blog/?tag=aws+weekly+intelligence"},
+        "all":    {"items": _all_feed,    "count": len(posts), "href": "/blog/"},
     })
 
     # 4. Publishing heatmap — posts per month per year
@@ -1794,7 +1811,7 @@ def build_index_page(posts):
     <!-- ④ Latest posts feed (switchable) -->
     <div class="sidebar-card" id="series-feed-widget">
       <div class="sidebar-title">Latest posts</div>
-      <div id="sf-tabs" style="display:flex;gap:4px;margin-bottom:10px"></div>
+      <div id="sf-tabs" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px"></div>
       <div id="sf-list"></div>
       <a id="sf-all" href="/blog/" style="display:block;margin-top:10px;font-size:11.5px;color:var(--orange);text-decoration:none;text-align:right">See all posts →</a>
     </div>
@@ -1802,10 +1819,11 @@ def build_index_page(posts):
     (function(){{
       var FEEDS = {feed_data_json};
       var TABS = [
-        ['arch','Arch',   'AWS Architecture Series — one enterprise pattern at a time, with the decisions and trade-offs behind it'],
-        ['lab','Lab',     'AWS Weekly Lab — one production-grade platform capability built end to end each week'],
-        ['daily','Daily', 'AWS Daily Intelligence — what AWS shipped, and whether it actually changes anything'],
-        ['all','All',     'Every post, newest first, across all series and topics']
+        ['arch','Arch',     'AWS Architecture Series — one enterprise pattern at a time, with the decisions and trade-offs behind it'],
+        ['lab','Lab',       'AWS Weekly Lab — one production-grade platform capability built end to end each week'],
+        ['daily','Daily',   'AWS Daily Intelligence — what AWS shipped, and whether it actually changes anything'],
+        ['weekly','Weekly', 'AWS Weekly Intelligence — everything AWS shipped that week, ranked, in one place'],
+        ['all','All',       'Every post, newest first, across all series and topics']
       ];
       var list = document.getElementById('sf-list');
       var tabWrap = document.getElementById('sf-tabs');

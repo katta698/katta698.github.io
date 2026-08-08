@@ -270,6 +270,34 @@ week-11 rather than inventing per-post ids like week-12's `w12-*`.
 - Every technical claim cites official AWS documentation, and the post ends
   with an "Official AWS references" section of those links.
 
+## AWS Weekly Intelligence series
+
+The Sunday companion to the daily series: everything AWS shipped that week,
+ranked, in one post. Started 9 August 2026.
+
+- File prefix `weekly-NNN-*` in `posts/`, slug prefix `aws-weekly-intelligence-*`.
+- Labels: `[AWS, "AWS Weekly Intelligence"]`.
+- Title format: `AWS Weekly Intelligence #N - 3-9 August 2026`. The sidebar feed
+  parses `#N`, same as the daily series.
+- Published **Sunday**, covering that week's news (Mon-Fri announcements).
+- Generic sync-built pages, like the daily series.
+
+**The slug must never contain `week-<digits>`.** `_week_num()` in
+`sync_blog.py` numbers AWS **Weekly Lab** posts by matching `week-(\d+)` against
+the slug. `aws-weekly-intelligence-3-9-august-2026` is safe;
+`aws-weekly-intelligence-week-32` would be picked up as a Weekly Lab number.
+
+**`DAILY-BACKLOG.md` is the source material.** Do not re-research the week. The
+backlog already holds every item ranked each day with its importance and
+official link; the weekly post is that content written up, with the items that
+became daily posts linked rather than repeated.
+
+Structure that works: the week in one paragraph, a table of what was covered in
+depth (linking the daily posts, one line each on the detail the announcement
+omitted), then the unwritten items grouped by domain, then "What I would act
+on" — three or four items worth doing something about now, which is the part
+readers actually use.
+
 ### The backlog is part of the workflow
 
 `DAILY-BACKLOG.md` in the repo root records **every** item ranked in a daily
