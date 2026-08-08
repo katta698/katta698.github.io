@@ -18,6 +18,25 @@ approaching a week old is about to become unwritable.
 
 ---
 
+## 7 August 2026 — covered by post #6
+
+A thin day: only five qualifying items. The winner was clear, but on a day like
+this the held items above are worth re-reading before defaulting to the news.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| BGP route protection monitoring and delegated RPKI for BYOIP | VPC IPAM | **#6** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-vpc-ipam-bgp-rpki-byoip/) |
+| One-click multi-Region for new organization instances | IAM Identity Center | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-iam-identity-center-supports-one-click-multi-region-option-new-organization-instances) |
+| Backup and restore, on-demand and automated, incremental | Timestream for InfluxDB | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/07/timestream-influxdb-backup-restore/) |
+| Cognito available as a skill in the Agent Toolkit for AWS | Cognito | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-auth-agent-skill/) |
+| R8i and R8i-Flex in Europe (Milan) | EC2 | skipped | Low | — |
+
+**Worth revisiting:** the IAM Identity Center one-click item pairs naturally with
+the 29 July multi-Region directory item still open above — together they would
+make a single stronger post on Identity Center resilience than either alone.
+
+---
+
 ## 6 August 2026 — covered by post #5
 
 | Item | Service | Status | Importance | Reference |

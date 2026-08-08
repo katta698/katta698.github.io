@@ -1,0 +1,333 @@
+---
+title: 'AWS Daily Intelligence #6 - IPAM Adds BGP Route Protection and Delegated RPKI'
+date: '2026-08-08T09:00:00'
+verified: '2026-08-08'
+labels:
+- AWS
+- AWS Daily Intelligence
+slug: aws-daily-intelligence-ipam-bgp-route-protection
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Daily Intelligence &middot; 8 August 2026</div>
+  <div class="post-title">IPAM Adds BGP Route Protection and Delegated RPKI: Route Hijack Defence Without the RIR Portal</div>
+  <div class="post-subtitle">If you bring your own IP space to AWS, your protection against route hijacking depends on ROAs you created manually at your registry and probably have not looked at since. IPAM can now monitor them across every account and Region, and create and renew them for you. Two constraints decide whether this is available to you at all.</div>
+  <div class="post-meta">
+    <span>General Availability</span>
+    <span>Commercial Regions only</span>
+    <span>Advanced Tier for most of it</span>
+    <span>Announced 7 August 2026</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="toc">
+    <h3>In This Post</h3>
+    <ol>
+      <li><a href="#what-changed">What changed</a></li>
+      <li><a href="#why">Why AWS built this</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#value">Business value</a></li>
+      <li><a href="#security">Security considerations</a></li>
+      <li><a href="#cost">Cost considerations</a></li>
+      <li><a href="#operations">Operational considerations</a></li>
+      <li><a href="#tradeoffs">Tradeoffs</a></li>
+      <li><a href="#implementation">Implementation guidance</a></li>
+      <li><a href="#practices">Best practices</a></li>
+      <li><a href="#adopt">Who should adopt, who should wait</a></li>
+      <li><a href="#gotchas">Two constraints and one way to cause an outage</a></li>
+      <li><a href="#takeaways">Key takeaways</a></li>
+      <li><a href="#references">Official AWS references</a></li>
+    </ol>
+  </div>
+
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>On 7 August 2026, AWS announced general availability of BGP route protection monitoring and delegated RPKI management in Amazon VPC IPAM, for Bring Your Own IP (BYOIP) prefixes.</p>
+    <p>It has three layers. <strong>Route discovery</strong> shows every BYOIP route across accounts and Regions with its ASN, advertisement status and RPKI validity. <strong>Route protection findings</strong> evaluates each route against published ROA data and flags missing, conflicting or permissive ROAs and overlapping announcements from other ASNs. <strong>Delegated RPKI</strong> lets you authorise AWS to create and renew Route Origin Authorizations on your behalf after a one-time setup with your registry.</p>
+    <p>Available in all commercial Regions, but <strong>not GovCloud (US) and not the China Regions</strong>.</p>
+    <p>Two constraints decide whether it applies to you. Only route discovery is available on the IPAM Free Tier — <strong>findings and delegated RPKI both require the Advanced Tier</strong>, and the findings API returns <code>UnsupportedOperation</code> otherwise. And <strong>AFRINIC customers get monitoring only</strong>; delegated RPKI is not supported for them.</p>
+    <p>There is also one way to cause an outage with it, covered at the end.</p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>Some background, because this feature is meaningless without it. When you announce IP space to the internet, nothing inherently proves you are entitled to. RPKI is the system that fixes that, and a <strong>Route Origin Authorization</strong> is the signed object that does the proving: it says <em>this ASN may announce this prefix, up to this level of specificity</em>. Three attributes — CIDR, ASN, and max-length.</p>
+    <p>Networks that validate RPKI reject announcements that contradict a published ROA. If you have no ROA, they have nothing to reject, and anyone can announce your space.</p>
+    <p>Until now, if you brought your own IP space to AWS you created those ROAs by hand at your registry, and renewed them by hand before they expired.</p>
+
+    <h3>Layer 1: route discovery</h3>
+    <p>IPAM discovers all BYOIP routes across accounts and Regions and shows prefix, locale, advertisement status, ASN, RPKI validity, ROA strength, route overlaps and ROA expiration in one dashboard. Available via <code>get-ipam-discovered-routes</code>.</p>
+
+    <h3>Layer 2: route protection findings</h3>
+    <p>IPAM evaluates each discovered route against published ROA data and surfaces findings through <code>get-ipam-route-protection-findings</code>. A finding carries <code>RpkiStatus</code>, <code>RpkiStrength</code>, the matching <code>Roas</code> with their <code>MaxLength</code> and <code>Expiration</code>, and any <code>RouteOverlaps</code> with the offending ASN and a detection timestamp.</p>
+
+    <h3>Layer 3: delegated RPKI</h3>
+    <p>After a one-time delegation with your registry, AWS creates ROAs when you provision a CIDR, renews them before expiry, and can manage ROAs for on-premises prefixes you have not brought to AWS at all. AWS describes the outcome as going from per-prefix registry portal logins to "zero manual ROA operations".</p>
+
+    <h3>Strict versus permissive</h3>
+    <p>The distinction that matters most, and the one the dashboard reports on:</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Type</th><th>Max-length</th><th>Effect</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Strict</strong></td><td>Equals the prefix length</td><td>Only that exact prefix is valid from the authorised ASN. Any more-specific announcement, from any ASN, is RPKI-invalid. <strong>AWS's recommended default.</strong></td></tr>
+        <tr><td><strong>Permissive</strong></td><td>Longer than the prefix</td><td>The authorised ASN may announce more-specific subnets and they are valid too. Useful for traffic engineering, weaker against sub-prefix hijacking.</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why AWS built this</h2>
+    <p>AWS is unusually blunt about the problem in its own documentation: customers "either use their RIR's hosted portal or run open-source tools like Krill to operate their own RPKI certificate authority", and "many customers skip ROA creation entirely or create them once and forget to renew."</p>
+    <p>That is the real state of affairs. The reasons are structural rather than careless:</p>
+    <ul>
+      <li><strong>The work happens outside AWS.</strong> ROAs live at ARIN, RIPE, APNIC or LACNIC. Nothing in your AWS tooling knows they exist, so they fall outside every review, dashboard and IaC pipeline you have.</li>
+      <li><strong>Expiry is silent and undated in your systems.</strong> A ROA expires and the prefix quietly stops being protected. Traffic keeps flowing. There is no alarm because nothing you own is tracking it.</li>
+      <li><strong>It scales badly.</strong> Dozens or hundreds of ROAs, each with its own expiry, across multiple registries if you hold space in several regions.</li>
+      <li><strong>Detection needed a third tool.</strong> Knowing someone was announcing your space meant subscribing to an external BGP monitoring service.</li>
+    </ul>
+    <p>Bringing ROA state into IPAM — where your address inventory already lives — puts it inside the boundary your team actually looks at.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>The three layers build on each other, and each works independently. You can start with monitoring, understand your posture, and add delegation later without disrupting existing routes.</p>
+
+    <img src="/blog/assets/diagrams/daily-006-ipam-bgp-route-protection.svg" alt="Diagram: IPAM BGP route protection has three layers — route discovery on the Free Tier, then route protection findings and delegated RPKI which both require the Advanced Tier. The lower panel shows the four states that fail silently without it: no ROA, a permissive ROA, an expired ROA, and an undetected route overlap.">
+
+    <h3>The tier boundary is the first design decision</h3>
+    <p>This is where most evaluations will end, so it belongs before anything else:</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Capability</th><th>Free Tier</th><th>Advanced Tier</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Route discovery (view routes)</td><td>Yes</td><td>Yes</td></tr>
+        <tr><td>Route protection findings (RPKI status, overlaps)</td><td>No</td><td>Yes</td></tr>
+        <tr><td>Delegated RPKI (automated ROA management)</td><td>No</td><td>Yes</td></tr>
+        <tr><td>On-premises ROA management</td><td>No</td><td>Yes</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>On the Free Tier you can list your routes and nothing more. <code>get-ipam-route-protection-findings</code> returns an <code>UnsupportedOperation</code> error. So "can I see whether my prefixes are protected?" is an Advanced Tier question, and the answer costs money before you learn anything.</p>
+
+    <h3>Delegation changes how provisioning works</h3>
+    <p>Once an Internet Registry Association is active, BYOIP provisioning is materially different. You no longer prove ownership with a signed message, because AWS verifies it against the association:</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Step</th><th>Without delegated RPKI</th><th>With delegated RPKI</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Authorization context</td><td>Signed message required</td><td><code>Message="CoveredByInternetRegistryAssociation"</code>, empty signature</td></tr>
+        <tr><td>Ownership validation</td><td>WHOIS or DNS TXT record</td><td>Verified against association CIDRs</td></tr>
+        <tr><td>ROA creation</td><td>Manual, at the registry, before advertising</td><td>Automatic on provisioning</td></tr>
+        <tr><td>ROA renewal</td><td>Manual, before expiry</td><td>Automatic</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>AWS creates <strong>strict</strong> ROAs matching the pool's locale and ASN. Worth pausing on if you hold a large block: the long-standing manual BYOIP guidance tells you to set max-length to <code>/24</code> for IPv4 so you can split the block across Regions, which is permissive for anything shorter than a /24. Automatic strict ROAs are the safer default but a different shape from what the manual instructions produce. If you bring a /20 and rely on splitting it, confirm the resulting ROAs match your advertisement plan before you rely on them.</p>
+
+    <h3>On-premises prefixes get the same treatment</h3>
+    <p>A <strong>routing policy registration</strong> covers IP space you have not brought to AWS: a prefix plus a list of ASNs, mapping to one ROA per ASN. That makes IPAM a control plane for your whole address estate, not just the part running in AWS — which is a bigger claim than the announcement makes.</p>
+  </div>
+
+  <div class="section" id="value">
+    <h2>Business value</h2>
+    <p><strong>A silent risk becomes a visible one.</strong> The honest value is not automation, it is discovery. Most organisations do not know their current RPKI posture. A dashboard showing Valid, Invalid and Unknown across every prefix answers a question most teams cannot answer today.</p>
+    <p><strong>Expiry stops being a memory test.</strong> Auto-renewal removes an entire class of incident whose root cause is "nobody had a calendar reminder from 2023".</p>
+    <p><strong>One fewer external dependency.</strong> Route hijack detection previously meant a third-party monitoring subscription. Overlap detection is now part of the platform holding your address inventory.</p>
+    <p><strong>Provisioning gets simpler.</strong> No X.509 certificate, no RDAP record edit, no signed authorization message, no waiting up to 24 hours for a manually created ROA to propagate before you can advertise.</p>
+    <p><strong>On-premises space comes along.</strong> Routing policy registrations cover prefixes that never touch AWS, which is unusual scope for an AWS feature and worth noting if you are consolidating address management.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p><strong>This is a hijack-mitigation control, and it is partial by nature.</strong> ROAs only help against networks that perform RPKI validation. A validating network rejects an invalid announcement; a non-validating one still accepts it. Adoption is broad but not universal, so a correct ROA reduces the blast radius of a hijack rather than preventing it. Do not present this internally as making hijacking impossible.</p>
+    <p><strong>Permissive ROAs are the quiet weakness.</strong> A permissive ROA is RPKI-valid, so a dashboard that only reported validity would show green. AWS's own framing is precise: with a permissive ROA, an attacker who compromises your ASN credentials can announce more-specific prefixes that are <em>also valid</em>, splitting your traffic. That is why ROA strength is reported separately from validity, and why it is worth looking at.</p>
+    <p><strong>Delegation is a real trust decision.</strong> You are authorising AWS to publish signed objects that assert who may announce your address space. That is appropriate for space you use on AWS. Think harder about it for on-premises prefixes via routing policy registrations, where AWS is not otherwise in the path.</p>
+    <p><strong>Whoever can call these APIs can change your routing security posture.</strong> <code>create-ipam-routing-policy-registration</code> and <code>batch-modify-ipam-routing-policy-registrations</code> alter which ASNs are authorised to announce your prefixes. Scope those permissions to network administration, not to general IPAM read access.</p>
+    <p><strong>Existing ASN authorisations must survive the change.</strong> Long-standing AWS guidance is that when migrating advertisements from on-premises to AWS you create a ROA for your existing ASN <em>before</em> creating ROAs for Amazon's ASNs, or you risk impacting current routing. The same ordering logic applies when handing management to AWS.</p>
+    <p><strong>AWS reserves the right to stop advertising non-compliant space.</strong> Documented plainly in the BYOIP prerequisites: if your ROAs are invalid or non-compliant, Amazon may stop advertising your range. Correct ROAs are an availability dependency, not only a security nicety.</p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p><strong>The cost is the Advanced Tier, and AWS did not publish rates in the announcement.</strong> Pricing is on the IPAM tab of the VPC pricing page; verify it for your Region before modelling, because everything except route discovery sits behind that tier.</p>
+    <p><strong>Model it against what it replaces, not from zero.</strong> If you already pay for third-party BGP monitoring, or run your own RPKI certificate authority such as Krill, this consolidates that spend and that operational load. If you do neither today, this is new spend buying visibility you currently do not have — a real benefit, but a different conversation with a budget holder.</p>
+    <p><strong>The tier is IPAM-wide, not per-prefix.</strong> Advanced Tier affects your whole IPAM deployment, so the decision is bigger than route protection and should be taken against everything the tier includes.</p>
+    <p><strong>Monitoring first is a legitimate way to size the case.</strong> AWS explicitly supports starting with discovery and adding delegation later. Route discovery on the Free Tier tells you how many BYOIP prefixes you actually have and where, which is the input to any cost model — even though it will not tell you whether they are protected.</p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p><strong>Setup is a genuine two-party exchange, not a console toggle.</strong> You call <code>create-ipam-internet-registry-association</code>, wait for state <code>pending-enable</code>, take the resulting <code>ChildRequestXml</code> to your registry portal, submit the delegation request, then extract <code>RpkiVersion</code>, <code>ServiceUri</code>, <code>ChildHandle</code>, <code>ParentHandle</code> and <code>ParentBpkiTa</code> from the registry's response and pass them to <code>enable-ipam-internet-registry-association</code>. Budget for registry turnaround.</p>
+    <p><strong>Alarm on ROA expiry even with auto-renewal.</strong> IPAM publishes a <code>RoaExpiration</code> metric to the <code>AWS/IPAM</code> namespace, in days remaining, with dimensions <code>Cidr</code>, <code>RoaPrefix</code>, <code>Asn</code> and <code>MaxLength</code>. Alarm when it drops <em>to or below</em> a threshold. Metrics publish to the global IPAM account, so create the alarm in that account and Region.</p>
+    <p><strong>Batch changes are atomic, single changes are not obviously safe.</strong> <code>batch-modify-ipam-routing-policy-registrations</code> succeeds or fails as a unit, with no partial application. A registration change that would invalidate existing routes fails, and <code>--force</code> overrides that check. Treat <code>--force</code> here as the routing equivalent of a force push.</p>
+    <p><strong>The filter names do not match the returned fields.</strong> AWS documents this quirk directly: you filter on <code>account-id</code> but the response returns <code>ResourceOwnerId</code>, and you filter on <code>byoip-cidr-state</code> but the field is <code>State</code>. ROA strength is not filterable at all, so finding permissive ROAs means pulling findings and filtering client-side.</p>
+    <p><strong>LACNIC works, with a caveat.</strong> Delegated RPKI is supported, but automatic CIDR discovery and ROA pre-creation are not available during initial setup, so expect more manual work at the start.</p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <p><strong>Against your registry's hosted portal.</strong> The portal is free and you already have it. It gives no cross-account view, no overlap detection, no expiry alarms and no automation. If you hold a handful of prefixes and renew reliably, the portal is sufficient and this is convenience.</p>
+    <p><strong>Against running your own RPKI CA.</strong> Krill and similar give complete control and work regardless of cloud provider. AWS says plainly that if you already run a mature CA with full automation, delegated RPKI duplicates it — though the dashboard may still add central visibility. Do not dismantle a working CA for this.</p>
+    <p><strong>Against third-party BGP monitoring.</strong> Dedicated services generally see more of the global routing table and alert on more than prefix overlap. IPAM's advantage is that it sits next to your address inventory and covers what you own. For a serious hijack-response capability, IPAM is a complement rather than a replacement.</p>
+    <p><strong>Against doing nothing.</strong> Worth stating, because it is the actual status quo for many. Doing nothing is defensible only if your prefixes are not advertised to the internet. If they are, the current arrangement is usually an unmonitored ROA that someone created once.</p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+
+    <h3>Prerequisites</h3>
+    <ul>
+      <li>An IPAM in the <strong>Advanced Tier</strong> for anything beyond route discovery.</li>
+      <li>One or more BYOIP prefixes provisioned to IPAM pools.</li>
+      <li>Access to your registry account: ARIN, RIPE NCC, APNIC or LACNIC. <strong>AFRINIC cannot use delegated RPKI.</strong></li>
+      <li>A commercial Region. Not available in GovCloud (US) or the China Regions.</li>
+    </ul>
+
+    <h3>Start with what costs nothing</h3>
+    <p>Route discovery works on the Free Tier and answers "what do we actually advertise?" before you spend anything:</p>
+<pre><code>aws ec2 get-ipam-discovered-routes \
+    --ipam-resource-discovery-id ipam-res-disco-0365d2977fc1672fe \
+    --resource-region us-west-2</code></pre>
+
+    <h3>Then find what is unprotected</h3>
+    <p>On the Advanced Tier, go straight to the prefixes with no ROA or a broken one:</p>
+<pre><code>aws ec2 get-ipam-route-protection-findings \
+    --ipam-id ipam-0a1b2c3d4e5f6g7h8 \
+    --filters "Name=rpki-status,Values=invalid,unknown"</code></pre>
+
+    <p>A finding tells you what you need in one object — status, strength, the ROA's max-length and expiry, and any overlapping announcement:</p>
+<pre><code>"RpkiStatus": "valid",
+"RpkiStrength": "strict",
+"Roas": [
+    { "Asn": "64512", "Prefix": "203.0.113.0/24",
+      "MaxLength": 24, "Match": true,
+      "Expiration": "2027-06-15T00:00:00Z" }
+],
+"RouteOverlaps": [
+    { "Prefix": "203.0.113.128/25", "Asn": "64513",
+      "DetectedAt": "2026-03-10T15:45:00+00:00" }
+]</code></pre>
+    <p>That <code>RouteOverlaps</code> entry is the shape of a sub-prefix hijack: a longer prefix inside yours, announced by an ASN that is not you.</p>
+
+    <h3>Alarm on expiry regardless</h3>
+<pre><code>aws cloudwatch put-metric-alarm --region us-east-1 \
+    --alarm-name "IPAM-RoaExpiration-203.0.113.0-24" \
+    --namespace "AWS/IPAM" \
+    --metric-name RoaExpiration \
+    --dimensions Name=Cidr,Value=203.0.113.0/24 Name=RoaPrefix,Value=203.0.113.0/24 \
+                 Name=Asn,Value=64512 Name=MaxLength,Value=24 \
+    --statistic Minimum --period 86400 --evaluation-periods 1 \
+    --threshold 30 --comparison-operator LessThanOrEqualToThreshold \
+    --treat-missing-data notBreaching \
+    --alarm-actions arn:aws:sns:us-east-1:123456789012:roa-expiry-notifications</code></pre>
+    <p>All four dimensions are required to target a single ROA.</p>
+  </div>
+
+  <div class="section" id="practices">
+    <h2>Best practices</h2>
+    <ol>
+      <li><strong>Run route discovery first.</strong> It is free and it tells you the size of the problem before you commit to a tier.</li>
+      <li><strong>Prefer strict ROAs</strong> unless you have a specific traffic-engineering reason for permissive. AWS recommends strict as the default.</li>
+      <li><strong>Treat permissive as a finding, not a setting.</strong> Validity alone will look green.</li>
+      <li><strong>Alarm on <code>RoaExpiration</code> even with auto-renewal.</strong> Automation that silently stops is worse than no automation.</li>
+      <li><strong>Create a ROA for your existing ASN before adding Amazon's</strong> when migrating advertisements, per long-standing BYOIP guidance.</li>
+      <li><strong>Check the deltas before batch changes</strong> and treat <code>--force</code> as a last resort.</li>
+      <li><strong>Filter findings client-side for ROA strength</strong> — the API cannot filter on it.</li>
+      <li><strong>Verify the ROAs delegation creates for large blocks</strong> match how you actually advertise, since automatic ROAs are strict.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt, who should wait</h2>
+
+    <h3>Adopt</h3>
+    <ul>
+      <li>Anyone with <strong>BYOIP prefixes advertised to the internet</strong> who cannot currently state their RPKI posture. Start with free route discovery today.</li>
+      <li>Organisations with <strong>ROAs across multiple registries</strong> and no central expiry tracking.</li>
+      <li>Teams <strong>paying for third-party BGP monitoring</strong> whose main use is watching their own prefixes.</li>
+      <li>Anyone who has <strong>skipped ROA creation</strong> because the registry process was too manual to sustain.</li>
+      <li>Teams wanting <strong>on-premises prefixes managed alongside AWS space</strong>.</li>
+    </ul>
+
+    <h3>Wait</h3>
+    <ul>
+      <li><strong>AFRINIC members</strong>. Monitoring and findings only; delegated RPKI is not supported.</li>
+      <li><strong>GovCloud (US) and China Region</strong> workloads. Not available.</li>
+      <li>Teams on the <strong>Free Tier</strong> who cannot justify Advanced Tier — you will see routes and learn nothing about their protection.</li>
+      <li>Organisations <strong>already running a mature RPKI CA</strong> with automation and monitoring. AWS says this would duplicate it.</li>
+      <li>Anyone whose <strong>BYOIP space is not advertised to the internet</strong>. No BGP announcement means no hijack risk, and AWS says so directly.</li>
+      <li>Teams using <strong>only AWS-owned IP space</strong>. AWS already manages those ROAs.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="gotchas">
+    <h2>Two constraints and one way to cause an outage</h2>
+
+    <div class="warning-box">
+      <p><strong>1. Almost all of it is Advanced Tier.</strong> The Free Tier gets route discovery and nothing else. <code>get-ipam-route-protection-findings</code> returns <code>UnsupportedOperation</code>. You can see your routes; you cannot see whether they are protected, cannot detect overlaps, and cannot delegate ROA management.</p>
+    </div>
+    <p>This matters because the announcement reads as a monitoring feature, and monitoring sounds like something you enable and look at. The part that tells you anything is paid, and the tier applies to your whole IPAM deployment.</p>
+
+    <div class="warning-box">
+      <p><strong>2. AFRINIC members cannot use delegated RPKI at all.</strong> Route discovery and findings work; ROA automation does not. LACNIC is supported but without automatic CIDR discovery or ROA pre-creation during initial setup.</p>
+    </div>
+    <p>If your address space is registered in Africa, the automation half of this launch is unavailable, and no amount of configuration changes that. Worth checking before building a plan around it.</p>
+
+    <div class="warning-box">
+      <p><strong>3. Deleting an Internet Registry Association removes every AWS-managed ROA under it.</strong> AWS flags this as an Important note in the cleanup procedure: make sure your routes have alternative ROA coverage before you disassociate.</p>
+    </div>
+    <p>This is the one that turns a tidy-up into an incident. Removing the association strips the ROAs, the prefixes fall to RPKI status <em>Unknown</em>, and validating networks lose any basis to distinguish your announcement from someone else's. Traffic does not stop — which is exactly why it will not be noticed. The prefixes simply become unprotected, and stay that way until somebody looks.</p>
+    <p>Handle disassociation as a change with a rollback plan: create replacement ROAs at the registry first, confirm they have propagated, and only then remove the association. AWS notes elsewhere that a manually created ROA can take up to 24 hours to become visible, so this is not a same-hour operation.</p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ol>
+      <li>Three independent layers: route discovery, route protection findings, and delegated RPKI. You can adopt them in order.</li>
+      <li><strong>Only route discovery is on the Free Tier.</strong> Findings and delegation require the Advanced Tier, which applies IPAM-wide.</li>
+      <li><strong>AFRINIC cannot use delegated RPKI.</strong> LACNIC can, without automatic CIDR discovery or ROA pre-creation during setup.</li>
+      <li>Commercial Regions only — <strong>not GovCloud (US), not China</strong>.</li>
+      <li><strong>Strict ROAs are the recommended default</strong>; permissive ROAs stay RPKI-valid while allowing sub-prefix announcements.</li>
+      <li>With delegation, provisioning uses <code>Message="CoveredByInternetRegistryAssociation"</code> with an empty signature and no WHOIS or DNS validation, and ROAs are created strict.</li>
+      <li>Routing policy registrations extend ROA management to <strong>on-premises prefixes</strong> never brought to AWS.</li>
+      <li>Alarm on the <code>RoaExpiration</code> metric in <code>AWS/IPAM</code>, in the global IPAM account, with all four dimensions specified.</li>
+      <li><strong>Deleting an Internet Registry Association deletes its ROAs.</strong> Arrange replacement coverage first.</li>
+      <li>Pricing was not published in the announcement. Check the IPAM tab on the VPC pricing page.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-vpc-ipam-bgp-rpki-byoip/">Amazon VPC IPAM now supports BGP route protection monitoring</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/ipam/monitor-bgp-route-security.html">Monitor BGP route protection</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/ipam/tutorials-byoip-bgp-security.html">Tutorial: Set up delegated RPKI for BYOIP prefixes</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/ipam/tutorials-byoip-ipam.html">Tutorial: Bring your IP addresses to IPAM</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/prepare-for-byoip.html">Prerequisites for BYOIP in Amazon EC2</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-byoip.html">Bring your own IP addresses (BYOIP) to Amazon EC2</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/ipam/cloudwatch-ipam.html">Monitor IPAM with Amazon CloudWatch</a></li>
+      <li><a href="https://docs.aws.amazon.com/cli/latest/reference/ec2/get-ipam-route-protection-findings.html">get-ipam-route-protection-findings, AWS CLI Reference</a></li>
+      <li><a href="https://docs.aws.amazon.com/cli/latest/reference/ec2/create-ipam-internet-registry-association.html">create-ipam-internet-registry-association, AWS CLI Reference</a></li>
+      <li><a href="https://aws.amazon.com/vpc/pricing/">Amazon VPC pricing (IPAM tab)</a></li>
+      <li><a href="https://aws.amazon.com/blogs/networking-and-content-delivery/how-aws-is-helping-to-secure-internet-routing/">How AWS is helping to secure internet routing</a></li>
+    </ul>
+  </div>
+
+  <div class="post-footer">
+    <p>AWS Daily Intelligence tracks meaningful AWS changes from official sources and explains what they mean for enterprise architecture.</p>
+    <p>Every technical claim in this post is sourced from the AWS documentation linked above. Feature status: General Availability, announced 7 August 2026.</p>
+  </div>
+
+</div>
+</div>
