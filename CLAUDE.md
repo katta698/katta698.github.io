@@ -279,13 +279,63 @@ ranked, in one post. Started 9 August 2026.
 - Labels: `[AWS, "AWS Weekly Intelligence"]`.
 - Title format: `AWS Weekly Intelligence #N - 3-9 August 2026`. The sidebar feed
   parses `#N`, same as the daily series.
-- Published **Sunday**, covering that week's news (Mon-Fri announcements).
+- Published **Saturday**, titled with the news window it covers, which is
+  Monday to Friday (`3-7 August 2026`).
+
+**Saturday is deliberate and it removes a failure mode.** AWS publishes Monday
+to Friday, so by Saturday morning the week is closed and the inventory cannot
+be invalidated by something landing after publication. A Sunday post titled with
+the full calendar week would claim a range that had not finished. Title the post
+with the news window, not the calendar week.
+
+**Scope by news date, not publish date, and reconcile the difference.** The
+daily series runs a day behind the news &mdash; a post published Tuesday covers
+Monday's announcement. So the set of posts published in a week is not the set of
+announcements made in that week. Scope the roundup's news sections by
+announcement date, but check which dailies published during the week and account
+for any that fall outside the window, rather than leaving them orphaned. Daily
+#1 published Monday 3 August covering a 30 July announcement, and is linked
+separately in the first roundup for exactly this reason.
+
+**Do not write about the weekend being empty.** Check the feed for Saturday
+items before publishing and include any that exist — but if there are none, say
+nothing. A callout explaining an absence is process commentary, not news, and it
+draws attention to a non-issue. "Across five working days" in the subtitle
+carries it.
+
+**Build the inventory with the scripts, never by hand or by asking a model to
+read the feed.** `scripts/fetch_week.py` parses the raw RSS;
+`scripts/build_weekly_inventory.py` generates the inventory HTML with AWS's own
+one-line summaries and validates every link, exiting non-zero if any fails.
+Model summarisation of the feed silently drops items — it missed 24 of 66
+announcements in the week of 3-7 August 2026, a third of the week, with no
+error. The completeness promise this series makes to readers depends entirely
+on not doing it that way again.
 - Generic sync-built pages, like the daily series.
 
 **The slug must never contain `week-<digits>`.** `_week_num()` in
 `sync_blog.py` numbers AWS **Weekly Lab** posts by matching `week-(\d+)` against
 the slug. `aws-weekly-intelligence-3-9-august-2026` is safe;
 `aws-weekly-intelligence-week-32` would be picked up as a Weekly Lab number.
+
+### Never repeat an announcement, but do follow up on a real one
+
+Each roundup covers a **distinct date range** and its inventory comes straight
+from the feed for those dates, so the same announcement cannot appear in two
+weeklies. Keep it that way:
+
+- **Scope the analysis sections to that week's announcements only.** Do not pull
+  a still-`open` item from a previous week into a later roundup to pad it out.
+  The backlog is a queue for *daily* deep-dives, not a source of weekly filler.
+- **A genuine follow-up is not a repeat.** When AWS re-announces something —
+  a Preview reaching GA, a limit raised again, a feature reaching new Regions —
+  that is a new announcement with its own date and URL, and it belongs in that
+  week's roundup. Network Firewall Forward Proxy, currently Preview in one
+  Region, is the standing example: cover it again on GA.
+- **A quiet week stays quiet.** If a week produced little, publish little. If it
+  produced nothing, publish nothing. Do not manufacture a roundup out of old
+  items to keep the cadence — an empty week is information, and padding destroys
+  the reason to trust the page.
 
 **`DAILY-BACKLOG.md` is the source material.** Do not re-research the week. The
 backlog already holds every item ranked each day with its importance and

@@ -115,6 +115,7 @@ Re-rank it on GA.
 | 15 new resource types; auto-recorded if recording all types | Config | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-config-new-resource-types) |
 | Max account quota visible in Service Quotas — us-east-1 only | Organizations | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-organizations/) |
 | Miggo Security managed rule groups for AI/ML apps | WAF | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/07/aws-waf-miggo-managed-rule-groups) |
+| I7i in Thailand and Tel Aviv; GameLift Streams stream URLs; SageMaker Unified Studio Teradata connector; Transform Windows offline schema transformation; Context Ontology Accelerator | EC2, GameLift, SageMaker, AWS Transform | skipped | Low | — |
 
 **Worth revisiting:** ECR's 200 GB layers has a sharp asymmetry worth a post —
 Docker push reaches 200 GB while the SDK/CLI `UploadLayerPart` path stays at
