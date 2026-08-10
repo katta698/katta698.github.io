@@ -1,0 +1,287 @@
+---
+title: 'AWS Architecture Series #17 — Step Functions Standard vs Express: The Type You Cannot Change Later'
+date: 2026-08-10
+slug: aws-architecture-step-functions-standard-express
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-08-10'
+problem: "A team moves a workflow to Express to cut a $250 monthly bill to about a dollar, and starts seeing duplicate downstream writes and steps that silently never ran."
+builds: "A choice made on execution semantics first and cost second: exactly-once Standard for non-idempotent work, Express only where every step is genuinely safe to repeat, and the type decided before the state machine exists rather than after."
+catch: "The workflow type cannot be updated after creation. Express also drops the .sync and callback integration patterns, Distributed Map and Activities — so the migration is often blocked by capability, not just by semantics."
+---
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      An order-processing workflow runs about a million times a month. Ten states each: validate,
+      reserve stock, charge the card, write the ledger entry, emit an event, and so on. The Step
+      Functions line on the bill is around <strong>$250</strong>, and somebody notices that Express
+      Workflows would do the same million runs for roughly <strong>a dollar</strong>.
+    </p>
+    <p>
+      That is not a rounding error, and the instinct to move is correct arithmetic. The team
+      switched. Within a fortnight they had duplicate ledger entries, a payment charged twice, and
+      a handful of orders where a step appeared to have simply not happened.
+    </p>
+    <p>
+      Nothing was misconfigured. Express Workflows were doing exactly what AWS documents them to
+      do. The mistake was treating the two types as the same product at different price points,
+      when the price difference <em>is</em> the difference in guarantees.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Standard is exactly-once. Express is not.</strong></div>
+      <div class="challenge-body">
+        <p>
+          Standard Workflows follow an <strong>exactly-once</strong> model, which AWS describes as
+          tasks and states never running more than once unless you specify <code>Retry</code>. That
+          is what makes them suitable for <strong>non-idempotent</strong> actions &#8212; the
+          documentation names starting an EMR cluster and processing payments specifically.
+        </p>
+        <p>
+          Asynchronous Express Workflows use an <strong>at-least-once</strong> model, so an
+          execution <em>could potentially run more than once</em>. Charging a card is the textbook
+          example of something that must not.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Ask whether every step is safe to repeat before looking at the price. If any step is not, the answer is Standard.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Synchronous Express is at-most-once, which is worse than it sounds</strong></div>
+      <div class="challenge-body">
+        <p>
+          The synchronous variant looks like the safe middle ground: it waits for completion and
+          returns the result, so it feels transactional. Its guarantee is
+          <strong>at-most-once</strong> &#8212; and AWS is explicit that
+          <strong>workflows don't restart if an exception occurs</strong>.
+        </p>
+        <p>
+          At-least-once fails loudly: you get duplicates, and duplicates are visible. At-most-once
+          fails silently: the work does not happen, the caller gets an error, and unless something
+          reconciles afterwards nobody finds out. Those are opposite failure modes and they need
+          opposite compensating designs.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat synchronous Express as best-effort. If the caller cannot safely retry the whole thing, it is the wrong tool.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Express drops the integration patterns that make orchestration worth having</strong></div>
+      <div class="challenge-body">
+        <p>
+          Express Workflows <strong>do not support Job-run (<code>.sync</code>) or Callback
+          (<code>.waitForTaskToken</code>) service integration patterns</strong>. The first is how
+          you wait for an EMR job or a Glue crawler to actually finish. The second is how you pause
+          for a human approval or an external callback.
+        </p>
+        <p>
+          <strong>Distributed Map</strong> and <strong>Activities</strong> are unsupported too. So
+          the migration is frequently blocked before semantics even come up: the workflow uses a
+          pattern Express does not have.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Check the state machine definition for <code>.sync</code>, <code>.waitForTaskToken</code>, Distributed Map and Activities first. It is a five-minute check that ends most of these discussions.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>The type cannot be changed afterwards</strong></div>
+      <div class="challenge-body">
+        <p>
+          AWS states it plainly: <strong>the workflow type can not be updated after you create a
+          state machine</strong>. There is no conversion, no toggle, no migration path.
+        </p>
+        <p>
+          Changing your mind means creating a new state machine, which means a new ARN, which means
+          updating every EventBridge rule, API Gateway integration, IAM policy and parent workflow
+          that referenced the old one. That is a deployment, not a setting &#8212; and it is why
+          this choice deserves more thought at creation time than it usually gets.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Decide the type when the workflow is designed, not when the bill arrives. Treat it as immutable infrastructure, because it is.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-017-workflow-semantics.svg" alt="Diagram: Standard workflows are exactly-once and run up to a year; asynchronous Express is at-least-once; synchronous Express is at-most-once and does not restart on exception. Both Express types are capped at five minutes and do not persist state between transitions. The workflow type cannot be changed after creation.">
+
+    <h3>Three guarantees, not two options</h3>
+    <p>
+      The comparison is usually framed as Standard versus Express, which hides the fact that there
+      are three distinct guarantees on offer. Standard is <strong>exactly-once</strong>.
+      Asynchronous Express is <strong>at-least-once</strong>. Synchronous Express is
+      <strong>at-most-once</strong>. Each one demands something different from the code downstream.
+    </p>
+    <p>
+      Exactly-once asks nothing: write the workflow, run it. At-least-once requires every step to be
+      idempotent &#8212; AWS gives the example of a DynamoDB <code>PUT</code>, which is safe to
+      repeat because it overwrites rather than accumulates. At-most-once requires a reconciliation
+      path, because the failure mode is work that quietly did not happen.
+    </p>
+
+    <h3>Why Standard can afford to be exactly-once</h3>
+    <p>
+      The mechanism is stated directly in the docs and it explains both the price and the limits:
+      <strong>execution state internally persists between state transitions</strong> in Standard,
+      and <strong>does not persist</strong> in either Express type.
+    </p>
+    <p>
+      Persisting state after every step is what allows a workflow to run for a year, survive a
+      failure mid-flight, be inspected step by step 89 days later, and return an idempotent response
+      when started twice with the same name. It is also why Standard is billed per state transition:
+      each transition is a durable write, and that is the unit of work being sold.
+    </p>
+    <p>
+      Express does not persist, so it cannot offer any of that &#8212; and correspondingly bills for
+      the run rather than the steps. The two pricing models are not two prices for one thing. They
+      are prices for two different things.
+    </p>
+
+    <h3>The five-minute wall, and a console trap behind it</h3>
+    <p>
+      Express Workflows run for <strong>five minutes</strong>, maximum, against Standard's
+      <strong>one year</strong>. That gap is large enough that most workflows are not near the
+      boundary and the decision is obvious. The ones that <em>are</em> near it are the dangerous
+      ones, because a workflow that fits in five minutes today can grow.
+    </p>
+    <p>
+      There is also a trap worth knowing when testing: if you run a synchronous Express workflow
+      from the console, the <code>StartSyncExecution</code> request
+      <strong>expires after 60 seconds</strong>. To get the full five minutes you have to call it
+      from the SDK or CLI. A workflow that looks like it times out at one minute in the console may
+      be perfectly healthy.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The cost gap is real, and it is the point</h3>
+    <p>
+      Take the million executions of a ten-state workflow. Standard bills every transition:
+      10,000,000 &#215; <strong>$0.000025</strong> = <strong>$250</strong>. Express bills the run
+      &#8212; <strong>$1.00 per million requests</strong> plus duration at
+      <strong>$0.0600 per GB-hour</strong>, which at 100 ms and 64 MB of memory works out under
+      twenty cents. Call it $1.20 against $250.
+    </p>
+    <p>
+      That ratio is not evidence that Standard is overpriced. It is the price of durable state
+      after every step, and it scales with the number of steps precisely because that is what is
+      being stored. The useful consequence is that <strong>Standard's cost is driven by state
+      count, not execution time</strong> &#8212; so a long, cheap workflow with few states can be
+      inexpensive, while a fast workflow with forty states is not.
+    </p>
+
+    <h3>Idempotency is the question, and it is not free either</h3>
+    <p>
+      &#8220;Make everything idempotent and use Express&#8221; is a legitimate strategy, but it is
+      engineering work, not a configuration change. It usually means threading an idempotency key
+      through every downstream call, storing seen keys somewhere with a TTL, and handling the
+      partial-failure cases where a key was recorded but the work did not complete.
+    </p>
+    <p>
+      Compare that honestly against $250 a month before committing. For a payments workflow at this
+      volume, Standard is almost certainly cheaper than the engineering time to make the alternative
+      safe &#8212; and considerably cheaper than getting it wrong once.
+    </p>
+
+    <h3>Observability is opt-in on Express, and absent by default</h3>
+    <p>
+      Standard executions can be listed and described through the Step Functions API and debugged
+      visually in the console, with history retained for <strong>90 days</strong> (reducible to 30
+      by quota request, if a compliance regime requires it).
+    </p>
+    <p>
+      For Express, <strong>execution history is not captured by Step Functions</strong> &#8212;
+      logging must be enabled through CloudWatch Logs. If you migrate and do not turn that on, you
+      have swapped a queryable 90-day history for nothing at all, and you will discover this while
+      investigating the first duplicate.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Situation</th><th>Choose</th><th>Because</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Payments, ledger writes, cluster provisioning</td>
+            <td>Standard</td>
+            <td>Non-idempotent actions need exactly-once. AWS names these cases directly.</td>
+          </tr>
+          <tr>
+            <td>High-volume ingestion, transform-and-store</td>
+            <td>Express, asynchronous</td>
+            <td>At-least-once is safe when every step overwrites rather than accumulates.</td>
+          </tr>
+          <tr>
+            <td>Request/response behind API Gateway</td>
+            <td>Express, synchronous</td>
+            <td>Returns the result to the caller — but at-most-once, so the caller must be able to retry.</td>
+          </tr>
+          <tr>
+            <td>Waiting on EMR, Glue, or a human approval</td>
+            <td>Standard, no choice</td>
+            <td><code>.sync</code> and <code>.waitForTaskToken</code> are unsupported in Express.</td>
+          </tr>
+          <tr>
+            <td>Large-scale parallel fan-out</td>
+            <td>Standard</td>
+            <td>Distributed Map is not supported in Express.</td>
+          </tr>
+          <tr>
+            <td>Anything running beyond five minutes</td>
+            <td>Standard</td>
+            <td>Five minutes is a hard ceiling, and workflows tend to grow rather than shrink.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The check that takes five minutes</h3>
+    <p>
+      Before any Standard-to-Express migration, grep the state machine definitions for
+      <code>.sync</code>, <code>.waitForTaskToken</code>, <code>DISTRIBUTED</code> map mode and
+      Activity ARNs. Any hit ends the discussion &#8212; the workflow cannot move regardless of what
+      the cost model says. Then list the downstream effects of every task state and mark each one
+      idempotent or not. If that list has a single &#8220;not&#8221; on it, the answer is Standard,
+      and you have saved yourself the fortnight this post opened with.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Step Functions presents this as a workflow <em>type</em>, which makes it sound like a
+      deployment detail. It is really a choice of execution guarantee, and the price follows from
+      the guarantee rather than the other way round. A 200&#215; cost difference between two things
+      that look interchangeable is not a discount waiting to be claimed &#8212; it is the clearest
+      possible signal that they are not interchangeable.
+    </p>
+    <p>
+      What makes it worth getting right the first time is that the type is fixed at creation. Most
+      architectural mistakes on AWS are a migration away from being fixed. This one is a new ARN and
+      every reference to it, which is enough friction that teams live with the wrong choice instead
+      &#8212; writing compensating logic around a guarantee they did not want, indefinitely.
+    </p>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/step-functions/latest/dg/choosing-workflow-type.html" target="_blank" rel="noopener">Choosing workflow type in Step Functions</a></li>
+      <li><a href="https://aws.amazon.com/step-functions/pricing/" target="_blank" rel="noopener">AWS Step Functions pricing</a></li>
+      <li><a href="https://docs.aws.amazon.com/step-functions/latest/dg/integrate-services.html" target="_blank" rel="noopener">Integrating services with Step Functions</a></li>
+      <li><a href="https://docs.aws.amazon.com/step-functions/latest/dg/state-map-distributed.html" target="_blank" rel="noopener">Distributed Map state</a></li>
+      <li><a href="https://docs.aws.amazon.com/step-functions/latest/dg/cw-logs.html" target="_blank" rel="noopener">Logging using CloudWatch Logs</a></li>
+    </ul>
+  </div>
