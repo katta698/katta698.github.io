@@ -260,6 +260,15 @@ as a raw code block. Do not author diagrams in mermaid.
   the picture.
 - **SVG is XML.** No named entities beyond the XML five (`&#8212;`, not
   `&mdash;`) or the file fails to render, silently and completely.
+- **`<text>` does not wrap.** A line longer than the canvas does not reflow —
+  it runs off the edge and is clipped, with no error. Break prose into one
+  `<text>` per line yourself and grow the box and `viewBox` to match. At the
+  house sizes (10.5px body text starting at x=44 on an 860px canvas) the
+  practical ceiling is about **120 characters per line**.
+  `python scripts/validate_diagrams.py` estimates the width of every line and
+  fails on anything that overruns; it also runs automatically as part of
+  `validate_arch_post.py`. Five diagrams shipped broken before it existed —
+  arch-014's worst line ran to 1311px on an 860px canvas.
 
 Why a file rather than inline SVG: `clean_html()` strips the `style` attribute
 off inline SVG, so an inline diagram loses its own sizing. An `<img>` is never

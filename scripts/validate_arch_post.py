@@ -169,6 +169,22 @@ def check_svg(slug, src):
     if 'width:100%' not in head.replace(' ', ''):
         warn(slug, '%s should use style="width:100%%;max-width:Npx"' % src)
 
+    # Text that runs off the canvas. Delegated to validate_diagrams.py rather
+    # than duplicated, so the width estimation lives in one place — and so this
+    # runs as part of the normal pre-publish check instead of being a separate
+    # command nobody remembers.
+    try:
+        import validate_diagrams as vd
+    except ImportError:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import validate_diagrams as vd
+    before_e, before_w = len(vd.errors), len(vd.warnings)
+    vd.check(path)
+    for msg in vd.errors[before_e:]:
+        err(slug, msg)
+    for msg in vd.warnings[before_w:]:
+        warn(slug, msg)
+
 
 def check_source(slug):
     """The posts/ file is what the RAG indexer reads."""
