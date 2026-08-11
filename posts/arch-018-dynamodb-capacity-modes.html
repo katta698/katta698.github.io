@@ -1,0 +1,280 @@
+---
+title: 'AWS Architecture Series #18 — DynamoDB On-Demand vs Provisioned: The Utilisation Number That Decides It'
+date: 2026-08-11
+slug: aws-architecture-dynamodb-capacity-modes
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-08-11'
+problem: "A team defaulted every DynamoDB table to on-demand because it sounded like the serverless choice, and is paying roughly three and a half times what provisioned capacity would cost on tables whose load barely moves."
+builds: "A per-table decision made on measured utilisation rather than instinct: on-demand where load is spiky or unknown, provisioned with auto scaling where it is steady, and reads assessed separately from writes."
+catch: "The break-even is different for reads and writes, so one table can legitimately want different answers for each. Switching provisioned to on-demand is capped at four times per rolling 24 hours, and doing it in the console deletes your auto scaling settings."
+---
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A team ran about forty DynamoDB tables, every one of them on-demand. The reasoning was
+      reasonable and entirely unexamined: on-demand is the serverless option, serverless is the
+      modern default, and nobody wanted to forecast capacity for forty tables.
+    </p>
+    <p>
+      Most of those tables served a business application with the traffic shape you would expect
+      &#8212; busy in office hours, quiet overnight, essentially identical week to week. That is
+      about as forecastable as load gets. They were paying per-request rates for a workload whose
+      requests could have been predicted a month in advance.
+    </p>
+    <p>
+      The interesting part is that &#8220;on-demand is more expensive at steady load&#8221; is not
+      a useful statement on its own. Steady at what level? The two modes are billed in different
+      units &#8212; one per request, one per reserved unit per hour &#8212; so until you put them
+      on the same scale there is nothing to compare.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The two prices are not comparable until you convert them</strong></div>
+      <div class="challenge-body">
+        <p>
+          On-demand is <strong>$0.625 per million writes</strong>. Provisioned is
+          <strong>$0.00065 per WCU-hour</strong>. Those numbers cannot be compared as written.
+        </p>
+        <p>
+          One write capacity unit sustains one 1 KB write per second, so held for an hour it
+          serves 3,600 writes. Divide: <code>$0.00065 / 3,600</code> is about
+          <strong>$0.18 per million writes</strong> at full utilisation. On-demand costs roughly
+          <strong>3.5&#215;</strong> that.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Convert both to cost per million requests before arguing about which is cheaper. Everything else follows from that one division.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>That ratio is really a utilisation threshold</strong></div>
+      <div class="challenge-body">
+        <p>
+          Provisioned capacity only achieves $0.18 per million if every unit is used every second,
+          which never happens. At half utilisation it is $0.36; at a quarter, $0.72 &#8212; more
+          than on-demand.
+        </p>
+        <p>
+          So the real question is what utilisation makes them equal, and that is simply
+          <code>$0.18 / $0.625</code>: about <strong>29%</strong>. Sustain average write
+          utilisation above roughly 29% and provisioned is cheaper. Below it, on-demand is, and no
+          amount of tuning changes that.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Pull ConsumedWriteCapacityUnits against provisioned capacity for a fortnight. The average is the answer.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Reads and writes cross over at different points</strong></div>
+      <div class="challenge-body">
+        <p>
+          Running the same arithmetic on reads gives a different threshold.
+          <code>$0.00013 / 3,600</code> is about <strong>$0.04 per million</strong> strongly
+          consistent reads, against <strong>$0.25 per million</strong> on-demand &#8212; a ratio
+          near <strong>6.9&#215;</strong>, and a break-even around <strong>14%</strong>.
+        </p>
+        <p>
+          Reads therefore justify provisioned capacity at roughly half the utilisation writes
+          need. A read-heavy table can be comfortably past the line for reads and nowhere near it
+          for writes, which is a legitimate outcome and not a contradiction: read and write
+          capacity are provisioned independently.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Assess the two axes separately. Treating a table as one decision hides the half that is already paying for itself.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>The console deletes your auto scaling settings</strong></div>
+      <div class="challenge-body">
+        <p>
+          This one is documented and still surprising. Switching a table from provisioned to
+          on-demand behaves differently depending on how you do it: in the console
+          <strong>all of your auto scaling settings will be deleted</strong>, while through the
+          CLI or SDK <strong>all of your auto scaling settings will be preserved</strong> and can
+          be reapplied when you switch back.
+        </p>
+        <p>
+          Identical operation, different outcome, decided entirely by which tool someone reached
+          for. Try on-demand for a week via the console, switch back, and the carefully tuned
+          scaling policy is simply gone &#8212; with the table working perfectly well the whole
+          time on flat capacity.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Make mode changes through the CLI or IaC, never the console. Anything reversible should stay reversible.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-018-capacity-modes.svg" alt="Diagram: on-demand and provisioned DynamoDB pricing converted to a common cost-per-million-requests basis, showing provisioned becoming cheaper above about 29% sustained write utilisation and about 14% for reads, plus the four-switches-per-24-hours limit and the console behaviour that deletes auto scaling settings.">
+
+    <h3>The decision, in the order it should be made</h3>
+    <p>
+      <strong>Start on-demand for anything new.</strong> You cannot forecast a workload that has
+      never run, and a wrong provisioned figure either throttles users or wastes money. On-demand
+      buys accurate measurements of real traffic, which is exactly what the next step needs.
+    </p>
+    <p>
+      <strong>After a few weeks, compute utilisation per table, per axis.</strong> Average consumed
+      capacity against what you would have to provision to serve the peak without throttling.
+      Above roughly 29% for writes or 14% for reads, provisioned wins.
+    </p>
+    <p>
+      <strong>Move only the tables that clear it, and keep auto scaling on.</strong> Provisioned
+      without auto scaling means provisioning for peak and paying for peak around the clock, which
+      throws away most of the saving that justified the move.
+    </p>
+
+    <h3>Auto scaling does not reach the theoretical number</h3>
+    <p>
+      The 29% figure assumes you can safely run capacity right at consumption, and you cannot.
+      AWS's own recommended default target utilisation is <strong>70%</strong>, deliberately
+      leaving headroom for scaling to react &#8212; it responds to sustained change, not to a
+      spike that arrives in seconds.
+    </p>
+    <p>
+      So provisioned at a 70% target costs about <code>$0.18 / 0.7</code>, near $0.26 per million
+      writes. Still well under on-demand's $0.625, but the honest saving on a steady table is
+      closer to <strong>2.4&#215;</strong> than 3.5&#215;. Quote the achievable number, not the
+      theoretical one.
+    </p>
+
+    <h3>What happens at the moment of the switch</h3>
+    <p>
+      Switching is not instantaneous and not symmetric. AWS states a table can move from
+      provisioned to on-demand <strong>up to four times in a 24-hour rolling window</strong>, while
+      the reverse can be done at any time. Any design that flips modes to chase load is therefore
+      not viable.
+    </p>
+    <p>
+      Throughput during and after the change is also worth knowing. The switch takes several
+      minutes, during which the table serves throughput consistent with its previous provisioned
+      settings. A table moving to on-demand for the first time is scaled to sustain at least
+      <strong>4,000 write units and 12,000 read units per second</strong>, or its previous peak if
+      that was higher &#8212; and coming back the other way, it delivers throughput consistent
+      with the peak it reached while on-demand.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>It replaces a preference with an arithmetic question</h3>
+    <p>
+      &#8220;On-demand versus provisioned&#8221; is usually argued as a philosophy &#8212;
+      serverless purity against operational control &#8212; and that argument has no ending
+      because neither side is describing the workload. Converting both to cost per million
+      requests turns it into a measurement, and measurements can be settled.
+    </p>
+    <p>
+      It also makes the answer legitimately different per table, which a philosophy cannot. Forty
+      tables do not share one traffic shape, and there is no reason they should share one billing
+      mode.
+    </p>
+
+    <h3>The threshold is stable even when the prices are not</h3>
+    <p>
+      AWS has changed these rates before and will again. What survives a price change is the
+      method: divide the hourly rate by 3,600, compare to the per-request rate, and the ratio
+      gives the break-even. Re-running that division after a price change takes a minute, whereas
+      a memorised number becomes quietly wrong.
+    </p>
+
+    <h3>Reserved capacity is a third option, and it is not free of risk</h3>
+    <p>
+      For provisioned tables, reserved capacity offers <strong>up to 54% for a one-year term and
+      up to 77% for three years</strong>. That is a substantial further saving on the steady
+      tables &#8212; but it is a commitment on a resource whose right size you have only recently
+      worked out.
+    </p>
+    <p>
+      Sequence it accordingly: measure, move to provisioned, run long enough to trust the number,
+      and only then reserve. Committing three years to a figure derived from two weeks of data is
+      how a cost optimisation becomes a cost floor.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Situation</th><th>Choose</th><th>Because</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>New table, unknown traffic</td>
+            <td>On-demand</td>
+            <td>Nothing to forecast from. It buys real measurements at a price that scales to zero.</td>
+          </tr>
+          <tr>
+            <td>Steady load above ~29% write utilisation</td>
+            <td>Provisioned with auto scaling</td>
+            <td>Past the break-even, on-demand is roughly 3.5&#215; the per-request cost.</td>
+          </tr>
+          <tr>
+            <td>Read-heavy table, modest writes</td>
+            <td>Provisioned reads, judge writes separately</td>
+            <td>Reads cross over near 14%, writes near 29%. The axes are provisioned independently.</td>
+          </tr>
+          <tr>
+            <td>Sharp, unpredictable spikes</td>
+            <td>On-demand</td>
+            <td>Auto scaling reacts to sustained change, not to a spike arriving in seconds.</td>
+          </tr>
+          <tr>
+            <td>Changing a table's mode</td>
+            <td>CLI or IaC, never the console</td>
+            <td>The console deletes auto scaling settings; the CLI and SDK preserve them.</td>
+          </tr>
+          <tr>
+            <td>Provisioned and stable for months</td>
+            <td>Consider reserved capacity</td>
+            <td>Up to 54% for one year, 77% for three &#8212; but only once the figure is trustworthy.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The audit that pays for itself</h3>
+    <p>
+      For every on-demand table, pull <code>ConsumedWriteCapacityUnits</code> and
+      <code>ConsumedReadCapacityUnits</code> for a fortnight at one-minute resolution. Take the
+      average and the peak on each axis. Average divided by peak is your achievable utilisation,
+      and any table over roughly 29% on writes or 14% on reads is currently overpaying. Sort by
+      total request volume and the list is already in priority order.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      On-demand is not the expensive option and provisioned is not the grown-up one. They are two
+      billing units for the same capacity, and which is cheaper is decided by a number that most
+      teams have never calculated for their own tables &#8212; despite it being one division away
+      from metrics they already collect.
+    </p>
+    <p>
+      What makes this worth doing properly rather than globally is that the answer genuinely
+      varies per table, and per axis within a table. A blanket policy either way is a decision not
+      to look. The version that holds up is unglamorous: start on-demand because you know nothing,
+      measure because it is cheap to, and move the tables that have earned it.
+    </p>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/dynamodb/pricing/on-demand/" target="_blank" rel="noopener">Amazon DynamoDB pricing &#8212; on-demand capacity</a></li>
+      <li><a href="https://aws.amazon.com/dynamodb/pricing/provisioned/" target="_blank" rel="noopener">Amazon DynamoDB pricing &#8212; provisioned capacity</a></li>
+      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/switching.capacitymode.html" target="_blank" rel="noopener">Considerations when switching capacity modes in DynamoDB</a></li>
+      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/AutoScaling.html" target="_blank" rel="noopener">Managing throughput capacity automatically with DynamoDB auto scaling</a></li>
+      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/warm-throughput.html" target="_blank" rel="noopener">Understanding DynamoDB warm throughput</a></li>
+    </ul>
+  </div>
