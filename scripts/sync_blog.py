@@ -37,6 +37,99 @@ def _css_version():
 
 CSS_VERSION = _css_version()
 
+
+# Cache-bust the JavaScript the same way. blog.js and site-footer.js share one
+# combined hash deliberately: blog.js injects site-footer.js at runtime and
+# passes its own token straight through, so a single version means a change to
+# either file busts both. They are a few KB each — there is nothing to gain
+# from versioning them separately, and plenty to lose when the injected one
+# silently keeps running a cached copy.
+#
+# This is not cosmetic. site-footer.js registers the service worker; while it
+# was unversioned, a returning visitor kept executing a cached copy and never
+# registered at all.
+def _js_version():
+    h = hashlib.md5()
+    for name in ("blog.js", "site-footer.js"):
+        h.update((REPO_ROOT / "blog" / "assets" / name).read_bytes())
+    return h.hexdigest()[:8]
+
+
+JS_VERSION = _js_version()
+
+# ── PWA ───────────────────────────────────────────────────────
+# The whole site is installable as a progressive web app — not just /blog/.
+# Site-wide scope is deliberate: the nav links Home, Blog and Resume, so a
+# /blog/-scoped app would eject the reader out to the browser on the second
+# link they tapped.
+#
+# These tags render nothing. Desktop browsers show a small install control in
+# the address bar once a manifest and a registered service worker both exist;
+# that is browser chrome, not page content, and there is deliberately no
+# beforeinstallprompt banner.
+#
+# The same six tags are hand-maintained in index.html, resume.html, now.html
+# and the arch pages/template — everything sync_blog.py does not build. Keep
+# them in step when changing anything here.
+#
+# Registration itself lives in blog/assets/site-footer.js, the one script every
+# page on the site loads.
+PWA_HEAD = """<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>"""
+
+
+def stamp_static_pages():
+    """Re-stamp asset cache-busting tokens on the pages sync does not build.
+
+    index.html, resume.html and now.html are hand-maintained, and the
+    Architecture Series pages are built by publish-draft.yml and otherwise
+    passed through untouched. All of them reference blog.js or site-footer.js,
+    so without this they would pin whatever token they were written with while
+    the files underneath them changed.
+
+    This is deliberately narrow: it rewrites an existing ?v= token on those two
+    script URLs and nothing else. It does not regenerate the pages, and it will
+    not add a token to a page that has no reference. The arch pages' read-only
+    pass-through (see the "externally_built" note) otherwise still holds.
+    """
+    targets = [REPO_ROOT / n for n in ("index.html", "resume.html", "now.html")]
+    targets += sorted(BLOG_DIR.glob("aws-architecture-*/index.html"))
+    targets.append(REPO_ROOT / "_templates" / "arch-post-template.html")
+
+    pattern = re.compile(r'(/blog/assets/(?:blog|site-footer)\.js)(\?v=[0-9a-zA-Z]+)?')
+    stamped = 0
+    for path in targets:
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        new = pattern.sub(lambda m: f"{m.group(1)}?v={JS_VERSION}", text)
+        if new != text:
+            path.write_text(new, encoding="utf-8")
+            stamped += 1
+    print(f"  {stamped} static page(s) re-stamped to js v={JS_VERSION}")
+
+
+def write_service_worker():
+    """Generate sw.js at the repo root from scripts/sw.template.js.
+
+    It has to sit at the root, not under blog/: a service worker can only claim
+    a scope at or below its own path, and this one claims "/".
+
+    The cache name is stamped with CSS_VERSION — the same content hash that
+    cache-busts blog.css — so a stylesheet change invalidates the whole cache
+    without anyone having to remember to bump a version constant.
+    """
+    template = (REPO_ROOT / "scripts" / "sw.template.js").read_text(encoding="utf-8")
+    (REPO_ROOT / "sw.js").write_text(
+        template.replace("__CACHE_VERSION__", CSS_VERSION)
+                .replace("__JS_VERSION__", JS_VERSION), encoding="utf-8"
+    )
+    print(f"  sw.js written at site root (cache jk-site-{CSS_VERSION})")
+
 SITE_URL    = "https://jayanthkatta.com"
 BLOG_URL    = f"{SITE_URL}/blog"
 DISQUS_ID   = "jayanthkatta"
@@ -979,6 +1072,7 @@ def html_head(title, description, canonical, extra="", og_type="website",
 <meta name="twitter:description" content="{escape(description)}"/>
 <meta name="twitter:image" content="{social_image}"/>
 <link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+{PWA_HEAD}
 <link rel="stylesheet" href="{ASSETS_URL}/blog.css?v={CSS_VERSION}"/>
 {extra}
 </head>"""
@@ -1121,7 +1215,7 @@ def build_post_page(post, prev_post, next_post):
 {back_top_html()}
 {footer_html()}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script src="{ASSETS_URL}/blog.js"></script>
+<script src="{ASSETS_URL}/blog.js?v={JS_VERSION}"></script>
 <script>
   hljs.highlightAll();
 </script>
@@ -1948,7 +2042,7 @@ def build_index_page(posts):
 {back_top_html()}
 {footer_html()}
 <audio id="beach-audio" loop preload="none"></audio>
-<script src="{ASSETS_URL}/blog.js"></script>
+<script src="{ASSETS_URL}/blog.js?v={JS_VERSION}"></script>
 <script>
 (function(){{
   var VIDEOS=[
@@ -2392,6 +2486,10 @@ def main():
     # blog-post-workflow action, which needs a feed since the old Blogger one
     # was retired) — and the blog-search RAG indexer, so drafts must stay out
     (BLOG_DIR / "rss.xml").write_text(build_rss_feed(visible_posts), encoding="utf-8")
+
+    # PWA: re-stamp asset tokens on hand-maintained pages, then emit sw.js
+    stamp_static_pages()
+    write_service_worker()
 
     print(f"Done — {len(visible_posts)} public posts built at blog/ ({draft_count} draft)")
 

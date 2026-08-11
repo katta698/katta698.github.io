@@ -13,6 +13,7 @@ Exits non-zero if any ERROR is found, so it can gate CI.
 """
 import io
 import os
+import hashlib
 import re
 import sys
 import glob
@@ -141,6 +142,28 @@ def check_page(slug):
     for tag in re.findall(r'<img[^>]*>', visible):
         if 'alt=' not in tag:
             err(slug, 'an <img> is missing alt text')
+
+    # 9. The cache-busting token must match the stylesheet it claims to name.
+    #    sync_blog.py stamps sync-built pages with md5(blog.css)[:8] and never
+    #    touches arch pages, so an arch page's token only changes when whatever
+    #    built it supplied a fresh one. The template used to hard-code a literal
+    #    hash, which meant every arch post copied one frozen value forward and
+    #    all 18 pages drifted from the real stylesheet together.
+    #
+    #    Nothing visibly breaks when it drifts — the query string only varies
+    #    the cache key, it does not select a file, so a stale token still serves
+    #    the current CSS. That is exactly why this needs a check rather than an
+    #    eye: it is invisible until something (a long max-age, a service worker)
+    #    starts honouring the token, at which point it pins stale CSS for good.
+    css_file = os.path.join(BLOG, 'assets', 'blog.css')
+    if os.path.isfile(css_file):
+        want = hashlib.md5(io.open(css_file, 'rb').read()).hexdigest()[:8]
+        m = re.search(r'blog\.css\?v=([0-9a-zA-Z]+)', html)
+        if not m:
+            warn(slug, 'no cache-busting token on blog.css')
+        elif m.group(1) != want:
+            err(slug, 'blog.css?v=%s does not match the current stylesheet '
+                      '(md5 is %s) — re-stamp the page' % (m.group(1), want))
 
     return html
 

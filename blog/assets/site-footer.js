@@ -49,3 +49,35 @@
     initFooter();
   }
 })();
+
+// Register the PWA service worker for the whole site.
+//
+// This file is the only script every page loads — index.html, resume.html and
+// now.html include it directly, and blog.js injects it on every blog surface,
+// including the Architecture Series pages that sync_blog.py never rebuilds.
+// Registering here therefore covers the whole origin with no per-page edits.
+//
+// Scope is "/" so the installed app owns the entire site: the nav's Home and
+// Resume links stay inside the app instead of bouncing the reader out to the
+// browser. That requires sw.js to be served from the site root — a worker can
+// only claim a scope at or below its own path.
+//
+// localhost is left enabled: service workers are allowed there without HTTPS,
+// which is what makes this testable before it ships.
+(function () {
+  if (!('serviceWorker' in navigator)) return;
+
+  function register() {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' })
+      .catch(function () { /* offline support is optional; never block the page */ });
+  }
+
+  // Registration is deferred to load so it never competes with the page's own
+  // resources — but blog.js injects this file dynamically, often after load has
+  // already fired, and a listener added then would never run. Check first.
+  if (document.readyState === 'complete') {
+    register();
+  } else {
+    window.addEventListener('load', register, { once: true });
+  }
+})();

@@ -490,10 +490,30 @@
 })();
 
 // Load the shared automatic copyright footer on every blog surface.
+//
+// The cache-busting token is carried over from this file's own URL rather than
+// hardcoded: sync_blog.py stamps blog.js and site-footer.js with one combined
+// hash, so whatever version loaded this script is the correct version of the
+// script it injects. Without a token the browser reruns a cached copy — which
+// matters because site-footer.js is what registers the service worker.
 (function () {
   if (document.querySelector('script[data-site-footer]')) return;
+
+  var version = '';
+  var self = document.currentScript ||
+             document.querySelector('script[src*="/blog/assets/blog.js"]');
+  if (self) {
+    var match = /[?&]v=([0-9a-zA-Z]+)/.exec(self.getAttribute('src') || '');
+    if (match) version = '?v=' + match[1];
+  }
+
   var script = document.createElement('script');
-  script.src = '/blog/assets/site-footer.js';
+  script.src = '/blog/assets/site-footer.js' + version;
   script.setAttribute('data-site-footer', '');
   document.body.appendChild(script);
 })();
+
+// Service worker registration lives in site-footer.js, which every page on the
+// site loads — the portfolio root and resume include it directly, and the
+// block above injects it here. That makes it the one place registration
+// reaches the whole origin rather than just /blog/.
