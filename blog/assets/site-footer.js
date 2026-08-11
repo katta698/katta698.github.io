@@ -50,6 +50,20 @@
   }
 })();
 
+// Installed-app window title.
+//
+// Each page's <title> is written for search results and browser tabs
+// ("Jayanth Katta — AWS Platform Engineer", "… | Jayanth Katta Blog"), but the
+// installed app's title bar should read just "Jayanth Katta". Only the app
+// window sees this override: display-mode: standalone matches solely when the
+// site runs as an installed PWA, so browser tabs and SEO keep the full titles.
+(function () {
+  var standalone =
+    (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+    window.navigator.standalone === true;
+  if (standalone) document.title = 'Jayanth Katta';
+})();
+
 // Register the PWA service worker for the whole site.
 //
 // This file is the only script every page loads — index.html, resume.html and
