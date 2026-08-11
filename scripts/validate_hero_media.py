@@ -3,7 +3,7 @@
 """
 Check the hero's clip counts against the files that actually exist.
 
-index.html carries a COUNTS map — how many clips each theme has — because the
+blog/assets/hero-media.js carries a COUNTS map — how many clips each theme has — because the
 browser cannot list a directory. The day-of-week index wraps on that number, so
 if it disagrees with reality the hero asks for a file that isn't there.
 
@@ -29,7 +29,9 @@ import sys
 import glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PAGE = os.path.join(ROOT, 'index.html')
+# The rotation moved out of index.html into a shared file so the home page
+# and the blog pages could not drift apart; COUNTS and PLAN live there now.
+PAGE = os.path.join(ROOT, 'blog', 'assets', 'hero-media.js')
 VIDEOS = os.path.join(ROOT, 'blog', 'assets', 'videos')
 
 MAX_MB = 8.0        # a 12s 1080p CRF-28 loop lands well under this
@@ -46,7 +48,7 @@ def main():
     html = io.open(PAGE, encoding='utf-8').read()
     m = re.search(r'var COUNTS = \{([^}]*)\}', html)
     if not m:
-        print('ERROR no COUNTS map found in index.html')
+        print('ERROR no COUNTS map found in blog/assets/hero-media.js')
         return 1
     counts = {k: int(v) for k, v in re.findall(r'(\w+)\s*:\s*(\d+)', m.group(1))}
 
