@@ -1,0 +1,361 @@
+---
+title: 'AWS Daily Intelligence #7 - EC2 Application Status Checks'
+date: '2026-08-11T09:00:00'
+verified: '2026-08-11'
+labels:
+- AWS
+- AWS Daily Intelligence
+slug: aws-daily-intelligence-ec2-application-status-checks
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Daily Intelligence &middot; 11 August 2026</div>
+  <div class="post-title">EC2 Application Status Checks: Auto-Recovery That Knows Whether Your App Is Actually Working</div>
+  <div class="post-subtitle">EC2 has always been able to tell you the box is alive. It has never been able to tell you the software on it is serving requests &mdash; not without a load balancer or a Lambda you wrote yourself. That changed on Monday, and it arrives with a trap that will terminate healthy instances during your next deployment.</div>
+  <div class="post-meta">
+    <span>General Availability</span>
+    <span>All commercial and GovCloud (US) Regions</span>
+    <span>$0.01 per managed ENI-hour</span>
+    <span>Announced 10 August 2026</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="toc">
+    <h3>In This Post</h3>
+    <ol>
+      <li><a href="#what-changed">What changed</a></li>
+      <li><a href="#why">Why AWS built this</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#value">Business value</a></li>
+      <li><a href="#security">Security considerations</a></li>
+      <li><a href="#cost">Cost considerations</a></li>
+      <li><a href="#operations">Operational considerations</a></li>
+      <li><a href="#tradeoffs">Tradeoffs</a></li>
+      <li><a href="#implementation">Implementation guidance</a></li>
+      <li><a href="#practices">Best practices</a></li>
+      <li><a href="#adopt">Who should adopt, who should wait</a></li>
+      <li><a href="#deployments">The trap: your next deployment</a></li>
+      <li><a href="#takeaways">Key takeaways</a></li>
+      <li><a href="#references">Official AWS references</a></li>
+    </ol>
+  </div>
+
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>On 10 August 2026, AWS added a fourth type of EC2 status check. Alongside system, instance and attached EBS checks &mdash; all managed by AWS and always running &mdash; there is now an <strong>application status check</strong> that sends an HTTP or HTTPS request to a path and port you specify, every 60 seconds, and reports whether your application answered.</p>
+    <p>You associate it with instances by ID or by tag, including the <code>aws:autoscaling:groupName</code> system tag. <strong>Auto Scaling then terminates and replaces any instance whose application reports impaired</strong>, with no Auto Scaling group configuration required beyond the association.</p>
+    <p>Available in all commercial Regions and AWS GovCloud (US). Billing is <strong>$0.01 per hour per managed network interface, per Availability Zone</strong> &mdash; which is not the same thing as per instance, and is explained below.</p>
+    <p>The thing to understand before you switch it on: a deployment that stops your application is indistinguishable from an application that has crashed. Auto Scaling will replace instances mid-deployment unless you suppress the check first. AWS provides three ways to handle that, and the post ends on which to use when.</p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>EC2 status checks have answered a narrow question since they existed: <em>is this instance reachable and running?</em> They cannot see inside it. A web server that stopped accepting connections, a Docker daemon that died, an application bound to <code>127.0.0.1</code> instead of the network interface &mdash; every one of those leaves the instance passing all its checks while serving nothing.</p>
+
+    <h3>Four types now, and only one is yours to manage</h3>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Check</th><th>Detects</th><th>Managed by</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>System</td><td>The AWS host underneath: power, network, hardware</td><td>AWS, always on</td></tr>
+        <tr><td>Instance</td><td>The OS responds to an ARP request: kernel, memory, filesystem</td><td>AWS, always on</td></tr>
+        <tr><td>Attached EBS</td><td>Attached volumes can complete I/O (Nitro instances only)</td><td>AWS, always on</td></tr>
+        <tr><td><strong>Application</strong></td><td>Your endpoint returns an acceptable HTTP status code</td><td><strong>You. Opt-in.</strong></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>The first three cannot be disabled or deleted. The fourth does not exist until you create it, associate it, and configure it.</p>
+
+    <h3>What you configure</h3>
+    <p>A check is a protocol, a port, a path, and the response codes you consider healthy. Everything else has a default:</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Setting</th><th>Default</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Check interval</td><td>60 seconds</td><td><strong>Fixed. Not configurable.</strong></td></tr>
+        <tr><td><code>FailureThreshold</code></td><td>2 consecutive failures</td><td>Before the check is marked impaired</td></tr>
+        <tr><td><code>SuccessThreshold</code></td><td>2 consecutive successes</td><td>Before it is healthy again</td></tr>
+        <tr><td><code>Timeout</code></td><td>6 seconds</td><td>Range 1-30. Enforced as a hard timeout</td></tr>
+        <tr><td><code>InitializationGracePeriodSeconds</code></td><td>300 seconds</td><td>Range 1-600. Time after launch before evaluation starts</td></tr>
+        <tr><td>Status code matcher</td><td><code>200</code></td><td>Redirects are <em>not</em> followed</td></tr>
+        <tr><td>Aggregation</td><td><code>included</code></td><td><code>excluded</code> reports status without driving Auto Scaling</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>Two details that are easy to miss and change behaviour: the request is sent over <strong>HTTP/2</strong>, and <strong>the HTTPS check does not validate the server certificate</strong>. It is a reachability and response-code check wearing TLS, not a certificate check.</p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why AWS built this</h2>
+    <p>Because application-aware recovery previously required a component whose job was something else entirely.</p>
+    <p>If you wanted Auto Scaling to replace an instance whose application had died, your options were:</p>
+    <ul>
+      <li><strong>Put a load balancer in front of it.</strong> Set the Auto Scaling group's health check type to <code>ELB</code> and let the target group's health check drive replacement. This works well, and it is why most people have never needed anything else &mdash; but it means running a load balancer for a workload that may not need one, and paying for it.</li>
+      <li><strong>Write a custom health check.</strong> A Lambda on a schedule, probing instances and calling <code>SetInstanceHealth</code> to mark them unhealthy. AWS has published guidance on this pattern for years, which tells you how common the need is. It is also a distributed system you now own, with its own IAM, failure modes and on-call.</li>
+      <li><strong>Alarm and page someone.</strong> A CloudWatch alarm on an application metric, and a human decides. Correct, and slow.</li>
+      <li><strong>Accept it.</strong> Let the instance sit in the group serving errors until someone notices.</li>
+    </ul>
+    <p>The gap was sharpest for workloads with <strong>no load balancer at all</strong>: queue consumers, batch workers, internal services reached by DNS, single-instance applications. Those are exactly the workloads where a silently dead process goes unnoticed longest, and exactly the ones where standing up an ALB purely to get a health check was hard to justify.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>The model: <strong>AWS runs a prober inside your VPC and asks your application a question every minute.</strong> Where that prober lives determines both your security group configuration and your bill.</p>
+
+    <img src="/blog/assets/diagrams/daily-007-ec2-application-status-checks.svg" alt="Diagram: EC2 now has four status check types. System, instance and attached EBS are managed by AWS and always on; application status checks are opt-in and probe an HTTP or HTTPS endpoint every 60 seconds from a managed network interface inside your VPC. Because Auto Scaling replaces instances reporting impaired, a deployment that stops the application triggers replacement unless the check is suppressed, excluded, or disassociated.">
+
+    <h3>The managed ENI is the part that surprises people</h3>
+    <p>Checks do not originate from outside. AWS creates a <strong>managed elastic network interface in your VPC</strong>, one per combination of source subnet and security group that has associated instances. It appears when a check first needs it and disappears when no check does.</p>
+    <p>Three consequences follow, and all three matter:</p>
+    <ul>
+      <li>Traffic stays on the AWS internal network, from the <strong>same Availability Zone</strong> as the target. It never touches the public internet.</li>
+      <li>The ENI <strong>does not count against your instance ENI limit</strong>, but it <strong>does count against ENIs per VPC</strong>. If you are near that quota, AWS cannot create the ENI and <strong>the check simply does not run</strong>.</li>
+      <li>Your instance's security group must allow inbound traffic on the check port <em>from the health check source security group</em>. With AWS-managed network paths, AWS tells you that group at creation.</li>
+    </ul>
+
+    <h3>Two onboarding modes, chosen by one parameter</h3>
+    <p>Omit <code>--health-check-paths</code> and AWS selects the source and destination subnets and security groups for you. Include it and you specify them yourself. The second exists for VPCs with strict segmentation or compliance rules about where probe traffic may originate. There is no separate flag &mdash; the presence or absence of that one parameter is the switch.</p>
+
+    <h3>Association by tag is the powerful part</h3>
+    <p>You can associate by instance ID, or by tag. Associating on <code>aws:autoscaling:groupName</code> covers every instance in an Auto Scaling group, including ones that do not exist yet. That makes the check a property of the group rather than something to remember at launch &mdash; and it means <strong>changing a tag changes what is monitored</strong>, which is worth knowing before someone retags a fleet.</p>
+  </div>
+
+  <div class="section" id="value">
+    <h2>Business value</h2>
+    <p><strong>Self-healing without a load balancer.</strong> The clearest win. A queue consumer or batch worker can now be replaced automatically when its process dies, with no ALB, no Lambda, and no code you maintain.</p>
+    <p><strong>One less bespoke component.</strong> If you built the Lambda-and-<code>SetInstanceHealth</code> pattern, this deletes it &mdash; along with its IAM role, its schedule, its error handling and the question of who owns it.</p>
+    <p><strong>Failures surface in the place people already look.</strong> Application status appears in <code>describe-instance-status</code> alongside the other checks, in the console, and as the <code>StatusCheckFailed_Application</code> CloudWatch metric. No new dashboard.</p>
+    <p><strong>Detection in about two minutes.</strong> Two consecutive failures at 60-second intervals. Not instant, but considerably faster than a human noticing a queue stopped draining.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+
+    <div class="warning-box">
+      <p><strong>The HTTPS check does not validate the server certificate.</strong> AWS states this plainly. An expired, self-signed or hostname-mismatched certificate will pass. This is a liveness probe over TLS, not a TLS health check &mdash; do not let it stand in for certificate monitoring.</p>
+    </div>
+
+    <p><strong>The health check path is an unauthenticated endpoint.</strong> AWS's own troubleshooting guidance says a <code>401</code> or <code>403</code> means the check failed, and to serve health checks on a path that does not require credentials. That path is reachable from inside your VPC by design. Make sure it returns liveness and nothing else &mdash; no version strings, no dependency detail, no internal hostnames.</p>
+    <p><strong>You are opening a port to a new source.</strong> The instance security group must accept inbound traffic from the health check source security group. Narrow it to the check port only. With customer-managed network paths you control which subnet and security group that is, which is the reason to use that mode in a segmented VPC.</p>
+    <p><strong>Whoever can create and associate checks can cause instance replacement.</strong> A check with a wrong path, associated by tag to a production fleet, produces rolling terminations. Treat <code>ec2:CreateApplicationStatusCheck</code> and <code>ec2:AssociateApplicationStatusCheck</code> as change-controlled, not general EC2 access.</p>
+    <p><strong>The ENIs are created by a service-linked role.</strong> <code>EC2ApplicationStatusChecksServiceRolePolicy</code>, no IAM setup required. Worth knowing so an unexpected ENI in your VPC is not mistaken for something else during an audit.</p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p><strong>$0.01 per hour per managed ENI, per Availability Zone</strong>, plus standard CloudWatch charges for the metrics.</p>
+    <p><strong>Cost follows network topology, not fleet size.</strong> This is the part worth internalising, because it inverts the usual intuition. AWS creates one ENI per <em>combination of source subnet and security group</em>. Ten thousand instances behind one subnet and security group combination is one ENI. Twenty instances spread across ten subnet-and-security-group combinations is ten.</p>
+    <p>So the driver is how fragmented your network is, not how many instances you monitor:</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Shape</th><th>Managed ENIs</th><th>Approximate monthly cost</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>One subnet, one security group</td><td>1</td><td>$7.30</td></tr>
+        <tr><td>Three AZs, one security group</td><td>3</td><td>$21.90</td></tr>
+        <tr><td>Three AZs, four security groups in use</td><td>up to 12</td><td>up to $87.60</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>At 730 hours a month. Compared with running an ALB purely to obtain a health check, this is cheap in every one of those shapes &mdash; but a heavily segmented estate should count its combinations rather than assume a single line item.</p>
+    <p><strong>Local Zones cost more.</strong> For instances in a Local Zone the managed ENI sits in the parent Region, so check traffic crosses the Local Zone service link and <strong>may incur data transfer charges</strong>. Worth modelling separately.</p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p><strong>Validate in production without risk, using <code>excluded</code>.</strong> Create the check with aggregation set to <code>excluded</code> and it evaluates and reports but does not contribute to overall status or drive Auto Scaling. AWS explicitly recommends this as the workflow for adding a check to an existing production workload. Confirm it reports what you expect, then switch to <code>included</code>. There is no reason to skip this step.</p>
+    <p><strong>The grace period is the second most common way to cause replacements.</strong> <code>InitializationGracePeriodSeconds</code> defaults to 300 and caps at 600. If your application takes longer than that to start listening, Auto Scaling will replace new instances before they are ready &mdash; and the replacements will do the same thing. Measure your real cold start, including the slowest case, before enabling.</p>
+    <p><strong>Exceeding the target quota stops monitoring silently.</strong> The default is 5,000 targets per account, where a target is one instance monitored by one check. AWS is explicit: targets over the limit <strong>are not monitored and do not report an application status</strong>. Nothing fails; coverage just stops. AWS recommends a CloudWatch alarm on quota usage from the <code>AWS/Usage</code> namespace, and that is worth setting up on day one.</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Quota</th><th>Default</th><th>Adjustable</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Health checks per account</td><td>50</td><td>Yes, automatically</td></tr>
+        <tr><td>Associations per health check</td><td>50</td><td>Yes, automatically</td></tr>
+        <tr><td>Associations per account</td><td>200</td><td>Yes, automatically</td></tr>
+        <tr><td>Targets per account</td><td>5,000</td><td>By request, manual approval</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p><strong>Redirects fail.</strong> Health check calls do not follow them, so a path returning <code>301</code> or <code>302</code> fails unless you add that code to the matcher. Point the check at the destination instead.</p>
+    <p><strong>Reason codes tell you why.</strong> <code>describe-application-status</code> returns <code>ResponseCodeMismatch</code>, <code>ConnectionTimeout</code>, <code>ConnectionRefused</code>, <code>ConnectionReset</code> or <code>ResponseTimeout</code>, with the actual HTTP status code where there was one. That distinction &mdash; refused versus mismatched &mdash; is the difference between a firewall problem and an application problem.</p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <p><strong>Against an ALB or NLB target group health check.</strong> If you already run a load balancer, its health check does this job, is configurable below 60 seconds, and removes the instance from rotation rather than terminating it. That last difference matters: a load balancer stops sending traffic, while this replaces the instance. Keep the load balancer's check as the traffic-shedding mechanism; application status checks are for workloads with no load balancer at all.</p>
+    <p><strong>Against a custom Lambda health check.</strong> The custom approach can probe anything &mdash; a TCP port, a database query, a queue depth, a file on disk. This is HTTP and HTTPS only. If your definition of healthy is not expressible as an HTTP response code, you still need the custom path.</p>
+    <p><strong>Against a CloudWatch alarm on an application metric.</strong> An alarm can watch what the application reports about itself, which is often a better signal than "does it return 200". It also cannot terminate an instance without you wiring that up. Different tools; there is no reason not to run both.</p>
+    <p><strong>The 60-second interval is fixed.</strong> With the default two-failure threshold, that is roughly two minutes to detection and a further replacement cycle before capacity returns. For anything latency-critical, a load balancer's faster health check in front is still the right answer.</p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+
+    <h3>Prerequisites</h3>
+    <ul>
+      <li>An endpoint on each instance answering HTTP or HTTPS on a known port and path.</li>
+      <li>An instance security group allowing inbound on that port from the health check source security group.</li>
+      <li>Headroom in your <strong>ENIs per VPC</strong> quota &mdash; without it the managed ENI cannot be created and the check will not run.</li>
+      <li>A measured cold-start time, to size <code>InitializationGracePeriodSeconds</code>.</li>
+    </ul>
+
+    <h3>Create it excluded first</h3>
+    <p>This is the recommended order, and it costs nothing to follow:</p>
+<pre><code>aws ec2 create-application-status-check \
+    --protocol https \
+    --port 443 \
+    --path "/health" \
+    --status-code-matcher "200" \
+    --aggregation excluded</code></pre>
+
+    <h3>Associate with the Auto Scaling group by tag</h3>
+<pre><code>aws ec2 associate-application-status-check \
+    --application-status-check-id asc-1234567890abcdef0 \
+    --target-tag-associations Key=aws:autoscaling:groupName,Value=my-asg</code></pre>
+
+    <h3>Confirm it reports what you expect</h3>
+    <p>Wait two intervals, then read the per-instance result &mdash; including the HTTP code your application actually returned:</p>
+<pre><code>aws ec2 describe-application-status \
+    --instance-ids i-0123456789abcdef0</code></pre>
+
+    <h3>Only then let it drive replacement</h3>
+<pre><code>aws ec2 modify-application-status-check \
+    --application-status-check-id asc-1234567890abcdef0 \
+    --aggregation included</code></pre>
+
+    <h3>Wire suppression into your deployment before you do</h3>
+    <p>Pre-deployment hook:</p>
+<pre><code>aws ec2 enable-application-status-check-suppression \
+    --instance-ids i-0123456789abcdef0 \
+    --duration-seconds 3600</code></pre>
+    <p>Post-deployment hook:</p>
+<pre><code>aws ec2 disable-application-status-check-suppression \
+    --instance-ids i-0123456789abcdef0</code></pre>
+    <p>Always pass a duration. If suppression is omitted and the post-deployment hook never runs &mdash; a failed pipeline, a cancelled job &mdash; the check stays suppressed indefinitely and you have silently switched off the monitoring you just installed.</p>
+  </div>
+
+  <div class="section" id="practices">
+    <h2>Best practices</h2>
+    <ol>
+      <li><strong>Create every check <code>excluded</code> first</strong>, confirm it, then switch to <code>included</code>.</li>
+      <li><strong>Wire suppression into deploy hooks before enabling aggregation</strong>, not after the first incident.</li>
+      <li><strong>Always give suppression a duration</strong> so a failed pipeline cannot leave monitoring off forever.</li>
+      <li><strong>Size the grace period from a measured cold start</strong>, worst case, not a guess. The ceiling is 600 seconds.</li>
+      <li><strong>Alarm on the targets-per-account quota</strong> via the <code>AWS/Usage</code> namespace &mdash; exceeding it stops monitoring silently.</li>
+      <li><strong>Serve the health path unauthenticated and content-free.</strong> Liveness only.</li>
+      <li><strong>Associate by Auto Scaling group tag</strong> so new instances are covered automatically.</li>
+      <li><strong>Do not treat the HTTPS check as certificate validation.</strong> It does not validate the certificate.</li>
+      <li><strong>Count your subnet and security group combinations</strong> before estimating cost, not your instances.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt, who should wait</h2>
+
+    <h3>Adopt</h3>
+    <ul>
+      <li><strong>Workloads with no load balancer</strong> &mdash; queue consumers, batch workers, internal services, single-instance applications. This is the case the feature exists for.</li>
+      <li>Anyone running a <strong>custom Lambda health check</strong> calling <code>SetInstanceHealth</code>. This replaces it.</li>
+      <li>Teams who have been <strong>bitten by a process that died while the instance stayed healthy</strong>.</li>
+      <li><strong>GovCloud (US) workloads</strong>, which have it at launch.</li>
+    </ul>
+
+    <h3>Wait</h3>
+    <ul>
+      <li>Fleets <strong>already behind a load balancer</strong> with a working target group health check. You have this already, with faster intervals and traffic shedding instead of termination.</li>
+      <li>Health definitions <strong>not expressible as an HTTP response code</strong> &mdash; queue depth, replication lag, a TCP port with no HTTP on it.</li>
+      <li>Applications with <strong>cold starts beyond 600 seconds</strong>. The grace period cannot cover you.</li>
+      <li>Teams <strong>without deployment hooks</strong> to drive suppression. Read the next section before deciding.</li>
+      <li>Anyone near their <strong>ENIs per VPC</strong> quota &mdash; the check will not run and will not tell you loudly.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="deployments">
+    <h2>The trap: your next deployment</h2>
+    <p>This deserves its own section because the feature works exactly as designed while doing it, and because the blast radius is a whole Auto Scaling group.</p>
+
+    <div class="warning-box">
+      <p><strong>An application stopped for a deployment is indistinguishable from an application that has crashed.</strong> Auto Scaling replaces any instance whose overall application status is <code>impaired</code>, and it needs no configuration to do so &mdash; associating the check is enough. Deploy by stopping the process, and the group terminates the instance you are deploying to.</p>
+    </div>
+
+    <p>The failure is worse than one lost instance. A rolling deployment stops the application on the next instance, which is replaced, which launches fresh and starts the deployment again. Capacity churns while the pipeline reports progress. Nothing errors, because nothing is wrong: the check saw an application that was not answering, and did what you asked.</p>
+    <p>AWS gives three ways out, and they are not interchangeable:</p>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Option</th><th>Use when</th><th>Status becomes</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Suppress</strong></td>
+          <td>A bounded maintenance window with a known duration. Driven from pre- and post-deployment hooks.</td>
+          <td><code>suppressed</code> &mdash; Auto Scaling stands down</td>
+        </tr>
+        <tr>
+          <td><strong>Exclude from aggregation</strong></td>
+          <td>Longer-lived: validating a new check, or keeping telemetry without operational impact.</td>
+          <td>Individual status still reported, ignored by Auto Scaling</td>
+        </tr>
+        <tr>
+          <td><strong>Disassociate</strong></td>
+          <td>Indefinite removal. If you associated by tag, remove the tag.</td>
+          <td><code>not-applicable</code></td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>For deployments, suppression is the right one, and it belongs in the pipeline rather than in a runbook. AWS's guidance is a pre-deployment hook that suppresses with a duration covering the expected window, and a post-deployment hook that lifts it. If your deployment tool has no hooks, drive it from whatever invokes the deployment.</p>
+    <p>The failure mode to design against is the one where the post-deployment hook never runs. A cancelled pipeline, a failed step, an operator interrupt &mdash; and the check stays suppressed. <strong>Always pass <code>--duration-seconds</code></strong>, so the worst case is monitoring resuming late rather than never. Suppression without a duration lasts until someone explicitly disables it, and nobody will remember.</p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ol>
+      <li>A fourth EC2 status check type. The other three are managed by AWS and always on; this one is <strong>opt-in</strong> and yours to configure.</li>
+      <li>HTTP or HTTPS to a path and port you choose, <strong>every 60 seconds &mdash; fixed, not configurable</strong>.</li>
+      <li><strong>Auto Scaling replaces impaired instances with no group configuration</strong> beyond associating the check.</li>
+      <li><strong>A deployment looks like a crash.</strong> Suppress from deploy hooks, always with a duration.</li>
+      <li>Create checks <code>excluded</code> first, confirm, then set <code>included</code>. AWS recommends this explicitly.</li>
+      <li><strong>The HTTPS check does not validate the server certificate.</strong></li>
+      <li>Cost is <strong>$0.01 per managed ENI-hour per AZ</strong> — driven by subnet and security group combinations, not instance count.</li>
+      <li><strong>Exceeding 5,000 targets per account stops monitoring silently.</strong> Alarm on quota usage.</li>
+      <li><code>InitializationGracePeriodSeconds</code> defaults to 300 and caps at <strong>600</strong>. Slower cold starts will be replaced before they are ready.</li>
+      <li>Associate by <code>aws:autoscaling:groupName</code> to cover instances that do not exist yet.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ec2-application-status-checks">Amazon EC2 introduces application status checks</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/application-status-checks.html">Application status checks, Amazon EC2 User Guide</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/monitoring-system-instance-status-check.html">Status checks for Amazon EC2 instances</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html">About the health checks for your Auto Scaling group</a></li>
+      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-health-checks.html">Health checks for instances in an Auto Scaling group</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_CreateApplicationStatusCheck.html">CreateApplicationStatusCheck API reference</a></li>
+      <li><a href="https://docs.aws.amazon.com/aws-managed-policy/latest/reference/EC2ApplicationStatusChecksServiceRolePolicy.html">EC2ApplicationStatusChecksServiceRolePolicy</a></li>
+      <li><a href="https://docs.aws.amazon.com/general/latest/gr/ec2-service.html">Amazon EC2 endpoints and quotas</a></li>
+      <li><a href="https://aws.amazon.com/blogs/compute/how-to-create-custom-health-checks-for-your-amazon-ec2-auto-scaling-fleet/">How to create custom health checks for your Amazon EC2 Auto Scaling fleet</a></li>
+    </ul>
+  </div>
+
+  <div class="post-footer">
+    <p>AWS Daily Intelligence tracks meaningful AWS changes from official sources and explains what they mean for enterprise architecture.</p>
+    <p>Every technical claim in this post is sourced from the AWS documentation linked above. Feature status: General Availability, announced 10 August 2026.</p>
+  </div>
+
+</div>
+</div>

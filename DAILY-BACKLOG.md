@@ -18,6 +18,27 @@ approaching a week old is about to become unwritable.
 
 ---
 
+## 10 August 2026 — covered by post #7
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Application status checks — 4th check type, HTTP/HTTPS, Auto Scaling replaces impaired | EC2 | **#7** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ec2-application-status-checks) |
+| UEFI boot mode now preserved for Linux servers | Elastic Disaster Recovery | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-drs-linux-uefi) |
+| Up to 10,000 collections per collection group | OpenSearch Serverless | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-opensearch-serverless-supports-10000-collections-per-collection-group/) |
+| Service-managed shader caching | GameLift Streams | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/Amazon-GameLift-Streams-Shader-Caching/) |
+| FLUX.2-small-decoder, gemma-4-12B-it; langcache-embed-v3-small, Mellum2-12B, LightOnOCR-2-1B; GLM-5.2 FP8, Nemotron-Nano-12B-v2, GLM-OCR | SageMaker JumpStart | skipped | Low | model catalogue additions, 3 announcements |
+| High Memory U7i in South America (São Paulo) | EC2 | skipped | Low | — |
+
+**Worth revisiting:** Elastic Disaster Recovery preserving UEFI boot mode is the
+classic silent-failure fix — servers that replicate fine and then fail to boot
+after failover. Narrow audience, real pain.
+
+**Event news for the weekly:** the 10 August AWS Weekly Roundup covers the AWS
+Heroes Summit, plus Dogwood and Kiro Crew. First event news since the series
+started — belongs in the Saturday roundup.
+
+---
+
 ## 7 August 2026 — covered by post #6
 
 A thin day: only five qualifying items. The winner was clear, but on a day like
