@@ -1,21 +1,25 @@
 # Media credits
 
-Hero background clips and ambience for the home page. Recorded here because a
-filename does not survive a year of memory, and "where did this come from" is
-a question with legal weight rather than a curiosity.
+Hero background clips and ambience for the home page and blog. Recorded here
+because a filename does not survive a year of memory, and "where did this come
+from" is a question with legal weight rather than a curiosity.
+
+Rotation lives in `blog/assets/hero-media.js`: the ISO week picks a theme, the
+day picks a clip within it, and audio rotates on the theme's recurrence so a
+theme does not sound identical every time it comes round.
 
 ## Video
 
-Sourced from **Pexels** (https://www.pexels.com/), whose licence permits use
-on a personal or commercial site without attribution. Attribution is kept
-anyway: the numeric prefix of each original filename is the Pexels asset ID,
-so any clip traces back to `https://www.pexels.com/video/<id>/`.
+Sourced from **Pexels**, whose licence permits use on a personal or
+commercial site without attribution. The numeric prefix of each original
+filename is the Pexels asset ID, so any clip traces back to
+`https://www.pexels.com/video/<id>/`.
 
-Originals were 4K and 1440p masters totalling about 1.9 GB. Each is re-encoded
-to a 1080p loop of at most 12 seconds with the audio stripped, since the hero
-plays muted behind a dark overlay. Ocean uses a higher CRF than the rest:
-churning water is high-entropy and compresses badly, and at CRF 32 it is
-visually indistinguishable behind the overlay.
+Originals were 4K and 1440p masters totalling about 2 GB. Each is re-encoded to
+a 1080p loop of at most 12 seconds with audio stripped, since the hero plays
+muted behind a dark overlay. Ocean and rain use a higher CRF: moving water is
+high-entropy and compresses badly, and the difference is invisible behind the
+overlay.
 
 ### ocean — 7 clips
 
@@ -59,11 +63,14 @@ visually indistinguishable behind the overlay.
 | `forest-12.mp4` | 6250415 | `6250415-hd_1920_1080_25fps.mp4` |
 | `forest-13.mp4` | 7936001 | `7936001-uhd_3840_2160_30fps.mp4` |
 
-### rain — no clips yet
+### rain — 4 clips
 
-The first download turned out to be jungle foliage rather than rainfall;
-those clips moved to `forest`. `COUNTS.rain` is 0, so rain weeks fall
-back to ocean until replacements land.
+| file | Pexels ID | original |
+|:--|:--|:--|
+| `rain-1.mp4` | 12879727 | `12879727_3840_2160_30fps.mp4` |
+| `rain-2.mp4` | 14034335 | `14034335_3840_2160_30fps.mp4` |
+| `rain-3.mp4` | 3813820 | `3813820-hd_1920_1080_24fps.mp4` |
+| `rain-4.mp4` | 4828773 | `4828773-hd_1920_1080_25fps.mp4` |
 
 ### sunset — 7 clips
 
@@ -93,10 +100,8 @@ back to ocean until replacements land.
 
 ## Audio
 
-Ambience rotates on the theme's *recurrence* rather than the day, so a theme
-sounds different each of the eight or nine times it comes round. Every track is
-mono, 96 kb/s, up to 2:30, loudness-normalised to about -18 LUFS so themes do
-not jump in volume when the week turns.
+Every track is mono, 96 kb/s, up to 2:30, loudness-normalised to about
+-18 LUFS so themes do not jump in volume when the week turns.
 
 | file | source | original |
 |:--|:--|:--|
@@ -104,22 +109,26 @@ not jump in volume when the week turns.
 | `mountains-1.mp3` | Pixabay | `boopul-indian-bansuri-flute-tarana-raga-music-525950.mp3` |
 | `mountains-2.mp3` | Pixabay | `boopul-still-cedar-bansuri-meditation-432hz-525924.mp3` |
 | `mountains-3.mp3` | Pixabay | `boopul-bansuri-lantern-night-healing-432hz-raga-525920.mp3` |
-| `forest-1.mp3` | Pixabay | `atlasaudio-ambient-ambient-music-576612.mp3` |
-| `forest-2.mp3` | chosic.com | `Veena_Kinhal_-_01_-_Haratanaya_Sree(chosic.com).mp3` |
-| `forest-3.mp3` | Pixabay | `boopul-bansuri-amp-sitar-healing-amp-balance-ahir-bhairav-raga-538687.mp3` |
-| `rain-1.mp3` | Pixabay | `alex-morgan-ambient-background-soft-air-drift-575882.mp3` |
-| `rain-2.mp3` | Pixabay | `celeronbeats-cozy-bedroom-rain-amp-ambient-sounds-574987.mp3` |
-| `sunset-1.mp3` | Pixabay | `alban_gogh-the-star-of-the-county-down-traditional-irish-ballad-198019.mp3` |
-| `sunset-2.mp3` | Pixabay | `chrispixer-sad-violin-4-343723.mp3` |
-| `sunset-3.mp3` | Pixabay | `chrispixer-sad-violin-3-343724.mp3` |
+| `mountains-4.mp3` | Pixabay | `saseendran-f-minor-veena-522212.mp3` |
+| `mountains-5.mp3` | Pixabay | `saseendran-veena-piano-bass-raga-sama-377963.mp3` |
+| `forest-1.mp3` | Pixabay | `harumachimusic-forest-moon-mysterious-fantastic-piano-192167.mp3` |
+| `forest-2.mp3` | Pixabay | `musicword-forest-night-306505.mp3` |
+| `forest-3.mp3` | Pixabay | `musicword-moonlit-night-320134.mp3` |
+| `rain-1.mp3` | Pixabay | `celeronbeats-cozy-bedroom-rain-amp-ambient-sounds-574987.mp3` |
+| `rain-2.mp3` | Pixabay | `alex-morgan-ambient-background-soft-air-drift-575882.mp3` |
+| `rain-3.mp3` | Pixabay | `chrispixer-sad-violin-4-343723.mp3` |
+| `rain-4.mp3` | Pixabay | `chrispixer-sad-violin-3-343724.mp3` |
+| `rain-5.mp3` | Pixabay | `alban_gogh-the-star-of-the-county-down-traditional-irish-ballad-198019.mp3` |
+| `sunset-1.mp3` | Pixabay | `clavier-music-aesthetic-sunset-342199.mp3` |
 | `boho-1.mp3` | Pixabay | `alex-morgan-ambient-background-soft-air-drift-575882.mp3` |
 | `boho-2.mp3` | Pixabay | `rungstudiorecords-dedication-sitar-tune-391624.mp3` |
 | `boho-3.mp3` | Pixabay | `43861138-bansu-effect-208830.mp3` |
 
-### Licence note
+### Notes
 
-Pixabay audio requires no attribution. **`forest-2.mp3` came from chosic.com,
-which aggregates tracks under varying licences — several are Creative Commons
-BY, which requires visible credit.** Confirm that track's licence before
-treating it as attribution-free; if it is CC-BY the credit belongs on the page,
-not only in this file.
+- Instrument-to-theme mapping was chosen by Jayanth, not inferred: bansuri and
+  veena on mountains, violin on rain (explicitly not sunset), dedicated forest
+  and sunset tracks.
+- `boho-1.mp3` and `rain-2.mp3` are the same recording. Deliberate; they are
+  never heard in the same week.
+- Pixabay audio requires no attribution.

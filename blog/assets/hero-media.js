@@ -54,16 +54,15 @@
   // — forest absorbed a set of jungle clips, boho grew by two — so the day
   // index has to wrap on the real count rather than assume seven.
   //
-  // rain is 0 on purpose: its downloaded clips turned out to be foliage
-  // rather than rainfall and are being re-sourced. A theme at 0 falls
-  // straight through to the fallback, so rain weeks show ocean until its
-  // files land. scripts/validate_hero_media.py fails if these numbers drift
-  // from what is actually on disk.
-  var COUNTS = { ocean: 7, mountains: 7, forest: 13, sunset: 7, boho: 9, rain: 0 };
+  // A theme at 0 falls straight through to the fallback, which is how a
+  // half-filled theme ships without breaking anything.
+  // scripts/validate_hero_media.py fails if these numbers drift from what
+  // is actually on disk.
+  var COUNTS = { ocean: 7, mountains: 7, forest: 13, sunset: 7, boho: 9, rain: 4 };
 
   // Audio is counted separately: there are far fewer tracks than clips, and
   // they rotate per theme-recurrence rather than per day.
-  var AUDIO_COUNTS = { ocean: 1, mountains: 3, forest: 3, rain: 2, sunset: 3, boho: 3 };
+  var AUDIO_COUNTS = { ocean: 1, mountains: 5, forest: 3, rain: 5, sunset: 1, boho: 3 };
 
   var now = new Date();
   // Some ISO years have 53 weeks — 2026 does, because 1 January was a
