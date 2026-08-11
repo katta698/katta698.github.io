@@ -114,6 +114,8 @@ Every track is mono, 96 kb/s, up to 2:30, loudness-normalised to about
 | file | source | original |
 |:--|:--|:--|
 | `ocean-1.mp3` | previously sourced | `ocean beach ambience` |
+| `ocean-2.mp3` | Pixabay | `atlasaudio-ambient-ambient-music-576612.mp3` |
+| `ocean-3.mp3` | Pixabay | `boopul-bansuri-amp-sitar-healing-amp-balance-ahir-bhairav-raga-538687.mp3` |
 | `mountains-1.mp3` | Pixabay | `boopul-indian-bansuri-flute-tarana-raga-music-525950.mp3` |
 | `mountains-2.mp3` | Pixabay | `boopul-still-cedar-bansuri-meditation-432hz-525924.mp3` |
 | `mountains-3.mp3` | Pixabay | `boopul-bansuri-lantern-night-healing-432hz-raga-525920.mp3` |
@@ -128,6 +130,7 @@ Every track is mono, 96 kb/s, up to 2:30, loudness-normalised to about
 | `rain-4.mp3` | Pixabay | `chrispixer-sad-violin-3-343724.mp3` |
 | `rain-5.mp3` | Pixabay | `alban_gogh-the-star-of-the-county-down-traditional-irish-ballad-198019.mp3` |
 | `sunset-1.mp3` | Pixabay | `clavier-music-aesthetic-sunset-342199.mp3` |
+| `sunset-2.mp3` | Pixabay | `boopul-bansuri-amp-tabla-raga-todi-indian-classical-music-559801.mp3` |
 | `boho-1.mp3` | Pixabay | `alex-morgan-ambient-background-soft-air-drift-575882.mp3` |
 | `boho-2.mp3` | Pixabay | `rungstudiorecords-dedication-sitar-tune-391624.mp3` |
 | `boho-3.mp3` | Pixabay | `43861138-bansu-effect-208830.mp3` |

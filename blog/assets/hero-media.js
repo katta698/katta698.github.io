@@ -62,7 +62,7 @@
 
   // Audio is counted separately: there are far fewer tracks than clips, and
   // they rotate per theme-recurrence rather than per day.
-  var AUDIO_COUNTS = { ocean: 1, mountains: 5, forest: 3, rain: 5, sunset: 1, boho: 3 };
+  var AUDIO_COUNTS = { ocean: 3, mountains: 5, forest: 3, rain: 5, sunset: 2, boho: 3 };
 
   var now = new Date();
   // Some ISO years have 53 weeks — 2026 does, because 1 January was a
