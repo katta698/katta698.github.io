@@ -63,7 +63,7 @@ overlay.
 | `forest-12.mp4` | 6250415 | `6250415-hd_1920_1080_25fps.mp4` |
 | `forest-13.mp4` | 7936001 | `7936001-uhd_3840_2160_30fps.mp4` |
 
-### rain — 4 clips
+### rain — 7 clips
 
 | file | Pexels ID | original |
 |:--|:--|:--|
@@ -71,6 +71,14 @@ overlay.
 | `rain-2.mp4` | 14034335 | `14034335_3840_2160_30fps.mp4` |
 | `rain-3.mp4` | 3813820 | `3813820-hd_1920_1080_24fps.mp4` |
 | `rain-4.mp4` | 4828773 | `4828773-hd_1920_1080_25fps.mp4` |
+| `rain-5.mp4` | 3813820 | `3813820-hd_1920_1080_24fps.mp4` (second segment, from 16s) |
+| `rain-6.mp4` | 14401942 | `14401942_3840_2160_30fps.mp4` |
+| `rain-7.mp4` | 15161525 | `15161525-uhd_3840_2160_24fps.mp4` |
+
+`rain-5` is a second cut of the same source as `rain-3`, taken from a different
+moment. Two further segments were cut from `rain-4`'s source and discarded: a
+static camera gives different rain but identical framing, and behind hero text
+they read as the same shot.
 
 ### sunset — 7 clips
 

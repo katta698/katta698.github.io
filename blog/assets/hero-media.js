@@ -58,7 +58,7 @@
   // half-filled theme ships without breaking anything.
   // scripts/validate_hero_media.py fails if these numbers drift from what
   // is actually on disk.
-  var COUNTS = { ocean: 7, mountains: 7, forest: 13, sunset: 7, boho: 9, rain: 4 };
+  var COUNTS = { ocean: 7, mountains: 7, forest: 13, sunset: 7, boho: 9, rain: 7 };
 
   // Audio is counted separately: there are far fewer tracks than clips, and
   // they rotate per theme-recurrence rather than per day.
