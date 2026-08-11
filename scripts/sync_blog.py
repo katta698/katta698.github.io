@@ -86,8 +86,8 @@ def stamp_static_pages():
     """Re-stamp asset cache-busting tokens on the pages sync does not build.
 
     index.html, resume.html and now.html are hand-maintained, and the
-    Architecture Series pages are built by publish-draft.yml and otherwise
-    passed through untouched. All of them reference blog.js or site-footer.js,
+    Architecture Series pages are built from _templates/arch-post-template.html
+    at publish time and otherwise passed through untouched. All of them reference blog.js or site-footer.js,
     so without this they would pin whatever token they were written with while
     the files underneath them changed.
 
@@ -594,9 +594,9 @@ def fetch_local_posts():
             # Opt-in accuracy badge. See verification_html() for why this is
             # deliberately NOT auto-stamped on every post.
             "verified": front_matter.get("verified"),
-            # Architecture Series posts (arch-NNN-*.html) are built by a
-            # completely separate pipeline (.github/workflows/publish-draft.yml),
-            # which uses its own template-substitution logic, not this script's
+            # Architecture Series posts (arch-NNN-*.html) are built outside this
+            # script, from _templates/arch-post-template.html by simple
+            # placeholder substitution, not this script's
             # clean_html()/generate_summary()/excerpt(). Reprocessing them here
             # produces genuinely different card text/excerpts than what's live
             # (confirmed live 2026-07-30) -- so main() must treat them as
@@ -2229,8 +2229,8 @@ def main():
     raw_posts = fetch_local_posts()
     print(f"  {len(raw_posts)} posts found")
 
-    # Architecture Series posts are built by a separate pipeline
-    # (publish-draft.yml) — load whatever's already committed for them so
+    # Architecture Series posts are built outside this script, from
+    # _templates/ — load whatever's already committed for them so
     # this script can reuse it verbatim instead of recomputing (and thereby
     # drifting from) their live card text. See fetch_local_posts()'s
     # "externally_built" note for the full story.
@@ -2323,7 +2323,7 @@ def main():
     own_pages = [p for p in posts if not p.get("externally_built")]
     print(
         f"Building {len(own_pages)} post pages ({draft_count} draft, unlisted; "
-        f"{externally_built_count} Architecture Series pages left untouched, built by publish-draft.yml)..."
+        f"{externally_built_count} Architecture Series pages left untouched)..."
     )
     for post in own_pages:
         out_dir = BLOG_DIR / post["slug"]

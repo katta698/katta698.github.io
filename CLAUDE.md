@@ -144,7 +144,20 @@ no vendor facts to verify.
 
 Slugs follow `arch-NNN-short-topic-name`. Source: `posts/arch-NNN-*.html`.
 
-The arch post pages (`blog/aws-architecture-*/index.html`) are **NOT rebuilt by sync_blog.py** — they are built by `.github/workflows/publish-draft.yml`. sync_blog.py only updates their cards in `blog/index.html`.
+The arch post pages (`blog/aws-architecture-*/index.html`) are **NOT rebuilt by
+sync_blog.py** — they are built from `_templates/arch-post-template.html` at
+publish time, by hand or by a per-post build script. sync_blog.py only updates
+their cards in `blog/index.html`.
+
+There is no workflow that builds them. `publish-draft.yml` used to, and this
+file used to say so, but it was deleted in August 2026: it had not run
+successfully since 26 July 2026 and could no longer produce a valid page. It
+built from `posts/arch-002-iam-identity-center.html`, and `posts/` files carry
+only front matter and a body — no `<head>`, no `<title>`, no canonical — so its
+substitutions matched nothing and the output was a headless fragment. Its
+post-publish steps (RAG re-index, README trigger) were already duplicated by
+`on-publish.yml`, which fires on any push touching `blog/index.html` and waits
+for the real Pages deploy rather than sleeping 90 seconds.
 
 This pass-through is driven by a filename check in `sync_blog.py` (`externally_built`): only files named `arch-*` are treated as read-only. See "Starting a new series" below before adding any other series.
 
@@ -216,7 +229,7 @@ it runs.** Decide up front:
    deliberately different. Follow the same two-part convention.
 5. **RAG needs nothing special** — the indexer reads `posts/`, so any file with
    valid frontmatter is picked up. Reindex by invoking the `blog-search-indexer`
-   Lambda (see `publish-draft.yml`).
+   Lambda (see `on-publish.yml`, which does it automatically after each push).
 6. **Progress widgets are not automatic.** They filter on the exact label and
    parse numbers by regex (`#N` in the arch title, `week-(\d+)` in the lab
    slug). A third series needs code added to `build_index_page()`.
