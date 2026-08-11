@@ -50,7 +50,9 @@ CSS_VERSION = _css_version()
 # registered at all.
 def _js_version():
     h = hashlib.md5()
-    for name in ("blog.js", "site-footer.js"):
+    # hero-media.js is included: it is loaded by every page, and without it in
+    # the hash a change to the rotation would ship behind a cached old copy.
+    for name in ("blog.js", "site-footer.js", "hero-media.js"):
         h.update((REPO_ROOT / "blog" / "assets" / name).read_bytes())
     return h.hexdigest()[:8]
 
@@ -1215,6 +1217,7 @@ def build_post_page(post, prev_post, next_post):
 {back_top_html()}
 {footer_html()}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="{ASSETS_URL}/hero-media.js?v={JS_VERSION}"></script>
 <script src="{ASSETS_URL}/blog.js?v={JS_VERSION}"></script>
 <script>
   hljs.highlightAll();
@@ -2042,42 +2045,10 @@ def build_index_page(posts):
 {back_top_html()}
 {footer_html()}
 <audio id="beach-audio" loop preload="none"></audio>
+<script src="{ASSETS_URL}/hero-media.js?v={JS_VERSION}"></script>
 <script src="{ASSETS_URL}/blog.js?v={JS_VERSION}"></script>
 <script>
-(function(){{
-  var VIDEOS=[
-    '/blog/assets/videos/sun.mp4',
-    '/blog/assets/videos/mon.mp4',
-    '/blog/assets/videos/tue.mp4',
-    '/blog/assets/videos/wed.mp4',
-    '/blog/assets/videos/thu.mp4',
-    '/blog/assets/videos/fri.mp4',
-    '/blog/assets/videos/sat.mp4'
-  ];
-  var AUDIO=[
-    '/blog/assets/audio/sun.mp3',
-    '/blog/assets/audio/mon.mp3',
-    '/blog/assets/audio/tue.mp3',
-    '/blog/assets/audio/wed.mp3',
-    '/blog/assets/audio/thu.mp3',
-    '/blog/assets/audio/fri.mp3',
-    '/blog/assets/audio/sat.mp3'
-  ];
-  var day=new Date().getDay();
-  var vid=document.getElementById('hero-video');
-  var aud=document.getElementById('beach-audio');
-  if(vid){{
-    vid.src=VIDEOS[day];
-    var _tryPlay=function(){{if(vid.paused)vid.play().catch(function(){{}});}};
-    vid.addEventListener('loadeddata',_tryPlay,{{once:true}});
-    vid.addEventListener('canplay',_tryPlay,{{once:true}});
-    document.addEventListener('visibilitychange',function(){{if(!document.hidden)_tryPlay();}});
-    window.addEventListener('pageshow',_tryPlay);
-    document.addEventListener('touchstart',_tryPlay,{{once:true}});
-    var _n=0,_iv=setInterval(function(){{_tryPlay();if(++_n>=4||!vid.paused)clearInterval(_iv);}},2000);
-  }}
-  if(aud)aud.src=AUDIO[day];
-}})();
+/* hero rotation moved to blog/assets/hero-media.js — see that file */
 
 function toggleBlogAudio(){{
   var audio=document.getElementById('beach-audio');
