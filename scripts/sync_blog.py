@@ -350,6 +350,17 @@ def load_service_catalogue():
     ambiguous = set(AMBIGUOUS_SERVICES)
     SERVICE_INFO.clear()
 
+    # Names that cannot be disambiguated from ordinary usage at all. "Account"
+    # is a real AWS service, and "AWS account" appears in nearly every post
+    # meaning something else entirely -- requiring the qualifier does not help
+    # when the qualifier IS the ordinary phrase. It read 15 posts before this.
+    # Shared with refresh_aws_services.py, which uses the same list to avoid
+    # fetching product pages for them.
+    links_path = REPO_ROOT / "scripts" / "service_links.json"
+    if links_path.is_file():
+        skip = json.loads(links_path.read_text(encoding="utf-8"))
+        names -= set(skip.get("skip", {}).get("names", []))
+
     path = REPO_ROOT / "scripts" / "aws_services.json"
     if path.is_file():
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -362,6 +373,10 @@ def load_service_catalogue():
     else:
         print("  WARNING: scripts/aws_services.json missing — falling back to "
               "the built-in list. Run scripts/refresh_aws_services.py.")
+
+    if links_path.is_file():
+        names -= set(json.loads(links_path.read_text(encoding="utf-8"))
+                     .get("skip", {}).get("names", []))
 
     # Longest first so "Step Functions" wins over a bare "Step", and so the
     # combined regex below prefers the most specific name at each position.
@@ -1684,10 +1699,22 @@ def build_index_page(posts):
     # recognisable by its bare name in another.
     known_services = KNOWN_SERVICES
 
+    # Posts, not mentions. Mentions reward a long post that repeats a name --
+    # S3 read 386 against Aurora's 48, which says more about how often the
+    # letters "S3" appear in a paragraph about buckets than about how much of
+    # this blog is about S3. One post counts once, however much it says.
+    #
+    # Reuses the per-post service sets already built for the card filter, so
+    # the number on the bar is exactly the number of posts that clicking it
+    # will show. Those two disagreeing is the bug this session just fixed on
+    # the homepage; no reason to reintroduce it here.
     service_counts = {}
-    for text in post_texts:
-        for svc, n in count_services(text).items():
-            service_counts[svc] = service_counts.get(svc, 0) + n
+    for services in post_services.values():
+        for svc in filter(None, services.split("|")):
+            service_counts[svc] = service_counts.get(svc, 0) + 1
+    # post_services is lower-cased for the DOM filter; restore display case.
+    _display = {s.lower(): s for s in KNOWN_SERVICES}
+    service_counts = {_display.get(k, k): v for k, v in service_counts.items()}
 
     # The catalogue is curated, so it can fall behind the writing. This is what
     # stops that happening silently: anything written about repeatedly that the
@@ -1723,7 +1750,7 @@ def build_index_page(posts):
         # The tooltip is AWS's own description, so a reader who does not know
         # what "Firehose" is gets an answer without leaving the page, and the
         # name links to AWS's own page for anyone who wants more than a line.
-        tip = f"{s} — {desc}" if desc else f"{s} — {c} mention{'' if c == 1 else 's'}"
+        tip = f"{s} — {desc}" if desc else f"{s} — {c} post{'' if c == 1 else 's'}"
         width = max(2, round(c / max_count * 100))
         # The name filters the posts on this page; the arrow leaves for AWS.
         # That way the primary click keeps the reader here -- "show me what you
@@ -1955,7 +1982,7 @@ def build_index_page(posts):
       <div class="svc-list">
 {service_rows}
       </div>
-      <div class="svc-foot">All {services_total} AWS services mentioned. Hover for what each does &mdash; descriptions and links are AWS&rsquo;s own.</div>
+      <div class="svc-foot">All {services_total} AWS services covered, by number of posts. Click one to filter; hover for what it does.</div>
     </div>
     <div class="sidebar-card" id="quiz-widget">
       <div class="sidebar-title" style="display:flex;justify-content:space-between;align-items:center">
