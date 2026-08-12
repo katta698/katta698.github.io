@@ -132,7 +132,8 @@ Every track is mono, 96 kb/s, up to 2:30, loudness-normalised to about
 | `sunset-1.mp3` | Pixabay | `clavier-music-aesthetic-sunset-342199.mp3` |
 | `sunset-2.mp3` | Pixabay | `boopul-bansuri-amp-tabla-raga-todi-indian-classical-music-559801.mp3` |
 | `boho-1.mp3` | Pixabay | `rungstudiorecords-dedication-sitar-tune-391624.mp3` |
-| `boho-2.mp3` | Pixabay | `43861138-bansu-effect-208830.mp3` |
+| `boho-2.mp3` | Pixabay | `haletski-archie-cat-150421.mp3` |
+| `boho-3.mp3` | Pixabay | `the_mountain-cat-comedy-130020.mp3` |
 
 ### Notes
 
