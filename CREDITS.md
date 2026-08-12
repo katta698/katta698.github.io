@@ -131,15 +131,15 @@ Every track is mono, 96 kb/s, up to 2:30, loudness-normalised to about
 | `rain-5.mp3` | Pixabay | `alban_gogh-the-star-of-the-county-down-traditional-irish-ballad-198019.mp3` |
 | `sunset-1.mp3` | Pixabay | `clavier-music-aesthetic-sunset-342199.mp3` |
 | `sunset-2.mp3` | Pixabay | `boopul-bansuri-amp-tabla-raga-todi-indian-classical-music-559801.mp3` |
-| `boho-1.mp3` | Pixabay | `alex-morgan-ambient-background-soft-air-drift-575882.mp3` |
-| `boho-2.mp3` | Pixabay | `rungstudiorecords-dedication-sitar-tune-391624.mp3` |
-| `boho-3.mp3` | Pixabay | `43861138-bansu-effect-208830.mp3` |
+| `boho-1.mp3` | Pixabay | `rungstudiorecords-dedication-sitar-tune-391624.mp3` |
+| `boho-2.mp3` | Pixabay | `43861138-bansu-effect-208830.mp3` |
 
 ### Notes
 
 - Instrument-to-theme mapping was chosen by Jayanth, not inferred: bansuri and
   veena on mountains, violin on rain (explicitly not sunset), dedicated forest
   and sunset tracks.
-- `boho-1.mp3` and `rain-2.mp3` are the same recording. Deliberate; they are
-  never heard in the same week.
+- No track is shared between themes. `soft-air-drift` was briefly on boho as
+  well as rain; it is a rain ambience and made no sense under boho footage,
+  so boho now carries only the sitar and bansu pieces.
 - Pixabay audio requires no attribution.
