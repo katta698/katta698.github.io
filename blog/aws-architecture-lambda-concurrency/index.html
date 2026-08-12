@@ -3,18 +3,18 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>AWS Architecture Series #10 — Graviton + Spot: Cutting Compute Cost Without Betting the Fleet | Jayanth Katta Blog</title>
-<meta name="description" content="One Auto Scaling group that runs Graviton and x86 across Spot and On-Demand — mixed instances policy, attribute-based instance type selection, price-capacity-optimized allocation, and Capacity Rebalancing."/>
-<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-graviton-spot-mixed-instances/"/>
+<title>AWS Architecture Series #19 — Lambda Concurrency: The Thousand Every Function Is Quietly Sharing | Jayanth Katta Blog</title>
+<meta name="description" content="An account gets 1,000 concurrent executions per Region and every function shares them. Reserved concurrency is a ceiling as much as a floor, provisioned concurrency is cheaper than on-demand above 60% utilisation, and a separate requests-per-second limit throttles short functions long before the pool fills."/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-lambda-concurrency/"/>
 <meta property="og:type" content="article"/>
 <meta property="og:site_name" content="Jayanth Katta"/>
-<meta property="og:title" content="AWS Architecture Series #10 — Graviton + Spot: Cutting Compute Cost Without Betting the Fleet"/>
-<meta property="og:description" content="One Auto Scaling group that runs Graviton and x86 across Spot and On-Demand — mixed instances policy, attribute-based instance type selection, price-capacity-optimized allocation, and Capacity Rebalancing."/>
-<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-graviton-spot-mixed-instances/"/>
+<meta property="og:title" content="AWS Architecture Series #19 — Lambda Concurrency: The Thousand Every Function Is Quietly Sharing"/>
+<meta property="og:description" content="An account gets 1,000 concurrent executions per Region and every function shares them. Reserved concurrency is a ceiling as much as a floor, provisioned concurrency is cheaper than on-demand above 60% utilisation, and a separate requests-per-second limit throttles short functions long before the pool fills."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-lambda-concurrency/"/>
 <meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
 <meta name="twitter:card" content="summary"/>
-<meta name="twitter:title" content="AWS Architecture Series #10 — Graviton + Spot: Cutting Compute Cost Without Betting the Fleet"/>
-<meta name="twitter:description" content="One Auto Scaling group that runs Graviton and x86 across Spot and On-Demand — mixed instances policy, attribute-based instance type selection, price-capacity-optimized allocation, and Capacity Rebalancing."/>
+<meta name="twitter:title" content="AWS Architecture Series #19 — Lambda Concurrency: The Thousand Every Function Is Quietly Sharing"/>
+<meta name="twitter:description" content="An account gets 1,000 concurrent executions per Region and every function shares them. Reserved concurrency is a ceiling as much as a floor, provisioned concurrency is cheaper than on-demand above 60% utilisation, and a separate requests-per-second limit throttles short functions long before the pool fills."/>
 <meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
 <link rel="icon" href="/favicon-transparent.png" type="image/png"/>
 <link rel="manifest" href="/manifest.webmanifest"/>
@@ -59,20 +59,21 @@
   <div class="post-breadcrumb">
     <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
     <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
-    <span>AWS Architecture Series #10 — Graviton + Spot: Cutting Compute Cost Without Betting the Fleet…</span>
+    <span>AWS Architecture Series #19 — Lambda Concurrency: The Thousand Every Function Is Quietly Sharing…</span>
   </div>
   <article>
     <header class="post-header">
       <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">AWS Architecture Series</span></div>
-      <h1>AWS Architecture Series #10 — Graviton + Spot: Cutting Compute Cost Without Betting the Fleet</h1>
-      <p class="post-description">One Auto Scaling group that runs Graviton and x86 across Spot and On-Demand — mixed instances policy, attribute-based instance type selection, price-capacity-optimized allocation, and Capacity Rebalancing.</p>
+      <h1>AWS Architecture Series #19 — Lambda Concurrency: The Thousand Every Function Is Quietly Sharing</h1>
+      <p class="post-description">An account gets 1,000 concurrent executions per Region and every function shares them. Reserved concurrency is a ceiling as much as a floor, provisioned concurrency is cheaper than on-demand above 60% utilisation, and a separate requests-per-second limit throttles short functions long before the pool fills.</p>
       <div class="post-info">
-        <span>Aug 3, 2026</span>
+        <span>Aug 12, 2026</span>
         <span class="post-info-dot"></span>
         <span>12 min read</span>
       </div>
     </header>
-    <div class="quick-summary-mount" data-slug="aws-architecture-graviton-spot-mixed-instances" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 12 August 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-lambda-concurrency" data-topics="AWS,Architecture,AWS Architecture Series"></div>
     <div class="post-divider"></div>
     <div class="post-body"><div id="jk-post">
 <!-- ═══════════════════════════════════════════════════════════════════════
@@ -184,392 +185,306 @@
   <div class="section" id="challenge">
     <h2>Business Challenge</h2>
     <p>
-      A B2B SaaS company serves its public API from 240 m5.2xlarge instances spread across three
-      Availability Zones in us-east-1. The fleet scales between 180 and 400 instances on a weekday
-      curve. Every instance is x86. Every instance is On-Demand. Every instance is billed at list
-      price.
+      A payments team gets paged: their Lambda function is throttling. Requests are being
+      dropped, and the CloudWatch graph shows the function pinned flat at 400 concurrent
+      executions. The obvious reading is that the account is out of capacity, so someone opens
+      a quota increase request.
     </p>
     <p>
-      Finance flagged EC2 as the largest single line item on the bill, and the platform team already
-      knows the textbook answer is Spot. They also already tried it. Eighteen months ago they added
-      four instance types to the Auto Scaling group, set the Spot allocation strategy to
-      <code>lowest-price</code>, and moved 70% of the fleet onto Spot. A regional demand surge
-      reclaimed most of that capacity inside ten minutes. The group tried to backfill with
-      On-Demand in the same instance types and could not get it. The incident review ended with an
-      informal rule: no Spot on anything a customer touches.
-    </p>
-    <p>
-      That rule is the expensive part. The outage was real, but the diagnosis was wrong — and so
-      was the remedy. Five specific configuration choices caused it, and every one of them is
-      documented as an anti-pattern.
+      The account is not out of capacity. The account-wide limit is 1,000 and total usage is
+      sitting around 350. There are roughly 600 unused units at the moment the function starts
+      dropping requests. The function is throttling <em>because</em> of a setting added six
+      months earlier to make sure it never throttled: a reserved concurrency of 400.
     </p>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">1</span><strong>Four instance types is not diversification</strong></div>
+      <div class="challenge-header"><span class="num">1</span><strong>Reserved concurrency is a ceiling as much as a floor</strong></div>
       <div class="challenge-body">
         <p>
-          A Spot capacity pool is one instance type in one Availability Zone. Four types across
-          three AZs is twelve pools — and correlated ones, since they were all from the same
-          generation and family. AWS's stated rule of thumb is to be flexible across
-          <strong>at least ten instance types</strong> per workload.
+          The name suggests a guarantee, and it is one. It is also a hard cap. AWS states it
+          plainly: reserved concurrency <strong>&#8220;acts as both a lower and upper
+          bound&#8221;</strong> &#8212; it reserves that capacity exclusively for the function
+          <em>while also preventing it from scaling beyond that limit</em>. A function with
+          reserved concurrency <strong>cannot use the unreserved pool at all</strong>, however
+          empty that pool is.
+        </p>
+        <p>
+          So the setting that protects a function from its neighbours also protects the
+          neighbours from it, and nobody reads it that way when they type the number in.
         </p>
         <span class="fix-label">Fix</span>
-        <p>Describe the shape of the compute instead of naming instances, so the group draws from dozens of pools.</p>
+        <p>Read it as &#8220;this function gets exactly this much, ever&#8221;. Size it to peak plus headroom, not to today&#8217;s average.</p>
       </div>
     </div>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">2</span><strong>lowest-price is the highest-risk strategy</strong></div>
+      <div class="challenge-header"><span class="num">2</span><strong>Reserving for one function takes from everyone else</strong></div>
       <div class="challenge-body">
         <p>
-          AWS does not hedge on this one: <em>"We don't recommend the <code>lowest-price</code>
-          strategy because it has the highest risk of interruption for your Spot Instances."</em>
-          The cheapest pool is frequently the thinnest pool, so the group deliberately concentrated
-          itself in the capacity most likely to be reclaimed.
+          Reservations are not additional capacity. They are carved out of the same 1,000, and
+          AWS is explicit that configuring reserved concurrency <strong>counts towards your
+          overall account concurrency limit</strong>. Two functions reserving 400 each leave
+          200 for everything else in that Region &#8212; every cron job, every S3 trigger,
+          every API handler nobody thought about.
+        </p>
+        <p>
+          Worse, the reservation is held whether or not it is used. A function reserving 400
+          and peaking at 60 is not being efficient; it is holding 340 units that no other
+          function can touch. AWS calls this out directly: if the function does not use the
+          concurrency, <strong>you are effectively wasting it</strong>.
         </p>
         <span class="fix-label">Fix</span>
-        <p>Use <code>price-capacity-optimized</code>, which weighs available capacity and price together.</p>
+        <p>Treat the 1,000 as a budget with a running total. A reservation is a withdrawal from a shared account, not a request for more.</p>
       </div>
     </div>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">3</span><strong>There was no floor</strong></div>
+      <div class="challenge-header"><span class="num">3</span><strong>100 units are never yours to reserve</strong></div>
       <div class="challenge-body">
         <p>
-          70% Spot with no guaranteed On-Demand meant a bad enough Spot event could take the
-          serving tier below the minimum needed to carry traffic. Nothing in the configuration
-          reserved a baseline that Spot conditions could not touch.
+          There is a floor under the shared pool. <strong>Lambda always holds back 100 units
+          for functions that do not reserve any</strong>, so on a default account the most you
+          can reserve across every function combined is <strong>900</strong>. Raise the account
+          limit to 2,000 and the ceiling becomes 1,900 &#8212; the 100 is permanent, not
+          proportional.
+        </p>
+        <p>
+          This is the number that turns a tidy allocation spreadsheet into a failed API call.
+          Four functions at 250 each looks like exactly 1,000 and is refused.
         </p>
         <span class="fix-label">Fix</span>
-        <p>Set <code>OnDemandBaseCapacity</code> to the instance count that must exist regardless of Spot availability.</p>
+        <p><code>aws lambda get-account-settings</code> reports <code>UnreservedConcurrentExecutions</code> &#8212; what is genuinely still allocatable, not what the arithmetic suggests.</p>
       </div>
     </div>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">4</span><strong>Replacement was reactive</strong></div>
+      <div class="challenge-header"><span class="num">4</span><strong>There is a second ceiling, counted in requests</strong></div>
       <div class="challenge-body">
         <p>
-          Without Capacity Rebalancing, Auto Scaling does not replace a Spot instance until after
-          the Spot service has interrupted it and its health check has failed. The group spent the
-          surge permanently behind the interruptions rather than ahead of them.
+          Concurrency is not the only quota. Lambda enforces a requests-per-second limit of
+          <strong>ten times your concurrency quota</strong> &#8212; 10,000 req/s on a default
+          account. For anything slower than 100&nbsp;ms the concurrency limit binds first and
+          this never comes up. Below 100&nbsp;ms it binds first, and the arithmetic that says
+          you have room is wrong.
         </p>
-        <span class="fix-label">Fix</span>
-        <p>Enable Capacity Rebalancing to act on the rebalance recommendation, which arrives ahead of the two-minute notice.</p>
-      </div>
-    </div>
-
-    <div class="challenge-card">
-      <div class="challenge-header"><span class="num">5</span><strong>Failing over to On-Demand made it worse</strong></div>
-      <div class="challenge-body">
         <p>
-          This is the counterintuitive one. AWS explicitly discourages failing over to On-Demand to
-          handle interruptions, because <em>"failing over to On-Demand Instances can inadvertently
-          drive interruptions for your other Spot Instances"</em> — and once a type-and-AZ
-          combination is under pressure on Spot, On-Demand in that same combination is often
-          unavailable too. The backfill attempt competed with the capacity it was trying to rescue.
+          AWS&#8217;s own worked example: a 20&nbsp;ms function at 30,000 req/s needs a
+          concurrency of just 600. Well inside the 1,000 limit &#8212; and it throttles anyway,
+          at a third of the offered load, with 400 units unused. The fix is a concurrency
+          increase to 3,000, requested not because concurrency is short but because it is the
+          only way to raise the request ceiling.
         </p>
         <span class="fix-label">Fix</span>
-        <p>Diversify wide enough that no single pool matters, rather than building an escape hatch that amplifies the failure.</p>
+        <p>For sub-100&nbsp;ms functions, size on requests per second first. Concurrency will look fine right up until it throttles.</p>
       </div>
     </div>
   </div>
 
   <div class="section" id="architecture">
     <h2>Architecture</h2>
-    <p>
-      The target is one Auto Scaling group that runs two CPU architectures across two purchase
-      models. Graviton instances carry the fleet when they are available, because their discount
-      compounds with the Spot discount. x86 instances exist mainly to widen the pool count. A fixed
-      slice of On-Demand underneath both guarantees the service survives a total Spot withdrawal.
-    </p>
 
-    <figure class="screenshot">
-      <img src="/blog/assets/diagrams/arch-010-mixed-instances.svg" alt="Diagram showing two launch templates, one arm64 and one x86_64, feeding a single mixed instances policy that contains two InstanceRequirements blocks. The resulting fleet is Spot Graviton capacity, Spot x86 capacity, and an On-Demand base, with Capacity Rebalancing handling at-risk instances." />
-      <figcaption>One Auto Scaling group, two launch templates, two architectures. The per-override launch template is what allows arm64 and x86 instance types to coexist in a single group, because each needs a different AMI.</figcaption>
-    </figure>
+    <img src="/blog/assets/diagrams/arch-019-concurrency-pool.svg" alt="Diagram: the shared 1,000-unit concurrency pool with two reserved slices, the unreserved remainder and the permanently held-back 100; what reserved and provisioned concurrency each do; the 60% utilisation break-even between provisioned and on-demand pricing; and the requests-per-second ceiling at ten times the concurrency quota.">
 
-    <h3>The mechanism that makes this possible</h3>
+    <h3>Two controls that are not alternatives</h3>
     <p>
-      A Graviton instance needs an arm64 AMI and an x86 instance needs an x86_64 AMI, so a single
-      launch template cannot serve both. The feature that resolves this is easy to miss: each entry
-      in the mixed instances policy's <code>Overrides</code> array can carry its own
-      <code>LaunchTemplateSpecification</code>. The group-level launch template is the default, and
-      any override that names its own template uses that one instead.
+      Reserved and provisioned concurrency get discussed as though you pick one. They answer
+      different questions and can be set together on the same function.
     </p>
     <p>
-      Combine that with attribute-based instance type selection and you get two blocks — one
-      selecting Graviton by CPU manufacturer, one selecting Intel and AMD — each bound to the
-      correct AMI:
+      <strong>Reserved</strong> answers <em>how much of the shared pool is this function
+      entitled to, and limited to</em>. It costs nothing and does nothing about cold starts.
+      A reserved function still initialises an environment on first use, and AWS notes that
+      with reserved concurrency alone Lambda <strong>might completely terminate an environment
+      after a period of inactivity</strong> &#8212; so the next request pays the cold start
+      again.
+    </p>
+    <p>
+      <strong>Provisioned</strong> answers <em>how many environments should already be warm</em>.
+      It costs money and says nothing about entitlement. Past its number the function spills
+      into the unreserved pool and those spillover requests do experience cold starts &#8212;
+      unless reserved concurrency is also set, in which case it throttles at the reserved
+      number instead.
     </p>
 
-    <div class="code-block">
-      <div class="code-header">
-        <span class="code-lang">config.json</span>
-        <div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
-      </div>
-<pre>{
-  "AutoScalingGroupName": "api-tier",
-  "MixedInstancesPolicy": {
-    "LaunchTemplate": {
-      "LaunchTemplateSpecification": {
-        "LaunchTemplateName": "api-tier-arm64",
-        "Version": "$Latest"
-      },
-      "Overrides": [
-        {
-          "InstanceRequirements": {
-            "VCpuCount":  { "Min": 4, "Max": 16 },
-            "MemoryMiB":  { "Min": 8192 },
-            "CpuManufacturers": ["amazon-web-services"],
-            "BaselinePerformanceFactors": {
-              "Cpu": { "References": [{ "InstanceFamily": "c6g" }] }
-            }
-          }
-        },
-        {
-          "InstanceRequirements": {
-            "VCpuCount":  { "Min": 4, "Max": 16 },
-            "MemoryMiB":  { "Min": 8192 },
-            "CpuManufacturers": ["intel", "amd"],
-            "BaselinePerformanceFactors": {
-              "Cpu": { "References": [{ "InstanceFamily": "c6i" }] }
-            }
-          },
-          "LaunchTemplateSpecification": {
-            "LaunchTemplateName": "api-tier-x86",
-            "Version": "$Latest"
-          }
-        }
-      ]
-    },
-    "InstancesDistribution": {
-      "OnDemandBaseCapacity": 60,
-      "OnDemandPercentageAboveBaseCapacity": 20,
-      "SpotAllocationStrategy": "price-capacity-optimized"
-    }
-  },
-  "CapacityRebalance": true,
-  "MinSize": 180,
-  "MaxSize": 400,
-  "DesiredCapacity": 240,
-  "VPCZoneIdentifier": "subnet-a,subnet-b,subnet-c"
-}</pre>
+    <h3>Provisioned is not the expensive option</h3>
+    <p>
+      This is the part that gets assumed rather than calculated. Provisioned concurrency is
+      usually described as a premium for latency. Per GB-second of actual work it is
+      <em>cheaper</em>:
+    </p>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead><tr><th></th><th>Held</th><th>Running</th><th>Per busy GB-second</th></tr></thead>
+        <tbody>
+          <tr><td>On-demand</td><td>&#8212;</td><td>$0.0000166667</td><td>$0.0000166667</td></tr>
+          <tr><td>Provisioned</td><td>$0.0000041667</td><td>$0.0000097222</td><td><strong>$0.0000138889</strong></td></tr>
+        </tbody>
+      </table>
     </div>
-
     <p>
-      Note what is <em>not</em> in that file: a list of instance types. The group is told the shape
-      of the compute it needs — 4 to 16 vCPUs, at least 8 GiB of memory, CPU performance no
-      worse than the named baseline family — and Auto Scaling resolves that to whatever
-      currently matches. New instance generations are picked up automatically as AWS releases them,
-      which is the main reason attribute-based selection beats a hand-maintained list.
+      The catch is the holding charge, which runs whether anything is invoked or not. Set the
+      two expressions equal and the crossover is exact: <strong>60% utilisation</strong>. An
+      environment busy more than 60% of the time is cheaper provisioned than on-demand, and the
+      cold-start benefit comes free. Below 60% you are paying for idle warmth.
+    </p>
+    <p>
+      That reframes the decision. Provisioned concurrency is not a latency tax &#8212; it is a
+      commitment discount, priced like every other commitment discount on AWS, and it pays off
+      at exactly the utilisation where a reserved instance would.
     </p>
 
-    <h3>How capacity gets filled</h3>
-    <div class="flow">
-      <div class="flow-step">
-        <div class="flow-icon">1</div>
-        <div class="flow-content">
-          <h4>The On-Demand base is satisfied first</h4>
-          <p><code>OnDemandBaseCapacity: 60</code> means the first 60 instances are On-Demand regardless of anything else. This is the floor the service is sized to survive on.</p>
-        </div>
-      </div>
-      <div class="flow-step">
-        <div class="flow-icon">2</div>
-        <div class="flow-content">
-          <h4>Everything above the base splits 20/80</h4>
-          <p><code>OnDemandPercentageAboveBaseCapacity: 20</code> applies only above the base. At a desired capacity of 240 that is 60 On-Demand plus 36 more On-Demand and 144 Spot.</p>
-        </div>
-      </div>
-      <div class="flow-step">
-        <div class="flow-icon">3</div>
-        <div class="flow-content">
-          <h4>Spot is drawn from the deepest cheap pools</h4>
-          <p><code>price-capacity-optimized</code> selects pools that are simultaneously least likely to be interrupted and lowest priced, across both the arm64 and x86 requirement blocks.</p>
-        </div>
-      </div>
-      <div class="flow-step">
-        <div class="flow-icon">4</div>
-        <div class="flow-content">
-          <h4>At-risk instances are replaced before they die</h4>
-          <p>Capacity Rebalancing launches a replacement on the rebalance recommendation, waits for it to pass its health check, and only then terminates the at-risk instance.</p>
-        </div>
-      </div>
-    </div>
+    <h3>The configuration that silently disables a function</h3>
+    <p>
+      Setting provisioned concurrency equal to reserved concurrency looks like the tidy
+      end-state: every invocation lands on a warm environment, nothing spills, nothing
+      throttles. AWS documents the side effect, and it is not obvious: that configuration
+      <strong>throttles the unpublished version</strong>, <code>$LATEST</code>, and prevents it
+      from executing.
+    </p>
+    <p>
+      Provisioned concurrency attaches to a published version or alias; <code>$LATEST</code>
+      cannot have it. If the reservation is entirely consumed by versions, nothing is left for
+      <code>$LATEST</code> to run in. Deploys through an alias are unaffected. Anyone testing
+      against the unqualified ARN finds the function simply does not respond.
+    </p>
   </div>
 
   <div class="section" id="why-it-matters">
     <h2>Why This Architecture Holds Up</h2>
 
-    <h3>Pool count is the actual availability lever</h3>
+    <h3>Sizing on peak, not on averages</h3>
     <p>
-      The original design's problem was arithmetic. Four instance types across three AZs is twelve
-      pools. Two attribute blocks that each resolve to twenty-odd instance types across three AZs is
-      well over a hundred, spanning two CPU architectures and three CPU vendors. A surge that
-      drains one family no longer drains the fleet, because the group was never concentrated there.
-      This is why the fix is diversification rather than a failover path — the failover path is
-      what turned a capacity squeeze into an outage.
+      Concurrency is not requests per second, and conflating them produces reservations that
+      are wrong by an order of magnitude. The formula is
+      <code>concurrency = requests per second &#215; average duration in seconds</code>. A
+      hundred requests a second at 500&nbsp;ms is 50 concurrent, not 100. The same hundred at
+      two seconds is 200.
+    </p>
+    <p>
+      That makes duration the lever nobody reaches for. Halving a function&#8217;s duration
+      halves its concurrency need, releases capacity back to the shared pool, and reduces the
+      GB-seconds billed. A reservation sized from a p99 duration that has since improved is
+      capacity nobody can use.
     </p>
 
-    <div class="callout blue">
-      <strong>The rule of thumb worth memorising</strong>
-      <p>AWS recommends being flexible across at least ten instance types per workload, and using attribute-based selection specifically because it keeps that flexibility current as new instance types launch.</p>
-    </div>
-
-    <h3>The two discounts multiply</h3>
+    <h3>The scaling rate is separate again</h3>
     <p>
-      AWS states that Graviton-based instances cost up to 20% less than comparable x86 instances,
-      and that Spot offers savings of up to 90% against On-Demand. These are independent
-      reductions applied to the same instance-hour, so a Graviton Spot instance is discounted off an
-      already lower base price. That compounding is the reason to put Graviton first in the policy
-      rather than treating it as an equal alternative to x86.
+      Having the concurrency does not mean getting it instantly. Lambda scales each function by
+      at most <strong>1,000 environments every 10 seconds</strong>. For a function going from
+      idle to 3,000 concurrent, that is roughly 30 seconds of ramp regardless of quota &#8212;
+      which is why a load test that steps straight to peak reports throttling that never
+      appears in production, where traffic arrives on a curve.
     </p>
     <p>
-      It also changes the migration calculus. Teams often stall on Graviton because rebuilding for
-      arm64 feels like a project with no immediate payoff. Inside a mixed instances group the
-      payoff is immediate and the risk is bounded: if the arm64 image has a problem, those instances
-      fail their health checks and the group fills from the x86 block instead.
+      Provisioned concurrency has its own allocation lag: Lambda begins allocating after
+      <strong>a minute or two of preparation</strong>, and none of the environments are usable
+      until all of them are ready. Scheduling provisioned capacity for a 9am peak means
+      scheduling it for 8:45, not 8:59.
     </p>
 
-    <h3>Capacity Rebalancing buys minutes instead of seconds</h3>
+    <h3>Reservations age badly</h3>
     <p>
-      A Spot interruption notice gives you two minutes. The rebalance recommendation is a separate,
-      earlier signal that fires when an instance moves to elevated risk. Acting on the earlier
-      signal is what turns a scramble into an orderly drain — connections finish, the load
-      balancer deregisters the instance, and the replacement is already serving before the old one
-      stops.
+      Every number here is set once, during an incident or a launch, and then persists. The
+      traffic that justified 400 units becomes 80. The function whose p99 was two seconds now
+      runs in 300&nbsp;ms. Nothing alerts on a reservation that is too large, because from the
+      function&#8217;s own perspective nothing is wrong &#8212; it never throttles.
     </p>
     <p>
-      Two behaviours are worth knowing before enabling it. Auto Scaling may temporarily exceed the
-      group's maximum size by up to 10% of desired capacity, because it launches before it
-      terminates — a group pinned at its ceiling can otherwise stall rebalancing entirely. And
-      it will only launch a replacement if that replacement has the same or better availability
-      than the instance it replaces, so it will not knowingly trade one at-risk instance for
-      another.
+      The damage shows up somewhere else entirely: an unrelated function throttling against a
+      shrunken shared pool, investigated by a different team, who find their own function
+      blameless and their own limits untouched.
     </p>
-
-    <div class="callout amber">
-      <strong>It replaces more instances, not fewer</strong>
-      <p>Capacity Rebalancing does not reduce your interruption rate. It acts earlier, which means more total replacements — you are buying graceful continuity, not fewer events. Budget for the extra churn.</p>
-    </div>
   </div>
 
   <div class="section" id="key-decisions">
     <h2>Key Architecture Decisions</h2>
 
     <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
-    <table>
-      <tr>
-        <th>Decision</th>
-        <th>Choice</th>
-        <th>Reasoning</th>
-      </tr>
-      <tr>
-        <td>Spot allocation strategy</td>
-        <td><code>price-capacity-optimized</code></td>
-        <td>AWS's recommended default. Weighs real-time capacity alongside price, so the group avoids thin pools instead of seeking them out.</td>
-      </tr>
-      <tr>
-        <td>Instance selection</td>
-        <td>Attribute-based, two blocks</td>
-        <td>Maximises pool count and adopts new instance generations automatically. A static list goes stale and silently narrows over time.</td>
-      </tr>
-      <tr>
-        <td>Architecture mix</td>
-        <td>Graviton block first, x86 second</td>
-        <td>Graviton's price advantage compounds with the Spot discount. x86 exists to widen the pool count and as a fallback if the arm64 image regresses.</td>
-      </tr>
-      <tr>
-        <td>On-Demand floor</td>
-        <td><code>OnDemandBaseCapacity</code>, not a percentage</td>
-        <td>A percentage of a shrinking group also shrinks. An absolute base is a real floor that scaling activity cannot erode.</td>
-      </tr>
-      <tr>
-        <td>Weak-CPU protection</td>
-        <td><code>BaselinePerformanceFactors</code></td>
-        <td>Attribute matching on vCPU count alone will happily select older, slower cores. A baseline family sets a performance floor.</td>
-      </tr>
-      <tr>
-        <td>Interruption handling</td>
-        <td>Capacity Rebalancing + lifecycle hook</td>
-        <td>Acts on the rebalance recommendation rather than the two-minute notice, giving connection draining time to complete.</td>
-      </tr>
-    </table>
+      <table>
+        <thead>
+          <tr><th>Situation</th><th>Setting</th><th>Because</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Function must never be starved by noisy neighbours</td>
+            <td>Reserved, sized to peak</td>
+            <td>Free, and the only thing that guarantees capacity. Remember it also caps.</td>
+          </tr>
+          <tr>
+            <td>Function must never overwhelm a downstream database</td>
+            <td>Reserved, sized to what the database tolerates</td>
+            <td>The cap is the point here rather than the side effect.</td>
+          </tr>
+          <tr>
+            <td>Latency-sensitive and busy more than 60% of the time</td>
+            <td>Provisioned</td>
+            <td>Cheaper per GB-second than on-demand at that utilisation, cold starts removed as a bonus.</td>
+          </tr>
+          <tr>
+            <td>Latency-sensitive but spiky and mostly idle</td>
+            <td>On-demand, or scheduled provisioned</td>
+            <td>Below 60% the holding charge outweighs the discount. Application Auto Scaling can schedule it around known peaks.</td>
+          </tr>
+          <tr>
+            <td>Java 11 or 17, cold starts hurt</td>
+            <td>SnapStart</td>
+            <td>Addresses startup at no additional cost. Cannot be combined with provisioned concurrency on the same version.</td>
+          </tr>
+          <tr>
+            <td>Average duration under 100&nbsp;ms</td>
+            <td>Size on requests per second</td>
+            <td>The 10&#215; request ceiling binds before concurrency does. Raising concurrency is the only lever that raises it.</td>
+          </tr>
+          <tr>
+            <td>Everything else</td>
+            <td>Neither</td>
+            <td>The shared pool is the right default. Every reservation is capacity withdrawn from it.</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
 
-    <h3>Constraints to design around</h3>
+    <h3>The audit that pays for itself</h3>
     <p>
-      Several limits in this design are not obvious until you hit them:
+      List every function with reserved concurrency, and beside each put its actual peak
+      concurrency from CloudWatch over the last 90 days. The gap between the two is capacity
+      the account is paying for in flexibility and getting nothing for. In most estates two or
+      three functions account for nearly all of it, reserved during an incident that has long
+      since been fixed.
     </p>
-    <div class="grid-2">
-      <div class="card">
-        <h4>Per-override launch templates are CLI/SDK only</h4>
-        <p>The feature that lets one group run both architectures is not available in the console. Build this with the CLI, CloudFormation, or Terraform, and expect the console to render it incompletely.</p>
-      </div>
-      <div class="card">
-        <h4>Four InstanceRequirements blocks, maximum</h4>
-        <p>You cannot express an unlimited taxonomy of workload shapes in one group. Two architectures plus two size envelopes already exhausts the budget.</p>
-      </div>
-      <div class="card">
-        <h4>The console pins On-Demand allocation to lowest-price</h4>
-        <p>In the console the On-Demand allocation strategy is preselected as lowest price and cannot be changed. Choosing <code>prioritized</code> — which matters if you hold Reserved Instances — requires the API.</p>
-      </div>
-      <div class="card">
-        <h4>Lifecycle hooks must finish inside two minutes</h4>
-        <p>AWS is explicit that the custom action has to complete in under two minutes. A drain routine that waits on long-lived connections will be cut off mid-flight.</p>
-      </div>
-    </div>
-
-    <h3>Price protection is on whether you configure it or not</h3>
     <p>
-      Attribute-based selection enables price protection by default, and the default On-Demand
-      threshold is 20% above the price of the lowest-priced current-generation C, M, or R instance
-      type matching your attributes. For Spot, Auto Scaling applies an optimal threshold
-      automatically unless you override it. This is usually the behaviour you want, but it means the
-      group may silently decline instance types you expected it to use. If you are debugging a group
-      that will not scale out, check price protection before assuming there is no capacity — and
-      note that you can effectively disable it by setting an absurdly high percentage such as
-      <code>999999</code>.
+      Then check <code>UnreservedConcurrentExecutions</code>. If it is close to 100, everything
+      without a reservation is sharing the permanent floor, and the next unexplained throttle
+      is already scheduled.
     </p>
-
-    <div class="callout green">
-      <strong>Preview before you deploy</strong>
-      <p>The <code>GetInstanceTypesFromInstanceRequirements</code> API returns exactly which instance types your attributes resolve to, without launching anything. Run it against both blocks and count the results — if either returns fewer than ten types, the requirements are too narrow.</p>
-    </div>
   </div>
 
   <div class="section" id="closing">
     <h2>Closing Thought</h2>
     <p>
-      The team in this scenario did not have a Spot problem. They had a concentration problem that
-      Spot exposed. Twelve correlated capacity pools, a strategy that actively sought the thinnest
-      of them, no guaranteed floor, and a failover path that competed with its own fleet — any
-      one of those is enough to produce the outage they had, and none of them is really about Spot.
+      Concurrency reads like a per-function setting and behaves like a shared one. That is the
+      whole difficulty. Every dialog presents it in the context of one function, the metrics
+      are per function, the alarm fires on one function &#8212; and the resource being divided
+      is regional and finite, with no view anywhere that shows the division.
     </p>
     <p>
-      What makes the mixed instances policy worth the configuration effort is that it turns the
-      question from <em>"which instances do we want?"</em> into <em>"what does this workload
-      actually need, and how many different ways can AWS satisfy it?"</em> Answer the second
-      question broadly enough and the capacity math stops being fragile. The cost reduction is
-      almost a side effect — the fleet gets cheaper because it got more flexible, not the other
-      way round.
+      The controls do not help. One is called <em>reserved</em> and enforces a maximum. The
+      other is called <em>provisioned</em> and turns out to be a discount rather than a
+      premium. Both count against the same total, and the limit most likely to stop a fast
+      function is measured in requests rather than concurrency at all. None of that is hidden
+      &#8212; it is all in the documentation, in plain terms. It just contradicts what the
+      names suggest, and the names are what people configure from.
     </p>
-    <p>
-      The honest caveat: none of this makes Spot suitable for stateful or tightly coupled
-      workloads. AWS says so directly, and no amount of diversification changes it. This pattern
-      works for the stateless serving tier, the CI fleet, and the batch pool. It does not work for
-      the database, and the discipline to keep that line clear is what makes the rest of it safe.
-    </p>
-
-    <div class="callout">
-      <strong>Next in this series</strong>
-      <p>Messaging — SQS, SNS, and EventBridge, and the decision tree enterprises consistently get wrong. Three services with overlapping descriptions, three genuinely different delivery models, and a set of failure modes that only appear once you have picked the wrong one.</p>
-    </div>
   </div>
 
   <div class="section" id="reference">
     <h2>Official AWS Reference</h2>
     <ul>
-      <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-mixed-instances-groups.html" target="_blank" rel="noopener">Auto Scaling groups with multiple instance types and purchase options</a> &mdash; the mixed instances policy, allocation strategies, attribute-based instance type selection, and the per-override launch templates that allow Graviton and x86 to share a single group.</li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/lambda-concurrency.html" target="_blank" rel="noopener">Understanding Lambda function scaling &#8212; reserved and provisioned concurrency</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/configuration-concurrency.html" target="_blank" rel="noopener">Configuring reserved concurrency for a function</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/provisioned-concurrency.html" target="_blank" rel="noopener">Configuring provisioned concurrency for a function</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html" target="_blank" rel="noopener">Improving startup performance with Lambda SnapStart</a></li>
+      <li><a href="https://aws.amazon.com/lambda/pricing/" target="_blank" rel="noopener">AWS Lambda pricing</a></li>
     </ul>
   </div>
 
@@ -585,15 +500,15 @@
       <span class="tag-badge">AWS</span> <span class="tag-badge">AWS Architecture Series</span>
     </div>
     <!-- post-nav: include prev and/or next links as applicable -->
-    <nav class="post-nav"><a href="/blog/aws-architecture-control-tower-aft/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">Control Tower + AFT: The Multi-Account Foundation Enterprises Actually Ship</span></a></nav>
+    <nav class="post-nav"><a href="/blog/aws-architecture-dynamodb-capacity-modes/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">DynamoDB On-Demand vs Provisioned: The Utilisation Number That Decides It</span></a></nav>
   </article>
   <div class="comments-section">
   <h3>Comments</h3>
   <div id="disqus_thread"></div>
   <script>
     var disqus_config = function () {
-      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-graviton-spot-mixed-instances/';
-      this.page.identifier = 'aws-architecture-graviton-spot-mixed-instances';
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-lambda-concurrency/';
+      this.page.identifier = 'aws-architecture-lambda-concurrency';
     };
     (function() {
       var d = document, s = d.createElement('script');

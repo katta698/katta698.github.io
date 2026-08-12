@@ -1,0 +1,316 @@
+---
+title: 'AWS Architecture Series #19 — Lambda Concurrency: The Thousand Every Function Is Quietly Sharing'
+date: 2026-08-12
+slug: aws-architecture-lambda-concurrency
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-08-12'
+problem: "A payments function is throttling at 400 concurrent executions while the account-wide pool sits two-thirds idle, and the setting that caused it was added to protect that very function."
+builds: "A concurrency budget treated as a shared, finite resource: reservations sized to real peak rather than to comfort, provisioned capacity justified by measured utilisation, and headroom checked against the requests-per-second ceiling as well as the concurrency one."
+catch: "Reserved concurrency is a maximum and a minimum at the same time — it caps the function it was meant to protect, and every unit reserved is a unit no other function can ever use, even when the reserving function is idle."
+---
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A payments team gets paged: their Lambda function is throttling. Requests are being
+      dropped, and the CloudWatch graph shows the function pinned flat at 400 concurrent
+      executions. The obvious reading is that the account is out of capacity, so someone opens
+      a quota increase request.
+    </p>
+    <p>
+      The account is not out of capacity. The account-wide limit is 1,000 and total usage is
+      sitting around 350. There are roughly 600 unused units at the moment the function starts
+      dropping requests. The function is throttling <em>because</em> of a setting added six
+      months earlier to make sure it never throttled: a reserved concurrency of 400.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Reserved concurrency is a ceiling as much as a floor</strong></div>
+      <div class="challenge-body">
+        <p>
+          The name suggests a guarantee, and it is one. It is also a hard cap. AWS states it
+          plainly: reserved concurrency <strong>&#8220;acts as both a lower and upper
+          bound&#8221;</strong> &#8212; it reserves that capacity exclusively for the function
+          <em>while also preventing it from scaling beyond that limit</em>. A function with
+          reserved concurrency <strong>cannot use the unreserved pool at all</strong>, however
+          empty that pool is.
+        </p>
+        <p>
+          So the setting that protects a function from its neighbours also protects the
+          neighbours from it, and nobody reads it that way when they type the number in.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Read it as &#8220;this function gets exactly this much, ever&#8221;. Size it to peak plus headroom, not to today&#8217;s average.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Reserving for one function takes from everyone else</strong></div>
+      <div class="challenge-body">
+        <p>
+          Reservations are not additional capacity. They are carved out of the same 1,000, and
+          AWS is explicit that configuring reserved concurrency <strong>counts towards your
+          overall account concurrency limit</strong>. Two functions reserving 400 each leave
+          200 for everything else in that Region &#8212; every cron job, every S3 trigger,
+          every API handler nobody thought about.
+        </p>
+        <p>
+          Worse, the reservation is held whether or not it is used. A function reserving 400
+          and peaking at 60 is not being efficient; it is holding 340 units that no other
+          function can touch. AWS calls this out directly: if the function does not use the
+          concurrency, <strong>you are effectively wasting it</strong>.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat the 1,000 as a budget with a running total. A reservation is a withdrawal from a shared account, not a request for more.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>100 units are never yours to reserve</strong></div>
+      <div class="challenge-body">
+        <p>
+          There is a floor under the shared pool. <strong>Lambda always holds back 100 units
+          for functions that do not reserve any</strong>, so on a default account the most you
+          can reserve across every function combined is <strong>900</strong>. Raise the account
+          limit to 2,000 and the ceiling becomes 1,900 &#8212; the 100 is permanent, not
+          proportional.
+        </p>
+        <p>
+          This is the number that turns a tidy allocation spreadsheet into a failed API call.
+          Four functions at 250 each looks like exactly 1,000 and is refused.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p><code>aws lambda get-account-settings</code> reports <code>UnreservedConcurrentExecutions</code> &#8212; what is genuinely still allocatable, not what the arithmetic suggests.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>There is a second ceiling, counted in requests</strong></div>
+      <div class="challenge-body">
+        <p>
+          Concurrency is not the only quota. Lambda enforces a requests-per-second limit of
+          <strong>ten times your concurrency quota</strong> &#8212; 10,000 req/s on a default
+          account. For anything slower than 100&nbsp;ms the concurrency limit binds first and
+          this never comes up. Below 100&nbsp;ms it binds first, and the arithmetic that says
+          you have room is wrong.
+        </p>
+        <p>
+          AWS&#8217;s own worked example: a 20&nbsp;ms function at 30,000 req/s needs a
+          concurrency of just 600. Well inside the 1,000 limit &#8212; and it throttles anyway,
+          at a third of the offered load, with 400 units unused. The fix is a concurrency
+          increase to 3,000, requested not because concurrency is short but because it is the
+          only way to raise the request ceiling.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>For sub-100&nbsp;ms functions, size on requests per second first. Concurrency will look fine right up until it throttles.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-019-concurrency-pool.svg" alt="Diagram: the shared 1,000-unit concurrency pool with two reserved slices, the unreserved remainder and the permanently held-back 100; what reserved and provisioned concurrency each do; the 60% utilisation break-even between provisioned and on-demand pricing; and the requests-per-second ceiling at ten times the concurrency quota.">
+
+    <h3>Two controls that are not alternatives</h3>
+    <p>
+      Reserved and provisioned concurrency get discussed as though you pick one. They answer
+      different questions and can be set together on the same function.
+    </p>
+    <p>
+      <strong>Reserved</strong> answers <em>how much of the shared pool is this function
+      entitled to, and limited to</em>. It costs nothing and does nothing about cold starts.
+      A reserved function still initialises an environment on first use, and AWS notes that
+      with reserved concurrency alone Lambda <strong>might completely terminate an environment
+      after a period of inactivity</strong> &#8212; so the next request pays the cold start
+      again.
+    </p>
+    <p>
+      <strong>Provisioned</strong> answers <em>how many environments should already be warm</em>.
+      It costs money and says nothing about entitlement. Past its number the function spills
+      into the unreserved pool and those spillover requests do experience cold starts &#8212;
+      unless reserved concurrency is also set, in which case it throttles at the reserved
+      number instead.
+    </p>
+
+    <h3>Provisioned is not the expensive option</h3>
+    <p>
+      This is the part that gets assumed rather than calculated. Provisioned concurrency is
+      usually described as a premium for latency. Per GB-second of actual work it is
+      <em>cheaper</em>:
+    </p>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead><tr><th></th><th>Held</th><th>Running</th><th>Per busy GB-second</th></tr></thead>
+        <tbody>
+          <tr><td>On-demand</td><td>&#8212;</td><td>$0.0000166667</td><td>$0.0000166667</td></tr>
+          <tr><td>Provisioned</td><td>$0.0000041667</td><td>$0.0000097222</td><td><strong>$0.0000138889</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The catch is the holding charge, which runs whether anything is invoked or not. Set the
+      two expressions equal and the crossover is exact: <strong>60% utilisation</strong>. An
+      environment busy more than 60% of the time is cheaper provisioned than on-demand, and the
+      cold-start benefit comes free. Below 60% you are paying for idle warmth.
+    </p>
+    <p>
+      That reframes the decision. Provisioned concurrency is not a latency tax &#8212; it is a
+      commitment discount, priced like every other commitment discount on AWS, and it pays off
+      at exactly the utilisation where a reserved instance would.
+    </p>
+
+    <h3>The configuration that silently disables a function</h3>
+    <p>
+      Setting provisioned concurrency equal to reserved concurrency looks like the tidy
+      end-state: every invocation lands on a warm environment, nothing spills, nothing
+      throttles. AWS documents the side effect, and it is not obvious: that configuration
+      <strong>throttles the unpublished version</strong>, <code>$LATEST</code>, and prevents it
+      from executing.
+    </p>
+    <p>
+      Provisioned concurrency attaches to a published version or alias; <code>$LATEST</code>
+      cannot have it. If the reservation is entirely consumed by versions, nothing is left for
+      <code>$LATEST</code> to run in. Deploys through an alias are unaffected. Anyone testing
+      against the unqualified ARN finds the function simply does not respond.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Sizing on peak, not on averages</h3>
+    <p>
+      Concurrency is not requests per second, and conflating them produces reservations that
+      are wrong by an order of magnitude. The formula is
+      <code>concurrency = requests per second &#215; average duration in seconds</code>. A
+      hundred requests a second at 500&nbsp;ms is 50 concurrent, not 100. The same hundred at
+      two seconds is 200.
+    </p>
+    <p>
+      That makes duration the lever nobody reaches for. Halving a function&#8217;s duration
+      halves its concurrency need, releases capacity back to the shared pool, and reduces the
+      GB-seconds billed. A reservation sized from a p99 duration that has since improved is
+      capacity nobody can use.
+    </p>
+
+    <h3>The scaling rate is separate again</h3>
+    <p>
+      Having the concurrency does not mean getting it instantly. Lambda scales each function by
+      at most <strong>1,000 environments every 10 seconds</strong>. For a function going from
+      idle to 3,000 concurrent, that is roughly 30 seconds of ramp regardless of quota &#8212;
+      which is why a load test that steps straight to peak reports throttling that never
+      appears in production, where traffic arrives on a curve.
+    </p>
+    <p>
+      Provisioned concurrency has its own allocation lag: Lambda begins allocating after
+      <strong>a minute or two of preparation</strong>, and none of the environments are usable
+      until all of them are ready. Scheduling provisioned capacity for a 9am peak means
+      scheduling it for 8:45, not 8:59.
+    </p>
+
+    <h3>Reservations age badly</h3>
+    <p>
+      Every number here is set once, during an incident or a launch, and then persists. The
+      traffic that justified 400 units becomes 80. The function whose p99 was two seconds now
+      runs in 300&nbsp;ms. Nothing alerts on a reservation that is too large, because from the
+      function&#8217;s own perspective nothing is wrong &#8212; it never throttles.
+    </p>
+    <p>
+      The damage shows up somewhere else entirely: an unrelated function throttling against a
+      shrunken shared pool, investigated by a different team, who find their own function
+      blameless and their own limits untouched.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Situation</th><th>Setting</th><th>Because</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Function must never be starved by noisy neighbours</td>
+            <td>Reserved, sized to peak</td>
+            <td>Free, and the only thing that guarantees capacity. Remember it also caps.</td>
+          </tr>
+          <tr>
+            <td>Function must never overwhelm a downstream database</td>
+            <td>Reserved, sized to what the database tolerates</td>
+            <td>The cap is the point here rather than the side effect.</td>
+          </tr>
+          <tr>
+            <td>Latency-sensitive and busy more than 60% of the time</td>
+            <td>Provisioned</td>
+            <td>Cheaper per GB-second than on-demand at that utilisation, cold starts removed as a bonus.</td>
+          </tr>
+          <tr>
+            <td>Latency-sensitive but spiky and mostly idle</td>
+            <td>On-demand, or scheduled provisioned</td>
+            <td>Below 60% the holding charge outweighs the discount. Application Auto Scaling can schedule it around known peaks.</td>
+          </tr>
+          <tr>
+            <td>Java 11 or 17, cold starts hurt</td>
+            <td>SnapStart</td>
+            <td>Addresses startup at no additional cost. Cannot be combined with provisioned concurrency on the same version.</td>
+          </tr>
+          <tr>
+            <td>Average duration under 100&nbsp;ms</td>
+            <td>Size on requests per second</td>
+            <td>The 10&#215; request ceiling binds before concurrency does. Raising concurrency is the only lever that raises it.</td>
+          </tr>
+          <tr>
+            <td>Everything else</td>
+            <td>Neither</td>
+            <td>The shared pool is the right default. Every reservation is capacity withdrawn from it.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The audit that pays for itself</h3>
+    <p>
+      List every function with reserved concurrency, and beside each put its actual peak
+      concurrency from CloudWatch over the last 90 days. The gap between the two is capacity
+      the account is paying for in flexibility and getting nothing for. In most estates two or
+      three functions account for nearly all of it, reserved during an incident that has long
+      since been fixed.
+    </p>
+    <p>
+      Then check <code>UnreservedConcurrentExecutions</code>. If it is close to 100, everything
+      without a reservation is sharing the permanent floor, and the next unexplained throttle
+      is already scheduled.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Concurrency reads like a per-function setting and behaves like a shared one. That is the
+      whole difficulty. Every dialog presents it in the context of one function, the metrics
+      are per function, the alarm fires on one function &#8212; and the resource being divided
+      is regional and finite, with no view anywhere that shows the division.
+    </p>
+    <p>
+      The controls do not help. One is called <em>reserved</em> and enforces a maximum. The
+      other is called <em>provisioned</em> and turns out to be a discount rather than a
+      premium. Both count against the same total, and the limit most likely to stop a fast
+      function is measured in requests rather than concurrency at all. None of that is hidden
+      &#8212; it is all in the documentation, in plain terms. It just contradicts what the
+      names suggest, and the names are what people configure from.
+    </p>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/lambda-concurrency.html" target="_blank" rel="noopener">Understanding Lambda function scaling &#8212; reserved and provisioned concurrency</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/configuration-concurrency.html" target="_blank" rel="noopener">Configuring reserved concurrency for a function</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/provisioned-concurrency.html" target="_blank" rel="noopener">Configuring provisioned concurrency for a function</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html" target="_blank" rel="noopener">Improving startup performance with Lambda SnapStart</a></li>
+      <li><a href="https://aws.amazon.com/lambda/pricing/" target="_blank" rel="noopener">AWS Lambda pricing</a></li>
+    </ul>
+  </div>
