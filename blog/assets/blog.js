@@ -188,6 +188,8 @@
   let activeTag = 'all';
   let activeYear = 'all';
   let activeMonth = 'all';
+  let activeService = 'all';
+  let activeTopic = 'all';
   let searchTerm = '';
 
   function normalize(s) {
@@ -211,10 +213,19 @@
       const tags = (card.dataset.tags || '').toLowerCase();
       const d = card.dataset.date || '';
       const tagMatch = activeTag === 'all' || tags.includes(activeTag.toLowerCase());
+      // Delimited on both sides so "s3" cannot match inside "s3 express".
+      const svcMatch = activeService === 'all' ||
+        (card.dataset.services || '').includes('|' + activeService + '|');
+      // Same delimited test for homepage topics. The badge count and this
+      // filter read the same attribute, so they cannot drift apart -- they
+      // used to be a title+tags count linking to a full-text search, and 17
+      // of 36 topics disagreed.
+      const topicMatch = activeTopic === 'all' ||
+        (card.dataset.topics || '').includes('|' + activeTopic + '|');
       const yearMatch = activeYear === 'all' || d.startsWith(activeYear);
       const monthMatch = activeMonth === 'all' || d.slice(5, 7) === activeMonth;
       const searchMatch = matchSearch(card, normalize(searchTerm));
-      const show = tagMatch && yearMatch && monthMatch && searchMatch;
+      const show = tagMatch && svcMatch && topicMatch && yearMatch && monthMatch && searchMatch;
       card.style.display = show ? '' : 'none';
       if (show) visible++;
     });
@@ -225,6 +236,35 @@
     }
     if (emptyEl) emptyEl.style.display = visible === 0 ? '' : 'none';
   }
+
+  // Clicking a service in the sidebar answers "what have you written about
+  // this?" without leaving the page. Clicking the same one again clears it,
+  // because a filter with no visible way back is a trap.
+  function setService(svc) {
+    activeService = (activeService === svc) ? 'all' : svc;
+    document.querySelectorAll('.svc-row').forEach(function (row) {
+      const btn = row.querySelector('.svc-name');
+      row.classList.toggle('active',
+        !!btn && btn.dataset.service === activeService);
+    });
+    const note = document.getElementById('svc-filter-note');
+    if (note) {
+      note.textContent = activeService === 'all' ? '' :
+        'Showing posts mentioning ' + activeService + ' — click again to clear';
+      note.style.display = activeService === 'all' ? 'none' : '';
+    }
+    applyFilters();
+    if (activeService !== 'all') {
+      const grid = document.getElementById('posts-grid');
+      if (grid) grid.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  document.querySelectorAll('.svc-name').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      setService(btn.dataset.service);
+    });
+  });
 
   function setTag(tag) {
     activeTag = tag;
@@ -343,6 +383,18 @@
       searchInput.value = qDeepLink;
       searchTerm = qDeepLink;
       applyFilters();
+    }
+  }
+
+  // ?topic= deep link from the homepage "Tools I work with" section.
+  const topicLink = new URLSearchParams(window.location.search).get('topic');
+  if (topicLink) {
+    activeTopic = topicLink.toLowerCase();
+    const note = document.getElementById('results-count');
+    applyFilters();
+    if (note && !note.dataset.topicNoted) {
+      note.dataset.topicNoted = '1';
+      note.textContent += ' mentioning ' + topicLink;
     }
   }
 

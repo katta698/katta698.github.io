@@ -1539,6 +1539,86 @@ def build_post_page(post, prev_post, next_post):
 
 
 # ── Build index page ──────────────────────────────────────────
+# Skills are DERIVED, never curated. TOPIC_VOCAB is a recognition
+# vocabulary, not a list of claims: a topic only reaches the homepage once
+# a post title or tag actually mentions it, and it ranks by how much has
+# been written. Start writing about something new and it appears on its
+# own; stop and it falls down the list. Add vocabulary entries as the
+# subject matter widens — never add a skill by hand.
+#   canonical name -> (match aliases, group)
+TOPIC_VOCAB = {
+    # Compute
+    "EC2":              (["ec2", "instance type"],                    "Compute"),
+    "Graviton":         (["graviton", "arm64"],                       "Compute"),
+    "Spot":             (["spot"],                                    "Compute"),
+    "Auto Scaling":     (["auto scaling", "autoscaling"],             "Compute"),
+    "Lambda":           (["lambda", "serverless"],                    "Compute"),
+    # Containers
+    "EKS":              (["eks"],                                     "Containers"),
+    "ECS / Fargate":    (["ecs", "fargate"],                          "Containers"),
+    "Kubernetes":       (["kubernetes", "k8s"],                       "Containers"),
+    "Docker":           (["docker"],                                  "Containers"),
+    # Networking
+    "VPC":              (["vpc"],                                     "Networking"),
+    "Transit Gateway":  (["transit gateway"],                         "Networking"),
+    "Route 53":         (["route 53", "route53", "dns"],              "Networking"),
+    "CloudFront":       (["cloudfront", "edge"],                      "Networking"),
+    "Load Balancing":   (["alb", "nlb", "load balanc"],               "Networking"),
+    "PrivateLink":      (["privatelink", "vpc endpoint"],             "Networking"),
+    # Security & Identity
+    "IAM":              (["iam"],                                     "Security & Identity"),
+    "Identity Center":  (["identity center", "sso"],                  "Security & Identity"),
+    "KMS":              (["kms", "encryption"],                       "Security & Identity"),
+    "Security Hub":     (["security hub", "guardduty"],               "Security & Identity"),
+    "Control Tower":    (["control tower", "landing zone", "aft"],    "Security & Identity"),
+    "Organizations":    (["organizations", "scp"],                    "Security & Identity"),
+    "Config":           (["config compliance", "aws config"],         "Security & Identity"),
+    # Data & Storage
+    "S3":               (["s3"],                                      "Data & Storage"),
+    "Aurora":           (["aurora"],                                  "Data & Storage"),
+    "RDS":              (["rds", "postgres", "mysql"],                "Data & Storage"),
+    "DynamoDB":         (["dynamodb"],                                "Data & Storage"),
+    "Athena":           (["athena", "glue"],                          "Data & Storage"),
+    # IaC & Delivery
+    "Terraform":        (["terraform"],                               "IaC & Delivery"),
+    "GitOps":           (["gitops", "argo"],                          "IaC & Delivery"),
+    "GitHub Actions":   (["github actions"],                          "IaC & Delivery"),
+    "CloudFormation":   (["cloudformation"],                          "IaC & Delivery"),
+    "Drift Detection":  (["drift"],                                   "IaC & Delivery"),
+    # Operations & Cost
+    "CloudWatch":       (["cloudwatch", "logging", "observability"],  "Operations & Cost"),
+    # Messaging & Events — aliases kept tight on purpose. "sqs"/"sns" are
+    # safe letter combinations; avoid loose words like "queue" or
+    # "notification" that appear in unrelated posts. See the "arc" note
+    # below for what loose matching costs.
+    "EventBridge":      (["eventbridge", "event-driven"],             "Messaging & Events"),
+    "SQS":              (["sqs"],                                     "Messaging & Events"),
+    "SNS":              (["sns"],                                     "Messaging & Events"),
+    "Step Functions":   (["step function"],                           "Messaging & Events"),
+    "Cost & FinOps":    (["cost", "finops", "cur", "savings", "billing"], "Operations & Cost"),
+    "Systems Manager":  (["systems manager", "ssm", "patch"],         "Operations & Cost"),
+    # NB: no bare "arc" alias — it matches "Architecture" in every arch title.
+    "Resilience / DR":  (["disaster recovery", "multi-region", "failover",
+                          "recovery controller"],                     "Operations & Cost"),
+}
+
+
+def topics_for(title, tags):
+    """Canonical topic names a post matches, by the same rule used to count.
+
+    Both the homepage badge and the click-through filter call this, which is
+    the whole point: they used to disagree. The badge counted a post if ANY
+    alias appeared in its title or tags, then linked to a search for only the
+    FIRST alias across title, excerpt and tags -- two different questions with
+    two different answers. 17 of 36 topics showed a count that did not match
+    what clicking produced, and three ("Resilience / DR", "Systems Manager",
+    "PrivateLink") advertised posts and then showed an empty page.
+    """
+    hay = (title + " " + " ".join(tags)).lower()
+    return [name for name, (aliases, _group) in TOPIC_VOCAB.items()
+            if any(a in hay for a in aliases)]
+
+
 def build_index_page(posts):
     tag_counts = {}
     for p in posts:
@@ -1558,6 +1638,17 @@ def build_index_page(posts):
     total_mins  = sum(p["read_time"] for p in posts)
     unique_tags = len([c for c in CATEGORY_ORDER if tag_counts.get(c, 0) > 0])
 
+    post_texts = [soup_text(p["body_html"]) for p in posts]
+
+    # Which services each post mentions, so clicking one in the sidebar can
+    # filter the grid to those posts. Pipe-delimited and lower-cased: the
+    # filter does a substring test, and service names contain spaces, so a
+    # delimiter is what stops "s3" matching inside "s3 express".
+    post_services = {}
+    for _p, _text in zip(posts, post_texts):
+        _hits = set(count_services(_text)) | set(count_services(_p["title"]))
+        post_services[_p["slug"]] = "|".join(sorted(h.lower() for h in _hits))
+
     cards_html = []
     for p in posts:
         tag1 = p["tags"][0] if p["tags"] else "Tech"
@@ -1567,7 +1658,9 @@ def build_index_page(posts):
             f' data-title="{escape(p["title"])}"'
             f' data-excerpt="{escape(p["excerpt"])}"'
             f' data-tags="{escape(tags_data)}"'
-            f' data-date="{p["date"].strftime("%Y-%m-%d")}">'
+            f' data-date="{p["date"].strftime("%Y-%m-%d")}"'
+            f' data-services="|{post_services.get(p["slug"], "")}|"'
+            f' data-topics="|{"|".join(x.lower() for x in topics_for(p["title"], p["tags"]))}|">'
             f'<div class="post-card-body">'
             f'<div class="post-meta"><span class="tag-badge">{tag1}</span>'
             f'<span class="post-date">{p["date_fmt"]}</span></div>'
@@ -1589,7 +1682,6 @@ def build_index_page(posts):
     # services are written about at all; the second counts them. It has to be
     # that order, because a service named properly in one post is then
     # recognisable by its bare name in another.
-    post_texts = [soup_text(p["body_html"]) for p in posts]
     known_services = KNOWN_SERVICES
 
     service_counts = {}
@@ -1633,10 +1725,19 @@ def build_index_page(posts):
         # name links to AWS's own page for anyone who wants more than a line.
         tip = f"{s} — {desc}" if desc else f"{s} — {c} mention{'' if c == 1 else 's'}"
         width = max(2, round(c / max_count * 100))
-        name = (f'<a class="svc-name" href="{escape(url)}" target="_blank" '
-                f'rel="noopener noreferrer">{escape(s)}</a>'
-                if url else f'<span class="svc-name">{escape(s)}</span>')
-        return (f'<div class="svc-row" title="{escape(tip)}">{name}'
+        # The name filters the posts on this page; the arrow leaves for AWS.
+        # That way the primary click keeps the reader here -- "show me what you
+        # wrote about Aurora" is the question the sidebar is really answering,
+        # and the definition is already in the tooltip for the other one.
+        out = (f'<button type="button" class="svc-name" '
+               f'data-service="{escape(s.lower())}">{escape(s)}</button>')
+        if url:
+            out += (f'<a class="svc-link" href="{escape(url)}" target="_blank" '
+                    f'rel="noopener noreferrer" title="{escape(s)} on aws.amazon.com" '
+                    f'aria-label="{escape(s)} on aws.amazon.com">&#8599;</a>')
+        else:
+            out += '<span class="svc-link svc-link-empty" aria-hidden="true"></span>'
+        return (f'<div class="svc-row" title="{escape(tip)}">{out}'
                 f'<span class="svc-track"><span class="svc-fill" '
                 f'style="width:{width}%"></span></span>'
                 f'<span class="svc-count">{c}</span></div>')
@@ -2724,76 +2825,17 @@ def main():
         for t, c in sorted(tag_counts.items(), key=lambda kv: -kv[1])
     ]
 
-    # Skills are DERIVED, never curated. TOPIC_VOCAB is a recognition
-    # vocabulary, not a list of claims: a topic only reaches the homepage once
-    # a post title or tag actually mentions it, and it ranks by how much has
-    # been written. Start writing about something new and it appears on its
-    # own; stop and it falls down the list. Add vocabulary entries as the
-    # subject matter widens — never add a skill by hand.
-    #   canonical name -> (match aliases, group)
-    TOPIC_VOCAB = {
-        # Compute
-        "EC2":              (["ec2", "instance type"],                    "Compute"),
-        "Graviton":         (["graviton", "arm64"],                       "Compute"),
-        "Spot":             (["spot"],                                    "Compute"),
-        "Auto Scaling":     (["auto scaling", "autoscaling"],             "Compute"),
-        "Lambda":           (["lambda", "serverless"],                    "Compute"),
-        # Containers
-        "EKS":              (["eks"],                                     "Containers"),
-        "ECS / Fargate":    (["ecs", "fargate"],                          "Containers"),
-        "Kubernetes":       (["kubernetes", "k8s"],                       "Containers"),
-        "Docker":           (["docker"],                                  "Containers"),
-        # Networking
-        "VPC":              (["vpc"],                                     "Networking"),
-        "Transit Gateway":  (["transit gateway"],                         "Networking"),
-        "Route 53":         (["route 53", "route53", "dns"],              "Networking"),
-        "CloudFront":       (["cloudfront", "edge"],                      "Networking"),
-        "Load Balancing":   (["alb", "nlb", "load balanc"],               "Networking"),
-        "PrivateLink":      (["privatelink", "vpc endpoint"],             "Networking"),
-        # Security & Identity
-        "IAM":              (["iam"],                                     "Security & Identity"),
-        "Identity Center":  (["identity center", "sso"],                  "Security & Identity"),
-        "KMS":              (["kms", "encryption"],                       "Security & Identity"),
-        "Security Hub":     (["security hub", "guardduty"],               "Security & Identity"),
-        "Control Tower":    (["control tower", "landing zone", "aft"],    "Security & Identity"),
-        "Organizations":    (["organizations", "scp"],                    "Security & Identity"),
-        "Config":           (["config compliance", "aws config"],         "Security & Identity"),
-        # Data & Storage
-        "S3":               (["s3"],                                      "Data & Storage"),
-        "Aurora":           (["aurora"],                                  "Data & Storage"),
-        "RDS":              (["rds", "postgres", "mysql"],                "Data & Storage"),
-        "DynamoDB":         (["dynamodb"],                                "Data & Storage"),
-        "Athena":           (["athena", "glue"],                          "Data & Storage"),
-        # IaC & Delivery
-        "Terraform":        (["terraform"],                               "IaC & Delivery"),
-        "GitOps":           (["gitops", "argo"],                          "IaC & Delivery"),
-        "GitHub Actions":   (["github actions"],                          "IaC & Delivery"),
-        "CloudFormation":   (["cloudformation"],                          "IaC & Delivery"),
-        "Drift Detection":  (["drift"],                                   "IaC & Delivery"),
-        # Operations & Cost
-        "CloudWatch":       (["cloudwatch", "logging", "observability"],  "Operations & Cost"),
-        # Messaging & Events — aliases kept tight on purpose. "sqs"/"sns" are
-        # safe letter combinations; avoid loose words like "queue" or
-        # "notification" that appear in unrelated posts. See the "arc" note
-        # below for what loose matching costs.
-        "EventBridge":      (["eventbridge", "event-driven"],             "Messaging & Events"),
-        "SQS":              (["sqs"],                                     "Messaging & Events"),
-        "SNS":              (["sns"],                                     "Messaging & Events"),
-        "Step Functions":   (["step function"],                           "Messaging & Events"),
-        "Cost & FinOps":    (["cost", "finops", "cur", "savings", "billing"], "Operations & Cost"),
-        "Systems Manager":  (["systems manager", "ssm", "patch"],         "Operations & Cost"),
-        # NB: no bare "arc" alias — it matches "Architecture" in every arch title.
-        "Resilience / DR":  (["disaster recovery", "multi-region", "failover",
-                              "recovery controller"],                     "Operations & Cost"),
-    }
-
     topic_hits = {}
     for name, (aliases, group) in TOPIC_VOCAB.items():
         n = sum(1 for p in visible_posts
-                if any(a in (p["title"] + " " + " ".join(p["tags"])).lower() for a in aliases))
+                if name in topics_for(p["title"], p["tags"]))
         if n:
             topic_hits.setdefault(group, []).append(
-                {"name": name, "count": n, "href": "/blog/?q=" + quote_plus(aliases[0].strip())})
+                # Link by canonical topic, not by a search for the first alias.
+                # The blog filters on the same data topics_for() produced, so
+                # the number on the badge is the number the reader sees.
+                {"name": name, "count": n,
+                 "href": "/blog/?topic=" + quote_plus(name.lower())})
 
     skills = []
     for group in sorted(topic_hits, key=lambda g: -sum(i["count"] for i in topic_hits[g])):
