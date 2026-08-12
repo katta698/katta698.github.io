@@ -3,7 +3,7 @@
  *   node scripts/build_hero_schedule.js            # 365 days from today
  *   node scripts/build_hero_schedule.js 2027-01-01 # from a given date
  *
- * Output: _schedule/hero-schedule.html
+ * Output: schedule/hero-schedule.html
  *
  * The point of this script is that it *runs* the real code rather than
  * re-implementing it. blog/assets/hero-media.js and the occasion-banner block
@@ -12,16 +12,16 @@
  * does. A hand-maintained schedule would be wrong the first time a clip count
  * or a plan entry changed.
  *
- * Underscore-prefixed directories are ignored by GitHub Pages' Jekyll build,
- * so _schedule/ is committed but never served — this is a reference for
- * Jayanth, not a page for readers.
+ * Served at /schedule/ rather than an underscore directory, so it is reachable
+ * from anywhere — but carries <meta name="robots" content="noindex">, because a
+ * personal reference page has no business in search results.
  */
 'use strict';
 const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const OUT_DIR = path.join(ROOT, '_schedule');
+const OUT_DIR = path.join(ROOT, 'schedule');
 const RealDate = Date;
 // Clip and audio names link to the live site so any of them can be seen in
 // context — the schedule says what plays when, the link shows you it.
@@ -130,7 +130,7 @@ const from = days[0].label + ' ' + start.getFullYear();
 const to = days[364].label + ' ' + new RealDate(start.getTime() + 364 * 86400000).getFullYear();
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
-fs.writeFileSync(path.join(OUT_DIR, 'hero-schedule.html'), `<!doctype html><meta charset="utf-8">
+fs.writeFileSync(path.join(OUT_DIR, 'hero-schedule.html'), `<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex">
 <title>Hero schedule — ${from} to ${to}</title>
 <style>
  body{margin:0;padding:26px;background:#1D2322;color:#F5F5F3;font:14px/1.5 'DM Sans',system-ui,sans-serif}
@@ -168,6 +168,6 @@ changes each time a theme comes round rather than daily. <b>Every clip and track
 <table><thead><tr><th>wk</th><th>dates</th><th>theme</th><th>video &mdash; changes daily</th><th>audio &mdash; holds all week</th><th>occasion banner</th></tr></thead>
 <tbody>${rows}</tbody></table>`);
 
-console.log(`_schedule/hero-schedule.html — ${from} to ${to}`);
+console.log(`schedule/hero-schedule.html — ${from} to ${to}`);
 console.log(`  ${weeks.length} week rows · ${bannerDays} banner days`);
 console.log(`  ${new Set(days.map(d => d.theme + d.clip)).size} distinct clips · ${new Set(days.map(d => d.audio)).size} distinct audio`);

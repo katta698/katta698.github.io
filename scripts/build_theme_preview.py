@@ -5,7 +5,7 @@ Build a reference page showing every hero clip and audio track.
 
     python scripts/build_theme_preview.py
 
-Output: _schedule/hero-themes.html
+Output: schedule/hero-themes.html
 
 Companion to build_hero_schedule.js. That one answers "what plays when"; this
 one answers "what have I actually got". Regenerate after adding or removing
@@ -16,8 +16,9 @@ really there.
 Media is referenced with relative paths (../blog/assets/...) so the page works
 opened straight off disk, without a local server.
 
-_schedule/ is underscore-prefixed and therefore ignored by GitHub Pages' Jekyll
-build, so this is committed for reference but never published.
+Served at /schedule/ rather than an underscore directory, so it is reachable
+from anywhere — but carries <meta name="robots" content="noindex">, because a
+personal reference page has no business in search results.
 """
 import io
 import os
@@ -27,7 +28,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HERO = os.path.join(ROOT, 'blog', 'assets', 'hero-media.js')
 CRED = os.path.join(ROOT, 'CREDITS.md')
-OUT = os.path.join(ROOT, '_schedule', 'hero-themes.html')
+OUT = os.path.join(ROOT, 'schedule', 'hero-themes.html')
 
 ORDER = ['ocean', 'mountains', 'forest', 'rain', 'sunset', 'boho']
 COL = {'ocean': '#3a5a6b', 'mountains': '#4a5568', 'forest': '#4a5a3a',
@@ -80,7 +81,7 @@ def main():
             .format(c=COL[t], t=t, nc=C[t], na=A[t], s='' if A[t] == 1 else 's',
                     w=weeks[t], clips=clips, tracks=tracks))
 
-    html = """<!doctype html><meta charset="utf-8"><title>Hero themes — what is live</title>
+    html = """<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex"><title>Hero themes — what is live</title>
 <style>
  body{margin:0;padding:26px;background:#1D2322;color:#F5F5F3;font:15px/1.5 'DM Sans',system-ui,sans-serif}
  h1{font-size:1.3rem;margin:0 0 .2rem}
@@ -132,7 +133,7 @@ if ('IntersectionObserver' in window) {
                ([os.path.join(ROOT, 'blog', 'assets', 'videos', '%s-%d.mp4' % (t, i)) for i in range(1, C[t] + 1)] +
                 [os.path.join(ROOT, 'blog', 'assets', 'audio', '%s-%d.mp3' % (t, i)) for i in range(1, A[t] + 1)])
                if not os.path.isfile(p)]
-    print('_schedule/hero-themes.html — %d clips, %d tracks across %d themes'
+    print('schedule/hero-themes.html — %d clips, %d tracks across %d themes'
           % (sum(C.values()), sum(A.values()), len(ORDER)))
     if missing:
         print('ERROR referenced but not on disk:')
