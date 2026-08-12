@@ -89,6 +89,31 @@ def main():
         print('%-11s %8s %8d   %s' % (theme, declared if declared is not None else '-',
                                       len(found), note))
 
+    # CLIP_AUDIO gives one audio index per clip, for themes that key audio to
+    # the clip rather than the week. Drift here is silent: a clip past the end
+    # of the map quietly falls back to the weekly track, and an index past the
+    # end of the tracks asks for a file that is not there.
+    cam = re.search(r'var CLIP_AUDIO = \{(.*?)\};', html, re.DOTALL)
+    am = re.search(r'var AUDIO_COUNTS = \{([^}]*)\}', html)
+    acounts = {k: int(v) for k, v in re.findall(r'(\w+)\s*:\s*(\d+)', am.group(1))} if am else {}
+    if cam:
+        for theme, body in re.findall(r'(\w+)\s*:\s*\[([^\]]*)\]', cam.group(1)):
+            idx = [int(x) for x in re.findall(r'\d+', body)]
+            want = counts.get(theme)
+            if want is None:
+                errors.append('CLIP_AUDIO lists %s, which has no COUNTS entry' % theme)
+                continue
+            if len(idx) != want:
+                errors.append('CLIP_AUDIO[%s] has %d entries but the theme has %d clips — '
+                              'clips past the end fall back to the weekly track'
+                              % (theme, len(idx), want))
+            over = sorted({n for n in idx if n < 1 or n > acounts.get(theme, 0)})
+            if over:
+                errors.append('CLIP_AUDIO[%s] points at track(s) %s but only %d exist'
+                              % (theme, over, acounts.get(theme, 0)))
+            print('%-11s %8s %8s   audio by clip: %s'
+                  % (theme, '', '', ' '.join(str(n) for n in idx)))
+
     print('\ntotal hero video on disk: %.1f MB' % total)
     print('')
     for w in warnings:

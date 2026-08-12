@@ -64,6 +64,19 @@
   // is actually on disk.
   var COUNTS = { ocean: 7, mountains: 7, forest: 13, sunset: 7, boho: 9, rain: 7 };
 
+  // Themes listed here pick audio by clip instead of by week, because the
+  // clips are about different things rather than variations on one thing.
+  // boho holds textiles, wind chimes, market stalls — and two cats. Playing a
+  // cat track over a rug shop for a whole week was the wrong kind of odd.
+  //
+  // One entry per clip, giving the audio index that clip should use. The cost
+  // is that the track restarts when the clip changes at midnight, which is
+  // fine for boho's short pieces and would be wrong for a seven-minute raga —
+  // hence opt-in per theme rather than site-wide.
+  //   boho clip:   1  2  3  4  5  6  7  8  9
+  //   audio:       sitar, cat, cat, then sitar for the rest
+  var CLIP_AUDIO = { boho: [1, 2, 3, 1, 1, 1, 1, 1, 1] };
+
   // Audio is counted separately: there are far fewer tracks than clips, and
   // they rotate per theme-recurrence rather than per day.
   var AUDIO_COUNTS = { ocean: 3, mountains: 5, forest: 3, rain: 5, sunset: 2, boho: 3 };
@@ -114,6 +127,12 @@
     for (var i = 0; i <= wk; i++) { if (PLAN[i] === theme) occurrence++; }
     var count = AUDIO_COUNTS[theme] || 1;
     var an = occurrence > 0 ? ((occurrence - 1) % count) + 1 : 1;
+
+    // A clip-keyed theme overrides the weekly choice; an explicit ?audio=
+    // still wins over both, so any track can be auditioned.
+    var byClip = CLIP_AUDIO[theme];
+    if (byClip && byClip[n - 1] >= 1 && byClip[n - 1] <= count) an = byClip[n - 1];
+
     var forcedAudio = parseInt((location.search.match(/[?&]audio=(\d+)/) || [])[1], 10);
     if (forcedAudio >= 1 && forcedAudio <= count) an = forcedAudio;
     return {

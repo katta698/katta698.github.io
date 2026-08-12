@@ -137,6 +137,12 @@ Every track is mono, 96 kb/s, up to 2:30, loudness-normalised to about
 
 ### Notes
 
+- boho keys audio to the clip rather than the week: `boho-2` and `boho-3` are
+  the cat clips and get the cat tracks; every other boho clip gets the sitar.
+  It is the only theme that does this. Elsewhere one track holds for the whole
+  week, which is right for long pieces — a seven-minute raga restarting each
+  midnight would never get past its opening.
+
 - Instrument-to-theme mapping was chosen by Jayanth, not inferred: bansuri and
   veena on mountains, violin on rain (explicitly not sunset), dedicated forest
   and sunset tracks.
