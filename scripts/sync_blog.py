@@ -1985,6 +1985,7 @@ def build_index_page(posts):
   <aside class="sidebar">
     <div class="sidebar-card" id="services-widget">
       <div class="sidebar-title">AWS services across all posts</div>
+      <div class="svc-filter-note" id="svc-filter-note" style="display:none"></div>
       <div class="svc-list">
 {service_rows}
       </div>
@@ -2875,8 +2876,38 @@ def main():
         items = sorted(topic_hits[group], key=lambda i: -i["count"])[:6]
         skills.append({"group": group, "items": items})
 
+    # AWS services for the homepage, grouped by domain. Same numbers and the
+    # same links as the blog sidebar, because both are built from one pass over
+    # the posts -- the homepage having its own idea of the counts is exactly
+    # the failure "Tools I work with" shipped with, where a badge said 2 and
+    # clicking showed none.
+    svc_by_post = {}
+    for _p in visible_posts:
+        _hits = set(count_services(soup_text(_p["body_html"]))) |                 set(count_services(_p["title"]))
+        for _h in _hits:
+            svc_by_post[_h] = svc_by_post.get(_h, 0) + 1
+
+    svc_groups = {}
+    for _name, _n in svc_by_post.items():
+        _domain = SERVICE_DOMAIN.get(_name, "Other AWS")
+        _desc, _url = SERVICE_INFO.get(_name, ("", ""))
+        svc_groups.setdefault(_domain, []).append({
+            "name": _name,
+            "count": _n,
+            "href": "/blog/?service=" + quote_plus(_name.lower()),
+            "aws": _url,
+            "desc": _desc,
+        })
+    services_stats = [
+        {"group": g, "items": sorted(v, key=lambda i: (-i["count"], i["name"]))}
+        for g, v in sorted(svc_groups.items(),
+                           key=lambda kv: -sum(i["count"] for i in kv[1]))
+    ]
+
     stats_json = {
         "total_posts": len(visible_posts),
+        "services": services_stats,
+        "services_total": len(svc_by_post),
         "first_post_date": min(dates).strftime("%Y-%m-%d") if dates else None,
         "latest_post_date": max(dates).strftime("%Y-%m-%d") if dates else None,
         "series": [s for s in series if s["count"]],

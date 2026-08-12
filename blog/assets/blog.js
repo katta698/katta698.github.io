@@ -240,10 +240,14 @@
   }
 
   // Clicking a service in the sidebar answers "what have you written about
-  // this?" without leaving the page. Clicking the same one again clears it,
-  // because a filter with no visible way back is a trap.
+  // this?" without leaving the page.
+  //
+  // Clicking the same one twice used to toggle the filter off, so the post
+  // list flipped between six posts and all ninety-four and looked like it was
+  // changing at random. Selecting is now idempotent -- clicking S3 five times
+  // shows the S3 posts five times -- and clearing is its own visible control.
   function setService(svc) {
-    activeService = (activeService === svc) ? 'all' : svc;
+    activeService = svc;
     document.querySelectorAll('.svc-row').forEach(function (row) {
       const btn = row.querySelector('.svc-name');
       row.classList.toggle('active',
@@ -251,15 +255,29 @@
     });
     const note = document.getElementById('svc-filter-note');
     if (note) {
-      note.textContent = activeService === 'all' ? '' :
-        'Showing posts mentioning ' + activeService + ' — click again to clear';
       note.style.display = activeService === 'all' ? 'none' : '';
+      if (activeService !== 'all') {
+        note.textContent = '';
+        const label = document.createElement('span');
+        const btn = document.querySelector(
+          '.svc-name[data-service="' + activeService.replace(/"/g, '') + '"]');
+        label.textContent = 'Showing posts mentioning ' +
+          (btn ? btn.textContent : activeService) + ' ';
+        const clear = document.createElement('button');
+        clear.type = 'button';
+        clear.className = 'svc-clear';
+        clear.textContent = 'Clear';
+        clear.addEventListener('click', function () { setService('all'); });
+        note.appendChild(label);
+        note.appendChild(clear);
+      }
     }
     applyFilters();
-    if (activeService !== 'all') {
-      const grid = document.getElementById('posts-grid');
-      if (grid) grid.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+    // Deliberately does not scroll. It used to jump to the top of the grid,
+    // which moved the sidebar out from under the pointer -- so the obvious
+    // next click landed on the same service again and cleared the filter,
+    // making it look like it took two clicks to work. The results count
+    // updates in place and the grid is already alongside the list.
   }
 
   document.querySelectorAll('.svc-name').forEach(function (btn) {
@@ -268,7 +286,20 @@
     });
   });
 
+  // Three ways out, because one control the reader has to find is not a way
+  // out: the Clear link in the note, Escape, and the "All" pill that already
+  // reads as "show me everything" and previously left a service filter on --
+  // which looked like the pill was broken.
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && activeService !== 'all') setService('all');
+  });
+
   function setTag(tag) {
+    // "All" means all. Leaving a service filter applied under it is how a
+    // reader concludes the pill does nothing.
+    if (tag === 'all' && activeService !== 'all') {
+      setService('all');
+    }
     activeTag = tag;
     pills.forEach(p => p.classList.toggle('active', p.dataset.tag === tag));
     sbTags.forEach(t => t.classList.toggle('active', t.dataset.tag === tag));
@@ -390,6 +421,18 @@
       searchTerm = qDeepLink;
       applyFilters();
     }
+  }
+
+  // ?service= deep link from the homepage AWS coverage section. Same filter
+  // the sidebar click uses, so the number on the chip is the number shown.
+  const svcLink = new URLSearchParams(window.location.search).get('service');
+  if (svcLink) {
+    activeService = svcLink.toLowerCase();
+    document.querySelectorAll('.svc-row').forEach(function (row) {
+      const b = row.querySelector('.svc-name');
+      row.classList.toggle('active', !!b && b.dataset.service === activeService);
+    });
+    applyFilters();
   }
 
   // ?topic= deep link from the homepage "Tools I work with" section.
