@@ -1,15 +1,26 @@
 # Architecture Series — coverage and roadmap
 
-Where the series stands after 19 posts, what is missing, and roughly a year of
-topics chosen to close the gaps.
+Where the series stands after 19 posts, and a year of topics aimed at covering
+the AWS surface rather than a favourite corner of it.
 
 Written 2026-08-12. The framing target is a Solutions Architect role, so the
-question throughout is not "is this an interesting AWS topic" but "does the
-body of work argue that this person designs systems".
+question throughout is not "is this an interesting AWS topic" but "does the body
+of work argue that this person designs systems".
 
-## What 19 posts actually cover
+## Cadence, and what it makes possible
 
-Domain spread is not the problem. Twelve domains are represented:
+Nineteen posts in eighteen days — one a day, unbroken. At that rate a year is
+about **365 posts**, which changes what is realistic. AWS has roughly 240
+services. Comprehensive coverage is not a fantasy at this cadence; it is a
+scheduling problem.
+
+The plan below allocates that year: about 200 posts anchored on services, about
+100 on architecture that belongs to no single service, and the rest as slack for
+re:Invent, launches, and topics that turn out to deserve two posts.
+
+## What 19 posts cover today
+
+Twelve domains are represented, so breadth was never the problem:
 
 | Domain | Posts |
 |:--|:--|
@@ -26,7 +37,7 @@ Domain spread is not the problem. Twelve domains are represented:
 | Edge | 1 — CloudFront + WAF |
 | Storage | 1 — S3 storage classes |
 
-## The actual problem: the lens, not the subject
+## The problem is the lens, not the subject
 
 |  | Architecture patterns |
 |:--|:--|
@@ -34,129 +45,116 @@ Domain spread is not the problem. Twelve domains are represented:
 | Posts #10–19 | **0 of 10** |
 
 The last ten are five cost posts, four comparisons and one limits post. Not one
-of them is *how to design this*. They are all *what this costs and where it
-bites*.
+says *how to design this*; they all say *what this costs and where it bites*.
 
-That reads as a very capable FinOps or platform engineer. It does not read as
-an architect, because an architect is hired to make design decisions under
-constraints — and the recent work analyses other people's decisions rather than
-making any.
+That reads as a very capable FinOps or platform engineer. An architect is hired
+to make design decisions under constraints, and the recent work analyses other
+people's decisions rather than making any.
 
-Cost and limits are a real strength and are what make the writing concrete.
-They should stay. Roughly one post in five, not five in ten.
+Cost and limits are a genuine strength and are what keep the writing concrete.
+They stay — as roughly one post in five, not five in ten.
 
-## Domains completely absent
+## Coverage plan by AWS category
 
-These matter more than another comparison in a domain already covered.
+Service counts are approximate and move constantly; treat them as scale, not
+inventory. "Posts" is the allocation for the year.
 
-- **Migration and modernisation** — the single most common thing an SA is
-  actually hired to lead, and there is not one post on it.
-- **AI / ML** — and note the blog already *has* a RAG-powered search system
-  whose architecture has never been written up.
-- **Application-level patterns** — idempotency, saga, outbox, CQRS. Service
-  agnostic, and closer to what separates an architect from a strong engineer
-  than any single AWS service is.
-- **Data platform** — streaming, catalog, lakehouse. Only CUR + Athena so far,
-  which is a cost tool rather than a data architecture.
-- **API design** — contracts, versioning, deprecation.
-- **Hybrid** — Direct Connect, Cloud WAN, Outposts.
-- **Well-Architected as a practice** — running a review that changes something,
-  rather than reciting six pillars.
+| Category | ~Services | Posts | Approach |
+|:--|--:|--:|:--|
+| Security, Identity & Compliance | 30 | 45 | Deepest coverage. Identity, detection, encryption, network security, compliance. Most services earn their own post |
+| Management & Governance | 25 | 40 | Observability, config, org structure, IaC, resilience tooling |
+| Machine Learning | 25 | 35 | Bedrock and SageMaker in depth; the AI services grouped by task |
+| Networking & Content Delivery | 20 | 35 | VPC design, hybrid, edge, service networking |
+| Database | 15 | 30 | Each engine on its own terms, plus data modelling patterns |
+| Analytics | 20 | 28 | Streaming, catalog, lakehouse, warehouse, BI |
+| Compute | 15 | 25 | Instance families, scaling, serverless compute, edge compute |
+| Application Integration | 12 | 22 | Messaging, orchestration, API surfaces, event patterns |
+| Storage | 10 | 20 | Object, block, file, archive, transfer, backup |
+| Migration & Transfer | 10 | 18 | The 7 Rs, discovery, database and server migration, cutover |
+| Developer Tools | 12 | 15 | Pipelines, artifacts, IaC, testing, developer experience |
+| Containers | 6 | 14 | Orchestration, registry, scaling, mesh, runtime security |
+| Cloud Financial Management | 8 | 12 | Allocation, forecasting, commitment, unit economics |
+| IoT | 12 | 6 | Grouped: ingest, device management, edge, industrial |
+| Front-End & Mobile | 6 | 5 | Amplify, AppSync, identity for clients |
+| Media Services | 10 | 4 | Grouped: the Elemental pipeline end to end |
+| End User Computing | 6 | 3 | WorkSpaces and AppStream as VDI architecture |
+| Business Applications | 8 | 3 | SES and Connect as integration surfaces |
+| Customer Enablement | 5 | 2 | Support models, Well-Architected reviews |
+| Games, Blockchain, Quantum, Satellite, Robotics | 8 | 1 | One honest round-up. Niche for this audience, and pretending otherwise wastes a post |
+| **Cross-cutting architecture** | — | **~30** | Patterns that belong to no service: idempotency, saga, outbox, CQRS, multi-tenancy, cell-based design, schema evolution, backpressure |
 
-## A year of topics
+Roughly 365, allowing slack.
 
-Fifty-two, weighted towards the gaps. Order is a suggestion; the grouping is
-the point. Each is a pattern post unless marked otherwise.
+## Order for the next quarter
 
-### Migration & modernisation — 8
+The gaps decide the order, not the categories. Absent domains first.
+
+### Migration & modernisation — nothing written, most common SA responsibility
 1. The 7 Rs, and why half of every "rehost" list should have been "retire"
-2. Dependency mapping before wave planning: the discovery nobody budgets for
-3. DMS for heterogeneous migration, and what CDC actually guarantees
-4. Application Migration Service: cutover windows, rollback, and the freeze
-5. Oracle to Aurora PostgreSQL: the parts that do not convert
-6. Strangler fig on AWS: routing, dual-write, and knowing when to cut
-7. When not to modernise — the honest case for leaving it alone
-8. The cost cliff after lift-and-shift *(cost lens)*
+2. Discovery and dependency mapping before wave planning
+3. Application Discovery Service and Migration Hub in practice
+4. DMS for heterogeneous migration, and what CDC actually guarantees
+5. Application Migration Service: cutover, rollback, and the freeze window
+6. Oracle to Aurora PostgreSQL: the parts that do not convert
+7. Mainframe Modernization: refactor, replatform, or leave it
+8. DataSync and Transfer Family: moving the data that is not a database
+9. Snow Family: when the network is genuinely the bottleneck
+10. Strangler fig on AWS: routing, dual-write, and knowing when to cut
+11. When not to modernise — the honest case for leaving it alone
+12. The cost cliff after lift-and-shift *(cost lens)*
 
-### AI & ML — 6
-9. RAG architecture, from this blog's own search system
-10. Bedrock: model choice, provisioned throughput, and what it costs *(cost lens)*
-11. Vector storage on AWS: OpenSearch, pgvector, S3 Vectors
-12. Guardrails, PII and prompt injection in production
-13. Bedrock or SageMaker: consume or build
-14. Evaluating model output, which is the part everyone skips
+### AI & ML — absent, and the blog already runs a RAG system
+13. RAG architecture, from this blog's own search
+14. Bedrock: model choice, provisioned throughput, and cost *(cost lens)*
+15. Vector storage: OpenSearch, pgvector, S3 Vectors
+16. Guardrails, PII and prompt injection in production
+17. Bedrock or SageMaker: consume or build
+18. Evaluating model output, the part everyone skips
+19. Comprehend, Textract, Rekognition: the task-shaped services
+20. Inference endpoints: real-time, serverless, batch, async
 
-### Application patterns — 7
-15. Idempotency: the property distributed systems cannot do without
-16. Saga, and why two-phase commit is not coming back
-17. The outbox pattern, and the dual-write problem it solves
-18. CQRS, and the far more common case where it is overkill
-19. Retries, backoff, jitter, and the thundering herd you built
-20. Event schema evolution: contracts between teams
-21. Multi-tenancy: pool, silo, bridge
+### Application patterns — absent, and closest to architecture thinking
+21. Idempotency: the property distributed systems cannot do without
+22. Saga, and why two-phase commit is not coming back
+23. The outbox pattern and the dual-write problem
+24. CQRS, and the commoner case where it is overkill
+25. Retries, backoff, jitter, and the thundering herd you built
+26. Event schema evolution: contracts between teams
+27. Multi-tenancy: pool, silo, bridge
+28. Backpressure, and what a queue is really telling you
 
-### Data platform — 6
-22. Kinesis, MSK or Firehose
-23. Glue catalog and schema drift
-24. Iceberg on S3: table formats and why they arrived
-25. Redshift or Athena: when a warehouse earns its keep
-26. Lake Formation and governed access
-27. Streaming versus batch: the latency and cost curve *(cost lens)*
-
-### Resilience & DR — 5
-28. RTO and RPO, chosen honestly rather than aspirationally
-29. Cell-based architecture and blast radius
-30. Multi-region active-active: the consistency bill
-31. Fault injection with FIS: testing the failover you claim to have
-32. Backup and restore, and the restore nobody has tried
-
-### Security & compliance — 6
-33. Zero trust on AWS, past the marketing
-34. Landing zones for regulated workloads: PCI and HIPAA
-35. Detection and response: GuardDuty, Security Hub, Detective
-36. Network Firewall and egress control
-37. Certificate management at scale
-38. Incident response runbooks that survive an actual incident
-
-### Governance & organisation — 5
-39. SCPs: the policy language nobody reads carefully
-40. Landing zone design beyond Control Tower
-41. A tagging strategy that survives contact with reality
-42. Cost allocation and showback that changes behaviour *(cost lens)*
-43. Running a Well-Architected review that changes something
-
-### API & integration — 4
-44. API Gateway REST, HTTP, or an ALB
-45. AppSync and GraphQL: where it fits
-46. Versioning and deprecating an API without breaking callers
-47. Service mesh: the honest threshold for needing one
-
-### Compute & networking top-up — 5
-48. Direct Connect, VPN, or Cloud WAN
-49. Global Accelerator versus CloudFront
-50. Karpenter and node lifecycle
-51. Fargate or EC2 for ECS and EKS *(cost lens)*
-52. PrivateLink from the service provider side
+### Data platform — only a cost tool so far
+29. Kinesis, MSK or Firehose
+30. Glue catalog and schema drift
+31. Iceberg on S3: why table formats arrived
+32. Redshift or Athena: when a warehouse earns its keep
+33. Lake Formation and governed access
+34. Streaming versus batch: the latency and cost curve *(cost lens)*
 
 ## Balance this produces
 
 | Lens | Share |
 |:--|:--|
-| Pattern / design | ~85% |
-| Cost | ~10% |
-| Comparison | ~5% |
+| Pattern / design | ~80% |
+| Cost | ~12% |
+| Comparison | ~8% |
 
 Against the current run of ten, which is 0% pattern.
 
-## Structural note
+## Two honest constraints
 
-Every post so far uses an identical six-section skeleton, enforced by
-`REQUIRED_HEADINGS` in `scripts/validate_arch_post.py`. That check was added to
-catch a body swallowed by an unclosed comment and became a straitjacket: the
-shape now dictates the content, and every topic gets bent into four problems and
-a decision table whether it has four problems or not.
+**Every service is not worth a post.** Ground Station, Braket and RoboMaker are
+real services and irrelevant to this audience; one round-up is more honest than
+five posts pretending otherwise. The same applies to the long tail of ML
+services that are one API call each — grouped by task, they make one good post
+rather than eight thin ones.
 
-Several topics above — the migration ones especially — want a different shape:
-a walkthrough, a post-mortem, a single-idea piece. Relaxing the required set to
-a smaller core (Architecture and Official AWS Reference) would allow that
-without losing the check's original purpose.
+**The template constrains what can be written.** Every post so far uses an
+identical six-section skeleton, enforced by `REQUIRED_HEADINGS` in
+`scripts/validate_arch_post.py`. That check was added to catch a body swallowed
+by an unclosed comment and became a straitjacket: the shape now dictates the
+content, and every topic gets bent into four problems and a decision table
+whether it has four problems or not. The migration posts especially want a
+walkthrough or post-mortem shape. Relaxing the required set to a smaller core —
+Architecture and Official AWS Reference — would allow that without losing the
+check's original purpose.
