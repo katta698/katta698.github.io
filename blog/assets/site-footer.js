@@ -142,6 +142,43 @@
     try { window.localStorage.setItem('jk-feedback-' + slug, vote); }
     catch (e) { /* asked again next visit; harmless */ }
   }
+  function forget() {
+    try { window.localStorage.removeItem('jk-feedback-' + slug); }
+    catch (e) { /* nothing to undo if storage is unavailable */ }
+  }
+
+  // A random id for this browser, made once and kept. It is the sort key on the
+  // server, so a second vote from here overwrites the first instead of being
+  // counted as another reader -- which is what lets someone change their mind.
+  //
+  // It identifies a browser, not a person: no address, no fingerprint, gone the
+  // moment site data is cleared, and shared across posts only with itself.
+  function voterId() {
+    try {
+      var id = window.localStorage.getItem('jk-voter');
+      if (id) return id;
+      var buf = new Uint8Array(10);
+      (window.crypto || window.msCrypto).getRandomValues(buf);
+      id = Array.prototype.map.call(buf, function (b) {
+        return ('0' + b.toString(16)).slice(-2);
+      }).join('');
+      window.localStorage.setItem('jk-voter', id);
+      return id;
+    } catch (e) {
+      // Storage blocked (private mode) or no crypto. Fall back to a throwaway
+      // id for this page view: the server requires one, so returning nothing
+      // would turn a blocked cookie jar into a rejected vote. It cannot be
+      // revised on a later visit, because nothing here outlives the page.
+      if (!fallbackVoter) {
+        fallbackVoter = '';
+        for (var i = 0; i < 20; i++) {
+          fallbackVoter += Math.floor(Math.random() * 16).toString(16);
+        }
+      }
+      return fallbackVoter;
+    }
+  }
+  var fallbackVoter = null;
 
   function el(tag, cls, html) {
     var n = document.createElement(tag);
@@ -150,16 +187,12 @@
     return n;
   }
 
-  // The id the server hands back for this reader's vote. A down-vote arrives in
-  // two parts -- the thumb, then optionally a reason chip -- and sending the id
-  // with the second part annotates the first row rather than writing another.
-  // Without it one unhappy reader is recorded as two or three down-votes.
-  var voteId = null;
-
   function send(vote, reason) {
-    var payload = { slug: slug, vote: vote };
+    // The voter id keys the row, so every one of these -- the thumb, a reason
+    // chip a moment later, a change of mind next week -- writes to the same
+    // place. There is no second insert to guard against.
+    var payload = { slug: slug, vote: vote, voter: voterId() };
     if (reason) payload.reason = reason;
-    if (reason && voteId) payload.id = voteId;
     // keepalive so a vote cast as the reader leaves still goes out.
     //
     // The catch is not optional: every call site fires and forgets, so without
@@ -171,15 +204,25 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       keepalive: true
-    })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (d) { if (d && d.id) voteId = d.id; })
-      .catch(function () { /* lost vote; the reader should never know */ });
+    }).catch(function () { /* lost vote; the reader should never know */ });
   }
 
   function thanksRow(root) {
     root.innerHTML = '';
     root.appendChild(el('span', 'qs-feedback-thanks', 'Thanks &mdash; noted.'));
+
+    // Someone who misclicks, or reads the rest and changes their mind, has to
+    // be able to say so. Without this the only way back is clearing site data,
+    // and doing that used to register as a whole second reader.
+    var again = el('button', 'qs-feedback-change', 'change');
+    again.type = 'button';
+    again.addEventListener('click', function () {
+      forget();
+      root.innerHTML = '';
+      buildInto(root);
+    });
+    root.appendChild(again);
+
     showCount(root);
   }
 
@@ -226,12 +269,18 @@
 
   function build() {
     var root = el('div', 'qs-feedback');
-
     if (remembered()) {
       thanksRow(root);
-      return root;
+    } else {
+      buildInto(root);
     }
+    return root;
+  }
 
+  // Fills an element with the question and the thumbs. Separate from build()
+  // so the "change" link can re-ask inside the element already on the page,
+  // rather than replacing it and losing where it sits in the box.
+  function buildInto(root) {
     root.appendChild(el('span', 'qs-feedback-q', 'Was this useful?'));
     var btns = el('div', 'qs-feedback-btns');
 
@@ -257,7 +306,6 @@
     });
 
     root.appendChild(btns);
-    return root;
   }
 
   function mount() {
