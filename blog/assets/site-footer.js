@@ -150,9 +150,16 @@
     return n;
   }
 
+  // The id the server hands back for this reader's vote. A down-vote arrives in
+  // two parts -- the thumb, then optionally a reason chip -- and sending the id
+  // with the second part annotates the first row rather than writing another.
+  // Without it one unhappy reader is recorded as two or three down-votes.
+  var voteId = null;
+
   function send(vote, reason) {
     var payload = { slug: slug, vote: vote };
     if (reason) payload.reason = reason;
+    if (reason && voteId) payload.id = voteId;
     // keepalive so a vote cast as the reader leaves still goes out.
     //
     // The catch is not optional: every call site fires and forgets, so without
@@ -164,7 +171,10 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       keepalive: true
-    }).catch(function () { /* lost vote; the reader should never know */ });
+    })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) { if (d && d.id) voteId = d.id; })
+      .catch(function () { /* lost vote; the reader should never know */ });
   }
 
   function thanksRow(root) {
