@@ -62,11 +62,13 @@ def main():
     sections = []
     for t in ORDER:
         clips = ''.join(
-            '<div class="clip"><video src="../blog/assets/videos/{t}-{i}.mp4" autoplay muted '
-            'loop playsinline preload="metadata"></video><span>{t}-{i}</span></div>'.format(t=t, i=i)
+            '<a class="clip" target="_blank" href="https://jayanthkatta.com/?theme={t}&clip={i}">'
+            '<video src="../blog/assets/videos/{t}-{i}.mp4" autoplay muted '
+            'loop playsinline preload="metadata"></video><span>{t}-{i}</span></a>'.format(t=t, i=i)
             for i in range(1, C[t] + 1))
         tracks = ''.join(
-            '<div class="tr"><span class="nm">{t}-{i}</span><span class="src">{d}</span>'
+            '<div class="tr"><a class="nm" target="_blank" '
+            'href="https://jayanthkatta.com/?theme={t}&audio={i}">{t}-{i}</a><span class="src">{d}</span>'
             '<audio controls preload="none" src="../blog/assets/audio/{t}-{i}.mp3"></audio></div>'
             .format(t=t, i=i, d=nice('%s-%d' % (t, i)))
             for i in range(1, A[t] + 1))
@@ -88,20 +90,23 @@ def main():
  h2{font-size:1rem;margin:0;text-transform:capitalize}
  .stat{font-size:.8rem;color:#A3ABA9} .stat b{color:#C9CDC9}
  .clips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:.9rem}
- .clip{position:relative;width:184px;line-height:0;border-radius:4px;overflow:hidden;background:#11140F}
+ .clip{position:relative;width:184px;line-height:0;border-radius:4px;overflow:hidden;background:#11140F;
+   display:block;text-decoration:none}
+ .clip:hover{outline:2px solid #C4A484;outline-offset:1px}
  .clip video{width:100%;display:block;aspect-ratio:16/9;object-fit:cover}
  .clip span{position:absolute;left:6px;bottom:5px;font:600 .66rem 'Courier New',monospace;color:#F5F5F3;
    background:rgba(29,35,34,.78);padding:1px 6px;border-radius:2px;line-height:1.5}
  .auds{border-top:1px solid #2E3635;padding-top:.7rem;display:flex;flex-direction:column;gap:6px}
  .tr{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
- .nm{font:600 .72rem 'Courier New',monospace;color:#C4A484;width:92px}
+ .nm{font:600 .72rem 'Courier New',monospace;color:#C4A484;width:92px;text-decoration:none;
+   border-bottom:1px dotted #C4A484}
  .src{font-size:.75rem;color:#7E8584;width:290px}
  audio{height:30px;width:250px}
 </style>
 <h1>Hero themes &mdash; what is live</h1>
 <div class="sub">Every clip and every track currently deployed. Clips autoplay; the observer below
 pauses whatever scrolls out of view so fifty videos do not decode at once. Audio is off by default on
-the site &mdash; these players are for auditioning. Video changes daily within a theme week; audio
+the site &mdash; these players are for auditioning. <b>Click any clip or track name</b> to open the live site showing it. Video changes daily within a theme week; audio
 changes each time the theme comes round. Regenerate with
 <code>python scripts/build_theme_preview.py</code>.</div>
 __SECTIONS__
