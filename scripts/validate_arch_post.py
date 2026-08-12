@@ -157,7 +157,15 @@ def check_page(slug):
     #    starts honouring the token, at which point it pins stale CSS for good.
     css_file = os.path.join(BLOG, 'assets', 'blog.css')
     if os.path.isfile(css_file):
-        want = hashlib.md5(io.open(css_file, 'rb').read()).hexdigest()[:8]
+        #    Hash the text, not the raw bytes, and hash it exactly the way
+        #    sync_blog.py's _css_version() does. Git checks this file out with
+        #    CRLF endings on Windows while the repo — and therefore what Pages
+        #    serves — stores LF. Hashing bytes off a CRLF working copy produces
+        #    a value the served file never has, so this check failed on all 19
+        #    arch pages at once and blamed the pages, which were correct.
+        want = hashlib.md5(
+            io.open(css_file, encoding='utf-8').read().encode('utf-8')
+        ).hexdigest()[:8]
         m = re.search(r'blog\.css\?v=([0-9a-zA-Z]+)', html)
         if not m:
             warn(slug, 'no cache-busting token on blog.css')
