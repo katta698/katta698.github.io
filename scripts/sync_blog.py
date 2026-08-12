@@ -28,12 +28,31 @@ BLOG_DIR    = REPO_ROOT / "blog"
 POSTS_DIR   = REPO_ROOT / "posts"
 ASSETS_URL  = "/blog/assets"
 
+# Hash the repository form of a file, not the working-tree form.
+#
+# core.autocrlf is true and there is no .gitattributes, so text files are LF in
+# the repository and CRLF on disk on Windows. Hashing the bytes as they sit on
+# disk therefore produces a different token per checkout: blog.css hashed to
+# 2e1d6b7d from a CRLF working tree and 649ff170 from the committed LF form.
+#
+# That is not cosmetic. Every worktree that ran sync would re-stamp the token to
+# its own value and commit it, so two worktrees pushing in turn would flip it
+# back and forth forever — each one "fixing" what the other just wrote, with a
+# full rebuild of every page in the diff each time. Normalising line endings
+# first makes the token a function of content alone, which is what it was always
+# meant to be.
+def _content_hash(*paths):
+    h = hashlib.md5()
+    for p in paths:
+        h.update(p.read_bytes().replace(b"\r\n", b"\n"))
+    return h.hexdigest()[:8]
+
+
 # Cache-bust blog.css with a short content hash, so a CSS change is
 # guaranteed to bypass any stale browser/CDN cache instead of relying on
 # everyone hitting a hard refresh.
 def _css_version():
-    css_path = REPO_ROOT / "blog" / "assets" / "blog.css"
-    return hashlib.md5(css_path.read_bytes()).hexdigest()[:8]
+    return _content_hash(REPO_ROOT / "blog" / "assets" / "blog.css")
 
 CSS_VERSION = _css_version()
 
@@ -49,12 +68,11 @@ CSS_VERSION = _css_version()
 # was unversioned, a returning visitor kept executing a cached copy and never
 # registered at all.
 def _js_version():
-    h = hashlib.md5()
     # hero-media.js is included: it is loaded by every page, and without it in
     # the hash a change to the rotation would ship behind a cached old copy.
-    for name in ("blog.js", "site-footer.js", "hero-media.js"):
-        h.update((REPO_ROOT / "blog" / "assets" / name).read_bytes())
-    return h.hexdigest()[:8]
+    return _content_hash(*[REPO_ROOT / "blog" / "assets" / name
+                           for name in ("blog.js", "site-footer.js",
+                                        "hero-media.js")])
 
 
 JS_VERSION = _js_version()
