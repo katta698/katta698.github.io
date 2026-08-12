@@ -130,7 +130,9 @@
     }
   });
 
-  // On blog index: pre-fill search from ?q= param
+  // On blog index: pre-fill the search box from ?q=, set by the inline search
+  // on post pages. Cosmetic only -- the filtering itself happens further down,
+  // once the input listener exists.
   var params = new URLSearchParams(window.location.search);
   var q = params.get('q');
   if (q && inp && wrap) {
@@ -374,10 +376,14 @@
       applyFilters();
     });
 
-    // ?q= deep link (used by the homepage skills section). Applied here, not
-    // where the box is pre-filled further up: that code runs before this
-    // listener is registered, so the 'input' event it dispatches is lost and
-    // the box ends up populated with nothing filtered.
+    // ?q= deep link. The caller is the inline search box on every post page,
+    // which navigates to /blog/?q=<term> on Enter -- not the homepage topic
+    // section, which used to link this way and now uses ?topic= instead,
+    // because a full-text search could not reproduce the counts it displayed.
+    //
+    // Applied here, not where the box is pre-filled further up: that code runs
+    // before this listener is registered, so the 'input' event it dispatches is
+    // lost and the box ends up populated with nothing filtered.
     const qDeepLink = new URLSearchParams(window.location.search).get('q');
     if (qDeepLink) {
       searchInput.value = qDeepLink;
