@@ -86,7 +86,9 @@ for (let i = 0; i < 365; i++) {
   days.push({ dow: DOW[dt.getDay()],
               label: dt.getDate() + ' ' + MON[dt.getMonth()],
               week: h.week, theme: h.theme,
-              clip: h.clip.replace(/\.mp4$/, '').split('-')[1],
+              clip: h.clip.replace(/\.mp4$/, ''),   // full name, e.g. rain-4 — a bare
+                                                    // index next to a named audio
+                                                    // column reads as the wrong thing
               audio: h.audio.replace(/\.mp3$/, ''),
               banner: banner(dt.getFullYear(), dt.getMonth(), dt.getDate()) });
 }
@@ -111,7 +113,7 @@ const rows = weeks.map(w => `<tr>
     <td class="dt">${w.days[0].label} &ndash; ${w.days[w.days.length - 1].label}</td>
     <td><span class="th" style="background:${COL[w.theme]}">${w.theme}</span></td>
     <td class="clips">${w.days.map(d => `<span class="d"><i>${d.dow}</i>${d.clip}</span>`).join('')}</td>
-    <td class="au">${[...w.audio].join(' · ')}</td>
+    <td class="au">${[...w.audio].map(a => a + '.mp3').join(' · ')}</td>
     <td class="bn">${w.days.filter(d => d.banner)
         .map(d => `<div class="ban"><b>${d.label}</b> ${esc(d.banner)}</div>`).join('') || '<span class="none">—</span>'}</td>
   </tr>`).join('');
@@ -138,13 +140,13 @@ fs.writeFileSync(path.join(OUT_DIR, 'hero-schedule.html'), `<!doctype html><meta
  td{padding:7px 8px;border-bottom:1px solid #242B2A;vertical-align:top}
  tr:hover td{background:#242B2A}
  .wk{color:#7E8584;font:400 .74rem 'Courier New',monospace;width:34px}
- .dt{color:#C9CDC9;white-space:nowrap;width:118px}
+ .dt{color:#C9CDC9;white-space:nowrap;width:112px}
  .th{display:inline-block;padding:2px 9px;border-radius:3px;font-size:.74rem;text-transform:capitalize}
  .clips{white-space:nowrap}
- .d{display:inline-block;text-align:center;margin-right:5px;font:400 .72rem 'Courier New',monospace;color:#C9CDC9}
+ .d{display:inline-block;text-align:center;margin-right:7px;font:400 .7rem 'Courier New',monospace;color:#C9CDC9}
  .d i{display:block;font-style:normal;font-size:.6rem;color:#5c6360}
  .au{color:#A3ABA9;font:400 .72rem 'Courier New',monospace}
- .bn{width:34%} .ban{margin-bottom:2px;font-size:.76rem;color:#C4A484}
+ .bn{width:27%} .ban{margin-bottom:2px;font-size:.76rem;color:#C4A484}
  .ban b{color:#F5F5F3;font-weight:600;margin-right:4px}
  .none{color:#3a4342}
 </style>
@@ -154,7 +156,7 @@ banner code against every date rather than re-implementing them. Regenerate afte
 the week plan, or the occasion list. The week picks the theme; the day picks the clip within it; audio
 changes each time a theme comes round rather than daily.</div>
 <div class="legend">${legend}<span class="lg">${bannerDays} banner days</span></div>
-<table><thead><tr><th>wk</th><th>dates</th><th>theme</th><th>clip by day (Sun&ndash;Sat)</th><th>audio</th><th>occasion banner</th></tr></thead>
+<table><thead><tr><th>wk</th><th>dates</th><th>theme</th><th>video &mdash; changes daily</th><th>audio &mdash; holds all week</th><th>occasion banner</th></tr></thead>
 <tbody>${rows}</tbody></table>`);
 
 console.log(`_schedule/hero-schedule.html — ${from} to ${to}`);
