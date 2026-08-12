@@ -1,0 +1,309 @@
+---
+title: 'AWS Daily Intelligence #8 - Reading S3 Backups Without a Restore'
+date: '2026-08-12T09:00:00'
+verified: '2026-08-12'
+labels:
+- AWS
+- AWS Daily Intelligence
+slug: aws-daily-intelligence-aws-backup-s3-access-points
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Daily Intelligence &middot; 12 August 2026</div>
+  <div class="post-title">Reading S3 Backups Without a Restore: AWS Backup Access Points</div>
+  <div class="post-subtitle">Every recovery workflow used to start the same way &mdash; restore it somewhere, then look. You can now point <code>GetObject</code> straight at a recovery point and read it in place. The capability is excellent. The cleanup story is where it will hurt you.</div>
+  <div class="post-meta">
+    <span>General Availability</span>
+    <span>Read-only</span>
+    <span>5 access points per recovery point</span>
+    <span>Announced 6 August 2026</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="toc">
+    <h3>In This Post</h3>
+    <ol>
+      <li><a href="#what-changed">What changed</a></li>
+      <li><a href="#why">Why AWS built this</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#value">Business value</a></li>
+      <li><a href="#security">Security considerations</a></li>
+      <li><a href="#cost">Cost considerations</a></li>
+      <li><a href="#operations">Operational considerations</a></li>
+      <li><a href="#tradeoffs">Tradeoffs</a></li>
+      <li><a href="#implementation">Implementation guidance</a></li>
+      <li><a href="#practices">Best practices</a></li>
+      <li><a href="#adopt">Who should adopt, who should wait</a></li>
+      <li><a href="#cleanup">The trap: an access point pins the recovery point</a></li>
+      <li><a href="#takeaways">Key takeaways</a></li>
+      <li><a href="#references">Official AWS references</a></li>
+    </ol>
+  </div>
+
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>AWS Backup can now expose an S3 recovery point through an S3 access point, so you read backup data with ordinary S3 calls &mdash; <code>GetObject</code>, <code>HeadObject</code>, <code>ListObjectsV2</code>, <code>ListObjectVersions</code> &mdash; <strong>without initiating a restore</strong>.</p>
+    <p>It works for snapshot and continuous (point-in-time) recovery points, in standard vaults and logically air-gapped vaults, including recovery points shared to another account through AWS Resource Access Manager or a restore access backup vault. Access is strictly read-only.</p>
+    <p>There is one genuinely clever behaviour worth knowing: for a continuous recovery point you choose the point-in-time view with <code>AccessPointInTime</code>, and <strong>while the access point exists that view stays readable even after the timestamp falls outside the 35-day retention window</strong>. An investigation opened on day 30 does not lose its evidence on day 36.</p>
+    <p>And one trap. While any access point is active, AWS Backup <strong>pauses lifecycle transitions and blocks deletion of that recovery point</strong>. Access points have no expiry and nothing reaps them. Leave one behind and your retention policy quietly stops being enforced on that backup &mdash; with no error, and no obvious place to look.</p>
+    <div class="tip-box">
+      <p><strong>Why this and not yesterday's news.</strong> Tuesday produced nine announcements, mostly model-catalogue additions and one Region expansion. This was announced on 6 August and has been the strongest unwritten item in the backlog since. On a thin day the held item wins &mdash; that is what the backlog is for.</p>
+    </div>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>Reading anything out of an AWS Backup recovery point previously required a restore job: choose a destination, wait for it to complete, then look at the result. That is the correct operation when you actually want the data back. It is a poor fit when you want to <em>look</em> at it.</p>
+    <p>A <strong>backup access point</strong> removes the wait. You create one against a specific recovery point; AWS Backup provisions an S3 access point on your behalf and hands you its alias and ARN. From then on the backup behaves like a read-only bucket.</p>
+
+    <h3>What you can and cannot call</h3>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Supported</th><th>Not supported</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>GetObject</code>, <code>HeadObject</code>, <code>GetObjectAttributes</code>, <code>GetObjectTagging</code>, <code>GetBucketLocation</code>, <code>ListObjects</code>, <code>ListObjectsV2</code>, <code>ListObjectVersions</code></td>
+          <td>Every write: <code>PutObject</code>, <code>DeleteObject</code>, <code>CopyObject</code>, all multipart operations. Also <code>GetObjectAcl</code>, <code>GetObjectRetention</code>, <code>GetObjectLegalHold</code>.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <p>That last group is easy to skim past and matters for compliance work. You can read an object and its tags, but you <strong>cannot read its ACL, retention setting or legal hold</strong> through an access point. If your audit question is about those, you still need a restore.</p>
+
+    <h3>Where it works</h3>
+    <ul>
+      <li><strong>Recovery point types:</strong> snapshot and continuous (PITR).</li>
+      <li><strong>Vaults:</strong> standard and logically air-gapped.</li>
+      <li><strong>Cross-account:</strong> recovery points shared via RAM, or reachable through a restore access backup vault under Multi-Party Approval.</li>
+      <li><strong>S3 only.</strong> No other AWS Backup resource type supports access points.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why AWS built this</h2>
+    <p>Because three common tasks were all being served by an operation designed for a fourth.</p>
+    <ul>
+      <li><strong>Targeted recovery.</strong> Someone deleted one file. Restoring a bucket to get one object back is absurd, but it was the mechanism available.</li>
+      <li><strong>Compliance sampling.</strong> An auditor wants to confirm that a particular record existed on a particular date. That is a read, not a recovery, and it should not require provisioning storage.</li>
+      <li><strong>Forensic investigation.</strong> After an incident you want to compare what a bucket held before and after. Restoring both to compare them is slow, expensive, and creates two more copies of data you are already worried about.</li>
+      <li><strong>Validating the backup itself.</strong> "Are our backups actually any good?" is a question most teams answer once a year, if that, precisely because the only way to check was a full restore.</li>
+    </ul>
+    <p>All four wanted read access. Restore gives you a copy, and a copy has to be paid for, secured, and eventually cleaned up. Access points give you a view instead.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>The model is a chain of two resources: a <strong>backup access point</strong> in AWS Backup, which provisions an <strong>S3 access point</strong> that your tools actually call.</p>
+
+    <img src="/blog/assets/diagrams/daily-008-aws-backup-s3-access-points.svg" alt="Diagram: a backup access point provisions an S3 access point that routes standard read calls at a recovery point, so backup data can be read without a restore. While any access point is active, AWS Backup pauses lifecycle transitions and blocks deletion of that recovery point. Access points never expire on their own, and deleting the underlying S3 access point directly leaves the protection in place.">
+
+    <h3>The two-resource chain matters</h3>
+    <p>You create and delete the <em>backup</em> access point; AWS Backup manages the <em>S3</em> access point underneath. They are not interchangeable, and treating them as one thing is what produces the orphan described at the end of this post.</p>
+    <p>Creation is asynchronous. The backup access point goes <code>CREATING</code>, then <code>AVAILABLE</code>, at which point <code>DescribeBackupAccessPoint</code> returns the S3 alias and ARN you use with S3 APIs. Call an S3 API too early and you get <code>409 InvalidBucketState</code>.</p>
+
+    <h3>Point-in-time views outlive the retention window</h3>
+    <p>This is the most useful thing in the feature and it is stated almost in passing in the documentation. For a continuous recovery point you pass <code>AccessPointInTime</code> to pick which moment you want to see. The timestamp must be inside the 35-day continuous retention window <em>at the time you create the access point</em>. After that:</p>
+    <p><strong>As long as the access point exists, that point-in-time view remains readable, even once the timestamp has aged past the retention window.</strong></p>
+    <p>Practically: an incident on 1 July, discovered on 30 July, investigated into September. Create the access point while the timestamp is still in range and the evidence stays available for as long as you need it. Without that, the investigation would race the retention clock.</p>
+    <p>It also means an access point is a deliberate, indefinite hold on data &mdash; which is the same mechanism as the trap. The capability and the footgun are the same behaviour seen from two directions.</p>
+
+    <h3>Access control has two layers</h3>
+    <p>By default the S3 access point is created <strong>without</strong> an access point policy, and access is governed purely by the caller's IAM permissions. You can optionally attach a policy to grant read access to other principals, restrict by source IP or VPC endpoint, or require MFA. An access point policy only ever grants what the underlying data source already allows, and account-level Block Public Access still applies.</p>
+  </div>
+
+  <div class="section" id="value">
+    <h2>Business value</h2>
+    <p><strong>Recovery time for single-file restores collapses.</strong> The most common real recovery request &mdash; one file, one object, one prefix &mdash; goes from a restore job to a <code>GetObject</code>.</p>
+    <p><strong>Backup validation becomes something you can automate.</strong> A scheduled job can open an access point, list objects, checksum a sample, and delete the access point. That converts "we assume our backups are good" into a test that runs.</p>
+    <p><strong>Forensics without making more copies.</strong> Investigating an incident no longer requires restoring potentially compromised data into a live bucket, which is both faster and a smaller security problem.</p>
+    <p><strong>Auditors can be given scoped, read-only access.</strong> An access point with a policy naming their role, on one recovery point, reading only what they need &mdash; rather than a restored copy someone has to remember to delete.</p>
+    <p><strong>Air-gapped vaults stay useful.</strong> Access points work against logically air-gapped vaults and across accounts via RAM, so the isolation does not have to mean the data is hard to inspect.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p><strong>Read-only is enforced by the service, not by policy.</strong> Every write operation is unsupported at the access point level. That is a genuinely strong property: an access point cannot be used to alter backup data even if someone attaches a permissive policy to it.</p>
+    <p><strong>An access point is a new door to your backups.</strong> Backups are usually the most sensitive copy of data you hold, and one of the least routinely accessed. Creating a durable read path to them deserves the scrutiny you would apply to any other access grant &mdash; particularly since it does not expire.</p>
+    <p><strong>Scope the operator permissions deliberately.</strong> The managed policy is <code>AWSBackupAccessPointOperatorAccess</code>. Note that creating an access point also requires <code>s3:CreateAccessPoint</code>, and attaching a policy requires <code>s3:PutAccessPointPolicy</code> &mdash; so this is not purely an AWS Backup permission.</p>
+    <p><strong>RAM sharing grants access-point creation by default.</strong> Worth checking if you own a logically air-gapped vault: the RAM permission <code>AWSRAMPermissionBackupVaultReadOnly</code> <strong>includes <code>backup:CreateBackupAccessPoint</code></strong>. A recipient account can therefore create its own read path into your vault. Vault owners who do not want that must add a vault access policy that denies the action.</p>
+    <p><strong>Revocation is clean.</strong> If a vault is unshared or a restore access backup vault is deleted, access points created by the formerly authorised account move to <code>DISASSOCIATED</code> and S3 calls through them fail. Lifecycle protection is also released, assuming no other access points remain.</p>
+    <p><strong>Status changes are auditable.</strong> AWS Backup emits CloudTrail events, EventBridge events and SNS notifications for access point creation, deletion and failure. Use the EventBridge events &mdash; they are the practical way to notice an access point that has been sitting open.</p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p><strong>AWS did not publish a specific charge for backup access points</strong>, and I could not verify one, so there is no figure here. Standard S3 request pricing applies to the calls you make through the access point. Confirm on the AWS Backup and S3 pricing pages before modelling.</p>
+    <p><strong>The saving is a restore you did not run.</strong> A restore writes a full copy into a bucket: storage charges until someone deletes it, request charges to create it, and the engineering time to do both. For an investigation touching a handful of objects, an access point avoids all of it.</p>
+    <p><strong>The cost risk is the one nobody budgets for: retention that stops being enforced.</strong> This is the important line in this section. A forgotten access point pauses lifecycle on its recovery point indefinitely. That backup is never expired, never transitioned, and keeps accruing storage charges &mdash; while your backup plan reports that it is doing its job. On a large S3 recovery point that is a real number, and it grows quietly.</p>
+    <p><strong>Storage class interactions still apply underneath.</strong> AWS Backup's S3 documentation notes that reads against objects backed up from Glacier Instant Retrieval, Standard-IA or One Zone-IA incur retrieval charges. Reading a large backup through an access point is still reading data.</p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p><strong>Five per recovery point, including the dead ones.</strong> The limit is five access points per recovery point per account, and <code>FAILED</code> and <code>EXPIRED</code> ones count. Hitting <code>LimitExceededException</code> when you appear to have none active usually means old failures were never cleaned up.</p>
+    <p><strong>Names live in the S3 namespace.</strong> An access point name must not collide with existing S3 access points in the same Region and account: lowercase, no underscores, 3&ndash;50 characters. After deleting one, reusing the same name too quickly returns <code>ConflictException</code> &mdash; so scripts that create and destroy an access point with a fixed name will fail intermittently. Use a unique suffix.</p>
+    <p><strong>Some object keys are simply unreachable.</strong> Objects named <code>.</code> or <code>..</code>, or with keys starting <code>./</code> or <code>../</code>, containing <code>/./</code>, <code>/../</code> or consecutive slashes, or ending in <code>/.</code>, <code>/..</code> or <code>/</code>, return <code>InvalidKey</code> through a backup access point. They are in the backup and restorable &mdash; just not readable this way. If your data came from a filesystem sync, some of these almost certainly exist.</p>
+    <p><strong>The recovery point must be in a usable state</strong> &mdash; <code>AVAILABLE</code>, <code>STOPPED</code> or <code>COMPLETED</code> &mdash; or creation fails with <code>InvalidParameterValueException</code>.</p>
+    <p><strong>While you are here, check EventBridge on your buckets.</strong> Unrelated to access points but directly relevant to whether your backups are current: AWS Backup's S3 continuous backups depend on the bucket's EventBridge notification setting. If it is turned off, S3 stops publishing object events, the continuous recovery window silently stops advancing, and <strong>AWS Backup generates no alert or job failure</strong>. Snapshot backups keep running, which makes it harder to notice. AWS suggests the Config rule <code>s3-event-notifications-enabled</code> or a CloudTrail rule on <code>PutBucketNotificationConfiguration</code>.</p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <p><strong>Against a restore.</strong> A restore gives you a real, writable copy with full metadata &mdash; ACLs, retention, legal hold &mdash; and no lifecycle side effects. An access point gives you a fast read-only view with a subset of metadata and a hold on the recovery point. Use restore when you need the data back; use an access point when you need to look.</p>
+    <p><strong>Against S3 Versioning for single-object recovery.</strong> If the object was deleted or overwritten recently and versioning is on, the previous version is right there in the bucket. That is faster and simpler than anything involving AWS Backup. Access points matter when the version has aged out, the bucket itself is gone, or the copy you need is deliberately isolated in a vault.</p>
+    <p><strong>Against granting read access to the source bucket.</strong> For auditing current state, read the bucket. Access points are for auditing a <em>point in time</em> you no longer have.</p>
+    <p><strong>The metadata gap is the real limitation.</strong> No ACLs, no retention, no legal hold through an access point. For compliance work that turns on exactly those attributes, this does not replace a restore, and the announcement does not make that obvious.</p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+
+    <h3>Prerequisites</h3>
+    <ul>
+      <li><code>AWSBackupAccessPointOperatorAccess</code>, or the equivalent <code>backup:*BackupAccessPoint*</code> actions plus <code>s3:CreateAccessPoint</code>, <code>s3:GetAccessPoint</code>, <code>s3:DeleteAccessPoint</code>, and <code>s3:PutAccessPointPolicy</code> if you attach a policy.</li>
+      <li>A recovery point in <code>AVAILABLE</code>, <code>STOPPED</code> or <code>COMPLETED</code> state.</li>
+      <li>For a continuous recovery point, a target timestamp inside the 35-day window <em>now</em>.</li>
+      <li>An access point name that is unique in the S3 access point namespace for the Region and account.</li>
+    </ul>
+
+    <h3>Create it, pinning a point in time</h3>
+<pre><code>aws backup create-backup-access-point \
+  --recovery-point-arn "arn:aws:backup:us-east-1:123456789012:recovery-point:rp-1234567890abcdef0" \
+  --name "incident-4471-jul01" \
+  --access-point-metadata '{"AccessPointInTime": "2026-07-01T12:00:00Z"}'</code></pre>
+
+    <h3>Wait for AVAILABLE, then get the S3 alias</h3>
+<pre><code>aws backup describe-backup-access-point \
+  --access-point-arn "arn:aws:backup:us-east-1:123456789012:accesspoint/incident-4471-jul01"</code></pre>
+    <p>The response carries <code>S3AccessPointAlias</code> and <code>S3AccessPointArn</code>. Use either as the bucket name in ordinary S3 calls.</p>
+
+    <h3>Read it like a bucket</h3>
+<pre><code>aws s3api list-objects-v2 \
+  --bucket "incident-4471-jul01-abc123-ext-s3alias"
+
+aws s3api get-object \
+  --bucket "incident-4471-jul01-abc123-ext-s3alias" \
+  --key "path/to/my-file.txt" \
+  recovered-file.txt</code></pre>
+
+    <h3>Clean up properly &mdash; this is the step that gets skipped</h3>
+<pre><code>aws backup delete-backup-access-point \
+  --access-point-arn "arn:aws:backup:us-east-1:123456789012:accesspoint/incident-4471-jul01"</code></pre>
+
+    <h3>Audit what is still open</h3>
+    <p>Run this on a schedule. It is the only way to find access points nobody remembers creating:</p>
+<pre><code>aws backup list-backup-access-points</code></pre>
+    <p>And for a recovery point you cannot delete:</p>
+<pre><code>aws backup list-backup-access-points-by-recovery-point \
+  --recovery-point-arn "arn:aws:backup:us-east-1:123456789012:recovery-point:rp-1234567890abcdef0"</code></pre>
+  </div>
+
+  <div class="section" id="practices">
+    <h2>Best practices</h2>
+    <ol>
+      <li><strong>Delete the access point in the same runbook step that finishes the investigation.</strong> Nothing else will.</li>
+      <li><strong>Never delete the underlying S3 access point directly.</strong> Always use <code>DeleteBackupAccessPoint</code>.</li>
+      <li><strong>Audit open access points on a schedule</strong> with <code>list-backup-access-points</code>, and alarm on any older than your investigation window.</li>
+      <li><strong>Name access points after the reason they exist</strong> &mdash; a ticket or incident number &mdash; so an orphan identifies its owner.</li>
+      <li><strong>Use a unique suffix in automation</strong> to avoid <code>ConflictException</code> on recently deleted names.</li>
+      <li><strong>Subscribe to the EventBridge events</strong> for access point creation and deletion.</li>
+      <li><strong>If you own a logically air-gapped vault, decide deliberately about RAM.</strong> <code>AWSRAMPermissionBackupVaultReadOnly</code> lets recipients create access points unless you deny it.</li>
+      <li><strong>Do not plan compliance evidence around ACLs, retention or legal hold.</strong> Those are unreadable through an access point.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt, who should wait</h2>
+
+    <h3>Adopt</h3>
+    <ul>
+      <li>Teams whose <strong>most common recovery request is one file or one prefix</strong>. This is the case it was built for.</li>
+      <li>Anyone doing <strong>incident forensics on S3 data</strong>, especially where restoring a compromised copy into a live account is unattractive.</li>
+      <li>Teams who have <strong>never actually verified a backup is readable</strong>, because the only way to check was a full restore.</li>
+      <li>Organisations handling <strong>audit requests about historical state</strong>.</li>
+    </ul>
+
+    <h3>Wait</h3>
+    <ul>
+      <li>Anyone whose audit questions are about <strong>ACLs, object retention or legal hold</strong>. Unreadable this way.</li>
+      <li>Teams <strong>without a cleanup discipline</strong>. A forgotten access point silently suspends retention, which is worse than not having the feature.</li>
+      <li>Cases where <strong>S3 Versioning already answers the question</strong> &mdash; simpler and faster.</li>
+      <li>Anyone needing to <strong>write to or modify</strong> backup data. Read-only, enforced.</li>
+      <li>Non-S3 resources. <strong>S3 only.</strong></li>
+    </ul>
+  </div>
+
+  <div class="section" id="cleanup">
+    <h2>The trap: an access point pins the recovery point</h2>
+    <p>This deserves its own section because the mechanism is a feature, the failure is silent, and the thing it breaks is data retention &mdash; which is usually a compliance obligation rather than a preference.</p>
+
+    <div class="warning-box">
+      <p><strong>While one or more access points exist for a recovery point, AWS Backup pauses scheduled lifecycle transitions and blocks deletion.</strong> <code>DeleteRecoveryPoint</code> returns an error. You can still change the lifecycle setting, but it will not be enforced until every access point is gone.</p>
+    </div>
+
+    <p>That behaviour is correct. Data should not evaporate while an application is reading it. The problem is what surrounds it.</p>
+
+    <p><strong>Access points have no expiry.</strong> The documentation is explicit: there is no delete-after-days setting, and they must be deleted manually. Nothing in AWS Backup will reap one for you, no matter how long it has been idle.</p>
+
+    <p>So the failure is ordinary. An engineer creates an access point during an incident at 2am, gets what they need, and moves on. The recovery point it points at is now exempt from lifecycle. Your backup plan still reports success. Your retention policy still says 30 days. That one recovery point stays forever, accruing storage cost, and nothing anywhere reports a problem &mdash; because from the service's point of view, nothing is wrong.</p>
+
+    <div class="warning-box">
+      <p><strong>Cleaning up the wrong way makes it worse.</strong> If you delete the underlying <em>S3</em> access point directly through S3 APIs, the backup access point moves to <code>EXPIRED</code> &mdash; and <strong>the lifecycle protection remains in place</strong> until you delete the orphaned backup access point as well.</p>
+    </div>
+
+    <p>This is the sharp edge. Someone tidying up unfamiliar S3 access points does the obvious thing, sees the S3 resource disappear, and reasonably concludes it is dealt with. The hold survives, now attached to a resource that no longer appears where they were looking.</p>
+
+    <p>Three habits make this a non-issue:</p>
+    <ol>
+      <li><strong>Deletion belongs in the same runbook step as the work.</strong> Not a follow-up ticket.</li>
+      <li><strong>Always use <code>DeleteBackupAccessPoint</code>.</strong> Never the S3 API.</li>
+      <li><strong>Audit on a schedule.</strong> <code>list-backup-access-points</code> across accounts, alarming on anything older than a few days. This is the only control that catches the 2am case, and it is the one worth building before you use the feature in anger.</li>
+    </ol>
+
+    <p>None of this makes the capability less good. It makes it a capability with a lifecycle, and lifecycles need owners.</p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ol>
+      <li>Read S3 backup data with standard S3 calls &mdash; <strong>no restore</strong>. Snapshot and continuous recovery points, standard and air-gapped vaults, cross-account via RAM.</li>
+      <li><strong>Read-only, enforced by the service.</strong> Every write operation is unsupported.</li>
+      <li><strong>ACLs, retention and legal hold are not readable</strong> through an access point. Compliance work about those still needs a restore.</li>
+      <li><code>AccessPointInTime</code> pins a point-in-time view that <strong>stays readable after the 35-day window passes</strong>, as long as the access point exists.</li>
+      <li><strong>An active access point pauses lifecycle and blocks deletion</strong> of its recovery point.</li>
+      <li><strong>Access points never expire.</strong> Nothing reaps them. A forgotten one silently suspends retention.</li>
+      <li><strong>Deleting the S3 access point directly leaves the hold in place</strong>, with the backup access point stuck in <code>EXPIRED</code>.</li>
+      <li>Limit of <strong>5 per recovery point</strong>, including <code>FAILED</code> and <code>EXPIRED</code> ones.</li>
+      <li>Some object keys &mdash; <code>.</code>, <code>..</code>, consecutive slashes, trailing slash &mdash; return <code>InvalidKey</code> and are unreachable this way.</li>
+      <li>RAM sharing grants <code>backup:CreateBackupAccessPoint</code> by default; deny it in a vault policy if that is not what you want.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/08/aws-backup-amazon-s3-direct-access/">AWS Backup for Amazon S3 now supports direct access to backup data</a></li>
+      <li><a href="https://docs.aws.amazon.com/aws-backup/latest/devguide/backup-access-points.html">Access points, AWS Backup Developer Guide</a></li>
+      <li><a href="https://docs.aws.amazon.com/aws-backup/latest/devguide/s3-backups.html">Amazon S3 backups, AWS Backup Developer Guide</a></li>
+      <li><a href="https://docs.aws.amazon.com/aws-backup/latest/devguide/restoring-s3.html">Restore S3 data using AWS Backup</a></li>
+      <li><a href="https://docs.aws.amazon.com/aws-backup/latest/devguide/logicallyairgappedvault.html">Logically air-gapped vaults</a></li>
+      <li><a href="https://docs.aws.amazon.com/aws-backup/latest/devguide/multipartyapproval.html">Multi-party approval for logically air-gapped vaults</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-points.html">Managing access to shared datasets with access points</a></li>
+      <li><a href="https://docs.aws.amazon.com/aws-managed-policy/latest/reference/AWSBackupAccessPointOperatorAccess.html">AWSBackupAccessPointOperatorAccess</a></li>
+      <li><a href="https://docs.aws.amazon.com/config/latest/developerguide/s3-event-notifications-enabled.html">AWS Config rule: s3-event-notifications-enabled</a></li>
+      <li><a href="https://aws.amazon.com/backup/pricing/">AWS Backup pricing</a></li>
+    </ul>
+  </div>
+
+  <div class="post-footer">
+    <p>AWS Daily Intelligence tracks meaningful AWS changes from official sources and explains what they mean for enterprise architecture.</p>
+    <p>Every technical claim in this post is sourced from the AWS documentation linked above. Feature status: General Availability, announced 6 August 2026.</p>
+  </div>
+
+</div>
+</div>

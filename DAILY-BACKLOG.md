@@ -18,6 +18,29 @@ approaching a week old is about to become unwritable.
 
 ---
 
+## 11 August 2026 — a thin day; post #8 used a held item instead
+
+Nine announcements, mostly SageMaker JumpStart catalogue additions and one
+Region expansion. Nothing outranked the held AWS Backup item from 6 August, so
+post #8 took that instead. This is what the backlog is for.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Managed external secrets for Jenkins and SonarQube, no rotation code | Secrets Manager | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/secrets-manager-integration-jenkins-sonarqube/) |
+| IAM principal cost allocation extended to the bedrock-mantle endpoint | Bedrock | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-bedrock-expands-iam-principal-cost-allocation-bedrock-mantle/) |
+| Export privacy-enhanced analysis logs for SQL | Clean Rooms | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-clean-rooms-export-analysis-log-sql) |
+| MariaDB 12.3 support | RDS for MariaDB | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-rds-mariadb-1232-available/) |
+| One-click access to SageMaker Unified Studio from the console | AWS Glue | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/smus-glue-access) |
+| Performance dashboard for Cases | Connect | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-connect-cases-dashboard/) |
+| LocateAnything-3B, Qwen-AgentWorld-35B, Qwen3.5-122B; NVIDIA Nemotron 3.5 Lightning | SageMaker JumpStart | skipped | Low | catalogue additions, 2 announcements |
+| R8a in Canada (Central) | EC2 | skipped | Low | — |
+
+**Worth revisiting:** Secrets Manager for Jenkins and SonarQube was the best of
+the day and is a genuine operational win — rotation for third-party CI tokens
+with no custom Lambda. Held only because the AWS Backup item outranked it.
+
+---
+
 ## 10 August 2026 — covered by post #7
 
 | Item | Service | Status | Importance | Reference |
@@ -63,7 +86,7 @@ make a single stronger post on Identity Center resilience than either alone.
 | Item | Service | Status | Importance | Reference |
 | --- | --- | --- | --- | --- |
 | Fractional GPU scheduling on G6f, 0.125/0.25/0.5 | ECS | **#5** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ecs-fractional-gpu/) |
-| Direct read-only access to backup data via S3 Access Points | AWS Backup for S3 | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-backup-amazon-s3-direct-access/) |
+| Direct read-only access to backup data via S3 Access Points | AWS Backup for S3 | **#8** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-backup-amazon-s3-direct-access/) |
 | AgentCore runtime instances GA, sessions up to 14 days | Bedrock AgentCore | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-bedrock-agentcore-runtime-instances-generally-available/) |
 | Temporal policies and per-user rate limiting | Bedrock AgentCore | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/temporal-policies-agentcore/) |
 | Kafka Authorizer Logs — denied requests with client IP and API | MSK | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-msk-kafka-authorizer-logs/) |
