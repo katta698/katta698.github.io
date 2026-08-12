@@ -6,7 +6,11 @@
  * requested files that no longer existed for as long as nobody looked at it.
  * One copy cannot drift from itself.
  *
- * Preview any theme without waiting for its week: ?theme=forest
+ * Preview without waiting for the calendar:
+ *   ?theme=forest          a particular theme
+ *   ?theme=ocean&clip=5    a particular clip within it
+ *   ?theme=rain&audio=3    a particular track
+ * Out-of-range values are ignored, so a bad number cannot blank the hero.
  */
 // HERO MEDIA — theme by week of year, clip by day of week.
 //
@@ -79,6 +83,13 @@
   var count = COUNTS[theme] || 1;
   var n = (now.getDay() % count) + 1;              // wraps on the real count
 
+  // ?clip=5 forces a particular clip, so any of a theme's clips can be seen
+  // without waiting for the day of week to come round. Out-of-range values are
+  // ignored rather than clamped — a wrong number should show the normal clip,
+  // not silently a different one.
+  var forcedClip = parseInt((location.search.match(/[?&]clip=(\d+)/) || [])[1], 10);
+  if (forcedClip >= 1 && forcedClip <= count) n = forcedClip;
+
   // Video is one file per clip; audio is one file per theme. The picture
   // changes daily, the ambience holds for the week — restarting a music bed
   // at every midnight would be worse than letting it run.
@@ -103,6 +114,8 @@
     for (var i = 0; i <= wk; i++) { if (PLAN[i] === theme) occurrence++; }
     var count = AUDIO_COUNTS[theme] || 1;
     var an = occurrence > 0 ? ((occurrence - 1) % count) + 1 : 1;
+    var forcedAudio = parseInt((location.search.match(/[?&]audio=(\d+)/) || [])[1], 10);
+    if (forcedAudio >= 1 && forcedAudio <= count) an = forcedAudio;
     return {
       themed:   '/blog/assets/audio/' + theme + '-' + an + '.mp3',
       fallback: '/blog/assets/audio/' + FALLBACK + '-1.mp3'
