@@ -116,7 +116,9 @@ const rows = weeks.map(w => `<tr>
     <td class="dt">${w.days[0].label} &ndash; ${w.days[w.days.length - 1].label}</td>
     <td><span class="th" style="background:${COL[w.theme]}">${w.theme}</span></td>
     <td class="clips">${w.days.map(d => `<a class="d" target="_blank" href="${LIVE}/?theme=${w.theme}&clip=${d.clip.split('-')[1]}"><i>${d.dow}</i>${d.clip}</a>`).join('')}</td>
-    <td class="au">${[...w.audio].map(a => `<a target="_blank" href="${LIVE}/?theme=${w.theme}&audio=${a.split('-')[1]}">${a}.mp3</a>`).join(' · ')}</td>
+    <td class="au">${w.audio.size === 1
+        ? `<a target="_blank" href="${LIVE}/?theme=${w.theme}&audio=${[...w.audio][0].split('-')[1]}">${[...w.audio][0]}.mp3</a>`
+        : w.days.map(d => `<a class="d" target="_blank" href="${LIVE}/?theme=${w.theme}&audio=${d.audio.split('-')[1]}"><i>${d.dow}</i>${d.audio}</a>`).join('')}</td>
     <td class="bn">${w.days.filter(d => d.banner)
         .map(d => `<div class="ban"><b>${d.label}</b> ${esc(d.banner)}</div>`).join('') || '<span class="none">—</span>'}</td>
   </tr>`).join('');
@@ -150,10 +152,10 @@ fs.writeFileSync(path.join(OUT_DIR, 'hero-schedule.html'), `<!doctype html><meta
     text-decoration:none;border-bottom:1px dotted #3a4342;padding-bottom:1px}
  .d:hover{color:#C4A484;border-bottom-color:#C4A484}
  .d i{display:block;font-style:normal;font-size:.6rem;color:#5c6360}
- .au{color:#A3ABA9;font:400 .72rem 'Courier New',monospace}
+ .au{color:#A3ABA9;font:400 .72rem 'Courier New',monospace;white-space:nowrap}
  .au a{color:#A3ABA9;text-decoration:none;border-bottom:1px dotted #3a4342}
  .au a:hover{color:#C4A484;border-bottom-color:#C4A484}
- .bn{width:27%} .ban{margin-bottom:2px;font-size:.76rem;color:#C4A484}
+ .bn{width:22%} .ban{margin-bottom:2px;font-size:.76rem;color:#C4A484}
  .ban b{color:#F5F5F3;font-weight:600;margin-right:4px}
  .none{color:#3a4342}
 </style>
