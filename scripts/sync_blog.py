@@ -1071,9 +1071,31 @@ def detect_tags(text, labels=None):
     return ["Tech"]
 
 
+def soup_text(html):
+    """get_text() for a chunk of HTML, parsed once per unique string.
+
+    Profiling sync showed 575 BeautifulSoup parses for 94 posts -- about six
+    per post -- and 21 of the run's 34 seconds inside the HTML parser. Most of
+    those were the same body being re-parsed by reading_time, tag detection,
+    service counting and the domain classifier, each just to read its text.
+
+    Only safe because every caller here reads the text and nothing else. The
+    parses that mutate their soup (clean_html strips attributes,
+    _summary_sentences decomposes tags) keep their own, because a shared
+    mutable soup would let one caller's edits leak into another's output.
+    """
+    cached = _TEXT_CACHE.get(html)
+    if cached is None:
+        cached = BeautifulSoup(html, "html.parser").get_text()
+        _TEXT_CACHE[html] = cached
+    return cached
+
+
+_TEXT_CACHE = {}
+
+
 def reading_time(html):
-    text = BeautifulSoup(html, "html.parser").get_text()
-    return max(1, math.ceil(len(text.split()) / 200))
+    return max(1, math.ceil(len(soup_text(html).split()) / 200))
 
 
 def excerpt(html, max_chars=160):
@@ -1555,8 +1577,7 @@ def build_index_page(posts):
     # services are written about at all; the second counts them. It has to be
     # that order, because a service named properly in one post is then
     # recognisable by its bare name in another.
-    post_texts = [BeautifulSoup(p["body_html"], "html.parser").get_text()
-                  for p in posts]
+    post_texts = [soup_text(p["body_html"]) for p in posts]
     known_services = KNOWN_SERVICES
 
     service_counts = {}
@@ -1747,7 +1768,7 @@ def build_index_page(posts):
     # ── Blog-extracted quiz questions ──────────────────────────
     blog_questions = []
     for p in posts[:15]:
-        text = BeautifulSoup(p["body_html"], "html.parser").get_text()
+        text = soup_text(p["body_html"])
         for svc in known_services:
             if svc.lower() in text.lower() and len(blog_questions) < 10:
                 title_words = p["title"].split()
@@ -2532,7 +2553,7 @@ def main():
         title    = entry["title"]
         url      = entry.get("url", "")
         body_html, embedded_title, embedded_subtitle = clean_html(entry["html"], title)
-        plain_text = BeautifulSoup(body_html, "html.parser").get_text()
+        plain_text = soup_text(body_html)
         tags     = detect_tags(title + " " + plain_text, entry.get("labels"))
         dt       = parse_date(url, entry.get("published"))
         slug     = entry.get("slug") or slugify(title)
