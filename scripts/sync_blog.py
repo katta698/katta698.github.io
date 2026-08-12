@@ -1764,10 +1764,16 @@ def build_index_page(posts):
                     f'aria-label="{escape(s)} on aws.amazon.com">&#8599;</a>')
         else:
             out += '<span class="svc-link svc-link-empty" aria-hidden="true"></span>'
-        return (f'<div class="svc-row" title="{escape(tip)}">{out}'
+        # Name and count on one line, bar beneath. A single-line grid needed a
+        # fixed name column to keep the bars comparable, and at sidebar width
+        # that column truncated 37 of 132 names -- including Step Functions,
+        # Secrets Manager and Transit Gateway. Stacking gives the name the full
+        # width and the bar a longer, more readable run.
+        return (f'<div class="svc-row" title="{escape(tip)}">'
+                f'<span class="svc-head">{out}'
+                f'<span class="svc-count">{c}</span></span>'
                 f'<span class="svc-track"><span class="svc-fill" '
-                f'style="width:{width}%"></span></span>'
-                f'<span class="svc-count">{c}</span></div>')
+                f'style="width:{width}%"></span></span></div>')
 
     service_rows = "\n".join(_service_row(s, c) for s, c in ranked)
     described = sum(1 for s, _ in ranked if s in SERVICE_INFO)
