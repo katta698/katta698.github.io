@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Regenerate the AWS service catalogue used by the blog's sidebar widgets.
+
+    python scripts/refresh_aws_services.py
+
+Writes scripts/aws_services.json from botocore's own service models, which are
+AWS's published API definitions -- 425 services and counting. That is the point:
+the list of AWS services is AWS's to maintain, not this repo's.
+
+Why a cached file rather than reading botocore during every sync: parsing all
+425 service models takes about seven seconds, and sync_blog.py runs on every
+publish. The cache reads in milliseconds.
+
+Why not detect services from the prose instead: that was tried. A capitalised
+word after the token "AWS" is not evidence of a service, and the widget ended
+up with bubbles labelled "What", "They" and "Terraform". AWS's own catalogue
+has no such problem.
+
+Keeping it current needs no human: .github/workflows/refresh-aws-services.yml
+upgrades botocore weekly, runs this, and commits the result if it changed. A
+service launched at re:Invent appears on the site the week botocore ships it.
+"""
+import gzip
+import json
+import os
+import re
+import sys
+
+try:
+    import botocore
+except ImportError:
+    print("botocore is not installed. pip install botocore")
+    sys.exit(1)
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.path.join(ROOT, "scripts", "aws_services.json")
+
+# Service names that are also ordinary English words. These are the only names
+# that need a qualifier ("AWS Config", "Amazon Connect") before a bare mention
+# counts, and unlike the service list itself this one is stable -- English does
+# not add words the way AWS adds services.
+#
+# It exists because counting bare mentions made "Config" the second largest
+# item on the blog index: 285 of its 426 hits were "configuration".
+ENGLISH_COLLISIONS = {
+    "Config", "Connect", "Backup", "Batch", "Shield", "Glue", "Health",
+    "Support", "Detective", "Inspector", "Forecast", "Translate", "Transcribe",
+    "Comprehend", "Personalize", "Location", "Budgets", "Signer", "Scheduler",
+    "Proton", "Chime", "Outposts", "Organizations", "Artifact", "Braket",
+    "Compute Optimizer", "Resource Explorer", "Application Auto Scaling",
+    "Discovery", "Entity Resolution", "Payment Cryptography", "Private CA",
+    "Pricing", "Marketplace", "Directory", "Notifications", "Recycle Bin",
+    "Snowball", "Snow Device Management", "Timestream Query", "Panorama",
+    "Deadline", "Omics", "One", "Q", "Rekognition", "Polly", "Kendra",
+}
+
+# Names botocore produces that are too generic to match safely in prose, or
+# that describe an API surface rather than something anyone writes about.
+SKIP = {
+    "Service", "API", "APIs", "Data", "Runtime", "Control", "Plane", "Admin",
+    "Management", "Core", "Simple Storage", "Elastic Compute Cloud",
+    "Simple Queue", "Simple Notification", "Simple Email", "Web Services",
+    "Elastic Load Balancing v2", "Elastic Load Balancing v3", "SFN",
+}
+
+PREFIX_RE = re.compile(r"^(?:AWS|Amazon)\s+")
+SUFFIX_RE = re.compile(r"\s+(?:Service|Services|API|Runtime|Control Plane)$")
+
+
+def clean(name):
+    if not name:
+        return None
+    name = PREFIX_RE.sub("", name.strip())
+    name = SUFFIX_RE.sub("", name).strip()
+    if len(name) < 2 or name in SKIP:
+        return None
+    return name
+
+
+def main():
+    data_dir = os.path.join(os.path.dirname(botocore.__file__), "data")
+    services = {}
+
+    for entry in sorted(os.listdir(data_dir)):
+        path = os.path.join(data_dir, entry)
+        if not os.path.isdir(path):
+            continue
+        versions = sorted(os.listdir(path))
+        if not versions:
+            continue
+        meta = None
+        for fn in ("service-2.json.gz", "service-2.json"):
+            f = os.path.join(path, versions[-1], fn)
+            if not os.path.exists(f):
+                continue
+            opener = gzip.open if fn.endswith(".gz") else open
+            try:
+                with opener(f, "rt", encoding="utf-8") as fh:
+                    meta = json.load(fh).get("metadata", {})
+            except Exception:
+                meta = None
+            break
+        if not meta:
+            continue
+
+        # Three spellings per service, because prose uses all of them: "S3",
+        # "Amazon S3" and "Simple Storage Service" are the same thing, and a
+        # post might use any. Longest first so "Step Functions" is preferred
+        # over a bare "SFN" that nobody writes.
+        candidates = {clean(meta.get("serviceId")),
+                      clean(meta.get("serviceAbbreviation")),
+                      clean(meta.get("serviceFullName"))}
+        for name in sorted(filter(None, candidates), key=len, reverse=True):
+            if name not in services:
+                services[name] = {
+                    "ambiguous": name in ENGLISH_COLLISIONS,
+                    "source": entry,
+                }
+
+    payload = {
+        "_comment": ("Generated by scripts/refresh_aws_services.py from "
+                     "botocore's service models. Do not edit by hand -- "
+                     "re-run the script instead."),
+        "botocore_version": botocore.__version__,
+        "count": len(services),
+        "services": services,
+    }
+    with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(payload, fh, indent=1, sort_keys=True)
+        fh.write("\n")
+    print(f"wrote {OUT}")
+    print(f"  {len(services)} names from botocore {botocore.__version__}")
+    print(f"  {sum(1 for v in services.values() if v['ambiguous'])} need a "
+          f"qualifier before bare mentions count")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

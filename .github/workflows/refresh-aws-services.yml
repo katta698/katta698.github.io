@@ -1,0 +1,72 @@
+# Keep the AWS service catalogue current without anyone remembering to.
+#
+# scripts/aws_services.json drives the blog's service widgets, and is generated
+# from botocore's service models -- AWS's own published API definitions. This
+# upgrades botocore weekly, regenerates the file, and commits it only if it
+# actually changed. A service launched at re:Invent appears on the site the
+# week botocore ships it, with nothing to edit.
+#
+# The alternative was detecting services from the prose, which was tried and
+# produced widget entries labelled "What", "They" and "Terraform": a
+# capitalised word after the token "AWS" is not evidence of a service.
+name: Refresh AWS service catalogue
+
+on:
+  schedule:
+    # Mondays, 06:00 UTC. Weekly is the right cadence -- AWS launches services
+    # continuously but the widget is a summary, not a news feed.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-aws-services
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the latest botocore
+        run: python -m pip install --upgrade pip botocore
+
+      - name: Regenerate the catalogue
+        run: python scripts/refresh_aws_services.py
+
+      - name: Commit only if it changed
+        run: |
+          if git diff --quiet -- scripts/aws_services.json; then
+            echo "No new AWS services this week."
+            exit 0
+          fi
+          # Show what moved, so the commit is reviewable from the log alone.
+          python - <<'PY'
+          import json, subprocess
+          old = json.loads(subprocess.run(
+              ["git", "show", "HEAD:scripts/aws_services.json"],
+              capture_output=True, text=True).stdout or '{"services":{}}')
+          new = json.load(open("scripts/aws_services.json", encoding="utf-8"))
+          added = sorted(set(new["services"]) - set(old.get("services", {})))
+          removed = sorted(set(old.get("services", {})) - set(new["services"]))
+          lines = []
+          if added:
+              lines.append("Added: " + ", ".join(added[:25]))
+          if removed:
+              lines.append("Removed: " + ", ".join(removed[:25]))
+          open("/tmp/msg.txt", "w", encoding="utf-8").write(
+              "Refresh AWS service catalogue (botocore %s)\n\n%s\n"
+              % (new["botocore_version"], "\n".join(lines) or "Metadata only."))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/aws_services.json
+          git commit -F /tmp/msg.txt
+          git push

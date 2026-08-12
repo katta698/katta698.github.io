@@ -164,16 +164,269 @@ DISQUS_ID   = "jayanthkatta"
 API_URL     = "https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search"
 SUMMARY_API_URL = "https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary"
 
-# ── AWS service names to detect in post content ───────────────
-AWS_SERVICES = [
-    "EC2","S3","IAM","VPC","RDS","EKS","ECS","Lambda","CloudWatch",
-    "CloudFront","Route 53","ALB","NLB","SSM","Glue","Step Functions",
-    "DynamoDB","SQS","SNS","Kinesis","Redshift","EMR","Athena",
-    "Secrets Manager","KMS","WAF","Shield","GuardDuty","Config",
-    "Organizations","Control Tower","Transit Gateway","NAT Gateway",
-    "Internet Gateway","Auto Scaling","Elastic Beanstalk","CodePipeline",
-    "CodeBuild","CodeDeploy","ECR","Fargate","API Gateway","EventBridge",
+# ── AWS service detection ─────────────────────────────────────
+# Two mechanisms, because neither works alone.
+#
+# SEED_SERVICES is the curated vocabulary and the only thing that ever reaches
+# a reader. A pure auto-discovery pass was tried and produced bubbles labelled
+# "What", "They" and "Auto" -- prose is full of capitalised words following the
+# token "AWS", and there is no reliable way to tell a service from a sentence.
+#
+# The discovery pass survives, but only as a gap detector: it finds candidates
+# the curated list does not know about and sync prints them as a warning. That
+# is the part that means the list never has to be maintained speculatively --
+# write about a service nobody has covered before, and the next sync says so by
+# name. What it must not do is put its guesses in front of visitors.
+#
+# The list this replaced held 43 names and silently hid 36 services that had
+# been written about -- Aurora, Bedrock, Backup, Security Hub, CloudTrail and
+# CloudFormation among them. Nothing errored; the widget just under-reported.
+SERVICE_PREFIX_RE = re.compile(
+    r"\b(?:AWS|Amazon)\s+"
+    r"((?:[A-Z][A-Za-z0-9]*|for\s+[A-Z][A-Za-z0-9]*)"
+    r"(?:\s+(?:[A-Z][A-Za-z0-9]*|for))*)"
+)
+
+# Things that follow "AWS"/"Amazon" and are not services. Without this the
+# widget fills up with "AWS Region", "AWS Account" and "AWS Documentation".
+NOT_SERVICES = {
+    "Region", "Regions", "Account", "Accounts", "Console", "Management",
+    "Management Console", "Documentation", "Docs", "CLI", "SDK", "API", "APIs",
+    "Support", "Partner", "Partners", "Marketplace", "Free", "Free Tier",
+    "Cloud", "Web", "Web Services", "Services", "Service", "Blog", "News",
+    "Pricing", "Calculator", "Availability", "Availability Zone", "Resource",
+    "Resources", "Customer", "Customers", "Provider", "Global", "Public",
+    "Managed", "Native", "Official", "General", "Reference", "Guide",
+    "User Guide", "Developer Guide", "Best", "Best Practices", "Whitepaper",
+    "Summit", "Builder", "Builders", "Certified", "Training", "Skill Builder",
+    "Health", "Status", "Root", "Organization", "Tags", "Tag", "Team",
+    "Linux", "Linux 2", "Machine", "Machine Image", "S3 Bucket",
+    # This blog's own series titles, which all begin "AWS ...". Without these
+    # the gap report is mostly the author's own headings and stops being read.
+    "Daily Intelligence", "Weekly Intelligence", "Architecture Series",
+    "Platform Engineering Lab", "Platform Engineering", "Weekly Lab",
+    "Terraform", "Terraform Challenge", "Certified", "Solutions Architect",
+    # Regions, protocols and partitions -- not services.
+    "GovCloud", "Europe", "Ireland", "Virginia", "Oregon", "Frankfurt",
+    "OIDC", "SSO", "STS", "ARN", "ARNs", "JSON", "YAML", "Well",
+    # Fragments the capitalised-word run sweeps up mid-sentence, and feature
+    # names that belong to a service already catalogued.
+    "Reference AWS", "Transform for", "Backup for Amazon", "Knowledge",
+    "Elastic Compute", "EC2 G6f", "Security Hub Extended", "Glue Data Catalog",
+    "VPC IPAM", "EC2 Instance Request", "Load Balancer", "Instance Request",
+}
+
+# Acronyms and product names that rarely carry an "AWS"/"Amazon" prefix in
+# running prose. Discovery alone would miss these, so they are seeded -- but a
+# seed still only appears if a post actually mentions it.
+SEED_SERVICES = [
+    "EC2", "S3", "IAM", "VPC", "RDS", "EKS", "ECS", "ECR", "EBS", "EFS", "FSx",
+    "SQS", "SNS", "KMS", "WAF", "SSM", "EMR", "MSK", "DMS", "ALB", "NLB",
+    "CloudWatch", "CloudFront", "CloudTrail", "CloudFormation", "DynamoDB",
+    "Lambda", "Aurora", "Athena", "Glue", "Redshift", "Kinesis", "Firehose",
+    "Fargate", "GuardDuty", "Route 53", "Step Functions", "EventBridge",
+    "API Gateway", "Transit Gateway", "NAT Gateway", "Internet Gateway",
+    "Direct Connect", "PrivateLink", "Auto Scaling", "Secrets Manager",
+    "Security Hub", "Control Tower", "Systems Manager", "Elastic Beanstalk",
+    "Global Accelerator", "Storage Gateway", "OpenSearch", "ElastiCache",
+    "SageMaker", "Bedrock", "Graviton", "CodePipeline", "CodeBuild",
+    "CodeDeploy", "Amplify", "AppSync", "Cognito", "QuickSight", "X-Ray",
 ]
+
+# Names that are ordinary English words as well as AWS services. Counting these
+# by substring is how "Config" became the second-largest bubble on the blog
+# index -- 285 of its 426 hits were "configuration" and "configure", and only
+# 44 were AWS Config. "ECR" was worse: it matched inside "secret" and came out
+# at seven times its real size.
+#
+# For these, a post must name the service properly at least once before bare
+# mentions in that post are counted at all.
+AMBIGUOUS_SERVICES = {
+    "Config": r"AWS Config|Config rule|Config recorder|Config aggregator",
+    "Connect": r"Amazon Connect",
+    "Backup": r"AWS Backup",
+    "Batch": r"AWS Batch",
+    "Shield": r"AWS Shield|Shield Advanced",
+    "Glue": r"AWS Glue|Glue (?:crawler|catalog|job|table|database)",
+    "Inspector": r"Amazon Inspector",
+    "Macie": r"Amazon Macie",
+    "Budgets": r"AWS Budgets",
+    "MQ": r"Amazon MQ",
+    "Organizations": r"AWS Organizations",
+    "Outposts": r"AWS Outposts",
+    "Detective": r"Amazon Detective",
+    "Comprehend": r"Amazon Comprehend",
+    "Translate": r"Amazon Translate",
+    "Transcribe": r"Amazon Transcribe",
+    "Polly": r"Amazon Polly",
+    "Connect Family": r"Amazon Connect",
+}
+
+
+# Which domain each service belongs to, for the "posts by AWS domain" donut.
+# Only services listed here can classify a post; a newly discovered service
+# shows up in the bubble widget immediately but contributes to the donut only
+# once it is placed here. That is deliberate -- guessing a domain from a name
+# is how the previous version decided "Architecture" meant networking.
+SERVICE_DOMAIN = {}
+for _domain, _members in {
+    "Networking": ["VPC", "CloudFront", "Route 53", "ALB", "NLB", "API Gateway",
+                   "Transit Gateway", "NAT Gateway", "Internet Gateway",
+                   "Direct Connect", "PrivateLink", "Global Accelerator",
+                   "VPC Lattice", "Cloud Map", "Network Firewall", "Cloud WAN",
+                   "IPAM"],
+    "Security": ["IAM", "IAM Identity Center", "KMS", "Secrets Manager", "WAF",
+                 "Shield", "GuardDuty", "Security Hub", "Inspector", "Macie",
+                 "Cognito", "Certificate Manager", "Control Tower",
+                 "Organizations", "Verified Access", "Resource Access Manager",
+                 "Detective"],
+    "Compute": ["EC2", "Lambda", "Fargate", "ECS", "EKS", "ECR", "Batch",
+                "Auto Scaling", "Graviton", "Spot", "App Runner", "Outposts",
+                "Elastic Beanstalk", "Compute Optimizer", "Lightsail",
+                "App Mesh"],
+    "Data": ["RDS", "Aurora", "DynamoDB", "S3", "EFS", "FSx", "EBS",
+             "ElastiCache", "MemoryDB", "DocumentDB", "Neptune", "Redshift",
+             "Athena", "Glue", "Kinesis", "Firehose", "MSK", "OpenSearch",
+             "EMR", "Lake Formation", "QuickSight", "Backup", "Timestream",
+             "Keyspaces", "QLDB", "DMS", "Storage Gateway", "Snowball",
+             "DataSync", "DataZone"],
+    "Observability": ["CloudWatch", "CloudTrail", "Config", "X-Ray",
+                      "Resilience Hub", "Application Recovery Controller",
+                      "Trusted Advisor", "Well-Architected"],
+    "Integration": ["SQS", "SNS", "EventBridge", "Step Functions", "MQ",
+                    "AppFlow"],
+    "AI & ML": ["Bedrock", "Bedrock AgentCore", "SageMaker", "Textract", "Comprehend",
+                "Rekognition", "Transcribe", "Polly", "Translate", "Kendra",
+                "Q Developer"],
+    "DevOps & IaC": ["CloudFormation", "CDK", "CodePipeline", "CodeBuild",
+                     "CodeDeploy", "CodeArtifact", "CodeCommit",
+                     "Systems Manager", "SSM", "Service Catalog"],
+    "Cost": ["Cost Explorer", "Budgets", "Savings Plans",
+             "Compute Savings Plans"],
+    "Apps & Front-end": ["Amplify", "AppSync", "SES", "Connect", "Pinpoint",
+                         "API Gateway REST"],
+}.items():
+    for _svc in _members:
+        SERVICE_DOMAIN[_svc] = _domain
+
+# Things people write about that are not services in their own right, so AWS's
+# API catalogue does not list them: Aurora is part of RDS, Fargate and Spot are
+# EC2/ECS features, ALB is Elastic Load Balancing. Short and stable -- these
+# change on the timescale of AWS renaming a flagship product, not weekly.
+SERVICE_SUPPLEMENT = [
+    "Aurora", "Fargate", "Graviton", "Spot", "ALB", "NLB", "EBS",
+    "Transit Gateway", "NAT Gateway", "Internet Gateway", "PrivateLink",
+    "VPC Lattice", "Savings Plans", "Compute Savings Plans", "S3 Express",
+    "IAM Identity Center", "Security Hub", "Systems Manager", "SSM",
+    "Step Functions", "Secrets Manager", "Control Tower", "Storage Gateway",
+    "Direct Connect", "Global Accelerator", "Well-Architected", "Firehose",
+    "Lake Formation", "Cost Explorer", "API Gateway", "Route 53", "CDK",
+]
+
+
+def load_service_catalogue():
+    """The service vocabulary: AWS's own list, plus the supplement above.
+
+    scripts/aws_services.json is generated from botocore's service models by
+    scripts/refresh_aws_services.py, and refreshed weekly by a workflow. That
+    is what makes new services automatic -- the list of AWS services is AWS's
+    to maintain, and a service launched at re:Invent lands here as soon as
+    botocore ships it, with nothing to edit in this repo.
+
+    Returns (names, ambiguous) where `ambiguous` are the names that are also
+    ordinary English words and therefore need a qualifier before a bare
+    mention counts.
+    """
+    names = set(SERVICE_SUPPLEMENT) | set(SERVICE_DOMAIN)
+    ambiguous = set(AMBIGUOUS_SERVICES)
+
+    path = REPO_ROOT / "scripts" / "aws_services.json"
+    if path.is_file():
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for name, meta in data.get("services", {}).items():
+            names.add(name)
+            if meta.get("ambiguous"):
+                ambiguous.add(name)
+    else:
+        print("  WARNING: scripts/aws_services.json missing — falling back to "
+              "the built-in list. Run scripts/refresh_aws_services.py.")
+
+    # Longest first so "Step Functions" wins over a bare "Step", and so the
+    # combined regex below prefers the most specific name at each position.
+    return sorted(names, key=lambda s: (-len(s), s)), ambiguous
+
+
+KNOWN_SERVICES, AMBIGUOUS_NAMES = load_service_catalogue()
+
+# One combined regex instead of 650 separate scans per post. The lookarounds
+# do the work \b cannot: \b treats "S3" as ending mid-token inside "S3B", so
+# short alphanumeric names would match inside longer ones.
+SERVICE_SCAN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(" +
+    "|".join(re.escape(s) for s in KNOWN_SERVICES) +
+    r")(?![A-Za-z0-9])"
+)
+
+
+def find_unlisted_services(texts, min_mentions=3):
+    """Report services the posts discuss that KNOWN_SERVICES does not have.
+
+    This is the part that means the catalogue never has to be maintained on
+    speculation. It does not add anything to the widget -- an earlier version
+    did, and shipped bubbles labelled "What" and "They", because a capitalised
+    word after "AWS" is not evidence of a service. It just tells you, by name
+    and with a count, that you have written about something the widget cannot
+    show, and leaves the judgement to a human.
+    """
+    candidates = {}
+    for text in texts:
+        for m in SERVICE_PREFIX_RE.finditer(text):
+            name = m.group(1).strip()
+            # Trim trailing filler swept up by the capitalised-word run, so
+            # "AWS Lambda Function URLs" reports as Lambda.
+            while name and name.split()[-1] in NOT_SERVICES:
+                name = " ".join(name.split()[:-1])
+            if not name or name in NOT_SERVICES or name in SERVICE_DOMAIN:
+                continue
+            if len(name.split()) > 3:
+                name = " ".join(name.split()[:3])
+            # A service is a proper noun; a sentence fragment usually is not.
+            if name in SERVICE_DOMAIN or len(name) < 3:
+                continue
+            candidates[name] = candidates.get(name, 0) + 1
+    return sorted(((n, c) for n, c in candidates.items() if c >= min_mentions),
+                  key=lambda x: -x[1])
+
+
+def count_services(text, services=None):
+    """Count AWS service mentions in one post.
+
+    Case-sensitive and word-bounded, which on its own removes most of the
+    damage: "configuration" no longer feeds Config, and "secret" no longer
+    feeds ECR -- that one was matching inside the word and came out at seven
+    times its real size.
+
+    One pass with a combined pattern rather than one scan per service, because
+    the catalogue is now ~660 names rather than 43.
+    """
+    counts = {}
+    for m in SERVICE_SCAN_RE.finditer(text):
+        name = m.group(1)
+        counts[name] = counts.get(name, 0) + 1
+
+    for name in list(counts):
+        if name not in AMBIGUOUS_NAMES:
+            continue
+        # A name that is also an English word only counts in a post that names
+        # the service properly at least once. After that, bare mentions in the
+        # same post are the service -- which is how people write: "AWS Config"
+        # once, then "Config" throughout.
+        explicit = AMBIGUOUS_SERVICES.get(
+            name, r"(?:AWS|Amazon)\s+%s" % re.escape(name))
+        if not re.search(explicit, text, re.IGNORECASE):
+            del counts[name]
+    return counts
+
 
 # ── 50 evergreen AWS quiz questions ───────────────────────────
 AWS_QUIZ_BANK = [
@@ -1298,15 +1551,56 @@ def build_index_page(posts):
     )
 
     # ── AWS service mention counts ─────────────────────────────
+    # Two passes on purpose. The first reads every post to find out which
+    # services are written about at all; the second counts them. It has to be
+    # that order, because a service named properly in one post is then
+    # recognisable by its bare name in another.
+    post_texts = [BeautifulSoup(p["body_html"], "html.parser").get_text()
+                  for p in posts]
+    known_services = KNOWN_SERVICES
+
     service_counts = {}
-    for p in posts:
-        text = BeautifulSoup(p["body_html"], "html.parser").get_text().lower()
-        for svc in AWS_SERVICES:
-            count = text.count(svc.lower())
-            if count:
-                service_counts[svc] = service_counts.get(svc, 0) + count
-    top_services = sorted(service_counts.items(), key=lambda x: x[1], reverse=True)[:20]
-    services_json = json.dumps([{"name": s, "count": c} for s, c in top_services])
+    for text in post_texts:
+        for svc, n in count_services(text).items():
+            service_counts[svc] = service_counts.get(svc, 0) + n
+
+    # The catalogue is curated, so it can fall behind the writing. This is what
+    # stops that happening silently: anything written about repeatedly that the
+    # widget cannot show gets named here, at build time, every time.
+    # Only the top few, and only if there is something worth acting on -- a
+    # header with nothing under it trains you to skip the whole block.
+    unlisted = find_unlisted_services(post_texts)[:12]
+    if unlisted:
+        print("  NOTE: %d service(s) mentioned in posts but missing from "
+              "SERVICE_DOMAIN (add them there to include them in the "
+              "widgets):" % len(unlisted))
+        for name, n in unlisted:
+            print(f"        {name}  ({n} post-level mentions)")
+
+    ranked = sorted(service_counts.items(), key=lambda x: (-x[1], x[0]))
+    services_total = len(ranked)
+
+    # A ranked bar list, not a bubble cloud.
+    #
+    # The bubbles were replaced after measuring them: the sidebar is 211px
+    # wide, S3's circle came out 72px across, and only nine of eighteen could
+    # be placed while 65% of the canvas sat empty. Circle packing needs room
+    # this column does not have, and the counts were only readable on hover.
+    #
+    # Bars fit the shape of the space, so every service fits -- all of them,
+    # scrolled, rather than a top slice that quietly drops two thirds of the
+    # list under a heading claiming "across all posts". They are also built
+    # here rather than by script: there is no layout to compute, so the widget
+    # renders with JavaScript disabled and cannot mis-place anything.
+    max_count = ranked[0][1] if ranked else 1
+    service_rows = "\n".join(
+        f'<div class="svc-row" title="{escape(s)} — {c} mention{"" if c == 1 else "s"}">'
+        f'<span class="svc-name">{escape(s)}</span>'
+        f'<span class="svc-track"><span class="svc-fill" style="width:{max(2, round(c / max_count * 100))}%"></span></span>'
+        f'<span class="svc-count">{c}</span></div>'
+        for s, c in ranked
+    )
+    print(f"  {services_total} AWS services detected across posts")
 
     # ── Widget data ───────────────────────────────────────────
 
@@ -1315,25 +1609,47 @@ def build_index_page(posts):
     total_hrs = round(total_mins / 60, 1)
 
     # 2. Domain donut — keyword mapping on title + tags
-    DOMAIN_KEYWORDS = {
-        "Networking":    ["vpc","transit gateway","route 53","alb","nlb","cloudfront","nat","network","dns","arc","subnet","peering"],
-        "Security":      ["iam","kms","waf","shield","guardduty","scp","identity","encryption","secret","control tower","aft","organization"],
-        "Compute":       ["ec2","ecs","eks","fargate","lambda","auto scaling","graviton","spot","container","kubernetes","serverless"],
-        "Data":          ["rds","aurora","dynamodb","s3","glue","athena","redshift","kinesis","emr","database","analytics","cur","cost"],
-        "Observability": ["cloudwatch","config","x-ray","monitoring","logging","compliance","drift","alert"],
-    }
-    domain_counts = {d: 0 for d in DOMAIN_KEYWORDS}
-    for p in posts:
-        combined = (p["title"] + " " + " ".join(p["tags"])).lower()
-        matched = False
-        for domain, kws in DOMAIN_KEYWORDS.items():
-            if any(k in combined for k in kws):
-                domain_counts[domain] += 1
-                matched = True
-                break
-        if not matched:
-            domain_counts.setdefault("Other", 0)
-            domain_counts["Other"] += 1
+    # Classify each post by the AWS services it actually discusses, rather than
+    # by keyword substrings in its title.
+    #
+    # The old version searched title+tags for substrings and took the first
+    # match, in dict order, with "arc" among the Networking keywords. "arc" is
+    # inside "Architecture", so every AWS Architecture Series post matched
+    # Networking first and stopped there: 18 of the 25 posts counted as
+    # Networking were really about IAM, KMS, Aurora, DynamoDB, Lambda and
+    # Secrets Manager. "Archive MongoDB data in Azure" was Networking too.
+    # Security read 5% because its posts had already been claimed.
+    #
+    # Services are detected dynamically now, so this maps those to domains and
+    # lets the post's own content decide. The title is weighted heavily: a post
+    # titled "DynamoDB capacity" belongs to Data even if it mentions VPC while
+    # explaining something else.
+    domain_counts = {}
+    for p, text in zip(posts, post_texts):
+        title_hits = count_services(p["title"])
+        body_hits = count_services(text)
+
+        # A service with no domain mapping still counts, into "Other AWS".
+        # Ignoring it would quietly shrink a post's AWS-ness to zero and file
+        # it under Non-AWS, which is how a widget starts lying as the
+        # catalogue grows past what anyone has classified by hand.
+        scores = {}
+        for svc, n in body_hits.items():
+            d = SERVICE_DOMAIN.get(svc, "Other AWS")
+            scores[d] = scores.get(d, 0) + n
+        for svc, n in title_hits.items():
+            d = SERVICE_DOMAIN.get(svc, "Other AWS")
+            scores[d] = scores.get(d, 0) + n * 25
+
+        if scores:
+            domain = max(scores.items(), key=lambda kv: (kv[1], kv[0]))[0]
+        else:
+            # Health, life and career posts. They are not a classification
+            # failure, so they get an honest label rather than "Other".
+            domain = "Non-AWS"
+        domain_counts[domain] = domain_counts.get(domain, 0) + 1
+
+    domain_counts = dict(sorted(domain_counts.items(), key=lambda kv: -kv[1]))
     domain_total = sum(domain_counts.values()) or 1
     domain_json = json.dumps([
         {"name": d, "count": c, "pct": round(c / domain_total * 100)}
@@ -1432,7 +1748,7 @@ def build_index_page(posts):
     blog_questions = []
     for p in posts[:15]:
         text = BeautifulSoup(p["body_html"], "html.parser").get_text()
-        for svc in AWS_SERVICES:
+        for svc in known_services:
             if svc.lower() in text.lower() and len(blog_questions) < 10:
                 title_words = p["title"].split()
                 if len(title_words) > 4:
@@ -1491,12 +1807,10 @@ def build_index_page(posts):
   <aside class="sidebar">
     <div class="sidebar-card" id="services-widget">
       <div class="sidebar-title">AWS services across all posts</div>
-      <div id="svc-bubble-area" style="position:relative;height:220px;width:100%"></div>
-      <div style="display:flex;gap:10px;margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border)">
-        <span style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--orange);opacity:.9"></span>high</span>
-        <span style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--orange);opacity:.45"></span>medium</span>
-        <span style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--orange);opacity:.2"></span>low</span>
+      <div class="svc-list">
+{service_rows}
       </div>
+      <div class="svc-foot">All {services_total} AWS services mentioned, by number of mentions</div>
     </div>
     <div class="sidebar-card" id="quiz-widget">
       <div class="sidebar-title" style="display:flex;justify-content:space-between;align-items:center">
@@ -1520,33 +1834,6 @@ def build_index_page(posts):
       </div>
     </div>
     <script>
-    (function(){{
-      var SERVICES = {services_json};
-      var area = document.getElementById('svc-bubble-area');
-      if(!area) return;
-      var W = area.offsetWidth || 240, H = 220;
-      var maxC = Math.max.apply(null, SERVICES.map(function(s){{return s.count;}}));
-      var placed = [];
-      function overlap(a,b){{var dx=a.x-b.x,dy=a.y-b.y;return Math.sqrt(dx*dx+dy*dy)<a.r+b.r+3;}}
-      SERVICES.slice().sort(function(a,b){{return b.count-a.count;}}).forEach(function(s){{
-        var r = 14 + (s.count/maxC)*28;
-        var tries=0,x,y;
-        do{{x=r+Math.random()*(W-2*r);y=r+Math.random()*(H-2*r);s.x=x;s.y=y;s.r=r;tries++;}}
-        while(tries<400 && placed.some(function(p){{return overlap(s,p);}}));
-        placed.push({{x:s.x,y:s.y,r:r}});
-        var opacity = 0.15+(s.count/maxC)*0.8;
-        var textColor = opacity>0.5?'#2E2113':'#7A5C3E';
-        var fs = r>32?12:r>22?10:9;
-        var div=document.createElement('div');
-        div.title=s.name+': ~'+s.count+' mentions';
-        div.style.cssText='position:absolute;left:'+(x-r)+'px;top:'+(y-r)+'px;width:'+(r*2)+'px;height:'+(r*2)+'px;border-radius:50%;background:rgba(196,164,132,'+opacity+');display:flex;align-items:center;justify-content:center;text-align:center;cursor:default;transition:transform .15s';
-        div.innerHTML='<span style="font-size:'+fs+'px;font-weight:500;color:'+textColor+';padding:2px;line-height:1.2">'+s.name+'</span>';
-        div.onmouseenter=function(){{div.style.transform='scale(1.08)';}};
-        div.onmouseleave=function(){{div.style.transform='scale(1)';}};
-        area.appendChild(div);
-      }});
-    }})();
-
     var QUIZ_BANK = {quiz_json};
     var qz = {{questions:[],current:0,score:0,answered:false}};
     function quizShuffle(a){{return a.slice().sort(function(){{return Math.random()-.5;}});}}
