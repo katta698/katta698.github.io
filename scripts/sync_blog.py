@@ -263,6 +263,28 @@ AMBIGUOUS_SERVICES = {
 }
 
 
+# Long-form and legacy spellings of services already in the catalogue. Without
+# this the homepage listed "Elastic Kubernetes" beside "EKS" and "Kinesis
+# Firehose" beside "Firehose" as if they were different products, which reads
+# as padding rather than coverage.
+SERVICE_ALIASES = {
+    "Elastic Kubernetes": "EKS",
+    "Elastic Container Registry": "ECR",
+    "Elastic Container": "ECS",
+    "Kinesis Firehose": "Firehose",
+    "Elastic Load Balancing": "ALB",
+    "Relational Database": "RDS",
+    "Single Sign-On": "IAM Identity Center",
+    "SSO": "IAM Identity Center",
+    "SSM": "Systems Manager",
+    "API Gateway REST": "API Gateway",
+    "WAFV2": "WAF",
+    "Elasticsearch": "OpenSearch",
+    "Kafka": "MSK",
+    "CloudWatch Synthetics": "Synthetics",
+    "Parallel Computing": "PCS",
+}
+
 # Which domain each service belongs to, for the "posts by AWS domain" donut.
 # Only services listed here can classify a post; a newly discovered service
 # shows up in the bubble widget immediately but contributes to the donut only
@@ -275,36 +297,39 @@ for _domain, _members in {
                    "Direct Connect", "PrivateLink", "Global Accelerator",
                    "VPC Lattice", "Cloud Map", "Network Firewall", "Cloud WAN",
                    "IPAM"],
-    "Security": ["IAM", "IAM Identity Center", "KMS", "Secrets Manager", "WAF",
+    "Security": ["STS", "RAM", "IAM Roles Anywhere", "IAM", "IAM Identity Center",
+                 "KMS", "Secrets Manager", "WAF",
                  "Shield", "GuardDuty", "Security Hub", "Inspector", "Macie",
                  "Cognito", "Certificate Manager", "Control Tower",
                  "Organizations", "Verified Access", "Resource Access Manager",
                  "Detective"],
-    "Compute": ["EC2", "Lambda", "Fargate", "ECS", "EKS", "ECR", "Batch",
+    "Compute": ["PCS", "WorkSpaces", "EC2", "Lambda", "Fargate", "ECS", "EKS", "ECR", "Batch",
                 "Auto Scaling", "Graviton", "Spot", "App Runner", "Outposts",
                 "Elastic Beanstalk", "Compute Optimizer", "Lightsail",
                 "App Mesh"],
-    "Data": ["RDS", "Aurora", "DynamoDB", "S3", "EFS", "FSx", "EBS",
+    "Data": ["Glacier", "S3 Vectors", "S3 Tables", "DynamoDB Streams",
+             "Data Pipeline", "RDS", "Aurora", "DynamoDB", "S3", "EFS", "FSx", "EBS",
              "ElastiCache", "MemoryDB", "DocumentDB", "Neptune", "Redshift",
              "Athena", "Glue", "Kinesis", "Firehose", "MSK", "OpenSearch",
              "EMR", "Lake Formation", "QuickSight", "Backup", "Timestream",
              "Keyspaces", "QLDB", "DMS", "Storage Gateway", "Snowball",
              "DataSync", "DataZone"],
-    "Observability": ["CloudWatch", "CloudTrail", "Config", "X-Ray",
+    "Observability": ["CloudWatch", "CloudWatch Logs", "Application Signals",
+                      "Synthetics", "Prometheus", "Service Quotas",
+                      "CloudTrail", "Config", "X-Ray",
                       "Resilience Hub", "Application Recovery Controller",
                       "Trusted Advisor", "Well-Architected"],
-    "Integration": ["SQS", "SNS", "EventBridge", "Step Functions", "MQ",
-                    "AppFlow"],
+    "Integration": ["SQS", "SNS", "EventBridge", "EventBridge Pipes", "Pipes",
+                    "Step Functions", "MQ", "AppFlow"],
     "AI & ML": ["Bedrock", "Bedrock AgentCore", "SageMaker", "Textract", "Comprehend",
                 "Rekognition", "Transcribe", "Polly", "Translate", "Kendra",
                 "Q Developer"],
     "DevOps & IaC": ["CloudFormation", "CDK", "CodePipeline", "CodeBuild",
                      "CodeDeploy", "CodeArtifact", "CodeCommit",
-                     "Systems Manager", "SSM", "Service Catalog"],
+                     "Systems Manager", "Service Catalog"],
     "Cost": ["Cost Explorer", "Budgets", "Savings Plans",
-             "Compute Savings Plans"],
-    "Apps & Front-end": ["Amplify", "AppSync", "SES", "Connect", "Pinpoint",
-                         "API Gateway REST"],
+             "Compute Savings Plans", "Cost and Usage Report"],
+    "Apps & Front-end": ["Amplify", "AppSync", "SES", "Connect", "Pinpoint"],
 }.items():
     for _svc in _members:
         SERVICE_DOMAIN[_svc] = _domain
@@ -378,6 +403,12 @@ def load_service_catalogue():
         names -= set(json.loads(links_path.read_text(encoding="utf-8"))
                      .get("skip", {}).get("names", []))
 
+    # botocore service ids like "deadline", "forecast" and "identitystore" are
+    # lower-case and collide with ordinary words -- "deadline" appeared twice
+    # on the homepage from prose about project deadlines. A real service name
+    # as written is capitalised.
+    names = {n for n in names if n[:1].isupper()}
+
     # Longest first so "Step Functions" wins over a bare "Step", and so the
     # combined regex below prefers the most specific name at each position.
     return sorted(names, key=lambda s: (-len(s), s)), ambiguous
@@ -438,7 +469,7 @@ def count_services(text, services=None):
     """
     counts = {}
     for m in SERVICE_SCAN_RE.finditer(text):
-        name = m.group(1)
+        name = SERVICE_ALIASES.get(m.group(1), m.group(1))
         counts[name] = counts.get(name, 0) + 1
 
     for name in list(counts):
@@ -1618,7 +1649,7 @@ TOPIC_VOCAB = {
 }
 
 
-def topics_for(title, tags):
+def topics_for(title, tags, text=""):
     """Canonical topic names a post matches, by the same rule used to count.
 
     Both the homepage badge and the click-through filter call this, which is
@@ -1629,7 +1660,12 @@ def topics_for(title, tags):
     what clicking produced, and three ("Resilience / DR", "Systems Manager",
     "PrivateLink") advertised posts and then showed an empty page.
     """
-    hay = (title + " " + " ".join(tags)).lower()
+    # Includes the body, not just the title and tags. Counting titles alone
+    # said this blog had 6 posts about S3 while the AWS coverage section,
+    # which reads the body, said 47 -- the same service with two numbers on
+    # one page. A post that spends three paragraphs on S3 is about S3 whether
+    # or not the word reached its headline.
+    hay = (title + " " + " ".join(tags) + " " + text).lower()
     return [name for name, (aliases, _group) in TOPIC_VOCAB.items()
             if any(a in hay for a in aliases)]
 
@@ -1675,7 +1711,7 @@ def build_index_page(posts):
             f' data-tags="{escape(tags_data)}"'
             f' data-date="{p["date"].strftime("%Y-%m-%d")}"'
             f' data-services="|{post_services.get(p["slug"], "")}|"'
-            f' data-topics="|{"|".join(x.lower() for x in topics_for(p["title"], p["tags"]))}|">'
+            f' data-topics="|{"|".join(x.lower() for x in topics_for(p["title"], p["tags"], post_texts[posts.index(p)]))}|">'
             f'<div class="post-card-body">'
             f'<div class="post-meta"><span class="tag-badge">{tag1}</span>'
             f'<span class="post-date">{p["date_fmt"]}</span></div>'
@@ -2862,7 +2898,8 @@ def main():
     topic_hits = {}
     for name, (aliases, group) in TOPIC_VOCAB.items():
         n = sum(1 for p in visible_posts
-                if name in topics_for(p["title"], p["tags"]))
+                if name in topics_for(p["title"], p["tags"],
+                                      soup_text(p["body_html"])))
         if n:
             topic_hits.setdefault(group, []).append(
                 # Link by canonical topic, not by a search for the first alias.
@@ -2903,6 +2940,28 @@ def main():
         for g, v in sorted(svc_groups.items(),
                            key=lambda kv: -sum(i["count"] for i in kv[1]))
     ]
+
+    # The parts of this work that are not an AWS service -- Terraform, GitOps,
+    # Kubernetes, the practices. They belong in the same list: the section is
+    # "what I work with", and splitting it into an AWS half and a non-AWS half
+    # left the same service showing two different numbers on one page.
+    _svc_names = set(SERVICE_DOMAIN) | set(SERVICE_ALIASES)
+    _tooling = []
+    for _name, (_aliases, _grp) in TOPIC_VOCAB.items():
+        if _name in _svc_names or _name in svc_by_post:
+            continue
+        _n = sum(1 for _p in visible_posts
+                 if _name in topics_for(_p["title"], _p["tags"],
+                                        soup_text(_p["body_html"])))
+        if _n:
+            _tooling.append({"name": _name, "count": _n,
+                             "href": "/blog/?topic=" + quote_plus(_name.lower()),
+                             "aws": "", "desc": ""})
+    if _tooling:
+        services_stats.append({
+            "group": "Tooling & practice",
+            "items": sorted(_tooling, key=lambda i: (-i["count"], i["name"])),
+        })
 
     stats_json = {
         "total_posts": len(visible_posts),
