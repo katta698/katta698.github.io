@@ -311,6 +311,15 @@ week-11 rather than inventing per-post ids like week-12's `w12-*`.
 - Every technical claim cites official AWS documentation, and the post ends
   with an "Official AWS references" section of those links.
 
+**Never explain the editorial process inside a post.** No "why this topic and
+not yesterday's", no note that the day was thin, no reference to the backlog,
+the ranking, or how the topic was chosen. Post #8 shipped a callout doing all
+four and it was cut. The reader does not have a backlog and did not ask how the
+sausage is made; a post that opens by explaining the news was slow is arguing
+against itself. This is the same rule as "do not write about the weekend being
+empty" in the weekly series — process commentary is not news, in either series.
+Pick the topic on its merits and write about the topic.
+
 ## AWS Weekly Intelligence series
 
 The Sunday companion to the daily series: everything AWS shipped that week,
@@ -345,13 +354,33 @@ draws attention to a non-issue. "Across five working days" in the subtitle
 carries it.
 
 **Build the inventory with the scripts, never by hand or by asking a model to
-read the feed.** `scripts/fetch_week.py` parses the raw RSS;
+read the feed.** `scripts/fetch_week.py` parses the raw RSS of **19 AWS feeds**;
 `scripts/build_weekly_inventory.py` generates the inventory HTML with AWS's own
 one-line summaries and validates every link, exiting non-zero if any fails.
 Model summarisation of the feed silently drops items — it missed 24 of 66
 announcements in the week of 3-7 August 2026, a third of the week, with no
 error. The completeness promise this series makes to readers depends entirely
 on not doing it that way again.
+
+**Two distinct completeness failures have happened. Guard against both.**
+
+1. *Parsing* — fixed by reading raw RSS instead of summarising it.
+2. *The source list* — fixing the parsing did not fix the sources. For a month
+   only two feeds were read while AWS publishes across a dozen service blogs,
+   and security bulletins were documented as "NO FEED, check by hand" when a
+   feed exists and had never been opened. That was ~170 unread posts.
+
+Run `python scripts/fetch_week.py --audit` before a roundup. It probes every
+feed and prints item count and date coverage, so a feed that has gone dead or
+stale is visible rather than silently returning nothing. A source absent from
+`SOURCES` in that file cannot be noticed as missing at run time — check the AWS
+blog index for new blogs periodically and add them.
+
+**The What's New feed is capped at exactly 100 items.** Measured 12 August 2026
+that was a **12-day** window, not "about two weeks" of slack. `fetch_week.py`
+prints a TRUNCATION WARNING when the requested start date is not older than the
+oldest item the feed still carries, because items in range may have aged out
+unseen. Do not publish an inventory that printed that warning as a complete one.
 - Generic sync-built pages, like the daily series.
 
 **The slug must never contain `week-<digits>`.** `_week_num()` in
