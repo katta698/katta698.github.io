@@ -324,6 +324,15 @@ SERVICE_SUPPLEMENT = [
 ]
 
 
+# name -> (AWS's own one-line description, product page URL). Filled from
+# scripts/aws_services.json, which refresh_aws_services.py populates from AWS's
+# product pages, so the wording is theirs and the weekly refresh keeps it
+# current. Nothing here is written by hand -- a description of a service is a
+# factual claim, and this repo already learned what happens when those are
+# asserted rather than sourced.
+SERVICE_INFO = {}
+
+
 def load_service_catalogue():
     """The service vocabulary: AWS's own list, plus the supplement above.
 
@@ -339,6 +348,7 @@ def load_service_catalogue():
     """
     names = set(SERVICE_SUPPLEMENT) | set(SERVICE_DOMAIN)
     ambiguous = set(AMBIGUOUS_SERVICES)
+    SERVICE_INFO.clear()
 
     path = REPO_ROOT / "scripts" / "aws_services.json"
     if path.is_file():
@@ -347,6 +357,8 @@ def load_service_catalogue():
             names.add(name)
             if meta.get("ambiguous"):
                 ambiguous.add(name)
+            if meta.get("desc"):
+                SERVICE_INFO[name] = (meta["desc"], meta.get("url", ""))
     else:
         print("  WARNING: scripts/aws_services.json missing — falling back to "
               "the built-in list. Run scripts/refresh_aws_services.py.")
@@ -1614,14 +1626,25 @@ def build_index_page(posts):
     # here rather than by script: there is no layout to compute, so the widget
     # renders with JavaScript disabled and cannot mis-place anything.
     max_count = ranked[0][1] if ranked else 1
-    service_rows = "\n".join(
-        f'<div class="svc-row" title="{escape(s)} — {c} mention{"" if c == 1 else "s"}">'
-        f'<span class="svc-name">{escape(s)}</span>'
-        f'<span class="svc-track"><span class="svc-fill" style="width:{max(2, round(c / max_count * 100))}%"></span></span>'
-        f'<span class="svc-count">{c}</span></div>'
-        for s, c in ranked
-    )
-    print(f"  {services_total} AWS services detected across posts")
+    def _service_row(s, c):
+        desc, url = SERVICE_INFO.get(s, ("", ""))
+        # The tooltip is AWS's own description, so a reader who does not know
+        # what "Firehose" is gets an answer without leaving the page, and the
+        # name links to AWS's own page for anyone who wants more than a line.
+        tip = f"{s} — {desc}" if desc else f"{s} — {c} mention{'' if c == 1 else 's'}"
+        width = max(2, round(c / max_count * 100))
+        name = (f'<a class="svc-name" href="{escape(url)}" target="_blank" '
+                f'rel="noopener noreferrer">{escape(s)}</a>'
+                if url else f'<span class="svc-name">{escape(s)}</span>')
+        return (f'<div class="svc-row" title="{escape(tip)}">{name}'
+                f'<span class="svc-track"><span class="svc-fill" '
+                f'style="width:{width}%"></span></span>'
+                f'<span class="svc-count">{c}</span></div>')
+
+    service_rows = "\n".join(_service_row(s, c) for s, c in ranked)
+    described = sum(1 for s, _ in ranked if s in SERVICE_INFO)
+    print(f"  {services_total} AWS services detected across posts "
+          f"({described} with an AWS description and link)")
 
     # ── Widget data ───────────────────────────────────────────
 
@@ -1831,7 +1854,7 @@ def build_index_page(posts):
       <div class="svc-list">
 {service_rows}
       </div>
-      <div class="svc-foot">All {services_total} AWS services mentioned, by number of mentions</div>
+      <div class="svc-foot">All {services_total} AWS services mentioned. Hover for what each does &mdash; descriptions and links are AWS&rsquo;s own.</div>
     </div>
     <div class="sidebar-card" id="quiz-widget">
       <div class="sidebar-title" style="display:flex;justify-content:space-between;align-items:center">
