@@ -111,26 +111,34 @@ def stamp_static_pages():
     so without this they would pin whatever token they were written with while
     the files underneath them changed.
 
-    This is deliberately narrow: it rewrites an existing ?v= token on those two
-    script URLs and nothing else. It does not regenerate the pages, and it will
-    not add a token to a page that has no reference. The arch pages' read-only
-    pass-through (see the "externally_built" note) otherwise still holds.
+    This is deliberately narrow: it rewrites an existing ?v= token on the two
+    script URLs and the stylesheet, and nothing else. It does not regenerate the
+    pages, and it will not add a token to a page that has no reference. The arch
+    pages' read-only pass-through (see the "externally_built" note) still holds.
+
+    blog.css is stamped here for the same reason blog.js is, and the omission
+    was a standing chore rather than a decision: validate_arch_post.py check 9
+    compares each arch page's token against md5(blog.css), so every stylesheet
+    change failed the validator on all 18 arch pages at once and had to be
+    cleared by hand, one file at a time, before anything else could ship.
     """
     targets = [REPO_ROOT / n for n in ("index.html", "resume.html", "now.html")]
     targets += sorted(BLOG_DIR.glob("aws-architecture-*/index.html"))
     targets.append(REPO_ROOT / "_templates" / "arch-post-template.html")
 
-    pattern = re.compile(r'(/blog/assets/(?:blog|site-footer)\.js)(\?v=[0-9a-zA-Z]+)?')
+    js_pattern = re.compile(r'(/blog/assets/(?:blog|site-footer)\.js)(\?v=[0-9a-zA-Z]+)?')
+    css_pattern = re.compile(r'(/blog/assets/blog\.css)(\?v=[0-9a-zA-Z]+)?')
     stamped = 0
     for path in targets:
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8")
-        new = pattern.sub(lambda m: f"{m.group(1)}?v={JS_VERSION}", text)
+        new = js_pattern.sub(lambda m: f"{m.group(1)}?v={JS_VERSION}", text)
+        new = css_pattern.sub(lambda m: f"{m.group(1)}?v={CSS_VERSION}", new)
         if new != text:
             path.write_text(new, encoding="utf-8")
             stamped += 1
-    print(f"  {stamped} static page(s) re-stamped to js v={JS_VERSION}")
+    print(f"  {stamped} static page(s) re-stamped to js v={JS_VERSION}, css v={CSS_VERSION}")
 
 
 def write_service_worker():
