@@ -129,6 +129,49 @@ differ: a post checked on Friday and held for a Sunday publish should still say
 Friday. That is the point — a reader arriving a year later needs to know how
 stale the figures might be.
 
+### The badge must be backed by evidence, not by a date
+
+A date alone cannot be checked by anything. It was not: every per-post build
+script carried a hardcoded `VERIFIED = '<date>'` and stamped it on whatever it
+built, which is exactly what the rule below forbids. Posts #15-19 were badged on
+five consecutive days for that reason and nothing else, and **#18 shipped a
+factual error under a badge claiming it had been checked** — it mixed current
+write pricing with pre-November-2024 read pricing and concluded reads and writes
+break even at different utilisations when they break even at the same one.
+
+So the badge now requires the evidence alongside it:
+
+```yaml
+verified: '2026-08-12'
+verified_claims:
+  - claim: "On-demand is $0.625 per million write request units"
+    source: https://aws.amazon.com/dynamodb/pricing/on-demand/
+  - claim: "Provisioned is $0.00065 per WCU-hour"
+    source: https://aws.amazon.com/dynamodb/pricing/provisioned/
+```
+
+`validate_arch_post.py` fails the build when `verified:` is present and there
+are fewer than two claims, when a source is not AWS's own documentation, when
+the date is in the future, or when the served page's badge disagrees with the
+front matter (arch pages are never rebuilt, so those drift silently). It warns
+when a cited page is missing from the post's Official AWS Reference section, and
+when the check is more than 180 days old.
+
+**Run `--check-links` before publishing.** It fetches every cited page.
+Status codes are not sufficient on their own: `docs.aws.amazon.com` is
+client-side routed and **answers HTTP 200 for pages that do not exist**,
+returning a ~1 KB shell, so the checker judges the body size instead. Without
+that, every dead docs link passes.
+
+```bash
+python scripts/validate_arch_post.py --check-links
+```
+
+**Never add `verified:` to a build script's template.** Writing the claim list
+is work a build script cannot fake, which is the entire point. If you did not
+personally fetch the pages, the post gets no badge — that is the correct
+outcome, not a gap to fill.
+
 **Do NOT make this automatic.** It is deliberately opt-in, and a future session
 should not "improve" it by defaulting it on for every post. The badge asserts
 that a human actually checked this post's figures on a specific date.

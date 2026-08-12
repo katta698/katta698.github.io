@@ -261,9 +261,161 @@ def check_source(slug):
         err(slug, '%s must start with "arch-" or sync_blog.py will overwrite '
                   'the served page' % name)
 
+    body = raw.split('---', 2)[2]
+    check_verification(slug, name, fm, parsed, body)
+
+    # The badge is rendered from the posts/ front matter into the served page.
+    # Arch pages are never rebuilt by sync_blog.py, so the two can drift: a
+    # badge removed from the source stays visible on the live page forever.
+    page = os.path.join(BLOG, slug, 'index.html')
+    if os.path.isfile(page):
+        served = io.open(page, encoding='utf-8').read()
+        shown = 'verified-badge' in served
+        if bool(parsed.get('verified')) != shown:
+            err(slug, 'badge mismatch: posts/%s %s a "verified:" date but the '
+                      'served page %s a badge. Arch pages are not rebuilt by '
+                      'sync, so fix blog/%s/index.html by hand.'
+                % (name, 'has' if parsed.get('verified') else 'has no',
+                   'shows' if shown else 'shows none', slug))
+
+
+AWS_DOC_HOSTS = ('docs.aws.amazon.com', 'aws.amazon.com')
+STALE_DAYS = 180
+# A missing docs.aws.amazon.com page returns ~1 KB; a real article, tens of KB.
+DOCS_SHELL_BYTES = 5000
+
+
+def check_verification(slug, name, fm, parsed, body):
+    """The verification badge must be backed by evidence, not by a build flag.
+
+    CLAUDE.md forbids auto-stamping `verified:`, because the badge asserts that
+    a human checked this post's figures on a stated date. Nothing enforced that:
+    every build script carried a hardcoded `VERIFIED = '<date>'` and stamped it
+    unconditionally, which is precisely the thing the rule prohibits. Posts #15
+    to #19 were stamped on five consecutive days for that reason alone, and #18
+    shipped with a factual error under a badge claiming it had been checked --
+    it mixed current write pricing with pre-November-2024 read pricing and
+    concluded reads and writes broke even at different utilisations when they
+    break even at the same one.
+
+    A date alone cannot be falsified by a script. A list of claims each paired
+    with the AWS page it came from can be: the URLs must resolve, must be AWS's
+    own documentation, and must also appear in the post's Official AWS Reference
+    section so a reader can repeat the check. Writing that list is work a build
+    script cannot fake, which is the whole point.
+    """
+    import datetime
+
+    verified = parsed.get('verified')
+    claims = parsed.get('verified_claims')
+
+    # A post with vendor figures and no badge is fine -- the badge is opt-in and
+    # its absence is honest. A badge with no evidence is not.
+    if not verified:
+        if claims:
+            err(slug, '%s has verified_claims but no "verified:" date' % name)
+        return
+
+    if not isinstance(verified, (str, datetime.date)):
+        err(slug, '%s "verified:" must be a quoted date, got %r' % (name, verified))
+        return
+    try:
+        vdate = (verified if isinstance(verified, datetime.date)
+                 else datetime.datetime.strptime(str(verified).strip(), '%Y-%m-%d').date())
+    except ValueError:
+        err(slug, '%s "verified: %s" is not YYYY-MM-DD' % (name, verified))
+        return
+
+    today = datetime.date.today()
+    if vdate > today:
+        err(slug, '%s claims verification on %s, which is in the future' % (name, vdate))
+    age = (today - vdate).days
+    if age > STALE_DAYS:
+        warn(slug, '%s was verified %d days ago (%s). Pricing and quotas move; '
+                   're-check before the figures are quoted anywhere.' % (name, age, vdate))
+
+    if not isinstance(claims, list) or len(claims) < 2:
+        err(slug, '%s carries a verification badge but lists fewer than two '
+                  'verified_claims. The badge tells readers a human checked this '
+                  "post's figures -- list what was checked and where, or drop the "
+                  'badge.' % name)
+        return
+
+    # Everything cited must also be reachable from the post itself.
+    ref = body.split('Official AWS Reference', 1)[-1]
+
+    for i, c in enumerate(claims, 1):
+        if not isinstance(c, dict) or not c.get('claim') or not c.get('source'):
+            err(slug, '%s verified_claims[%d] needs both "claim:" and "source:"' % (name, i))
+            continue
+        src = str(c['source']).strip()
+        if not src.startswith('https://'):
+            err(slug, '%s verified_claims[%d] source is not https: %s' % (name, i, src))
+            continue
+        host = src.split('/')[2]
+        if not any(host == h or host.endswith('.' + h) for h in AWS_DOC_HOSTS):
+            err(slug, '%s verified_claims[%d] cites %s. Verification means AWS\'s own '
+                      'documentation, not a blog quoting it secondhand.' % (name, i, host))
+            continue
+        if src.rstrip('/') not in ref.replace('&amp;', '&'):
+            warn(slug, '%s verified_claims[%d] cites %s, which is not in the post\'s '
+                       'Official AWS Reference section -- a reader cannot repeat the '
+                       'check' % (name, i, src))
+
+    if CHECK_LINKS:
+        _check_links_resolve(slug, name, claims)
+
+
+def _check_links_resolve(slug, name, claims):
+    """Opt-in (--check-links): confirm every cited page still exists.
+
+    Off by default so the validator stays usable offline and in CI without
+    network egress, but run it before publishing: a source that has moved means
+    the figure quoted from it may have moved with it.
+
+    Status codes alone are not enough. `aws.amazon.com` 404s honestly, but
+    `docs.aws.amazon.com` is client-side routed and answers **HTTP 200 for
+    pages that do not exist** -- it returns a ~1 KB shell whose <title> is just
+    the service name, and the real article is fetched by script afterwards. A
+    HEAD request therefore passes every dead docs link. So fetch the body and
+    judge it: a real article is tens of KB and its title names the article.
+    """
+    import urllib.request
+    import urllib.error
+    seen = set()
+    for c in claims:
+        if not isinstance(c, dict):
+            continue
+        src = str(c.get('source', '')).strip()
+        if not src.startswith('https://') or src in seen:
+            continue
+        seen.add(src)
+        req = urllib.request.Request(src, headers={
+            'User-Agent': 'Mozilla/5.0 (validate_arch_post.py)'})
+        try:
+            resp = urllib.request.urlopen(req, timeout=25)
+            code, body = resp.getcode(), resp.read(80000)
+        except urllib.error.HTTPError as exc:
+            err(slug, '%s cites %s which returns HTTP %d' % (name, src, exc.code))
+            continue
+        except Exception as exc:
+            warn(slug, '%s could not reach %s (%s)' % (name, src, exc))
+            continue
+        if code >= 400:
+            err(slug, '%s cites %s which returns HTTP %d' % (name, src, code))
+        elif 'docs.aws.amazon.com' in src and len(body) < DOCS_SHELL_BYTES:
+            err(slug, '%s cites %s which returns a %d-byte shell, not an article. '
+                      'docs.aws.amazon.com answers 200 for missing pages, so this '
+                      'link is dead -- the page moved.' % (name, src, len(body)))
+
+
+CHECK_LINKS = False
+
 
 def main():
-    slugs = sys.argv[1:]
+    global CHECK_LINKS
+    slugs = [a for a in sys.argv[1:] if not a.startswith('--')]
+    CHECK_LINKS = '--check-links' in sys.argv[1:]
     if not slugs:
         slugs = sorted(os.path.basename(os.path.dirname(p))
                        for p in glob.glob(os.path.join(BLOG, 'aws-architecture-*', 'index.html')))
