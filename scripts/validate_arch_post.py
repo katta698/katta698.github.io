@@ -196,6 +196,18 @@ def check_page(slug, spec):
             err(slug, 'no rendered <h2> matching "%s" — section missing or '
                       'commented out' % label)
 
+    # 4b. An empty "Next in this series" callout. The template marks it
+    #     REQUIRED and the build scripts either fill it or remove the whole
+    #     block; substituting an empty string leaves the heading with nothing
+    #     under it, which is what arch-020 shipped. Check 4 already catches the
+    #     same shape in the post-nav -- this is the other place a required
+    #     element can end up present but blank.
+    m = re.search(r'Next in this series</strong>\s*<p>(.*?)</p>', visible, re.DOTALL)
+    if m and not m.group(1).strip():
+        err(slug, 'empty "Next in this series" callout — either write the teaser '
+                  'or remove the whole callout block, as the posts with no '
+                  'successor do')
+
     # 4. Empty nav boxes (shipped once on arch-009).
     if re.search(r'class="post-nav-link (?:prev|next)"[^>]*>\s*'
                  r'<span class="post-nav-dir">[^<]*</span>\s*'
