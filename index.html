@@ -1380,11 +1380,11 @@
           <div class="cidr-row"><span class="cidr-row-label">Network Address</span><span class="cidr-row-value" id="cr-network"></span></div>
           <div class="cidr-row"><span class="cidr-row-label">Broadcast Address</span><span class="cidr-row-value" id="cr-broadcast"></span></div>
           <div class="cidr-row"><span class="cidr-row-label">Subnet Mask</span><span class="cidr-row-value" id="cr-mask"></span></div>
-          <div class="cidr-row"><span class="cidr-row-label">First Usable IP</span><span class="cidr-row-value" id="cr-first"></span></div>
-          <div class="cidr-row"><span class="cidr-row-label">Last Usable IP</span><span class="cidr-row-value" id="cr-last"></span></div>
-          <div class="cidr-row"><span class="cidr-row-label">Usable Hosts</span><span class="cidr-row-value highlight" id="cr-hosts"></span></div>
+          <div class="cidr-row"><span class="cidr-row-label">First Usable IP <small style="opacity:.6">(AWS)</small></span><span class="cidr-row-value" id="cr-first"></span></div>
+          <div class="cidr-row"><span class="cidr-row-label">Last Usable IP <small style="opacity:.6">(AWS)</small></span><span class="cidr-row-value" id="cr-last"></span></div>
+          <div class="cidr-row"><span class="cidr-row-label">Usable Hosts <small style="opacity:.6">(AWS reserves 5)</small></span><span class="cidr-row-value highlight" id="cr-hosts"></span></div>
           <div class="cidr-row"><span class="cidr-row-label">Total IPs</span><span class="cidr-row-value" id="cr-total"></span></div>
-          <div class="cidr-row"><span class="cidr-row-label">IP Class</span><span class="cidr-row-value" id="cr-class"></span></div>
+          <div class="cidr-row"><span class="cidr-row-label">Address space</span><span class="cidr-row-value" id="cr-class"></span></div>
         </div>
       </div>
       <div class="cidr-subnets" id="cidr-subnets" style="display:none;">
@@ -1588,18 +1588,41 @@ function cidrCalculate() {
   var network = (ipInt & mask) >>> 0;
   var bcast   = (network | (~mask >>> 0)) >>> 0;
   var total   = Math.pow(2, 32 - prefix);
-  var hosts   = total <= 2 ? 0 : total - 2;
-  var first   = prefix < 31 ? intToIp(network + 1) : intToIp(network);
-  var last    = prefix < 31 ? intToIp(bcast - 1)   : intToIp(bcast);
+  // AWS reserves FIVE addresses in every VPC subnet, not the two a general
+  // networking calculator subtracts: network, VPC router, DNS, a fourth held
+  // for future use, and broadcast. This tool suggests VPC subnet splits, so
+  // reporting 254 usable in a /24 overstates every subnet by three -- and on
+  // a /28, AWS's smallest allowed subnet, 14 against the real 11 is out by a
+  // quarter. https://docs.aws.amazon.com/vpc/latest/userguide/subnet-sizing.html
+  var hosts   = total <= 5 ? 0 : total - 5;
+  // AWS hands out the fifth address onward: .0 network, .1 VPC router,
+  // .2 DNS, .3 reserved for future use, and the last is broadcast. A general
+  // calculator would say network+1 here, which is an address you cannot
+  // assign in a VPC.
+  var first   = total > 5 ? intToIp(network + 4) : '—';
+  var last    = total > 5 ? intToIp(bcast - 1)   : '—';
 
   function maskStr(p) {
     return intToIp(p === 0 ? 0 : (0xFFFFFFFF << (32 - p)) >>> 0);
   }
 
-  var firstOct = (network >>> 24) & 255;
-  var cls = firstOct < 128 ? 'A (10.0.0.0/8 private range)' :
-            firstOct < 192 ? 'B (172.16.0.0/12 private range)' :
-                             'C (192.168.0.0/16 private range)';
+  // Whether the block is actually RFC 1918 private, tested properly against
+  // the three ranges. The old version picked a label from the first octet
+  // alone and asserted a private range for any address below 128 -- which
+  // labelled 8.8.8.8 and AWS's own 54.239.0.0/16 as "10.0.0.0/8 private".
+  // Class A/B/C is also pre-CIDR and does not describe how anything routes.
+  function inBlock(addr, base, bits) {
+    var m = (0xFFFFFFFF << (32 - bits)) >>> 0;
+    return ((addr & m) >>> 0) === ((ipToInt(base) & m) >>> 0);
+  }
+  var cls;
+  if (inBlock(network, '10.0.0.0', 8))          cls = 'RFC 1918 private (10.0.0.0/8)';
+  else if (inBlock(network, '172.16.0.0', 12))  cls = 'RFC 1918 private (172.16.0.0/12)';
+  else if (inBlock(network, '192.168.0.0', 16)) cls = 'RFC 1918 private (192.168.0.0/16)';
+  else if (inBlock(network, '100.64.0.0', 10))  cls = 'Carrier-grade NAT (100.64.0.0/10) — usable in a VPC, but shared address space';
+  else if (inBlock(network, '127.0.0.0', 8))    cls = 'Loopback (127.0.0.0/8) — not routable';
+  else if (inBlock(network, '169.254.0.0', 16)) cls = 'Link-local (169.254.0.0/16) — reserved by AWS inside a VPC';
+  else cls = 'Public address space — a VPC accepts it, but it is not yours to route';
 
   document.getElementById('cr-network').textContent   = intToIp(network) + '/' + prefix;
   document.getElementById('cr-broadcast').textContent = intToIp(bcast);
@@ -1631,7 +1654,7 @@ function cidrCalculate() {
         splits.push({
           name: tier + ' ' + az,
           cidr: intToIp(subNet) + '/' + newPrefix,
-          hosts: (subnetSize > 2 ? subnetSize - 2 : 0).toLocaleString()
+          hosts: (subnetSize > 5 ? subnetSize - 5 : 0).toLocaleString()
         });
         idx++;
       });
@@ -1760,9 +1783,12 @@ var TF_TEMPLATES = {
 
   subnet: function(n) { return [
     'resource "aws_subnet" "' + n + '_public_a" {',
-    '  vpc_id            = aws_vpc.' + n + '.id',
-    '  cidr_block        = "10.0.1.0/24"',
-    '  availability_zone = "us-east-1a"',
+    // Aligned to the longest key in the block, which is what terraform fmt
+    // does. Snippets are copied straight into a repo, and output that fails
+    // `terraform fmt -check` fails CI on arrival.
+    '  vpc_id                  = aws_vpc.' + n + '.id',
+    '  cidr_block              = "10.0.1.0/24"',
+    '  availability_zone       = "us-east-1a"',
     '  map_public_ip_on_launch = true',
     '',
     '  tags = { Name = "' + n + '-public-a" }',
@@ -1961,6 +1987,14 @@ function iamLoadExample(key) {
   iamAnalyze();
 }
 
+function iamEsc(s) {
+  // Everything below is interpolated into innerHTML, and the input is
+  // arbitrary pasted JSON -- a Sid or Action carrying markup would otherwise
+  // execute in the reader's own page.
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function iamAnalyze() {
   var errEl = document.getElementById('iam-error');
   var resEl = document.getElementById('iam-results');
@@ -1973,23 +2007,60 @@ function iamAnalyze() {
   var policy;
   try { policy = JSON.parse(raw); } catch(e) { errEl.textContent = 'Invalid JSON: ' + e.message; return; }
 
+  // Statement may be a single object rather than an array -- that is valid IAM
+  // and AWS's own console emits it. Calling forEach on it threw a TypeError
+  // that nothing caught, so the panel simply never appeared and the button
+  // looked dead.
+  var stmts = policy.Statement;
+  if (!stmts) { errEl.textContent = 'No "Statement" found — is this an IAM policy?'; return; }
+  if (!Array.isArray(stmts)) stmts = [stmts];
+
   var findings = [];
-  var stmts = policy.Statement || [];
+  var allowCount = 0;
 
   stmts.forEach(function(s, i) {
+    if (!s || typeof s !== 'object') return;
     var label = s.Sid ? '"' + s.Sid + '"' : 'Statement ' + (i + 1);
-    var actions  = [].concat(s.Action  || []);
+    var actions   = [].concat(s.Action   || []);
+    var notActs   = [].concat(s.NotAction || []);
     var resources = [].concat(s.Resource || []);
+    var notRes    = [].concat(s.NotResource || []);
 
     if (s.Effect === 'Allow') {
+      allowCount++;
+
+      // NotAction with Allow permits everything EXCEPT what is listed. It is
+      // one of the broadest things a policy can say, and the previous version
+      // did not look at the field at all -- a policy allowing everything but
+      // iam:* came back with nothing worse than a generic warning.
+      if (notActs.length) {
+        findings.push({ level: 'error', title: label + ': Allow with NotAction',
+          desc: 'Grants every action except ' + notActs.join(', ') +
+                ' — including services that do not exist yet. Invert it: list the actions you mean to allow.' });
+      }
+      if (notRes.length) {
+        findings.push({ level: 'error', title: label + ': Allow with NotResource',
+          desc: 'Applies to every resource except ' + notRes.join(', ') +
+                '. Name the resources you mean to allow instead.' });
+      }
+
       if (actions.indexOf('*') !== -1) {
         findings.push({ level: 'error', title: label + ': Action "*"', desc: 'Grants all AWS actions — equivalent to root. Scope down to specific services and actions.' });
       } else {
-        var broadSvc = actions.filter(function(a) { return a.endsWith(':*'); });
+        var broadSvc = actions.filter(function(a) { return /^[^:]+:\*$/.test(a); });
         if (broadSvc.length) {
           findings.push({ level: 'warning', title: label + ': Broad service wildcard', desc: 'Actions ' + broadSvc.join(', ') + ' grant everything in that service. Use specific actions.' });
         }
+        // Wildcards in the middle of an action name match more than they look
+        // like they do: s3:*Object covers Delete as well as Get and Put.
+        var midWild = actions.filter(function(a) {
+          return a.indexOf('*') !== -1 && !/^[^:]+:\*$/.test(a) && a !== '*';
+        });
+        if (midWild.length) {
+          findings.push({ level: 'warning', title: label + ': Wildcard inside action name', desc: midWild.join(', ') + ' — matches more operations than it appears to, including destructive ones. Enumerate the actions.' });
+        }
       }
+
       if (resources.indexOf('*') !== -1) {
         findings.push({ level: 'warning', title: label + ': Resource "*"', desc: 'Applies to all resources in the account. Restrict to specific ARNs where possible.' });
       }
@@ -1998,18 +2069,26 @@ function iamAnalyze() {
       } else {
         findings.push({ level: 'ok', title: label + ': Condition present', desc: 'Good — condition block limits when this permission applies.' });
       }
-    }
 
-    if (s.Effect === 'Allow' && actions.some(function(a) { return a.toLowerCase().indexOf('passrole') !== -1; })) {
-      findings.push({ level: 'error', title: label + ': iam:PassRole detected', desc: 'PassRole can be used for privilege escalation. Ensure Resource is restricted to specific role ARNs.' });
-    }
-    if (actions.some(function(a) { return a === 'iam:*' || a === 'iam:CreatePolicyVersion'; })) {
-      findings.push({ level: 'error', title: label + ': IAM write access', desc: 'IAM write permissions allow privilege escalation. Restrict tightly and require MFA conditions.' });
+      if (actions.some(function(a) { return a.toLowerCase().indexOf('passrole') !== -1; })) {
+        findings.push({ level: 'error', title: label + ': iam:PassRole detected', desc: 'PassRole can be used for privilege escalation. Ensure Resource is restricted to specific role ARNs.' });
+      }
+      if (actions.some(function(a) { return a === 'iam:*' || a === 'iam:CreatePolicyVersion'; })) {
+        findings.push({ level: 'error', title: label + ': IAM write access', desc: 'IAM write permissions allow privilege escalation. Restrict tightly and require MFA conditions.' });
+      }
     }
   });
 
   if (findings.length === 0) {
-    findings.push({ level: 'ok', title: 'No issues found', desc: 'Policy looks well-scoped. Always test in a non-production account before applying.' });
+    // Only Allow statements are inspected, so a Deny-only policy produces no
+    // findings. Saying "well-scoped" there claims an analysis that did not
+    // happen -- the previous version did exactly that.
+    if (allowCount === 0) {
+      findings.push({ level: 'ok', title: 'Nothing to analyse',
+        desc: 'No Allow statements found. This checker looks at what a policy grants, so a Deny-only or empty policy is not reviewed here.' });
+    } else {
+      findings.push({ level: 'ok', title: 'No issues found', desc: 'Policy looks well-scoped. Always test in a non-production account before applying.' });
+    }
   }
 
   var icons = { error: '✕', warning: '!', ok: '✓' };
@@ -2018,8 +2097,8 @@ function iamAnalyze() {
     html += '<div class="iam-finding ' + f.level + '">' +
       '<span class="iam-finding-icon">' + icons[f.level] + '</span>' +
       '<div class="iam-finding-body">' +
-        '<span class="iam-finding-title">' + f.title + '</span>' +
-        '<span class="iam-finding-desc">' + f.desc + '</span>' +
+        '<span class="iam-finding-title">' + iamEsc(f.title) + '</span>' +
+        '<span class="iam-finding-desc">' + iamEsc(f.desc) + '</span>' +
       '</div></div>';
   });
 
