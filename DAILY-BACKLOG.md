@@ -18,6 +18,45 @@ approaching a week old is about to become unwritable.
 
 ---
 
+## 12 August 2026 — covered by post #9
+
+First run on the widened source list: 6 What's New announcements, 2 security
+bulletins and 17 service-blog posts across 19 feeds. Two items shipped with a
+same-day AWS deep-dive blog, which is the signal that separated them from the
+rest.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Role manager creates roles from AWS managed templates; Lambda template attaches `PowerUserAccess` | IAM | **#9** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-iam-role-manager) |
+| Control plane parameters configurable — scheduler, controller manager, API server | EKS | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-eks-control-plane-configuration-parameters) |
+| CVE-2026-19311 — missing authorization in OpenSearch Alerting plugin | OpenSearch | open | Med-High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-078-aws/) |
+| Forensic container checkpointing for incident response | EKS | open | Med-High | [link](https://aws.amazon.com/blogs/containers/forensic-container-checkpointing-on-amazon-eks/) |
+| CVE-2026-19642 / 19643 — Base64 decoder memory safety in AWS SDK for C++ | AWS SDK | open | Medium | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-080-aws/) |
+| Deny by default for custom permissions | Amazon Quick | open | Medium | [link](https://aws.amazon.com/whats-new/2026/08/amazon-quick-deny-by-default-permissions/) |
+| Burst to Region — overflow Outposts workloads to EC2 | Outposts | open | Medium | [link](https://aws.amazon.com/blogs/compute/burst-to-region-overflow-aws-outposts-workloads-to-amazon-ec2/) |
+| Aurora PostgreSQL major-version migration with live Debezium CDC connectors | Aurora | open | Medium | [link](https://aws.amazon.com/blogs/database/migrate-amazon-aurora-postgresql-across-major-versions-with-active-debezium-cdc-connectors-using-native-logical-replication/) |
+| Oracle Exadata on Exascale for Oracle AI Database@AWS | Oracle@AWS | open | Medium | [link](https://aws.amazon.com/blogs/database/introducing-oracle-exadata-on-exascale-for-oracle-ai-databaseaws/) |
+| Data loss prevention with Microsoft Purview | Amazon Quick | open | Low-Med | [link](https://aws.amazon.com/whats-new/2026/08/amazon-quick-dlp-purview/) |
+| Interactive map view for Regions and Local Zones | Global View | skipped | Low | console UI only |
+| Manual assignment of queued agent-first callbacks | Connect | skipped | Low | — |
+| Bedrock cost attribution part 2, Athena and CUDOS | Bedrock | skipped | Low-Med | how-to, not a change |
+| Storage Lens + Kiro CLI cost reduction case study | S3 | skipped | Low | customer case study |
+| Hybrid ML inferencing with FSx for NetApp ONTAP | FSx | skipped | Low-Med | how-to, not a change |
+
+**Worth revisiting:** EKS control plane configuration is the strongest held
+item and the better pure-engineering story — EKS has never exposed scheduler,
+controller manager or API server tuning on a managed control plane. It lost
+only because IAM reaches every reader and the `PowerUserAccess` default is a
+live security decision. Write it before it ages out.
+
+**Correction logged:** the initial ranking described role manager as on by
+default. It is not — an administrator enables it once in IAM account settings,
+and what happens automatically is its behaviour thereafter inside supported
+consoles. Caught by checking AWS's security blog against the announcement
+before writing.
+
+---
+
 ## 11 August 2026 — a thin day; post #8 used a held item instead
 
 Nine announcements, mostly SageMaker JumpStart catalogue additions and one
