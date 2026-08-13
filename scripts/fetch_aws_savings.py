@@ -156,14 +156,20 @@ def spot(region):
     ], timeout=180)
     if not doc:
         return region, {}
-    latest = {}
+    # Latest quote per (type, AZ) first, then the cheapest AZ. Taking the
+    # cheapest row across the whole returned history instead finds an old dip:
+    # the first run here surfaced a price from seven weeks earlier and labelled
+    # it current, which the timestamp on screen is what caught.
+    newest = {}
     for h in doc.get("SpotPriceHistory", []):
-        t = h["InstanceType"]
-        ts = h["Timestamp"]
-        price = float(h["SpotPrice"])
-        # Several AZs per type; keep the cheapest, which is what a fleet picks.
-        if t not in latest or price < latest[t]["usd"]:
-            latest[t] = {"usd": round(price, 6), "at": ts}
+        key = (h["InstanceType"], h["AvailabilityZone"])
+        if key not in newest or h["Timestamp"] > newest[key]["Timestamp"]:
+            newest[key] = h
+    latest = {}
+    for (itype, _az), h in newest.items():
+        usd = float(h["SpotPrice"])
+        if itype not in latest or usd < latest[itype]["usd"]:
+            latest[itype] = {"usd": round(usd, 6), "at": h["Timestamp"]}
     return region, latest
 
 
