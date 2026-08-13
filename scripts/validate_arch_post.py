@@ -216,6 +216,33 @@ def check_page(slug, spec):
     if re.search(r'href="/blog//+"', visible):
         err(slug, 'post-nav link with a malformed empty slug URL')
 
+    # 4c. The page chrome must still be the site's chrome.
+    #
+    #     arch-020 shipped with four AWS documentation links in the site nav,
+    #     beside Home / Blog / Resume. They were the post's reference list,
+    #     inserted by a build script that anchored on "the first </li> before
+    #     a </ul>" -- which is the nav, not the reference section. The page
+    #     was verified by counting links inside #reference, which returned the
+    #     right answer and said nothing about the nav.
+    #
+    #     That is the general shape of the mistake: editing a page by text
+    #     substitution, then checking only the region you meant to change.
+    #     This check looks at the region you did not mean to change.
+    nav = re.search(r'<ul class="nav-links">(.*?)</ul>', visible, re.DOTALL)
+    if not nav:
+        err(slug, 'no <ul class="nav-links"> — the page chrome is missing')
+    else:
+        items = re.findall(r'<li>.*?</li>', nav.group(1), re.DOTALL)
+        stray = [re.sub(r'<[^>]+>', '', i).strip() for i in items
+                 if 'href="/' not in i]
+        if stray:
+            err(slug, 'site nav contains %d link(s) that are not site links: %s '
+                      '— something wrote page content into the header'
+                % (len(stray), ', '.join(s[:40] for s in stray)))
+        if len(items) != 3:
+            err(slug, 'site nav has %d links, expected 3 (Home, Blog, Resume)'
+                % len(items))
+
     # 5. Wide tables need their own scroll container or the last column is
     #    unreachable on mobile. Which wrapper is valid depends on the series:
     #    arch posts bypass clean_html() so inline overflow-x survives, but every
