@@ -1,15 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Pre-publish validator for Architecture Series posts.
+Pre-publish validator for every post series on the site.
 
 Every check here exists because the failure actually happened and was caught by
 eye rather than by tooling. Run it before committing a new post:
 
-    python scripts/validate_arch_post.py                 # all arch posts
+    python scripts/validate_arch_post.py                 # every series
     python scripts/validate_arch_post.py <slug> [<slug>] # specific ones
+    python scripts/validate_arch_post.py --series daily  # one series
+    python scripts/validate_arch_post.py --check-links   # also fetch cited pages
 
 Exits non-zero if any ERROR is found, so it can gate CI.
+
+**It used to check only the Architecture Series**, which is why it is still
+named `validate_arch_post.py` — the name is referenced from CLAUDE.md and from
+three publishing workflows, so renaming it costs more than it gains.
+
+That arch-only scope was a real gap rather than a cosmetic one. The
+`verified_claims` evidence rule was added to stop a badge asserting a check
+that never happened, and it was enforced for 19 arch posts while the daily and
+weekly series — which publish far more often, and carry exactly the pricing and
+quota claims the rule exists for — were never examined at all. Daily #9 shipped
+with six verified claims and was silently skipped; the links were checked by
+hand instead, which is the situation the validator exists to remove.
+
+Adding a series means adding an entry to SERIES below. Anything absent from
+that list is not checked by anything.
 """
 import io
 import os
@@ -23,19 +40,87 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BLOG = os.path.join(ROOT, 'blog')
 POSTS = os.path.join(ROOT, 'posts')
 
-# Validated by heading text, not element id: section ids drifted across template
-# revisions (id="why" became id="why-it-matters"), but the headings are stable
-# and are what actually tells you a section is missing.
-REQUIRED_HEADINGS = [
-    ('Business Challenge',    r'^Business Challenge$'),
-    ('Architecture',          r'^Architecture$'),
-    ('Why ...',               r'^Why\b'),
-    ('... Decisions',         r'Decisions$'),
-    ('Closing Thought',       r'^Closing Thought$'),
-    ('Official AWS Reference', r'^Official AWS Reference$'),
-]
-EXPECTED_LABELS = ['AWS', 'AWS Architecture Series']
+# Sections are validated by heading text, not element id: ids drifted across
+# template revisions (id="why" became id="why-it-matters"), but the headings are
+# stable and are what actually tells you a section is missing.
+#
+# Each series' required headings were derived from the posts already published,
+# taking only headings present in *every* post of that series. Requiring a
+# heading that established posts do not have would fail correct work, which is
+# how a validator gets switched off.
+SERIES = {
+    'arch': {
+        'label': 'Architecture Series',
+        'file_prefix': 'arch-',
+        'slug_glob': 'aws-architecture-*',
+        'labels': ['AWS', 'AWS Architecture Series'],
+        # Arch pages are built from a template and never rebuilt by sync_blog.py,
+        # so a page can drift from its posts/ source and stay that way forever.
+        'externally_built': True,
+        'ref_heading': 'Official AWS Reference',
+        'first_section': 'id="challenge"',
+        'headings': [
+            ('Business Challenge',     r'^Business Challenge$'),
+            ('Architecture',           r'^Architecture$'),
+            ('Why ...',                r'^Why\b'),
+            ('... Decisions',          r'Decisions$'),
+            ('Closing Thought',        r'^Closing Thought$'),
+            ('Official AWS Reference', r'^Official AWS Reference$'),
+        ],
+    },
+    'daily': {
+        'label': 'AWS Daily Intelligence',
+        'file_prefix': 'daily-',
+        'slug_glob': 'aws-daily-intelligence-*',
+        'labels': ['AWS', 'AWS Daily Intelligence'],
+        'externally_built': False,
+        'ref_heading': 'Official AWS references',
+        'first_section': 'id="what-changed"',
+        'headings': [
+            ('Executive summary',        r'^Executive summary$'),
+            ('What changed',             r'^What changed$'),
+            ('Architecture',             r'^Architecture$'),
+            ('Business value',           r'^Business value$'),
+            ('Security considerations',  r'^Security considerations$'),
+            ('Cost considerations',      r'^Cost considerations$'),
+            ('Operational considerations', r'^Operational considerations$'),
+            ('Tradeoffs',                r'^Tradeoffs$'),
+            ('Implementation guidance',  r'^Implementation guidance$'),
+            ('Best practices',           r'^Best practices$'),
+            ('Who should adopt ...',     r'^Who should adopt'),
+            ('Key takeaways',            r'^Key takeaways$'),
+            ('Official AWS references',  r'^Official AWS references$'),
+        ],
+    },
+    'weekly': {
+        'label': 'AWS Weekly Intelligence',
+        'file_prefix': 'weekly-',
+        'slug_glob': 'aws-weekly-intelligence-*',
+        'labels': ['AWS', 'AWS Weekly Intelligence'],
+        'externally_built': False,
+        'ref_heading': 'Official AWS references',
+        'first_section': 'id="the-week"',
+        # Deliberately only the structural sections. The domain groupings
+        # ("Storage and backup", "AI and agents") vary with what AWS actually
+        # shipped that week, and a quiet week is allowed to be short -- see the
+        # never-repeat rules in CLAUDE.md.
+        'headings': [
+            ('The week in one paragraph', r'^The week in one paragraph$'),
+            ('What I would act on',       r'^What I would act on$'),
+            ('Official AWS references',   r'^Official AWS references$'),
+        ],
+    },
+}
+
 XML_SAFE_ENTITIES = {'amp', 'lt', 'gt', 'quot', 'apos'}
+
+
+def series_for_slug(slug):
+    """Which series does this slug belong to? None if it is not a series post."""
+    for key, spec in SERIES.items():
+        if slug.startswith(spec['slug_glob'].rstrip('*')):
+            return key, spec
+    return None, None
 
 errors = []
 warnings = []
@@ -54,7 +139,7 @@ def strip_comments(html):
     return re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)
 
 
-def check_page(slug):
+def check_page(slug, spec):
     path = os.path.join(BLOG, slug, 'index.html')
     if not os.path.isfile(path):
         err(slug, 'served page missing: blog/%s/index.html' % slug)
@@ -71,7 +156,10 @@ def check_page(slug):
     #     rebuilt by sync_blog.py, so they do not inherit the og:*/twitter:*
     #     tags that html_head() emits for every other series. Arch #14 shipped
     #     without them and needed a follow-up commit; this check is here so the
-    #     next one cannot. og:image is intentionally not checked for a per-post
+    #     next one cannot. Sync-built pages get these from html_head() and were
+    #     confirmed to carry all eight, so the check is applied to every series
+    #     rather than only to the one that once got it wrong.
+    #     og:image is intentionally not checked for a per-post
     #     value — it points at the site image everywhere, because LinkedIn, X
     #     and Facebook do not render SVG and the diagrams are all SVG.
     for tag in ('og:type', 'og:title', 'og:description', 'og:url', 'og:image',
@@ -103,7 +191,7 @@ def check_page(slug):
     #    (This is what catches a body swallowed by an unclosed comment.)
     headings = [re.sub(r'\s+', ' ', h).strip()
                 for h in re.findall(r'<h2>(.*?)</h2>', visible, re.DOTALL)]
-    for label, pattern in REQUIRED_HEADINGS:
+    for label, pattern in spec['headings']:
         if not any(re.search(pattern, h) for h in headings):
             err(slug, 'no rendered <h2> matching "%s" — section missing or '
                       'commented out' % label)
@@ -117,17 +205,22 @@ def check_page(slug):
         err(slug, 'post-nav link with a malformed empty slug URL')
 
     # 5. Wide tables need their own scroll container or the last column is
-    #    unreachable on mobile.
+    #    unreachable on mobile. Which wrapper is valid depends on the series:
+    #    arch posts bypass clean_html() so inline overflow-x survives, but every
+    #    sync-built series has its inline style attributes stripped, and there
+    #    the only wrapper that survives is class="table-scroll". Accepting just
+    #    one of the two would flag correct posts in the other series.
     for m in re.finditer(r'<table[\s>]', visible):
         before = visible[max(0, m.start() - 300):m.start()]
-        if 'overflow-x' not in before:
-            warn(slug, 'a <table> is not wrapped in an overflow-x container '
-                       '(last column clips on mobile)')
+        if 'overflow-x' not in before and 'table-scroll' not in before:
+            warn(slug, 'a <table> is not wrapped in a scroll container '
+                       '(last column clips on mobile). Use class="table-scroll" '
+                       'on sync-built pages — inline styles are stripped there')
             break
 
     # 6. A leading <code> in the first paragraph mangles the auto-excerpt,
     #    because tag stripping does not reinsert spaces.
-    body = visible.split('id="challenge"', 1)
+    body = visible.split(spec['first_section'], 1)
     if len(body) > 1:
         first_p = re.search(r'<p>(.*?)</p>', body[1], re.DOTALL)
         if first_p and '<code>' in first_p.group(1):
@@ -217,13 +310,14 @@ def check_svg(slug, src):
         warn(slug, msg)
 
 
-def check_source(slug):
+def check_source(slug, spec):
     """The posts/ file is what the RAG indexer reads."""
-    matches = [p for p in glob.glob(os.path.join(POSTS, 'arch-*.html'))
+    pattern = '%s*.html' % spec['file_prefix']
+    matches = [p for p in glob.glob(os.path.join(POSTS, pattern))
                if ('slug: %s' % slug) in io.open(p, encoding='utf-8').read()]
     if not matches:
-        err(slug, 'no posts/arch-*.html source file declares slug: %s '
-                  '(RAG will not index it)' % slug)
+        err(slug, 'no posts/%s source file declares slug: %s '
+                  '(RAG will not index it)' % (pattern, slug))
         return
     raw = io.open(matches[0], encoding='utf-8').read()
     name = os.path.basename(matches[0])
@@ -258,19 +352,26 @@ def check_source(slug):
             (err if field in ('title', 'date') else warn)(
                 slug, '%s missing "%s:" front matter' % (name, field))
 
-    m = re.search(r'^labels:\s*\[(.*?)\]', fm, re.MULTILINE)
-    if m:
-        got = [x.strip().strip('"\'') for x in m.group(1).split(',')]
-        if got != EXPECTED_LABELS:
-            err(slug, '%s labels are %s, expected %s — pill counts and widgets '
-                      'match on the exact string' % (name, got, EXPECTED_LABELS))
+    # Read labels from the parsed YAML, not a regex. The arch series writes them
+    # inline (`labels: [AWS, ...]`) and the daily and weekly series write them as
+    # a block sequence; a regex for one form silently skips the other, which is
+    # how the label check went unenforced on every daily post ever published.
+    expected = spec['labels']
+    got = parsed.get('labels')
+    if got is None:
+        warn(slug, '%s has no labels — the series filter pill will not count it'
+             % name)
+    elif [str(x) for x in got] != expected:
+        err(slug, '%s labels are %s, expected %s — pill counts and widgets '
+                  'match on the exact string' % (name, got, expected))
 
-    if not name.startswith('arch-'):
-        err(slug, '%s must start with "arch-" or sync_blog.py will overwrite '
-                  'the served page' % name)
+    if not name.startswith(spec['file_prefix']):
+        err(slug, '%s must start with "%s" — sync_blog.py decides whether to '
+                  'overwrite the served page from the filename prefix'
+            % (name, spec['file_prefix']))
 
     body = raw.split('---', 2)[2]
-    check_verification(slug, name, fm, parsed, body)
+    check_verification(slug, name, fm, parsed, body, spec)
 
     # The badge is rendered from the posts/ front matter into the served page.
     # Arch pages are never rebuilt by sync_blog.py, so the two can drift: a
@@ -280,11 +381,15 @@ def check_source(slug):
         served = io.open(page, encoding='utf-8').read()
         shown = 'verified-badge' in served
         if bool(parsed.get('verified')) != shown:
+            fix = ('Arch pages are not rebuilt by sync, so fix '
+                   'blog/%s/index.html by hand.' % slug
+                   if spec['externally_built'] else
+                   'This page is sync-built, so run scripts/sync_blog.py — the '
+                   'served page is stale relative to posts/.')
             err(slug, 'badge mismatch: posts/%s %s a "verified:" date but the '
-                      'served page %s a badge. Arch pages are not rebuilt by '
-                      'sync, so fix blog/%s/index.html by hand.'
+                      'served page %s a badge. %s'
                 % (name, 'has' if parsed.get('verified') else 'has no',
-                   'shows' if shown else 'shows none', slug))
+                   'shows' if shown else 'shows none', fix))
 
 
 AWS_DOC_HOSTS = ('docs.aws.amazon.com', 'aws.amazon.com')
@@ -293,7 +398,7 @@ STALE_DAYS = 180
 DOCS_SHELL_BYTES = 5000
 
 
-def check_verification(slug, name, fm, parsed, body):
+def check_verification(slug, name, fm, parsed, body, spec):
     """The verification badge must be backed by evidence, not by a build flag.
 
     CLAUDE.md forbids auto-stamping `verified:`, because the badge asserts that
@@ -349,8 +454,17 @@ def check_verification(slug, name, fm, parsed, body):
                   'badge.' % name)
         return
 
-    # Everything cited must also be reachable from the post itself.
-    ref = body.split('Official AWS Reference', 1)[-1]
+    # Everything cited must also be reachable from the post itself. The heading
+    # text differs by series ("Official AWS Reference" in arch, "Official AWS
+    # references" in daily and weekly); splitting on the wrong one yields the
+    # entire body, which makes this check pass for any URL mentioned anywhere.
+    ref_heading = spec['ref_heading']
+    if ref_heading not in body:
+        warn(slug, '%s has no "%s" heading in its body — cannot confirm cited '
+                   'sources are reachable from the post' % (name, ref_heading))
+        ref = ''
+    else:
+        ref = body.split(ref_heading, 1)[-1]
 
     for i, c in enumerate(claims, 1):
         if not isinstance(c, dict) or not c.get('claim') or not c.get('source'):
@@ -422,26 +536,53 @@ CHECK_LINKS = False
 
 def main():
     global CHECK_LINKS
-    slugs = [a for a in sys.argv[1:] if not a.startswith('--')]
-    CHECK_LINKS = '--check-links' in sys.argv[1:]
+    args = sys.argv[1:]
+    CHECK_LINKS = '--check-links' in args
+
+    only = None
+    if '--series' in args:
+        i = args.index('--series')
+        if i + 1 >= len(args):
+            print('--series needs a value: %s' % ', '.join(sorted(SERIES)))
+            return 2
+        only = args[i + 1]
+        if only not in SERIES:
+            print('unknown series %r. Known: %s' % (only, ', '.join(sorted(SERIES))))
+            return 2
+        args = args[:i] + args[i + 2:]
+
+    slugs = [a for a in args if not a.startswith('--')]
     if not slugs:
-        slugs = sorted(os.path.basename(os.path.dirname(p))
-                       for p in glob.glob(os.path.join(BLOG, 'aws-architecture-*', 'index.html')))
+        for key, spec in sorted(SERIES.items()):
+            if only and key != only:
+                continue
+            slugs += sorted(os.path.basename(os.path.dirname(p)) for p in
+                            glob.glob(os.path.join(BLOG, spec['slug_glob'], 'index.html')))
     if not slugs:
-        print('No Architecture Series posts found.')
+        print('No posts found%s.' % (' for series %s' % only if only else ''))
         return 0
 
+    counts = {}
     for slug in slugs:
-        check_page(slug)
-        check_source(slug)
+        key, spec = series_for_slug(slug)
+        if spec is None:
+            # Not a hard error: the blog holds standalone pages that belong to
+            # no series and have no template to conform to.
+            warn(slug, 'does not match any series in SERIES — not checked')
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        check_page(slug, spec)
+        check_source(slug, spec)
 
     for w in warnings:
         print('WARN  %s' % w)
     for e in errors:
         print('ERROR %s' % e)
 
-    print('\nChecked %d post(s): %d error(s), %d warning(s)'
-          % (len(slugs), len(errors), len(warnings)))
+    summary = ', '.join('%d %s' % (n, SERIES[k]['label'])
+                        for k, n in sorted(counts.items())) or 'none'
+    print('\nChecked %d post(s) [%s]: %d error(s), %d warning(s)'
+          % (sum(counts.values()), summary, len(errors), len(warnings)))
     return 1 if errors else 0
 
 
