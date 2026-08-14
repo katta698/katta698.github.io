@@ -157,6 +157,27 @@ front matter (arch pages are never rebuilt, so those drift silently). It warns
 when a cited page is missing from the post's Official AWS Reference section, and
 when the check is more than 180 days old.
 
+**Every figure the post prints needs a claim, not just two of them.**
+
+`validate_arch_post.py` enforces that a badge carries at least two sourced
+claims. That is a floor, not the standard. The badge says "the figures in this
+post were checked", so a price, limit, threshold or quota that appears in the
+body and in no `verified_claim` is a number nobody checked, sitting next to
+numbers that were.
+
+`python scripts/audit_claims.py` reports that coverage per post. It does not
+fail a build -- deciding which figures matter is a judgement -- but a badged
+post tracing 0% of its figures is a badge doing less than it appears to.
+
+**Sourcing is not correctness.** The checks confirm a claim cites AWS and that
+the page resolves. They cannot tell whether the page was read correctly.
+arch-018 cited two real AWS pricing pages and still stated a wrong break-even,
+because the error was in arithmetic done on top of correct sources. Derived
+figures -- break-evens, ratios, "N times cheaper", effective rates -- are where
+every error here has actually happened. Recompute them from the cited numbers
+before publishing, and write the inputs into the claim so the arithmetic can be
+repeated.
+
 **Run `--check-links` before publishing.** It fetches every cited page.
 Status codes are not sufficient on their own: `docs.aws.amazon.com` is
 client-side routed and **answers HTTP 200 for pages that do not exist**,
