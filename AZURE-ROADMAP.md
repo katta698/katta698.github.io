@@ -78,11 +78,15 @@ is how the verification becomes a formality, which is the specific failure the
 badge exists to prevent. Slip the schedule and carry on; the phase windows are
 guides, not commitments.
 
-**Do not run this series and the GCP series at the same cadence on the same
-day.** Every post carries the badge, and the badge means a human personally
-checked every printed figure against vendor documentation. Two of those a day,
-on top of the AWS daily and weekly series, is not a schedule anybody keeps
-honestly. Stagger GCP behind Azure, or run it at half cadence.
+**Azure and GCP both run daily, and that is the constraint to manage.** Decided
+2026-08-14, superseding an earlier note here that said not to. Every post carries
+the badge, and the badge means a human personally checked every printed figure
+against vendor documentation — two of those a day, on top of the AWS daily and
+weekly series, is the tightest thing on this schedule. Two mitigations, both
+cheap: verify a post's figures the day before it publishes, so a bad day costs
+slippage rather than accuracy; and schedule the conceptual topics, which carry no
+price or quota and therefore need no badge, for the heavy weeks. See the matching
+section in `GCP-ROADMAP.md`.
 
 ## This series is not an AWS comparison
 

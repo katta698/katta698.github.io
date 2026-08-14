@@ -331,9 +331,9 @@ and in readers' saved progress, so a number cannot be reassigned later.
   `validate_arch_post.py` requires it.
 
 **This series is written while learning the material, not from experience.** It
-publishes **daily on weekdays** from no GCP background, starting 14 August 2026:
-#1–#52 lands the map by 26 October 2026, and Phase 7 carries the rest of the
-year. That makes the
+publishes **one post a day, every day**, from no GCP background: 365 numbered
+posts from 14 August 2026 to 13 August 2027, the same rhythm as the Azure
+series. That makes the
 verification badge more load-bearing here than anywhere else on the site — there is no experience to catch a wrong figure, so an unverified
 claim ships as a confident guess. Build the architecture in a real project
 before writing about it.
