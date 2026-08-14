@@ -97,6 +97,40 @@ SERIES = {
             ('Official Azure Reference', r'^Official Azure Reference$'),
         ],
     },
+    'gcp': {
+        'label': 'GCP Architecture Series',
+        'file_prefix': 'gcp-',
+        'slug_glob': 'gcp-architecture-*',
+        'labels': ['GCP', 'GCP Architecture Series'],
+        # Same deal as arch and az: custom-built pages, never rebuilt by
+        # sync_blog.py.
+        'externally_built': True,
+        'ref_heading': 'Official Google Cloud Reference',
+        'first_section': 'id="challenge"',
+        'vendor': 'Google Cloud',
+        # Two hosts for one vendor, and not for the reason AWS has two.
+        # Measured 2026-08-14 while verifying gcp-001: cloud.google.com/*/docs/*
+        # answers 301 Moved Permanently to docs.cloud.google.com, which is where
+        # the documentation now actually lives. Marketing and pricing pages stay
+        # on cloud.google.com. Both are allowed, because a 301 still resolves and
+        # older links are worth keeping citable -- but prefer the docs host when
+        # writing a claim, since that is the URL a reader lands on.
+        'doc_hosts': ('cloud.google.com', 'docs.cloud.google.com'),
+        # Measured 2026-08-14 against two known-bad URLs on each host
+        # (/resource-manager/docs/this-page-does-not-exist-xyz123 and
+        # /nonsense-xyz123): both return an honest HTTP 404, unlike
+        # docs.aws.amazon.com, which answers 200 with a ~1 KB shell. So the
+        # body-size heuristic is not needed here and is not guessed at.
+        'shell_hosts': (),
+        'headings': [
+            ('Business Challenge',              r'^Business Challenge$'),
+            ('Architecture',                    r'^Architecture$'),
+            ('Why ...',                         r'^Why\b'),
+            ('... Decisions',                   r'Decisions$'),
+            ('Closing Thought',                 r'^Closing Thought$'),
+            ('Official Google Cloud Reference', r'^Official Google Cloud Reference$'),
+        ],
+    },
     'daily': {
         'label': 'AWS Daily Intelligence',
         'file_prefix': 'daily-',

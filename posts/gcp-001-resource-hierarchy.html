@@ -1,0 +1,292 @@
+---
+title: "GCP Architecture Series #1 — Organizations, Folders and Projects: Why the Project Is the Unit That Matters"
+date: 2026-08-14
+slug: gcp-architecture-resource-hierarchy
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-08-14'
+verified_claims:
+  - claim: "The hierarchy is the organization at the root, then optional folders for grouping, then projects, which contain the service resources"
+    source: https://docs.cloud.google.com/resource-manager/docs/cloud-platform-resource-hierarchy
+  - claim: "All resources except for the highest resource in a hierarchy have exactly one parent"
+    source: https://docs.cloud.google.com/resource-manager/docs/cloud-platform-resource-hierarchy
+  - claim: "Roles granted at the organization or a folder are inherited by all child resources"
+    source: https://docs.cloud.google.com/resource-manager/docs/cloud-platform-resource-hierarchy
+  - claim: "When a user with a Google Workspace or Cloud Identity account creates a project, an organization resource is automatically provisioned for them"
+    source: https://docs.cloud.google.com/resource-manager/docs/cloud-platform-resource-hierarchy
+  - claim: "Folders can be nested up to 10 levels deep"
+    source: https://docs.cloud.google.com/resource-manager/docs/limits
+  - claim: "A parent folder cannot contain more than 300 direct child folders"
+    source: https://docs.cloud.google.com/resource-manager/docs/limits
+  - claim: "Each resource can have a maximum of 50 tag key-value pairs attached"
+    source: https://docs.cloud.google.com/resource-manager/docs/limits
+  - claim: "A maximum of 1,000 tag keys can be created under a given organization or project, and each key supports a maximum of 1,000 values"
+    source: https://docs.cloud.google.com/resource-manager/docs/limits
+  - claim: "One organization offers 1,000,000 possible tag key-value combinations, of which any single resource may carry 50"
+    derive: "1000 * 1000"
+    expect: "1000000"
+    source: https://docs.cloud.google.com/resource-manager/docs/limits
+  - claim: "A policy can be attached at any of 12 inheriting levels: the organization, ten folder levels, and the project"
+    derive: "1 + 10 + 1"
+    expect: "12"
+    source: https://docs.cloud.google.com/resource-manager/docs/limits
+  - claim: "The effective allow policy for a resource is the union of the allow policy set at that resource and the allow policy inherited from its parent"
+    source: https://docs.cloud.google.com/iam/docs/resource-hierarchy-access-control
+  - claim: "IAM always checks relevant deny policies before checking relevant allow policies"
+    source: https://docs.cloud.google.com/iam/docs/deny-overview
+  - claim: "When a principal is denied a permission, they can't do anything that requires that permission, regardless of the IAM roles they've been granted"
+    source: https://docs.cloud.google.com/iam/docs/deny-overview
+  - claim: "A deny policy attached to a project, folder or organization is also effective for all resources inside it"
+    source: https://docs.cloud.google.com/iam/docs/deny-overview
+  - claim: "Each resource can have up to 500 deny policies, containing a total of 500 deny rules"
+    source: https://docs.cloud.google.com/iam/docs/deny-overview
+  - claim: "A project ID must be 6 to 30 characters, lowercase letters, numbers and hyphens only, starting with a letter and not ending with a hyphen"
+    source: https://docs.cloud.google.com/resource-manager/docs/creating-managing-projects
+  - claim: "After project creation, the project ID is permanent"
+    source: https://docs.cloud.google.com/resource-manager/docs/creating-managing-projects
+  - claim: "A project ID cannot be in use or previously used, including by deleted projects"
+    source: https://docs.cloud.google.com/resource-manager/docs/creating-managing-projects
+  - claim: "Soft-deleted projects are fully deleted after 30 days and count against quota during that period"
+    source: https://docs.cloud.google.com/resource-manager/docs/creating-managing-projects
+  - claim: "Quotas generally apply at the project level, and use of a resource in one project doesn't affect available quota in another project"
+    source: https://docs.cloud.google.com/docs/quotas/overview
+  - claim: "If a project isn't linked to an active, valid Cloud Billing account, you can't use the Google Cloud products and services enabled in it"
+    source: https://docs.cloud.google.com/billing/docs/concepts
+  - claim: "Cloud Billing accounts aren't parents of projects in an IAM sense"
+    source: https://docs.cloud.google.com/billing/docs/concepts
+problem: "A team arrives on Google Cloud from somewhere else and maps the project onto whatever they used before — an account, a subscription, a resource group — and picks whichever mapping makes the first week easiest. Every one of those mappings is wrong in a way that only shows up later, because the project is simultaneously the quota boundary, the billing attachment point and the deletion boundary, and no other cloud puts all three in the same place."
+builds: "The Google Cloud resource hierarchy as it actually behaves: what the organization, folders and projects each are a boundary for, how allow and deny policies flow through them, and why the project is the level that ends up deciding designs."
+catch: "Folders nest ten deep, which sounds like an invitation to model the company. It is not. Depth adds inheriting levels a policy can be hiding at — twelve of them at full depth — and a deny rule at any of them beats every role granted below."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series · #001 · Foundations</div>
+  <h1 class="post-title">Organizations, Folders and Projects: Why the Project Is the Unit That Matters</h1>
+  <p class="post-subtitle">Google Cloud puts quota, billing and deletion in the same container, and that container is the project. Almost every design decision downstream is really a decision about how many projects there are.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Google Cloud · Governance · Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A data platform team gets approval to build on Google Cloud. They need somewhere to put things, so they create one project for production, one for development, and they start building. Nobody creates a folder, because nothing asks them to. The organization already exists, because someone in IT set up Cloud Identity a year earlier and it was provisioned automatically.
+    </p>
+    <p>
+      A year on, three things have gone wrong, and none of them announced itself.
+    </p>
+    <p>
+      A batch job cannot get the CPUs it needs in the production project, and raising the quota takes days. A second team's pipeline is in the same project and consumed the headroom. Nobody did anything wrong; the quota was simply shared, because quota is counted per project and both workloads were in one.
+    </p>
+    <p>
+      Finance cannot answer what the recommendation engine costs. The billing export splits cleanly by project, and the recommendation engine is four services inside a project that also holds six other things. The project was drawn around a team, and the question is being asked about a product.
+    </p>
+    <p>
+      And a decommissioning request has stalled. Deleting the development project would delete everything inside it, which is correct and is the point, except that one of the things inside it is the bucket another team has been reading from for eight months.
+    </p>
+    <p>
+      All three are the same mistake. The team chose their project boundaries in week one, for week-one reasons, and the project turned out to be the boundary for three unrelated things at once.
+    </p>
+
+    <div class="callout amber">
+      <strong>The project is not the thing you are used to</strong>
+      <p>If you have worked in another cloud, the instinct is to map the project onto the nearest equivalent container and move on. Every version of that mapping is wrong somewhere, because the project is simultaneously the quota boundary, the billing attachment point, the IAM scope most grants land on, and the deletion boundary. No single container elsewhere carries all four. It is worth reading the rest of this on its own terms rather than as a translation.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The hierarchy has an organization at the root, optional folders for grouping, and then projects, which contain the actual service resources — VM instances, buckets, datasets, clusters. Every resource except the one at the top has exactly one parent.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-001-resource-hierarchy.svg" alt="Diagram: the Google Cloud resource hierarchy nested inside itself, from organization through up to ten levels of folders to the project and its service resources, with the limit that applies at each level listed alongside" />
+      <figcaption>Four levels, one parent each. Folders nest up to ten deep and hold at most 300 direct children; the project is where quota is counted and a billing account is attached.</figcaption>
+    </figure>
+
+    <h3>The organization arrives before you ask for it</h3>
+    <p>
+      The organization is not something you design and then create. When a user with a Google Workspace or Cloud Identity account creates a project, an organization resource is automatically provisioned for them. It is tied to the identity domain, and it is the root of everything below.
+    </p>
+    <p>
+      This has a practical consequence worth knowing on day one: the boundary of your Google Cloud estate was decided by whoever set up your identity domain, quite possibly years earlier and for reasons having nothing to do with cloud. That is the first thing to go and look at, before drawing any diagrams.
+    </p>
+
+    <h3>Folders are grouping, and grouping only</h3>
+    <p>
+      A folder exists to be a place to attach a policy so it reaches everything underneath. That is the whole job. The rules that shape a design:
+    </p>
+
+    <div class="grid-2">
+      <div class="card">
+        <h4>Ten levels deep</h4>
+        <p>Folders nest up to 10 levels. As with most depth limits, this is a ceiling and not a target — each level is another place a grant can be hiding when you are trying to work out why somebody has access.</p>
+      </div>
+      <div class="card">
+        <h4>Three hundred children</h4>
+        <p>A parent folder cannot contain more than 300 direct child folders. Breadth is generous but finite, which matters for anyone planning a folder per team in a large organisation.</p>
+      </div>
+      <div class="card">
+        <h4>One parent, always</h4>
+        <p>Every resource below the root has exactly one parent. A project sits in one folder, so the tree can encode exactly one dimension — and everything else has to be expressed some other way.</p>
+      </div>
+      <div class="card">
+        <h4>Optional, genuinely</h4>
+        <p>Projects can sit directly under the organization. Folders are not required, and a small estate does not need them. They start earning their place when the same policy has to reach many projects.</p>
+      </div>
+    </div>
+
+    <h3>The project is where the constraints live</h3>
+    <p>
+      Three separate things attach to the project, and the fact that they attach to the <em>same</em> object is the single most important structural fact in Google Cloud.
+    </p>
+    <p>
+      <strong>Quota is counted here.</strong> Quotas generally apply at the project level, and use of a resource in one project does not affect available quota in another. Two workloads in one project share every ceiling; the same two workloads in two projects do not.
+    </p>
+    <p>
+      <strong>Billing attaches here.</strong> A billing account is linked to projects, and a project without an active, valid billing account cannot use the services enabled in it. Notably, billing accounts are not parents of projects in an IAM sense — the payment relationship and the hierarchy are two different graphs over the same projects, which is why "who pays for this" and "who governs this" can diverge and often do.
+    </p>
+    <p>
+      <strong>Deletion happens here.</strong> Deleting a project takes everything in it. Google softens this with a soft-delete: the project is fully deleted after 30 days, and it counts against your quota for that entire window — a detail that surprises anyone who deletes projects to free up room and finds they have not.
+    </p>
+
+    <h3>The identifiers are permanent in a way that catches people</h3>
+    <p>
+      A project has a mutable display name and an immutable ID. The ID must be 6 to 30 characters, lowercase letters, numbers and hyphens only, starting with a letter and not ending with one. After creation, the project ID is permanent.
+    </p>
+    <p>
+      More consequentially: an ID cannot be one that is in use or has been previously used, and that includes deleted projects. The namespace is global and it is append-only. A team that burns <code>data-platform</code> on a proof of concept and deletes it cannot have that ID back — not in 30 days, not ever. This is the argument for a naming convention existing before the first project, rather than after the tenth.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why Inheritance Is the Part to Understand First</h2>
+    <p>
+      The hierarchy is not an org chart. It is a propagation mechanism, and access is what propagates.
+    </p>
+    <p>
+      The effective allow policy for a resource is the union of the allow policy set at that resource and the allow policy inherited from its parent. Two words there carry the weight. <em>Union</em> means grants accumulate: a role granted at the organization and a role granted at the project both apply, and nothing at the lower level can subtract from the higher one. <em>Inherited</em> means roles granted at the organization or a folder reach every child resource, including the ones that do not exist yet.
+    </p>
+    <p>
+      That last property is the entire argument for building a folder structure before you need it. A grant on the right folder covers the project nobody has created. A grant made project by project covers exactly the projects that existed on the day someone made it.
+    </p>
+
+    <h3>Deny policies are the only thing that subtracts</h3>
+    <p>
+      Because allow policies only ever add, Google Cloud provides a separate mechanism for taking away. IAM always checks relevant deny policies before checking relevant allow policies, and when a principal is denied a permission, they cannot do anything requiring it regardless of the roles they have been granted.
+    </p>
+    <p>
+      Deny policies inherit the same way: attached to a project, folder or organization, a deny policy is effective for all resources inside it. Each resource can carry up to 500 deny policies containing 500 deny rules in total.
+    </p>
+    <p>
+      The reason this belongs in post #1 rather than in the IAM post is that it changes how you read the hierarchy. Access is not "the sum of what was granted here". It is "the sum of what was granted anywhere above, minus anything denied anywhere above" — and at full folder depth, <em>anywhere above</em> means twelve places: the organization, ten folder levels, and the project itself.
+    </p>
+
+    <div class="callout">
+      <strong>A useful test before adding a folder level</strong>
+      <p>Name the policy that would live at the new level and at no other level. If there isn't one, the level is a folder in the filing sense rather than the Google Cloud sense — and it is not free, because it is one more of the twelve places somebody will have to check when the question is "why can this account read that bucket".</p>
+    </div>
+
+    <h3>What the tree cannot express</h3>
+    <p>
+      One parent per node means the tree encodes exactly one dimension. Everything genuinely multi-dimensional — cost centre, owning team, data classification, environment, application — has to live somewhere else, and that somewhere is tags.
+    </p>
+    <p>
+      The budget there is generous: 1,000 tag keys under an organization or project, 1,000 values per key, which is a million possible combinations, of which any single resource may carry 50. There is no shortage of room to describe a resource. The shortage is in the tree, and the mistake is trying to solve a tagging problem by adding folder levels.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>What a project is drawn around</td>
+          <td>One application in one environment</td>
+          <td>The project is the quota ceiling, the billing line and the deletion boundary at once. Any coarser and all three become shared; any finer and you are managing projects for their own sake.</td>
+        </tr>
+        <tr>
+          <td>Folder depth</td>
+          <td>Two or three levels, not ten</td>
+          <td>Depth costs nothing to create and adds an inheriting level to every future access question. Ten is the ceiling; twelve inheriting levels is what a policy investigation has to walk at full depth.</td>
+        </tr>
+        <tr>
+          <td>What the folder tree is organised by</td>
+          <td>The one dimension whose policies must propagate — usually environment or governance posture</td>
+          <td>One parent per node. Production and sandbox need genuinely different policy; two teams' production projects usually do not.</td>
+        </tr>
+        <tr>
+          <td>Ownership, cost centre, classification</td>
+          <td>Tags, never folder levels</td>
+          <td>They are multi-dimensional and they change. A million key-value combinations are available; the tree has room for one dimension.</td>
+        </tr>
+        <tr>
+          <td>Where a broad grant goes</td>
+          <td>The highest folder whose entire subtree should have it</td>
+          <td>Grants inherit downward and cover projects that do not exist yet. Per-project grants cover only what existed the day they were made.</td>
+        </tr>
+        <tr>
+          <td>Project IDs</td>
+          <td>A convention agreed before the first project</td>
+          <td>The ID is permanent, globally unique across all of Google Cloud, and can never be reused — including after deletion. There is no renaming your way out of this later.</td>
+        </tr>
+        <tr>
+          <td>Removing access that inheritance granted</td>
+          <td>A deny policy, deliberately and rarely</td>
+          <td>Allow policies only add. Deny is the only subtraction, it is evaluated first, and it beats every role below it — which makes it both the right tool and an easy way to break something quietly.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout amber">
+      <strong>The 30 days after a deletion</strong>
+      <p>A soft-deleted project is fully deleted after 30 days and counts against quota for that whole window. Two things follow. Deleting projects to make room does not make room until next month. And a project you deleted is recoverable for a while — which is a genuine safety net, but not one to rely on, since the resources inside it may not survive the round trip in the state you left them.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Google Cloud asks you to make one decision early and repeatedly: where does this project boundary go. It is an unusually loaded question, because the answer sets a quota ceiling, a billing line and a blast radius simultaneously, and those three concerns pull in different directions. A project per application per environment is the shape that satisfies all three most of the time, and the estates that struggle are almost always the ones with too few projects rather than too many.
+    </p>
+    <p>
+      The folder tree above it should stay shallow and boring. It exists so that a grant can reach projects that do not exist yet, and every level added past that purpose is a level somebody will have to check later.
+    </p>
+    <p>
+      Everything else in this series is built on these three nouns. Identity in #2, IAM in #3 and service accounts in #4 are all descriptions of things attached to the levels described here.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#2 looks at Cloud Identity and Google Workspace as the identity plane: where a principal comes from before it ever reaches Google Cloud, why identity is a separate product from the cloud it governs, and what that separation means for an organization resource that was provisioned automatically on somebody else's decision.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/cloud-platform-resource-hierarchy" target="_blank" rel="noopener">Resource hierarchy</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/limits" target="_blank" rel="noopener">Resource Manager quotas and limits</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/creating-managing-projects" target="_blank" rel="noopener">Creating and managing projects</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/resource-hierarchy-access-control" target="_blank" rel="noopener">Access control for the resource hierarchy</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/deny-overview" target="_blank" rel="noopener">Deny policies overview</a></li>
+      <li><a href="https://docs.cloud.google.com/docs/quotas/overview" target="_blank" rel="noopener">Cloud Quotas overview</a></li>
+      <li><a href="https://docs.cloud.google.com/billing/docs/concepts" target="_blank" rel="noopener">Cloud Billing concepts</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

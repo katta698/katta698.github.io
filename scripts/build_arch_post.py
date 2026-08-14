@@ -42,19 +42,41 @@ TPL = os.path.join(ROOT, "_templates", "arch-post-template.html")
 
 SECTIONS = ["challenge", "architecture", "why", "decisions", "closing"]
 
-# One template, two series. _templates/arch-post-template.html is written in AWS
-# terms because it predates the Azure series; rather than fork it -- two copies
-# of the same page chrome drift, and the chrome is the part validate_arch_post.py
-# checks hardest -- the Azure build rewrites the handful of literals that name
-# the cloud. Order matters: the longest string is replaced first, so "AWS
-# Architecture Series" is not left as "Azure Architecture Series" by an earlier
-# bare "AWS" -> "Azure" pass.
-AZURE_LITERALS = [
-    ("AWS Architecture Series", "Azure Architecture Series"),
-    ("Official AWS Reference", "Official Azure Reference"),
-    ('<span class="tag-badge">AWS</span>', '<span class="tag-badge">Azure</span>'),
-    ('data-topics="AWS,Architecture,', 'data-topics="Azure,Architecture,'),
-]
+# One template, three series. _templates/arch-post-template.html is written in
+# AWS terms because it predates the Azure series; rather than fork it -- three
+# copies of the same page chrome drift, and the chrome is the part
+# validate_arch_post.py checks hardest -- a non-AWS build rewrites the handful of
+# literals that name the cloud. Order matters within each list: the longest
+# string is replaced first, so "AWS Architecture Series" is not left as
+# "Azure Architecture Series" by an earlier bare "AWS" -> "Azure" pass.
+#
+# Keyed on the source filename prefix, which is also what sync_blog.py's
+# externally_built check and validate_arch_post.py's SERIES key off. A prefix
+# absent here builds as AWS, which is the correct default for arch-*.
+CLOUD_SERIES = {
+    "az-": {
+        "tag": "Azure",
+        "ref_heading": "Official Azure Reference",
+        "docs_description": "Microsoft's own documentation for this post's claims.",
+    },
+    "gcp-": {
+        "tag": "GCP",
+        "ref_heading": "Official Google Cloud Reference",
+        "docs_description": "Google's own documentation for this post's claims.",
+    },
+}
+
+
+def cloud_literals(spec):
+    """The template rewrites for one non-AWS series, longest string first."""
+    return [
+        ("AWS Architecture Series", "%s Architecture Series" % spec["tag"]),
+        ("Official AWS Reference", spec["ref_heading"]),
+        ('<span class="tag-badge">AWS</span>',
+         '<span class="tag-badge">%s</span>' % spec["tag"]),
+        ('data-topics="AWS,Architecture,',
+         'data-topics="%s,Architecture,' % spec["tag"]),
+    ]
 
 
 def build(src_path, prev_slug=None, prev_title=None):
@@ -92,9 +114,11 @@ def build(src_path, prev_slug=None, prev_title=None):
 
     tpl = io.open(TPL, encoding="utf-8").read()
 
-    is_azure = os.path.basename(src_path).startswith("az-")
-    if is_azure:
-        for old, new in AZURE_LITERALS:
+    basename = os.path.basename(src_path)
+    spec = next((s for pfx, s in CLOUD_SERIES.items()
+                 if basename.startswith(pfx)), None)
+    if spec:
+        for old, new in cloud_literals(spec):
             tpl = tpl.replace(old, new)
 
     # Strip the template's instruction comment, which is for whoever is reading
@@ -125,7 +149,7 @@ def build(src_path, prev_slug=None, prev_title=None):
         "{{AWS_DOCS_URL}}": ref_links[0][0],
         "{{AWS_DOCS_LINK_TEXT}}": ref_links[0][1],
         "{{AWS_DOCS_DESCRIPTION}}": (
-            "Microsoft's own documentation for this post's claims." if is_azure
+            spec["docs_description"] if spec
             else "AWS's own guidance for this post's claims."),
         "{{PREV_SLUG}}": prev_slug or "",
         "{{PREV_TITLE}}": prev_title or "",
@@ -148,7 +172,7 @@ def build(src_path, prev_slug=None, prev_title=None):
     items = "\n".join(
         '      <li><a href="%s" target="_blank" rel="noopener">%s</a></li>' % (u, t)
         for u, t in ref_links)
-    ref_heading = "Official Azure Reference" if is_azure else "Official AWS Reference"
+    ref_heading = spec["ref_heading"] if spec else "Official AWS Reference"
     m = re.search(r'(<h2>%s</h2>\s*<ul>)(.*?)(</ul>)' % ref_heading, tpl, re.S)
     if not m:
         raise SystemExit("reference <ul> not found in the template")

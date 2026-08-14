@@ -100,7 +100,8 @@ def main():
     # and a report that silently omits a series is how a badge with 0% traced
     # figures goes unnoticed.
     files = sorted(glob.glob(os.path.join(ROOT, "posts", "arch-*.html"))
-                   + glob.glob(os.path.join(ROOT, "posts", "az-*.html")))
+                   + glob.glob(os.path.join(ROOT, "posts", "az-*.html"))
+                   + glob.glob(os.path.join(ROOT, "posts", "gcp-*.html")))
     if args:
         files = [f for f in files if any(a in os.path.basename(f) for a in args)]
 

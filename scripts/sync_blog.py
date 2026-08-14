@@ -125,6 +125,7 @@ def stamp_static_pages():
     targets = [REPO_ROOT / n for n in ("index.html", "resume.html", "now.html")]
     targets += sorted(BLOG_DIR.glob("aws-architecture-*/index.html"))
     targets += sorted(BLOG_DIR.glob("azure-architecture-*/index.html"))
+    targets += sorted(BLOG_DIR.glob("gcp-architecture-*/index.html"))
     targets.append(REPO_ROOT / "_templates" / "arch-post-template.html")
 
     # A URL may already carry literal tokens, and — in the template — a
@@ -736,7 +737,7 @@ CHATGPT_MARKERS = [
 # At 3 the series label evicted the most specific tag, and the Kubernetes pill
 # disappeared entirely because its only three posts were all in the series.
 MAX_TAGS = 4
-CATEGORY_ORDER = ["All", "AWS Architecture Series", "Azure Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS Weekly Intelligence", "30 Days of AWS Terraform", "AWS", "Azure", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
+CATEGORY_ORDER = ["All", "AWS Architecture Series", "Azure Architecture Series", "GCP Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS Weekly Intelligence", "30 Days of AWS Terraform", "AWS", "Azure", "GCP", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
 
 NAV_SVG = """<svg width="30" height="30" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
   <rect width="80" height="80" rx="16" fill="#11140F"/>
@@ -965,7 +966,7 @@ def fetch_local_posts():
             # way, from the same template, and is read-only here for the same
             # reason. Adding a prefix to this tuple is what makes a series
             # custom-built; anything absent from it is regenerated on every sync.
-            "externally_built": post_file.name.startswith(("arch-", "az-")),
+            "externally_built": post_file.name.startswith(("arch-", "az-", "gcp-")),
         })
     return posts
 
@@ -1693,25 +1694,25 @@ def topics_for(title, tags, text=""):
             if any(a in hay for a in aliases)]
 
 
-AZ_PROGRESS_TEMPLATE = """
-    <!-- ① Azure Series Progress -->
-    <div class="sidebar-card" id="az-progress-widget">
-      <div class="sidebar-title">Azure series progress</div>
-      <div id="ap-years" style="display:none;gap:4px;margin-bottom:10px;flex-wrap:wrap"></div>
-      <div id="ap-dots" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
+CLOUD_PROGRESS_TEMPLATE = """
+    <!-- ① Cloud Series Progress -->
+    <div class="sidebar-card" id="__WIDGET_ID__-progress-widget">
+      <div class="sidebar-title">__SERIES_NAME__ series progress</div>
+      <div id="__PFX__-years" style="display:none;gap:4px;margin-bottom:10px;flex-wrap:wrap"></div>
+      <div id="__PFX__-dots" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
       <div style="height:4px;background:var(--border);border-radius:4px;margin-bottom:9px;overflow:hidden">
-        <div id="ap-bar" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width .4s ease"></div>
+        <div id="__PFX__-bar" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width .4s ease"></div>
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--text-muted)">
-        <span><strong id="ap-count" style="color:var(--text)">0</strong> of <span id="ap-total">__AZ_TOTAL__</span> <span id="ap-unit">posts read</span></span>
-        <a id="ap-next" href="#" style="color:var(--orange);text-decoration:none;font-size:11px"></a>
+        <span><strong id="__PFX__-count" style="color:var(--text)">0</strong> of <span id="__PFX__-total">__TOTAL__</span> <span id="__PFX__-unit">posts read</span></span>
+        <a id="__PFX__-next" href="#" style="color:var(--orange);text-decoration:none;font-size:11px"></a>
       </div>
       <div style="font-size:10.5px;color:var(--text-muted);margin-top:9px;padding-top:9px;border-top:0.5px solid var(--border)">Stored in your browser · picks up where you left off</div>
     </div>
     <script>
     (function(){
-      var AZ = __AZ_JSON__;
-      var KEY = 'az-read-v1';
+      var SERIES = __SERIES_JSON__;
+      var KEY = '__KEY__';
       function load(){ try{ return JSON.parse(localStorage.getItem(KEY)||'[]'); }catch(e){ return []; } }
       function save(r){ try{ localStorage.setItem(KEY,JSON.stringify(r)); }catch(e){} }
       var COMPACT_AT = 24;
@@ -1731,18 +1732,18 @@ AZ_PROGRESS_TEMPLATE = """
       }
       var YEARS = (function(){
         var seen = {}, out = [];
-        AZ.forEach(function(p){ if(!seen[p.y]){ seen[p.y]=1; out.push(String(p.y)); } });
+        SERIES.forEach(function(p){ if(!seen[p.y]){ seen[p.y]=1; out.push(String(p.y)); } });
         return out.sort().reverse();
       })();
-      var useTabs = YEARS.length > 1 && AZ.length > COMPACT_AT;
+      var useTabs = YEARS.length > 1 && SERIES.length > COMPACT_AT;
       var curYear = YEARS[0];
       function maxYearCount(){
         var c = {}, m = 0;
-        AZ.forEach(function(p){ c[p.y] = (c[p.y]||0)+1; if(c[p.y] > m) m = c[p.y]; });
+        SERIES.forEach(function(p){ c[p.y] = (c[p.y]||0)+1; if(c[p.y] > m) m = c[p.y]; });
         return m;
       }
       function renderTabs(){
-        var tw = document.getElementById('ap-years');
+        var tw = document.getElementById('__PFX__-years');
         if(!tw) return;
         if(!useTabs){ tw.style.display = 'none'; return; }
         tw.style.display = 'flex';
@@ -1766,10 +1767,10 @@ AZ_PROGRESS_TEMPLATE = """
       }
       function render(){
         var read = load();
-        var wrap = document.getElementById('ap-dots');
+        var wrap = document.getElementById('__PFX__-dots');
         if(!wrap) return;
-        var shown = useTabs ? AZ.filter(function(q){ return String(q.y) === String(curYear); }) : AZ;
-        var compact = (useTabs ? maxYearCount() : AZ.length) > COMPACT_AT;
+        var shown = useTabs ? SERIES.filter(function(q){ return String(q.y) === String(curYear); }) : SERIES;
+        var compact = (useTabs ? maxYearCount() : SERIES.length) > COMPACT_AT;
         wrap.style.gap = compact ? '4px' : '6px';
         wrap.innerHTML = '';
         renderTabs();
@@ -1790,13 +1791,13 @@ AZ_PROGRESS_TEMPLATE = """
         });
         var inScope = shown.filter(function(q){ return read.includes(q.n); }).length;
         var pct = shown.length ? Math.round(inScope/shown.length*100) : 0;
-        document.getElementById('ap-bar').style.width = pct+'%';
-        document.getElementById('ap-count').textContent = inScope;
-        document.getElementById('ap-total').textContent = shown.length;
-        document.getElementById('ap-unit').textContent = useTabs ? ('posts in '+curYear) : 'posts read';
+        document.getElementById('__PFX__-bar').style.width = pct+'%';
+        document.getElementById('__PFX__-count').textContent = inScope;
+        document.getElementById('__PFX__-total').textContent = shown.length;
+        document.getElementById('__PFX__-unit').textContent = useTabs ? ('posts in '+curYear) : 'posts read';
         var next = null;
-        for(var i=0;i<AZ.length;i++){ if(!read.includes(AZ[i].n)){ next=AZ[i]; break; } }
-        var el = document.getElementById('ap-next');
+        for(var i=0;i<SERIES.length;i++){ if(!read.includes(SERIES[i].n)){ next=SERIES[i]; break; } }
+        var el = document.getElementById('__PFX__-next');
         if(next){ el.href='/blog/'+next.slug+'/'; el.textContent='#'+next.n+' Next →'; }
         else{ el.textContent='✓ All done!'; el.removeAttribute('href'); }
       }
@@ -1804,6 +1805,25 @@ AZ_PROGRESS_TEMPLATE = """
     })();
     </script>
 """
+
+
+def cloud_progress_widget(pfx, widget_id, series_name, key, series_json, total):
+    """Render CLOUD_PROGRESS_TEMPLATE for one cloud series.
+
+    Every id in the markup is prefixed and the localStorage key is per-series,
+    which is the whole reason this is parameterised rather than copied: two of
+    these cards sit on the same page, and duplicated ids would make the second
+    widget write its dots into the first one's DOM and read the first one's
+    progress. The Azure widget was written with hardcoded `ap-` ids; adding GCP
+    is what forced the generalisation.
+    """
+    return (CLOUD_PROGRESS_TEMPLATE
+            .replace("__WIDGET_ID__", widget_id)
+            .replace("__PFX__", pfx)
+            .replace("__SERIES_NAME__", series_name)
+            .replace("__KEY__", key)
+            .replace("__SERIES_JSON__", series_json)
+            .replace("__TOTAL__", str(total)))
 
 
 def build_index_page(posts):
@@ -1829,7 +1849,7 @@ def build_index_page(posts):
 
     # The service catalogue is generated from botocore, so it knows AWS and
     # nothing else. Two widgets are built on it — the "AWS services across all
-    # posts" bar list and the domain donut — and a post about Azure matches no
+    # posts" bar list and the domain donut — and an Azure or GCP post matches no
     # service in it. Left alone, an Azure post would count as a post with zero
     # AWS services and land in the donut's "Non-AWS" slice beside the health and
     # career posts, which is true but useless: it would say the blog is getting
@@ -1838,7 +1858,7 @@ def build_index_page(posts):
     # So both widgets are scoped to the posts the catalogue can actually
     # describe, and the footer says which posts those are. A non-AWS series gets
     # its own widget when there is a catalogue behind it, not a share of this one.
-    NON_AWS_SERIES = ("Azure Architecture Series",)
+    NON_AWS_SERIES = ("Azure Architecture Series", "GCP Architecture Series")
     aws_scope = [(p, t) for p, t in zip(posts, post_texts)
                  if not any(s in p["tags"] for s in NON_AWS_SERIES)]
     aws_posts = [p for p, _ in aws_scope]
@@ -2083,6 +2103,25 @@ def build_index_page(posts):
         for p in sorted(az_posts, key=_az_num)
     ])
 
+    # GCP Architecture Series. Numbered from "#N" in the title, exactly as the
+    # Azure series above and for the same reason — the number is in the URL and
+    # in the reader's saved read-list, so it must not depend on ordering.
+    # The title format is fixed in GCP-ROADMAP.md.
+    gcp_posts = [p for p in posts if "GCP Architecture Series" in p["tags"]]
+
+    def _gcp_num(p):
+        m = _re.search(r'#(\d+)', p["title"])
+        return int(m.group(1)) if m else 0
+
+    def _gcp_title(p):
+        return _re.sub(r'^GCP Architecture Series\s*#\d+\s*[-–—]\s*', '', p["title"])
+
+    gcp_series_json = json.dumps([
+        {"n": _gcp_num(p), "slug": p["slug"], "title": _gcp_title(p),
+         "date": p["date_fmt"], "y": p["date"].year}
+        for p in sorted(gcp_posts, key=_gcp_num)
+    ])
+
     def _feed_item(p, n=None, title=None):
         return {"n": n, "slug": p["slug"], "title": title or p["title"],
                 "date": p["date_fmt"], "rt": p["read_time"],
@@ -2129,6 +2168,10 @@ def build_index_page(posts):
         _feed_item(p, _az_num(p) or None, _az_title(p))
         for p in sorted(az_posts, key=_az_num, reverse=True)[:3]
     ]
+    _gcp_feed = [
+        _feed_item(p, _gcp_num(p) or None, _gcp_title(p))
+        for p in sorted(gcp_posts, key=_gcp_num, reverse=True)[:3]
+    ]
     _all_feed = [_feed_item(p) for p in posts[:3]]
 
     feed_data_json = json.dumps({
@@ -2136,6 +2179,8 @@ def build_index_page(posts):
                    "href": "/blog/?tag=aws+architecture+series"},
         "az":     {"items": _az_feed,     "count": len(az_posts),
                    "href": "/blog/?tag=azure+architecture+series"},
+        "gcp":    {"items": _gcp_feed,    "count": len(gcp_posts),
+                   "href": "/blog/?tag=gcp+architecture+series"},
         "lab":    {"items": _lab_feed,    "count": len(lab_posts),
                    "href": "/blog/?tag=aws+weekly+lab"},
         "daily":  {"items": _daily_feed,  "count": len(daily_posts),
@@ -2145,20 +2190,21 @@ def build_index_page(posts):
         "all":    {"items": _all_feed,    "count": len(posts), "href": "/blog/"},
     })
 
-    # 3b. Azure series progress widget.
+    # 3b. Per-cloud series progress widgets.
     #
     # Built as a string rather than written into the page template because it
     # must not render at all until the series exists: a progress card reading
     # "0 of 0 posts read" is worse than no card. It appears with post #1 and
     # disappears again if the series is ever withdrawn.
     #
-    # The markup is the lab/arch widget with its own ids (ap-*) and its own
-    # localStorage key, so a reader's Azure progress is independent of their AWS
-    # progress. Ids are what keep three of these on one page from writing into
-    # each other's DOM.
-    az_progress_html = "" if not az_posts else AZ_PROGRESS_TEMPLATE \
-        .replace("__AZ_JSON__", az_series_json) \
-        .replace("__AZ_TOTAL__", str(len(az_posts)))
+    # The markup is the lab/arch widget with its own id prefix and its own
+    # localStorage key per series, so a reader's Azure progress is independent of
+    # their GCP progress and both are independent of their AWS progress. Ids are
+    # what keep several of these on one page from writing into each other's DOM.
+    az_progress_html = "" if not az_posts else cloud_progress_widget(
+        "ap", "az", "Azure", "az-read-v1", az_series_json, len(az_posts))
+    gcp_progress_html = "" if not gcp_posts else cloud_progress_widget(
+        "gp", "gcp", "GCP", "gcp-read-v1", gcp_series_json, len(gcp_posts))
 
     # 4. Publishing heatmap — posts per month per year
     from collections import defaultdict
@@ -2572,6 +2618,7 @@ def build_index_page(posts):
     }})();
     </script>
 {az_progress_html}
+{gcp_progress_html}
     <!-- ② Domain Donut -->
     <div class="sidebar-card" id="domain-donut-widget">
       <div class="sidebar-title">Posts by AWS domain</div>
@@ -2665,6 +2712,7 @@ def build_index_page(posts):
       var TABS = [
         ['arch','Arch',     'AWS Architecture Series — one enterprise pattern at a time, with the decisions and trade-offs behind it'],
         ['az','Azure',      'Azure Architecture Series — the same treatment, on Azure, from the basics upward'],
+        ['gcp','GCP',       'GCP Architecture Series — the same treatment, on Google Cloud, from the basics upward'],
         ['lab','Lab',       'AWS Weekly Lab — one production-grade platform capability built end to end each week'],
         ['daily','Daily',   'AWS Daily Intelligence — what AWS shipped, and whether it actually changes anything'],
         ['weekly','Weekly', 'AWS Weekly Intelligence — everything AWS shipped that week, ranked, in one place'],

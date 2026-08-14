@@ -241,7 +241,7 @@ post-publish steps (RAG re-index, README trigger) were already duplicated by
 `on-publish.yml`, which fires on any push touching `blog/index.html` and waits
 for the real Pages deploy rather than sleeping 90 seconds.
 
-This pass-through is driven by a filename check in `sync_blog.py` (`externally_built`): only files named `arch-*` are treated as read-only. See "Starting a new series" below before adding any other series.
+This pass-through is driven by a filename check in `sync_blog.py` (`externally_built`): only files named `arch-*`, `az-*` or `gcp-*` are treated as read-only. See "Starting a new series" below before adding any other series.
 
 **One narrow exception:** `stamp_static_pages()` rewrites the `?v=` cache-busting
 token on `blog.js` / `site-footer.js` in arch pages. See "PWA" below. It rewrites
@@ -312,6 +312,66 @@ from that widget and from the domain donut (`NON_AWS_SERIES` in
 filed under "Non-AWS" beside the health and career posts. A non-AWS series gets
 its own widget when there is a catalogue behind it — not a share of this one.
 
+## GCP Architecture Series
+
+Started 2026-08-14. Read `GCP-ROADMAP.md` before writing any post — the full
+numbered curriculum is decided there, and post numbers appear in published URLs
+and in readers' saved progress, so a number cannot be reassigned later.
+
+- File prefix `gcp-NNN-*` in `posts/`, slug prefix `gcp-architecture-*`.
+- Labels: `[GCP, "GCP Architecture Series"]`.
+- Title format: `GCP Architecture Series #N — <Topic>` (em dash). The sidebar
+  progress widget parses `#N` **from the title**, as the Azure one does.
+- **Custom-built pages**, like the AWS and Azure arch series. `gcp-` is in the
+  `externally_built` tuple in `sync_blog.py`, so sync never regenerates them.
+  Build with `scripts/build_arch_post.py` from
+  `_templates/arch-post-template.html`; edit `blog/gcp-architecture-*/index.html`
+  directly for live fixes.
+- Reference section heading is `Official Google Cloud Reference`, and
+  `validate_arch_post.py` requires it.
+
+**This series is written while learning the material, not from experience.** It
+publishes **daily on weekdays** from no GCP background, starting 14 August 2026:
+#1–#52 lands the map by 26 October 2026, and Phase 7 carries the rest of the
+year. That makes the
+verification badge more load-bearing here than anywhere else on the site — there is no experience to catch a wrong figure, so an unverified
+claim ships as a confident guess. Build the architecture in a real project
+before writing about it.
+
+### Verification on GCP posts
+
+Same badge, same rules. `doc_hosts` for the `gcp` series is `cloud.google.com`
+and `docs.cloud.google.com`.
+
+**Cite the docs host.** Measured 2026-08-14 while verifying gcp-001,
+`cloud.google.com/*/docs/*` answers **301 Moved Permanently** to
+`docs.cloud.google.com` — the documentation moved, and that is the URL a reader
+actually lands on. Pricing and marketing pages stay on `cloud.google.com`, which
+is why both are allowed; a docs claim pointed at the old host is citing a
+redirect, and `--check-links` will not flag it.
+
+Measured the same day against two known-bad URLs on each host, both return a real
+HTTP 404, so the series declares no `shell_hosts` and `--check-links` judges them
+on the status code. As with Azure: **do not extend the body-size heuristic to a
+host without probing a known-bad URL on it first.**
+
+### Not an AWS comparison
+
+Google Cloud is explained on its own terms, for a reader who may never have
+opened an AWS console. No running translation table, no "the AWS equivalent is".
+The temptation is stronger here than for Azure, because the material is being
+learned against an AWS background and comparison is the fastest way to understand
+it yourself — it is not the fastest way to explain it. See `GCP-ROADMAP.md`.
+
+The card accent (`.cloud-gcp`, olive sage) already exists in `blog.css` and is
+applied by `CLOUD_BY_LABEL` on the literal label string. Use the exact label and
+it appears by itself. **Do not add CSS for it and do not change the colour** — it
+is deliberately desaturated to sit in the site's warm palette, and Google's
+four-colour mark was tried and rejected.
+
+The service widget and domain donut stay AWS-only: `GCP Architecture Series` is
+in `NON_AWS_SERIES` in `build_index_page()`, for the same reason Azure is.
+
 ## Starting a new series
 
 Read this before publishing the first post of any new series (e.g. a daily
@@ -324,10 +384,10 @@ intelligence/editorial series). Everything below was verified against
 **filename prefix check**:
 
 ```python
-"externally_built": post_file.name.startswith("arch-"),   # sync_blog.py
+"externally_built": post_file.name.startswith(("arch-", "az-", "gcp-")),  # sync_blog.py
 ```
 
-Only `arch-*` files are read-only pass-through. **Any other prefix means
+Only those three prefixes are read-only pass-through. **Any other prefix means
 `sync_blog.py` regenerates and overwrites `blog/<slug>/index.html` every time
 it runs.** Decide up front:
 
