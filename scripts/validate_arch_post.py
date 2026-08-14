@@ -156,6 +156,35 @@ SERIES = {
             ('Official Google Cloud references', r'^Official Google Cloud references$'),
         ],
     },
+    'azweekly': {
+        'label': 'Azure Weekly Intelligence',
+        # NOT "az-weekly-". `externally_built` in sync_blog.py matches the
+        # prefix tuple ("arch-", "az-", "gcp-"), so a file named az-weekly-001
+        # would be treated as a custom-built architecture page and its served
+        # page would never be generated at all. "azw-" clears that check
+        # because the third character is not a hyphen. Do not "tidy" it.
+        'file_prefix': 'azw-',
+        'slug_glob': 'azure-weekly-intelligence-*',
+        'labels': ['Azure', 'Azure Weekly Intelligence'],
+        'externally_built': False,
+        'ref_heading': 'Official Azure references',
+        'first_section': 'id="week"',
+        'vendor': 'Microsoft',
+        # msrc.microsoft.com is allowed here and nowhere else. A roundup carries
+        # CVEs, and the update guide is Microsoft's own authority on them; the
+        # architecture series has no reason to cite it.
+        'doc_hosts': ('learn.microsoft.com', 'azure.microsoft.com',
+                      'msrc.microsoft.com'),
+        'shell_hosts': (),
+        # Structural sections only, like the AWS weekly series. The domain
+        # groupings vary with what actually shipped, and a quiet week is
+        # allowed to be short.
+        'headings': [
+            ('The week in one paragraph', r'^The week in one paragraph$'),
+            ('What I would act on',       r'^What I would act on$'),
+            ('Official Azure references', r'^Official Azure references$'),
+        ],
+    },
     'daily': {
         'label': 'AWS Daily Intelligence',
         'file_prefix': 'daily-',

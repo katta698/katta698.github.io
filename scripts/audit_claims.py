@@ -101,6 +101,7 @@ def main():
     # figures goes unnoticed.
     files = sorted(glob.glob(os.path.join(ROOT, "posts", "arch-*.html"))
                    + glob.glob(os.path.join(ROOT, "posts", "az-*.html"))
+                   + glob.glob(os.path.join(ROOT, "posts", "azw-*.html"))
                    + glob.glob(os.path.join(ROOT, "posts", "gcp-*.html")))
     if args:
         files = [f for f in files if any(a in os.path.basename(f) for a in args)]

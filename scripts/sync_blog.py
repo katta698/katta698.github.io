@@ -742,7 +742,7 @@ CHATGPT_MARKERS = [
 # At 3 the series label evicted the most specific tag, and the Kubernetes pill
 # disappeared entirely because its only three posts were all in the series.
 MAX_TAGS = 4
-CATEGORY_ORDER = ["All", "AWS Architecture Series", "Azure Architecture Series", "GCP Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS Weekly Intelligence", "GCP Weekly Intelligence", "30 Days of AWS Terraform", "AWS", "Azure", "GCP", "Terraform", "Databases & Ops", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
+CATEGORY_ORDER = ["All", "AWS Architecture Series", "Azure Architecture Series", "GCP Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS Weekly Intelligence", "Azure Weekly Intelligence", "GCP Weekly Intelligence", "30 Days of AWS Terraform", "AWS", "Azure", "GCP", "Terraform", "Databases & Ops", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
 
 NAV_SVG = """<svg width="30" height="30" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
   <rect width="80" height="80" rx="16" fill="#11140F"/>
@@ -1878,6 +1878,7 @@ POSTS_PER_PAGE = 24
 # the blog and the portfolio disagree about what colour a post is.
 CLOUD_BY_LABEL = [
     ("Azure Architecture Series", "cloud cloud-azure"),
+    ("Azure Weekly Intelligence", "cloud cloud-azure"),
     ("GCP Architecture Series", "cloud cloud-gcp"),
     ("GCP Weekly Intelligence", "cloud cloud-gcp"),
     ("AWS Architecture Series", "cloud cloud-aws"),
@@ -2390,6 +2391,20 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
         _feed_item(p, _gcp_num(p) or None, _gcp_title(p))
         for p in sorted(gcp_posts, key=_gcp_num, reverse=True)[:3]
     ]
+    # Azure Weekly Intelligence. Titled "Azure Weekly Intelligence #N - 10-14
+    # August 2026", so the number parses the same way the AWS weekly one does.
+    azweekly_posts = [p for p in posts if "Azure Weekly Intelligence" in p["tags"]]
+
+    def _azweekly_num(p):
+        m = _re.search(r'#(\d+)', p["title"])
+        return int(m.group(1)) if m else 0
+
+    _azweekly_feed = [
+        _feed_item(p, _azweekly_num(p) or None,
+                   _re.sub(r'^Azure Weekly Intelligence\s*#\d+\s*[-–—]\s*', '',
+                           p["title"]))
+        for p in sorted(azweekly_posts, key=_azweekly_num, reverse=True)[:3]
+    ]
     _all_feed = [_feed_item(p) for p in posts[:3]]
 
     feed_data_json = json.dumps({
@@ -2405,6 +2420,8 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
                    "href": "/blog/?tag=aws+daily+intelligence"},
         "weekly": {"items": _weekly_feed, "count": len(weekly_posts),
                    "href": "/blog/?tag=aws+weekly+intelligence"},
+        "azweekly": {"items": _azweekly_feed, "count": len(azweekly_posts),
+                     "href": "/blog/?tag=azure+weekly+intelligence"},
         "all":    {"items": _all_feed,    "count": len(posts), "href": "/blog/"},
     })
 
@@ -2837,6 +2854,7 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
         ['lab','Lab',       'AWS Weekly Lab — one production-grade platform capability built end to end each week'],
         ['daily','Daily',   'AWS Daily Intelligence — what AWS shipped, and whether it actually changes anything'],
         ['weekly','Weekly', 'AWS Weekly Intelligence — everything AWS shipped that week, ranked, in one place'],
+        ['azweekly','Az Wk','Azure Weekly Intelligence — everything Azure shipped that week, ranked, in one place'],
         ['all','All',       'Every post, newest first, across all series and topics']
       ];
       var list = document.getElementById('sf-list');
