@@ -742,7 +742,7 @@ CHATGPT_MARKERS = [
 # At 3 the series label evicted the most specific tag, and the Kubernetes pill
 # disappeared entirely because its only three posts were all in the series.
 MAX_TAGS = 4
-CATEGORY_ORDER = ["All", "AWS Architecture Series", "Azure Architecture Series", "GCP Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS Weekly Intelligence", "30 Days of AWS Terraform", "AWS", "Azure", "GCP", "Terraform", "Databases & Ops", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
+CATEGORY_ORDER = ["All", "AWS Architecture Series", "Azure Architecture Series", "GCP Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS Weekly Intelligence", "GCP Weekly Intelligence", "30 Days of AWS Terraform", "AWS", "Azure", "GCP", "Terraform", "Databases & Ops", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
 
 NAV_SVG = """<svg width="30" height="30" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
   <rect width="80" height="80" rx="16" fill="#11140F"/>
@@ -1879,6 +1879,7 @@ POSTS_PER_PAGE = 24
 CLOUD_BY_LABEL = [
     ("Azure Architecture Series", "cloud cloud-azure"),
     ("GCP Architecture Series", "cloud cloud-gcp"),
+    ("GCP Weekly Intelligence", "cloud cloud-gcp"),
     ("AWS Architecture Series", "cloud cloud-aws"),
     ("AWS Daily Intelligence", "cloud cloud-aws"),
     ("AWS Weekly Intelligence", "cloud cloud-aws"),
@@ -1988,7 +1989,8 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     # So both widgets are scoped to the posts the catalogue can actually
     # describe, and the footer says which posts those are. A non-AWS series gets
     # its own widget when there is a catalogue behind it, not a share of this one.
-    NON_AWS_SERIES = ("Azure Architecture Series", "GCP Architecture Series")
+    NON_AWS_SERIES = ("Azure Architecture Series", "GCP Architecture Series",
+                      "GCP Weekly Intelligence")
     aws_scope = [(p, t) for p, t in zip(posts, post_texts)
                  if not any(s in p["tags"] for s in NON_AWS_SERIES)]
     aws_posts = [p for p, _ in aws_scope]

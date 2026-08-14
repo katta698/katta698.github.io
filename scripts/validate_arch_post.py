@@ -131,6 +131,31 @@ SERIES = {
             ('Official Google Cloud Reference', r'^Official Google Cloud Reference$'),
         ],
     },
+    'gcpweekly': {
+        'label': 'GCP Weekly Intelligence',
+        # NOT "gcp-weekly-". `externally_built` in sync_blog.py matches the
+        # prefix tuple ("arch-", "az-", "gcp-"), so a file named gcp-weekly-001
+        # would be treated as a custom-built architecture page and its served
+        # page would never be generated at all. "gcpweekly-" clears that check
+        # because the fourth character is not a hyphen. Do not "tidy" it.
+        'file_prefix': 'gcpweekly-',
+        'slug_glob': 'gcp-weekly-intelligence-*',
+        'labels': ['GCP', 'GCP Weekly Intelligence'],
+        'externally_built': False,
+        'ref_heading': 'Official Google Cloud references',
+        'first_section': 'id="the-week"',
+        'vendor': 'Google Cloud',
+        'doc_hosts': ('cloud.google.com', 'docs.cloud.google.com'),
+        'shell_hosts': (),
+        # Structural sections only, like the AWS weekly series. The domain
+        # groupings vary with what actually shipped, and a quiet week is allowed
+        # to be short.
+        'headings': [
+            ('The week in one paragraph',        r'^The week in one paragraph$'),
+            ('What I would act on',              r'^What I would act on$'),
+            ('Official Google Cloud references', r'^Official Google Cloud references$'),
+        ],
+    },
     'daily': {
         'label': 'AWS Daily Intelligence',
         'file_prefix': 'daily-',
