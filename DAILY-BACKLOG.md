@@ -18,6 +18,30 @@ approaching a week old is about to become unwritable.
 
 ---
 
+## 13 August 2026 — nothing outranked the held EKS item; post #10 took that
+
+Eight announcements, none architectural. The best of them, S3 returning more
+policy detail in access denied messages, is a genuine quality-of-life fix and is
+held as the strongest open item.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Additional policy details in access denied error messages | S3 | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/s3-additional-policy-details-access-denied-error-messages/) |
+| CLI, administration controls, faster connections | Client VPN | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-client-vpn-cli/) |
+| CVE-2026-18428 — async query validation bypass in the OpenSearch SQL plugin | OpenSearch | open | Med-High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-081-aws/) |
+| Switch from e-mail to DNS validation on an existing certificate | Certificate Manager | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/AWS-Certificate-Manager-Email-DNS-Switch) |
+| Minimum aggregation thresholds in custom analysis rules | Clean Rooms | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-clean-rooms-minimum-aggregation-custom-analysis-rules) |
+| Spot Placement Score now includes Local Zones | EC2 | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/spot-placement-score-local-zones/) |
+| Claude Opus 5 available in GovCloud (US) | Bedrock | skipped | Low-Med | Region expansion |
+| Daybreak Red and Daybreak Blue from OpenAI on Bedrock | Bedrock | skipped | Low | catalogue addition |
+| Microsoft 365 extensions GA | Amazon Quick | skipped | Low | — |
+
+**Worth revisiting:** the ACM e-mail-to-DNS validation switch is small but removes
+a long-standing migration annoyance — e-mail-validated certificates previously
+had to be reissued to move to DNS validation.
+
+---
+
 ## 12 August 2026 — covered by post #9
 
 First run on the widened source list: 6 What's New announcements, 2 security
@@ -28,7 +52,7 @@ rest.
 | Item | Service | Status | Importance | Reference |
 | --- | --- | --- | --- | --- |
 | Role manager creates roles from AWS managed templates; Lambda template attaches `PowerUserAccess` | IAM | **#9** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-iam-role-manager) |
-| Control plane parameters configurable — scheduler, controller manager, API server | EKS | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-eks-control-plane-configuration-parameters) |
+| Control plane parameters configurable — scheduler, controller manager, API server | EKS | **#10** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-eks-control-plane-configuration-parameters) |
 | CVE-2026-19311 — missing authorization in OpenSearch Alerting plugin | OpenSearch | open | Med-High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-078-aws/) |
 | Forensic container checkpointing for incident response | EKS | open | Med-High | [link](https://aws.amazon.com/blogs/containers/forensic-container-checkpointing-on-amazon-eks/) |
 | CVE-2026-19642 / 19643 — Base64 decoder memory safety in AWS SDK for C++ | AWS SDK | open | Medium | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-080-aws/) |
