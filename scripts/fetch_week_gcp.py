@@ -108,7 +108,21 @@ MANUAL_SOURCES = ("Next / events",)
 
 TAG_RE = re.compile(r"<[^>]+>")
 PRODUCT_SPLIT_RE = re.compile(r'<h2 class="release-note-product-title">(.*?)</h2>', re.S)
-NOTE_RE = re.compile(r"<h3[^>]*>(.*?)</h3>(.*?)(?=<h3[^>]*>|$)", re.S)
+# A note is delimited by a BARE <h3>. Google uses h3 for two different things,
+# and treating them alike produced notes with no text at all:
+#
+#     <h3>Announcement</h3>              <- the note type: bare, delimits a note
+#     <h3 id="release_7_0_2">7.0.3</h3>  <- a heading INSIDE that announcement
+#     <h3>Fixed</h3>                     <- the next note type
+#     <ul>...</ul>                       <- its body
+#
+# Splitting on every h3 gave "Announcement" an empty body (the next thing is
+# another h3) and invented a note whose type was "Release 7.0.3". Measured over
+# the whole feed: 1,253 bare h3 against a handful carrying attributes, so the
+# distinction is the vendor's, not a guess. 6% of one week's notes parsed to an
+# empty summary before this, which is worse than dropping them -- an item with no
+# text still inflates the count a roundup is built on.
+NOTE_RE = re.compile(r"<h3>(.*?)</h3>(.*?)(?=<h3>|$)", re.S)
 PUBLISHED_RE = re.compile(r"Published:\s*</strong>\s*(\d{4}-\d\d-\d\d)")
 
 
@@ -256,6 +270,24 @@ def audit(results, with_products):
     # Truncation window, measured on this run rather than recalled from a comment.
     combined = next((r for n, k, r, e in results if k == "daynotes" and not e), [])
     print()
+
+    # Parse-quality guard. A note counted with no text still inflates the total a
+    # roundup is built on, so it is worse than a note that was dropped. 6% of one
+    # week parsed empty before the bare-<h3> fix, and nothing surfaced it — it was
+    # found only because a duplicate-rate check produced a suspicious group of
+    # eight identical blanks. Printed on every audit so the next regression is
+    # visible on the run that causes it.
+    if combined:
+        blank = [r for r in combined if not r[3].strip()]
+        pct = 100.0 * len(blank) / len(combined)
+        print("PARSE QUALITY")
+        print("  %d of %d notes have an empty summary (%.1f%%)%s"
+              % (len(blank), len(combined), pct,
+                 "" if not blank else "   <-- investigate before publishing"))
+        if blank:
+            worst = collections.Counter(r[1] for r in blank).most_common(5)
+            print("  worst products: %s" % ", ".join("%s x%d" % w for w in worst))
+        print()
     if combined:
         days = sorted({r[0] for r in combined})
         print("TRUNCATION WINDOW (measured just now)")

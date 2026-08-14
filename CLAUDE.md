@@ -688,8 +688,37 @@ feed's generation time. The real date is `Published:` in the body. Trusting
 days rather than 30 items. Re-measured on every `--audit` run; the script warns
 when a requested start date reaches past what the feed still holds.
 
-**Deduplicate before counting.** One App Engine TLS change shipped as six
-identical notes across runtime variants. Raw counts overstate a week.
+**The GKE bulletins feed being ~60 days stale is expected, not a fault.** Both
+bulletin feeds share one `GCP-YYYY-NNN` numbering series, and the main feed is
+authoritative: every recent GKE id appears in it, and it carried a newer
+GKE-related bulletin (`GCP-2026-046`) than the GKE feed's newest
+(`GCP-2026-037`). The GKE-only ids are 2025 ones that aged out of the main feed's
+30-item cap. The GKE feed is a lagging subset, kept for cross-checking. Do not
+"fix" its staleness or go hunting for a replacement.
+
+**Deduplicate before counting, with two different rules.** Measured across two
+weeks, 22% and 34% of raw notes are duplicates — but from two causes that need
+opposite handling:
+
+- *Same text, different products* — one App Engine TLS change published six
+  times, once per runtime. Collapse these; the reader wants it once.
+- *Same text, same product* — Container OS and GKE version notes that share
+  boilerplate. These are separate real notes. Collapsing them under-counts.
+
+**A note delimiter is a bare `<h3>`.** Google uses `<h3>` both for the note type
+(`Feature`, `Security`, `Change`, `Fixed`, `Announcement`, `Deprecated`,
+`Breaking`) and for headings *inside* a note, which carry attributes
+(`<h3 id="release_7_0_2">`). Splitting on every h3 invented notes with no text
+and gave real notes an empty body — 6% of a week. `--audit` now prints a PARSE
+QUALITY line; anything above 0% means investigate before publishing, because a
+counted note with no text inflates the total the roundup's headline rests on.
+
+**The `gcpweekly-` file prefix is deliberate, like the Azure series' `azw-`.**
+`externally_built` in `sync_blog.py` matches the prefix tuple
+`("arch-", "az-", "gcp-")`, so a file named `gcp-weekly-001` would be treated as
+a custom-built architecture page and its served page would never be generated.
+`gcpweekly-` clears that check because the fourth character is not a hyphen. Do
+not "tidy" it to `gcp-weekly-`.
 
 Everything else carries over from the AWS weekly section below: scope by news
 date, never repeat an announcement but do follow up on a genuine one, a quiet
