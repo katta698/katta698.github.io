@@ -632,9 +632,72 @@ against itself. This is the same rule as "do not write about the weekend being
 empty" in the weekly series — process commentary is not news, in either series.
 Pick the topic on its merits and write about the topic.
 
+## GCP Weekly Intelligence series
+
+Started 2026-08-14 with a feed audit, not a post. Everything Google Cloud
+shipped that week, ranked, in one post.
+
+**Published every Saturday, covering the Monday–Friday news window.** Same rule
+as the AWS weekly and for the same reason: Google publishes Monday to Friday, so
+by Saturday morning the week is closed and the inventory cannot be invalidated by
+something landing after publication. Title the post with the **news window**, not
+the calendar week — a post titled with a range that has not finished is claiming
+something it cannot know.
+
+**Weekly only. There is no GCP daily series** and one is not planned. Do not add
+a daily cadence to this cloud on the assumption that AWS's shape transfers.
+
+- File prefix `gcpweekly-NNN-*` in `posts/`, slug prefix
+  `gcp-weekly-intelligence-*`.
+- Labels: `[GCP, "GCP Weekly Intelligence"]`.
+- Title format: `GCP Weekly Intelligence #N - 10-14 August 2026`. The sidebar
+  feed parses `#N`.
+- Generic sync-built pages. Do **not** add the prefix to `externally_built`.
+- The slug must never contain `week-<digits>` — `_week_num()` would number it as
+  an AWS Weekly Lab post.
+
+### The feed list, and what the audit found
+
+Build the inventory with `python scripts/fetch_week_gcp.py`, never by hand and
+never by asking a model to read a feed. Run `--audit --products` before a
+roundup. Measured 2026-08-14:
+
+**Feeds live on `docs.cloud.google.com`, not `cloud.google.com`,** and the GKE
+feeds move again to `/static/feeds/gke-*`.
+
+**The combined release-notes feed is day-granular, not item-granular.** One Atom
+entry is one *calendar day*; its content holds every product's notes for that day
+— 447 in the 4 August entry alone. Counting entries counts days. Parsing means
+exploding the content HTML on `<h2 class="release-note-product-title">` and
+`<h3>`.
+
+**The combined feed is complete, not curated.** This was the open question in
+`INTELLIGENCE-SERIES-BRIEF.md` and the answer inverts what it expected.
+Cross-checked against eight products' own feeds: zero misses.
+
+**The per-product feeds are the unreliable ones, and are NOT the source list.**
+`compute-engine` is frozen at April 2020 — 2,307 days stale — while the combined
+feed carries Compute Engine notes throughout. 9 of 39 probed feeds are over 60
+days behind, and every one answers HTTP 200.
+
+**The security bulletins feed gives every entry the same `<updated>`** — the
+feed's generation time. The real date is `Published:` in the body. Trusting
+`<updated>` dates the whole backlog to today.
+
+**Truncation window is 30 days**, not AWS's 12, because the 30-entry cap is 30
+days rather than 30 items. Re-measured on every `--audit` run; the script warns
+when a requested start date reaches past what the feed still holds.
+
+**Deduplicate before counting.** One App Engine TLS change shipped as six
+identical notes across runtime variants. Raw counts overstate a week.
+
+Everything else carries over from the AWS weekly section below: scope by news
+date, never repeat an announcement but do follow up on a genuine one, a quiet
+week stays quiet, and no process commentary in the post.
+
 ## AWS Weekly Intelligence series
 
-The Sunday companion to the daily series: everything AWS shipped that week,
+The Saturday companion to the daily series: everything AWS shipped that week,
 ranked, in one post. Started 9 August 2026.
 
 - File prefix `weekly-NNN-*` in `posts/`, slug prefix `aws-weekly-intelligence-*`.
