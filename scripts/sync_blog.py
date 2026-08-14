@@ -3311,8 +3311,12 @@ def main():
         })
     services_stats = [
         {"group": g, "items": sorted(v, key=lambda i: (-i["count"], i["name"]))}
+        # Tie-break on the group name, as the items inside a group already do.
+        # Without it two groups on the same total swap places between runs --
+        # "AI & ML" and "Apps & Front-end" both sum to 5 -- and every sync
+        # produces a 52-line diff in stats.json that changes no data at all.
         for g, v in sorted(svc_groups.items(),
-                           key=lambda kv: -sum(i["count"] for i in kv[1]))
+                           key=lambda kv: (-sum(i["count"] for i in kv[1]), kv[0]))
     ]
 
     # The parts of this work that are not an AWS service -- Terraform, GitOps,
