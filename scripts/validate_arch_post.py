@@ -59,6 +59,11 @@ SERIES = {
         'externally_built': True,
         'ref_heading': 'Official AWS Reference',
         'first_section': 'id="challenge"',
+        'vendor': 'AWS',
+        'doc_hosts': ('docs.aws.amazon.com', 'aws.amazon.com'),
+        # Hosts that answer HTTP 200 for pages that do not exist. See
+        # _check_links_resolve.
+        'shell_hosts': ('docs.aws.amazon.com',),
         'headings': [
             ('Business Challenge',     r'^Business Challenge$'),
             ('Architecture',           r'^Architecture$'),
@@ -66,6 +71,30 @@ SERIES = {
             ('... Decisions',          r'Decisions$'),
             ('Closing Thought',        r'^Closing Thought$'),
             ('Official AWS Reference', r'^Official AWS Reference$'),
+        ],
+    },
+    'az': {
+        'label': 'Azure Architecture Series',
+        'file_prefix': 'az-',
+        'slug_glob': 'azure-architecture-*',
+        'labels': ['Azure', 'Azure Architecture Series'],
+        # Same deal as arch: custom-built pages, never rebuilt by sync_blog.py.
+        'externally_built': True,
+        'ref_heading': 'Official Azure Reference',
+        'first_section': 'id="challenge"',
+        'vendor': 'Microsoft',
+        'doc_hosts': ('learn.microsoft.com', 'azure.microsoft.com'),
+        # Measured 2026-08-14: both Microsoft hosts return an honest HTTP 404
+        # for a missing page, unlike docs.aws.amazon.com. No body-size heuristic
+        # is needed, and applying one would be guesswork.
+        'shell_hosts': (),
+        'headings': [
+            ('Business Challenge',       r'^Business Challenge$'),
+            ('Architecture',             r'^Architecture$'),
+            ('Why ...',                  r'^Why\b'),
+            ('... Decisions',            r'Decisions$'),
+            ('Closing Thought',          r'^Closing Thought$'),
+            ('Official Azure Reference', r'^Official Azure Reference$'),
         ],
     },
     'daily': {
@@ -76,6 +105,9 @@ SERIES = {
         'externally_built': False,
         'ref_heading': 'Official AWS references',
         'first_section': 'id="what-changed"',
+        'vendor': 'AWS',
+        'doc_hosts': ('docs.aws.amazon.com', 'aws.amazon.com'),
+        'shell_hosts': ('docs.aws.amazon.com',),
         'headings': [
             ('Executive summary',        r'^Executive summary$'),
             ('What changed',             r'^What changed$'),
@@ -100,6 +132,9 @@ SERIES = {
         'externally_built': False,
         'ref_heading': 'Official AWS references',
         'first_section': 'id="the-week"',
+        'vendor': 'AWS',
+        'doc_hosts': ('docs.aws.amazon.com', 'aws.amazon.com'),
+        'shell_hosts': ('docs.aws.amazon.com',),
         # Deliberately only the structural sections. The domain groupings
         # ("Storage and backup", "AI and agents") vary with what AWS actually
         # shipped that week, and a quiet week is allowed to be short -- see the
@@ -431,7 +466,6 @@ def check_source(slug, spec):
                    'shows' if shown else 'shows none', fix))
 
 
-AWS_DOC_HOSTS = ('docs.aws.amazon.com', 'aws.amazon.com')
 STALE_DAYS = 180
 # A missing docs.aws.amazon.com page returns ~1 KB; a real article, tens of KB.
 DOCS_SHELL_BYTES = 5000
@@ -514,9 +548,10 @@ def check_verification(slug, name, fm, parsed, body, spec):
             err(slug, '%s verified_claims[%d] source is not https: %s' % (name, i, src))
             continue
         host = src.split('/')[2]
-        if not any(host == h or host.endswith('.' + h) for h in AWS_DOC_HOSTS):
-            err(slug, '%s verified_claims[%d] cites %s. Verification means AWS\'s own '
-                      'documentation, not a blog quoting it secondhand.' % (name, i, host))
+        if not any(host == h or host.endswith('.' + h) for h in spec['doc_hosts']):
+            err(slug, "%s verified_claims[%d] cites %s. Verification means %s's own "
+                      'documentation (%s), not a blog quoting it secondhand.'
+                % (name, i, host, spec['vendor'], ', '.join(spec['doc_hosts'])))
             continue
         if src.rstrip('/') not in ref.replace('&amp;', '&'):
             warn(slug, '%s verified_claims[%d] cites %s, which is not in the post\'s '
@@ -526,7 +561,7 @@ def check_verification(slug, name, fm, parsed, body, spec):
     _check_derived(slug, name, claims)
 
     if CHECK_LINKS:
-        _check_links_resolve(slug, name, claims)
+        _check_links_resolve(slug, name, claims, spec)
 
 
 def _check_derived(slug, name, claims):
@@ -594,7 +629,7 @@ def _check_derived(slug, name, claims):
                 % (name, i, c["expect"], expr, got))
 
 
-def _check_links_resolve(slug, name, claims):
+def _check_links_resolve(slug, name, claims, spec):
     """Opt-in (--check-links): confirm every cited page still exists.
 
     Off by default so the validator stays usable offline and in CI without
@@ -607,6 +642,14 @@ def _check_links_resolve(slug, name, claims):
     the service name, and the real article is fetched by script afterwards. A
     HEAD request therefore passes every dead docs link. So fetch the body and
     judge it: a real article is tens of KB and its title names the article.
+
+    That heuristic is a property of one host, not of documentation in general,
+    so the hosts it applies to are declared per series as `shell_hosts`.
+    Measured 2026-08-14, `learn.microsoft.com` and `azure.microsoft.com` both
+    return a real HTTP 404 for a missing page, so the Azure series declares no
+    shell hosts and relies on the status code alone. Do not extend the byte
+    threshold to a host without checking a known-bad URL on it first — a wrong
+    threshold either passes dead links or fails live ones.
     """
     import urllib.request
     import urllib.error
@@ -631,9 +674,10 @@ def _check_links_resolve(slug, name, claims):
             continue
         if code >= 400:
             err(slug, '%s cites %s which returns HTTP %d' % (name, src, code))
-        elif 'docs.aws.amazon.com' in src and len(body) < DOCS_SHELL_BYTES:
+        elif (any(h in src for h in spec.get('shell_hosts', ()))
+              and len(body) < DOCS_SHELL_BYTES):
             err(slug, '%s cites %s which returns a %d-byte shell, not an article. '
-                      'docs.aws.amazon.com answers 200 for missing pages, so this '
+                      'That host answers 200 for missing pages, so this '
                       'link is dead -- the page moved.' % (name, src, len(body)))
 
 

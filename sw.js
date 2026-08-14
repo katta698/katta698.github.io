@@ -2,7 +2,7 @@
  *
  * GENERATED FILE — do not edit sw.js at the repo root. Edit
  * scripts/sw.template.js and re-run scripts/sync_blog.py, which stamps
- * b1745e4f with the same content hash of blog.css that cache-busts
+ * 7d1194ec with the same content hash of blog.css that cache-busts
  * the stylesheet. A CSS change therefore invalidates the whole cache
  * automatically; there is no version constant anyone has to remember to bump.
  *
@@ -27,7 +27,7 @@
  * the background, bounding staleness to one page load regardless of the token.
  */
 
-const VERSION = 'b1745e4f';
+const VERSION = '7d1194ec';
 const JS_VERSION = 'b75415d4';
 const CACHE = 'jk-site-' + VERSION;
 const OFFLINE_URL = '/offline.html';

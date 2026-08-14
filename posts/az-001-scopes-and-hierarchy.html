@@ -1,0 +1,254 @@
+---
+title: "Azure Architecture Series #1 — Tenants, Management Groups and Subscriptions: Where the Blast Radius Actually Sits"
+date: 2026-08-14
+slug: azure-architecture-scopes-and-hierarchy
+labels: [Azure, "Azure Architecture Series"]
+verified: '2026-08-14'
+verified_claims:
+  - claim: "A single directory can support 10,000 management groups"
+    source: https://learn.microsoft.com/en-us/azure/governance/management-groups/overview
+  - claim: "A management group tree can support up to six levels of depth, excluding the root level and the subscription level"
+    source: https://learn.microsoft.com/en-us/azure/governance/management-groups/overview
+  - claim: "Each management group and subscription can support only one parent"
+    source: https://learn.microsoft.com/en-us/azure/governance/management-groups/overview
+  - claim: "Azure Resource Manager caches details of the management group hierarchy for up to 30 minutes"
+    source: https://learn.microsoft.com/en-us/azure/governance/management-groups/overview
+  - claim: "Azure provides four levels of management scope: management groups, subscriptions, resource groups and resources"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/overview
+  - claim: "A role assignment or policy can be placed at any of ten inheriting scopes: the root management group, six management group levels, the subscription, the resource group and the resource"
+    derive: "1 + 6 + 1 + 1 + 1"
+    expect: "10"
+    source: https://learn.microsoft.com/en-us/azure/governance/management-groups/overview
+  - claim: "A resource group can hold up to 800 instances of a resource type, and some resource types are exempt from that limit"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/overview
+  - claim: "Resources in a resource group can be located in different regions than the resource group itself"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/overview
+  - claim: "Tags applied to a resource group are not inherited by the resources in it"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/overview
+  - claim: "A subscription can hold 980 resource groups"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/azure-subscription-service-limits
+  - claim: "A resource group keeps 800 deployments in its deployment history"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/azure-subscription-service-limits
+  - claim: "A resource or resource group can carry 50 tags, with keys up to 512 characters and values up to 256 characters"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/azure-subscription-service-limits
+  - claim: "Azure allows 4,000 role assignments per subscription and 500 per management group"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/azure-subscription-service-limits
+  - claim: "The management group role assignment budget is one eighth of the subscription budget, at 500 against 4,000"
+    derive: "4000 / 500"
+    expect: "8"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/azure-subscription-service-limits
+  - claim: "Lower scopes inherit role permissions from higher scopes, and scopes are structured in a parent-child relationship"
+    source: https://learn.microsoft.com/en-us/azure/role-based-access-control/scope-overview
+problem: "A team builds its Azure estate before it has a hierarchy, treating resource groups as folders and leaving every subscription under the tenant root, and ends up with no scope to express the boundary they actually need. Two years later the platform team is maintaining role assignments one subscription at a time, and a policy that should apply everywhere applies to about seventy per cent of things."
+builds: "The four Azure scopes as they really behave: what each one is a boundary for, which limit binds at each level, and why the management group hierarchy is the decision that is hardest to change afterwards."
+catch: "Depth is not free and it is not the point. Six levels of management groups sounds generous until you notice that a role assignment at management group scope has a budget of 500 against a subscription's 4,000 — the hierarchy is where you place a few broad assignments, not where you place many."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">Azure Architecture Series · #001 · Governance</div>
+  <h1 class="post-title">Tenants, Management Groups and Subscriptions: Where the Blast Radius Actually Sits</h1>
+  <p class="post-subtitle">Every later decision in Azure — networking, identity, cost, compliance — is made inside a hierarchy chosen on day one, usually before anyone knows what it has to hold.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Azure Governance · Landing Zones · Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A financial services platform team starts building in Azure the week their programme is approved. They need somewhere to put things, so they create one subscription per environment, three resource groups per application named after the tier they hold, and they leave every subscription directly under the tenant root because nothing in the portal suggests otherwise.
+    </p>
+    <p>
+      Eighteen months later, two things have gone wrong and neither announced itself. The first is access: a security engineer who needs read access across the estate has forty-one separate role assignments, because there was never a scope between "one subscription" and "everything in the tenant" to hang a single one on. The second is policy: a rule requiring customer-managed keys on storage accounts was assigned to each subscription individually as the estate grew, and the four subscriptions created last quarter do not have it. Nothing failed. The compliance dashboard simply reports on the subscriptions where the policy exists.
+    </p>
+    <p>
+      Both are the same mistake with two faces. The team modelled Azure's hierarchy as an org chart, when it is a <strong>propagation mechanism</strong>. A scope in Azure is not a label describing what something is. It is a place where a setting can be attached so that it reaches everything underneath.
+    </p>
+
+    <div class="callout amber">
+      <strong>The hierarchy is the one decision that gets harder, not easier, with time</strong>
+      <p>Almost everything else in Azure can be rebuilt. A VNet can be re-addressed, a workload can be redeployed, a storage account can be migrated. The scope hierarchy cannot be rearranged casually, because role assignments, policy assignments and custom role definitions are anchored to positions within it — moving a subscription to a different parent can break the path between a role assignment and the role definition it depends on, and Azure will refuse the move rather than silently orphan it.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Azure provides four levels of management scope: management groups, subscriptions, resource groups and resources. They nest, and settings applied at one level inherit downward to everything below it. Nothing inherits upward, and a lower scope cannot decline what a higher scope assigned.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/az-001-scope-hierarchy.svg" alt="Diagram: the four Azure management scopes nested inside one another — tenant root management group, up to six levels of management groups, subscription, resource group, resource — with the limit that binds at each level listed alongside" />
+      <figcaption>The four scopes, and the limit that actually binds at each one. Depth is capped at six levels of management groups, which excludes the root and the subscription level.</figcaption>
+    </figure>
+
+    <h3>The tenant is not a scope you assign things to</h3>
+    <p>
+      A Microsoft Entra tenant is the identity boundary. It is where users, groups and service principals live. It is not where Azure resources live, and it is not a level of the resource hierarchy — the top of that hierarchy is the <strong>root management group</strong>, which is created automatically and carries the tenant ID as its own ID.
+    </p>
+    <p>
+      Two properties of the root make it different from every other management group. It cannot be moved or deleted, and nobody has access to it by default: a Global Administrator has to explicitly elevate themselves to User Access Administrator on it before anything can be assigned there at all. That friction is deliberate. Anything assigned at the root applies to every management group, subscription, resource group and resource in the directory.
+    </p>
+
+    <h3>Management groups are the propagation layer</h3>
+    <p>
+      A management group's entire purpose is to be a place to attach a policy or a role assignment so that it reaches many subscriptions at once. The rules that shape a design:
+    </p>
+
+    <div class="grid-2">
+      <div class="card">
+        <h4>Ten thousand groups, six levels deep</h4>
+        <p>A single directory supports 10,000 management groups, and the tree can be up to six levels deep — a limit that excludes the root level and the subscription level. Breadth is effectively free; depth is the scarce thing, and almost no organisation needs all six.</p>
+      </div>
+      <div class="card">
+        <h4>One parent, always</h4>
+        <p>Each management group and each subscription has exactly one parent. There is no way to place a subscription under two branches, so the hierarchy has to encode the <em>one</em> dimension that most needs to propagate — and everything else has to be expressed another way.</p>
+      </div>
+      <div class="card">
+        <h4>All subscriptions are in it</h4>
+        <p>There is one hierarchy per directory, and every subscription is somewhere in it. New subscriptions default to the root management group, which means a subscription created by someone in a hurry sits at the level with the broadest assignments and the fewest guardrails.</p>
+      </div>
+      <div class="card">
+        <h4>The hierarchy is cached</h4>
+        <p>Azure Resource Manager caches details of the management group hierarchy for up to 30 minutes. A move that appears not to have worked has very often worked. This is worth knowing before someone repeats the operation.</p>
+      </div>
+    </div>
+
+    <h3>Subscriptions are the limit boundary</h3>
+    <p>
+      A subscription is the billing and isolation boundary, which is how most people describe it. What that description leaves out is how often it is the <em>quota</em> boundary that ends a design. A subscription holds 980 resource groups. It allows 4,000 role assignments. Service quotas — cores of a given VM family in a given region, public IP addresses, and so on — are counted per subscription, not per tenant.
+    </p>
+    <p>
+      This is why "one subscription per environment" stops working at scale and "one subscription per application per environment" starts to. The subscription is not an accounting convenience; it is the unit at which you buy headroom.
+    </p>
+
+    <h3>Resource groups are the lifecycle boundary</h3>
+    <p>
+      A resource group is where the deletion story lives. Deleting one deletes everything in it, which makes it the right container for things that are created and destroyed together, and the wrong container for a mixture of things that are not.
+    </p>
+    <p>
+      Three properties surprise people, all three documented and all three the source of real incidents:
+    </p>
+    <ul>
+      <li>A resource group has its own location, and the resources inside it can be in different regions. The group's region is where its <em>metadata</em> lives, and where control plane operations for it are routed.</li>
+      <li>Tags applied to a resource group are <strong>not</strong> inherited by the resources in it. Cost allocation built on the assumption that they are will under-report from the first day, silently.</li>
+      <li>A resource group holds up to 800 instances of a given resource type, and keeps 800 deployments in its deployment history. The second limit is the one that bites first: a pipeline deploying several times a day reaches it, and Azure starts removing the oldest entries as it approaches the ceiling.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why the Hierarchy Is Not an Org Chart</h2>
+    <p>
+      The most common failed design is a management group tree that mirrors the company: a group per business unit, then per department, then per team. It fails because a hierarchy has one parent per node, and the thing you actually need to propagate is almost never the reporting line.
+    </p>
+    <p>
+      What propagates well is <strong>governance posture</strong>: how regulated is this, how exposed is it, what is allowed to run here. That is why the Cloud Adoption Framework's reference hierarchy separates platform from landing zones from sandbox from decommissioned, rather than separating retail from wholesale from treasury. A sandbox subscription and a production subscription need genuinely different policy sets. Two production subscriptions owned by different departments usually do not.
+    </p>
+    <p>
+      Everything that is genuinely multi-dimensional — ownership, cost centre, application, data classification — belongs in tags and in Azure Policy conditions, not in the tree. The tree gets the one dimension along which you would apply a <code>deny</code> policy.
+    </p>
+
+    <div class="callout">
+      <strong>A useful test before adding a level</strong>
+      <p>Name the policy or role assignment that would live at the new level and at no other level. If there isn't one, the level is a folder, and folders in this hierarchy are not free — they add a scope that every future assignment has to be reasoned about against.</p>
+    </div>
+
+    <h3>Where the role assignment budget goes</h3>
+    <p>
+      A role assignment or a policy assignment can be placed at any of ten inheriting scopes: the root management group, the six management group levels beneath it, the subscription, the resource group, and the resource itself. Each step down makes the assignment more specific and multiplies how many of them you need.
+    </p>
+    <p>
+      The budgets are not symmetric, and the asymmetry points the right way. A subscription allows 4,000 role assignments; a management group allows 500 — one eighth as many. Management group scope is deliberately not where hundreds of assignments belong. It is where a handful of broad ones belong, each replacing dozens of subscription-scoped copies.
+    </p>
+    <p>
+      The security engineer with forty-one role assignments in the opening story is the symptom this budget is describing. One assignment on the right management group replaces all forty-one, and it applies automatically to the forty-second subscription nobody has created yet. That last property — covering what does not exist yet — is the entire argument for building the hierarchy before you need it.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Depth of the management group tree</td>
+          <td>Three or four levels, not six</td>
+          <td>Depth costs nothing to create and everything to reason about. Six levels is the ceiling, not a target; each level is another scope where an assignment might be hiding.</td>
+        </tr>
+        <tr>
+          <td>What the tree is organised by</td>
+          <td>Governance posture — platform, landing zones, sandbox, decommissioned</td>
+          <td>One parent per node means the tree can encode exactly one dimension. Posture is the dimension whose settings must propagate; org structure is not.</td>
+        </tr>
+        <tr>
+          <td>Subscription granularity</td>
+          <td>Per application per environment, once the estate is more than a handful of workloads</td>
+          <td>Quotas, the 980 resource group limit and the 4,000 role assignment limit all count per subscription. A shared subscription shares its ceilings.</td>
+        </tr>
+        <tr>
+          <td>Resource group granularity</td>
+          <td>By shared lifecycle, not by resource type</td>
+          <td>The group is the deletion boundary. A group of "all the storage accounts" cannot be deleted meaningfully; a group of "everything this release created" can.</td>
+        </tr>
+        <tr>
+          <td>Where to put a broad role assignment</td>
+          <td>The highest management group whose whole subtree should have it</td>
+          <td>It covers subscriptions that do not exist yet, and it is one assignment against a budget of 500 rather than dozens against 4,000.</td>
+        </tr>
+        <tr>
+          <td>Ownership and cost centre</td>
+          <td>Tags plus Azure Policy, never a level in the tree</td>
+          <td>They are multi-dimensional and they change. Remember that resource group tags do not flow to resources — enforce tags on the resources themselves.</td>
+        </tr>
+        <tr>
+          <td>Access to the root management group</td>
+          <td>Nothing, except by deliberate elevation</td>
+          <td>Everything assigned there reaches every resource in the directory. Assignments at that scope should be the ones you would defend in an audit.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout amber">
+      <strong>The move that Azure will refuse</strong>
+      <p>A custom role can name only one management group in its assignable scopes. If a role is defined on one branch and assigned on a subscription, moving that subscription to a different branch severs the path between the assignment and the definition, and the move is rejected. The fixes are all deliberate ones — remove the assignment first, add the subscription to the assignable scope, or raise the definition to a common ancestor. None of them is something to discover during a reorganisation.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The Azure hierarchy rewards being boring. A shallow tree organised by how strictly a workload must be governed, subscriptions sized so that quotas are somebody's deliberate choice, and resource groups drawn around things that die together will carry an estate for years. A tree that mirrors the company will be wrong the week after the next reorganisation, and the assignments anchored in it will have to be untangled by hand.
+    </p>
+    <p>
+      Everything in the rest of this series — identity in #2, RBAC in #3, policy in #4 — assumes the scopes described here. They are the nouns the rest of Azure governance is written in.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#2 looks at Microsoft Entra ID as the identity plane: tenant against directory against subscription, what "one tenant, many subscriptions" actually costs, and why the trust relationship between a subscription and a tenant is the thing that makes a subscription move difficult.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Azure Reference</h2>
+    <ul>
+      <li><a href="https://learn.microsoft.com/en-us/azure/governance/management-groups/overview" target="_blank" rel="noopener">Organize your resources with management groups</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/overview" target="_blank" rel="noopener">What is Azure Resource Manager?</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/azure-subscription-service-limits" target="_blank" rel="noopener">Azure subscription and service limits, quotas, and constraints</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/role-based-access-control/scope-overview" target="_blank" rel="noopener">Understand scope for Azure RBAC</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

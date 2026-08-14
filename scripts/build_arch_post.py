@@ -42,6 +42,20 @@ TPL = os.path.join(ROOT, "_templates", "arch-post-template.html")
 
 SECTIONS = ["challenge", "architecture", "why", "decisions", "closing"]
 
+# One template, two series. _templates/arch-post-template.html is written in AWS
+# terms because it predates the Azure series; rather than fork it -- two copies
+# of the same page chrome drift, and the chrome is the part validate_arch_post.py
+# checks hardest -- the Azure build rewrites the handful of literals that name
+# the cloud. Order matters: the longest string is replaced first, so "AWS
+# Architecture Series" is not left as "Azure Architecture Series" by an earlier
+# bare "AWS" -> "Azure" pass.
+AZURE_LITERALS = [
+    ("AWS Architecture Series", "Azure Architecture Series"),
+    ("Official AWS Reference", "Official Azure Reference"),
+    ('<span class="tag-badge">AWS</span>', '<span class="tag-badge">Azure</span>'),
+    ('data-topics="AWS,Architecture,', 'data-topics="Azure,Architecture,'),
+]
+
 
 def build(src_path, prev_slug=None, prev_title=None):
     raw = io.open(src_path, encoding="utf-8").read()
@@ -78,6 +92,11 @@ def build(src_path, prev_slug=None, prev_title=None):
 
     tpl = io.open(TPL, encoding="utf-8").read()
 
+    is_azure = os.path.basename(src_path).startswith("az-")
+    if is_azure:
+        for old, new in AZURE_LITERALS:
+            tpl = tpl.replace(old, new)
+
     # Strip the template's instruction comment, which is for whoever is reading
     # the template and has no business in a served page.
     if "<!DOCTYPE html>" in tpl:
@@ -105,10 +124,22 @@ def build(src_path, prev_slug=None, prev_title=None):
         "{{CLOSING_CONTENT}}": content["closing"],
         "{{AWS_DOCS_URL}}": ref_links[0][0],
         "{{AWS_DOCS_LINK_TEXT}}": ref_links[0][1],
-        "{{AWS_DOCS_DESCRIPTION}}": "AWS's own guidance for this post's claims.",
+        "{{AWS_DOCS_DESCRIPTION}}": (
+            "Microsoft's own documentation for this post's claims." if is_azure
+            else "AWS's own guidance for this post's claims."),
         "{{PREV_SLUG}}": prev_slug or "",
         "{{PREV_TITLE}}": prev_title or "",
     }
+    # First post of a series: drop the previous half of the post-nav rather than
+    # substituting empty strings into it. This has to happen BEFORE the
+    # substitution loop below, which would otherwise turn the placeholders into
+    # `href="/blog//"` around an empty title — both of which
+    # validate_arch_post.py rejects. Until the Azure series started, every post
+    # this script built had a predecessor, so the case had never arisen.
+    if not prev_slug:
+        tpl = re.sub(r'<a href="/blog/\{\{PREV_SLUG\}\}/" class="post-nav-link prev">.*?</a>',
+                     "", tpl, flags=re.S)
+
     for k, v in repl.items():
         tpl = tpl.replace(k, v)
 
@@ -117,7 +148,8 @@ def build(src_path, prev_slug=None, prev_title=None):
     items = "\n".join(
         '      <li><a href="%s" target="_blank" rel="noopener">%s</a></li>' % (u, t)
         for u, t in ref_links)
-    m = re.search(r'(<h2>Official AWS Reference</h2>\s*<ul>)(.*?)(</ul>)', tpl, re.S)
+    ref_heading = "Official Azure Reference" if is_azure else "Official AWS Reference"
+    m = re.search(r'(<h2>%s</h2>\s*<ul>)(.*?)(</ul>)' % ref_heading, tpl, re.S)
     if not m:
         raise SystemExit("reference <ul> not found in the template")
     tpl = tpl[:m.start(2)] + "\n" + items + "\n    " + tpl[m.end(2):]

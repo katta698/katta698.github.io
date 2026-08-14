@@ -105,8 +105,8 @@ PWA_HEAD = """<link rel="manifest" href="/manifest.webmanifest"/>
 def stamp_static_pages():
     """Re-stamp asset cache-busting tokens on the pages sync does not build.
 
-    index.html, resume.html and now.html are hand-maintained, and the
-    Architecture Series pages are built from _templates/arch-post-template.html
+    index.html, resume.html and now.html are hand-maintained, and the AWS and
+    Azure Architecture Series pages are built from _templates/arch-post-template.html
     at publish time and otherwise passed through untouched. All of them reference blog.js or site-footer.js,
     so without this they would pin whatever token they were written with while
     the files underneath them changed.
@@ -124,17 +124,35 @@ def stamp_static_pages():
     """
     targets = [REPO_ROOT / n for n in ("index.html", "resume.html", "now.html")]
     targets += sorted(BLOG_DIR.glob("aws-architecture-*/index.html"))
+    targets += sorted(BLOG_DIR.glob("azure-architecture-*/index.html"))
     targets.append(REPO_ROOT / "_templates" / "arch-post-template.html")
 
-    js_pattern = re.compile(r'(/blog/assets/(?:blog|site-footer)\.js)(\?v=[0-9a-zA-Z]+)?')
-    css_pattern = re.compile(r'(/blog/assets/blog\.css)(\?v=[0-9a-zA-Z]+)?')
+    # A URL may already carry literal tokens, and — in the template — a
+    # {{PLACEHOLDER}} the build script substitutes at publish time. Match both,
+    # and leave a placeholder alone: stamping a line that already held one is
+    # what produced `blog.css?v=<hash>?v={{CSS_VERSION}}` in
+    # arch-post-template.html, a doubled query string every page built from the
+    # template then inherited. Static servers ignore the query, so nothing broke
+    # visibly; the cache key was simply not the thing it appeared to be.
+    def _pattern(url):
+        return re.compile(url + r'((?:\?v=[0-9a-zA-Z]+)*)(\?v=\{\{[A-Z_0-9]+\}\})?')
+
+    js_pattern = _pattern(r'(/blog/assets/(?:blog|site-footer)\.js)')
+    css_pattern = _pattern(r'(/blog/assets/blog\.css)')
+
+    def _stamp(version):
+        def sub(m):
+            # A placeholder wins: the build script owns that token.
+            return m.group(1) + (m.group(3) or f"?v={version}")
+        return sub
+
     stamped = 0
     for path in targets:
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8")
-        new = js_pattern.sub(lambda m: f"{m.group(1)}?v={JS_VERSION}", text)
-        new = css_pattern.sub(lambda m: f"{m.group(1)}?v={CSS_VERSION}", new)
+        new = js_pattern.sub(_stamp(JS_VERSION), text)
+        new = css_pattern.sub(_stamp(CSS_VERSION), new)
         if new != text:
             path.write_text(new, encoding="utf-8")
             stamped += 1
@@ -718,7 +736,7 @@ CHATGPT_MARKERS = [
 # At 3 the series label evicted the most specific tag, and the Kubernetes pill
 # disappeared entirely because its only three posts were all in the series.
 MAX_TAGS = 4
-CATEGORY_ORDER = ["All", "AWS Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS Weekly Intelligence", "30 Days of AWS Terraform", "AWS", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
+CATEGORY_ORDER = ["All", "AWS Architecture Series", "Azure Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS Weekly Intelligence", "30 Days of AWS Terraform", "AWS", "Azure", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
 
 NAV_SVG = """<svg width="30" height="30" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
   <rect width="80" height="80" rx="16" fill="#11140F"/>
@@ -942,7 +960,12 @@ def fetch_local_posts():
             # read-only pass-through: never rewrite their individual page, never
             # recompute their display metadata, just reuse whatever's already
             # committed in blog/posts.json for their card.
-            "externally_built": post_file.name.startswith("arch-"),
+            #
+            # The Azure Architecture Series (az-NNN-*.html) is built the same
+            # way, from the same template, and is read-only here for the same
+            # reason. Adding a prefix to this tuple is what makes a series
+            # custom-built; anything absent from it is regenerated on every sync.
+            "externally_built": post_file.name.startswith(("arch-", "az-")),
         })
     return posts
 
@@ -1670,6 +1693,119 @@ def topics_for(title, tags, text=""):
             if any(a in hay for a in aliases)]
 
 
+AZ_PROGRESS_TEMPLATE = """
+    <!-- ① Azure Series Progress -->
+    <div class="sidebar-card" id="az-progress-widget">
+      <div class="sidebar-title">Azure series progress</div>
+      <div id="ap-years" style="display:none;gap:4px;margin-bottom:10px;flex-wrap:wrap"></div>
+      <div id="ap-dots" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
+      <div style="height:4px;background:var(--border);border-radius:4px;margin-bottom:9px;overflow:hidden">
+        <div id="ap-bar" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width .4s ease"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--text-muted)">
+        <span><strong id="ap-count" style="color:var(--text)">0</strong> of <span id="ap-total">__AZ_TOTAL__</span> <span id="ap-unit">posts read</span></span>
+        <a id="ap-next" href="#" style="color:var(--orange);text-decoration:none;font-size:11px"></a>
+      </div>
+      <div style="font-size:10.5px;color:var(--text-muted);margin-top:9px;padding-top:9px;border-top:0.5px solid var(--border)">Stored in your browser · picks up where you left off</div>
+    </div>
+    <script>
+    (function(){
+      var AZ = __AZ_JSON__;
+      var KEY = 'az-read-v1';
+      function load(){ try{ return JSON.parse(localStorage.getItem(KEY)||'[]'); }catch(e){ return []; } }
+      function save(r){ try{ localStorage.setItem(KEY,JSON.stringify(r)); }catch(e){} }
+      var COMPACT_AT = 24;
+      function dotStyle(isRead, compact){
+        if(compact){
+          return 'width:13px;height:13px;border-radius:3px;display:block;'
+            +'border:1px solid '+(isRead?'var(--orange)':'var(--border)')+';'
+            +'background:'+(isRead?'var(--orange)':'transparent')+';'
+            +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
+        }
+        return 'width:26px;height:26px;border-radius:50%;display:flex;align-items:center;'
+          +'justify-content:center;font-size:10px;font-weight:700;'
+          +'border:1.5px solid '+(isRead?'var(--orange)':'var(--border)')+';'
+          +'color:'+(isRead?'#1D2322':'var(--text-muted)')+';'
+          +'background:'+(isRead?'var(--orange)':'transparent')+';'
+          +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
+      }
+      var YEARS = (function(){
+        var seen = {}, out = [];
+        AZ.forEach(function(p){ if(!seen[p.y]){ seen[p.y]=1; out.push(String(p.y)); } });
+        return out.sort().reverse();
+      })();
+      var useTabs = YEARS.length > 1 && AZ.length > COMPACT_AT;
+      var curYear = YEARS[0];
+      function maxYearCount(){
+        var c = {}, m = 0;
+        AZ.forEach(function(p){ c[p.y] = (c[p.y]||0)+1; if(c[p.y] > m) m = c[p.y]; });
+        return m;
+      }
+      function renderTabs(){
+        var tw = document.getElementById('ap-years');
+        if(!tw) return;
+        if(!useTabs){ tw.style.display = 'none'; return; }
+        tw.style.display = 'flex';
+        if(!tw.dataset.built){
+          YEARS.forEach(function(y){
+            var b = document.createElement('button');
+            b.textContent = y; b.dataset.y = y;
+            b.style.cssText = 'font-size:10.5px;padding:2px 8px;border-radius:10px;border:1px solid var(--border);cursor:pointer;background:transparent;color:var(--text-muted)';
+            b.onclick = function(){ curYear = y; render(); };
+            tw.appendChild(b);
+          });
+          tw.dataset.built = '1';
+        }
+        tw.querySelectorAll('button').forEach(function(b){
+          var on = String(b.dataset.y) === String(curYear);
+          b.style.background = on ? 'var(--orange)' : 'transparent';
+          b.style.color = on ? '#1D2322' : 'var(--text-muted)';
+          b.style.borderColor = on ? 'var(--orange)' : 'var(--border)';
+          b.style.fontWeight = on ? '600' : '400';
+        });
+      }
+      function render(){
+        var read = load();
+        var wrap = document.getElementById('ap-dots');
+        if(!wrap) return;
+        var shown = useTabs ? AZ.filter(function(q){ return String(q.y) === String(curYear); }) : AZ;
+        var compact = (useTabs ? maxYearCount() : AZ.length) > COMPACT_AT;
+        wrap.style.gap = compact ? '4px' : '6px';
+        wrap.innerHTML = '';
+        renderTabs();
+        shown.forEach(function(p){
+          var d = document.createElement('a');
+          d.href = '/blog/'+p.slug+'/';
+          d.title = '#'+p.n+': '+p.title;
+          var isRead = read.includes(p.n);
+          d.style.cssText = dotStyle(isRead, compact);
+          if(!compact) d.textContent = p.n;
+          d.addEventListener('click',function(e){
+            e.preventDefault();
+            var r=load(); var i=r.indexOf(p.n);
+            if(i>-1)r.splice(i,1); else r.push(p.n);
+            save(r); render();
+          });
+          wrap.appendChild(d);
+        });
+        var inScope = shown.filter(function(q){ return read.includes(q.n); }).length;
+        var pct = shown.length ? Math.round(inScope/shown.length*100) : 0;
+        document.getElementById('ap-bar').style.width = pct+'%';
+        document.getElementById('ap-count').textContent = inScope;
+        document.getElementById('ap-total').textContent = shown.length;
+        document.getElementById('ap-unit').textContent = useTabs ? ('posts in '+curYear) : 'posts read';
+        var next = null;
+        for(var i=0;i<AZ.length;i++){ if(!read.includes(AZ[i].n)){ next=AZ[i]; break; } }
+        var el = document.getElementById('ap-next');
+        if(next){ el.href='/blog/'+next.slug+'/'; el.textContent='#'+next.n+' Next →'; }
+        else{ el.textContent='✓ All done!'; el.removeAttribute('href'); }
+      }
+      render();
+    })();
+    </script>
+"""
+
+
 def build_index_page(posts):
     tag_counts = {}
     for p in posts:
@@ -1691,6 +1827,23 @@ def build_index_page(posts):
 
     post_texts = [soup_text(p["body_html"]) for p in posts]
 
+    # The service catalogue is generated from botocore, so it knows AWS and
+    # nothing else. Two widgets are built on it — the "AWS services across all
+    # posts" bar list and the domain donut — and a post about Azure matches no
+    # service in it. Left alone, an Azure post would count as a post with zero
+    # AWS services and land in the donut's "Non-AWS" slice beside the health and
+    # career posts, which is true but useless: it would say the blog is getting
+    # less technical when it is getting broader.
+    #
+    # So both widgets are scoped to the posts the catalogue can actually
+    # describe, and the footer says which posts those are. A non-AWS series gets
+    # its own widget when there is a catalogue behind it, not a share of this one.
+    NON_AWS_SERIES = ("Azure Architecture Series",)
+    aws_scope = [(p, t) for p, t in zip(posts, post_texts)
+                 if not any(s in p["tags"] for s in NON_AWS_SERIES)]
+    aws_posts = [p for p, _ in aws_scope]
+    aws_texts = [t for _, t in aws_scope]
+
     # Which services each post mentions, so clicking one in the sidebar can
     # filter the grid to those posts. Pipe-delimited and lower-cased: the
     # filter does a substring test, and service names contain spaces, so a
@@ -1700,12 +1853,32 @@ def build_index_page(posts):
         _hits = set(count_services(_text)) | set(count_services(_p["title"]))
         post_services[_p["slug"]] = "|".join(sorted(h.lower() for h in _hits))
 
+    # Cloud accent. A card carries a colour so the grid is scannable without
+    # reading: AWS warm, Azure blue, GCP green. Driven off the series label
+    # rather than the post's content, because a post that merely mentions Azure
+    # is not an Azure post -- the label is the thing the reader is being told.
+    # A post in no cloud series gets no class and is styled exactly as before.
+    CLOUD_BY_LABEL = [
+        ("Azure Architecture Series", "cloud cloud-azure"),
+        ("GCP Architecture Series", "cloud cloud-gcp"),
+        ("AWS Architecture Series", "cloud cloud-aws"),
+        ("AWS Daily Intelligence", "cloud cloud-aws"),
+        ("AWS Weekly Intelligence", "cloud cloud-aws"),
+        ("AWS Weekly Lab", "cloud cloud-aws"),
+    ]
+
+    def cloud_class(tags):
+        for label, cls in CLOUD_BY_LABEL:
+            if label in tags:
+                return " " + cls
+        return ""
+
     cards_html = []
     for p in posts:
         tag1 = p["tags"][0] if p["tags"] else "Tech"
         tags_data = " ".join(p["tags"]).lower()
         cards_html.append(
-            f'<a href="/blog/{p["slug"]}/" class="post-card"'
+            f'<a href="/blog/{p["slug"]}/" class="post-card{cloud_class(p["tags"])}"'
             f' data-title="{escape(p["title"])}"'
             f' data-excerpt="{escape(p["excerpt"])}"'
             f' data-tags="{escape(tags_data)}"'
@@ -1745,8 +1918,8 @@ def build_index_page(posts):
     # will show. Those two disagreeing is the bug this session just fixed on
     # the homepage; no reason to reintroduce it here.
     service_counts = {}
-    for services in post_services.values():
-        for svc in filter(None, services.split("|")):
+    for _p in aws_posts:
+        for svc in filter(None, post_services.get(_p["slug"], "").split("|")):
             service_counts[svc] = service_counts.get(svc, 0) + 1
     # post_services is lower-cased for the DOM filter; restore display case.
     _display = {s.lower(): s for s in KNOWN_SERVICES}
@@ -1757,7 +1930,7 @@ def build_index_page(posts):
     # widget cannot show gets named here, at build time, every time.
     # Only the top few, and only if there is something worth acting on -- a
     # header with nothing under it trains you to skip the whole block.
-    unlisted = find_unlisted_services(post_texts)[:12]
+    unlisted = find_unlisted_services(aws_texts)[:12]
     if unlisted:
         print("  NOTE: %d service(s) mentioned in posts but missing from "
               "SERVICE_DOMAIN (add them there to include them in the "
@@ -1813,8 +1986,9 @@ def build_index_page(posts):
 
     service_rows = "\n".join(_service_row(s, c) for s, c in ranked)
     described = sum(1 for s, _ in ranked if s in SERVICE_INFO)
-    print(f"  {services_total} AWS services detected across posts "
-          f"({described} with an AWS description and link)")
+    print(f"  {services_total} AWS services detected across {len(aws_posts)} AWS "
+          f"post(s) ({described} with an AWS description and link); "
+          f"{len(posts) - len(aws_posts)} non-AWS post(s) excluded")
 
     # ── Widget data ───────────────────────────────────────────
 
@@ -1839,7 +2013,7 @@ def build_index_page(posts):
     # titled "DynamoDB capacity" belongs to Data even if it mentions VPC while
     # explaining something else.
     domain_counts = {}
-    for p, text in zip(posts, post_texts):
+    for p, text in aws_scope:
         title_hits = count_services(p["title"])
         body_hits = count_services(text)
 
@@ -1889,6 +2063,26 @@ def build_index_page(posts):
         {"n": i+1, "slug": p["slug"], "title": p["title"].split(" — ", 1)[-1] if " — " in p["title"] else p["title"], "date": p["date_fmt"], "y": p["date"].year}
         for i, p in enumerate(reversed(arch_posts))
     ])
+    # Azure Architecture Series. Numbered from "#N" in the title rather than by
+    # position, which is what the arch series does above: position is only
+    # correct while no post is ever backfilled or reordered, and the number is
+    # in the reader's URL and in their localStorage read-list, so it cannot be
+    # allowed to shift under them. The title format is fixed in AZURE-ROADMAP.md.
+    az_posts = [p for p in posts if "Azure Architecture Series" in p["tags"]]
+
+    def _az_num(p):
+        m = _re.search(r'#(\d+)', p["title"])
+        return int(m.group(1)) if m else 0
+
+    def _az_title(p):
+        return _re.sub(r'^Azure Architecture Series\s*#\d+\s*[-–—]\s*', '', p["title"])
+
+    az_series_json = json.dumps([
+        {"n": _az_num(p), "slug": p["slug"], "title": _az_title(p),
+         "date": p["date_fmt"], "y": p["date"].year}
+        for p in sorted(az_posts, key=_az_num)
+    ])
+
     def _feed_item(p, n=None, title=None):
         return {"n": n, "slug": p["slug"], "title": title or p["title"],
                 "date": p["date_fmt"], "rt": p["read_time"],
@@ -1931,11 +2125,17 @@ def build_index_page(posts):
                    _re.sub(r'^AWS Weekly Intelligence\s*#\d+\s*[-–—]\s*', '', p["title"]))
         for p in sorted(weekly_posts, key=_weekly_num, reverse=True)[:3]
     ]
+    _az_feed = [
+        _feed_item(p, _az_num(p) or None, _az_title(p))
+        for p in sorted(az_posts, key=_az_num, reverse=True)[:3]
+    ]
     _all_feed = [_feed_item(p) for p in posts[:3]]
 
     feed_data_json = json.dumps({
         "arch":   {"items": _arch_feed,   "count": len(arch_posts),
                    "href": "/blog/?tag=aws+architecture+series"},
+        "az":     {"items": _az_feed,     "count": len(az_posts),
+                   "href": "/blog/?tag=azure+architecture+series"},
         "lab":    {"items": _lab_feed,    "count": len(lab_posts),
                    "href": "/blog/?tag=aws+weekly+lab"},
         "daily":  {"items": _daily_feed,  "count": len(daily_posts),
@@ -1944,6 +2144,21 @@ def build_index_page(posts):
                    "href": "/blog/?tag=aws+weekly+intelligence"},
         "all":    {"items": _all_feed,    "count": len(posts), "href": "/blog/"},
     })
+
+    # 3b. Azure series progress widget.
+    #
+    # Built as a string rather than written into the page template because it
+    # must not render at all until the series exists: a progress card reading
+    # "0 of 0 posts read" is worse than no card. It appears with post #1 and
+    # disappears again if the series is ever withdrawn.
+    #
+    # The markup is the lab/arch widget with its own ids (ap-*) and its own
+    # localStorage key, so a reader's Azure progress is independent of their AWS
+    # progress. Ids are what keep three of these on one page from writing into
+    # each other's DOM.
+    az_progress_html = "" if not az_posts else AZ_PROGRESS_TEMPLATE \
+        .replace("__AZ_JSON__", az_series_json) \
+        .replace("__AZ_TOTAL__", str(len(az_posts)))
 
     # 4. Publishing heatmap — posts per month per year
     from collections import defaultdict
@@ -2025,7 +2240,7 @@ def build_index_page(posts):
       <div class="svc-list">
 {service_rows}
       </div>
-      <div class="svc-foot">All {services_total} AWS services covered, by number of posts. Click one to filter; hover for what it does.</div>
+      <div class="svc-foot">All {services_total} AWS services covered, across {len(aws_posts)} AWS posts, by number of posts. Click one to filter; hover for what it does.</div>
     </div>
     <div class="sidebar-card" id="quiz-widget">
       <div class="sidebar-title" style="display:flex;justify-content:space-between;align-items:center">
@@ -2356,7 +2571,7 @@ def build_index_page(posts):
       render();
     }})();
     </script>
-
+{az_progress_html}
     <!-- ② Domain Donut -->
     <div class="sidebar-card" id="domain-donut-widget">
       <div class="sidebar-title">Posts by AWS domain</div>
@@ -2449,6 +2664,7 @@ def build_index_page(posts):
       var FEEDS = {feed_data_json};
       var TABS = [
         ['arch','Arch',     'AWS Architecture Series — one enterprise pattern at a time, with the decisions and trade-offs behind it'],
+        ['az','Azure',      'Azure Architecture Series — the same treatment, on Azure, from the basics upward'],
         ['lab','Lab',       'AWS Weekly Lab — one production-grade platform capability built end to end each week'],
         ['daily','Daily',   'AWS Daily Intelligence — what AWS shipped, and whether it actually changes anything'],
         ['weekly','Weekly', 'AWS Weekly Intelligence — everything AWS shipped that week, ranked, in one place'],

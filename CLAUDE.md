@@ -265,6 +265,53 @@ Leave `og:image` and `twitter:image` pointing at the site image. Do **not** poin
 them at the post's diagram: those are SVG, and LinkedIn, X and Facebook do not
 render SVG for `og:image`, so the card would come out blank.
 
+## Azure Architecture Series
+
+Started 2026-08-14. Read `AZURE-ROADMAP.md` before writing any post — the full
+numbered curriculum is decided there, and post numbers appear in published URLs
+and in readers' saved progress, so a number cannot be reassigned later.
+
+- File prefix `az-NNN-*` in `posts/`, slug prefix `azure-architecture-*`.
+- Labels: `[Azure, "Azure Architecture Series"]`.
+- Title format: `Azure Architecture Series #N — <Topic>` (em dash), matching the
+  AWS series exactly. The sidebar progress
+  widget parses `#N` **from the title**, unlike the AWS arch widget which numbers
+  by position — position is only correct while nothing is ever backfilled.
+- **Custom-built pages, like the AWS arch series.** `az-` is in the
+  `externally_built` tuple in `sync_blog.py`, so sync never regenerates them.
+  Build from `_templates/arch-post-template.html`; edit
+  `blog/azure-architecture-*/index.html` directly for live fixes.
+- Reference section heading is `Official Azure Reference` (singular, matching the
+  arch series), and `validate_arch_post.py` requires it.
+
+**Not an AWS comparison series.** Azure is explained on its own terms, for a
+reader who may never have opened an AWS console. No running translation table,
+no "the AWS equivalent is". A comparison appears only where the Azure design is
+genuinely unintelligible without one, which should be rare. See the note in
+`AZURE-ROADMAP.md`.
+
+### Verification on Azure posts
+
+Same badge, same rules, different hosts. `AWS_DOC_HOSTS` is gone; the allowlist
+is now per-series `doc_hosts` in the `SERIES` dict in `validate_arch_post.py`.
+Azure claims must cite `learn.microsoft.com` or `azure.microsoft.com`.
+
+Measured 2026-08-14, both Microsoft hosts return a real HTTP 404 for a missing
+page — unlike `docs.aws.amazon.com`, which answers 200 with a ~1 KB shell. So the
+`az` series declares no `shell_hosts` and `--check-links` judges it on the status
+code. **Do not extend the body-size heuristic to a host without probing a
+known-bad URL on it first**; a wrong threshold either passes dead links or fails
+live ones.
+
+### The service widget is AWS-only, by design
+
+`SERVICE_DOMAIN` and the "AWS services across all posts" bar list are derived
+from botocore, which knows AWS and nothing else. Azure posts are now excluded
+from that widget and from the domain donut (`NON_AWS_SERIES` in
+`build_index_page()`), rather than being counted as posts with zero services and
+filed under "Non-AWS" beside the health and career posts. A non-AWS series gets
+its own widget when there is a catalogue behind it — not a share of this one.
+
 ## Starting a new series
 
 Read this before publishing the first post of any new series (e.g. a daily

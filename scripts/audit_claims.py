@@ -96,7 +96,11 @@ def audit(path):
 
 def main():
     args = [a for a in sys.argv[1:]]
-    files = sorted(glob.glob(os.path.join(ROOT, "posts", "arch-*.html")))
+    # Both architecture series. Coverage is the same question on either cloud,
+    # and a report that silently omits a series is how a badge with 0% traced
+    # figures goes unnoticed.
+    files = sorted(glob.glob(os.path.join(ROOT, "posts", "arch-*.html"))
+                   + glob.glob(os.path.join(ROOT, "posts", "az-*.html")))
     if args:
         files = [f for f in files if any(a in os.path.basename(f) for a in args)]
 
