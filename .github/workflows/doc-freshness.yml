@@ -1,0 +1,78 @@
+name: Documentation freshness
+
+# A post is verified on the day it is written and nothing re-checks it after
+# that. Vendors change prices, rename doc pages and migrate hosts, and none of
+# it produces an error here -- the post simply becomes wrong beneath a badge
+# saying its figures were checked.
+#
+# So this runs weekly, unattended, and keeps a single issue up to date with what
+# needs attention. It is deliberately quiet: staleness alone never fails the
+# run, because after a year almost every post is past the threshold and a job
+# that always fails is one nobody looks at. A broken citation does fail, because
+# that is a real defect and they are rare.
+#
+# Tuesday rather than Monday so it does not collide with refresh-aws-services.
+
+on:
+  schedule:
+    - cron: "0 7 * * 2"
+  workflow_dispatch:
+    inputs:
+      stale_batch:
+        description: "How many stale posts to surface"
+        required: false
+        default: "10"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install --quiet pyyaml
+
+      - name: Check citation freshness
+        id: check
+        run: |
+          python scripts/check_freshness.py \
+            --stale-batch "${{ github.event.inputs.stale_batch || '10' }}" \
+            --out freshness.md
+          # Record whether anything is actually broken, separately from the
+          # report itself, so the step below can decide whether to fail.
+          if grep -q "^## Broken" freshness.md; then
+            echo "broken=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "broken=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="Documentation freshness"
+          # One issue, edited in place each week. Opening a new issue per run
+          # would bury the signal in a list of near-identical reports.
+          NUM=$(gh issue list --state open --search "$TITLE in:title" \
+                  --json number,title \
+                  --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+          if [ -n "$NUM" ]; then
+            gh issue edit "$NUM" --body-file freshness.md
+            echo "Updated issue #$NUM"
+          else
+            gh issue create --title "$TITLE" --body-file freshness.md
+          fi
+
+      - name: Fail if a citation is broken
+        if: steps.check.outputs.broken == 'true'
+        run: |
+          echo "A cited vendor page no longer resolves. See the freshness issue."
+          exit 1

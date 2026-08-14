@@ -8,13 +8,23 @@
 
 ## Which folder am I in?
 
-**Three worktrees share one repository. Check before doing anything.**
+**One chat window, one folder. Four of each.** Check before doing anything.
 
-| Folder | Branch | Used for |
-| --- | --- | --- |
-| `C:\Projects\Engineering\katta698.github.io` | `main` | Architecture Series, Weekly Lab, site work |
-| `C:\Projects\Engineering\katta698-daily` | `daily` | AWS Daily Intelligence |
-| `C:\Projects\Engineering\katta698-weekly` | `weekly` | AWS Weekly Intelligence |
+| Chat window | Folder | Branch | Series |
+| --- | --- | --- | --- |
+| AWS Architecture Series | `C:\Projects\Engineering\katta698.github.io` | `main` | AWS Architecture, Weekly Lab, site work |
+| Azure Architecture Series | `C:\Projects\Engineering\katta698-azure` | `azure` | Azure Architecture, Azure Weekly Intelligence |
+| GCP Architecture Series | `C:\Projects\Engineering\katta698-gcp` | `gcp` | GCP Architecture, GCP Weekly Intelligence |
+| AWS Intelligence — daily + weekly | `C:\Projects\Engineering\katta698-aws-intel` | `aws-intel` | AWS Daily + AWS Weekly Intelligence |
+
+**A worktree belongs to a window, not to a series.** `daily` and `weekly` were
+two worktrees driven from one window, which is one more than that window can use
+— a window can only be in one directory at a time. They were consolidated into
+`aws-intel` on 2026-08-14. For the same reason, Azure and GCP weekly
+intelligence need **no new worktrees**: they belong to the windows that already
+own those clouds.
+
+Add a worktree when a new *window* is opened, not when a new series starts.
 
 ```
 git worktree list
@@ -24,26 +34,55 @@ Run that if there is any doubt. Each worktree has its own working files and its
 own staging area, but they share one history — a commit made in any of them is
 visible to the others immediately.
 
-Two worktrees cannot check out the same branch. That is the only reason `daily`
-and `weekly` exist as branches; they are staging branches, not long-lived ones,
-and everything publishes to `main`.
+Two worktrees cannot check out the same branch. That is the only reason these
+branches exist; they are staging branches, not long-lived ones, and everything
+publishes to `main`.
+
+**One window, one worktree. This is not optional.** The `azure` and `gcp`
+worktrees were created on 2026-08-14 because all three cloud series were being
+written in *this* folder at once, from three chat windows. Worktrees are not
+about avoiding merge conflicts — they are about not sharing a working directory.
+Three sessions in one folder share one set of files and one staging area, so:
+
+- each session sees the others' half-finished edits as if they were its own;
+- `git add -A` in any window stages whatever the others happen to have open;
+- a commit can capture another window's incomplete work;
+- running `sync_blog.py` regenerates files another window is mid-edit on.
+
+None of that produces an error. It was noticed only because a push was blocked
+by 264 lines of another session's uncommitted changes to `sync_blog.py` and
+`validate_arch_post.py`.
+
+Adding a sixth series means adding a sixth worktree, not a sixth window here:
+
+```
+git worktree add C:\Projects\Engineering\katta698-<name> -b <name> main
+```
+
+Branch from `main` rather than `origin/main` when the work being moved has
+commits that are not pushed yet, or the new worktree starts without them.
 
 ### Publishing from a series worktree
 
-Identical for `daily` and `weekly`. Rebase onto `main` first, then push straight
-to remote `main`:
+Identical for `azure`, `gcp` and `aws-intel`. Rebase onto `main` first, then push
+straight to remote `main`:
 
 ```
-cd C:\Projects\Engineering\katta698-daily     # or -weekly
+cd C:\Projects\Engineering\katta698-azure     # or -gcp, or -aws-intel
 git fetch origin
 git rebase origin/main          # BEFORE running sync, not just before editing
 # write the post, run scripts/sync_blog.py, commit
 git push origin HEAD:main       # fast-forwards remote main, no merge commit
 ```
 
-`git push origin HEAD:main` works from either branch and needs no merge commit,
-provided you rebased first. If it is rejected, the branch has fallen behind —
-rebase and push again.
+`git push origin HEAD:main` works from any of those branches and needs no merge
+commit, provided you rebased first. If it is rejected, the branch has fallen
+behind — rebase and push again.
+
+**No window waits for another.** Each commits in its own folder whenever it is
+ready and pushes independently; rebasing first is what makes that safe. If you
+find yourself holding a change because another window has not pushed, something
+is wrong with the layout, not with the timing.
 
 **Rebase before running sync, not just before editing.** Each worktree has its
 own copy of `posts/`, so it cannot see a post written in another worktree until
@@ -74,10 +113,15 @@ generated.
 publishing rewrite the same generated files. The Actions bot also auto-commits
 `blog/posts.json` after every push, which is a third writer.
 
-Worktrees make this *more* likely, not less: each of the three has its own
-`posts/` and cannot see another's new post until it rebases. With three writers
-rather than two, conflicts on generated files are routine. That is why the rule
-is rebase before **sync**, not merely before editing.
+Worktrees make this *more* likely, not less: each of the four has its own
+`posts/` and cannot see another's new post until it rebases. With five writers
+rather than two — four worktrees plus the Actions bot — conflicts on generated
+files are routine. That is why the rule is rebase before **sync**, not merely
+before editing.
+
+They are still the right structure. A conflict on a generated file is visible
+and has a documented fix; sharing one working directory silently mixes two
+sessions' unfinished work, which does not.
 
 **Resolving a conflict on a generated file — never hand-merge it:**
 
