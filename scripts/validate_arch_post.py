@@ -523,8 +523,75 @@ def check_verification(slug, name, fm, parsed, body, spec):
                        'Official AWS Reference section -- a reader cannot repeat the '
                        'check' % (name, i, src))
 
+    _check_derived(slug, name, claims)
+
     if CHECK_LINKS:
         _check_links_resolve(slug, name, claims)
+
+
+def _check_derived(slug, name, claims):
+    """Recompute any claim that shows its arithmetic.
+
+    Sourcing a claim is not the same as getting it right. arch-018 cited two
+    genuine AWS pricing pages and still published a wrong break-even, because
+    the error was in the maths done on top of them -- it paired a current write
+    price with a read price from before November 2024 and derived a ratio from
+    the mixture. Every check written before this one would have passed that
+    post: the claims were real, the sources were AWS, the links resolved.
+
+    So a claim may carry a `derive:` expression and an `expect:` value. The
+    expression is evaluated with a deliberately tiny arithmetic evaluator and
+    compared against what the post says. If they disagree, the post is wrong
+    about its own numbers and the build fails.
+
+    This is opt-in per claim, because most claims are quotations and have no
+    arithmetic in them. It is meant for the ones that have actually been wrong:
+    break-evens, ratios, per-unit conversions, effective rates.
+    """
+    import ast
+    import operator
+
+    ops = {ast.Add: operator.add, ast.Sub: operator.sub,
+           ast.Mult: operator.mul, ast.Div: operator.truediv,
+           ast.Pow: operator.pow, ast.USub: operator.neg}
+
+    def evaluate(node):
+        if isinstance(node, ast.Expression):
+            return evaluate(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in ops:
+            return ops[type(node.op)](evaluate(node.left), evaluate(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in ops:
+            return ops[type(node.op)](evaluate(node.operand))
+        raise ValueError("only numbers and + - * / ** are allowed")
+
+    for i, c in enumerate(claims, 1):
+        if not isinstance(c, dict) or "derive" not in c:
+            continue
+        expr = str(c["derive"])
+        if "expect" not in c:
+            err(slug, '%s verified_claims[%d] has "derive:" but no "expect:" — '
+                      'there is nothing to compare the result against' % (name, i))
+            continue
+        try:
+            got = evaluate(ast.parse(expr, mode="eval"))
+        except Exception as exc:
+            err(slug, '%s verified_claims[%d] derive "%s" did not evaluate: %s'
+                % (name, i, expr, exc))
+            continue
+        try:
+            want = float(str(c["expect"]).strip().rstrip("%$x×"))
+        except ValueError:
+            err(slug, '%s verified_claims[%d] expect "%s" is not a number'
+                % (name, i, c["expect"]))
+            continue
+        # A published figure is rounded; allow a percent of slack, no more.
+        tol = max(abs(want) * 0.01, 1e-9)
+        if abs(got - want) > tol:
+            err(slug, '%s verified_claims[%d] says %s but %s works out to %.6g '
+                      '— the post disagrees with its own arithmetic'
+                % (name, i, c["expect"], expr, got))
 
 
 def _check_links_resolve(slug, name, claims):

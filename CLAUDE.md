@@ -169,6 +169,24 @@ numbers that were.
 fail a build -- deciding which figures matter is a judgement -- but a badged
 post tracing 0% of its figures is a badge doing less than it appears to.
 
+**A derived figure must show its arithmetic.** Break-evens, ratios, per-unit
+conversions and effective rates are the only things that have ever been wrong
+here, so a claim stating one carries the calculation:
+
+```yaml
+  - claim: "Writes break even near 29% sustained utilisation"
+    derive: "(0.00065 / 3600 * 1000000) / 0.625"
+    expect: "0.289"
+    source: https://aws.amazon.com/dynamodb/pricing/provisioned/
+```
+
+`validate_arch_post.py` evaluates `derive:` and fails the build if it disagrees
+with `expect:` by more than one percent. The inputs are the rates from the cited
+page, so a price change makes the check fail rather than leaving a stale
+conclusion in place. This is what would have caught arch-018: its wrong
+break-even came from pairing a current write price with a read price from
+before November 2024, and no amount of source-checking notices that.
+
 **Sourcing is not correctness.** The checks confirm a claim cites AWS and that
 the page resolves. They cannot tell whether the page was read correctly.
 arch-018 cited two real AWS pricing pages and still stated a wrong break-even,
