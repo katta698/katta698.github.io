@@ -177,7 +177,12 @@
 })();
 
 (function () {
-  const cards = Array.from(document.querySelectorAll('.post-card'));
+  // The server now renders only the current page of cards, so this starts as a
+  // slice and is topped up from blog/cards.json after first paint. Everything
+  // downstream -- filters, search, year pills, sort -- reads this array, so it
+  // must end up holding every post or a filter would silently only search the
+  // page on screen.
+  let cards = Array.from(document.querySelectorAll('.post-card'));
   const pills = Array.from(document.querySelectorAll('.filter-pill'));
   const sbTags = Array.from(document.querySelectorAll('.sb-tag'));
   const searchInput = document.getElementById('blog-search');
@@ -186,6 +191,76 @@
   const emptyEl = document.getElementById('empty-state');
 
   var MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  // Slugs the server rendered onto this page, captured before hydration adds
+  // the rest. Used to restore the paged view when filters are cleared.
+  const serverSlugs = cards.map(c => c.dataset.slug || '');
+  let hydrated = false;
+  let totalPosts = cards.length;
+
+  // Card markup, kept deliberately in step with the f-string in
+  // build_index_page() in sync_blog.py. Two renderers is a real cost, but the
+  // alternative -- shipping rendered HTML for every post in cards.json -- puts
+  // the page weight straight back, since the two inline SVGs are most of a
+  // card's bytes and are identical in all of them.
+  const CLOCK_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
+  const CHEV_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function renderCard(c) {
+    const a = document.createElement('a');
+    a.href = '/blog/' + c.slug + '/';
+    a.className = 'post-card' + (c.cloud ? ' ' + c.cloud : '');
+    a.dataset.slug = c.slug;
+    a.dataset.title = c.title;
+    a.dataset.excerpt = c.excerpt;
+    a.dataset.tags = c.tags;
+    a.dataset.date = c.date;
+    a.dataset.services = '|' + (c.services || '') + '|';
+    a.dataset.topics = '|' + (c.topics || '') + '|';
+    a.innerHTML =
+      '<div class="post-card-body">' +
+      '<div class="post-meta"><span class="tag-badge">' + esc(c.tag1) + '</span>' +
+      '<span class="post-date">' + esc(c.date_fmt) + '</span></div>' +
+      '<div class="post-title">' + esc(c.title) + '</div>' +
+      '<div class="post-excerpt">' + esc(c.excerpt) + '</div>' +
+      '<div class="post-footer">' +
+      '<span class="read-time">' + CLOCK_SVG + ' ' + c.read_time + ' min read</span>' +
+      '<span class="read-more">Read ' + CHEV_SVG + '</span>' +
+      '</div></div>';
+    return a;
+  }
+
+  // Only this page's cards are in the HTML, so a filter would otherwise search
+  // 24 posts and quietly report that as the whole archive. Fetched after first
+  // paint: landing on /blog/ and reading the newest posts costs nothing extra.
+  function hydrate() {
+    if (hydrated) return Promise.resolve();
+    return fetch('/blog/cards.json')
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then(data => {
+        const have = new Set(serverSlugs);
+        const frag = document.createDocumentFragment();
+        data.forEach(c => { if (!have.has(c.slug)) frag.appendChild(renderCard(c)); });
+        if (emptyEl) grid.insertBefore(frag, emptyEl);
+        else grid.appendChild(frag);
+        cards = Array.from(grid.querySelectorAll('.post-card'));
+        totalPosts = cards.length;
+        hydrated = true;
+        applyFilters();
+      })
+      .catch(() => {
+        // Leave the server-rendered page exactly as it is. Filtering then only
+        // covers this page, which is worse than the whole archive but better
+        // than an empty grid, and paging still works because it is plain links.
+        hydrated = false;
+      });
+  }
 
   let activeTag = 'all';
   let activeYear = 'all';
@@ -209,9 +284,27 @@
     return term.split(/\s+/).every(w => haystack.includes(w));
   }
 
+  // With no filter active the reader is browsing, and should see this page's
+  // slice with the pagination nav. The moment anything is filtered the query
+  // runs across every post, so paging by 24 would be meaningless -- the nav is
+  // hidden and every match is shown.
+  function filtersActive() {
+    return activeTag !== 'all' || activeYear !== 'all' || activeMonth !== 'all' ||
+           activeService !== 'all' || activeTopic !== 'all' || !!searchTerm;
+  }
+
   function applyFilters() {
+    const pager = document.getElementById('pagination');
+    const browsing = !filtersActive();
+    if (pager) pager.style.display = browsing ? '' : 'none';
+    // Cards the server put on this page; the rest arrive via cards.json.
+    const onThisPage = new Set(serverSlugs);
     let visible = 0;
     cards.forEach(card => {
+      if (browsing && hydrated && !onThisPage.has(card.dataset.slug)) {
+        card.style.display = 'none';
+        return;
+      }
       const tags = (card.dataset.tags || '').toLowerCase();
       const d = card.dataset.date || '';
       const tagMatch = activeTag === 'all' || tags.includes(activeTag.toLowerCase());
@@ -232,9 +325,10 @@
       if (show) visible++;
     });
     if (countEl) {
-      countEl.textContent = visible === cards.length
-        ? `${visible} posts`
-        : `${visible} of ${cards.length} posts`;
+      const total = hydrated ? cards.length : totalPosts;
+      countEl.textContent = (browsing || visible === total)
+        ? `${total} posts`
+        : `${visible} of ${total} posts`;
     }
     if (emptyEl) emptyEl.style.display = visible === 0 ? '' : 'none';
   }
@@ -357,13 +451,18 @@
     monthRow.style.display = '';
   }
 
-  // Build year filter pills dynamically from data-date on cards
-  var years = [];
-  var seenYears = {};
-  cards.forEach(function(c) {
-    var y = (c.dataset.date || '').slice(0, 4);
-    if (y && !seenYears[y]) { seenYears[y] = true; years.push(y); }
-  });
+  // Year pills come from the server, not from the cards on screen: this runs
+  // before cards.json arrives, so scanning the DOM would offer only the years
+  // this page's 24 posts happen to cover. Falls back to the DOM scan for any
+  // page built before that attribute existed.
+  var years = ((grid && grid.dataset.years) || '').split(',').filter(Boolean);
+  if (!years.length) {
+    var seenYears = {};
+    cards.forEach(function(c) {
+      var y = (c.dataset.date || '').slice(0, 4);
+      if (y && !seenYears[y]) { seenYears[y] = true; years.push(y); }
+    });
+  }
   years.sort(function(a, b) { return b - a; });
 
   var yearRow = document.createElement('div');
@@ -479,6 +578,20 @@
     setTag(tagParam.toLowerCase());
   } else {
     applyFilters();
+  }
+
+  // Pull in the rest of the archive once the page is interactive. Deferred to
+  // idle so it never competes with first paint; the paged view is already
+  // usable and correct without it.
+  if (grid) {
+    if (window.requestIdleCallback) requestIdleCallback(hydrate, { timeout: 2500 });
+    else setTimeout(hydrate, 400);
+    // A reader who types or clicks a filter before idle fires must not get a
+    // search over 24 posts, so every entry point waits for the full set first.
+    if (searchInput) searchInput.addEventListener('focus', hydrate, { once: true });
+    document.addEventListener('click', function (e) {
+      if (e.target.closest('.filter-pill, .sb-tag, .svc-name, .topic-chip')) hydrate();
+    }, true);
   }
 })();
 

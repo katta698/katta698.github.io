@@ -10,6 +10,7 @@ Usage:
 import hashlib
 import json
 import math
+import shutil
 import os
 import re
 import sys
@@ -1826,7 +1827,25 @@ def cloud_progress_widget(pfx, widget_id, series_name, key, series_json, total):
             .replace("__TOTAL__", str(total)))
 
 
-def build_index_page(posts):
+POSTS_PER_PAGE = 24
+
+
+def build_index_page(posts, page_posts=None, page=1, total_pages=1):
+    """Build one page of the blog index.
+
+    `posts` is always the full set -- every widget, count and filter pill is
+    derived from it, so slicing it would quietly break the sidebar. Only the
+    cards are paginated, via `page_posts`.
+
+    Pagination exists because every card used to be embedded in this one file:
+    2.8 KB each, so 99 posts was a 279 KB page and 1,000 would be 2.7 MB, all of
+    it downloaded before a reader sees the first post. It degrades gradually and
+    never errors, which is why it needed catching before it got bad.
+
+    The page links are real <a href> elements rather than JavaScript, because
+    there is no sitemap.xml -- this index is the only thing linking to every
+    post, so a JS-only pager would cut crawlers off from older posts.
+    """
     tag_counts = {}
     for p in posts:
         for t in p["tags"]:
@@ -1894,11 +1913,12 @@ def build_index_page(posts):
         return ""
 
     cards_html = []
-    for p in posts:
+    for p in (posts if page_posts is None else page_posts):
         tag1 = p["tags"][0] if p["tags"] else "Tech"
         tags_data = " ".join(p["tags"]).lower()
         cards_html.append(
             f'<a href="/blog/{p["slug"]}/" class="post-card{cloud_class(p["tags"])}"'
+            f' data-slug="{p["slug"]}"'
             f' data-title="{escape(p["title"])}"'
             f' data-excerpt="{escape(p["excerpt"])}"'
             f' data-tags="{escape(tags_data)}"'
@@ -1920,6 +1940,72 @@ def build_index_page(posts):
         f'<span class="sb-tag" data-tag="{c.lower()}">{c} <span style="opacity:.5;font-size:.65rem">{tag_counts.get(c,0)}</span></span>'
         for c in CATEGORY_ORDER if c != "All" and tag_counts.get(c, 0) > 0
     )
+
+    # ── The dataset behind filtering and search ───────────────
+    # Filters run across every post, not just the page on screen, so blog.js
+    # needs the whole set. Written once (from page 1, which sees the same full
+    # `posts`) and fetched by the browser only when a reader actually filters,
+    # so it stays off the critical path for the common case of landing on
+    # /blog/ and reading the newest posts.
+    if page == 1:
+        cards_json = [
+            {
+                "slug": p["slug"],
+                "title": p["title"],
+                "excerpt": p["excerpt"],
+                "tags": " ".join(p["tags"]).lower(),
+                "tag1": p["tags"][0] if p["tags"] else "Tech",
+                "date": p["date"].strftime("%Y-%m-%d"),
+                "date_fmt": p["date_fmt"],
+                "read_time": p["read_time"],
+                "cloud": cloud_class(p["tags"]).strip(),
+                "services": post_services.get(p["slug"], ""),
+                "topics": "|".join(
+                    x.lower() for x in topics_for(p["title"], p["tags"],
+                                                  post_texts[i])),
+            }
+            for i, p in enumerate(posts)
+        ]
+        (BLOG_DIR / "cards.json").write_text(
+            json.dumps(cards_json, separators=(",", ":")), encoding="utf-8")
+
+    # The year pills are built at page load, before cards.json has arrived, so
+    # they cannot be derived from the cards on screen -- page 3 would offer only
+    # the years its own 24 posts happen to cover. Emit the full list instead.
+    index_years = ",".join(sorted(
+        {p["date"].strftime("%Y") for p in posts}, reverse=True))
+
+    # ── Pagination nav ────────────────────────────────────────
+    # Hidden by blog.js the moment a filter or search is active, because those
+    # run across every post rather than the current page, so a page-2 link
+    # would be meaningless while results are being shown.
+    def page_href(n):
+        return "/blog/" if n == 1 else f"/blog/page/{n}/"
+
+    if total_pages > 1:
+        bits = []
+        if page > 1:
+            bits.append(f'<a class="pg-link" href="{page_href(page-1)}" rel="prev">&#8592; Newer</a>')
+        # First, last, and a window around the current page. A thousand posts
+        # is forty pages; printing all forty is its own kind of clutter.
+        window = {1, total_pages, page, page - 1, page + 1}
+        shown = sorted(n for n in window if 1 <= n <= total_pages)
+        prev_n = 0
+        for n in shown:
+            if prev_n and n - prev_n > 1:
+                bits.append('<span class="pg-gap">&#8230;</span>')
+            cls = "pg-num active" if n == page else "pg-num"
+            bits.append(f'<a class="{cls}" href="{page_href(n)}">{n}</a>')
+            prev_n = n
+        if page < total_pages:
+            bits.append(f'<a class="pg-link" href="{page_href(page+1)}" rel="next">Older &#8594;</a>')
+        pagination = (
+            '<nav class="pagination" id="pagination" aria-label="Blog pages">'
+            + "".join(bits)
+            + f'<span class="pg-of">Page {page} of {total_pages}</span></nav>'
+        )
+    else:
+        pagination = ""
 
     # ── AWS service mention counts ─────────────────────────────
     # Two passes on purpose. The first reads every post to find out which
@@ -2272,12 +2358,13 @@ def build_index_page(posts):
 <div class="results-count" id="results-count">{total_posts} posts</div>
 <div class="layout">
   <div>
-    <div class="posts-grid" id="posts-grid">
+    <div class="posts-grid" id="posts-grid" data-page="{page}" data-total-pages="{total_pages}" data-years="{index_years}">
       {"".join(cards_html)}
       <div class="empty-state" id="empty-state" style="display:none">
         <h3>No posts found</h3><p>Try a different search term or topic filter.</p>
       </div>
     </div>
+    {pagination}
   </div>
   <aside class="sidebar">
     <div class="sidebar-card" id="services-widget">
@@ -3100,7 +3187,30 @@ def main():
             encoding="utf-8",
         )
 
-    (BLOG_DIR / "index.html").write_text(build_index_page(visible_posts), encoding="utf-8")
+    # ── The index, paginated ──────────────────────────────────
+    # Page 1 stays at /blog/ so no existing link breaks; the rest live at
+    # /blog/page/N/. Every page carries the full sidebar and filter pills,
+    # which are computed from the whole post set rather than the page.
+    total_pages = max(1, math.ceil(len(visible_posts) / POSTS_PER_PAGE))
+    for page in range(1, total_pages + 1):
+        chunk = visible_posts[(page - 1) * POSTS_PER_PAGE: page * POSTS_PER_PAGE]
+        html = build_index_page(visible_posts, page_posts=chunk,
+                                page=page, total_pages=total_pages)
+        if page == 1:
+            (BLOG_DIR / "index.html").write_text(html, encoding="utf-8")
+        else:
+            d = BLOG_DIR / "page" / str(page)
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "index.html").write_text(html, encoding="utf-8")
+
+    # Stale page directories from a shrinking archive would otherwise linger and
+    # keep answering 200 with posts that have moved to another page.
+    page_root = BLOG_DIR / "page"
+    if page_root.is_dir():
+        for d in page_root.iterdir():
+            if d.is_dir() and (not d.name.isdigit() or int(d.name) > total_pages):
+                shutil.rmtree(d)
+
 
     # /blog/drafts/ — unlisted index of currently-pending drafts, so there's
     # one memorable URL instead of needing each draft's own slug on hand.
