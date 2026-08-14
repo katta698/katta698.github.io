@@ -8,23 +8,48 @@
 
 ## Which folder am I in?
 
-**One chat window, one folder. Four of each.** Check before doing anything.
+**One chat window, one folder. One site on `main`, three clouds on branches.**
+Check before doing anything.
 
-| Chat window | Folder | Branch | Series |
+| Chat window | Folder | Branch | Owns |
 | --- | --- | --- | --- |
-| AWS Architecture Series | `C:\Projects\Engineering\katta698.github.io` | `main` | AWS Architecture, Weekly Lab, site work |
-| Azure Architecture Series | `C:\Projects\Engineering\katta698-azure` | `azure` | Azure Architecture, Azure Weekly Intelligence |
-| GCP Architecture Series | `C:\Projects\Engineering\katta698-gcp` | `gcp` | GCP Architecture, GCP Weekly Intelligence |
-| AWS Intelligence — daily + weekly | `C:\Projects\Engineering\katta698-aws-intel` | `aws-intel` | AWS Daily + AWS Weekly Intelligence |
+| Site | `C:\Projects\Engineering\katta698.github.io` | `main` | Everything that is not a post |
+| AWS | `C:\Projects\Engineering\katta698-aws` | `aws` | AWS Architecture, AWS Daily + Weekly Intelligence, Weekly Lab |
+| Azure | `C:\Projects\Engineering\katta698-azure` | `azure` | Azure Architecture, Azure Weekly Intelligence |
+| GCP | `C:\Projects\Engineering\katta698-gcp` | `gcp` | GCP Architecture, GCP Weekly Intelligence |
 
-**A worktree belongs to a window, not to a series.** `daily` and `weekly` were
-two worktrees driven from one window, which is one more than that window can use
-— a window can only be in one directory at a time. They were consolidated into
-`aws-intel` on 2026-08-14. For the same reason, Azure and GCP weekly
-intelligence need **no new worktrees**: they belong to the windows that already
-own those clouds.
+Site work sits on `main` because it owns the shared files every series depends
+on — `blog.css`, `blog.js`, `sync_blog.py`, the validators and the workflows.
+The clouds branch off it and publish back to it, so a change to the machinery
+reaches all three by the rebase they already do before syncing.
+
+**A worktree belongs to a window, not to a series.** A window can only be in one
+directory at a time, so two folders for one window is one too many — `daily` and
+`weekly` were exactly that before the AWS series were consolidated into a single
+window. For the same reason, Azure and GCP weekly intelligence need **no new
+worktrees**: they belong to the windows that already own those clouds. All three
+AWS series share the `aws` worktree for the same reason.
 
 Add a worktree when a new *window* is opened, not when a new series starts.
+
+### Why site work is its own window, and why it holds `main`
+
+Post work touches `posts/` and one page. Site work touches `blog.css`,
+`blog.js`, `sync_blog.py` and the workflows — files that regenerate **every**
+page. A single CSS change rewrites the `?v=` cache-busting token on all ~110
+pages, so it collides with anything else publishing at that moment.
+
+Separating it means a post can publish without waiting for a half-finished CSS
+change, and site work can rebuild the whole site without stepping on a draft.
+
+It holds `main` rather than a branch of its own because the clouds branch from
+`main` and rebase onto it before every sync — so a fix to the shared machinery
+reaches all three through a step they already take, instead of needing to be
+merged anywhere first.
+
+Belongs in the `main` window: the blog index and its filters, pagination, the
+PWA and service worker, the home-page tools, diagram tooling, `sync_blog.py`,
+`validate_arch_post.py`, `check_freshness.py`, and the GitHub workflows.
 
 ```
 git worktree list
@@ -53,7 +78,7 @@ None of that produces an error. It was noticed only because a push was blocked
 by 264 lines of another session's uncommitted changes to `sync_blog.py` and
 `validate_arch_post.py`.
 
-Adding a sixth series means adding a sixth worktree, not a sixth window here:
+Opening a fifth window means adding a fifth worktree, not a fifth session here:
 
 ```
 git worktree add C:\Projects\Engineering\katta698-<name> -b <name> main
@@ -64,11 +89,11 @@ commits that are not pushed yet, or the new worktree starts without them.
 
 ### Publishing from a series worktree
 
-Identical for `azure`, `gcp` and `aws-intel`. Rebase onto `main` first, then push
+Identical for `aws`, `azure` and `gcp`. Rebase onto `main` first, then push
 straight to remote `main`:
 
 ```
-cd C:\Projects\Engineering\katta698-azure     # or -gcp, or -aws-intel
+cd C:\Projects\Engineering\katta698-aws       # or -azure, or -gcp
 git fetch origin
 git rebase origin/main          # BEFORE running sync, not just before editing
 # write the post, run scripts/sync_blog.py, commit
