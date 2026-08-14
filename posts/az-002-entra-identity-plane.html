@@ -1,0 +1,236 @@
+---
+title: "Azure Architecture Series #2 — Microsoft Entra ID as the Identity Plane: Tenant, Directory and the Trust a Subscription Depends On"
+date: 2026-08-15
+slug: azure-architecture-entra-identity-plane
+labels: [Azure, "Azure Architecture Series"]
+verified: '2026-08-14'
+verified_claims:
+  - claim: "All Azure subscriptions have a trust relationship with a Microsoft Entra tenant, and a subscription can trust only a single directory while one tenant might be trusted by multiple subscriptions"
+    source: https://learn.microsoft.com/en-us/entra/fundamentals/how-subscriptions-associated-directory
+  - claim: "When a subscription is associated with a different directory, users who have roles assigned using Azure RBAC lose their access, and classic Service Administrator and Co-Administrators also lose access"
+    source: https://learn.microsoft.com/en-us/entra/fundamentals/how-subscriptions-associated-directory
+  - claim: "All role assignments and custom roles are permanently deleted from the source directory and are not transferred to the target directory"
+    source: https://learn.microsoft.com/en-us/azure/role-based-access-control/transfer-subscription
+  - claim: "System-assigned managed identities must be disabled and re-enabled after a transfer; user-assigned managed identities must be deleted, re-created and re-attached, and their role assignments re-created"
+    source: https://learn.microsoft.com/en-us/azure/role-based-access-control/transfer-subscription
+  - claim: "Key vaults require the associated tenant ID to be updated, all existing access policy entries removed, and new entries added against the target directory"
+    source: https://learn.microsoft.com/en-us/azure/role-based-access-control/transfer-subscription
+  - claim: "An AKS cluster and its associated resources cannot be transferred to a different directory"
+    source: https://learn.microsoft.com/en-us/azure/role-based-access-control/transfer-subscription
+  - claim: "Azure SQL Database, Azure Database for MySQL, and Azure Database for PostgreSQL Flexible Server with Microsoft Entra authentication enabled cannot be transferred to a different directory"
+    source: https://learn.microsoft.com/en-us/azure/role-based-access-control/transfer-subscription
+  - claim: "All Azure Policy objects — custom definitions, assignments, exemptions and compliance data — are impacted and not recoverable; they must be exported, imported and re-assigned"
+    source: https://learn.microsoft.com/en-us/azure/role-based-access-control/transfer-subscription
+  - claim: "Microsoft Sentinel workspaces are offboarded immediately on transfer, and retain the same data if re-onboarded in the new tenant within 90 days"
+    source: https://learn.microsoft.com/en-us/azure/role-based-access-control/transfer-subscription
+  - claim: "To transfer a subscription the Owner role must be assigned directly, without conditions, group assignment, or Privileged Identity Management"
+    source: https://learn.microsoft.com/en-us/azure/role-based-access-control/transfer-subscription
+  - claim: "Changing a subscription's Microsoft Entra directory is not supported for Cloud Solution Provider (CSP) subscriptions"
+    source: https://learn.microsoft.com/en-us/azure/role-based-access-control/transfer-subscription
+  - claim: "Azure Lighthouse is the documented alternative: adopt a multi-directory architecture, leave the subscription in the source directory, and delegate resources so users in the target directory can access it"
+    source: https://learn.microsoft.com/en-us/azure/role-based-access-control/transfer-subscription
+  - claim: "Changing the subscription directory is a service-level operation and does not affect subscription billing ownership"
+    source: https://learn.microsoft.com/en-us/entra/fundamentals/how-subscriptions-associated-directory
+  - claim: "When an owner of a subscription joins that subscription to an existing tenant, the owner is not assigned the Global Administrator role"
+    source: https://learn.microsoft.com/en-us/entra/fundamentals/how-subscriptions-associated-directory
+  - claim: "Every new Microsoft Entra directory includes an initial domain name such as contoso.onmicrosoft.com, and custom domain names can be added"
+    source: https://learn.microsoft.com/en-us/entra/fundamentals/what-is-entra
+problem: "A team treats the Entra tenant as an implementation detail of their Azure estate, discovers during a merger that the subscription must move to the parent company's directory, and finds out mid-migration that every role assignment, every custom role, and every managed identity is destroyed by the move — and that the AKS clusters cannot move at all."
+builds: "The tenant as a separate plane from the subscription: what lives in the directory, what lives in the subscription, which way the trust runs, and what a directory change actually costs. Ends with the multi-directory alternative that avoids the move entirely."
+catch: "Global Administrator is not an Azure role. It grants no access to any resource in any subscription, and a subscription Owner who joins their subscription to a tenant does not become one. The two planes are separate by design and people discover this during an incident."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">Azure Architecture Series · #002 · Identity</div>
+  <h1 class="post-title">Microsoft Entra ID as the Identity Plane: Tenant, Directory and the Trust a Subscription Depends On</h1>
+  <p class="post-subtitle">The directory is not part of your subscription. It is a separate thing your subscription trusts — and the difference only becomes visible on the day you try to change which one.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Microsoft Entra · Identity · Governance</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A mid-sized software company is acquired. The integration plan is unremarkable and someone writes the obvious line into it: move the acquired company's Azure subscriptions into the parent's Microsoft Entra tenant, so that one directory governs everything and the acquired staff sign in with their new accounts.
+    </p>
+    <p>
+      It reads like an administrative change. The resources are not moving. No virtual machine is rebuilt, no database is migrated, no address range changes. The subscription keeps its ID, so the applications that reference it keep working.
+    </p>
+    <p>
+      What actually happens on the day is this. Every role assignment in the subscription is permanently deleted — not migrated, not archived, deleted. Every custom role goes with them. Every system-assigned managed identity stops working and has to be disabled and re-enabled; every user-assigned managed identity has to be deleted, re-created and re-attached to the resource that used it. Every key vault becomes inaccessible until its tenant ID is updated and its access policies are rebuilt. All Azure Policy definitions, assignments, exemptions and compliance history are gone and must be exported and re-created. And the two AKS clusters cannot make the move at all: a cluster cannot be transferred to a different directory, full stop.
+    </p>
+    <p>
+      None of that is a bug, and all of it is documented. It follows from a single structural fact that most teams never have to think about: <strong>the directory is not inside the subscription. The subscription trusts it.</strong>
+    </p>
+
+    <div class="callout amber">
+      <strong>Global Administrator is not an Azure role</strong>
+      <p>The fastest way to see that these are two separate planes: a Global Administrator in Entra ID has no access to any resource in any subscription by virtue of that role. And it works in the other direction too — when the owner of a subscription joins it to an existing tenant, that owner is <em>not</em> assigned Global Administrator. Directory power and resource power are granted separately, and people usually discover this at the worst moment, when nobody in the room can do the thing that needs doing.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Every Azure subscription has a trust relationship with exactly one Microsoft Entra tenant. The tenant supplies the identities; the subscription supplies the resources and the role assignments that point at those identities. A subscription can trust only a single directory, while one directory can be trusted by many subscriptions.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/az-002-tenant-subscription-trust.svg" alt="Diagram: one Microsoft Entra tenant trusted by three Azure subscriptions, showing users, service principals and Entra roles living in the directory while resources and Azure RBAC role assignments live in the subscription, and a panel listing what is destroyed when a subscription moves to a different tenant" />
+      <figcaption>The trust runs one way and is one-to-one from the subscription's side. The lower panel is what a directory change costs — the resources stay, the authorisation layer on top of them is discarded.</figcaption>
+    </figure>
+
+    <h3>What lives in the directory</h3>
+    <p>
+      Users, groups, service principals and app registrations. Managed identities, which are service principals with a lifecycle tied to an Azure resource. And Entra roles — Global Administrator, User Administrator, and the rest — which control access to <em>directory</em> objects: users, groups, domains.
+    </p>
+    <p>
+      A directory has its own identity independent of any subscription. Every new Entra directory gets an initial domain name of the form <code>contoso.onmicrosoft.com</code>, and custom domains are added to it afterwards. A user has one home directory for authentication, but can be a guest in many others.
+    </p>
+
+    <h3>What lives in the subscription</h3>
+    <p>
+      Resources, resource groups, and Azure RBAC role assignments. A role assignment is a pointer: it names a principal in the trusted directory, a role definition, and a scope. That pointer is the entire connection between the two planes, and it is stored on the subscription side.
+    </p>
+    <p>
+      This is why the two-plane model matters more here than the equivalent question in other clouds. The identity is not in the subscription. The permission is. Break the trust and the permissions are pointing at principals the subscription can no longer resolve — which is precisely why they are deleted rather than carried across.
+    </p>
+
+    <h3>Which way the trust runs</h3>
+    <p>
+      The subscription trusts the tenant, not the other way round. The practical consequences:
+    </p>
+    <ul>
+      <li>Adding a subscription to your tenant gives you no power over that subscription's contents until somebody assigns you an Azure role in it.</li>
+      <li>Being Global Administrator of the tenant does not let you read a storage account. It lets you <em>elevate</em> yourself to User Access Administrator at the root of the hierarchy, which is a deliberate, audited act — that mechanism was the subject of <a href="/blog/azure-architecture-scopes-and-hierarchy/">#1</a>.</li>
+      <li>When a subscription expires, the trust remains but the principals lose access to the resources.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why the Directory Change Is the Expensive One</h2>
+    <p>
+      Almost everything in Azure can be moved with effort. A resource can move between resource groups, a resource group's contents can move between subscriptions, and a subscription can move between management groups. Those are re-parenting operations: the object keeps its identity and its permissions come along or are re-derived from a new position in the same hierarchy.
+    </p>
+    <p>
+      A directory change is not a re-parenting operation. It replaces the source of identity itself, and every permission in the subscription refers to principals that only exist in the old one. There is no mapping Azure could apply, because it has no way of knowing that <code>jayanth@oldco.com</code> and <code>jayanth@newco.com</code> are the same person. So it deletes.
+    </p>
+
+    <h3>The three tiers of damage</h3>
+    <div class="grid-2">
+      <div class="card">
+        <h4>Deleted permanently, rebuild by hand</h4>
+        <p>Every role assignment and every custom role. Export both to files <em>before</em> the move, because they cannot be recovered afterwards and there is no undo — the documentation says plainly that you cannot go back once the subscription is transferred.</p>
+      </div>
+      <div class="card">
+        <h4>Broken, recoverable with work</h4>
+        <p>System-assigned managed identities need disabling and re-enabling. User-assigned identities need deleting, re-creating and re-attaching. Key vaults need a new tenant ID and rebuilt access policies. Storage and Data Lake ACLs need re-applying. Synapse workspaces need their tenant ID updated.</p>
+      </div>
+      <div class="card">
+        <h4>Cannot move at all</h4>
+        <p>AKS clusters. Entra Domain Services managed domains. Azure Databricks workspaces. Dev Box and Deployment Environments. Service Fabric clusters must be re-created. Databases with Entra authentication enabled — SQL, MySQL, PostgreSQL flexible server — must have it disabled first, or they cannot move.</p>
+      </div>
+      <div class="card">
+        <h4>Silently still there</h4>
+        <p>The part nobody plans for. Role assignments are removed, but access keys, management certificates and remote access credentials are not. Users in the source directory keep whatever access those grant until the credentials are rotated. Removing someone's role assignment is not removing their access.</p>
+      </div>
+    </div>
+
+    <div class="callout amber">
+      <strong>The unrecoverable case worth knowing before you start</strong>
+      <p>If a resource uses encryption at rest with customer-managed keys, and the key vault holding those keys is part of the transfer, the documentation describes the outcome as an unrecoverable scenario. The guidance is to move the dependency to a different key vault, or temporarily disable customer-managed keys, before transferring. This is the one item on the list where careful sequencing is not an optimisation.</p>
+    </div>
+
+    <h3>One time limit worth writing down</h3>
+    <p>
+      Microsoft Sentinel workspaces are offboarded immediately when the subscription transfers. They can be re-onboarded in the new tenant with the same data intact — provided that happens within <strong>90 days</strong>. That is the only clock in the whole process, and it runs during exactly the period when everybody is busy re-creating role assignments.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Which tenant a new subscription trusts</td>
+          <td>Decide before anything is deployed into it</td>
+          <td>It is the one attribute that cannot be changed cheaply later. Everything else in the subscription can be rebuilt in place; this cannot.</td>
+        </tr>
+        <tr>
+          <td>Merger or acquisition: one directory or two</td>
+          <td>Azure Lighthouse and a multi-directory architecture, unless there is a reason it must be one</td>
+          <td>It is the documented alternative: leave the subscription in its own directory and delegate access to users in the other. No deletion, no downtime, no rebuild.</td>
+        </tr>
+        <tr>
+          <td>If you do transfer</td>
+          <td>Export role assignments and custom roles to files first</td>
+          <td>Both are permanently deleted with no recovery path. A saved JSON file is the only version of your access model that will survive the move.</td>
+        </tr>
+        <tr>
+          <td>Who performs the transfer</td>
+          <td>An account with Owner assigned <em>directly</em> on the subscription</td>
+          <td>The role must not come via a group, a condition, or PIM activation. An estate that has correctly eliminated standing access has to make a deliberate exception to perform this operation.</td>
+        </tr>
+        <tr>
+          <td>Preventing surprise transfers</td>
+          <td>Set a subscription policy to block directory changes</td>
+          <td>The operation needs only subscription Owner. Anyone who holds it can move a subscription out of your governance hierarchy without touching anything you monitor.</td>
+        </tr>
+        <tr>
+          <td>Cutting off the old directory's access</td>
+          <td>Rotate storage keys, certificates and secrets as part of the cutover</td>
+          <td>Deleting role assignments does not revoke key-based access. Until keys rotate, the previous directory's users retain whatever those keys grant.</td>
+        </tr>
+        <tr>
+          <td>Directory administration and resource administration</td>
+          <td>Treat them as separate roles held by separate people</td>
+          <td>They are separate planes with separate role systems. Conflating them produces accounts that are powerful in both, which is the shape of the account an attacker most wants.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout">
+      <strong>Billing does not follow the directory</strong>
+      <p>Changing a subscription's directory is a service-level operation and does not affect billing ownership. The two are transferred separately, and a plan that assumes moving the directory also moves the invoice will leave the old account paying for it.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The tenant is the one dependency in an Azure estate that behaves like a foundation rather than a component. Everything else can be rebuilt underneath a running system; the directory can only be replaced by discarding the authorisation layer and building it again.
+    </p>
+    <p>
+      Which makes the useful habit an early one: when a subscription is created, know which directory it trusts and why, and write down the reason. It is a decision that takes a minute at the start and a project to revisit.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#3 gets into Azure RBAC properly: role definitions, role assignments, and why the scope of an assignment matters more than the role in it — the mechanism this post has been pointing at from the subscription side.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Azure Reference</h2>
+    <ul>
+      <li><a href="https://learn.microsoft.com/en-us/entra/fundamentals/how-subscriptions-associated-directory" target="_blank" rel="noopener">Add an existing Azure subscription to your tenant</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/role-based-access-control/transfer-subscription" target="_blank" rel="noopener">Transfer an Azure subscription to a different Microsoft Entra directory</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/entra/fundamentals/what-is-entra" target="_blank" rel="noopener">What is Microsoft Entra?</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
