@@ -644,8 +644,18 @@ something landing after publication. Title the post with the **news window**, no
 the calendar week — a post titled with a range that has not finished is claiming
 something it cannot know.
 
-**Weekly only. There is no GCP daily series** and one is not planned. Do not add
-a daily cadence to this cloud on the assumption that AWS's shape transfers.
+**Compose it on Saturday morning, from a fresh fetch.** Do not pre-write it on
+Friday. Friday's release notes are still landing while Friday is happening — the
+combined feed's Friday entry grows through the day and into the evening — so an
+inventory built on Friday afternoon can be missing items from the window the post
+claims to cover. Run `--week` on Saturday, then write. The post is cheap to
+compose from the inventory; the inventory is the part that must be current.
+
+**There is no GCP *daily intelligence* series** and one is not planned. The
+GCP daily cadence is the **Architecture Series** (one post a day, see
+`GCP-ROADMAP.md`); intelligence for this cloud is weekly only. Do not add a daily
+intelligence series on the assumption that the AWS shape transfers — AWS runs
+both because its daily series predates its weekly one.
 
 - File prefix `gcpweekly-NNN-*` in `posts/`, slug prefix
   `gcp-weekly-intelligence-*`.
