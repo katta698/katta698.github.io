@@ -16,6 +16,48 @@ deliberately.
 before picking a topic — a held item can beat the day's news, and anything
 approaching a week old is about to become unwritable.
 
+## Cadence: five posts, Tuesday to Saturday
+
+Fixed on 2026-08-14. **AWS publishes Monday to Friday, so there are five news
+days and there should be five posts.** Each one covers the previous weekday:
+
+| Post publishes | Covers |
+| --- | --- |
+| Tuesday | Monday |
+| Wednesday | Tuesday |
+| Thursday | Wednesday |
+| Friday | Thursday |
+| Saturday | Friday |
+
+**There is no Monday post.** A Monday post has no news of its own: the weekend
+is empty, and the previous Friday is already covered by Saturday's post. The
+only things it can do are cover stale news, cover nothing, or flush the
+backlog. The first is what happened — post #1 published Monday 3 August
+covering 30 July news, three days stale, and then fell outside the weekly
+roundup's window and had to be linked separately as an orphan. Week two dropped
+Monday without anyone deciding to, and settled on this shape by itself.
+
+**Saturday rather than Monday for Friday's news, and this is the part that
+matters.** Both Tue–Sat and Mon–Fri are five posts; the difference is where
+Friday's news lands. The weekly roundup publishes Saturday covering Monday to
+Friday, and it links every daily published to that point. If Friday's daily
+waits until Monday, the Saturday roundup discusses an announcement whose
+deep-dive does not exist yet — the orphan problem again, in the other
+direction. Publishing Friday's daily on Saturday puts it alongside the roundup
+that links it.
+
+**The load this creates, and what to cut.** Saturday carries three posts:
+architecture, daily and weekly. Monday carries one, architecture only. If a
+Saturday is too full, cut the **architecture** post — the roadmap has no date
+attached to it and slipping a day costs nothing. Do not cut the daily: it is
+the only one with a news window that closes, and the weekly depends on it
+existing.
+
+**A quiet day still gets a post, a quiet week still gets a roundup — but
+neither gets padding.** If a day produces nothing worth a deep-dive, take the
+strongest held item from this file rather than writing up something thin. That
+is what the backlog is for. See the never-repeat rules in CLAUDE.md.
+
 ---
 
 ## 13 August 2026 — nothing outranked the held EKS item; post #10 took that
