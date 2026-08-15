@@ -94,11 +94,11 @@ The gaps decide the order, not the categories. Absent domains first.
 2. Discovery and dependency mapping before wave planning
 3. Discovery after Application Discovery Service — agentless vs agent, and the home Region *(written as #22; the original title named a service AWS closed to new customers on 7 November 2025, so the slot covers the decisions that outlived it rather than the product)*
 4. DMS for heterogeneous migration, and what CDC actually guarantees
-5. Application Migration Service: cutover, rollback, and the freeze window
+5. AWS Transform MGN: cutover, rollback, and the freeze window *(the service formerly called Application Migration Service — renamed, not closed. Checked 14 August 2026: the user guide is titled "What Is AWS Transform MGN?" and it is live in 36 Regions including both GovCloud partitions. Topic unchanged; only the product name moved.)*
 6. Oracle to Aurora PostgreSQL: the parts that do not convert
-7. Mainframe Modernization: refactor, replatform, or leave it
+7. Mainframe modernisation after the managed runtime closed: what a new customer can actually buy *(checked 14 August 2026. Both AWS Mainframe Modernization experiences are closed to new customers, and the two banners point at each other — the Managed Runtime notice sends new customers to the Self-Managed experience, whose own notice says it is closed too. The live paths are AWS Transform for mainframe (refactor) and vendor-direct offerings; replatform runs on Rocket Software, formerly Micro Focus. "Refactor, replatform, or leave it" is no longer a choice a new customer has, so the slot covers what remains buyable rather than a decision that has been made for them.)*
 8. DataSync and Transfer Family: moving the data that is not a database
-9. Snow Family: when the network is genuinely the bottleneck
+9. Moving data when the network is genuinely the bottleneck: Data Transfer Terminal, DataSync, and the end of Snowball *(checked 14 August 2026. AWS Snowball Edge is no longer available to new customers; AWS directs them to DataSync for online transfers, **AWS Data Transfer Terminal** for secure physical transfers, AWS Partner solutions, or Outposts for edge compute. The premise of the original item survives — the network really is sometimes the bottleneck — but AWS's answer changed shape from a shipped appliance to a facility you carry drives to. Data Transfer Terminal appears nowhere else in this roadmap and is the substance of this slot. Note the redirect also makes DataSync the default for a job Snowball used to own, which item 8 should reflect.)*
 10. Strangler fig on AWS: routing, dual-write, and knowing when to cut
 11. When not to modernise — the honest case for leaving it alone
 12. The cost cliff after lift-and-shift *(cost lens)*
