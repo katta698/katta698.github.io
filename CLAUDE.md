@@ -165,6 +165,31 @@ is unlinked everywhere — no card, no filter pill count, no RSS entry, no RAG
 index entry — and nothing errors. Always `git pull --rebase` before running
 sync, not just before editing.
 
+## Dates: every post carries a time
+
+```yaml
+date: '2026-08-14T09:00:00'     # quoted, ISO 8601, local time
+```
+
+**Not** `date: 2026-08-14`. A bare date is parsed as midnight, so on any day
+when more than one series publishes, the post with a time always sorts above
+the ones without — regardless of which was actually written first.
+
+That is not hypothetical. On 14 August 2026 the AWS daily post carried
+`'2026-08-14T09:00:00'` while the Azure and GCP posts carried bare dates, so
+AWS was labelled **Latest** on the home page even though the other two were
+published after it. Ordering is `posts.sort(key=lambda p: p["date"],
+reverse=True)` in `sync_blog.py` — one key, no tie-break, so without a time the
+order within a day comes down to the order files happen to be read in.
+
+Four windows now publish on the same day routinely. Use the real publish time;
+it costs nothing and it is the only thing that makes "Latest" mean anything.
+
+**Existing posts are deliberately left alone.** Backfilling times onto ~100
+published posts would rewrite the order of the whole archive to no benefit —
+their relative order is already settled and nobody is looking at which of two
+posts from March 2026 came first. The standard applies from now on.
+
 ## Blog post structure
 
 Two files per post:
