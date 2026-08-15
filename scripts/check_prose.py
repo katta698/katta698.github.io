@@ -159,9 +159,17 @@ def prose(raw):
     """
     body = raw.split("---", 2)[2] if raw.startswith("---") else raw
     body = TAGS_RE.sub(" ", body)
-    body = re.sub(r"<code>.*?</code>", " ", body, flags=re.S)
-    body = re.sub(r"<pre>.*?</pre>", " ", body, flags=re.S)
-    body = re.sub(r"https?://\S+", " ", body)
+    # A newline, not a space, for the same reason as the element boundary
+    # below: removing a code span joins the words either side of it, and a
+    # space lets them read as adjacent prose when they are not. This reported
+    # daily-008 as having a doubled word for "and <code>FAILED</code> and
+    # <code>EXPIRED</code> ones count" -- a correct sentence, flagged because
+    # the two <code> spans were deleted into nothing and the two "and"s landed
+    # side by side. A false positive is worse here than a miss: the whole
+    # premise of this checker is that every hit is real and needs no judgement.
+    body = re.sub(r"<code>.*?</code>", "\n", body, flags=re.S)
+    body = re.sub(r"<pre>.*?</pre>", "\n", body, flags=re.S)
+    body = re.sub(r"https?://\S+", "\n", body)
     # A newline, not a space: an element boundary is a break between phrases,
     # and collapsing it hides that from the doubled-word check.
     body = re.sub(r"<[^>]+>", "\n", body)
