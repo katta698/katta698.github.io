@@ -289,8 +289,13 @@
   // runs across every post, so paging by 24 would be meaningless -- the nav is
   // hidden and every match is shown.
   function filtersActive() {
+    // Sorting oldest-first counts as a filter for this purpose. The paged view
+    // shows the newest 24; re-ordering those and calling it "Oldest" showed the
+    // oldest post *on page 1* -- 4 August -- while the archive goes back to
+    // 2023. Any non-default view drops pagination and shows the whole set.
     return activeTag !== 'all' || activeYear !== 'all' || activeMonth !== 'all' ||
-           activeService !== 'all' || activeTopic !== 'all' || !!searchTerm;
+           activeService !== 'all' || activeTopic !== 'all' || !!searchTerm ||
+           sortAsc === true;
   }
 
   function applyFilters() {
@@ -568,7 +573,8 @@
     sortBtn.innerHTML = sortAsc
       ? '<span class="sort-icon">↑</span> Oldest'
       : '<span class="sort-icon">↓</span> Newest';
-    applySort();
+    // Sorting needs the whole archive, not the 24 cards this page shipped.
+    hydrate().then(function () { applySort(); applyFilters(); });
   });
 
   // Pre-select tag filter from ?tag= param (set by portfolio teaser links)

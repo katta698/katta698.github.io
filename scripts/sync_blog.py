@@ -1913,8 +1913,14 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
 
     cats = [c for c in CATEGORY_ORDER if c == "All" or tag_counts.get(c, 0) > 0]
 
+    # Series pills carry their cloud's accent; topic pills stay neutral. That
+    # split is doing real work -- the row used to be one undifferentiated line
+    # of grey, and now "a series" and "a tag" are visibly different things.
+    # Driven off CLOUD_BY_LABEL so a pill's tint always matches the cards it
+    # filters to; a pill tinted for a cloud whose cards were not would be worse
+    # than no tint at all.
     filter_pills = "\n".join(
-        f'<button class="filter-pill {"active" if c=="All" else ""}" data-tag="{c.lower()}">'
+        f'<button class="filter-pill {"active" if c=="All" else ""}{cloud_class([c])}" data-tag="{c.lower()}">'
         f'{c}{" ("+str(tag_counts.get(c,0))+")" if c!="All" else " ("+str(len(posts))+")"}'
         f'</button>'
         for c in cats
