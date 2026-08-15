@@ -190,6 +190,35 @@ published posts would rewrite the order of the whole archive to no benefit —
 their relative order is already settled and nobody is looking at which of two
 posts from March 2026 came first. The standard applies from now on.
 
+## Label colours: hue follows the cloud, treatment follows the kind
+
+Every filter pill and post card carries an accent, and the two axes mean
+different things:
+
+- **Hue** identifies the cloud. AWS tan `#C4A484`, Azure dusty indigo
+  `#5B7B9A`, GCP olive sage `#8A9A5B` — the same colour wherever that cloud
+  appears: series pill, bare tag pill, post card, sidebar widget, progress tab.
+- **Treatment** identifies the kind. A **series** gets a filled tint; a **tag**
+  gets accent text and border only. A post belongs to exactly one series but
+  can carry several tags, so the two are not the same kind of thing and should
+  not look alike.
+
+Non-cloud topics have their own hues in the same warm desaturated register
+(`TOPIC_BY_LABEL` in `sync_blog.py`, `.topic-*` in `blog.css`). Databases & Ops
+is deliberately slate blue-grey rather than warm: it is the pre-cloud DBA
+writing and looks like a different era on purpose.
+
+**Adding a label means adding an accent.** A new entry in `CATEGORY_ORDER` with
+no `TOPIC_BY_LABEL` mapping renders neutral grey beside coloured neighbours.
+
+**Watch the dark-mode cascade.** `body.dark .filter-pill.cloud` is specificity
+(0,3,1) and beats `.filter-pill.cloud.active` at (0,3,0), so the selected pill
+takes the orange fill but keeps its pale accent text — measured 1.10-1.39:1,
+invisible. Both the `.cloud` and `.topic` halves need an explicit
+`body.dark .filter-pill.X.active { color: #1D2322; }`. This was shipped broken
+twice: once for clouds, then again for topics, because only the half that
+happened to be selected got noticed.
+
 ## Blog post structure
 
 Two files per post:
