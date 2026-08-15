@@ -139,7 +139,11 @@ def stamp_static_pages():
     def _pattern(url):
         return re.compile(url + r'((?:\?v=[0-9a-zA-Z]+)*)(\?v=\{\{[A-Z_0-9]+\}\})?')
 
-    js_pattern = _pattern(r'(/blog/assets/(?:blog|site-footer|occasion-banner)\.js)')
+    # hero-media.js belongs here too. It is in the JS_VERSION hash but was never
+    # in this pattern, so its token on index.html sat at 2fd3bd31 while the hash
+    # moved on -- a returning visitor kept executing a cached copy and would not
+    # have seen the dusk switch at all. Exactly the failure site-footer.js had.
+    js_pattern = _pattern(r'(/blog/assets/(?:blog|site-footer|occasion-banner|hero-media)\.js)')
     css_pattern = _pattern(r'(/blog/assets/blog\.css)')
 
     def _stamp(version):
