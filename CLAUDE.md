@@ -6,6 +6,33 @@
 - Never commit or push without explicit instruction. Jayanth pushes himself.
 - After `sync_blog.py` runs, stage ALL modified files under `blog/` — not just the new post's directory. Older posts get regenerated too (widgets, date format, CSS).
 
+## Finish the work and stop
+
+**Do not end a response with offers of further work.** No "Want me to…?", no
+"I could also…", no closing block of open items to authorise. Finish what was
+asked, say what changed, stop.
+
+Raised 2026-08-15, about every window rather than one of them — which is why
+the rule lives here, in the file all four worktrees share, rather than in one
+window's memory.
+
+The problem is not that any single suggestion is bad. It is that each one is
+plausible enough to need a decision, so a closing menu of three turns a
+finished task into three more judgements. Jayanth acts on them, so the cost
+lands entirely on him: "I am kind of sick at times to see if I need to go ahead
+or ignore your suggestions."
+
+What to do instead:
+
+- **End on the result.** A list of what changed is information and is welcome.
+  An invitation to authorise more work is not.
+- **A real fork gets one flat sentence**, in the body where it is relevant, no
+  question mark and no menu. "arch-002 and daily-008 fail the prose check and
+  belong to the AWS window" — then move on, and do not re-raise it next turn.
+- **Answer at the size asked.** A yes/no question gets a yes or no.
+- **This is about unsolicited offers, not about answering.** Asked for the
+  options, lay them out properly.
+
 ## Which folder am I in?
 
 **One chat window, one folder. One site on `main`, three clouds on branches.**
