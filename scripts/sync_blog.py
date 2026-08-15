@@ -1894,6 +1894,14 @@ TOPIC_BY_LABEL = [
     ("Career", "topic topic-career"),
     ("Health", "topic topic-health"),
     ("Life", "topic topic-life"),
+    # The bare cloud tags. Same hue as the matching series so a cloud looks
+    # like itself wherever it appears, but the topic treatment so the filter
+    # row still separates a series from a tag. Listed after the series entries
+    # above, and checked after CLOUD_BY_LABEL, so a post carrying both "AWS"
+    # and "AWS Daily Intelligence" is styled as the series.
+    ("AWS", "topic topic-aws"),
+    ("Azure", "topic topic-azure"),
+    ("GCP", "topic topic-gcp"),
 ]
 
 
