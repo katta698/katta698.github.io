@@ -1,0 +1,90 @@
+name: Publish Lab Draft Post
+
+# Self-service publish for AWS-Platform-Engineering-Lab weekly posts written
+# with `draft: true` in their front matter (see sync_blog.py's draft-mode
+# handling). Trigger this from the Actions tab with the post's slug -- it
+# publishes only that one post; any other pending drafts are left untouched.
+#
+# This workflow stops at the push. It deliberately does NOT re-index RAG
+# search or trigger the profile README: pushing a rebuilt blog/index.html
+# fires on-publish.yml, which does both, waits for the real Pages deploy
+# first, and is the single place those steps live. An earlier draft of this
+# file carried its own copies -- that duplication is exactly what got
+# publish-draft.yml deleted in August 2026.
+#
+# Out of scope, still manual: updating the Lab repo's own root README (a
+# different repository) and generating the LinkedIn draft.
+
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: "Draft slug to publish (matches the post's slug: front-matter field)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ github.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Remove draft flag from the target post
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: |
+          python3 - <<'PYEOF'
+          import glob, os, re, sys
+
+          slug = os.environ["SLUG"]
+          target = None
+          for path in glob.glob("posts/*.html") + glob.glob("posts/*.md"):
+              text = open(path, encoding="utf-8").read()
+              m = re.search(r'^slug:\s*(\S+)\s*$', text, re.MULTILINE)
+              if m and m.group(1) == slug:
+                  target = path
+                  break
+
+          if not target:
+              print(f"ERROR: no post found with slug '{slug}' in posts/")
+              sys.exit(1)
+
+          text = open(target, encoding="utf-8").read()
+          if re.search(r'^draft:\s*true\s*$', text, re.MULTILINE):
+              text = re.sub(r'^draft:\s*true\s*\n', '', text, flags=re.MULTILINE)
+              open(target, "w", encoding="utf-8").write(text)
+              print(f"Published: removed draft flag from {target}")
+          else:
+              print(f"WARNING: {target} had no 'draft: true' line -- it may already be public. Continuing anyway.")
+          PYEOF
+
+      - name: Rebuild the site
+        run: python3 scripts/sync_blog.py
+
+      - name: Commit and push
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add posts/ blog/
+          if git diff --cached --quiet; then
+            echo "Nothing changed -- was '$SLUG' already published?"
+            exit 1
+          fi
+          git commit -m "Publish ${SLUG} (via publish-lab-draft workflow)"
+          git push
+          echo "Pushed. on-publish.yml takes it from here: Pages deploy, RAG re-index, README."
