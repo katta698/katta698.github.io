@@ -106,7 +106,12 @@ def build(src_path, prev_slug=None, prev_title=None):
     short_title = title.split("—", 1)[1].strip()
     plain = BeautifulSoup(body, "html.parser").get_text()
     read_time = "%d min read" % max(1, math.ceil(len(plain.split()) / 200))
-    date = datetime.strptime(str(fm["date"]), "%Y-%m-%d")
+    # Accept both 'YYYY-MM-DD' and the 'YYYY-MM-DDTHH:MM:SS' form CLAUDE.md now
+    # requires. Posts carry a time so that same-day posts from four windows sort
+    # by when they were actually published rather than by file-read order; this
+    # script parsed date-only and raised ValueError on the first post that
+    # followed the new rule. Only the date part is rendered on the page.
+    date = datetime.strptime(str(fm["date"])[:10], "%Y-%m-%d")
     date_display = "%s %d, %d" % (date.strftime("%b"), date.day, date.year)
 
     css = io.open(os.path.join(ROOT, "blog", "assets", "blog.css"), encoding="utf-8").read()

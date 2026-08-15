@@ -92,7 +92,7 @@ The gaps decide the order, not the categories. Absent domains first.
 ### Migration & modernisation — nothing written, most common SA responsibility
 1. The 7 Rs, and why half of every "rehost" list should have been "retire"
 2. Discovery and dependency mapping before wave planning
-3. Application Discovery Service and Migration Hub in practice
+3. Discovery after Application Discovery Service — agentless vs agent, and the home Region *(written as #22; the original title named a service AWS closed to new customers on 7 November 2025, so the slot covers the decisions that outlived it rather than the product)*
 4. DMS for heterogeneous migration, and what CDC actually guarantees
 5. Application Migration Service: cutover, rollback, and the freeze window
 6. Oracle to Aurora PostgreSQL: the parts that do not convert

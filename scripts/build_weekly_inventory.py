@@ -16,7 +16,10 @@ Usage
 -----
     python scripts/build_weekly_inventory.py 2026-08-03 2026-08-09 > section.html
 
-Exits non-zero if any link fails, so a broken reference cannot ship silently.
+A link that does not resolve is rendered as unlinked text with a note saying
+AWS's own URL returns 404, rather than dropped or shipped as a dead link. The
+count is reported on stderr on every run: a rising number means AWS's feed is
+degrading, which is worth knowing even though it no longer fails the build.
 """
 import concurrent.futures
 import datetime
@@ -28,7 +31,12 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, __file__.rsplit("\\", 1)[0].rsplit("/", 1)[0])
-from fetch_week import fetch, parse  # noqa: E402
+# WHATS_NEW is passed explicitly: fetch() used to default to the What's New feed
+# back when that was the only source. It gained a required url argument when
+# fetch_week.py grew to 19 feeds, which broke this script silently until the
+# next roundup was built. Import the constant rather than re-declaring the URL,
+# so there is one definition of where announcements come from.
+from fetch_week import WHATS_NEW, fetch, parse  # noqa: E402
 
 
 def gists(raw):
@@ -93,7 +101,7 @@ def main():
     start = datetime.date.fromisoformat(sys.argv[1])
     end = datetime.date.fromisoformat(sys.argv[2])
 
-    raw = fetch()
+    raw = fetch(WHATS_NEW)
     rows = [r for r in parse(raw) if start <= r[0] <= end]
     if not rows:
         print("No announcements in range.", file=sys.stderr)
@@ -103,10 +111,12 @@ def main():
     urls = sorted({l for _, _, l in rows})
     print("Validating %d links..." % len(urls), file=sys.stderr)
     bad = []
+    dead = set()
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
         for url, status in ex.map(check, urls):
             if status != 200:
                 bad.append((url, status))
+                dead.add(url)
 
     by = {}
     for d, t, l in rows:
@@ -129,6 +139,24 @@ def main():
             gist = summaries.get(l, "")
             # No inline style: clean_html() strips the style attribute from
             # every tag, so the muted colour must come from a theme class.
+            #
+            # An announcement whose own AWS link is dead still belongs in the
+            # inventory -- dropping it would break the completeness promise the
+            # series is built on -- but it must not ship as a link a reader
+            # cannot follow. AWS's feed emitted five such entries in the week of
+            # 10-14 August 2026, all Amazon Quick, on a /whats-new/ path missing
+            # the /about-aws/ segment; the corrected path 404s as well, so this
+            # cannot be repaired by rewriting the URL. Render the title as text
+            # and say why, so the gap is visible rather than silently absent.
+            if l in dead:
+                out.append(
+                    '      <li><strong>%s</strong>'
+                    '<span class="inv-gist">%s</span>'
+                    '<span class="inv-gist">AWS\'s own link for this '
+                    "announcement returns 404 &#8212; recorded here for "
+                    "completeness.</span></li>"
+                    % (html.escape(t), html.escape(gist)))
+                continue
             out.append(
                 '      <li><a href="%s"><strong>%s</strong></a>'
                 '<span class="inv-gist">%s</span>%s</li>'
@@ -141,10 +169,14 @@ def main():
     print("\n%d announcements, %d unique links" % (len(rows), len(urls)),
           file=sys.stderr)
     if bad:
-        print("BROKEN LINKS (%d):" % len(bad), file=sys.stderr)
+        # Not a failure any more: these are rendered as unlinked text with a
+        # note, so nothing broken reaches a reader. Still reported loudly,
+        # because a rising count means AWS's feed is degrading and the next
+        # roundup should be read more carefully.
+        print("DEAD LINKS, rendered as text (%d):" % len(bad), file=sys.stderr)
         for url, status in bad:
             print("  %s  %s" % (status, url), file=sys.stderr)
-        return 1
+        return 0
     print("all links return 200", file=sys.stderr)
     return 0
 
