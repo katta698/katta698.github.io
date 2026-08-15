@@ -731,6 +731,19 @@
   script.src = '/blog/assets/site-footer.js' + version;
   script.setAttribute('data-site-footer', '');
   document.body.appendChild(script);
+
+  // The occasion banner, injected the same way and for the same reason. It was
+  // inline in index.html, so a reader arriving straight at a post on
+  // Independence Day saw nothing and the site looked like two different sites
+  // on the same day. Injecting from here reaches every blog surface including
+  // the arch pages, which sync_blog.py never rebuilds and so cannot be given a
+  // new script tag.
+  if (!document.querySelector('script[data-occasion-banner]')) {
+    var ob = document.createElement('script');
+    ob.src = '/blog/assets/occasion-banner.js' + version;
+    ob.setAttribute('data-occasion-banner', '');
+    document.body.appendChild(ob);
+  }
 })();
 
 // Service worker registration lives in site-footer.js, which every page on the

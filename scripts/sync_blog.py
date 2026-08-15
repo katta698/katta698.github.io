@@ -73,7 +73,7 @@ def _js_version():
     # the hash a change to the rotation would ship behind a cached old copy.
     return _content_hash(*[REPO_ROOT / "blog" / "assets" / name
                            for name in ("blog.js", "site-footer.js",
-                                        "hero-media.js")])
+                                        "hero-media.js", "occasion-banner.js")])
 
 
 JS_VERSION = _js_version()
@@ -139,7 +139,7 @@ def stamp_static_pages():
     def _pattern(url):
         return re.compile(url + r'((?:\?v=[0-9a-zA-Z]+)*)(\?v=\{\{[A-Z_0-9]+\}\})?')
 
-    js_pattern = _pattern(r'(/blog/assets/(?:blog|site-footer)\.js)')
+    js_pattern = _pattern(r'(/blog/assets/(?:blog|site-footer|occasion-banner)\.js)')
     css_pattern = _pattern(r'(/blog/assets/blog\.css)')
 
     def _stamp(version):
