@@ -1829,6 +1829,28 @@ def cloud_progress_widget(pfx, widget_id, series_name, key, series_json, total):
 
 POSTS_PER_PAGE = 24
 
+# Which cloud a post belongs to, decided by its series label rather than by
+# anything in its body: a post that merely mentions Azure is not an Azure post,
+# and the label is what the reader is being told. Module level because the blog
+# index and the home page's posts.json both need it, and two copies would let
+# the blog and the portfolio disagree about what colour a post is.
+CLOUD_BY_LABEL = [
+    ("Azure Architecture Series", "cloud cloud-azure"),
+    ("GCP Architecture Series", "cloud cloud-gcp"),
+    ("AWS Architecture Series", "cloud cloud-aws"),
+    ("AWS Daily Intelligence", "cloud cloud-aws"),
+    ("AWS Weekly Intelligence", "cloud cloud-aws"),
+    ("AWS Weekly Lab", "cloud cloud-aws"),
+]
+
+
+def cloud_class(tags):
+    """The accent class for a post, or "" for one in no cloud series."""
+    for label, cls in CLOUD_BY_LABEL:
+        if label in tags:
+            return " " + cls
+    return ""
+
 
 def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     """Build one page of the blog index.
@@ -1897,21 +1919,6 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     # rather than the post's content, because a post that merely mentions Azure
     # is not an Azure post -- the label is the thing the reader is being told.
     # A post in no cloud series gets no class and is styled exactly as before.
-    CLOUD_BY_LABEL = [
-        ("Azure Architecture Series", "cloud cloud-azure"),
-        ("GCP Architecture Series", "cloud cloud-gcp"),
-        ("AWS Architecture Series", "cloud cloud-aws"),
-        ("AWS Daily Intelligence", "cloud cloud-aws"),
-        ("AWS Weekly Intelligence", "cloud cloud-aws"),
-        ("AWS Weekly Lab", "cloud cloud-aws"),
-    ]
-
-    def cloud_class(tags):
-        for label, cls in CLOUD_BY_LABEL:
-            if label in tags:
-                return " " + cls
-        return ""
-
     cards_html = []
     for p in (posts if page_posts is None else page_posts):
         tag1 = p["tags"][0] if p["tags"] else "Tech"
@@ -3262,6 +3269,10 @@ def main():
             "date":    p["date"].strftime("%b %d, %Y").replace(" 0", " "),
             "tags":    " · ".join(p["tags"][:2]) if p["tags"] else "",
             "excerpt": p["excerpt"],
+            # So the home page can tint these cards the same way the blog does.
+            # Without it an Azure post and an AWS post looked identical there,
+            # which is the one place a reader sees all three series side by side.
+            "cloud":   cloud_class(p["tags"]).strip(),
         }
         for p in visible_posts[:7]
     ]
