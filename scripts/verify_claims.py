@@ -231,6 +231,32 @@ def check_post(path, cache, verbose):
         claim, src = str(c.get("claim", "")), str(c.get("source", "")).strip()
         strong, weak = tokens(claim)
 
+        # A derived figure is computed by the author, so by definition it is not
+        # on the cited page -- that is what `derive:` means. Requiring it would
+        # fail every correctly-formed derived claim on the site and train people
+        # to ignore this output, which is the same reason bare small integers are
+        # reported WEAK rather than enforced. The arithmetic is not going
+        # unchecked: validate_arch_post.py re-evaluates `derive:` against
+        # `expect:` and fails on a mismatch, which is the stronger check.
+        #
+        # Only the result is exempt. Every other figure in the claim -- crucially
+        # the inputs the arithmetic was done on -- must still be found on the
+        # page. That is precisely the arch-018 failure: real sources, live links,
+        # and a break-even computed from a price that was no longer on either
+        # page.
+        derived_only = False
+        if c.get("derive") and c.get("expect") is not None:
+            want = digits(str(c["expect"]))
+            kept = [t for t in strong if digits(t) != want]
+            # If the result was the claim's ONLY figure, exempting it leaves
+            # nothing to check against the page, and the claim would quietly
+            # report as having no figures at all. Say so instead: the fix is to
+            # state the inputs in the claim ("1,000 keys at 1,000 values each
+            # is ...") so the numbers the arithmetic rests on are the ones
+            # verified against the source.
+            derived_only = bool(strong) and not kept
+            strong = kept
+
         if src not in cache:
             cache[src] = page_text(src)
         text, kind = cache[src]
@@ -245,7 +271,9 @@ def check_post(path, cache, verbose):
         text_digits = set(digits(t) for t in re.findall(
             r"\d[\d,]*(?:\.\d+)?", text))
         missing = [t for t in strong if not present(t, text, text_digits)]
-        if not strong:
+        if derived_only:
+            rows.append(("DERIVED-ONLY", i, claim, src, strong, []))
+        elif not strong:
             rows.append(("NO-FIGURES", i, claim, src, strong, []))
         elif missing:
             rows.append(("MISSING", i, claim, src, strong, missing))
@@ -295,7 +323,7 @@ def main():
             totals[r[0]] += 1
         print("%-46s %-6d %-5d %-6d %s" % (name[:46], len(rows), ok, figs, verdict))
         for r in rows:
-            if r[0] in ("MISSING", "UNREACHABLE") or args.verbose:
+            if r[0] in ("MISSING", "UNREACHABLE", "DERIVED-ONLY") or args.verbose:
                 problems.append((name, r))
 
     if problems:
