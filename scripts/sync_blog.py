@@ -1882,9 +1882,34 @@ CLOUD_BY_LABEL = [
 ]
 
 
+# Everything that is not a cloud series. Same warm, desaturated register as the
+# three cloud accents -- clay, plum, sage, rose, sand -- so the whole set reads
+# as one palette rather than a cloud family plus some other colours. Order
+# matters: the first match wins, so the more specific label is listed first.
+TOPIC_BY_LABEL = [
+    ("30 Days of AWS Terraform", "topic topic-tf30"),
+    ("Terraform", "topic topic-terraform"),
+    ("GitOps", "topic topic-gitops"),
+    ("AI", "topic topic-ai"),
+    ("Career", "topic topic-career"),
+    ("Health", "topic topic-health"),
+    ("Life", "topic topic-life"),
+]
+
+
 def cloud_class(tags):
-    """The accent class for a post, or "" for one in no cloud series."""
+    """The accent class for a post or pill.
+
+    Cloud series first, then topics. Topics are tinted more softly than series
+    in blog.css: without that, tinting everything would erase the one thing
+    that currently distinguishes "a series" from "a tag" in the filter row.
+    Anything matching neither is left neutral rather than given a colour it has
+    not earned.
+    """
     for label, cls in CLOUD_BY_LABEL:
+        if label in tags:
+            return " " + cls
+    for label, cls in TOPIC_BY_LABEL:
         if label in tags:
             return " " + cls
     return ""
@@ -1911,7 +1936,14 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
         for t in p["tags"]:
             tag_counts[t] = tag_counts.get(t, 0) + 1
 
-    cats = [c for c in CATEGORY_ORDER if c == "All" or tag_counts.get(c, 0) > 0]
+    # Tags that stay ON posts -- so search and data-tags still match them -- but
+    # get no pill. Kubernetes reached 3 posts of 100 and Tech says nothing about
+    # what a reader would get, and both cost a slot in a row that already wraps
+    # to two lines. Removing them from CATEGORY_ORDER instead would strip the
+    # tag from the posts entirely, because detect_tags() filters against it.
+    NO_PILL = {"Kubernetes", "Tech"}
+    cats = [c for c in CATEGORY_ORDER
+            if c == "All" or (tag_counts.get(c, 0) > 0 and c not in NO_PILL)]
 
     # Series pills carry their cloud's accent; topic pills stay neutral. That
     # split is doing real work -- the row used to be one undifferentiated line
