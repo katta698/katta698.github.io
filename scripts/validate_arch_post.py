@@ -572,9 +572,25 @@ def check_verification(slug, name, fm, parsed, body, spec):
         return
 
     today = datetime.date.today()
-    if vdate > today:
-        err(slug, '%s claims verification on %s, which is in the future' % (name, vdate))
-    age = (today - vdate).days
+
+    # The ceiling is the post's own publish date, not the clock. A daily series
+    # is written the day before it goes out, and the GCP Architecture Series
+    # carries the publish date on its badge by decision (see CLAUDE.md), so a
+    # post dated tomorrow and verified tomorrow is correct and must not fail the
+    # build today. Verification dated AFTER publication is still nonsense --
+    # nobody checked figures that were already public -- so that still fails.
+    pub = parsed.get('date')
+    try:
+        pubdate = (pub if isinstance(pub, datetime.date)
+                   else datetime.datetime.strptime(str(pub).strip()[:10], '%Y-%m-%d').date())
+    except (ValueError, TypeError):
+        pubdate = today
+    ceiling = max(today, pubdate)
+    if vdate > ceiling:
+        err(slug, '%s claims verification on %s, which is after both today and '
+                  'its publish date %s' % (name, vdate, pubdate))
+    # Negative age for a scheduled post is not staleness.
+    age = max(0, (today - vdate).days)
     if age > STALE_DAYS:
         warn(slug, '%s was verified %d days ago (%s). Pricing and quotas move; '
                    're-check before the figures are quoted anywhere.' % (name, age, vdate))

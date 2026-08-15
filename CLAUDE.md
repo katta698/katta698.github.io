@@ -463,8 +463,26 @@ before writing about it.
 
 ### Verification on GCP posts
 
-Same badge, same rules. `doc_hosts` for the `gcp` series is `cloud.google.com`
-and `docs.cloud.google.com`.
+**The badge carries the publish date on this series.** Decided 2026-08-14,
+scoped to the GCP Architecture Series and overriding the general "verification
+date, not publish date" rule above for these posts only — the AWS and Azure
+series are unchanged. The cadence is what makes it work: a daily post is written
+and verified within a day of going out, so the two dates are the same anyway.
+
+**What that obliges you to do.** The badge still asserts a human checked the
+figures, so a post written on Friday for a Saturday publish is verified *on
+Saturday morning*, before it goes out. Do not write the publish date onto a check
+you did the day before and leave it — that is the auto-stamping this whole
+mechanism exists to prevent, just done by hand. If the re-check does not happen,
+drop the badge rather than post-date it.
+
+`validate_arch_post.py` compares `verified:` against the post's own publish date
+rather than against the clock, so a post dated tomorrow and verified tomorrow
+passes today. Verification dated *after* publication still fails, because nobody
+checks figures that are already public.
+
+`doc_hosts` for the `gcp` series is `cloud.google.com` and
+`docs.cloud.google.com`.
 
 **Cite the docs host.** Measured 2026-08-14 while verifying gcp-001,
 `cloud.google.com/*/docs/*` answers **301 Moved Permanently** to
