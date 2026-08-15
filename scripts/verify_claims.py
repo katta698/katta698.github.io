@@ -50,6 +50,29 @@ exemption: `azure.microsoft.com/updates?id=NNN` is a shell, but the same record
 is available as JSON from the release-communications API, so the description is
 fetched from there and checked properly. Any future host with the same problem
 should get the same treatment, not an exemption.
+
+A defect and an outage are not the same finding
+-----------------------------------------------
+MISSING means a page loaded and did not contain the figure -- that is a defect
+in the post, and it is what this script exists to catch. UNREACHABLE means the
+fetch itself failed, which says nothing about the post: the vendor's edge was
+down, DNS blipped, the runner had no egress.
+
+Both used to exit 1. In an interactive run that is right -- an unreachable page
+means you did not get the check you asked for, and you should know before you
+publish. In CI it is wrong, and expensively so: a 503 from Microsoft's edge
+(observed during testing, and gone on immediate retry) would redden a build on
+a post with nothing whatever wrong with it. A gate that fails for reasons the
+author cannot fix and cannot predict is a gate people switch off, and then the
+MISSING findings stop being seen too.
+
+So the caller says which it wants:
+
+    --fail-on any       MISSING or UNREACHABLE fails  (default; hand runs)
+    --fail-on missing   only MISSING fails            (CI)
+
+Unreachable sources are still printed either way. `--fail-on missing` downgrades
+them from a failure to a report; it never hides them.
 """
 import argparse
 import collections
@@ -287,6 +310,11 @@ def main():
     ap.add_argument("posts", nargs="*", help="substring of a post filename")
     ap.add_argument("--series", help="one series key: %s" % ", ".join(sorted(SERIES)))
     ap.add_argument("--verbose", action="store_true", help="print every claim")
+    ap.add_argument("--fail-on", choices=("any", "missing"), default="any",
+                    help="'any' (default) fails on MISSING or UNREACHABLE; "
+                         "'missing' fails only on a figure absent from a page "
+                         "that loaded, so a vendor outage reports without "
+                         "blocking. Use 'missing' in CI.")
     args = ap.parse_args()
 
     specs = SERIES if not args.series else {args.series: SERIES[args.series]}
@@ -339,7 +367,19 @@ def main():
             print()
 
     print("claims: %s" % ", ".join("%s=%d" % (k, v) for k, v in sorted(totals.items())))
-    return 1 if (totals["MISSING"] or totals["UNREACHABLE"]) else 0
+
+    # An unreachable page is a check that did not happen, not a defect that did.
+    # Say which of the two is being counted, so a green run under --fail-on
+    # missing can never be mistaken for "every figure was confirmed".
+    if totals["UNREACHABLE"] and args.fail_on == "missing":
+        print("\n%d source(s) could not be fetched. Not failing the run: an "
+              "unreachable page is a vendor or network problem, not a defect "
+              "in the post. Those claims are UNCONFIRMED, not passed."
+              % totals["UNREACHABLE"])
+
+    if totals["MISSING"]:
+        return 1
+    return 1 if (totals["UNREACHABLE"] and args.fail_on == "any") else 0
 
 
 if __name__ == "__main__":

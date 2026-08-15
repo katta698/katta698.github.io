@@ -1,0 +1,183 @@
+name: Pre-publish checks
+
+# The four checks in scripts/prepublish.py, run automatically so publishing
+# cannot skip them. They exist because each one was written after something
+# shipped broken, and the failure mode they now guard against is not a missing
+# check -- it is a person running two of the four and pushing.
+#
+# Where this sits relative to the other workflows
+# -----------------------------------------------
+#   prepublish.yml   (this)  BEFORE the site is trusted -- does the post hold up
+#   on-publish.yml           AFTER Pages deploys        -- RAG re-index, README
+#   doc-freshness.yml        weekly, site-wide          -- has a citation rotted
+#
+# It deliberately does not duplicate on-publish.yml. That fires on
+# blog/index.html and owns everything downstream of a successful deploy; this
+# owns the question of whether the content deserved to deploy. Both run on the
+# same push and neither waits for the other -- this is a gate on the record, not
+# on the deployment, because GitHub Pages publishes from the branch and no
+# workflow can hold that back. A red run here means "fix this now", and the
+# offending post is one commit deep.
+#
+# Why it checks the changed posts, not all 104
+# ---------------------------------------------
+# Three reasons, and the first is the one that matters:
+#
+# 1. A gate that fails a good push because of a defect in an unrelated post
+#    published weeks ago teaches people to ignore red, and then it catches
+#    nothing. The checks found two such findings in already-published posts on
+#    their first run, in a window that owned neither post -- site-wide runs
+#    would have failed every push until somebody else fixed them.
+# 2. 19 badged posts carry 145 claims across ~100 distinct vendor URLs. Fetching
+#    all of them on every push is minutes of runtime and ~100 chances for a
+#    transient to go wrong, on a push that touched one file.
+# 3. The site-wide sweep already exists and has a better home: doc-freshness.yml
+#    runs weekly, opens one tracking issue, and is built to report drift without
+#    crying wolf. Drift is its job. This one's job is the diff.
+#
+# Run it over everything by hand any time: Actions -> Run workflow, leave the
+# scope blank.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'posts/**'
+      - 'blog/**'
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "Post filename substrings, space-separated. Blank = every post, every series."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # prepublish scopes itself to what this push changed, so the diff has
+          # to be reachable. A shallow clone cannot see the pushed-from commit.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install --quiet pyyaml beautifulsoup4
+
+      - name: Work out which posts this push touched
+        id: scope
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          MANUAL: ${{ github.event.inputs.scope }}
+        run: |
+          python3 - <<'PYEOF' >> "$GITHUB_OUTPUT"
+          import io, os, re, subprocess, sys
+
+          def git(*args):
+              """git output as text, always UTF-8.
+
+              Post prose is full of em dashes, so letting subprocess decode with
+              the platform codec raises on any diff that contains one. Explicit
+              here rather than relying on the runner's locale.
+              """
+              p = subprocess.run(["git"] + list(args), capture_output=True,
+                                 encoding="utf-8", errors="replace")
+              return p.stdout or "" if p.returncode == 0 else None
+
+          manual = (os.environ.get("MANUAL") or "").strip()
+          if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+              # Blank input is a deliberate "check everything", not an empty
+              # scope -- do not turn it into a no-op.
+              print("args=%s" % manual)
+              print("skip=false")
+              sys.exit()
+
+          before, after = os.environ["BEFORE"], os.environ["AFTER"]
+          if not before or set(before) == {"0"}:      # new branch / force push
+              before = after + "~1"
+          out = git("diff", "--name-only", before, after)
+          if out is None:                             # cannot diff -> check all
+              print("args=")
+              print("skip=false")
+              sys.exit()
+
+          changed = [l.strip() for l in out.splitlines() if l.strip()]
+
+          # posts/<stem>.html -> <stem>, which is exactly the substring
+          # prepublish.py matches on.
+          stems = {os.path.basename(p)[:-5]
+                   for p in changed
+                   if p.startswith("posts/") and p.endswith(".html")}
+
+          def content_changed(path):
+              """Did this page change, or was it only re-stamped?
+
+              stamp_static_pages() rewrites the ?v= cache-busting token on every
+              arch page whenever blog.css or blog.js changes. That is ~20 pages
+              modified by a push that touched no prose, and treating it as a
+              content change drags 20 posts and ~100 vendor fetches into a CSS
+              tweak -- the site-wide run this workflow is built to avoid.
+              """
+              out = git("diff", "-U0", before, after, "--", path)
+              if out is None:
+                  return True          # cannot tell -> check it, do not skip it
+              def side(ch):
+                  return [re.sub(r"\?v=[0-9a-f]+", "?v=", l[1:])
+                          for l in out.splitlines()
+                          if l.startswith(ch) and not l.startswith(ch * 3)]
+              # Identical once the token is normalised => the token was all of it.
+              return side("+") != side("-")
+
+          # blog/<slug>/index.html is the served page. Map it back through the
+          # slug declared in front matter -- the two prefixes differ on purpose
+          # (arch-002 -> aws-architecture-...), so filename matching will not do.
+          slugs = {m.group(1) for m in
+                   (re.match(r"^blog/([^/]+)/index\.html$", p) for p in changed
+                    if content_changed(p))
+                   if m}
+          if slugs:
+              for f in sorted(os.listdir("posts")):
+                  if not f.endswith(".html"):
+                      continue
+                  raw = io.open(os.path.join("posts", f), encoding="utf-8").read(4000)
+                  m = re.search(r"^slug:\s*[\"']?([^\"'\s]+)", raw, re.M)
+                  if m and m.group(1) in slugs:
+                      stems.add(f[:-5])
+
+          # Generated files only (posts.json, rss.xml, page/2/) map to no post.
+          # Nothing to check, and running all 104 here would be the site-wide
+          # sweep this workflow exists to avoid.
+          print("args=%s" % " ".join(sorted(stems)))
+          print("skip=%s" % ("true" if not stems else "false"))
+          PYEOF
+
+      - name: Nothing to check
+        if: steps.scope.outputs.skip == 'true'
+        run: |
+          echo "This push touched only generated files -- no post source changed."
+          echo "Site-wide checking is doc-freshness.yml's job, weekly."
+
+      - name: Run the pre-publish checks
+        if: steps.scope.outputs.skip != 'true'
+        run: |
+          echo "Scope: ${{ steps.scope.outputs.args || 'every post, every series' }}"
+          python scripts/prepublish.py --ci ${{ steps.scope.outputs.args }}
+
+      - name: What a failure here means
+        if: failure()
+        run: |
+          echo "A blocking check failed. Reproduce locally with:"
+          echo "    python scripts/prepublish.py ${{ steps.scope.outputs.args }}"
+          echo
+          echo "Note the local command has no --ci: by hand, an unreachable"
+          echo "vendor page fails too, because you should know you did not"
+          echo "actually get the check before you publish. CI cannot make that"
+          echo "distinction useful, so there it reports instead of blocking."

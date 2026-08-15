@@ -754,9 +754,28 @@ def _check_links_resolve(slug, name, claims, spec):
     shell hosts and relies on the status code alone. Do not extend the byte
     threshold to a host without checking a known-bad URL on it first — a wrong
     threshold either passes dead links or fails live ones.
+
+    A dead link and a bad afternoon look identical for one request
+    -------------------------------------------------------------
+    404 and 410 are the vendor saying the page is gone: a real defect, and an
+    error. 429 and the 5xx family are the vendor saying "not right now" —
+    retried, and if they persist, a warning rather than an error. Microsoft's
+    edge returned 503 during testing and served the page on immediate retry;
+    failing a build for that teaches people the gate is noise, and a gate
+    nobody trusts stops catching the 404s too.
+
+    A connection-level failure was already a warning for the same reason. This
+    only closes the gap where the same transient arrived with a status code
+    attached.
     """
+    import time
     import urllib.request
     import urllib.error
+
+    # "Come back later", not "it is gone".
+    TRANSIENT = (408, 425, 429, 500, 502, 503, 504)
+    ATTEMPTS = 3
+
     seen = set()
     for c in claims:
         if not isinstance(c, dict):
@@ -767,14 +786,35 @@ def _check_links_resolve(slug, name, claims, spec):
         seen.add(src)
         req = urllib.request.Request(src, headers={
             'User-Agent': 'Mozilla/5.0 (validate_arch_post.py)'})
-        try:
-            resp = urllib.request.urlopen(req, timeout=25)
-            code, body = resp.getcode(), resp.read(80000)
-        except urllib.error.HTTPError as exc:
-            err(slug, '%s cites %s which returns HTTP %d' % (name, src, exc.code))
-            continue
-        except Exception as exc:
-            warn(slug, '%s could not reach %s (%s)' % (name, src, exc))
+
+        code = body = None
+        for attempt in range(ATTEMPTS):
+            last = attempt == ATTEMPTS - 1
+            try:
+                resp = urllib.request.urlopen(req, timeout=25)
+                code, body = resp.getcode(), resp.read(80000)
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code in TRANSIENT:
+                    if not last:
+                        time.sleep(2 * (attempt + 1))
+                        continue
+                    warn(slug, '%s cites %s which returned HTTP %d on %d '
+                               'attempts — treated as a vendor outage, not a '
+                               'dead link. Not verified this run.'
+                         % (name, src, exc.code, ATTEMPTS))
+                else:
+                    err(slug, '%s cites %s which returns HTTP %d'
+                        % (name, src, exc.code))
+                break
+            except Exception as exc:
+                if not last:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                warn(slug, '%s could not reach %s (%s)' % (name, src, exc))
+                break
+
+        if code is None:
             continue
         if code >= 400:
             err(slug, '%s cites %s which returns HTTP %d' % (name, src, code))

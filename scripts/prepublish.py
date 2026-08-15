@@ -7,6 +7,7 @@
     python scripts/prepublish.py az-002               # one post
     python scripts/prepublish.py                      # everything, all series
     python scripts/prepublish.py --offline            # skip network checks
+    python scripts/prepublish.py --ci                 # what prepublish.yml runs
 
 Why this exists
 ---------------
@@ -38,6 +39,28 @@ What it runs, and why in this order
 
 Exit code is non-zero if any blocking check failed, so it can gate a workflow.
 `audit_claims.py` is advisory and never changes the exit code.
+
+--ci, and why it is not just --offline
+--------------------------------------
+Checks 1 and 2 fetch vendor documentation, so both can fail for reasons that
+have nothing to do with the post: an edge returning 503, a DNS blip, a runner
+without egress. Left alone, that makes the gate in `prepublish.yml` fail on
+good posts at random, and a gate that cries wolf gets disabled -- at which
+point the findings that *were* real stop being read.
+
+`--offline` is the wrong answer to that. It does not run the network checks at
+all, so a claim citing a figure that is not on the page sails through, and the
+most valuable check in the set is the one CI never performs.
+
+`--ci` keeps them running and narrows what they are allowed to fail on: a
+finding blocks when the page loaded and the post was wrong about it, and
+reports without blocking when the page could not be read. Structure and prose
+are unaffected -- they need no network, so they block unconditionally.
+
+Mechanically: `verify_claims.py --fail-on missing`, plus the transient-status
+retry in `validate_arch_post.py`, which downgrades 429/5xx to a warning after
+three attempts while leaving 404 an error. Both still print everything they
+found; only the exit code changes.
 """
 import argparse
 import os
@@ -73,7 +96,16 @@ def main():
     ap.add_argument("--series", help="restrict to one series key")
     ap.add_argument("--offline", action="store_true",
                     help="skip the checks that fetch vendor pages")
+    ap.add_argument("--ci", action="store_true",
+                    help="run the network checks but let them fail only on a "
+                         "real defect, not on an unreachable page")
     args = ap.parse_args()
+
+    if args.ci and args.offline:
+        print("--ci and --offline are contradictory: --offline does not run "
+              "the network checks at all, so there is nothing for --ci to "
+              "narrow. Pick one.")
+        return 2
 
     results, blocked = [], False
     for script, blocking, network, takes_series, takes_posts in CHECKS:
@@ -90,6 +122,10 @@ def main():
         # rest fetch unconditionally or not at all.
         if script == "validate_arch_post.py" and not args.offline:
             argv.append("--check-links")
+        # See "--ci" above: a page that would not load is not a defect in the
+        # post, and must not fail an automated gate.
+        if script == "verify_claims.py" and args.ci:
+            argv += ["--fail-on", "missing"]
 
         code = run(script, argv)
         if code == 0:
@@ -101,11 +137,15 @@ def main():
             blocked = True
 
     print("\n" + "=" * 74)
-    print("  PRE-PUBLISH SUMMARY%s" % (" — %s" % args.series if args.series else ""))
+    print("  PRE-PUBLISH SUMMARY%s%s"
+          % (" — %s" % args.series if args.series else "",
+             "  [ci]" if args.ci else ""))
     print("=" * 74)
     for script, status in results:
         print("  %-26s %s" % (script, status))
     print()
+    if args.ci:
+        print("  ci mode: unreachable vendor pages reported, not failed.")
     print("  %s" % ("DO NOT PUBLISH — fix the failures above." if blocked
                     else "All blocking checks passed."))
     return 1 if blocked else 0
