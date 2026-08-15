@@ -1695,91 +1695,133 @@ def topics_for(title, tags, text=""):
             if any(a in hay for a in aliases)]
 
 
-CLOUD_PROGRESS_TEMPLATE = """
-    <!-- ① Cloud Series Progress -->
-    <div class="sidebar-card" id="__WIDGET_ID__-progress-widget">
-      <div class="sidebar-title">__SERIES_NAME__ series progress</div>
-      <div id="__PFX__-years" style="display:none;gap:4px;margin-bottom:10px;flex-wrap:wrap"></div>
-      <div id="__PFX__-dots" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
+TABBED_PROGRESS_TEMPLATE = """
+    <!-- (1) Architecture series progress - one card, one tab per cloud.
+         This was three separate cards, one per cloud: three boxes saying the
+         same thing, and a lot of sidebar. Collapsing them into three summary
+         bars would have thrown away the per-post dots and the read-list, which
+         is the part readers actually use. So the tabs switch which series is
+         shown, and each series keeps its own localStorage key - arch-read-v1,
+         az-read-v1, gcp-read-v1 - exactly the keys the separate widgets used.
+         Saved progress surviving the merge is the whole constraint here. -->
+    <div class="sidebar-card" id="series-progress-widget">
+      <div class="sidebar-title">Architecture series progress</div>
+      <div class="sp-tabs" id="sp-tabs"></div>
+      <div id="sp-years" style="display:none;gap:4px;margin-bottom:10px;flex-wrap:wrap"></div>
+      <div id="sp-dots" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
       <div style="height:4px;background:var(--border);border-radius:4px;margin-bottom:9px;overflow:hidden">
-        <div id="__PFX__-bar" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width .4s ease"></div>
+        <div id="sp-bar" style="height:100%;background:var(--sp-accent,var(--orange));border-radius:4px;width:0%;transition:width .4s ease"></div>
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--text-muted)">
-        <span><strong id="__PFX__-count" style="color:var(--text)">0</strong> of <span id="__PFX__-total">__TOTAL__</span> <span id="__PFX__-unit">posts read</span></span>
-        <a id="__PFX__-next" href="#" style="color:var(--orange);text-decoration:none;font-size:11px"></a>
+        <span><strong id="sp-count" style="color:var(--text)">0</strong> of <span id="sp-total">0</span> <span id="sp-unit">posts read</span></span>
+        <a id="sp-next" href="#" style="color:var(--sp-accent,var(--orange));text-decoration:none;font-size:11px"></a>
       </div>
-      <div style="font-size:10.5px;color:var(--text-muted);margin-top:9px;padding-top:9px;border-top:0.5px solid var(--border)">Stored in your browser · picks up where you left off</div>
+      <div style="font-size:10.5px;color:var(--text-muted);margin-top:9px;padding-top:9px;border-top:0.5px solid var(--border)">Stored in your browser &middot; picks up where you left off</div>
     </div>
     <script>
     (function(){
-      var SERIES = __SERIES_JSON__;
-      var KEY = '__KEY__';
-      function load(){ try{ return JSON.parse(localStorage.getItem(KEY)||'[]'); }catch(e){ return []; } }
-      function save(r){ try{ localStorage.setItem(KEY,JSON.stringify(r)); }catch(e){} }
+      var ALL = __ALL_SERIES__;
+      if(!ALL.length) return;
+      var TABKEY = 'sp-active-v1';
+      var card = document.getElementById('series-progress-widget');
+      var cur = 0;
+      try{
+        var saved = localStorage.getItem(TABKEY);
+        ALL.forEach(function(s,i){ if(s.id === saved) cur = i; });
+      }catch(e){}
+
+      function S(){ return ALL[cur]; }
+      function load(){ try{ return JSON.parse(localStorage.getItem(S().key)||'[]'); }catch(e){ return []; } }
+      function save(r){ try{ localStorage.setItem(S().key,JSON.stringify(r)); }catch(e){} }
+
       var COMPACT_AT = 24;
       function dotStyle(isRead, compact){
+        var a = 'var(--sp-accent,var(--orange))';
         if(compact){
           return 'width:13px;height:13px;border-radius:3px;display:block;'
-            +'border:1px solid '+(isRead?'var(--orange)':'var(--border)')+';'
-            +'background:'+(isRead?'var(--orange)':'transparent')+';'
+            +'border:1px solid '+(isRead?a:'var(--border)')+';'
+            +'background:'+(isRead?a:'transparent')+';'
             +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
         }
         return 'width:26px;height:26px;border-radius:50%;display:flex;align-items:center;'
           +'justify-content:center;font-size:10px;font-weight:700;'
-          +'border:1.5px solid '+(isRead?'var(--orange)':'var(--border)')+';'
+          +'border:1.5px solid '+(isRead?a:'var(--border)')+';'
           +'color:'+(isRead?'#1D2322':'var(--text-muted)')+';'
-          +'background:'+(isRead?'var(--orange)':'transparent')+';'
+          +'background:'+(isRead?a:'transparent')+';'
           +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
       }
-      var YEARS = (function(){
-        var seen = {}, out = [];
-        SERIES.forEach(function(p){ if(!seen[p.y]){ seen[p.y]=1; out.push(String(p.y)); } });
+
+      var curYear = null;
+      function years(){
+        var seen={}, out=[];
+        S().posts.forEach(function(p){ if(!seen[p.y]){ seen[p.y]=1; out.push(String(p.y)); } });
         return out.sort().reverse();
-      })();
-      var useTabs = YEARS.length > 1 && SERIES.length > COMPACT_AT;
-      var curYear = YEARS[0];
+      }
       function maxYearCount(){
-        var c = {}, m = 0;
-        SERIES.forEach(function(p){ c[p.y] = (c[p.y]||0)+1; if(c[p.y] > m) m = c[p.y]; });
+        var c={}, m=0;
+        S().posts.forEach(function(p){ c[p.y]=(c[p.y]||0)+1; if(c[p.y]>m)m=c[p.y]; });
         return m;
       }
+
       function renderTabs(){
-        var tw = document.getElementById('__PFX__-years');
-        if(!tw) return;
-        if(!useTabs){ tw.style.display = 'none'; return; }
-        tw.style.display = 'flex';
-        if(!tw.dataset.built){
-          YEARS.forEach(function(y){
-            var b = document.createElement('button');
-            b.textContent = y; b.dataset.y = y;
-            b.style.cssText = 'font-size:10.5px;padding:2px 8px;border-radius:10px;border:1px solid var(--border);cursor:pointer;background:transparent;color:var(--text-muted)';
-            b.onclick = function(){ curYear = y; render(); };
-            tw.appendChild(b);
+        var t = document.getElementById('sp-tabs');
+        t.innerHTML = '';
+        if(ALL.length < 2) return;
+        ALL.forEach(function(s,i){
+          var b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'sp-tab' + (i===cur ? ' active' : '') + ' ' + s.cls;
+          b.textContent = s.name;
+          b.setAttribute('aria-pressed', i===cur ? 'true' : 'false');
+          b.addEventListener('click', function(){
+            cur = i; curYear = null;
+            try{ localStorage.setItem(TABKEY, s.id); }catch(e){}
+            render();
           });
-          tw.dataset.built = '1';
-        }
-        tw.querySelectorAll('button').forEach(function(b){
-          var on = String(b.dataset.y) === String(curYear);
-          b.style.background = on ? 'var(--orange)' : 'transparent';
-          b.style.color = on ? '#1D2322' : 'var(--text-muted)';
-          b.style.borderColor = on ? 'var(--orange)' : 'var(--border)';
-          b.style.fontWeight = on ? '600' : '400';
+          t.appendChild(b);
         });
       }
+
+      function renderYears(useTabs, ys){
+        var tw = document.getElementById('sp-years');
+        if(!useTabs){ tw.style.display='none'; return; }
+        tw.style.display='flex';
+        tw.innerHTML='';
+        ys.forEach(function(y){
+          var b=document.createElement('button');
+          b.type='button'; b.dataset.y=y; b.textContent=y;
+          var on = String(y)===String(curYear);
+          b.style.cssText='font:inherit;font-size:10.5px;padding:2px 8px;border-radius:20px;cursor:pointer;'
+            +'border:1px solid '+(on?'var(--sp-accent,var(--orange))':'var(--border)')+';'
+            +'background:'+(on?'var(--sp-accent,var(--orange))':'transparent')+';'
+            +'color:'+(on?'#1D2322':'var(--text-muted)')+';'
+            +'font-weight:'+(on?'600':'400');
+          b.addEventListener('click',function(){ curYear=y; render(); });
+          tw.appendChild(b);
+        });
+      }
+
       function render(){
+        var s = S();
+        card.style.setProperty('--sp-accent', s.accent);
         var read = load();
-        var wrap = document.getElementById('__PFX__-dots');
-        if(!wrap) return;
-        var shown = useTabs ? SERIES.filter(function(q){ return String(q.y) === String(curYear); }) : SERIES;
-        var compact = (useTabs ? maxYearCount() : SERIES.length) > COMPACT_AT;
+        var ys = years();
+        var useTabs = ys.length > 1;
+        if(useTabs && !curYear) curYear = ys[0];
+        var shown = useTabs ? s.posts.filter(function(q){ return String(q.y)===String(curYear); }) : s.posts;
+        var compact = (useTabs ? maxYearCount() : s.posts.length) > COMPACT_AT;
+
+        renderTabs();
+        renderYears(useTabs, ys);
+
+        var wrap = document.getElementById('sp-dots');
         wrap.style.gap = compact ? '4px' : '6px';
         wrap.innerHTML = '';
-        renderTabs();
         shown.forEach(function(p){
           var d = document.createElement('a');
           d.href = '/blog/'+p.slug+'/';
           d.title = '#'+p.n+': '+p.title;
-          var isRead = read.includes(p.n);
+          var isRead = read.indexOf(p.n) > -1;
           d.style.cssText = dotStyle(isRead, compact);
           if(!compact) d.textContent = p.n;
           d.addEventListener('click',function(e){
@@ -1790,15 +1832,17 @@ CLOUD_PROGRESS_TEMPLATE = """
           });
           wrap.appendChild(d);
         });
-        var inScope = shown.filter(function(q){ return read.includes(q.n); }).length;
+
+        var inScope = shown.filter(function(q){ return read.indexOf(q.n) > -1; }).length;
         var pct = shown.length ? Math.round(inScope/shown.length*100) : 0;
-        document.getElementById('__PFX__-bar').style.width = pct+'%';
-        document.getElementById('__PFX__-count').textContent = inScope;
-        document.getElementById('__PFX__-total').textContent = shown.length;
-        document.getElementById('__PFX__-unit').textContent = useTabs ? ('posts in '+curYear) : 'posts read';
-        var next = null;
-        for(var i=0;i<SERIES.length;i++){ if(!read.includes(SERIES[i].n)){ next=SERIES[i]; break; } }
-        var el = document.getElementById('__PFX__-next');
+        document.getElementById('sp-bar').style.width = pct+'%';
+        document.getElementById('sp-count').textContent = inScope;
+        document.getElementById('sp-total').textContent = shown.length;
+        document.getElementById('sp-unit').textContent = useTabs ? ('posts in '+curYear) : 'posts read';
+
+        var next=null;
+        for(var i=0;i<s.posts.length;i++){ if(read.indexOf(s.posts[i].n)===-1){ next=s.posts[i]; break; } }
+        var el=document.getElementById('sp-next');
         if(next){ el.href='/blog/'+next.slug+'/'; el.textContent='#'+next.n+' Next →'; }
         else{ el.textContent='✓ All done!'; el.removeAttribute('href'); }
       }
@@ -1808,23 +1852,17 @@ CLOUD_PROGRESS_TEMPLATE = """
 """
 
 
-def cloud_progress_widget(pfx, widget_id, series_name, key, series_json, total):
-    """Render CLOUD_PROGRESS_TEMPLATE for one cloud series.
+def tabbed_progress_widget(entries):
+    """One progress card with a tab per cloud series.
 
-    Every id in the markup is prefixed and the localStorage key is per-series,
-    which is the whole reason this is parameterised rather than copied: two of
-    these cards sit on the same page, and duplicated ids would make the second
-    widget write its dots into the first one's DOM and read the first one's
-    progress. The Azure widget was written with hardcoded `ap-` ids; adding GCP
-    is what forced the generalisation.
+    `entries` is a list of dicts: id, name, key, cls, accent, posts. A series
+    with no posts is dropped by the caller, so a cloud that has not started
+    yet contributes no tab rather than an empty one.
     """
-    return (CLOUD_PROGRESS_TEMPLATE
-            .replace("__WIDGET_ID__", widget_id)
-            .replace("__PFX__", pfx)
-            .replace("__SERIES_NAME__", series_name)
-            .replace("__KEY__", key)
-            .replace("__SERIES_JSON__", series_json)
-            .replace("__TOTAL__", str(total)))
+    if not entries:
+        return ""
+    return TABBED_PROGRESS_TEMPLATE.replace(
+        "__ALL_SERIES__", json.dumps(entries, separators=(",", ":")))
 
 
 POSTS_PER_PAGE = 24
@@ -2328,10 +2366,21 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     # localStorage key per series, so a reader's Azure progress is independent of
     # their GCP progress and both are independent of their AWS progress. Ids are
     # what keep several of these on one page from writing into each other's DOM.
-    az_progress_html = "" if not az_posts else cloud_progress_widget(
-        "ap", "az", "Azure", "az-read-v1", az_series_json, len(az_posts))
-    gcp_progress_html = "" if not gcp_posts else cloud_progress_widget(
-        "gp", "gcp", "GCP", "gcp-read-v1", gcp_series_json, len(gcp_posts))
+    # One card, one tab per cloud. Series with no posts are dropped so a cloud
+    # that has not started yet contributes no tab rather than an empty one.
+    progress_widget_html = tabbed_progress_widget([
+        e for e in [
+            {"id": "aws", "name": "AWS", "key": "arch-read-v1",
+             "cls": "cloud-aws", "accent": "#C4A484",
+             "posts": json.loads(arch_series_json)},
+            {"id": "azure", "name": "Azure", "key": "az-read-v1",
+             "cls": "cloud-azure", "accent": "#5B7B9A",
+             "posts": json.loads(az_series_json)},
+            {"id": "gcp", "name": "GCP", "key": "gcp-read-v1",
+             "cls": "cloud-gcp", "accent": "#8A9A5B",
+             "posts": json.loads(gcp_series_json)},
+        ] if e["posts"]
+    ])
 
     # 4. Publishing heatmap — posts per month per year
     from collections import defaultdict
@@ -2527,115 +2576,7 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     </div>
     <style>@keyframes sb-pulse{{0%,100%{{opacity:1}}50%{{opacity:.3}}}}</style>
 
-    <!-- ① Series Progress -->
-    <div class="sidebar-card" id="series-progress-widget">
-      <div class="sidebar-title">Architecture series progress</div>
-      <div id="sp-years" style="display:none;gap:4px;margin-bottom:10px;flex-wrap:wrap"></div>
-      <div id="sp-dots" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
-      <div style="height:4px;background:var(--border);border-radius:4px;margin-bottom:9px;overflow:hidden">
-        <div id="sp-bar" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width .4s ease"></div>
-      </div>
-      <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--text-muted)">
-        <span><strong id="sp-count" style="color:var(--text)">0</strong> of <span id="sp-total">{len(arch_posts)}</span> <span id="sp-unit">posts read</span></span>
-        <a id="sp-next" href="#" style="color:var(--orange);text-decoration:none;font-size:11px"></a>
-      </div>
-      <div style="font-size:10.5px;color:var(--text-muted);margin-top:9px;padding-top:9px;border-top:0.5px solid var(--border)">Stored in your browser · picks up where you left off</div>
-    </div>
-    <script>
-    (function(){{
-      var ARCH = {arch_series_json};
-      var KEY = 'arch-read-v1';
-      function load(){{ try{{ return JSON.parse(localStorage.getItem(KEY)||'[]'); }}catch(e){{ return []; }} }}
-      function save(r){{ try{{ localStorage.setItem(KEY,JSON.stringify(r)); }}catch(e){{}} }}
-      var COMPACT_AT = 24;
-      function dotStyle(isRead, compact){{
-        if(compact){{
-          return 'width:13px;height:13px;border-radius:3px;display:block;'
-            +'border:1px solid '+(isRead?'var(--orange)':'var(--border)')+';'
-            +'background:'+(isRead?'var(--orange)':'transparent')+';'
-            +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
-        }}
-        return 'width:26px;height:26px;border-radius:50%;display:flex;align-items:center;'
-          +'justify-content:center;font-size:10px;font-weight:700;'
-          +'border:1.5px solid '+(isRead?'var(--orange)':'var(--border)')+';'
-          +'color:'+(isRead?'#1D2322':'var(--text-muted)')+';'
-          +'background:'+(isRead?'var(--orange)':'transparent')+';'
-          +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
-      }}
-      var YEARS = (function(){{
-        var seen = {{}}, out = [];
-        ARCH.forEach(function(p){{ if(!seen[p.y]){{ seen[p.y]=1; out.push(String(p.y)); }} }});
-        return out.sort().reverse();
-      }})();
-      var useTabs = YEARS.length > 1 && ARCH.length > COMPACT_AT;
-      var curYear = YEARS[0];
-      function maxYearCount(){{
-        var c = {{}}, m = 0;
-        ARCH.forEach(function(p){{ c[p.y] = (c[p.y]||0)+1; if(c[p.y] > m) m = c[p.y]; }});
-        return m;
-      }}
-      function renderTabs(){{
-        var tw = document.getElementById('sp-years');
-        if(!tw) return;
-        if(!useTabs){{ tw.style.display = 'none'; return; }}
-        tw.style.display = 'flex';
-        if(!tw.dataset.built){{
-          YEARS.forEach(function(y){{
-            var b = document.createElement('button');
-            b.textContent = y; b.dataset.y = y;
-            b.style.cssText = 'font-size:10.5px;padding:2px 8px;border-radius:10px;border:1px solid var(--border);cursor:pointer;background:transparent;color:var(--text-muted)';
-            b.onclick = function(){{ curYear = y; render(); }};
-            tw.appendChild(b);
-          }});
-          tw.dataset.built = '1';
-        }}
-        tw.querySelectorAll('button').forEach(function(b){{
-          var on = String(b.dataset.y) === String(curYear);
-          b.style.background = on ? 'var(--orange)' : 'transparent';
-          b.style.color = on ? '#1D2322' : 'var(--text-muted)';
-          b.style.borderColor = on ? 'var(--orange)' : 'var(--border)';
-          b.style.fontWeight = on ? '600' : '400';
-        }});
-      }}
-      function render(){{
-        var read = load();
-        var wrap = document.getElementById('sp-dots');
-        if(!wrap) return;
-        var shown = useTabs ? ARCH.filter(function(q){{ return String(q.y) === String(curYear); }}) : ARCH;
-        var compact = (useTabs ? maxYearCount() : ARCH.length) > COMPACT_AT;
-        wrap.style.gap = compact ? '4px' : '6px';
-        wrap.innerHTML = '';
-        renderTabs();
-        shown.forEach(function(p){{
-          var d = document.createElement('a');
-          d.href = '/blog/'+p.slug+'/';
-          d.title = p.title;
-          var isRead = read.includes(p.n);
-          d.style.cssText = dotStyle(isRead, compact);
-          if(!compact) d.textContent = p.n;
-          d.addEventListener('click',function(e){{
-            e.preventDefault();
-            var r=load(); var i=r.indexOf(p.n);
-            if(i>-1)r.splice(i,1); else r.push(p.n);
-            save(r); render();
-          }});
-          wrap.appendChild(d);
-        }});
-        var inScope = shown.filter(function(q){{ return read.includes(q.n); }}).length;
-        var pct = shown.length ? Math.round(inScope/shown.length*100) : 0;
-        document.getElementById('sp-bar').style.width = pct+'%';
-        document.getElementById('sp-count').textContent = inScope;
-        document.getElementById('sp-total').textContent = shown.length;
-        document.getElementById('sp-unit').textContent = useTabs ? ('posts in '+curYear) : 'posts read';
-        var next = null;
-        for(var i=0;i<ARCH.length;i++){{ if(!read.includes(ARCH[i].n)){{ next=ARCH[i]; break; }} }}
-        var el = document.getElementById('sp-next');
-        if(next){{ el.href='/blog/'+next.slug+'/'; el.textContent='#'+next.n+' Next →'; }}
-        else{{ el.textContent='✓ All done!'; el.removeAttribute('href'); }}
-      }}
-      render();
-    }})();
-    </script>
+    {progress_widget_html}
 
     <!-- ① Lab Series Progress -->
     <div class="sidebar-card" id="lab-progress-widget">
@@ -2746,8 +2687,6 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
       render();
     }})();
     </script>
-{az_progress_html}
-{gcp_progress_html}
     <!-- ② Domain Donut -->
     <div class="sidebar-card" id="domain-donut-widget">
       <div class="sidebar-title">Posts by AWS domain</div>
