@@ -218,6 +218,20 @@ def build(src_path, prev_slug=None, prev_title=None):
     nav = re.search(r'<ul class="nav-links">(.*?)</ul>', tpl, re.S)
     nav_items = len(re.findall(r"<li>", nav.group(1))) if nav else 0
 
+    # Point the previous post forward at this one. This page's own next link was
+    # just dropped because nothing follows it yet, which is correct -- but the
+    # post before it now has a successor, and nothing else will ever tell it so:
+    # these pages are externally_built, so sync_blog.py never regenerates them.
+    # Without this step a series can only be read backwards, which is how 15
+    # pages across the three clouds ended up with no forward link at all.
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import fix_series_nav
+        fix_series_nav.backfill_all(quiet=True)
+    except Exception as exc:                                  # noqa: BLE001
+        print("  WARNING: could not back-fill the previous post's next link (%s)."
+              "  Run scripts/fix_series_nav.py by hand." % exc)
+
     print("wrote %s" % out_path)
     print("  %s | %s | css v=%s" % (date_display, read_time, css_version))
     print("  references: %d | nav items: %d | placeholders left: %s"
