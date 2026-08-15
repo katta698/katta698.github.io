@@ -2,7 +2,7 @@
 
 ## Workflow rules
 
-- Always `git pull --rebase` before any edits. GitHub Actions auto-commits posts.json after every push.
+- Always `git pull --rebase` before any edits. Three other worktrees publish to this same branch, so `origin/main` moves without you.
 - Never commit or push without explicit instruction. Jayanth pushes himself.
 - After `sync_blog.py` runs, stage ALL modified files under `blog/` — not just the new post's directory. Older posts get regenerated too (widgets, date format, CSS).
 
@@ -162,14 +162,22 @@ generated.
 | **Generated** | `blog/posts.json`, `blog/index.html`, `blog/rss.xml`, `blog/stats.json`, every rebuilt `blog/<slug>/index.html` | Every parallel publish |
 
 `sync_blog.py` rebuilds the whole site index from `posts/`, so any two people
-publishing rewrite the same generated files. The Actions bot also auto-commits
-`blog/posts.json` after every push, which is a third writer.
+publishing rewrite the same generated files.
 
-Worktrees make this *more* likely, not less: each of the four has its own
-`posts/` and cannot see another's new post until it rebases. With five writers
-rather than two — four worktrees plus the Actions bot — conflicts on generated
-files are routine. That is why the rule is rebase before **sync**, not merely
-before editing.
+**No workflow commits back after a post push.** `on-publish.yml` used to
+regenerate `posts.json` from the rendered HTML and commit it, which made the
+Actions bot a third writer on every publish; `111570f` deleted that step on
+5 August 2026, and `posts.json` now comes only from `sync_blog.py`. The three
+workflows that still commit are `refresh-aws-services.yml` (weekly cron),
+`regenerate-schedule.yml` (fires on hero media and `index.html`, never on
+`posts/`) and `publish-lab-draft.yml` (manual). So after pushing a post your
+local branch stays level with `origin/main`, and a pull before the next post is
+only needed because another *window* may have published.
+
+Worktrees make conflicts *more* likely, not less: each of the four has its own
+`posts/` and cannot see another's new post until it rebases. With four writers
+rather than two, conflicts on generated files are routine. That is why the rule
+is rebase before **sync**, not merely before editing.
 
 They are still the right structure. A conflict on a generated file is visible
 and has a documented fix; sharing one working directory silently mixes two
