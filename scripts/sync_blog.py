@@ -738,7 +738,7 @@ CHATGPT_MARKERS = [
 # At 3 the series label evicted the most specific tag, and the Kubernetes pill
 # disappeared entirely because its only three posts were all in the series.
 MAX_TAGS = 4
-CATEGORY_ORDER = ["All", "AWS Architecture Series", "Azure Architecture Series", "GCP Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS Weekly Intelligence", "30 Days of AWS Terraform", "AWS", "Azure", "GCP", "Terraform", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
+CATEGORY_ORDER = ["All", "AWS Architecture Series", "Azure Architecture Series", "GCP Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS Weekly Intelligence", "30 Days of AWS Terraform", "AWS", "Azure", "GCP", "Terraform", "Databases & Ops", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
 
 NAV_SVG = """<svg width="30" height="30" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
   <rect width="80" height="80" rx="16" fill="#11140F"/>
@@ -1894,6 +1894,7 @@ TOPIC_BY_LABEL = [
     ("Career", "topic topic-career"),
     ("Health", "topic topic-health"),
     ("Life", "topic topic-life"),
+    ("Databases & Ops", "topic topic-db"),
     # The bare cloud tags. Same hue as the matching series so a cloud looks
     # like itself wherever it appears, but the topic treatment so the filter
     # row still separates a series from a tag. Listed after the series entries
