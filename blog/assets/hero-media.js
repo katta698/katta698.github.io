@@ -85,6 +85,22 @@
   // hero would go blank for a week, once every five or six years.
   var theme = PLAN[(isoWeek(now) - 1) % PLAN.length];
 
+  // Dusk: sunset takes the evening whatever the week's theme is, then hands it
+  // back. The hero otherwise shows one clip from midnight to midnight, so a
+  // reader who visits in the morning and again after dinner saw no change at
+  // all -- the week and the day were the only two dimensions.
+  //
+  // Deliberately still a pure function of the clock, which is the property
+  // build_hero_schedule.js depends on: it evaluates this file against a stubbed
+  // date to render a year ahead, and cannot do that for anything needing a
+  // network call. Weather or location would have ended that page.
+  //
+  // The stub fixes the hour at noon, so the schedule keeps reporting the week's
+  // theme rather than every row turning to sunset.
+  var DUSK_FROM = 17, DUSK_TO = 21;
+  var dusk = now.getHours() >= DUSK_FROM && now.getHours() < DUSK_TO;
+  if (dusk && COUNTS.sunset) theme = 'sunset';
+
   // ?theme=forest forces a theme, for previewing without waiting for the
   // calendar. Ignored unless it names a theme that actually has clips.
   var forced = (location.search.match(/[?&]theme=([a-z]+)/) || [])[1];
@@ -186,5 +202,5 @@
 
   // Exposed so scripts/validate_hero_media.py and manual checks can see what
   // today resolves to without reading the clock by hand.
-  window.__heroTheme = { theme: theme, clip: n, week: isoWeek(now) };
+  window.__heroTheme = { theme: theme, clip: n, week: isoWeek(now), dusk: dusk };
 })();
