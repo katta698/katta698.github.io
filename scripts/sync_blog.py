@@ -1941,6 +1941,40 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
         for c in CATEGORY_ORDER if c != "All" and tag_counts.get(c, 0) > 0
     )
 
+    # ── Posts by cloud ────────────────────────────────────────
+    # The blog stopped being an AWS blog when the Azure and GCP series started,
+    # and nothing in the sidebar said so. Counted from the same tag test
+    # applyFilters() uses rather than from CLOUD_BY_LABEL, so the number on a
+    # row always equals the number of cards clicking it produces -- the service
+    # badges and their filter drifted apart exactly once, on 17 of 36 topics,
+    # by being computed two different ways.
+    cloud_defs = [("AWS", "aws", "cloud-aws"),
+                  ("Azure", "azure", "cloud-azure"),
+                  ("GCP", "gcp", "cloud-gcp")]
+    cloud_counts = []
+    for _name, _tag, _cls in cloud_defs:
+        _n = sum(1 for p in posts if _tag in " ".join(p["tags"]).lower())
+        if _n:
+            cloud_counts.append((_name, _tag, _cls, _n))
+    cloud_total = sum(c[3] for c in cloud_counts)
+    _cloud_max = max((c[3] for c in cloud_counts), default=1)
+    cloud_rows = "\n".join(
+        f'<span class="sb-tag cloud-row {cls}" data-tag="{tag}">'
+        f'<span class="cloud-name">{name}</span>'
+        f'<span class="cloud-bar"><span class="cloud-bar-fill" style="width:{100*n//_cloud_max}%"></span></span>'
+        f'<span class="cloud-count">{n}</span></span>'
+        for name, tag, cls, n in cloud_counts
+    )
+    # Only worth showing once there is more than one cloud to compare.
+    cloud_widget = "" if len(cloud_counts) < 2 else f'''
+    <div class="sidebar-card" id="clouds-widget">
+      <div class="sidebar-title">Posts by cloud</div>
+      <div class="cloud-list">
+{cloud_rows}
+      </div>
+      <div class="svc-foot">{cloud_total} of {len(posts)} posts belong to a cloud series. Click one to filter.</div>
+    </div>'''
+
     # ── The dataset behind filtering and search ───────────────
     # Filters run across every post, not just the page on screen, so blog.js
     # needs the whole set. Written once (from page 1, which sees the same full
@@ -2367,6 +2401,7 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     {pagination}
   </div>
   <aside class="sidebar">
+    {cloud_widget}
     <div class="sidebar-card" id="services-widget">
       <div class="sidebar-title">AWS services across all posts</div>
       <div class="svc-filter-note" id="svc-filter-note" style="display:none"></div>
@@ -3252,10 +3287,18 @@ def main():
             entry["total"] = total
         return entry
 
+    # The short names name their cloud. "Architecture Series" was unambiguous
+    # while there was one; with three it tells a reader nothing, and the pills
+    # sit next to each other. Entries with a zero count are dropped below, so a
+    # series can be listed here before its first post without showing an empty
+    # pill on the home page.
     series = [
-        _series_entry("AWS Architecture Series", "Architecture Series", "aws+architecture+series"),
+        _series_entry("AWS Architecture Series", "AWS Architecture", "aws+architecture+series"),
+        _series_entry("Azure Architecture Series", "Azure Architecture", "azure+architecture+series"),
+        _series_entry("GCP Architecture Series", "GCP Architecture", "gcp+architecture+series"),
         _series_entry("AWS Weekly Lab", "Weekly Lab", "aws+weekly+lab", total=52),
-        _series_entry("AWS Daily Intelligence", "Daily Intelligence", "aws+daily+intelligence"),
+        _series_entry("AWS Daily Intelligence", "AWS Daily", "aws+daily+intelligence"),
+        _series_entry("AWS Weekly Intelligence", "AWS Weekly", "aws+weekly+intelligence"),
     ]
 
     series_labels = {s["label"] for s in series}
