@@ -16,6 +16,27 @@ deliberately.
 before picking a topic — a held item can beat the day's news, and anything
 approaching a week old is about to become unwritable.
 
+## Leftover news goes in Saturday's post, not a catch-up
+
+Set 2026-08-16. When a daily slot passes without covering the day it was due to
+— usually because a held item outranked the day's news — **do not publish a
+late post to fill the gap.** The uncovered items stay in this file and are
+picked up by that week's Saturday roundup.
+
+This happened first on 15 August: post #11 took Thursday's S3 announcement into
+Saturday's slot, leaving Friday's news uncovered. A catch-up post written on the
+Sunday would have published four-day-old news on a day the cadence has no post,
+and pushed every subsequent slot a day further out of step.
+
+The roundup is the right home for it. It is scoped by announcement date rather
+than publish date, so an item from Friday belongs there by definition, and
+nothing about it is late.
+
+**Tuesday always starts clean.** Tuesday covers Monday, and never carries
+anything owed from the week before.
+
+---
+
 ## Cadence: five posts, Tuesday to Saturday
 
 Fixed on 2026-08-14. **AWS publishes Monday to Friday, so there are five news
@@ -60,6 +81,24 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 14 August 2026 — not covered by a daily; folded into Saturday's post instead
+
+Three announcements. None became a daily: the Saturday slot that should have
+carried Friday's news went to a held item instead, and rather than publish a
+late catch-up post the items are held for the next Saturday roundup.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Managed Dashboards — five preconfigured cost dashboards, no setup, no cost | Billing & Cost Management | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-billing-and-cost-management-managed-dashboards/) |
+| Click tracking supports custom URL paths for mobile app deep linking | SES | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ses-supports-customurl-deeplinking) |
+| Oracle Application Express (APEX) 26.1 support | RDS for Oracle | skipped | Low | version bump |
+
+**Worth revisiting:** Managed Dashboards is the strongest of the three. Five
+read-only dashboards arrive populated with account data, and duplicating one to
+edit it forks it away from the version AWS maintains, with no drift signal.
+
+---
+
 ## 13 August 2026 — nothing outranked the held EKS item; post #10 took that
 
 Eight announcements, none architectural. The best of them, S3 returning more
@@ -68,7 +107,7 @@ held as the strongest open item.
 
 | Item | Service | Status | Importance | Reference |
 | --- | --- | --- | --- | --- |
-| Additional policy details in access denied error messages | S3 | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/s3-additional-policy-details-access-denied-error-messages/) |
+| Additional policy details in access denied error messages | S3 | **#11** | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/s3-additional-policy-details-access-denied-error-messages/) |
 | CLI, administration controls, faster connections | Client VPN | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-client-vpn-cli/) |
 | CVE-2026-18428 — async query validation bypass in the OpenSearch SQL plugin | OpenSearch | open | Med-High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-081-aws/) |
 | Switch from e-mail to DNS validation on an existing certificate | Certificate Manager | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/AWS-Certificate-Manager-Email-DNS-Switch) |

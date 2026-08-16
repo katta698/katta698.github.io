@@ -1,0 +1,264 @@
+---
+title: 'AWS Architecture Series #23 — DMS and CDC: What "Ongoing Replication" Does Not Promise'
+date: 2026-08-16
+slug: aws-architecture-dms-cdc-guarantees
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-08-16'
+verified_claims:
+  - claim: "AWS states that DMS CDC does not provide real-time replication and that there are no SLAs for CDC latency"
+    source: https://docs.aws.amazon.com/dms/latest/userguide/CHAP_Task.CDC.html
+  - claim: "Views can be migrated by full-load tasks only; a CDC-only task or a full-load task that starts CDC migrates tables only"
+    source: https://docs.aws.amazon.com/dms/latest/userguide/CHAP_Task.CDC.html
+  - claim: "The CDC start point is marked when the task is created and cannot be changed; using a different start point requires a new task"
+    source: https://docs.aws.amazon.com/dms/latest/userguide/CHAP_Task.CDC.html
+  - claim: "Starting an Oracle CDC task from an SCN or timestamp misses open transactions unless the openTransactionWindow endpoint setting is used, available from DMS 3.5.1"
+    source: https://docs.aws.amazon.com/dms/latest/userguide/CHAP_Task.CDC.html
+  - claim: "PostgreSQL as a source does not support a custom CDC start time, because the engine cannot map a timestamp to an LSN or SCN"
+    source: https://docs.aws.amazon.com/dms/latest/userguide/CHAP_Task.CDC.html
+  - claim: "DMS bidirectional replication does not include conflict detection or resolution, and loopback prevention tracks only DML, not DDL"
+    source: https://docs.aws.amazon.com/dms/latest/userguide/CHAP_Task.CDC.html
+problem: "The cutover plan says the target is kept in sync by CDC, so the freeze window is minutes. Nobody wrote down what CDC actually promises, and it promises less than the plan assumes: not real-time, no latency SLA, tables only, and a start point that cannot be moved once the task exists."
+builds: "A cutover designed around what the change stream guarantees rather than what the phrase 'ongoing replication' suggests — with schema objects handled outside CDC, a start point chosen before the task is created rather than after, and a freeze window sized by measured latency instead of by hope."
+catch: "Every limit here is documented and none of them produce an error. A task that silently omits views, misses open transactions, or runs eight minutes behind reports the same healthy status as one that does not."
+---
+
+<div class="container">
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The migration plan has one sentence that everything else depends on: <em>DMS keeps the
+      target in sync, so the cutover window is minutes, not hours.</em> It is written early,
+      by someone reading a product page, and it is never revisited.
+    </p>
+    <p>
+      On the night, the application is stopped, the team waits for replication to drain, and
+      the wait does not end when anybody expected. Somebody opens a console to find out how far
+      behind the target is, which is the first time in the project anyone has asked.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>"Ongoing replication" is not "real-time replication"</strong></div>
+      <div class="challenge-body">
+        <p>
+          AWS is unusually direct about this, in a note on the CDC page itself:
+          <em>&#8220;AWS DMS CDC does not provide real-time replication.&#8221;</em> Latency varies
+          with source workload, network conditions, replication instance resources, target
+          ingestion capacity and data characteristics, and <em>&#8220;There are no SLAs for CDC
+          latency.&#8221;</em> It <em>&#8220;can increase to several minutes or longer&#8221;</em>.
+        </p>
+        <p>
+          That is not a caveat about degraded operation. It is the guarantee. A freeze window
+          sized on the assumption of second-level lag is sized against something AWS never
+          offered, and the number you need &#8212; your latency, on your data, under your load
+          &#8212; can only come from measurement.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>CDC moves rows, not schemas</strong></div>
+      <div class="challenge-body">
+        <p>
+          A full-load task can migrate views, or a combination of tables and views. A CDC-only
+          task, or a full-load task that starts CDC when it completes, migrates
+          <em>&#8220;only tables from the source&#8221;</em>.
+        </p>
+        <p>
+          Most migrations use full load plus CDC, because that is the pattern that keeps the
+          window short. That choice quietly removes views from the migration. The target comes
+          up with every row present and correct, and an application that queries a view fails
+          on something that looks nothing like a data problem.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The start point is decided once, before you know you needed it</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&#8220;When the task is created, AWS DMS marks the CDC start point, and it can't
+          be changed. To use a different CDC start point, create a new task.&#8221;</em>
+        </p>
+        <p>
+          This is the parameter people get wrong under pressure, at 2am, having just realised
+          the bulk load finished at a different moment than they assumed. There is no correcting
+          it in place. The only remedy is a new task, which means re-establishing where the
+          change stream should begin &#8212; the exact problem you were trying to solve.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>Open transactions fall through the gap</strong></div>
+      <div class="challenge-body">
+        <p>
+          On Oracle, starting a CDC task from an SCN or timestamp means you
+          <em>&#8220;miss the results of any open transactions and fail to migrate these
+          results&#8221;</em> &#8212; transactions that began before the start position and
+          committed after it. From DMS 3.5.1 the <code>openTransactionWindow</code> endpoint
+          setting handles them, by shifting the capture position back by a window you specify
+          in minutes.
+        </p>
+        <p>
+          Nothing reports the loss. The rows are simply not there, and they belong to
+          long-running transactions &#8212; which in most estates means the batch jobs, the ones
+          whose absence surfaces at month end rather than at cutover.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      DMS reads the source engine's transaction log through that engine's own API. Everything
+      that follows &#8212; what can be captured, how you address a point in the stream, what
+      "start here" even means &#8212; is inherited from the log, not from DMS.
+    </p>
+
+    <h3>One mechanism per engine, and the differences leak</h3>
+    <p>
+      Oracle uses LogMiner or the binary reader against online or archive redo logs, addressed
+      by SCN. SQL Server uses MS-Replication or MS-CDC and reads the transaction log through
+      <code>fn_dblog()</code> or <code>fn_dump_dblog()</code>, addressed by LSN. MySQL reads
+      row-based binlogs, addressed by file and position. PostgreSQL creates a logical
+      replication slot and reads through the <code>test_decoding</code> plugin.
+    </p>
+    <p>
+      Each requires source configuration before any of it works &#8212; Oracle needs
+      supplemental logging, MySQL needs row-level binary logging &#8212; and each imposes its own
+      limits. The clearest is PostgreSQL: it <em>&#8220;doesn't support a custom CDC start
+      time&#8221;</em>, because the engine has no way to map a timestamp to an LSN the way Oracle
+      and SQL Server can. A runbook written around "start replication from 21:00" is not
+      portable between engines, and the failure appears only when you try it.
+    </p>
+
+    <h3>Addressing a point in the stream</h3>
+    <p>
+      Three ways to say where CDC begins: a custom start <em>time</em>, which DMS converts to a
+      native point; a native start point stated directly in the engine's own terms; or a
+      checkpoint from a previous task. AWS's own caution is that a timestamp
+      <em>&#8220;can indicate multiple native points in the transaction log&#8221;</em>, which is
+      why the native form exists.
+    </p>
+    <p>
+      Checkpoints are the underused one. A running task writes recovery checkpoints, and a
+      checkpoint can start <em>another</em> task at that same position &#8212; the supported way
+      to fan a migration out to a second target without re-loading, or to recover a failed task
+      at a known point. Setting <code>TaskRecoveryTableEnabled</code> writes them to an
+      <code>awsdms_txn_state</code> table on the target, which matters because checkpoint
+      information held only by the task <em>&#8220;is lost if the task is deleted&#8221;</em>.
+    </p>
+
+    <h3>Bidirectional replication is not multi-master</h3>
+    <p>
+      DMS can replicate A to B and B to A, with <code>LoopbackPreventionSettings</code> stopping
+      each task re-applying the other's changes. AWS states the boundary plainly: it
+      <em>&#8220;isn't intended as a full multi-master solution&#8221;</em> and
+      <em>&#8220;doesn't include conflict detection or resolution&#8221;</em>. The intended use is
+      data that is <em>operationally segregated</em> &#8212; node A owns its rows and node B never
+      writes them.
+    </p>
+    <p>
+      Two constraints come with it. Loopback prevention <em>&#8220;tracks only data manipulation
+      language (DML) statements&#8221;</em>, so DDL will loop unless one task filters it out. And
+      such tasks <em>&#8220;don't support committing changes in batches&#8221;</em>:
+      <code>BatchApplyEnabled</code> must be <code>false</code>, which removes the main throughput
+      optimisation available to a busy task.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Matters</h2>
+    <p>
+      Every limit above is documented, and not one of them raises an error. That is the property
+      that makes them worth designing around rather than discovering.
+    </p>
+    <p>
+      A task running eight minutes behind reports the same healthy status as one running eight
+      seconds behind. A task that omitted every view reports success. A task that missed a
+      long-running transaction reports success. The feedback you get is that replication is
+      working &#8212; which is true, and not the question you were asking.
+    </p>
+    <p>
+      The gap is between two readings of the same phrase. "Ongoing replication" is accurate:
+      changes flow continuously. The plan needs something stronger &#8212; a bounded, known lag at
+      a specific moment &#8212; and that is a property of your workload, measured, not a property
+      of the service.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take this</th><th>Because</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Sizing the freeze window</td>
+            <td>Measure CDC latency under production-like load and size from the observed tail, not the average</td>
+            <td>There is no latency SLA. The only number that means anything is one you produced</td>
+          </tr>
+          <tr>
+            <td>Views, sequences, procedures</td>
+            <td>Handle outside CDC &#8212; Schema Conversion, or applied by hand and verified</td>
+            <td>A task that starts CDC migrates tables only, and reports success having done so</td>
+          </tr>
+          <tr>
+            <td>Choosing the start point</td>
+            <td>Decide before creating the task; prefer a native point or checkpoint over a timestamp</td>
+            <td>It cannot be changed afterwards, and a timestamp can map to several points in the log</td>
+          </tr>
+          <tr>
+            <td>Oracle sources</td>
+            <td>Set <code>openTransactionWindow</code> to a window wider than your longest transaction</td>
+            <td>Otherwise transactions open at the start position are silently dropped</td>
+          </tr>
+          <tr>
+            <td>Recovering or fanning out</td>
+            <td>Enable <code>TaskRecoveryTableEnabled</code> so checkpoints persist on the target</td>
+            <td>Checkpoint information is lost when the task is deleted</td>
+          </tr>
+          <tr>
+            <td>Two-way replication</td>
+            <td>Only where write ownership is genuinely segregated by node</td>
+            <td>No conflict detection or resolution exists; conflicts corrupt rather than fail</td>
+          </tr>
+          <tr>
+            <td>Verifying the result</td>
+            <td>Enable data validation, and on both tasks in a bidirectional pair</td>
+            <td>It is the only mechanism that compares source and target rather than reporting task health</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      DMS is a good service, and none of this is a criticism of it. The documentation states
+      every limit here plainly, including the sentence most likely to change a migration plan:
+      there are no SLAs for CDC latency.
+    </p>
+    <div class="callout">
+      <p>
+        The failure mode is not the tool. It is that "the target is kept in sync" gets written
+        into a plan as an assumption, and the assumption is never converted into a number.
+        Convert it early &#8212; measure the lag, on your data, under load &#8212; and the rest of
+        the cutover design follows from something real.
+      </p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/dms/latest/userguide/CHAP_Task.CDC.html">Creating tasks for ongoing replication using AWS DMS</a></li>
+      <li><a href="https://docs.aws.amazon.com/dms/latest/userguide/CHAP_BestPractices.html">AWS DMS best practices</a></li>
+      <li><a href="https://docs.aws.amazon.com/dms/latest/userguide/CHAP_Validating.html">Validating AWS DMS tasks</a></li>
+    </ul>
+  </div>
+</div>
