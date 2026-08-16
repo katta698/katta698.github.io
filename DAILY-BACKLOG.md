@@ -16,24 +16,35 @@ deliberately.
 before picking a topic — a held item can beat the day's news, and anything
 approaching a week old is about to become unwritable.
 
-## Leftover news goes in Saturday's post, not a catch-up
+## A missed daily slot is not missed coverage
 
-Set 2026-08-16. When a daily slot passes without covering the day it was due to
-— usually because a held item outranked the day's news — **do not publish a
-late post to fill the gap.** The uncovered items stay in this file and are
-picked up by that week's Saturday roundup.
+Set 2026-08-16, corrected the same day after the first version of this rule got
+it wrong.
 
-This happened first on 15 August: post #11 took Thursday's S3 announcement into
-Saturday's slot, leaving Friday's news uncovered. A catch-up post written on the
-Sunday would have published four-day-old news on a day the cadence has no post,
-and pushed every subsequent slot a day further out of step.
+**The weekly roundup already covers every announcement in its date range.** Its
+inventory is built from the raw feed for those dates, so nothing in the window
+can be absent from it. When a daily slot takes a held item instead of the day it
+was due to cover, that day's news is still in the roundup — what it does not get
+is a *deep-dive*.
 
-The roundup is the right home for it. It is scoped by announcement date rather
-than publish date, so an item from Friday belongs there by definition, and
-nothing about it is late.
+So there is no gap to fill and no catch-up to publish. The items simply stay in
+this file as `open`, and compete for a future daily slot on their merits like
+anything else held here.
 
-**Tuesday always starts clean.** Tuesday covers Monday, and never carries
-anything owed from the week before.
+**What went wrong the first time this was written.** Post #11 took Thursday's S3
+announcement into Saturday's slot, leaving Friday 14 August without a deep-dive.
+That was recorded here as news needing to be "folded into Saturday's post" — but
+weekly #2 had already published that morning, covering 10–14 August, and it
+carried Managed Dashboards in both its analysis and its inventory. The news was
+never uncovered. Only the deep-dive was missing.
+
+**Never move an item into a later roundup to compensate.** Each roundup covers a
+distinct date range, so a 14 August item cannot appear in the roundup for 17–21
+August. That is the never-repeat rule in CLAUDE.md, and it is what stops the
+series quietly recycling old news.
+
+**Tuesday always starts clean.** Tuesday covers Monday and carries nothing owed
+from the week before.
 
 ---
 
@@ -81,11 +92,12 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
-## 14 August 2026 — not covered by a daily; folded into Saturday's post instead
+## 14 August 2026 — no daily deep-dive; covered in weekly #2's inventory
 
-Three announcements. None became a daily: the Saturday slot that should have
-carried Friday's news went to a held item instead, and rather than publish a
-late catch-up post the items are held for the next Saturday roundup.
+Three announcements. None became a daily: Saturday's slot went to a held item
+instead. All three are in weekly #2 (10–14 August), which published the same
+morning, so they are covered — they are held here only as candidates for a
+future daily deep-dive, not because anything is missing from the record.
 
 | Item | Service | Status | Importance | Reference |
 | --- | --- | --- | --- | --- |
