@@ -1,0 +1,251 @@
+---
+title: "Azure Architecture Series #3 — Azure Resource Manager: The Control Plane Every Request Passes Through"
+date: 2026-08-16
+slug: azure-architecture-resource-manager-control-plane
+labels: [Azure, "Azure Architecture Series"]
+verified: '2026-08-14'
+verified_claims:
+  - claim: "All control plane requests go to the Azure Resource Manager URL, which for Azure global is https://management.azure.com"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/control-plane-and-data-plane
+  - claim: "Azure Resource Manager automatically applies Azure RBAC, Azure Policy, management locks and activity logs to control plane requests"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/control-plane-and-data-plane
+  - claim: "Even during periods of unavailability for the control plane, the data plane of a resource remains accessible through its own endpoint"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/control-plane-and-data-plane
+  - claim: "A lock that prevents users from deleting a database does not prevent users from deleting data through queries"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/control-plane-and-data-plane
+  - claim: "Since 2024 throttling limits are applied per region rather than per instance of Azure Resource Manager, using a token bucket algorithm"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/request-limits-and-throttling
+  - claim: "Subscription-scoped reads have a bucket size of 250 tokens and a refill rate of 25 per second"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/request-limits-and-throttling
+  - claim: "Subscription-scoped writes and deletes each have a bucket size of 200 tokens and a refill rate of 10 per second"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/request-limits-and-throttling
+  - claim: "An emptied read bucket takes 10 seconds to refill completely, at 250 tokens and 25 per second"
+    derive: "250 / 25"
+    expect: "10"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/request-limits-and-throttling
+  - claim: "An emptied write bucket takes 20 seconds to refill completely, at 200 tokens and 10 per second"
+    derive: "200 / 10"
+    expect: "20"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/request-limits-and-throttling
+  - claim: "Subscription limits apply per subscription, per service principal and per operation type, and global subscription limits are equivalent to 15 times the individual service principal limits"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/request-limits-and-throttling
+  - claim: "Reaching the limit returns HTTP 429 Too many requests with a Retry-After value in seconds"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/request-limits-and-throttling
+  - claim: "Remaining capacity is reported in response headers such as x-ms-ratelimit-remaining-subscription-reads and x-ms-ratelimit-remaining-subscription-writes"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/request-limits-and-throttling
+  - claim: "Reading metrics through the providers/microsoft.insights/metrics API is a common cause of subscription throttling, and the getBatch API is the recommended replacement"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/request-limits-and-throttling
+  - claim: "Storage account management operations are limited to 800 reads per 5 minutes, 10 writes per second or 1,200 per hour, and 100 list operations per 5 minutes, per subscription per region"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/request-limits-and-throttling
+  - claim: "The Microsoft.Network resource provider limits writes and deletes to 1,000 per 5 minutes and reads to 10,000 per 5 minutes"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/request-limits-and-throttling
+  - claim: "When two operations try to update the same resource at the same time, Resource Manager allows one to complete, blocks the others and returns HTTP 409"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/overview
+  - claim: "Resource Manager distributes across regions and availability zones, and is not taken down for maintenance activities"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/overview
+problem: "A deployment pipeline that has run for a year starts failing with HTTP 429 in the middle of a release, and nothing in it changed. The team looks for the service that is rate limiting them and does not find one, because the limit is not on the service — it is on the subscription, shared with every other pipeline, dashboard and monitoring agent using the same service principal."
+builds: "Azure Resource Manager as the single front door for management: what it applies to every request, why the control plane and data plane fail independently, and how the token-bucket throttle is actually shared."
+catch: "A management lock that stops someone deleting a database does not stop them deleting the data inside it. Locks, policy and RBAC-on-management are control plane features; a query is a data plane operation and passes none of them."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">Azure Architecture Series · #003 · Platform</div>
+  <h1 class="post-title">Azure Resource Manager: The Control Plane Every Request Passes Through</h1>
+  <p class="post-subtitle">One endpoint receives every management request in Azure, applies every governance control you have configured, and enforces a budget most teams meet for the first time during an incident.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Azure Resource Manager · Platform · Operations</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A platform team runs a release pipeline that has worked for a year. One Thursday it starts failing halfway through, with HTTP 429, too many requests. Nothing in the pipeline changed that week. The obvious suspects — the compute provider, the network provider, the storage account being written to — are all healthy.
+    </p>
+    <p>
+      What changed is somewhere else entirely. A new monitoring dashboard went live on Monday, polling metrics for a few hundred resources on a short interval, using the same service principal the pipeline uses. The dashboard is not failing. The pipeline is, because the two of them are drawing from one bucket of request tokens, and the pipeline arrives second.
+    </p>
+    <p>
+      The team's mental model is that a rate limit belongs to the service you are calling. In Azure the limit that bites first usually belongs to <strong>Azure Resource Manager</strong> — the single front door every management request passes through, regardless of which service it is ultimately for.
+    </p>
+    <p>
+      The same misunderstanding has a mirror image that shows up during outages. When the control plane has a bad day, teams report "Azure is down" while their applications keep serving traffic perfectly. Both statements are true at once, and knowing why is the difference between an incident call that ends in five minutes and one that does not.
+    </p>
+
+    <div class="callout amber">
+      <strong>The lock that does not lock what you think</strong>
+      <p>The clearest illustration of the two planes: a management lock that prevents users from deleting a database does not prevent users from deleting the data in it through queries. The lock is a control plane feature and the query is a data plane operation. Everything you configure to govern Azure — RBAC on management operations, Azure Policy, locks, the activity log — lives on one side of that line.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Azure operations divide into two categories. You use the <strong>control plane</strong> to manage resources — create a virtual machine, resize a disk, delete a resource group. You use the <strong>data plane</strong> to use what a resource does — RDP into that virtual machine, read a blob, run a query.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/az-003-control-plane-request-path.svg" alt="Diagram: a control plane request travelling from portal, CLI or Terraform through management.azure.com into Azure Resource Manager, which applies RBAC, policy, locks, throttling and activity logging before handing off to a resource provider; and a separate dashed data plane path from an application straight to the resource endpoint, bypassing all of it" />
+      <figcaption>Every governance control sits on the top path. The dashed path reaches the same resource without passing through any of them.</figcaption>
+    </figure>
+
+    <h3>One endpoint, and what it does before your request lands</h3>
+    <p>
+      Every control plane request goes to the Resource Manager URL — <code>https://management.azure.com</code> for Azure global, with separate URLs for Government, Azure Germany and the 21Vianet-operated cloud. The portal, the CLI, PowerShell, the SDKs and Terraform are all clients of that one API, which is why they behave consistently: they are not four implementations of Azure management, they are four callers of it.
+    </p>
+    <p>
+      Resource Manager authenticates the request and then applies, on your behalf, the features you configured to manage resources: Azure RBAC, Azure Policy, management locks, and activity logging. Only then does it forward the request to the resource provider that actually performs the work.
+    </p>
+    <p>
+      That ordering is the whole reason those governance features are trustworthy. A policy that denies public IP addresses is not implemented by the network provider being polite about it; the request never reaches the network provider. It also explains why the same policy is silent about what happens inside a resource — Resource Manager never sees a data plane call.
+    </p>
+
+    <h3>The two planes fail independently</h3>
+    <p>
+      Microsoft states this directly: even during periods of control plane unavailability, you can still access the data plane of your resources. A storage account remains readable at <code>myaccount.blob.core.windows.net</code> while <code>management.azure.com</code> is unavailable.
+    </p>
+    <p>
+      For an architect this is a design input, not trivia. It means a management-plane incident stops you <em>changing</em> things — no scaling, no deployments, no failover that requires an API call — while leaving the running system serving. It also means any recovery procedure that depends on calling Azure APIs has a dependency your application does not have.
+    </p>
+
+    <h3>Resource Manager's own resilience</h3>
+    <p>
+      Resource Manager runs a separate instance in each region, distributes across availability zones where they exist, does not depend on a single logical datacentre, and is not taken down for maintenance. The global endpoint is recommended precisely because it does DNS-based distribution and automatic failover across those instances.
+    </p>
+    <p>
+      The caveat is in the same paragraph and matters more than the reassurance: while the initial handling of a request is resilient, the request may still be susceptible to a regional outage once it is forwarded to a regional service. The front door is highly available; what is behind a given door may not be.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why the Throttle Is a Shared Budget</h2>
+    <p>
+      Since 2024, Resource Manager throttling is applied <strong>per region rather than per instance</strong>, using a token bucket. A bucket holds a maximum number of tokens; each request spends one; tokens return at a fixed refill rate. Per region rather than per instance is the meaningful change — the old model gave inconsistent behaviour because regions have different numbers of Resource Manager instances.
+    </p>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Scope</th><th>Operation</th><th>Bucket size</th><th>Refill per second</th><th>Empty to full</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Subscription</td><td>reads</td><td>250</td><td>25</td><td>10 seconds</td></tr>
+        <tr><td>Subscription</td><td>writes</td><td>200</td><td>10</td><td>20 seconds</td></tr>
+        <tr><td>Subscription</td><td>deletes</td><td>200</td><td>10</td><td>20 seconds</td></tr>
+        <tr><td>Tenant</td><td>reads</td><td>250</td><td>25</td><td>10 seconds</td></tr>
+        <tr><td>Tenant</td><td>writes / deletes</td><td>200</td><td>10</td><td>20 seconds</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      The sentence that explains the opening story is this one: the limits apply <strong>per subscription, per service principal, and per operation type</strong>. Two workloads authenticating as the same service principal share a bucket. Two workloads with their own service principals do not — though there is also a global subscription limit equivalent to 15 times an individual service principal's limit, so a large enough fleet of identities eventually meets a ceiling anyway.
+    </p>
+    <p>
+      There is a specific, named offender worth checking before anything else: reading metrics through the <code>providers/microsoft.insights/metrics</code> API contributes significantly to Resource Manager traffic and is called out as a common cause of subscription throttling. The recommended fix is the <code>getBatch</code> API, which queries many resources in one request.
+    </p>
+
+    <h3>Resource providers throttle separately</h3>
+    <p>
+      Passing the Resource Manager throttle does not mean the request is safe. Providers apply their own limits, per subscription per region:
+    </p>
+    <ul>
+      <li><strong>Storage</strong> — 800 management reads per 5 minutes, 10 writes per second or 1,200 per hour, 100 list operations per 5 minutes.</li>
+      <li><strong>Network</strong> — 1,000 writes or deletes per 5 minutes, 10,000 reads per 5 minutes.</li>
+    </ul>
+    <p>
+      Note the shape of the storage write limit: 10 per second <em>or</em> 1,200 per hour. Sustained use hits the hourly figure long before the per-second one, which is 36,000 an hour if you could actually sustain it. A burst-tolerant limit and a sustained limit are two different constraints and both are enforced.
+    </p>
+
+    <div class="callout">
+      <strong>Two headers worth logging in every pipeline</strong>
+      <p><code>x-ms-ratelimit-remaining-subscription-reads</code> and <code>x-ms-ratelimit-remaining-subscription-writes</code> come back on ordinary responses and tell you how much budget is left. Logging them turns throttling from an unexplained failure into a trend you can see approaching. When you do get a 429, the response carries <code>Retry-After</code> in seconds — and sending a request before it elapses does not get processed, it just returns a fresh value.</p>
+    </div>
+
+    <h3>Concurrency, and the other status code</h3>
+    <p>
+      429 has a quieter sibling. When two operations try to update the same resource at the same time, Resource Manager lets one complete, blocks the others, and returns <strong>409</strong>. If request A finishes before request B, A succeeds and B fails with 409. This is a correctness guarantee rather than a fault: it is what stops two concurrent updates leaving a resource in a state neither of them intended. Pipelines that run in parallel against shared infrastructure meet it regularly, and the right response is to re-read the resource state and decide, not to blindly retry.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Identity for automation</td>
+          <td>A separate service principal per pipeline or workload</td>
+          <td>The throttle is per service principal. Sharing one identity across a pipeline, a dashboard and an agent makes them compete for a single bucket, and the loser is whichever arrives second.</td>
+        </tr>
+        <tr>
+          <td>Handling 429</td>
+          <td>Honour Retry-After; log the remaining-quota headers continuously</td>
+          <td>Retrying before the value elapses is not processed and returns a new value. The headers arrive on successful responses too, so the trend is visible before the failure.</td>
+        </tr>
+        <tr>
+          <td>Handling 409</td>
+          <td>Re-read state and re-decide, do not blind-retry</td>
+          <td>409 means somebody else changed the resource. A blind retry re-applies a decision made against state that no longer exists.</td>
+        </tr>
+        <tr>
+          <td>Metrics collection at scale</td>
+          <td>The getBatch API, not per-resource metrics calls</td>
+          <td>It is the named common cause of subscription throttling, and the fix is documented rather than clever.</td>
+        </tr>
+        <tr>
+          <td>Protecting data, not just resources</td>
+          <td>Do not rely on locks or policy for data-level protection</td>
+          <td>They are control plane features. Deleting rows, dropping a container or emptying a blob are data plane operations that pass none of them. Data protection needs backup, soft delete and data plane permissions.</td>
+        </tr>
+        <tr>
+          <td>DR runbooks</td>
+          <td>Assume the control plane may be unavailable when you need it</td>
+          <td>Any step that scales, fails over or redeploys is an API call. The application keeps running without the control plane; your recovery procedure does not.</td>
+        </tr>
+        <tr>
+          <td>Endpoint choice</td>
+          <td>The global endpoint, management.azure.com</td>
+          <td>It provides DNS-based distribution, automatic failover and routing to the healthiest region. Pinning a regional endpoint trades that away for nothing.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Resource Manager is the least visible component in an Azure estate and the one most consistently underestimated. It is not a routing layer that forwards requests to services; it is where authorisation, governance and rate limiting actually happen, and it is the reason a policy assignment is worth trusting at all.
+    </p>
+    <p>
+      The practical takeaway is a habit rather than a configuration: when something in Azure fails to change, ask which plane the failure is on before asking which service is at fault. A 429 and a 409 are both Resource Manager telling you about contention — one for capacity, one for state — and neither is a problem with the resource you were trying to touch.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#4 stays on the control plane and looks at resource providers: what registration actually does, why a deployment fails with a provider that is not registered, and what the provider boundary means for regional availability.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Azure Reference</h2>
+    <ul>
+      <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/control-plane-and-data-plane" target="_blank" rel="noopener">Control plane and data plane operations</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/request-limits-and-throttling" target="_blank" rel="noopener">Understand how Azure Resource Manager throttles requests</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/overview" target="_blank" rel="noopener">What is Azure Resource Manager?</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
