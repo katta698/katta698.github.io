@@ -3320,6 +3320,12 @@ def main():
         _series_entry("AWS Weekly Lab", "Weekly Lab", "aws+weekly+lab", total=52),
         _series_entry("AWS Daily Intelligence", "AWS Daily", "aws+daily+intelligence"),
         _series_entry("AWS Weekly Intelligence", "AWS Weekly", "aws+weekly+intelligence"),
+        # Azure and GCP weekly were publishing but absent from this list, so the
+        # home page showed six series when eight existed -- and the AWS weekly
+        # roundup appeared to be the only one of its kind. Zero-count entries are
+        # dropped below, so listing a series here before its first post is safe.
+        _series_entry("Azure Weekly Intelligence", "Azure Weekly", "azure+weekly+intelligence"),
+        _series_entry("GCP Weekly Intelligence", "GCP Weekly", "gcp+weekly+intelligence"),
     ]
 
     series_labels = {s["label"] for s in series}
