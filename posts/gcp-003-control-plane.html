@@ -1,0 +1,242 @@
+---
+title: "GCP Architecture Series #3 — Resource Manager: The Control Plane Is Asynchronous and Your Pipeline Is Not"
+date: '2026-08-16T09:00:00'
+slug: gcp-architecture-control-plane
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-08-16'
+verified_claims:
+  - claim: "The projects resource supports create, delete, get, getIamPolicy, list, move, patch, search, setIamPolicy, testIamPermissions and undelete"
+    source: https://docs.cloud.google.com/resource-manager/reference/rest/v3/projects
+  - claim: "create, delete, move, patch and undelete return a long-running Operation rather than completing immediately, while get and list are ordinary synchronous reads"
+    source: https://docs.cloud.google.com/resource-manager/reference/rest/v3/projects
+  - claim: "A project's canonical resource name is projects/PROJECT_NUMBER, and API calls accept either the project ID or the project number"
+    source: https://docs.cloud.google.com/resource-manager/reference/rest/v3/projects
+  - claim: "A project in the ACTIVE state is in normal operation, and DELETE_REQUESTED is generally reversible by invoking projects.undelete"
+    source: https://docs.cloud.google.com/resource-manager/reference/rest/v3/projects
+  - claim: "A lien placed on a project blocks the project's deletion until the lien is removed"
+    source: https://docs.cloud.google.com/resource-manager/docs/project-liens
+  - claim: "Removing a lien requires the Project lien modifier role, roles/resourcemanager.lienModifier, which carries the resourcemanager.projects.updateLiens permission"
+    source: https://docs.cloud.google.com/resource-manager/docs/project-liens
+  - claim: "An allow policy change takes typically 2 minutes to propagate and potentially 7 minutes or longer"
+    source: https://docs.cloud.google.com/iam/docs/access-change-propagation
+  - claim: "A group membership change takes typically several minutes to propagate and potentially hours or longer"
+    source: https://docs.cloud.google.com/iam/docs/access-change-propagation
+  - claim: "Group membership propagates more slowly than a direct policy change, so a design that grants through groups inherits the slower of the two"
+    source: https://docs.cloud.google.com/iam/docs/access-change-propagation
+  - claim: "To use most Google Cloud APIs and services you must first enable them in a project, which associates them with the project and enables billing for them if billing is enabled"
+    source: https://docs.cloud.google.com/service-usage/docs/enabled-service
+problem: "A pipeline creates a project, grants a service account a role and immediately deploys as that service account, and fails with a permission error on a grant that plainly exists in the console. Nothing was misconfigured: the write returned an Operation rather than a result, the grant was read before it had propagated, and a retry minutes later succeeds having changed nothing."
+builds: "Resource Manager as the control plane every request passes through: which calls are asynchronous, what an Operation actually is, how long an access change really takes to take effect, and the two independent brakes on deleting a project."
+catch: "There are two waits, not one. Polling the Operation until it reports done tells you the write finished; it says nothing about whether the systems that enforce access have caught up, which is typically 2 minutes later and can be 7 or more."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series · #003 · Foundations</div>
+  <h1 class="post-title">Resource Manager: The Control Plane Is Asynchronous and Your Pipeline Is Not</h1>
+  <p class="post-subtitle">Posts #1 and #2 described the hierarchy and where it came from. This one is about the API that edits it — and about the two separate delays between asking for a change and being able to rely on it.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Google Cloud · Control Plane · Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A platform team automates project vending. The pipeline does four things in order: create the project, attach it to the billing account, grant the deploying service account a role on it, then run the first deployment as that service account.
+    </p>
+    <p>
+      It works when they run it by hand, one step at a time. It fails perhaps one run in three in CI, always at the fourth step, always with a permission error naming a role the console plainly shows as granted.
+    </p>
+    <p>
+      They spend a week on it. They add logging that proves the grant was made. They re-run the failing job and it passes, which makes it look like flakiness in the deployment tool. Somebody adds a retry, the failure rate falls, and the ticket is closed as a transient error.
+    </p>
+    <p>
+      It was not transient and it was not a race in their code. It is the documented behaviour of the platform, and the team had built a pipeline on an assumption the platform never made: that when a write returns, the thing it wrote is in effect everywhere.
+    </p>
+
+    <div class="callout amber">
+      <strong>Two waits, and only one of them is visible</strong>
+      <p>A write to Resource Manager returns an <strong>Operation</strong> — a handle you poll until it reports done. That is the first wait, and it is at least obvious, because the response is clearly not the resource you asked for. The second wait is invisible: once the operation has completed, the change still has to reach the systems that enforce it. An allow policy change takes <strong>typically 2 minutes and potentially 7 minutes or longer</strong>. Nothing in the API response tells you that, and nothing in the console shows it.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Resource Manager is the API for the hierarchy itself — organizations, folders, projects, tag keys and values, and the liens that protect them. Every other service in this series sits inside a container this API creates and governs, which is why it comes before any of them.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-003-control-plane.svg" alt="Diagram: a write call to Resource Manager returning a long-running Operation rather than a resource, the poll loop until it reports done, and the separate access-propagation delay that continues after the operation completes, alongside the project lifecycle states and liens" />
+      <figcaption>The two waits. Polling the Operation tells you the write finished; it says nothing about whether the systems that enforce access have caught up.</figcaption>
+    </figure>
+
+    <h3>Half the methods are asynchronous, and it is not the half people expect</h3>
+    <p>
+      The projects resource supports <code>create</code>, <code>delete</code>, <code>get</code>, <code>getIamPolicy</code>, <code>list</code>, <code>move</code>, <code>patch</code>, <code>search</code>, <code>setIamPolicy</code>, <code>testIamPermissions</code> and <code>undelete</code>.
+    </p>
+    <p>
+      Of those, <strong>create, delete, move, patch and undelete return a long-running Operation</strong>. The reads — <code>get</code>, <code>list</code>, <code>search</code> — are ordinary synchronous calls that return what you asked for.
+    </p>
+    <p>
+      The consequence is that every mutation of the hierarchy is a two-step conversation. You do not create a project; you start a project creation and receive a handle. Code that treats the response as the created resource is reading the wrong object, and it will appear to work whenever the operation happens to complete quickly.
+    </p>
+
+    <h3>A project has two names and one of them is the real one</h3>
+    <p>
+      The canonical resource name is <code>projects/PROJECT_NUMBER</code> — the generated number, not the ID you chose. API calls accept either, which is convenient and is also why the distinction goes unnoticed until something depends on it.
+    </p>
+    <p>
+      Prefer the number in anything durable. The ID is the human handle and the one in URLs; the number is what the platform means. When you eventually read an audit log or an IAM binding that Google generated rather than you, it is the number you will see.
+    </p>
+
+    <h3>The lifecycle has a state you can come back from</h3>
+    <p>
+      A project in <code>ACTIVE</code> is in normal operation. Deleting it moves it to <code>DELETE_REQUESTED</code>, which is <strong>generally reversible by invoking <code>projects.undelete</code></strong> — the API-level view of the soft delete described in post #1, where the project is fully removed after 30 days and counts against quota throughout.
+    </p>
+    <p>
+      Treat "generally reversible" as the careful phrase it is. The project record comes back; the resources that lived inside it are a separate question, and some of them will not.
+    </p>
+
+    <h3>Liens: the brake that is not a permission</h3>
+    <p>
+      A lien placed on a project <strong>blocks the project's deletion until the lien is removed</strong>. It is not an IAM condition and not an organization policy — it is a separate object attached to the project whose only job is to refuse one operation.
+    </p>
+    <p>
+      What makes it useful as a design element is who can lift it. Removing a lien requires the <strong>Project lien modifier</strong> role (<code>roles/resourcemanager.lienModifier</code>), carrying <code>resourcemanager.projects.updateLiens</code>. That is a different grant from project ownership, so an owner who can delete the project cannot quietly clear the thing stopping them. Two people, or at least two deliberate steps.
+    </p>
+
+    <h3>Services must be enabled before they exist for you</h3>
+    <p>
+      To use most Google Cloud APIs and services you must first enable them in a project. Enabling associates the service with the project and enables billing for it where billing is enabled on the project.
+    </p>
+    <p>
+      For automation this is another ordering constraint hiding in plain sight: a freshly created project has almost nothing switched on, so a pipeline that creates a project and immediately calls a service API is making a call against something not yet present in that project.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why "Done" Does Not Mean Ready</h2>
+    <p>
+      The failure in the opening story has a precise shape, and it is worth stating exactly, because the fix follows from it.
+    </p>
+    <p>
+      The pipeline polled correctly. The operation genuinely completed. The grant genuinely existed — it was visible in the console and in <code>getIamPolicy</code> immediately. What had not happened was propagation: an allow policy change takes <strong>typically 2 minutes and potentially 7 minutes or longer</strong> before every system that enforces it agrees.
+    </p>
+    <p>
+      So there is a window, minutes wide, in which the API will tell you a principal has a role and a service will tell you it does not. Both are being truthful about different things. The control plane has recorded the change; the enforcement path has not finished hearing about it.
+    </p>
+
+    <div class="callout">
+      <strong>Why the retry "fixed" it</strong>
+      <p>A retry a few minutes later succeeds having changed nothing at all, which is exactly what makes this so easy to misdiagnose as flakiness. A transient error implies something failed and then worked. Here nothing failed — the second attempt simply happened after the window closed. Adding a retry does work, but understanding <em>why</em> matters, because the same delay will reappear anywhere a design assumes an access change is immediate.</p>
+    </div>
+
+    <h3>Groups are slower, and most designs grant through groups</h3>
+    <p>
+      The advice everywhere, including in this series, is to grant roles to groups rather than to individuals. That advice is right, and it has a cost worth knowing: a <strong>group membership change takes typically several minutes and potentially hours or longer</strong> to propagate — substantially slower than a direct policy change.
+    </p>
+    <p>
+      A design that grants through groups inherits the slower of the two. For humans that is invisible and irrelevant; nobody notices that their new access took four minutes. For automated joiner-mover-leaver flows, and for any break-glass procedure that assumes adding someone to a group grants access immediately, it is a real property to design around. A break-glass path that routes through group membership is a break-glass path with an unpredictable delay in front of it.
+    </p>
+
+    <h3>What this means for how you write automation</h3>
+    <p>
+      The general rule: <strong>separate the act of granting from the act of using</strong>. Anything that provisions access and then immediately exercises it is depending on a timing property the platform explicitly does not offer.
+    </p>
+    <p>
+      In practice that means waiting on the thing you actually care about rather than on the API's acknowledgement — poll until the permission works rather than until the write returns — and building pipelines in stages that can tolerate a gap between them, rather than one long transaction that assumes each step is fully effective the moment the previous one returns.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Handling a create, delete, move, patch or undelete</td>
+          <td>Poll the returned Operation until done</td>
+          <td>These five are asynchronous. The response is a handle, not the resource, and code that reads it as the resource works only when the operation happens to be fast.</td>
+        </tr>
+        <tr>
+          <td>Granting access then using it in the same pipeline</td>
+          <td>Separate the stages, and wait on the permission rather than on the API</td>
+          <td>An allow policy change is typically 2 minutes and potentially 7 or more. The operation completing tells you nothing about enforcement having caught up.</td>
+        </tr>
+        <tr>
+          <td>Granting to groups or to principals directly</td>
+          <td>Groups, with the delay designed for</td>
+          <td>Groups remain right for manageability, but membership changes take several minutes and potentially hours — slower than a direct policy change, and the slower path is the one you inherit.</td>
+        </tr>
+        <tr>
+          <td>Break-glass access</td>
+          <td>Do not route it through group membership alone</td>
+          <td>An emergency path whose activation takes an unpredictable number of minutes is not an emergency path. Grant directly for break-glass, or pre-provision it.</td>
+        </tr>
+        <tr>
+          <td>Referring to a project in durable systems</td>
+          <td>The project number</td>
+          <td>It is the canonical resource name. The ID is the human handle; the number is what generated bindings and audit records will show you.</td>
+        </tr>
+        <tr>
+          <td>Protecting a project that must not be deleted</td>
+          <td>A lien, not just careful IAM</td>
+          <td>It blocks deletion outright, and lifting it needs roles/resourcemanager.lienModifier — a different grant from ownership, so the owner cannot quietly clear their own obstacle.</td>
+        </tr>
+        <tr>
+          <td>A newly created project</td>
+          <td>Enable services explicitly, as a step</td>
+          <td>Most APIs must be enabled before use. A pipeline that creates a project and immediately calls a service API is calling something not yet present there.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout amber">
+      <strong>The test for whether your automation has this bug</strong>
+      <p>Find every place that changes access and then uses that access. If the gap between the two is measured in seconds, it is relying on a guarantee that does not exist — and it will pass in testing, because a single manual run has a human-sized pause in the middle of it. That pause is the bug, hiding.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Resource Manager is the least visible layer in this series and the one most likely to produce a failure nobody can reproduce. Its rules are not about any particular service: the same asynchrony and the same propagation delay apply whether the project holds one bucket or a thousand VMs.
+    </p>
+    <p>
+      The single idea worth carrying forward is that Google Cloud is honest about being eventually consistent, and publishes the numbers — 2 minutes typically, 7 or more sometimes, hours for group membership. Those are not caveats buried in a footnote; they are the operating characteristics of the control plane. A platform built as though they were zero will work in demonstrations and fail intermittently in production, which is the most expensive way for a design to be wrong.
+    </p>
+    <p>
+      Post #4 goes one level down, to the services themselves.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#4 covers enabling services: why an API has to be turned on before it exists in a project, what enabling actually changes, what it means for billing, and why the list of enabled services is a governance surface rather than a checkbox.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/resource-manager/reference/rest/v3/projects" target="_blank" rel="noopener">Resource Manager REST API: projects</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/access-change-propagation" target="_blank" rel="noopener">Access change propagation</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/project-liens" target="_blank" rel="noopener">Protecting projects with liens</a></li>
+      <li><a href="https://docs.cloud.google.com/service-usage/docs/enabled-service" target="_blank" rel="noopener">Enabled services</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/creating-managing-projects" target="_blank" rel="noopener">Creating and managing projects</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
