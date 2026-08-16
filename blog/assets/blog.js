@@ -1,5 +1,30 @@
 /* Blog — nav dark mode + search, filter, back-to-top */
 
+// ── Weekly palette rotation ────────────────────────
+// Seven boho neutrals, one per weekday, repeating each week. Light mode only:
+// the dark palette already sits close to its floor and there is no room to move
+// it seven ways, so a reader in dark mode sees no rotation at all.
+//
+// This sets an attribute and nothing else -- every colour lives in blog.css,
+// keyed on [data-palette] and guarded by body:not(.dark). Doing it in CSS keeps
+// the values in one place and means a failure here leaves the default palette
+// standing rather than an unstyled page.
+//
+// Runs first in this file on purpose. blog.js loads after </head>, so this is
+// post-paint and can flash -- but the seven palettes are within ~10 RGB points
+// of each other, where the existing light/dark flash spans the whole page.
+// Overridable for testing: ?palette=wed, or localStorage.paletteDay.
+(function () {
+  var DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  var pick;
+  try {
+    pick = new URLSearchParams(location.search).get('palette') ||
+           localStorage.getItem('paletteDay');
+  } catch (e) { pick = null; }
+  if (DAYS.indexOf(pick) === -1) pick = DAYS[new Date().getDay()];
+  document.documentElement.setAttribute('data-palette', pick);
+})();
+
 // ── Hero typer (homepage only) ─────────────────────
 (function () {
   var el = document.getElementById('hero-typer-text');
