@@ -33,9 +33,39 @@ What it runs, and why in this order
                             actually on that page. Network; skipped by
                             --offline.
 3. `check_prose.py`         retired product names, misspellings, doubled words.
-4. `audit_claims.py`        which printed figures appear in no claim at all.
+4. `check_page_structure.py` where things sit on the served page, not what
+                            colour they are: post navigation inside the site
+                            header, two Next links, unbalanced tags or comments,
+                            an empty post-nav, a page that is not valid UTF-8.
+5. `check_index_complete.py` that every post in posts/ actually reached the
+                            index, cards.json and rss.xml. This is the failure
+                            with no symptom: four worktrees publish to one
+                            branch, and a window that syncs before rebasing
+                            rebuilds the index without another window's post.
+                            The post's own page serves fine; its card, filter
+                            count, RSS item and cards.json entry are absent, and
+                            nothing errors. It happened on 2026-08-17 -- a9bbdd6
+                            shipped an index missing an Azure post published
+                            fifteen minutes earlier, and was noticed only
+                            because a person went looking for it.
+6. `fix_series_nav.py --check` that Previous/Next on the hand-built pages still
+                            agrees with strict date order across every series.
+7. `audit_claims.py`        which printed figures appear in no claim at all.
                             Reports rather than fails -- deciding which numbers
                             matter is a judgement, so it never blocks.
+
+Checks 4, 5 and 6 are site-wide, not per-post, and ignore the post arguments.
+They are cheap and they are exactly the checks a scoped run would miss:
+publishing a post changes its NEIGHBOUR's nav and rewrites the shared index, so
+the page that breaks is one this push does not touch -- and in the index case,
+the post that disappears belongs to a different window entirely.
+
+Both were written after the bug they catch and then left unwired, which is the
+same failure this file exists to prevent -- a check nobody runs. `fix_series_nav`
+scoped Previous/Next per series at first, making the 32 hand-built architecture
+pages the only ones on the site that navigated differently from the ~110 pages
+sync_blog.py generates; with three series publishing daily that put a dead end at
+the front of each. Nothing failed. It was noticed by a person looking at a page.
 
 Exit code is non-zero if any blocking check failed, so it can gate a workflow.
 `audit_claims.py` is advisory and never changes the exit code.
@@ -73,11 +103,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 # (script, blocking, needs_network, passes_series, passes_posts)
+#
+# check_page_structure.py and fix_series_nav.py take neither --series nor post
+# names: both look at every served page. That is deliberate rather than an
+# omission -- publishing a post rewrites its neighbour's Previous/Next, so the
+# page a scoped run would need to check is the one the push did not touch.
 CHECKS = [
-    ("validate_arch_post.py", True,  True,  True,  True),
-    ("verify_claims.py",      True,  True,  True,  True),
-    ("check_prose.py",        True,  False, True,  True),
-    ("audit_claims.py",       False, False, False, True),
+    ("validate_arch_post.py",   True,  True,  True,  True),
+    ("verify_claims.py",        True,  True,  True,  True),
+    ("check_prose.py",          True,  False, True,  True),
+    ("check_page_structure.py", True,  False, False, False),
+    ("check_index_complete.py", True,  False, False, False),
+    ("fix_series_nav.py",       True,  False, False, False),
+    ("audit_claims.py",         False, False, False, True),
 ]
 
 
@@ -126,6 +164,11 @@ def main():
         # post, and must not fail an automated gate.
         if script == "verify_claims.py" and args.ci:
             argv += ["--fail-on", "missing"]
+        # fix_series_nav.py REWRITES pages when run bare. A gate must report,
+        # never edit -- a CI run that silently corrected the tree would make the
+        # push pass while the committed pages stayed wrong.
+        if script == "fix_series_nav.py":
+            argv.append("--check")
 
         code = run(script, argv)
         if code == 0:
