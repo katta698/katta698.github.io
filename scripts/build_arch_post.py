@@ -24,6 +24,7 @@ script, and each one reintroduced the same defects:
 
 Every one of those is now handled once, here, instead of being re-derived.
 """
+import glob
 import hashlib
 import io
 import math
@@ -79,7 +80,52 @@ def cloud_literals(spec):
     ]
 
 
+def previous_post(src_path):
+    """Return (slug, short_title) of the post this one follows, or (None, None).
+
+    Derived from the filename rather than passed in. The predecessor of
+    arch-024 can only be the highest-numbered arch- post below 024, so it was
+    never information a caller needed to supply -- and supplying it optionally
+    meant forgetting it produced a page that still passed validation.
+
+    That is not hypothetical: arch-022 and arch-024 both shipped with
+    <nav class="post-nav"></nav> because this script was run with the source
+    path alone. validate_arch_post.py could not catch it, because a missing
+    Previous link is correct for the first post of a series and indistinguishable
+    from a forgotten argument.
+
+    Returns (None, None) for the genuine first post, which is the only case that
+    should drop the Previous half of the nav.
+    """
+    name = os.path.basename(src_path)
+    m = re.match(r"([a-z]+-)(\d+)-", name)
+    if not m:
+        return None, None
+    prefix, num = m.group(1), int(m.group(2))
+
+    best = None
+    for cand in glob.glob(os.path.join(ROOT, "posts", "%s*.html" % prefix)):
+        cm = re.match(r"%s(\d+)-" % re.escape(prefix), os.path.basename(cand))
+        if not cm:
+            continue
+        n = int(cm.group(1))
+        if n < num and (best is None or n > best[0]):
+            best = (n, cand)
+
+    if best is None:
+        return None, None
+
+    fm = yaml.safe_load(io.open(best[1], encoding="utf-8").read().split("---", 2)[1])
+    title = fm["title"]
+    short = title.split("—", 1)[1].strip() if "—" in title else title
+    return fm["slug"], short
+
+
 def build(src_path, prev_slug=None, prev_title=None):
+    # Derive the predecessor unless a caller deliberately overrode it.
+    if prev_slug is None:
+        prev_slug, prev_title = previous_post(src_path)
+
     raw = io.open(src_path, encoding="utf-8").read()
     _, fm_text, body = raw.split("---", 2)
     fm = yaml.safe_load(fm_text)

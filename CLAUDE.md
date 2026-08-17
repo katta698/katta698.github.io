@@ -33,6 +33,25 @@ What to do instead:
 - **This is about unsolicited offers, not about answering.** Asked for the
   options, lay them out properly.
 
+## What Jayanth means by each series name
+
+One word, one series. **"daily" is not one of them** — every series in this
+window publishes daily, so the word identifies nothing.
+
+| He says | He means |
+| --- | --- |
+| **arch** | AWS Architecture Series — the next numbered topic in `ROADMAP.md` |
+| **intel** | AWS Daily Intelligence — rank yesterday's news, recommend one, then write on "write" |
+| **weekly** | AWS Weekly Intelligence — the Saturday roundup |
+
+Set 2026-08-17, after "next daily post" was read as Daily Intelligence when it
+meant the daily architecture post, and a full Daily Intelligence post was
+written and thrown away. The ambiguity was noticed when the trigger words were
+first proposed, and writing it down was skipped — so it happened anyway.
+
+**If the word is ambiguous, ask before writing.** A one-line question costs
+nothing; a wrong 3,000-word post costs an hour and has to be deleted.
+
 ## Which folder am I in?
 
 **One chat window, one folder. One site on `main`, three clouds on branches.**
