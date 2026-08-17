@@ -1,0 +1,219 @@
+---
+title: "Azure Architecture Series #4 — Resource Providers and Registration: What \"Not Registered\" Really Means"
+date: 2026-08-17
+slug: azure-architecture-resource-providers-registration
+labels: [Azure, "Azure Architecture Series"]
+verified: '2026-08-17'
+verified_claims:
+  - claim: "An Azure resource provider is a set of REST operations that support functionality for a specific Azure service, and a resource type's name follows the format {resource-provider}/{resource-type}"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types
+  - claim: "Registration configures your subscription to work with the resource provider, so it is a per-subscription state rather than a property of the service"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types
+  - claim: "Microsoft advises registering a provider only when you are ready to use it, to maintain least privilege, because a malicious user cannot use unregistered resource providers"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types
+  - claim: "Registering a resource provider adds an app for that provider to the Microsoft Entra tenant, typically added by the Windows Azure Service Management API"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types
+  - claim: "Some resource providers are registered by default, and the Azure portal typically registers the provider when you create a resource"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types
+  - claim: "Deploying an ARM template or Bicep file automatically registers the resource providers defined in that template, but supporting resources not in the template — commonly monitoring or security — must be registered manually"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types
+  - claim: "Registration is performed individually for each supported region, and to create resources in a region the registration only needs to be completed in that region"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types
+  - claim: "Application code should not block the creation of resources for a resource provider that is in the registering state"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types
+  - claim: "Registering a provider requires permission to perform the /register/action operation, which is included in the Contributor and Owner roles"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types
+  - claim: "A resource provider cannot be unregistered while resource types from that provider still exist in the subscription"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types
+  - claim: "A provider should be registered again when it supports new locations you need to use"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types
+  - claim: "The MissingSubscriptionRegistration error reads: The subscription is not registered to use namespace {resource-provider-namespace}"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/troubleshooting/error-register-resource-provider
+  - claim: "The NoRegisteredProviderFound error reads: No registered resource provider found for location {location} and API version {api-version} for type {resource-type}"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/troubleshooting/error-register-resource-provider
+  - claim: "NoRegisteredProviderFound has three documented causes: the provider is not registered, the API version is not supported for the resource type, or the location is not supported for the resource type"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/troubleshooting/error-register-resource-provider
+  - claim: "Virtual machine auto-shutdown requires the Microsoft.DevTestLab resource provider to be registered"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/troubleshooting/error-register-resource-provider
+problem: "A deployment that has worked for a year fails in a new region with NoRegisteredProviderFound, and the team reads it as an Azure outage or a quota problem. It is neither: registration is a per-subscription, per-region state that most deployment paths set silently, so the first time anyone learns it exists is the first time something does not set it."
+builds: "Resource providers as the unit Azure actually organises itself by, registration as a subscription-scoped switch that completes region by region, and the two error codes that tell you which of three unrelated problems you have."
+catch: "The error that names registration is the easy one. NoRegisteredProviderFound has three documented causes and only one is registration — the other two are an unsupported API version and an unsupported location, which look identical from the deployment log and are fixed in completely different ways."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">Azure Architecture Series · #004 · Foundations</div>
+  <h1 class="post-title">Resource Providers and Registration: What "Not Registered" Really Means</h1>
+  <p class="post-subtitle">Azure is organised into resource providers, and your subscription has an opinion about each one. Most of the time something sets that opinion for you, which is exactly why it is confusing when nothing does.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Azure Resource Manager · Deployments · Foundations</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A platform team has been deploying the same Bicep file for a year. It builds a standard application stack, it runs in three regions, and it has never once failed for a reason anybody had to think about. Then they add a fourth region and the deployment stops with:
+    </p>
+    <p>
+      <code>NoRegisteredProviderFound: No registered resource provider found for location westus3 and API version 2024-03-01 for type sites.</code>
+    </p>
+    <p>
+      The first theory is an Azure outage, because the same template worked an hour ago in a different region. The second is a quota problem, because that is what "not found for location" sounds like. Both are wrong, and both cost an hour.
+    </p>
+    <p>
+      What has actually happened is that this subscription has never used that provider in that region — and registration, the thing that grants a subscription the right to call a provider at all, is completed <strong>region by region</strong>. Nobody on the team had met the concept, because for a year every deployment path they used registered providers silently on their behalf.
+    </p>
+
+    <div class="callout amber">
+      <strong>The error that names the problem is the easy one</strong>
+      <p><code>MissingSubscriptionRegistration</code> says "the subscription is not registered to use namespace X", which tells you what to do. <code>NoRegisteredProviderFound</code> is the one that costs time, because it has three documented causes — the provider is not registered, the API version is not supported for that type, or the location is not supported for that type — and the message shape is identical for all three.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      A resource provider is a set of REST operations supporting one Azure service. Key Vault is <code>Microsoft.KeyVault</code>; the operations it defines are how vaults, secrets, keys and certificates are managed. Every resource type is named for the provider that owns it, in the form <code>{resource-provider}/{resource-type}</code> — so a key vault is <code>Microsoft.KeyVault/vaults</code>.
+    </p>
+    <p>
+      That naming is not cosmetic. It is the seam along which Azure is actually assembled: Resource Manager, from <a href="/blog/azure-architecture-resource-manager-control-plane/">#3</a>, is a router, and the provider is what it routes to. Every ARM template type string, every RBAC action, every policy alias begins with a provider namespace, because that is the unit the platform is built from.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/az-004-provider-registration.svg" alt="Diagram: which deployment paths register a resource provider automatically and which do not, how registration completes region by region, and the two error codes MissingSubscriptionRegistration and NoRegisteredProviderFound with their meanings" />
+      <figcaption>Registration is a property of your subscription. Most paths set it for you, which is why the exceptions are the ones that cost an afternoon.</figcaption>
+    </figure>
+
+    <h3>Registration is subscription state</h3>
+    <p>
+      Registering a provider "configures your subscription to work with" it. The service exists regardless; what registration decides is whether this subscription may call it. Two consequences worth holding on to:
+    </p>
+    <ul>
+      <li>It is not global. A provider registered in one subscription says nothing about the next one, which is why a template that works in dev can fail in prod with nothing else different.</li>
+      <li>It is not free of side effects. Registering a provider <strong>adds an application to your Microsoft Entra tenant</strong> — typically added by the Windows Azure Service Management API. Register everything speculatively and unfamiliar apps appear in the directory, which is a genuine reason not to.</li>
+    </ul>
+
+    <h3>Region by region, not all at once</h3>
+    <p>
+      This is the part that produces the confusing failure. Registration runs individually for each supported region, and creating a resource in a region only requires that region to have finished. So the state <code>Registering</code> does not mean "not usable yet" — it means some regions are ready and others are still going.
+    </p>
+    <p>
+      Microsoft's guidance follows from that: <strong>application code should not block resource creation while a provider is in the registering state</strong>. Pipelines that poll until the state reads <code>Registered</code> are waiting for regions they will never deploy to. And a provider registered before a region existed does not automatically reach it — you register again to pick up locations added since.
+    </p>
+
+    <h3>What registers for you, and what does not</h3>
+    <p>
+      Some providers are registered by default on a new subscription. The portal typically registers a provider when you create a resource through it. Deploying an ARM template or Bicep file registers the providers <em>defined in that template</em>.
+    </p>
+    <p>
+      The gap is the last clause. A deployment often creates supporting resources the template never mentions — monitoring and security are the common pair — and those providers are not registered for you. The documented example is worth memorising because nothing about it is guessable: <strong>enabling auto-shutdown on a virtual machine requires <code>Microsoft.DevTestLab</code> to be registered.</strong> No reading of a VM template would suggest that a lab provider is involved.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why Least Privilege Argues Against Registering Everything</h2>
+    <p>
+      The obvious reaction to all of this is to register every provider in every subscription on day one and never think about it again. Microsoft explicitly advises against it, and the reasoning is more interesting than convenience.
+    </p>
+    <p>
+      An unregistered provider cannot be used — including by someone who should not be using it. The documentation puts it plainly: a malicious user cannot use unregistered resource providers. Registration is therefore a coarse but real capability boundary. A subscription with only the providers its workloads need is a subscription where a compromised credential has a smaller catalogue of services to reach for.
+    </p>
+    <p>
+      The second argument is the directory clutter mentioned above. Every registration adds an app to the tenant, and a tenant full of apps nobody recognises makes the genuine anomaly harder to spot.
+    </p>
+
+    <div class="callout">
+      <strong>The asymmetry that matters operationally</strong>
+      <p>Registering is easy and reversible-looking; unregistering is neither. You <em>cannot</em> unregister a provider while any resource type from it still exists in the subscription. So the decision is effectively one-way for as long as anything is using it — which is an argument for deliberateness at the start rather than a cleanup project later.</p>
+    </div>
+
+    <h3>Reading the failure correctly</h3>
+    <p>
+      When a deployment fails on <code>NoRegisteredProviderFound</code>, the message names a location, an API version and a type. Work through the three causes in that order:
+    </p>
+    <ol>
+      <li><strong>Is the provider registered in this subscription?</strong> Check the namespace, not the resource type.</li>
+      <li><strong>Is the API version supported for this type?</strong> The template pins a version; providers retire old ones.</li>
+      <li><strong>Is the location supported for this type?</strong> Resource Manager runs everywhere, but individual resource types do not — and a subscription can carry limits that exclude regions the type otherwise supports.</li>
+    </ol>
+    <p>
+      The error message itself suggests supported locations and API versions, which is the fastest way to tell cause 1 from causes 2 and 3: if it lists your region and version among the supported ones, registration is your problem.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Which providers to register</td>
+          <td>Only the ones a workload in that subscription actually uses</td>
+          <td>An unregistered provider cannot be used by anyone, including an attacker with valid credentials. Registration is a capability boundary, not paperwork.</td>
+        </tr>
+        <tr>
+          <td>When to register</td>
+          <td>Explicitly, as part of subscription provisioning, for the known set</td>
+          <td>Relying on silent auto-registration works until a deployment needs a provider its template never names. Then it fails in whatever environment you meet that case in first.</td>
+        </tr>
+        <tr>
+          <td>Pipelines that register</td>
+          <td>Do not wait for the state to become Registered</td>
+          <td>Registration completes per region, and the target region may be ready long before the rest. Blocking on the aggregate state is waiting for regions you will not deploy to.</td>
+        </tr>
+        <tr>
+          <td>Adding a new region</td>
+          <td>Re-register the providers you need there</td>
+          <td>A provider registered before that region existed does not reach it. This is the specific cause of the fails-only-in-the-new-region deployment.</td>
+        </tr>
+        <tr>
+          <td>Who can register</td>
+          <td>Treat it as a Contributor-level platform action</td>
+          <td>It needs <code>/register/action</code>, which Contributor and Owner include. A Reader debugging the failure cannot fix it, which is worth knowing before the escalation.</td>
+        </tr>
+        <tr>
+          <td>Reading a provider error</td>
+          <td>Check whether the message lists your region and API version as supported</td>
+          <td>It separates a registration problem from an API-version or location problem in one step, and the three have nothing in common but the error text.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Resource providers are the least visible structural idea in Azure, precisely because the common paths hide them so well. You can build for a year without registering anything by hand, and then lose an afternoon the first time a deployment needs a provider that no template names.
+    </p>
+    <p>
+      The useful habit is to treat the provider list as part of a subscription's configuration — decided when the subscription is created, reviewed when a region is added, and kept as short as the workloads allow.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#5 stays with the provider and looks at resource types and API versions: why a template pins a version, what changes when a provider ships a new one, and why the version in your template is a dependency you are choosing whether or not you think about it.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Azure Reference</h2>
+    <ul>
+      <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types" target="_blank" rel="noopener">Azure resource providers and types</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/troubleshooting/error-register-resource-provider" target="_blank" rel="noopener">Resource provider registration errors</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/azure-services-resource-providers" target="_blank" rel="noopener">Resource providers for Azure services</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
