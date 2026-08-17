@@ -53,7 +53,16 @@ def check(path):
             kind = "next" if "next" in m.group(0) else "prev"
             out.append("%s link is inside the site header, not the post-nav" % kind)
 
-    # 2. Tag balance. An unclosed anchor swallows the rest of the page into a
+    # 2. One next and one prev at most. Moving a link between navs can leave the
+    #    page with two, which renders as two Next boxes pointing at the same
+    #    post -- exactly what happened on azure-architecture-entra-identity-plane
+    #    when the header copy was relocated into a post-nav that already had one.
+    for kind in ("next", "prev"):
+        n = len(re.findall(r'class="post-nav-link %s"' % kind, html))
+        if n > 1:
+            out.append("%d %s links; expected at most one" % (n, kind))
+
+    # 3. Tag balance. An unclosed anchor swallows the rest of the page into a
     #    link; an unclosed nav does the same to the layout.
     for tag in ("a", "nav", "article", "main"):
         o = len(re.findall(r"<%s[\s>]" % tag, html))
@@ -61,12 +70,12 @@ def check(path):
         if o != c:
             out.append("<%s> unbalanced: %d open, %d close" % (tag, o, c))
 
-    # 3. An unclosed HTML comment silently swallows everything after it.
+    # 4. An unclosed HTML comment silently swallows everything after it.
     if html.count("<!--") != html.count("-->"):
         out.append("unbalanced HTML comment: %d open, %d close"
                    % (html.count("<!--"), html.count("-->")))
 
-    # 4. Exactly one post-nav, and it should carry at least one link. An empty
+    # 5. Exactly one post-nav, and it should carry at least one link. An empty
     #    one renders as a stray bordered box at the foot of the post.
     navs = re.findall(r'<nav class="post-nav".*?</nav>', html, re.S)
     if len(navs) > 1:
@@ -75,7 +84,7 @@ def check(path):
         if "post-nav-link" not in n:
             out.append("post-nav is present but empty")
 
-    # 5. The page must actually be UTF-8. PowerShell has corrupted these before.
+    # 6. The page must actually be UTF-8. PowerShell has corrupted these before.
     try:
         io.open(path, "rb").read().decode("utf-8")
     except UnicodeDecodeError as exc:
