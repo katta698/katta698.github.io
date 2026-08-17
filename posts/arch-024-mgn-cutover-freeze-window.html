@@ -1,0 +1,251 @@
+---
+title: 'AWS Architecture Series #24 — Cutover, Rollback, and the Button That Ends Both'
+date: '2026-08-17T09:00:00'
+slug: aws-architecture-mgn-cutover-freeze-window
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-08-17'
+verified_claims:
+  - claim: "Finalizing a cutover stops data replication and causes all replicated data to be discarded, and all AWS resources used for data replication are terminated"
+    source: https://docs.aws.amazon.com/mgn/latest/ug/finalizing-cutover-2.html
+  - claim: "After finalizing, the source server shows Migration lifecycle Cutover complete, Data replication Disconnected, and a next step of Mark as archived"
+    source: https://docs.aws.amazon.com/mgn/latest/ug/finalizing-cutover-2.html
+  - claim: "Reverting a finalized cutover returns the source server's Migration lifecycle to Ready for cutover"
+    source: https://docs.aws.amazon.com/mgn/latest/ug/revert-finalize-cutover.html
+  - claim: "Reverting a test returns the source server's Migration lifecycle to Ready for testing"
+    source: https://docs.aws.amazon.com/mgn/latest/ug/revert-finalize-test.html
+problem: "The runbook says the rollback plan is 'fail back to the source server, which is still replicating'. Somebody clicks Finalize cutover on Saturday night because the console suggests it as the next step, and the rollback plan stops existing — quietly, with a green status."
+builds: "A cutover where the irreversible step is identified before the window opens, performed deliberately after the business has accepted the migration rather than when the console offers it, and where the freeze window is defined by how long you intend to keep the ability to go back."
+catch: "Reverting a finalized cutover looks like an undo and is not. It restores the lifecycle status; it cannot restore the replicated data, because finalizing discarded it and terminated the infrastructure holding it."
+---
+
+<div class="container">
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The migration runbook has a rollback section, and it is one line long:
+      <em>if the application fails validation, fail back to the source server, which is still
+      running and still replicating.</em> Everyone signs off on it. It is a good plan.
+    </p>
+    <p>
+      Cutover night goes well. Instances launch, the application comes up, the team runs
+      through the checks. Somewhere in the tidying-up, with the console showing
+      <strong>Finalize cutover</strong> as the obvious next action, somebody finalises. On
+      Monday morning a batch job fails against something nobody tested, and the rollback plan
+      is discovered to have expired on Saturday.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Finalizing is not a status change</strong></div>
+      <div class="challenge-body">
+        <p>
+          The documentation is explicit, and it is worth reading slowly:
+          finalizing <em>&#8220;changes your source servers' Migration lifecycle status to
+          Cutover complete&#8221;</em>, and <em>&#8220;In addition, this stops data replication
+          and causes all replicated data to be discarded. All AWS resources used for data
+          replication are terminated.&#8221;</em>
+        </p>
+        <p>
+          Three destructive actions behind a word that sounds administrative. The first clause
+          is bookkeeping. The two that follow are the ones that end your ability to go back,
+          and they are stated in the same sentence, in the same tone.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The console suggests it before you are ready</strong></div>
+      <div class="challenge-body">
+        <p>
+          MGN drives migrations through a lifecycle, and the console surfaces a
+          <strong>Next step</strong> for each server. That column is a workflow prompt, not a
+          judgement about whether your business has accepted the migration.
+        </p>
+        <p>
+          After a successful cutover launch it points at finalizing. After finalizing it points
+          at <em>Mark as archived</em>. The path is designed to be followed, which is exactly
+          why the irreversible step in the middle of it needs to be a decision somebody makes
+          rather than a prompt somebody clears.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>"Revert" restores a status, not a capability</strong></div>
+      <div class="challenge-body">
+        <p>
+          There is a revert action, and its existence is reassuring in a way that does not
+          survive reading what it does. Reverting a finalized cutover returns the
+          <strong>Migration lifecycle</strong> to <em>Ready for cutover</em>.
+        </p>
+        <p>
+          That is a lifecycle state, and lifecycle state is not what you needed. The replicated
+          data was discarded and the replication infrastructure was terminated at finalize time.
+          Reverting puts the label back. Getting the capability back means replicating the
+          server again, from the beginning, at whatever rate your network allows.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>The freeze window is not the cutover window</strong></div>
+      <div class="challenge-body">
+        <p>
+          Teams size the freeze around the technical cutover &#8212; how long until the
+          instances are up and serving. That is the wrong quantity. The freeze has to last as
+          long as the source is the thing you might return to, and the source stops being that
+          the moment replication is discarded.
+        </p>
+        <p>
+          Which means the freeze window is defined by a decision, not by a duration: it ends
+          when you finalise. Anything that could still send you back &#8212; a month-end batch,
+          a quarterly report, a partner integration that runs weekly &#8212; belongs inside it.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      MGN replicates block-level from the source server into a staging area in your account,
+      then launches instances from that replicated data. Understanding where the data lives is
+      what makes the finalize step legible.
+    </p>
+
+    <h3>Two lifecycles that look like one</h3>
+    <p>
+      There is a lifecycle for testing and a lifecycle for cutover, and they mirror each other.
+      Finalizing a test moves a server to <em>Ready for cutover</em>; reverting a test moves it
+      back to <em>Ready for testing</em>. Finalizing a cutover moves it to
+      <em>Cutover complete</em>; reverting a cutover moves it back to <em>Ready for cutover</em>.
+    </p>
+    <p>
+      The symmetry is the problem. Finalizing a test is genuinely cheap &#8212; it advances a
+      status and nothing is destroyed, so a team that has finalised several tests learns that
+      finalize is a safe, routine action. The cutover version wears the same word and the same
+      dialog and does something categorically different.
+    </p>
+
+    <h3>What is terminated, and why it cannot come back</h3>
+    <p>
+      Replication runs on infrastructure in your account, paid for by the hour, holding a copy
+      of your source volumes. Finalizing stops replication, discards that copy and terminates
+      the infrastructure. The console then reports <em>Data replication: Disconnected</em>.
+    </p>
+    <p>
+      This is a reasonable default. Keeping replication running after a completed migration
+      costs money for a copy nobody intends to use, and AWS says plainly that the console does
+      this <em>&#8220;to save resource costs&#8221;</em>. The cost saving is real. It is simply
+      not free, and what it costs is the rollback.
+    </p>
+
+    <h3>Archiving is the harmless one</h3>
+    <p>
+      After finalizing, the suggested next step is <em>Mark as archived</em>, which removes the
+      server from the main list so the view shows only servers still to migrate. Archived servers
+      remain accessible through filtering.
+    </p>
+    <p>
+      That one is genuinely presentational, and it is worth knowing which of the two is which.
+      In a sequence of three prompts &#8212; finalize, archive, done &#8212; only the first is
+      destructive, and it is the one that reads most like paperwork.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Matters</h2>
+    <p>
+      Every migration plan has a rollback story, and in a rehost the rollback story is almost
+      always the same one: the source is untouched and still replicating, so we can go back.
+      That story is true right up until a step whose name gives no indication that it is the
+      step which ends it.
+    </p>
+    <p>
+      The failure is not that AWS hid anything. The sentence is in the documentation, in the
+      console dialog, and it is not ambiguous. The failure is that <em>finalize</em> belongs to
+      the vocabulary of paperwork, the same lifecycle offers a harmless finalize on the test
+      path, and the console presents the destructive one as the natural next step at the exact
+      moment a tired team is looking for things to tick off.
+    </p>
+    <p>
+      Nothing about the resulting state looks wrong. The server reports <em>Cutover complete</em>
+      in green. The application is running. The only thing that changed is that a plan everyone
+      agreed to is no longer executable, and nobody will find out until they try.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take this</th><th>Because</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>When to finalise</td>
+            <td>After the business has accepted the migration, not when the cutover launch succeeds</td>
+            <td>It discards the replicated data and terminates replication; acceptance is the real gate</td>
+          </tr>
+          <tr>
+            <td>Who may finalise</td>
+            <td>A named person, as an explicit step in the runbook with its own sign-off</td>
+            <td>It is the only irreversible action in the sequence, and the console offers it as routine</td>
+          </tr>
+          <tr>
+            <td>Sizing the freeze window</td>
+            <td>Long enough to cover the slowest business cycle that could reject the migration</td>
+            <td>Month-end and weekly partner jobs are what fail after the window everyone planned for</td>
+          </tr>
+          <tr>
+            <td>Rollback plan wording</td>
+            <td>State that it is valid only until finalize, and name finalize explicitly</td>
+            <td>"Fail back to the source" is not a plan once replication has been discarded</td>
+          </tr>
+          <tr>
+            <td>Carrying replication cost</td>
+            <td>Treat it as the price of the rollback option and budget it into the window</td>
+            <td>Finalizing early buys a small saving by selling the ability to go back</td>
+          </tr>
+          <tr>
+            <td>Test finalize vs cutover finalize</td>
+            <td>Train the team that these are different actions despite the shared name</td>
+            <td>Finalizing a test destroys nothing, which teaches the wrong instinct for the cutover one</td>
+          </tr>
+          <tr>
+            <td>Archiving</td>
+            <td>Safe at any time after finalize; use it to keep the working list clean</td>
+            <td>It only hides the server from the default view, and filtering brings it back</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Rehosting is the migration pattern people choose because it is reversible. That
+      reversibility is not a property of the tool &#8212; it is a property of the replication
+      you are still paying for, and it lasts exactly as long as you keep paying.
+    </p>
+    <div class="callout">
+      <p>
+        Find the irreversible step before the window opens, put a name against it, and do not
+        let it be something a tired engineer clears at 2am because the console suggested it.
+        In this workflow that step is <strong>Finalize cutover</strong>, and the word does
+        nothing to warn you.
+      </p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/mgn/latest/ug/finalizing-cutover-2.html">Finalizing a cutover</a></li>
+      <li><a href="https://docs.aws.amazon.com/mgn/latest/ug/revert-finalize-cutover.html">Reverting a cutover</a></li>
+      <li><a href="https://docs.aws.amazon.com/mgn/latest/ug/revert-finalize-test.html">Reverting a test</a></li>
+      <li><a href="https://docs.aws.amazon.com/mgn/latest/ug/server-test-cutover-main.html">Manage test and cutover instances</a></li>
+    </ul>
+  </div>
+</div>
