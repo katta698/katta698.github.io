@@ -71,8 +71,14 @@ CSS_VERSION = _css_version()
 def _js_version():
     # hero-media.js is included: it is loaded by every page, and without it in
     # the hash a change to the rotation would ship behind a cached old copy.
+    # site-footer.css is hashed here, not with CSS_VERSION, because it is not
+    # linked by any page: site-footer.js injects it and stamps it with this
+    # token. Hashing it here is what makes an edit to the CSS change the JS URL
+    # and therefore the CSS URL. Left out, the stylesheet is uncacheable-busted
+    # and an edit never reaches a returning visitor.
     return _content_hash(*[REPO_ROOT / "blog" / "assets" / name
                            for name in ("blog.js", "site-footer.js",
+                                        "site-footer.css",
                                         "hero-media.js", "occasion-banner.js")])
 
 

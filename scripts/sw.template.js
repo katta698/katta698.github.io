@@ -41,7 +41,7 @@ const PRECACHE = [
   '/blog/assets/blog.css?v=' + VERSION,
   '/blog/assets/blog.js?v=' + JS_VERSION,
   '/blog/assets/site-footer.js?v=' + JS_VERSION,
-  '/blog/assets/site-footer.css',
+  '/blog/assets/site-footer.css?v=' + JS_VERSION,
   '/blog/assets/icons/icon-192.png',
   '/favicon-transparent.png'
 ];

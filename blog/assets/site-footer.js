@@ -25,7 +25,15 @@
     if (document.querySelector('link[data-site-footer-style]')) return;
     var link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = '/blog/assets/site-footer.css';
+    // Carry this file's own ?v= token onto the stylesheet. Without it the CSS
+    // was the one asset on the site with no cache-busting at all, so an edit
+    // here shipped behind a stale copy -- the same silent failure that left
+    // returning visitors running a site-footer.js that predated the service
+    // worker registration. sync_blog.py includes site-footer.css in the
+    // JS_VERSION hash, so editing the CSS changes this script's token too.
+    var self = document.querySelector('script[src*="site-footer.js"]');
+    var v = self && (self.getAttribute('src').split('?v=')[1] || '');
+    link.href = '/blog/assets/site-footer.css' + (v ? '?v=' + v : '');
     link.setAttribute('data-site-footer-style', '');
     document.head.appendChild(link);
   }

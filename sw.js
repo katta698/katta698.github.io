@@ -28,7 +28,7 @@
  */
 
 const VERSION = 'b9388676';
-const JS_VERSION = '2596a123';
+const JS_VERSION = '25f3ffd1';
 const CACHE = 'jk-site-' + VERSION;
 const OFFLINE_URL = '/offline.html';
 
@@ -41,7 +41,7 @@ const PRECACHE = [
   '/blog/assets/blog.css?v=' + VERSION,
   '/blog/assets/blog.js?v=' + JS_VERSION,
   '/blog/assets/site-footer.js?v=' + JS_VERSION,
-  '/blog/assets/site-footer.css',
+  '/blog/assets/site-footer.css?v=' + JS_VERSION,
   '/blog/assets/icons/icon-192.png',
   '/favicon-transparent.png'
 ];
