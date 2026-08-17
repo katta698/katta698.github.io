@@ -387,6 +387,63 @@ SERVICE_SUPPLEMENT = [
 # asserted rather than sourced.
 SERVICE_INFO = {}
 
+# Azure and Google Cloud, from hand-curated catalogues rather than a vendor SDK.
+#
+# The AWS list is generated from botocore, so it is complete and maintained by
+# AWS. Neither other cloud has an equivalent, and deriving names from the posts
+# was tried: it returned "What", "Every", "That", "Gbps", "Correct" and
+# "Operation" as services. So these two are written by hand, and the trade is
+# stated plainly in each file -- a generous catalogue costs nothing because only
+# a detected service is rendered, while a WRONG name matches ordinary prose and
+# inflates every count.
+#
+# Kept as separate dicts, not merged into SERVICE_DOMAIN, for two reasons. The
+# donut and the "AWS services" ranking are scoped to AWS posts and would change
+# meaning if Azure names entered that vocabulary. And "Resource Manager" is a
+# real product name in BOTH Azure and Google Cloud, naming different things --
+# separate catalogues matched against separate post scopes is what stops one
+# cloud borrowing the other's count.
+CLOUD_CATALOGUES = {}      # cloud -> {name: {domain, desc, url}}
+
+
+def load_cloud_catalogues():
+    """Load the Azure and GCP service catalogues, keyed by cloud label.
+
+    A missing file is a warning rather than an error: the widget simply renders
+    no section for that cloud, which is the same outcome as a cloud with no
+    posts yet, and is better than failing a sync over a sidebar.
+    """
+    for cloud, filename in (("Azure", "azure_services.json"),
+                            ("GCP", "gcp_services.json")):
+        path = REPO_ROOT / "scripts" / filename
+        if not path.is_file():
+            print(f"  WARNING: scripts/{filename} missing — no {cloud} section "
+                  f"in the services widget.")
+            CLOUD_CATALOGUES[cloud] = {}
+            continue
+        data = json.loads(path.read_text(encoding="utf-8"))
+        CLOUD_CATALOGUES[cloud] = data.get("services", {})
+
+
+def count_cloud_services(text, catalogue):
+    """Which catalogue services this text mentions, word-bounded.
+
+    Case-sensitive and bounded on both sides, the same rule the AWS scan uses
+    and for the same reason: without it "Cloud Run" would match inside a
+    sentence about running something in the cloud, and every count would drift
+    upward invisibly.
+
+    Returns a set, not counts. The widget ranks by POSTS mentioning a service,
+    not by mentions, so a post that says "Cloud Run" nine times counts once --
+    otherwise one long post outranks a service discussed across five.
+    """
+    hits = set()
+    for name in catalogue:
+        if re.search(r"(?<![A-Za-z0-9])" + re.escape(name) + r"(?![A-Za-z0-9])",
+                     text):
+            hits.add(name)
+    return hits
+
 
 def load_service_catalogue():
     """The service vocabulary: AWS's own list, plus the supplement above.
@@ -445,6 +502,7 @@ def load_service_catalogue():
 
 
 KNOWN_SERVICES, AMBIGUOUS_NAMES = load_service_catalogue()
+load_cloud_catalogues()
 
 # One combined regex instead of 650 separate scans per post. The lookarounds
 # do the work \b cannot: \b treats "S3" as ending mid-token inside "S3B", so
@@ -2010,6 +2068,14 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     post_services = {}
     for _p, _text in zip(posts, post_texts):
         _hits = set(count_services(_text)) | set(count_services(_p["title"]))
+        # Azure and GCP names go in the same flat string, so clicking one of
+        # their rows filters the grid through the existing code path with no
+        # change to blog.js. Scoped by the post's own cloud tag: an AWS post
+        # mentioning Cloud Run in passing should not answer a Cloud Run filter,
+        # for the same reason the sections are scoped.
+        for _cloud, _cat in CLOUD_CATALOGUES.items():
+            if _cat and _cloud in _p["tags"]:
+                _hits |= count_cloud_services(_p["title"] + " " + _text, _cat)
         post_services[_p["slug"]] = "|".join(sorted(h.lower() for h in _hits))
 
     # Cloud accent. A card carries a colour so the grid is scannable without
@@ -2231,6 +2297,77 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
 
     service_rows = "\n".join(_service_row(s, c) for s, c in ranked)
     described = sum(1 for s, _ in ranked if s in SERVICE_INFO)
+
+    # ── Azure and Google Cloud sections ───────────────────────
+    #
+    # Same widget, three sections, because the reader's question is "what have
+    # you written about" and that does not stop at one cloud. Each cloud is
+    # scoped to ITS OWN posts and its own catalogue: an Azure post mentioning S3
+    # in passing must not add to the AWS count, and "Resource Manager" means
+    # different products in Azure and Google Cloud.
+    #
+    # Ranked by number of posts, not mentions, so one long post cannot outrank a
+    # service that appears across several. A cloud with nothing detected renders
+    # no section at all rather than an empty heading.
+    cloud_sections = []
+    cloud_section_counts = {}
+    for cloud in ("Azure", "GCP"):
+        catalogue = CLOUD_CATALOGUES.get(cloud) or {}
+        if not catalogue:
+            continue
+        scope = [(p, t) for p, t in zip(posts, post_texts) if cloud in p["tags"]]
+        counts = {}
+        for p, text in scope:
+            for name in count_cloud_services(p["title"] + " " + text, catalogue):
+                counts[name] = counts.get(name, 0) + 1
+        c_ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        cloud_section_counts[cloud] = (len(c_ranked), len(scope))
+        if not c_ranked:
+            continue
+        c_max = c_ranked[0][1]
+        rows = []
+        for name, n in c_ranked:
+            meta = catalogue.get(name, {})
+            desc = meta.get("desc", "")
+            url = meta.get("url", "")
+            tip = f"{name} — {desc}" if desc else \
+                  f"{name} — {n} post{'' if n == 1 else 's'}"
+            width = max(2, round(n / c_max * 100))
+            btn = (f'<button type="button" class="svc-name" '
+                   f'data-service="{escape(name.lower())}">{escape(name)}</button>')
+            if url:
+                host = "learn.microsoft.com" if cloud == "Azure" else "cloud.google.com"
+                btn += (f'<a class="svc-link" href="{escape(url)}" target="_blank" '
+                        f'rel="noopener noreferrer" '
+                        f'title="{escape(name)} on {host}" '
+                        f'aria-label="{escape(name)} on {host}">&#8599;</a>')
+            else:
+                btn += '<span class="svc-link svc-link-empty" aria-hidden="true"></span>'
+            rows.append(f'<div class="svc-row" title="{escape(tip)}">'
+                        f'<span class="svc-head">{btn}'
+                        f'<span class="svc-count">{n}</span></span>'
+                        f'<span class="svc-track"><span class="svc-fill" '
+                        f'style="width:{width}%"></span></span></div>')
+        # cloud-<key> carries the accent, exactly as the filter pills and cards
+        # do, so a bar's colour means the same thing here as everywhere else.
+        key = cloud.lower()
+        cloud_sections.append(
+            f'      <div class="svc-group cloud cloud-{key}">\n'
+            f'        <div class="svc-group-title">{escape(cloud)}</div>\n'
+            f'        <div class="svc-list">\n' + "\n".join(rows) + "\n"
+            f'        </div>\n'
+            f'      </div>')
+    cloud_service_sections = "\n".join(cloud_sections)
+    # The footer states each cloud's numbers separately rather than summing them.
+    # A single "131 services across 116 posts" would be a number that is true of
+    # nothing: the three catalogues are different sizes and maturities, and the
+    # AWS one comes from botocore while the others are hand-written.
+    cloud_foot = "".join(
+        f", {n_svc} {cloud} across {n_posts}"
+        for cloud, (n_svc, n_posts) in cloud_section_counts.items() if n_svc)
+    for cloud, (n_svc, n_posts) in cloud_section_counts.items():
+        print(f"  {n_svc} {cloud} service(s) detected across {n_posts} "
+              f"{cloud} post(s)")
     print(f"  {services_total} AWS services detected across {len(aws_posts)} AWS "
           f"post(s) ({described} with an AWS description and link); "
           f"{len(posts) - len(aws_posts)} non-AWS post(s) excluded")
@@ -2535,12 +2672,16 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
   <aside class="sidebar">
     {cloud_widget}
     <div class="sidebar-card" id="services-widget">
-      <div class="sidebar-title">AWS services across all posts</div>
+      <div class="sidebar-title">Services across all posts</div>
       <div class="svc-filter-note" id="svc-filter-note" style="display:none"></div>
-      <div class="svc-list">
+      <div class="svc-group cloud cloud-aws">
+        <div class="svc-group-title">AWS</div>
+        <div class="svc-list">
 {service_rows}
+        </div>
       </div>
-      <div class="svc-foot">All {services_total} AWS services covered, across {len(aws_posts)} AWS posts, by number of posts. Click one to filter; hover for what it does.</div>
+{cloud_service_sections}
+      <div class="svc-foot">{services_total} AWS services across {len(aws_posts)} AWS posts{cloud_foot}, by number of posts. Click one to filter; hover for what it does.</div>
     </div>
     <div class="sidebar-card" id="quiz-widget">
       <div class="sidebar-title" style="display:flex;justify-content:space-between;align-items:center">
