@@ -43,7 +43,7 @@ def inside_header_nav(html, pos):
 
 def check(path):
     """Return a list of problems for one served page."""
-    name = os.path.basename(os.path.dirname(path))
+    name = os.path.relpath(path, ROOT).replace("\\", "/")
     html = io.open(path, encoding="utf-8", errors="replace").read()
     out = []
 
@@ -84,9 +84,32 @@ def check(path):
     return name, out
 
 
+def collect():
+    """Every page GitHub Pages actually serves.
+
+    A first version globbed blog/*/index.html and called that "every page". It
+    missed nine: the home page, resume, now, offline, the blog index itself and
+    four pagination pages -- including the two most-visited pages on the site.
+    A checker that quietly skips the front door is worse than none, because it
+    reports clean.
+    """
+    seen, out = set(), []
+    pats = ["index.html", "resume.html", "now.html", "offline.html",
+            os.path.join("blog", "index.html"),
+            os.path.join("blog", "*", "index.html"),
+            os.path.join("blog", "page", "*", "index.html")]
+    for pat in pats:
+        for f in sorted(glob.glob(os.path.join(ROOT, pat))):
+            rp = os.path.relpath(f, ROOT)
+            if rp not in seen:
+                seen.add(rp)
+                out.append(f)
+    return out
+
+
 def main():
     quiet = "--quiet" in sys.argv
-    pages = sorted(glob.glob(os.path.join(ROOT, "blog", "*", "index.html")))
+    pages = collect()
     bad = 0
     for p in pages:
         name, problems = check(p)
