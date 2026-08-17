@@ -88,9 +88,59 @@
     }
   }
 
+  // ── Disqus re-theme, deferred ───────────────────────
+  // Disqus picks its theme when it loads, by sampling the page, and gets it
+  // right -- which is why a refresh always looks correct. What it never does is
+  // re-theme on a toggle, so after switching you get its light theme on a dark
+  // page or the reverse, unreadable either way.
+  //
+  // DISQUS.reset() is the only way to re-theme an iframe we do not control, and
+  // an earlier attempt called it immediately: correct colours, but the whole
+  // widget visibly reloaded on every switch, which had always been seamless.
+  //
+  // So it is deferred. The comments are at the foot of the article, so if the
+  // toggle happens anywhere above them the reset runs while they are off-screen
+  // and is never seen. Only if they are already in view does it happen in front
+  // of you -- and there it is unavoidable, because the alternative is leaving
+  // unreadable text on screen.
+  var _pendingScheme = null, _observer = null;
+  function doReset() {
+    if (!_pendingScheme || !window.DISQUS || typeof window.DISQUS.reset !== 'function') return;
+    var page = {}, want = _pendingScheme;
+    _pendingScheme = null;
+    try {
+      if (typeof window.disqus_config === 'function') window.disqus_config.call({ page: page, callbacks: {} });
+    } catch (e) { return; }
+    try {
+      window.DISQUS.reset({ reload: true, config: function () {
+        // The identifier must survive: a different one is a different thread,
+        // and every existing comment would appear to vanish.
+        if (page.url) this.page.url = page.url;
+        if (page.identifier) this.page.identifier = page.identifier;
+      }});
+    } catch (e) {}
+  }
+  function scheduleDisqusReset(dark) {
+    var el = document.getElementById('disqus_thread');
+    if (!el || !window.DISQUS) return;         // nothing to re-theme
+    _pendingScheme = dark ? 'dark' : 'light';
+    var r = el.getBoundingClientRect();
+    var onScreen = r.top < window.innerHeight && r.bottom > 0;
+    if (onScreen) { doReset(); return; }       // already looking at it
+    if (_observer) return;                     // already waiting
+    if (!('IntersectionObserver' in window)) { doReset(); return; }
+    _observer = new IntersectionObserver(function (entries) {
+      if (entries.some(function (e) { return e.isIntersecting; })) {
+        _observer.disconnect(); _observer = null; doReset();
+      }
+    }, { rootMargin: '200px' });               // fire just before it appears
+    _observer.observe(el);
+  }
+
   function applyTheme(dark) {
     document.body.classList.toggle('dark', dark);
     applyPostBodyDark(dark);
+    scheduleDisqusReset(dark);
     var e = dark ? '☀️' : '🌙', l = dark ? 'Light' : 'Dark';
     ['theme-icon-moon','theme-icon-moon-m'].forEach(function(id) {
       var el = document.getElementById(id); if (el) el.textContent = e;
