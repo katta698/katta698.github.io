@@ -2548,6 +2548,24 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
                            p["title"]))
         for p in sorted(azweekly_posts, key=_azweekly_num, reverse=True)[:3]
     ]
+
+    # GCP Weekly Intelligence. This series existed and had no tab at all -- eight
+    # tabs covered seven series plus All, and the one series with no way to reach
+    # it was the newest. Adding a series means adding it here AND to the TABS
+    # array in the script below; a feed with no tab is invisible and a tab with no
+    # feed renders "No posts yet." forever.
+    gcpweekly_posts = [p for p in posts if "GCP Weekly Intelligence" in p["tags"]]
+
+    def _gcpweekly_num(p):
+        m = _re.search(r'#(\d+)', p["title"])
+        return int(m.group(1)) if m else 0
+
+    _gcpweekly_feed = [
+        _feed_item(p, _gcpweekly_num(p) or None,
+                   _re.sub(r'^GCP Weekly Intelligence\s*#\d+\s*[-–—]\s*', '',
+                           p["title"]))
+        for p in sorted(gcpweekly_posts, key=_gcpweekly_num, reverse=True)[:3]
+    ]
     _all_feed = [_feed_item(p) for p in posts[:3]]
 
     feed_data_json = json.dumps({
@@ -2565,6 +2583,8 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
                    "href": "/blog/?tag=aws+weekly+intelligence"},
         "azweekly": {"items": _azweekly_feed, "count": len(azweekly_posts),
                      "href": "/blog/?tag=azure+weekly+intelligence"},
+        "gcpweekly": {"items": _gcpweekly_feed, "count": len(gcpweekly_posts),
+                      "href": "/blog/?tag=gcp+weekly+intelligence"},
         "all":    {"items": _all_feed,    "count": len(posts), "href": "/blog/"},
     })
 
@@ -2994,16 +3014,36 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     <script>
     (function(){{
       var FEEDS = {feed_data_json};
+      /* Fourth column is the cloud, so the selected tab and its number badge
+         carry that cloud's accent instead of the site orange -- matching the
+         filter pills and the services widget, where hue already means "which
+         cloud". Empty for All, which belongs to no cloud.
+
+         Labels: three series are weekly roundups, one per cloud, and they used to
+         read "Weekly", "Az Wk" and nothing at all (GCP had no tab). "Weekly"
+         silently meant AWS, which is only obvious to someone who knows the AWS
+         series came first. All three now name their cloud in the same shape. */
       var TABS = [
-        ['arch','Arch',     'AWS Architecture Series — one enterprise pattern at a time, with the decisions and trade-offs behind it'],
-        ['az','Azure',      'Azure Architecture Series — the same treatment, on Azure, from the basics upward'],
-        ['gcp','GCP',       'GCP Architecture Series — the same treatment, on Google Cloud, from the basics upward'],
-        ['lab','Lab',       'AWS Weekly Lab — one production-grade platform capability built end to end each week'],
-        ['daily','Daily',   'AWS Daily Intelligence — what AWS shipped, and whether it actually changes anything'],
-        ['weekly','Weekly', 'AWS Weekly Intelligence — everything AWS shipped that week, ranked, in one place'],
-        ['azweekly','Az Wk','Azure Weekly Intelligence — everything Azure shipped that week, ranked, in one place'],
-        ['all','All',       'Every post, newest first, across all series and topics']
+        ['arch','Arch',      'aws',   'AWS Architecture Series — one enterprise pattern at a time, with the decisions and trade-offs behind it'],
+        ['az','Azure',       'azure', 'Azure Architecture Series — the same treatment, on Azure, from the basics upward'],
+        ['gcp','GCP',        'gcp',   'GCP Architecture Series — the same treatment, on Google Cloud, from the basics upward'],
+        ['lab','Lab',        'aws',   'AWS Weekly Lab — one production-grade platform capability built end to end each week'],
+        ['daily','Daily',    'aws',   'AWS Daily Intelligence — what AWS shipped, and whether it actually changes anything'],
+        ['weekly','AWS Wk',  'aws',   'AWS Weekly Intelligence — everything AWS shipped that week, ranked, in one place'],
+        ['azweekly','Az Wk', 'azure', 'Azure Weekly Intelligence — everything Azure shipped that week, ranked, in one place'],
+        ['gcpweekly','GCP Wk','gcp',  'GCP Weekly Intelligence — everything Google Cloud shipped that week, ranked, in one place'],
+        ['all','All',        '',      'Every post, newest first, across all series and topics']
       ];
+      /* The accents, duplicated from blog.css because this runs before any
+         stylesheet variable is readable on an arbitrary element. Same values;
+         if they change there, change them here. */
+      var CLOUD_ACCENT = {{aws:'#C4A484', azure:'#5B7B9A', gcp:'#8A9A5B'}};
+      var CLOUD_TINT   = {{aws:'rgba(196,164,132,.12)', azure:'rgba(91,123,154,.14)',
+                          gcp:'rgba(138,154,91,.14)'}};
+      function tabCloud(k){{
+        for(var i=0;i<TABS.length;i++) if(TABS[i][0]===k) return TABS[i][2];
+        return '';
+      }}
       var list = document.getElementById('sf-list');
       var tabWrap = document.getElementById('sf-tabs');
       var allLink = document.getElementById('sf-all');
@@ -3021,7 +3061,10 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
           row.style.cssText='display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:0.5px solid var(--border);text-decoration:none;'+(i===f.items.length-1?'border-bottom:none;padding-bottom:0':'');
           var badge=p.n?('#'+p.n):'•';
           var meta=p.date+' · '+p.rt+' min'+((!p.n&&p.tag)?(' · '+p.tag):'');
-          row.innerHTML='<div style="width:22px;height:22px;border-radius:50%;background:rgba(196,164,132,.12);color:var(--orange);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px">'+badge+'</div>'
+          var cl=tabCloud(key);
+          var bTint=CLOUD_TINT[cl]||'rgba(196,164,132,.12)';
+          var bInk=CLOUD_ACCENT[cl]||'var(--orange)';
+          row.innerHTML='<div style="width:22px;height:22px;border-radius:50%;background:'+bTint+';color:'+bInk+';font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px">'+badge+'</div>'
             +'<div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--text);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">'+p.title+'</div>'
             +'<div style="font-size:10.5px;color:var(--text-muted);margin-top:2px">'+meta+'</div></div>'
             +'<div style="color:var(--orange);font-size:14px;margin-top:2px">›</div>';
@@ -3031,9 +3074,13 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
         allLink.textContent='See all '+f.count+' post'+(f.count===1?'':'s')+' →';
         tabWrap.querySelectorAll('button').forEach(function(b){{
           var on=b.dataset.k===key;
-          b.style.background=on?'var(--orange)':'transparent';
+          var acc=CLOUD_ACCENT[tabCloud(b.dataset.k)]||'var(--orange)';
+          // #1D2322 on every accent: measured 6.83:1 on the AWS tan, 4.55 on the
+          // Azure blue and 5.21 on the GCP olive, all above the 4.5 AA floor. A
+          // light ink would fail on the tan, so it cannot simply flip per cloud.
+          b.style.background=on?acc:'transparent';
           b.style.color=on?'#1D2322':'var(--text-muted)';
-          b.style.borderColor=on?'var(--orange)':'var(--border)';
+          b.style.borderColor=on?acc:'var(--border)';
           b.style.fontWeight=on?'600':'400';
         }});
         try{{localStorage.setItem('sf-tab',key);}}catch(e){{}}
@@ -3041,8 +3088,10 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
       TABS.forEach(function(t){{
         var btn=document.createElement('button');
         btn.textContent=t[1]; btn.dataset.k=t[0];
-        btn.title=t[2];                 // native tooltip on hover
-        btn.setAttribute('aria-label', t[2]);
+        // t[2] is the cloud, t[3] the description. Adding the cloud column
+        // shifted these; leaving them at t[2] made every tooltip read "aws".
+        btn.title=t[3];                 // native tooltip on hover
+        btn.setAttribute('aria-label', t[3]);
         btn.style.cssText='font-size:10.5px;padding:2px 8px;border-radius:10px;border:1px solid var(--border);cursor:pointer;background:transparent;color:var(--text-muted)';
         btn.onclick=function(){{render(t[0]);}};
         tabWrap.appendChild(btn);
