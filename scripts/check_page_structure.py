@@ -93,6 +93,42 @@ def check(path):
     return name, out
 
 
+def check_stylesheets():
+    """A stray `*/` in CSS silently deletes the rule that follows it.
+
+    This happened on 2026-08-17. An edit to blog.css left the previous comment's
+    closing `*/` in place and added prose after it, so ~30 lines of English sat
+    outside any comment as raw CSS. The parser recovers from that by discarding
+    tokens up to the next `}` -- which was the Monday light-palette rule. So
+    Monday, and only Monday, silently lost its palette and fell back to the
+    :root default. It shipped, and the day it broke was the day it was pushed.
+
+    Nothing caught it: the file still parsed, every other rule worked, contrast
+    checks read the fallback values and called them fine, and the served CSS
+    contained the rule -- the browser was dropping it, not the file.
+    """
+    out = []
+    for path in sorted(glob.glob(os.path.join(ROOT, "blog", "assets", "*.css"))):
+        name = os.path.relpath(path, ROOT).replace("\\", "/")
+        css = io.open(path, encoding="utf-8", errors="replace").read()
+        if css.count("/*") != css.count("*/"):
+            out.append((name, "unbalanced CSS comment: %d /* and %d */"
+                        % (css.count("/*"), css.count("*/"))))
+        stripped = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        if "*/" in stripped:
+            i = stripped.index("*/")
+            out.append((name, "stray '*/' outside a comment near %r -- the CSS "
+                              "after it is discarded up to the next }"
+                        % stripped[max(0, i - 45):i + 2].strip()[-60:]))
+        if "/*" in stripped:
+            out.append((name, "unterminated '/*' -- everything after it is a "
+                              "comment"))
+        o, c = stripped.count("{"), stripped.count("}")
+        if o != c:
+            out.append((name, "unbalanced braces: %d { and %d }" % (o, c)))
+    return out
+
+
 def collect():
     """Every page GitHub Pages actually serves.
 
@@ -120,6 +156,13 @@ def main():
     quiet = "--quiet" in sys.argv
     pages = collect()
     bad = 0
+
+    css_problems = check_stylesheets()
+    for name, problem in css_problems:
+        print("\n%s" % name)
+        print("   %s" % problem)
+    bad += len(css_problems)
+
     for p in pages:
         name, problems = check(p)
         if problems:
