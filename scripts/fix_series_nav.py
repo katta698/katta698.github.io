@@ -148,7 +148,23 @@ def load_order():
         if not (title and slug and date):
             continue
         out.append((str(date)[:19], str(slug), str(title)))
-    out.sort(key=lambda r: r[0], reverse=True)
+    # Slug is the tie-break, and it is not optional. Sorting on date alone is a
+    # STABLE sort, so two posts sharing a timestamp keep the order glob() handed
+    # back -- which is filesystem order, and differs between platforms. That is
+    # not hypothetical: arch-024 and gcp-004 were both published at
+    # 2026-08-17T09:00:00 by two different windows, this check passed on Windows
+    # and failed on the Linux CI runner reporting 8 changed pages, and the diff
+    # was real -- the two orders genuinely disagreed about which came first.
+    #
+    # sync_blog.py sorts by the same (date, slug) key for the same reason. If one
+    # of them changes, the other must, or check_matches_sync starts failing on a
+    # difference that is nobody's bug.
+    #
+    # Which post wins a tie is arbitrary (alphabetically later slug first, since
+    # reverse=True applies to the whole tuple). Arbitrary but identical everywhere
+    # is the property that matters; CLAUDE.md's advice to give every post a real
+    # publish time is what avoids the tie in the first place.
+    out.sort(key=lambda r: (r[0], r[1]), reverse=True)
     return [(slug, title) for _d, slug, title in out]
 
 

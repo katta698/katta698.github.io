@@ -3209,7 +3209,16 @@ def main():
             "externally_built": entry.get("externally_built", False),
         })
 
-    posts.sort(key=lambda p: p["date"], reverse=True)
+    # (date, slug), not date alone. Python's sort is stable, so sorting on date
+    # alone leaves two posts published at the same timestamp in whatever order
+    # posts/ was read in -- filesystem order, which differs by platform. arch-024
+    # and gcp-004 were both stamped 2026-08-17T09:00:00 by two different windows,
+    # and that made this ordering disagree with fix_series_nav.py's depending on
+    # which OS ran it: clean on Windows, 8 changed pages on the Linux CI runner.
+    #
+    # fix_series_nav.py sorts by the identical key, and check_matches_sync asserts
+    # the two agree. Change one and you must change both.
+    posts.sort(key=lambda p: (p["date"], p["slug"]), reverse=True)
 
     # Draft mode: a post with `draft: true` in its front matter still gets a
     # real page built at its normal URL (so the author can preview/share the
