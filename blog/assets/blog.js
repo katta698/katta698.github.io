@@ -88,9 +88,42 @@
     }
   }
 
+  // ── Disqus theme ────────────────────────────────────
+  // Disqus is a third-party iframe that picks its own theme by sampling the
+  // background behind #disqus_thread, once, when it loads. The embed passes no
+  // colorScheme and the toggle never told it anything, so loading in dark and
+  // switching to light left white Disqus text on a bone page -- invisible, and
+  // invisible to every contrast check we run, because none of them can see
+  // inside someone else's iframe.
+  //
+  // The identifier is read back out of the page's own disqus_config rather than
+  // rebuilt. Resetting with a different identifier would point at a DIFFERENT
+  // THREAD and appear to lose every existing comment, so it is worth the extra
+  // few lines to carry the original through untouched.
+  function syncDisqusTheme(dark) {
+    if (!window.DISQUS || typeof window.DISQUS.reset !== 'function') return;
+    var page = {};
+    try {
+      if (typeof window.disqus_config === 'function') {
+        window.disqus_config.call({ page: page, callbacks: {} });
+      }
+    } catch (e) { return; }          // never let a reset break the page
+    try {
+      window.DISQUS.reset({
+        reload: true,
+        config: function () {
+          if (page.url) this.page.url = page.url;
+          if (page.identifier) this.page.identifier = page.identifier;
+          this.page.colorScheme = dark ? 'dark' : 'light';
+        }
+      });
+    } catch (e) {}
+  }
+
   function applyTheme(dark) {
     document.body.classList.toggle('dark', dark);
     applyPostBodyDark(dark);
+    syncDisqusTheme(dark);
     var e = dark ? '☀️' : '🌙', l = dark ? 'Light' : 'Dark';
     ['theme-icon-moon','theme-icon-moon-m'].forEach(function(id) {
       var el = document.getElementById(id); if (el) el.textContent = e;
