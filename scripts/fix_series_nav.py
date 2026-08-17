@@ -1,39 +1,50 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Back-fill the "Next" link on architecture-series pages.
+"""Set Previous/Next on the architecture pages sync_blog.py never rebuilds.
 
 Why this exists
 ---------------
-`build_arch_post.py` builds a page once, at publish time, and drops the next
-half of the post-nav because at that moment nothing follows the post. Those
-pages are `externally_built`, so `sync_blog.py` never regenerates them — which
-means when post N+1 ships, post N is never updated to point forward at it.
+`build_arch_post.py` builds a page once, at publish time, and drops the next half
+of the post-nav because at that moment nothing follows the post. Those pages are
+`externally_built`, so `sync_blog.py` never regenerates them — which means when
+the next post ships, the previous one is never updated to point forward at it.
 
-The result is a series you can only read backwards. Measured 2026-08-15, only 6
-of 24 architecture pages across the three clouds had a next link, the newest post
-of every series was a dead end, and `gcp-architecture-resource-hierarchy` had no
-navigation at all. On a 365-post series that compounds every day.
+Measured 2026-08-15, only 6 of 24 architecture pages carried a next link and
+`gcp-architecture-resource-hierarchy` had no navigation at all.
 
-What it does, and deliberately does not do
-------------------------------------------
-It sets the **next** link only, from the series order, and leaves every existing
-**prev** link exactly as it is. Some older AWS pages have a prev pointing at a
-Weekly Lab post from before the series conventions settled; those are historical
-navigation choices, and rewriting them is a different decision from fixing a
-missing link. This script does not make that decision.
+Chronological, not per-series
+-----------------------------
+The order is chronological across every post, matching what sync_blog.py does
+for the ~110 pages it builds itself:
 
-It is idempotent: a page already carrying the correct next link is left alone,
-so it is safe to run on every publish and safe to run twice.
+    post["_prev"] = visible_posts[i + 1]     # the next older post, any series
+    post["_next"] = visible_posts[i - 1]     # the next newer post, any series
+
+So a reader on any sync-built page walks the whole blog, not one series. This
+script exists to make the hand-built pages agree with them. It computes the same
+order from posts/ (see load_order) and cross-checks it against sync's own
+cards.json, warning on any divergence rather than assuming the two agree.
+
+The first version of this script scoped the nav to each series instead, which was
+wrong in two ways. It made the arch pages the only ones on the site that navigate
+differently from everything else. And it led me to misread the older AWS pages
+whose Previous points at a Weekly Lab post: those were correct chronological
+links, not leftovers from before the conventions settled, and the earlier
+version of this file deliberately preserved them for the wrong reason.
+
+It sets both halves, and it is idempotent: a page already carrying the right
+links is left untouched, so it is safe to run on every publish and safe to run
+twice.
 
 Usage
 -----
-    python scripts/fix_series_nav.py            # fix every series
+    python scripts/fix_series_nav.py            # fix every hand-built page
     python scripts/fix_series_nav.py --check    # report only, exit 1 if wrong
-    python scripts/fix_series_nav.py --series gcp
 """
 import argparse
 import glob
 import io
+import json
 import os
 import re
 import sys
@@ -43,18 +54,17 @@ import yaml
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CARDS = os.path.join(ROOT, "blog", "cards.json")
 
-# Only the custom-built architecture series. The sync-built series get their
-# pages regenerated on every run, so they never carry this problem.
-SERIES = {
-    "arch": ("arch-", "AWS Architecture Series"),
-    "az":   ("az-",   "Azure Architecture Series"),
-    "gcp":  ("gcp-",  "GCP Architecture Series"),
+# The slug prefixes sync_blog.py passes through untouched, i.e. the pages whose
+# nav nothing else maintains. Keep in step with `externally_built` there.
+HAND_BUILT = ("aws-architecture-", "azure-architecture-", "gcp-architecture-")
+
+LINK_RE = {
+    "prev": re.compile(r'<a href="[^"]*" class="post-nav-link prev">.*?</a>', re.S),
+    "next": re.compile(r'<a href="[^"]*" class="post-nav-link next">.*?</a>', re.S),
 }
-
-NEXT_LINK_RE = re.compile(
-    r'<a href="[^"]*" class="post-nav-link next">.*?</a>', re.S)
-NAV_CLOSE = "</nav>"
+DIR_LABEL = {"prev": "← Previous", "next": "Next →"}
 
 
 def esc(s):
@@ -62,15 +72,71 @@ def esc(s):
              .replace('"', "&quot;"))
 
 
-def load_series(prefix):
-    """Ordered [(n, slug, title)] for one series, by the #N in the title.
+def link_html(kind, slug, title):
+    return ('<a href="/blog/%s/" class="post-nav-link %s">'
+            '<span class="post-nav-dir">%s</span>'
+            '<span class="post-nav-title">%s</span></a>'
+            % (slug, kind, DIR_LABEL[kind], esc(title)))
 
-    Numbered from the title rather than by position or by date: the number is in
-    the reader's URL and in their saved progress, and position is only correct
-    while nothing is ever backfilled.
+
+def href_of(anchor):
+    m = re.search(r'href="([^"]*)"', anchor)
+    return m.group(1) if m else ""
+
+
+def fix_page(slug, prev, nxt, check):
+    """Make this page's nav match (prev, nxt); each is (slug, title) or None."""
+    path = os.path.join(ROOT, "blog", slug, "index.html")
+    if not os.path.isfile(path):
+        return "missing", "no served page at blog/%s/" % slug
+    html = io.open(path, encoding="utf-8").read()
+
+    # The post-nav, not the site header's <nav>. These pages have two, and
+    # matching the first </nav> in the document put 19 Next links inside the top
+    # navigation bar, floating over the header nowhere near the post.
+    navm = re.search(r'<nav class="post-nav"[^>]*>(.*?)</nav>', html, re.S)
+    if not navm:
+        return "missing", 'no <nav class="post-nav"> element'
+
+    want = "".join(link_html(k, *t) for k, t in (("prev", prev), ("next", nxt)) if t)
+    have = navm.group(1)
+
+    # Compare destinations, not markup. Titles on existing links are sometimes
+    # the short form rather than the full one -- pages were hand-built at
+    # different times -- and rewriting that is churn on a page nothing else
+    # regenerates.
+    def dests(fragment):
+        return {k: href_of(m.group(0)) for k, rx in LINK_RE.items()
+                for m in [rx.search(fragment)] if m}
+    if dests(have) == dests(want):
+        return "ok", ""
+
+    new = html[:navm.start(1)] + want + html[navm.end(1):]
+    changes = []
+    for k, t in (("prev", prev), ("next", nxt)):
+        old_d = dests(have).get(k)
+        new_d = "/blog/%s/" % t[0] if t else None
+        if old_d != new_d:
+            changes.append("%s: %s -> %s" % (k, old_d or "(none)", new_d or "(none)"))
+    if not check:
+        io.open(path, "w", encoding="utf-8", newline="\n").write(new)
+    return "fixed", "; ".join(changes)
+
+
+def load_order():
+    """Newest-first order of every visible post, as (slug, title).
+
+    Computed from posts/ rather than read from blog/cards.json, because this runs
+    from build_arch_post.py BEFORE sync regenerates cards.json -- so the card
+    file does not yet contain the post just built, and using it would set the
+    predecessor's Next from an order the new post is missing from.
+
+    It mirrors sync_blog.py's rule deliberately: every post with a usable title
+    and date, sorted by date descending. `check_matches_sync` below verifies that
+    claim against cards.json instead of trusting this comment.
     """
     out = []
-    for path in glob.glob(os.path.join(ROOT, "posts", prefix + "*.html")):
+    for path in glob.glob(os.path.join(ROOT, "posts", "*.html")):
         raw = io.open(path, encoding="utf-8").read()
         if not raw.startswith("---"):
             continue
@@ -78,120 +144,65 @@ def load_series(prefix):
             fm = yaml.safe_load(raw.split("---", 2)[1]) or {}
         except yaml.YAMLError:
             continue
-        title, slug = fm.get("title"), fm.get("slug")
-        if not title or not slug:
+        title, slug, date = fm.get("title"), fm.get("slug"), fm.get("date")
+        if not (title and slug and date):
             continue
-        m = re.search(r"#(\d+)", str(title))
-        if not m:
-            continue
-        out.append((int(m.group(1)), slug, str(title)))
-    return sorted(out)
+        out.append((str(date)[:19], str(slug), str(title)))
+    out.sort(key=lambda r: r[0], reverse=True)
+    return [(slug, title) for _d, slug, title in out]
 
 
-def _href_of(anchor):
-    m = re.search(r'href="([^"]*)"', anchor)
-    return m.group(1) if m else ""
+def check_matches_sync(order):
+    """Warn if our order disagrees with the one sync actually built pages from.
+
+    A silent divergence here would give the hand-built pages different
+    neighbours from every sync-built page -- the exact inconsistency this script
+    was rewritten to remove.
+    """
+    if not os.path.isfile(CARDS):
+        return
+    theirs = [c["slug"] for c in json.load(io.open(CARDS, encoding="utf-8"))]
+    ours = [s for s, _t in order]
+    if ours != theirs:
+        only_ours = [s for s in ours if s not in theirs]
+        only_theirs = [s for s in theirs if s not in ours]
+        print("  WARNING: order differs from blog/cards.json.")
+        if only_ours:
+            print("    in posts/ but not cards.json: %s" % ", ".join(only_ours[:5]))
+        if only_theirs:
+            print("    in cards.json but not posts/: %s" % ", ".join(only_theirs[:5]))
+        if not only_ours and not only_theirs:
+            first = next(i for i, (a, b) in enumerate(zip(ours, theirs)) if a != b)
+            print("    same posts, different sequence, first at index %d: "
+                  "%s vs %s" % (first, ours[first], theirs[first]))
 
 
-def next_link_html(slug, title):
-    return ('<a href="/blog/%s/" class="post-nav-link next">'
-            '<span class="post-nav-dir">Next →</span>'
-            '<span class="post-nav-title">%s</span></a>' % (slug, esc(title)))
-
-
-def fix_page(slug, nxt, check):
-    """Ensure this page's next link points at `nxt`, or has none if nxt is None."""
-    path = os.path.join(ROOT, "blog", slug, "index.html")
-    if not os.path.isfile(path):
-        return "missing", "no served page at blog/%s/" % slug
-    html = io.open(path, encoding="utf-8").read()
-    if '<nav class="post-nav"' not in html:
-        return "missing", "no <nav class=\"post-nav\"> element"
-
-    have = NEXT_LINK_RE.search(html)
-    want = next_link_html(*nxt) if nxt else None
-
-    if want is None:
-        # Latest post in the series: a next link here would be a dead end.
-        if not have:
-            return "ok", ""
-        new = NEXT_LINK_RE.sub("", html, count=1)
-        action = "removed stale next link"
-    elif have and _href_of(have.group(0)) == "/blog/%s/" % nxt[0]:
-        # Already points at the right post. The displayed title may be the short
-        # form rather than the full one -- pages were built by hand at different
-        # times and both styles exist. Rewriting that is churn on a page nothing
-        # regenerates, so a correct destination is left exactly as it is.
-        return "ok", ""
-    elif have:
-        new = html[:have.start()] + want + html[have.end():]
-        action = "repointed next -> %s" % nxt[1]
-    else:
-        # Insert before the closing tag of the POST-NAV, not the first </nav> in
-        # the document. These pages have two: the site header at the top and the
-        # post-nav at the bottom. html.index(NAV_CLOSE) finds the header's, which
-        # put the Next link inside the top navigation bar on 19 pages -- floating
-        # over the header, nowhere near the post it belongs to. The guard above
-        # confirms a post-nav EXISTS but said nothing about which one gets used.
-        m = re.search(r'<nav class="post-nav".*?(?=</nav>)', html, re.S)
-        if not m:
-            return "missing", 'could not locate the post-nav closing tag'
-        i = m.end()
-        new = html[:i] + want + html[i:]
-        action = "added next -> %s" % nxt[1]
-
-    if not check:
-        io.open(path, "w", encoding="utf-8", newline="\n").write(new)
-    return "fixed", action
-
-
-def backfill_all(quiet=False):
-    """Fix every series. Called by build_arch_post.py after each publish."""
-    fixed = 0
-    for key in sorted(SERIES):
-        prefix, _label = SERIES[key]
-        posts = load_series(prefix)
-        for i, (_n, slug, _title) in enumerate(posts):
-            nxt = (posts[i + 1][1], posts[i + 1][2]) if i + 1 < len(posts) else None
-            state, detail = fix_page(slug, nxt, check=False)
-            if state == "fixed":
-                fixed += 1
-                if not quiet:
-                    print("  %s: %s" % (slug, detail))
-    return fixed
+def backfill_all(quiet=False, check=False):
+    order = load_order()
+    check_matches_sync(order)
+    fixed = problems = 0
+    for i, (slug, _title) in enumerate(order):
+        if not slug.startswith(HAND_BUILT):
+            continue                      # sync rebuilds this page's nav itself
+        prev = order[i + 1] if i + 1 < len(order) else None
+        nxt = order[i - 1] if i > 0 else None
+        state, detail = fix_page(slug, prev, nxt, check)
+        if state == "fixed":
+            fixed += 1
+            if not quiet:
+                print("  %-46s %s" % (slug[:46], detail))
+        elif state == "missing":
+            problems += 1
+            print("  %-46s PROBLEM: %s" % (slug[:46], detail))
+    return fixed, problems
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true",
                     help="report what is wrong and exit non-zero, changing nothing")
-    ap.add_argument("--series", help="one of: %s" % ", ".join(sorted(SERIES)))
     args = ap.parse_args()
-
-    keys = [args.series] if args.series else sorted(SERIES)
-    for k in keys:
-        if k not in SERIES:
-            print("unknown series %r. Known: %s" % (k, ", ".join(sorted(SERIES))))
-            return 2
-
-    fixed = problems = 0
-    for key in keys:
-        prefix, label = SERIES[key]
-        posts = load_series(prefix)
-        if not posts:
-            continue
-        print("%s (%d posts)" % (label, len(posts)))
-        for i, (n, slug, _title) in enumerate(posts):
-            nxt = (posts[i + 1][1], posts[i + 1][2]) if i + 1 < len(posts) else None
-            state, detail = fix_page(slug, nxt, args.check)
-            if state == "fixed":
-                fixed += 1
-                print("  #%-3d %-52s %s" % (n, slug[:52], detail))
-            elif state == "missing":
-                problems += 1
-                print("  #%-3d %-52s PROBLEM: %s" % (n, slug[:52], detail))
-        print()
-
+    fixed, problems = backfill_all(quiet=False, check=args.check)
     verb = "would change" if args.check else "changed"
     print("%s %d page(s); %d problem(s)." % (verb, fixed, problems))
     if args.check and (fixed or problems):
