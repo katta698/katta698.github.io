@@ -21,8 +21,25 @@ verified: '2026-08-07'
   </div>
 </div>
 
-<div class="section">
-  <h2>The problem</h2>
+  <div class="toc">
+    <h3>&#128203; In This Post</h3>
+    <ol>
+      <li><a href="#why">Why &mdash; The Problem This Solves</a></li>
+      <li><a href="#what">What You Need to Know &mdash; Skills &amp; Tools</a></li>
+      <li><a href="#architecture">Architecture &mdash; How It Fits Together</a></li>
+      <li><a href="#how">How We Built It &mdash; Step by Step</a></li>
+      <li><a href="#challenges">Challenges &mdash; What Actually Went Wrong</a></li>
+      <li><a href="#security">Security &mdash; Controls at Every Layer</a></li>
+      <li><a href="#cost">Cost</a></li>
+      <li><a href="#cleanup">Cleanup</a></li>
+      <li><a href="#references">References</a></li>
+      <li><a href="#takeaways">Key Takeaways</a></li>
+    </ol>
+  </div>
+
+<div class="section" id="why">
+  <h2>Why &mdash; The Problem This Solves</h2>
+
   <p>An internet-facing endpoint receives traffic nobody wrote code for. Path scanners looking for <code>/wp-admin</code> and <code>.env</code>. Log4Shell probes in headers. A single IP sending thousands of requests a minute at an endpoint sized for dozens.</p>
   <p>The application usually does not break. It degrades, it bills, and it logs nothing useful about who did it. The team finds out from a latency graph, not from a security signal.</p>
   <p>The specific gap: <strong>there is no layer between the internet and the application that can say "no" before the request costs you compute.</strong> Every request that reaches Lambda is a request you pay for, and a request that gets to touch your code.</p>
@@ -36,8 +53,32 @@ verified: '2026-08-07'
   <p>That last one is the misconception this week exists to correct.</p>
 </div>
 
-<div class="section">
-  <h2>Shield Standard is not something you deploy</h2>
+<div class="section" id="what">
+  <h2>What You Need to Know &mdash; Skills &amp; Tools</h2>
+
+    <p>WAF looks simple from the console and has four concepts that decide whether a deployment works or quietly does nothing.</p>
+    <div class="grid-2">
+      <div class="card">
+        <h4>Shield Standard vs Shield Advanced</h4>
+        <p>Standard is free, always on, and protects layers 3 and 4. Advanced is <strong>$3,000/month on a 1-year commitment</strong>. Believing DDoS protection means Advanced is the most common reason teams ship nothing at all.</p>
+      </div>
+      <div class="card">
+        <h4>WAF scopes</h4>
+        <p>A web ACL is either <code>CLOUDFRONT</code> scope or <code>REGIONAL</code> scope, and they are not interchangeable. Edge-only protection is bypassable if the origin stays publicly reachable.</p>
+      </div>
+      <div class="card">
+        <h4>Rule actions</h4>
+        <p><strong>Count</strong> observes, <strong>Block</strong> rejects, <strong>Challenge</strong> and <strong>CAPTCHA</strong> interrogate the client. Custom rules use <code>action</code>; managed rule groups use <code>override_action</code> &mdash; and they behave differently.</p>
+      </div>
+      <div class="card">
+        <h4>WCUs &mdash; WAF's real capacity currency</h4>
+        <p>Every rule costs Web ACL Capacity Units, and <strong>1,500 are included</strong>. CommonRuleSet alone is 700. Stacking managed groups without checking the sum is how you land in overage.</p>
+      </div>
+    </div>
+    <p><strong>Tools used:</strong> Terraform via HCP Terraform (VCS-driven), Python on Lambda, and <code>curl</code> plus CloudWatch metrics for the attack simulation.</p>
+
+    <h3>Shield Standard is not something you deploy</h3>
+
   <p>There is no Terraform resource for AWS Shield Standard. There is no console toggle. It is already active on every AWS account at no charge.</p>
   <p>It protects CloudFront, Route&nbsp;53, Global Accelerator and Elastic Load Balancing against layer 3 and 4 volumetric attacks &mdash; SYN floods, UDP reflection. AWS reports mitigating over 99% of infrastructure-layer attacks in under one second.</p>
   <p>What Shield Standard does <strong>not</strong> do is inspect HTTP. An attacker sending well-formed requests at 10,000 per minute, or a single request carrying an SQL injection payload, is invisible to it. That is layer 7, and layer 7 is AWS WAF's job.</p>
@@ -55,8 +96,9 @@ verified: '2026-08-07'
   </figure>
 </div>
 
-<div class="section">
-  <h2>Architecture</h2>
+<div class="section" id="architecture">
+  <h2>Architecture &mdash; How It Fits Together</h2>
+
   <p>Two web ACLs, one at the edge and one at the origin, protecting a deliberately trivial application.</p>
 
   <div class="arch-container">
@@ -172,10 +214,8 @@ verified: '2026-08-07'
 
   <h3>Why Lambda for the origin</h3>
   <p>The origin is an echo function whose only job is to answer "did this request get through?". It runs only when tested, holds no state, and has effectively zero concurrency. A container or an EC2 instance would bill 24/7 to serve a few minutes of use per month. The choice follows the workload's shape, not habit.</p>
-</div>
+    <h3>The five rules</h3>
 
-<div class="section">
-  <h2>The five rules</h2>
   <p>AWS WAF evaluates rules in ascending priority order and stops at the first terminating action, so the cheapest and most definitive checks run first.</p>
 
   <div class="table-scroll">
@@ -193,7 +233,7 @@ verified: '2026-08-07'
 
   <p><strong>953 of the 1,500 WCUs included in the base price.</strong> This matters: exceed 1,500 and you pay $0.20 per million requests for every additional 500 WCUs. Stacking Core rule set with Bot Control would blow that budget immediately. The console reports the exact figure, and it matched the estimate.</p>
 
-  <h3>Two choices worth explaining</h3>
+  <h4>Two choices worth explaining</h4>
 
   <h4><code>evaluation_window_sec = 60</code>, not the 300 default</h4>
   <p>AWS WAF re-checks the request rate roughly every 10 seconds regardless of this setting &mdash; the window controls how far <em>back</em> it looks each time. A five-minute lookback averages an attacker's burst across five minutes before it crosses the threshold. A 60-second window treats a burst as a burst.</p>
@@ -226,8 +266,11 @@ verified: '2026-08-07'
   </div>
 </div>
 
-<div class="section">
-  <h2>Count mode first &mdash; the discipline that makes WAF stick</h2>
+<div class="section" id="how">
+  <h2>How We Built It &mdash; Step by Step</h2>
+
+    <h3>Count mode first &mdash; the discipline that makes WAF stick</h3>
+
   <p>Every rule was deployed with its action set to Count. In Count mode WAF inspects the request, records that it <em>would</em> have blocked it, and lets it through anyway.</p>
   <p>This is not caution for its own sake. The Core rule set blocks request bodies over 8&nbsp;KB and query strings over 2,048 bytes. On a real application, a file upload or a long rich-text field trips that immediately. Count mode is how you find that out before it rejects a paying customer.</p>
 
@@ -236,7 +279,7 @@ verified: '2026-08-07'
     <p>Custom rules use <code>action { count {} }</code>. Managed rule groups use <code>override_action { count {} }</code>. Critically, <code>override_action { none {} }</code> does <strong>not</strong> mean "no action" &mdash; it means "use the rule group's own configured actions", which is to say <em>enforce</em>. Misreading that is the easiest way to ship a blocking WAF while believing it is only observing.</p>
   </div>
 
-  <h3>The four rule actions</h3>
+  <h4>The four rule actions</h4>
   <div class="table-scroll">
   <table>
     <thead><tr><th>Action</th><th>What happens to the request</th><th>Use it for</th></tr></thead>
@@ -253,10 +296,8 @@ verified: '2026-08-07'
     <strong>A monitoring subtlety this creates</strong>
     <p>During the Count phase, <code>BlockedRequests</code> stays flat at zero because nothing is being blocked. An alarm watching only that metric will report "all clear" while rules are matching heavily. This build ships a separate <code>CountedRequests</code> alarm for exactly that reason.</p>
   </div>
-</div>
+    <h3>Deploying</h3>
 
-<div class="section">
-  <h2>Deploying</h2>
   <p>State lives in HCP Terraform (workspace <code>week-13-dev</code>, VCS-driven). The first apply failed, and it is worth showing rather than hiding.</p>
 
   <figure class="screenshot">
@@ -310,10 +351,8 @@ verified: '2026-08-07'
       <figcaption>CloudFront takes the web ACL as a distribution attribute.</figcaption>
     </figure>
   </div>
-</div>
+    <h3>Testing it: the attack simulation</h3>
 
-<div class="section">
-  <h2>Testing it: the attack simulation</h2>
   <p>A shell script sends benign-but-rule-matching requests to my own endpoints. Nothing in it is an exploit &mdash; the payloads are the well-known signature strings the managed rule groups look for, sent to a Lambda that echoes its input and does nothing else.</p>
 
   <div class="callout red">
@@ -329,10 +368,8 @@ verified: '2026-08-07'
     <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-13-waf-shield-protection/docs/blog/screenshots/12-sampled-requests-count-mode.png" alt="WAF sampled requests in Count mode with the CountedRequests graph">
     <figcaption>Sampled requests during the Count phase. Every action reads ALLOW &mdash; the matches show up in the CountedRequests series, not in the HTTP response.</figcaption>
   </figure>
-</div>
+    <h3>Flipping to Block</h3>
 
-<div class="section">
-  <h2>Flipping to Block</h2>
   <p>With clean evidence, the rules were switched to enforcing. The repository default stays <code>count_mode = true</code> deliberately, so anyone reusing the module gets Count-first as the safe default; the flip was made as an HCP workspace variable, which is an operational decision rather than a code change.</p>
 
   <figure class="screenshot">
@@ -351,10 +388,8 @@ verified: '2026-08-07'
     <strong>The rate-based rule finally fired</strong>
     <p>Across the earlier runs the rate rule never triggered, because a burst of concurrent requests finishes before WAF's next rate check. In Block mode, a 200-request flood produced <strong>8 blocked requests</strong> on the origin. This is normal and worth internalising: WAF re-evaluates the rate roughly every 10 seconds, so requests sent before the next evaluation still get through even once you are over the limit. A rate rule is not an instantaneous cap.</p>
   </div>
-</div>
+    <h3>Logging, and proving the redaction works</h3>
 
-<div class="section">
-  <h2>Logging, and proving the redaction works</h2>
   <p>A WAF log records the request it inspected &mdash; which means it records credentials unless you tell it not to. Without redaction, the security control becomes the disclosure vector.</p>
 
   <div class="code-block">
@@ -380,10 +415,8 @@ verified: '2026-08-07'
     <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-13-waf-shield-protection/docs/blog/screenshots/22-waf-log-redaction-verified.png" alt="WAF log record showing Authorization, Cookie and X-Api-Key all REDACTED while other headers remain">
     <figcaption>All three credential headers come back <code>REDACTED</code>; every other header is logged in full. The redaction is selective and it works.</figcaption>
   </figure>
-</div>
+    <h3>Alarms: making a block something a human hears about</h3>
 
-<div class="section">
-  <h2>Alarms: making a block something a human hears about</h2>
   <p>A web ACL with no alarm is a control you have to remember to go and look at. Two alarms per web ACL &mdash; <code>BlockedRequests</code> for enforcement and <code>CountedRequests</code> for the observation phase &mdash; both publishing to SNS.</p>
 
   <div class="callout red">
@@ -406,10 +439,18 @@ verified: '2026-08-07'
   </div>
 
   <p>The recovery email is the half people forget to configure. An operator who receives an alert and never learns the attack stopped has to go and check manually every time.</p>
+
+    <h3>Verifying it actually works</h3>
+    <p>The first version of the simulation script reported the benign baseline as "blocked as expected", and it was wrong in a way worth naming: <strong>an HTTP status is not a WAF verdict.</strong></p>
+    <p>API Gateway returns 400 for a malformed URI path and 405 for an unsupported method. CloudFront returns 403 for a method outside <code>allowed_methods</code>. None of those involve WAF at all. And in Count mode <em>everything</em> returns 200 by design, so status codes cannot distinguish a match from a miss.</p>
+    <p>The only real evidence is <code>CountedRequests</code> and <code>BlockedRequests</code> in CloudWatch, or the WAF logs themselves. A related trap: the <code>Rule</code> metric dimension uses the rule's <code>visibility_config.metric_name</code>, not its <code>name</code>, so querying by rule name silently returns nothing.</p>
+    <p>Two things were therefore proven by reading data rather than responses &mdash; the count-versus-block comparison above, and the redaction check, which confirms a request carrying three fake credentials came back <code>REDACTED</code> in all three headers rather than merely showing the configuration was present.</p>
+
 </div>
 
-<div class="section">
-  <h2>What went wrong</h2>
+<div class="section" id="challenges">
+  <h2>Challenges &mdash; What Actually Went Wrong</h2>
+
 
   <div class="challenge-card">
     <div class="challenge-header">1. The Anti-DDoS rule group rejected both web ACLs</div>
@@ -436,8 +477,24 @@ verified: '2026-08-07'
   </div>
 </div>
 
-<div class="section">
+<div class="section" id="security">
+  <h2>Security &mdash; Controls at Every Layer</h2>
+
+    <p>The interesting security property of this build is that <em>the firewall itself is the control</em>. What follows is what protects the rest of it.</p>
+    <ul>
+      <li><strong>Defence at both scopes.</strong> The edge ACL protects CloudFront; the regional ACL protects the API Gateway stage. That pairing exists specifically because an origin URL that stays publicly reachable makes an edge-only firewall decorative.</li>
+      <li><strong>A break-glass IP set</strong> evaluated before the managed rule groups, so a legitimate client caught by a false positive can be let through without disabling a rule for everyone.</li>
+      <li><strong>Logs are redacted at source.</strong> <code>authorization</code>, <code>cookie</code> and <code>x-api-key</code> are declared as redacted fields, so credentials never reach the log group rather than being scrubbed afterwards.</li>
+      <li><strong>A per-web-ACL log resource policy</strong> instead of contributing to the shared account-wide <code>AWSWAF-LOGS</code> policy, which has a maximum size that silently breaks logging configuration once enough web ACLs share it.</li>
+      <li><strong>Count mode as a safety control</strong>, not just a testing convenience. Shipping managed rules straight to Block is what causes the outage that gets WAF switched off permanently.</li>
+      <li><strong>No static credentials anywhere.</strong> Deployment uses HCP Terraform's OIDC dynamic credentials against an AWS role.</li>
+    </ul>
+
+</div>
+
+<div class="section" id="cost">
   <h2>Cost</h2>
+
   <div class="table-scroll">
   <table>
     <thead><tr><th>Component</th><th>Monthly</th></tr></thead>
@@ -460,23 +517,52 @@ verified: '2026-08-07'
   </div>
 </div>
 
-<div class="section">
-  <h2>What I would do differently in production</h2>
-  <ul>
-    <li><strong>Stay in Count mode far longer.</strong> Fourteen matches from a synthetic script is a thin sample. Real production traffic over several days is what actually surfaces false positives.</li>
-    <li><strong>Use <code>rule_action_override</code> rather than dropping a rule group.</strong> When Core rule set rejects a legitimate upload, override that single rule to Count &mdash; do not disable 700 rules to fix one.</li>
-    <li><strong>Reconsider the rate aggregation key.</strong> IP aggregation punishes shared-NAT users collectively.</li>
-    <li><strong>Add a logging filter.</strong> WAF logs one record per inspected request; at real traffic volumes the ingestion cost becomes the dominant line item, not the web ACL.</li>
-  </ul>
+<div class="section" id="cleanup">
+  <h2>Cleanup</h2>
+
+    <p>The workspace is VCS-connected, which blocks <code>terraform destroy</code> from a CLI checkout but <strong>not</strong> a destroy queued through HCP &mdash; either from the UI (Workspace &rarr; Settings &rarr; Destruction and Deletion &rarr; Queue destroy plan) or the API with <code>is-destroy: true</code>.</p>
+    <div class="code-block"><pre><code>./scripts/cleanup.sh</code></pre></div>
+    <p>This build was destroyed via an API destroy run: <strong>33 resources destroyed, 0 added or changed</strong>, and every post-teardown check passed. Total cost for the week came to about <strong>$1.40</strong>.</p>
+    <p>The script verifies rather than destroys, and distinguishes three outcomes rather than two &mdash; gone, still present, and <em>could not verify</em> &mdash; because an expired session returning an empty result otherwise reads as a clean teardown while having checked nothing at all.</p>
+    <p>Two things linger for opposite reasons, and both are worth checking by hand:</p>
+    <ul>
+      <li><strong>A web ACL cannot be deleted while still associated</strong> with a resource, so an association left behind blocks the delete.</li>
+      <li><strong>A CloudFront distribution must be disabled and fully propagated</strong> before it can be removed, which takes roughly fifteen minutes and looks like a hang if you are not expecting it.</li>
+    </ul>
+    <p>Left running, this build has a real floor of about <strong>$20/month</strong> &mdash; unlike most weeks in this series, two web ACLs bill whether or not a single request ever arrives.</p>
+
 </div>
 
-<div class="section">
-  <h2>Links</h2>
+<div class="section" id="references">
+  <h2>References</h2>
+
   <ul>
     <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/week-13-waf-shield-protection">Week 13 source on GitHub</a> &mdash; Terraform modules, Lambda, attack simulation script</li>
     <li><a href="https://docs.aws.amazon.com/waf/latest/developerguide/waf-chapter.html">AWS WAF Developer Guide</a></li>
     <li><a href="https://aws.amazon.com/blogs/security/aws-shield-advanced-is-embracing-the-aws-waf-anti-ddos-managed-rule-group-what-changes-and-how-to-prepare/">Shield Advanced and the Anti-DDoS managed rule group migration</a></li>
     <li><a href="https://aws.amazon.com/waf/pricing/">AWS WAF pricing</a> &middot; <a href="https://aws.amazon.com/shield/pricing/">AWS Shield pricing</a></li>
+  </ul>
+</div>
+
+<div class="section" id="takeaways">
+  <h2>Key Takeaways</h2>
+
+    <ul>
+      <li><strong>Shield Standard is already protecting you</strong> and there is nothing to deploy. The gap it leaves is layer 7, and that is WAF's job.</li>
+      <li><strong>Deploy managed rules in Count mode first.</strong> Going straight to Block is what produces the day-one outage that gets WAF disabled permanently.</li>
+      <li><strong>Protect the origin as well as the edge.</strong> An invoke URL that stays publicly reachable makes an edge-only web ACL trivial to bypass.</li>
+      <li><strong>Check the WCU sum before adding a managed group.</strong> 1,500 are included; CommonRuleSet alone is 700.</li>
+      <li><strong>An HTTP status is not a WAF verdict.</strong> Only CloudWatch metrics or the WAF logs tell you what the firewall actually did.</li>
+      <li><strong>WAF pricing is prorated hourly</strong>, so a build-test-destroy day costs under a dollar. Do not let a monthly figure narrow the design.</li>
+    </ul>
+
+    <h3>What I'd do differently in production</h3>
+
+  <ul>
+    <li><strong>Stay in Count mode far longer.</strong> Fourteen matches from a synthetic script is a thin sample. Real production traffic over several days is what actually surfaces false positives.</li>
+    <li><strong>Use <code>rule_action_override</code> rather than dropping a rule group.</strong> When Core rule set rejects a legitimate upload, override that single rule to Count &mdash; do not disable 700 rules to fix one.</li>
+    <li><strong>Reconsider the rate aggregation key.</strong> IP aggregation punishes shared-NAT users collectively.</li>
+    <li><strong>Add a logging filter.</strong> WAF logs one record per inspected request; at real traffic volumes the ingestion cost becomes the dominant line item, not the web ACL.</li>
   </ul>
 </div>
 
