@@ -116,6 +116,10 @@ SERIES = {
         # older links are worth keeping citable -- but prefer the docs host when
         # writing a claim, since that is the URL a reader lands on.
         'doc_hosts': ('cloud.google.com', 'docs.cloud.google.com'),
+        # This series' badge carries the publish date (see CLAUDE.md), so
+        # check_verification enforces verified == published. AWS and Azure
+        # deliberately allow verified < published and must not set this.
+        'badge_is_publish_date': True,
         # Measured 2026-08-14 against two known-bad URLs on each host
         # (/resource-manager/docs/this-page-does-not-exist-xyz123 and
         # /nonsense-xyz123): both return an honest HTTP 404, unlike
@@ -618,6 +622,23 @@ def check_verification(slug, name, fm, parsed, body, spec):
     if vdate > ceiling:
         err(slug, '%s claims verification on %s, which is after both today and '
                   'its publish date %s' % (name, vdate, pubdate))
+    # The GCP Architecture Series decided its badge carries the PUBLISH date, so
+    # any other value is wrong there by definition -- and the wrong value that
+    # actually occurred was a stale one. gcp-004 was badged from a date read the
+    # previous evening; the session crossed midnight and the clock read was
+    # carried across turns instead of re-taken. It went out at 2026-08-16 on a
+    # post published 2026-08-17, was "corrected" the wrong way, and needed a
+    # second edit. Nothing failed either time, which is why it took a person
+    # noticing.
+    #
+    # Enforced only for series whose rule is badge == publish date. AWS and Azure
+    # deliberately allow verified < published, so this must not apply to them.
+    if spec.get('badge_is_publish_date') and vdate != pubdate:
+        err(slug, '%s is badged %s but publishes %s. This series carries the '
+                  'publish date on its badge, so those must match: either '
+                  're-verify on the publish date, or drop the badge. Do not '
+                  'post-date a check.' % (name, vdate, pubdate))
+
     # Negative age for a scheduled post is not staleness.
     age = max(0, (today - vdate).days)
     if age > STALE_DAYS:
