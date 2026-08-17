@@ -57,37 +57,6 @@
 
 // ── Dark mode ─────────────────────────────────────
 (function () {
-  var POST_CARD_SELS = ['.card','.callout','.challenge-card','.tip-box','.warning-box','[class*="callout"','[class*="box"]','.container'];
-
-  function applyPostBodyDark(dark) {
-    var jkPost = document.getElementById('jk-post');
-    if (!jkPost) return;
-    if (dark) {
-      jkPost.style.setProperty('background', 'transparent', 'important');
-      jkPost.style.setProperty('color', '#e6edf3', 'important');
-      jkPost.querySelectorAll('*').forEach(function(el) {
-        if (el.closest('.zoom-trigger')) return;
-        if (!el.matches('pre,code,img,svg,span.val')) {
-          el.style.setProperty('background', 'transparent', 'important');
-          el.style.setProperty('color', '#e6edf3', 'important');
-          el.style.setProperty('border-color', '#2d3a4a', 'important');
-        }
-      });
-      // Keep links orange
-      jkPost.querySelectorAll('a').forEach(function(a) {
-        a.style.setProperty('color', '#FF9900', 'important');
-      });
-    } else {
-      jkPost.style.removeProperty('background');
-      jkPost.style.removeProperty('color');
-      jkPost.querySelectorAll('*').forEach(function(el) {
-        el.style.removeProperty('background');
-        el.style.removeProperty('color');
-        el.style.removeProperty('border-color');
-      });
-    }
-  }
-
   // ── Disqus re-theme, deferred ───────────────────────
   // Disqus picks its theme when it loads, by sampling the page, and gets it
   // right -- which is why a refresh always looks correct. What it never does is
@@ -139,7 +108,6 @@
 
   function applyTheme(dark) {
     document.body.classList.toggle('dark', dark);
-    applyPostBodyDark(dark);
     scheduleDisqusReset(dark);
     var e = dark ? '☀️' : '🌙', l = dark ? 'Light' : 'Dark';
     ['theme-icon-moon','theme-icon-moon-m'].forEach(function(id) {
