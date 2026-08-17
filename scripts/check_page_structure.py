@@ -106,11 +106,30 @@ def check_stylesheets():
     Nothing caught it: the file still parsed, every other rule worked, contrast
     checks read the fallback values and called them fine, and the served CSS
     contained the rule -- the browser was dropping it, not the file.
+
+    Scanning only blog/assets/*.css was not enough, and that gap cost a second
+    round of the same bug: index.html carries its own palette in an inline
+    <style>, the identical stray `*/` was there too, and Monday was broken on the
+    home page as well. Found by measuring, not by the checker that had just been
+    written to catch exactly this. So inline <style> blocks are scanned too.
     """
     out = []
-    for path in sorted(glob.glob(os.path.join(ROOT, "blog", "assets", "*.css"))):
+    targets = [(p, None) for p in
+               sorted(glob.glob(os.path.join(ROOT, "blog", "assets", "*.css")))]
+    for page in ("index.html", "resume.html", "now.html"):
+        targets.append((os.path.join(ROOT, page), "inline <style>"))
+
+    for path, kind in targets:
         name = os.path.relpath(path, ROOT).replace("\\", "/")
-        css = io.open(path, encoding="utf-8", errors="replace").read()
+        text = io.open(path, encoding="utf-8", errors="replace").read()
+        if kind:
+            blocks = re.findall(r"<style[^>]*>(.*?)</style>", text, re.S | re.I)
+            if not blocks:
+                continue
+            css = "\n".join(blocks)
+            name = "%s (%s)" % (name, kind)
+        else:
+            css = text
         if css.count("/*") != css.count("*/"):
             out.append((name, "unbalanced CSS comment: %d /* and %d */"
                         % (css.count("/*"), css.count("*/"))))
