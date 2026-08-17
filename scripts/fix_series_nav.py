@@ -127,7 +127,16 @@ def fix_page(slug, nxt, check):
         new = html[:have.start()] + want + html[have.end():]
         action = "repointed next -> %s" % nxt[1]
     else:
-        i = html.index(NAV_CLOSE)
+        # Insert before the closing tag of the POST-NAV, not the first </nav> in
+        # the document. These pages have two: the site header at the top and the
+        # post-nav at the bottom. html.index(NAV_CLOSE) finds the header's, which
+        # put the Next link inside the top navigation bar on 19 pages -- floating
+        # over the header, nowhere near the post it belongs to. The guard above
+        # confirms a post-nav EXISTS but said nothing about which one gets used.
+        m = re.search(r'<nav class="post-nav".*?(?=</nav>)', html, re.S)
+        if not m:
+            return "missing", 'could not locate the post-nav closing tag'
+        i = m.end()
         new = html[:i] + want + html[i:]
         action = "added next -> %s" % nxt[1]
 
