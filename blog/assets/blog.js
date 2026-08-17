@@ -25,6 +25,43 @@
   document.documentElement.setAttribute('data-palette', pick);
 })();
 
+// ── Disqus colour scheme ───────────────────────────
+// Disqus guesses its theme by sampling the background behind #disqus_thread.
+// It gets it wrong and renders white text on a light page. Telling it
+// explicitly is the fix, but WHERE to tell it is the hard part:
+//
+//   * the embed markup lives in sync_blog.py, which never regenerates the 23
+//     architecture pages -- so those kept guessing, which is how light mode
+//     broke a second time;
+//   * DISQUS.reset() reaches every page but re-fetches and re-renders the
+//     widget, which made every theme toggle visibly reload the page.
+//
+// So intercept the assignment instead. blog.js runs before the embed script
+// further down the body, so this defines the property first and wraps whatever
+// the page later assigns to it -- keeping the page's own url and identifier
+// (a changed identifier points at a DIFFERENT THREAD) and adding only the
+// scheme. No reset, no reload, and it works on pages nothing rebuilds.
+(function () {
+  var inner = null;
+  function scheme() {
+    try { return localStorage.getItem('theme') === 'dark' ? 'dark' : 'light'; }
+    catch (e) { return 'light'; }
+  }
+  function wrapped() {
+    if (typeof inner === 'function') {
+      try { inner.call(this); } catch (e) {}
+    }
+    this.page.colorScheme = scheme();
+  }
+  try {
+    Object.defineProperty(window, 'disqus_config', {
+      configurable: true,
+      get: function () { return wrapped; },
+      set: function (fn) { inner = fn; }
+    });
+  } catch (e) {}          // older browser: leave Disqus to its own guess
+})();
+
 // ── Hero typer (homepage only) ─────────────────────
 (function () {
   var el = document.getElementById('hero-typer-text');
