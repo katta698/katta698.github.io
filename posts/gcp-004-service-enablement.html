@@ -1,0 +1,263 @@
+---
+title: "GCP Architecture Series #4 — Enabling Services: The Project Surface Nobody Decided"
+date: '2026-08-17T09:00:00'
+slug: gcp-architecture-service-enablement
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-08-17'
+verified_claims:
+  - claim: "Service Usage is an infrastructure service of Google Cloud that lets you list and manage APIs and services in your Google Cloud projects"
+    source: https://docs.cloud.google.com/service-usage/docs/overview
+  - claim: "Some APIs and services are enabled by default when you create a project, while others are automatically enabled when you use them in the Google Cloud console"
+    source: https://docs.cloud.google.com/service-usage/docs/overview
+  - claim: "To use most Google Cloud APIs and services you must first enable them in a project, which associates them with the project and enables billing for them if billing is enabled"
+    source: https://docs.cloud.google.com/service-usage/docs/enabled-service
+  - claim: "The process to enable a service can vary: some APIs require you to accept their Terms of Service first, and some are in preview and require approval before you can use them"
+    source: https://docs.cloud.google.com/service-usage/docs/enable-disable
+  - claim: "Disabling a service's API does not delete your data, and you continue to be billed for it"
+    source: https://docs.cloud.google.com/service-usage/docs/enable-disable
+  - claim: "To stop future charges and discontinue using a service, delete all associated data before disabling its API"
+    source: https://docs.cloud.google.com/service-usage/docs/enable-disable
+  - claim: "You can disable an API for a project at any time, but you are still charged for pending fees and billable API use"
+    source: https://docs.cloud.google.com/service-usage/docs/enable-disable
+  - claim: "Attempting to disable a service that other enabled services depend on fails and returns an error"
+    source: https://docs.cloud.google.com/service-usage/docs/enable-disable
+  - claim: "Enabling and disabling services requires the Service Usage Admin role, roles/serviceusage.serviceUsageAdmin"
+    source: https://docs.cloud.google.com/service-usage/docs/enable-disable
+  - claim: "The gcp.restrictServiceUsage organization policy constraint controls runtime access to all in-scope resources"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/restricting-resources
+  - claim: "When an organization policy containing gcp.restrictServiceUsage is updated, it immediately applies to all access to all resources within the scope of the policy"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/restricting-resources
+  - claim: "Under a denylist, resources of any service that is not denied are allowed; under an allowlist, resources of any service that is not allowed are denied"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/restricting-resources
+  - claim: "When a service is restricted by gcp.restrictServiceUsage, some Google Cloud services with a direct dependency on the restricted service are restricted as well"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/restricting-resources
+problem: "A team is asked which Google Cloud services their platform uses and cannot answer from anything authoritative. The enabled-services list has grown from three separate sources, only one of which was a decision anybody recorded, and the obvious remedy — disabling what looks unused — neither deletes the data nor stops the billing."
+builds: "Service enablement as a governance surface rather than a checkbox: the three ways a service ends up enabled, what disabling actually does, why the dependency graph refuses some clean-ups, and why the real control is a runtime access constraint instead."
+catch: "Disabling an API does not delete your data and does not stop you being billed for it. The order matters and it is the opposite of the intuitive one: delete the data first, then disable the API."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series · #004 · Foundations</div>
+  <h1 class="post-title">Enabling Services: The Project Surface Nobody Decided</h1>
+  <p class="post-subtitle">Post #3 ended on a detail worth its own post: a new project has almost nothing switched on. What switches things on turns out to be three different mechanisms, and only one of them leaves a record.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Google Cloud · Governance · Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      An architecture review asks a platform team a reasonable question: which Google Cloud services does your platform use? They expect to answer it from Terraform, and they cannot.
+    </p>
+    <p>
+      Terraform enables eleven services. The production project reports forty-three enabled. The gap is not drift in the usual sense — nobody edited anything by hand and reverted it. Some of those services were on the moment the project was created. Others switched on because an engineer opened a console page while debugging, months ago, and the platform enabled the service to render it.
+    </p>
+    <p>
+      So the team does the obvious thing and starts disabling what looks unused. Two things happen. Several disable calls fail outright, because other enabled services depend on them, and the order in which to unpick that is not written anywhere they can find. And for the ones that succeed, the following month's bill is unchanged — because disabling an API does not delete the data behind it, and the data is what was being billed.
+    </p>
+    <p>
+      Six weeks later the review is still open, the enabled list is now forty-one rather than forty-three, and the only thing anybody has learned is that the list was never the answer to the question.
+    </p>
+
+    <div class="callout amber">
+      <strong>Two intuitions to give up early</strong>
+      <p><strong>Enabled does not mean chosen.</strong> Some services are enabled by default when the project is created, and others are automatically enabled when somebody uses them in the console. Only the third route — an explicit call — records that anyone decided anything.</p>
+      <p><strong>Disabled does not mean stopped.</strong> Disabling a service's API does not delete your data and you continue to be billed for it. The order is the opposite of the intuitive one: delete the data first, <em>then</em> disable the API.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Service Usage is an infrastructure service of Google Cloud that lets you list and manage APIs and services in your projects. It is the thing that holds the answer to "what is this project able to do", and it is worth understanding as state with three writers rather than as a settings page.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-004-service-enablement.svg" alt="Diagram: the three sources that add to a project's enabled-services list, what disabling a service does and does not stop, and how the restrictServiceUsage organization policy constraint governs runtime access to resources instead" />
+      <figcaption>Three writers to one list, only one of them auditable — and a disable that stops neither the data nor the billing.</figcaption>
+    </figure>
+
+    <h3>Why anything needs enabling at all</h3>
+    <p>
+      To use most Google Cloud APIs and services you must first enable them in a project. Enabling associates the service with the project and enables billing for it where billing is enabled on the project.
+    </p>
+    <p>
+      That second clause is the one that makes this a governance topic rather than a mechanical one. Enabling is not merely unlocking an endpoint; it is the point at which a service becomes something the project can be charged for. A project's enabled list is therefore closer to a list of open accounts than a list of installed features.
+    </p>
+
+    <h3>The three ways a service ends up enabled</h3>
+    <p>
+      <strong>By default.</strong> Some APIs and services are enabled when you create a project. Nobody selected them, and they are the reason a brand-new empty project already reports a double-digit enabled count.
+    </p>
+    <p>
+      <strong>By explicit call.</strong> Through <code>gcloud</code>, the API, or Terraform. This is the only route that produces a reviewable artefact — a line in a repository somebody approved.
+    </p>
+    <p>
+      <strong>By using the console.</strong> Some services are automatically enabled when you use them in the Google Cloud console. An engineer looking at a page can enable a service as a side effect of looking, with no ticket, no review and no record of intent beyond an audit log entry nobody is reading.
+    </p>
+    <p>
+      That third route is not a flaw — it removes real friction, and most of the time it is what you want. But it means the enabled list drifts upward on its own, and that drift is indistinguishable in the final state from a deliberate decision.
+    </p>
+
+    <h3>Enabling is not always a single step</h3>
+    <p>
+      The process to enable a service can vary: some APIs require you to accept their Terms of Service first, and some are in preview and require approval before you can use them.
+    </p>
+    <p>
+      For automation this matters more than it looks. A pipeline that enables a list of services and assumes each call is equivalent will work for most of the list and stop on the one that wanted a Terms acceptance or an approval that no service account can give. That is a human step in the middle of an automated sequence, and it is better discovered while designing than at three in the morning during a region build-out.
+    </p>
+
+    <h3>What disabling actually does</h3>
+    <p>
+      You can disable an API for a project at any time, but you are still charged for pending fees and billable API use. More consequentially: <strong>disabling a service's API does not delete your data, and you continue to be billed for it.</strong> To stop future charges and discontinue using a service, you delete all associated data <em>before</em> disabling its API.
+    </p>
+    <p>
+      Read in the order most people act, that is a trap. Disabling first feels like the safe, reversible step — turn it off, see if anything breaks, clean up later. What it actually produces is a service you can no longer call, holding data you are still paying for, in a project whose enabled list now understates what it costs.
+    </p>
+
+    <h3>The dependency graph refuses some clean-ups</h3>
+    <p>
+      Attempting to disable a service that other enabled services depend on fails and returns an error. That is a genuine safety property and it is doing you a favour.
+    </p>
+    <p>
+      Its limitation is that it is a refusal, not a map. You discover the order to unpick things by attempting it and reading errors, rather than by consulting a dependency list up front. For a one-off tidy-up that is tolerable. For a scripted decommission across many projects it is worth accepting that the script will need to tolerate failures and retry in a different order, rather than assuming a clean topological sort exists to be computed.
+    </p>
+
+    <h3>Who can do any of this</h3>
+    <p>
+      Enabling and disabling services requires the <strong>Service Usage Admin</strong> role, <code>roles/serviceusage.serviceUsageAdmin</code>. Worth placing deliberately: it is the permission that decides which services a project may begin to be charged for.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why the Enabled List Is the Wrong Control</h2>
+    <p>
+      The instinct, once the drift is visible, is to govern the list — review it, prune it, alert on additions. That is worth doing for tidiness, and it is not a security control, for a reason worth being precise about.
+    </p>
+    <p>
+      The enabled list answers "what has been switched on here". The question you usually care about is "what is this project permitted to reach". Those come apart immediately: a service enabled by default that nobody uses is on the list and harmless, while a service somebody genuinely needs is on the list and unconstrained.
+    </p>
+    <p>
+      Google Cloud has a separate mechanism for the second question, and it is not enablement. The <code>gcp.restrictServiceUsage</code> organization policy constraint <strong>controls runtime access to all in-scope resources</strong>. Three properties make it the right tool:
+    </p>
+    <ul>
+      <li>It governs <em>access</em>, not enablement. A service being switched on stops being the thing that decides whether it can be used.</li>
+      <li>It applies to what already exists. When a policy containing the constraint is updated, it <strong>immediately applies to all access to all resources within the scope of the policy</strong> — so it is not limited to future enablement the way a review process is.</li>
+      <li>It inherits down the hierarchy from post #1, so it can be set once at a folder and cover projects nobody has created yet.</li>
+    </ul>
+    <p>
+      The polarity is worth stating plainly because it is easy to get backwards. Under a <strong>denylist</strong>, resources of any service that is not denied are allowed. Under an <strong>allowlist</strong>, resources of any service that is not allowed are denied. A regulated environment wants the allowlist and should expect the work that comes with it; a general-purpose estate usually wants a short denylist and a reason for each entry.
+    </p>
+
+    <div class="callout">
+      <strong>The cascade is a feature and a footgun</strong>
+      <p>When a service is restricted by this constraint, some services with a <em>direct dependency</em> on the restricted service are restricted as well. That is correct — restricting something while leaving a path to it through a dependency would be theatre. It also means the blast radius of an allowlist is larger than the list you wrote, which is the argument for testing it in dry-run mode before enforcing, and the reason post #21 covers exactly that.</p>
+    </div>
+
+    <h3>What to actually do about the drift</h3>
+    <p>
+      Treat the enabled list as inventory rather than policy. It is genuinely useful for the question "what might this project be charged for", which is a cost and audit question worth answering monthly.
+      Cloud Asset Inventory, in post #23, is how you answer it across an estate rather than a project at a time.
+    </p>
+    <p>
+      And keep explicit enablement in code even though the console will happily do it for you. Not because the console route is dangerous — it usually is not — but because a service enabled in Terraform carries a reason, an author and a date, and a service enabled by opening a page carries none of those. When the review in the opening story asks its question a year from now, the difference between eleven and forty-three is entirely a difference in what was written down.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>How services get enabled</td>
+          <td>Explicitly, in Terraform or gcloud, as a reviewed change</td>
+          <td>It is the only route that records who decided and when. Default and console-triggered enablement produce the same end state with no author and no reason.</td>
+        </tr>
+        <tr>
+          <td>Governing which services may be used</td>
+          <td>gcp.restrictServiceUsage, not review of the enabled list</td>
+          <td>The constraint governs runtime access and applies immediately to resources that already exist. A list review only ever catches what was added since the last review.</td>
+        </tr>
+        <tr>
+          <td>Allowlist or denylist</td>
+          <td>Denylist by default; allowlist only where regulation requires it</td>
+          <td>Anything not denied is allowed, and anything not allowed is denied. An allowlist is defensible and expensive, and its blast radius is wider than its entries because restriction cascades to dependents.</td>
+        </tr>
+        <tr>
+          <td>Rolling out a restriction</td>
+          <td>Dry-run first, always</td>
+          <td>It applies immediately to all in-scope access, and restricting a service also restricts services that depend on it. Those two together mean the effect is larger than the change.</td>
+        </tr>
+        <tr>
+          <td>Decommissioning a service</td>
+          <td>Delete the data, then disable the API</td>
+          <td>Disabling deletes nothing and does not stop billing. The intuitive order leaves you paying for data you can no longer reach.</td>
+        </tr>
+        <tr>
+          <td>Scripting a decommission</td>
+          <td>Expect failures and retry in a different order</td>
+          <td>Disabling a service other enabled services depend on returns an error. The platform refuses, but it does not hand you the dependency graph to plan from.</td>
+        </tr>
+        <tr>
+          <td>Who holds Service Usage Admin</td>
+          <td>The platform team, deliberately and narrowly</td>
+          <td>roles/serviceusage.serviceUsageAdmin decides which services a project can begin incurring charges for. That is a spending decision wearing a technical name.</td>
+        </tr>
+        <tr>
+          <td>Answering "what does this project use?"</td>
+          <td>Cloud Asset Inventory, with the enabled list as a cost inventory</td>
+          <td>The enabled list says what is switched on, not what is used. Conflating the two is what makes the review in the opening story unanswerable.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout amber">
+      <strong>Enabling a service in a pipeline is not always one call</strong>
+      <p>Some APIs need their Terms of Service accepted; some are in preview and need approval. A provisioning pipeline that treats every enablement as equivalent will stop on the first one that wants a human, and it will do so in whatever environment you build next rather than the one you tested in.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Enablement looks like the most trivial topic in this phase and produces two of its most durable misunderstandings: that the enabled list reflects decisions, and that disabling something stops it costing money. Neither is true, and both are documented plainly by Google — they are assumptions people bring with them rather than things the platform claims.
+    </p>
+    <p>
+      The useful reframing is that a project has two different surfaces. There is what it is <em>able</em> to do, which grows on its own and is best read as an inventory. And there is what it is <em>permitted</em> to do, which only changes when somebody writes a policy, applies immediately when they do, and is the one worth governing.
+    </p>
+    <p>
+      Posts #19 to #22 are about that second surface in full. This one exists so that when they arrive, it is already clear why the enabled list was never going to be the answer.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#5 covers project IDs, numbers and names: which of the three is permanent, which is globally unique and can never be reused even after deletion, which one generated bindings and audit records will show you, and why a naming convention has to exist before the first project rather than after the tenth.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/service-usage/docs/overview" target="_blank" rel="noopener">Service Usage overview</a></li>
+      <li><a href="https://docs.cloud.google.com/service-usage/docs/enable-disable" target="_blank" rel="noopener">Enabling and disabling services</a></li>
+      <li><a href="https://docs.cloud.google.com/service-usage/docs/enabled-service" target="_blank" rel="noopener">Enabled services</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/restricting-resources" target="_blank" rel="noopener">Restricting resource service usage</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/creating-managing-projects" target="_blank" rel="noopener">Creating and managing projects</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
