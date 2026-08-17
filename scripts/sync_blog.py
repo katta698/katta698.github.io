@@ -1541,6 +1541,15 @@ def build_post_page(post, prev_post, next_post):
     var disqus_config = function () {{
       this.page.url = '{post_url}';
       this.page.identifier = '{slug}';
+      // Told at load, not corrected afterwards. Disqus otherwise guesses the
+      // theme by sampling the background behind #disqus_thread, and got it
+      // wrong -- white text on a bone page. Reading localStorage rather than
+      // body.dark avoids depending on whether blog.js has run yet.
+      // DISQUS.reset() would re-theme on every toggle, but it re-fetches and
+      // visibly reloads the widget, which is worse than a comments block that
+      // matches the theme the page was OPENED in.
+      try {{ this.page.colorScheme =
+        localStorage.getItem('theme') === 'dark' ? 'dark' : 'light'; }} catch (e) {{}}
     }};
     (function() {{
       var d = document, s = d.createElement('script');
