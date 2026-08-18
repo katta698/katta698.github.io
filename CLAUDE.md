@@ -150,6 +150,23 @@ git push origin HEAD:main       # fast-forwards remote main, no merge commit
 commit, provided you rebased first. If it is rejected, the branch has fallen
 behind — rebase and push again.
 
+**Run `prepublish.py` after the final rebase, not before it.** Rebasing pulls in
+other windows' posts, and Previous/Next is a function of every post on the site
+— so a post arriving between your build and your push silently invalidates the
+nav on all 32 hand-built pages. `sync_blog.py` recomputes it for the pages it
+generates; `arch-`, `az-` and `gcp-` pages are `externally_built` and keep
+whatever the last build gave them.
+
+`build_arch_post.py` does call `fix_series_nav.backfill_all()`, and it works —
+but only for the set of posts that existed at build time. On 2026-08-18 arch-025
+was committed at 07:17 and Azure #5 landed on origin at 07:18; the rebase that
+followed left three pages with stale links, and `prepublish.py` was the only
+thing that caught it.
+
+With four windows publishing daily, the gap between build and push routinely
+contains somebody else's post. So the order is: rebase, sync, **prepublish**,
+commit, push. If the push is rejected and you rebase again, run it again.
+
 **No window waits for another.** Each commits in its own folder whenever it is
 ready and pushes independently; rebasing first is what makes that safe. If you
 find yourself holding a change because another window has not pushed, something
