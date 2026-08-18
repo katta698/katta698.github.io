@@ -1827,15 +1827,22 @@ TABBED_PROGRESS_TEMPLATE = """
       var COMPACT_AT = 24;
       function dotStyle(isRead, compact){
         var a = 'var(--sp-accent,var(--orange))';
+        /* --marker, not --border. An unread square drawn with the hairline token
+           measured 1.19:1 on the dark card and 1.27:1 on the light one, so the
+           row of 25 read as an empty space in both themes -- which is the whole
+           widget. --marker is the same idea as a border but sized for a
+           component rather than a rule: 3.3:1 or better on every one of the
+           seven daily card colours. */
+        var idle = 'var(--marker,var(--border))';
         if(compact){
           return 'width:13px;height:13px;border-radius:3px;display:block;'
-            +'border:1px solid '+(isRead?a:'var(--border)')+';'
+            +'border:1px solid '+(isRead?a:idle)+';'
             +'background:'+(isRead?a:'transparent')+';'
             +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
         }
         return 'width:26px;height:26px;border-radius:50%;display:flex;align-items:center;'
           +'justify-content:center;font-size:10px;font-weight:700;'
-          +'border:1.5px solid '+(isRead?a:'var(--border)')+';'
+          +'border:1.5px solid '+(isRead?a:idle)+';'
           +'color:'+(isRead?'#1D2322':'var(--text-muted)')+';'
           +'background:'+(isRead?a:'transparent')+';'
           +'text-decoration:none;flex-shrink:0;transition:all .15s;cursor:pointer';
