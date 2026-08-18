@@ -4,8 +4,25 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    # blog/index.html alone was not enough. It fires when the site index is
+    # regenerated, which is most publishes -- but 09c3c73 rebuilt one post's own
+    # page without touching the index, so this never ran and that post's summary
+    # was never generated. The widget reported "still being generated" and was
+    # telling the truth: the record did not exist and nothing was going to create
+    # it.
+    #
+    # cards.json is the precise signal, because it is exactly what the indexer
+    # reads -- if the post list or any card's title, excerpt or date changed, the
+    # index is stale by definition. posts/** covers a body edit that leaves the
+    # card identical, which is what today's citation fixes were.
+    #
+    # Deliberately NOT blog/*/index.html: a CSS change re-stamps the ?v= token on
+    # every post page, so that would re-index the whole corpus on every styling
+    # push -- 570 embeddings for a change that alters no post text.
     paths:
       - 'blog/index.html'
+      - 'blog/cards.json'
+      - 'posts/**'
 
 permissions:
   id-token: write
@@ -24,14 +41,24 @@ jobs:
           role-to-assume: arn:aws:iam::684346483786:role/github-actions-blog-publish
           aws-region: us-east-1
 
+      # Waits on cards.json, not posts.json. The indexer reads cards.json;
+      # posts.json is the home page's top-7 widget feed. Guarding a different
+      # file than the one being consumed is how the index ended up holding 117
+      # posts while the site served 118 -- the wait passed because posts.json[0]
+      # already matched, and the indexer then read a cards.json that had not
+      # landed yet. Same deploy, but nothing guaranteed the ordering.
+      #
+      # Compares the post COUNT rather than the newest URL, because the failure
+      # is a missing post, and a stale file can have the right newest entry and
+      # still be short.
       - name: Wait for GitHub Pages to deploy
         run: |
-          EXPECTED=$(python3 -c "import json; print(json.load(open('blog/posts.json'))[0]['url'])")
-          echo "Waiting for Pages to serve first post: $EXPECTED"
+          EXPECTED=$(python3 -c "import json; print(len(json.load(open('blog/cards.json'))))")
+          echo "Waiting for Pages to serve cards.json with $EXPECTED posts"
           for i in $(seq 1 40); do
-            LIVE=$(curl -sf https://jayanthkatta.com/blog/posts.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['url'])" 2>/dev/null || echo "")
+            LIVE=$(curl -sf https://jayanthkatta.com/blog/cards.json | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "")
             if [ "$LIVE" = "$EXPECTED" ]; then
-              echo "Pages deployed after $i attempts."
+              echo "Pages deployed after $i attempts; cards.json has $LIVE posts."
               break
             fi
             echo "Attempt $i: live='$LIVE', expected='$EXPECTED' — retrying in 15s"
@@ -71,6 +98,27 @@ jobs:
           # its reason and the workflow would go green anyway.
           if grep -q '"errorMessage"' response.json; then
             echo "::error::The indexer returned an error; the search index was NOT updated."
+            exit 1
+          fi
+
+          # Assert the OUTCOME, not the trigger.
+          #
+          # Every failure this workflow has had was a silent shortfall that
+          # returned 200: the indexer read one page of a paginated index and
+          # covered 24 of 114 posts for weeks, and later covered 117 while the
+          # site served 118, leaving one post with no summary and a widget
+          # reporting "still being generated" forever.
+          #
+          # Both were visible in the response payload the whole time and nothing
+          # compared it to anything. This does. A trigger can be wrong again --
+          # this catches it when it is.
+          INDEXED=$(python3 -c "import json,re;b=json.load(open('response.json'))['body'];print(re.search(r'from (\d+) posts',b).group(1))")
+          LIVE=$(curl -sf https://jayanthkatta.com/blog/cards.json | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")
+          echo "Indexed $INDEXED posts; the site serves $LIVE."
+          if [ "$INDEXED" != "$LIVE" ]; then
+            echo "::error::The index covers $INDEXED posts but the site serves $LIVE. \
+          Posts missing from the index return no search results and no At a glance \
+          summary, and nothing else reports it."
             exit 1
           fi
 
