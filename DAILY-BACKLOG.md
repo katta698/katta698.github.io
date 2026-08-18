@@ -92,6 +92,33 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 17 August 2026 — covered by post #12
+
+Ten announcements plus 14 blog posts. The strongest item could not be written:
+Network Firewall stateful rule hit counts has no documentation yet — the
+CloudWatch metrics page lists no such metric and four candidate doc URLs
+redirect — so post #12 took the sign-in change instead.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Stateful rule hit counts — enabled by default, all Regions except UAE and Bahrain | Network Firewall | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-network-firewall-stateful-rule-hit-counts/) |
+| Redesigned sign-in: email entry point, third-party providers, session page | AWS Sign-In | **#12** | Med-High | [link](https://aws.amazon.com/blogs/security/updates-to-your-aws-sign-in-experience/) |
+| Batch instance termination | EC2 Auto Scaling | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ec2-auto-scaling-batch-termination) |
+| Cross-Region Inferencing for OpenAI models, expanded API support | Bedrock | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-bedrock-cross-region-openai-v2/) |
+| Custom domain names for Provisioned clusters | MSK | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/17/amazon-msk-custom-domain-names/) |
+| Automatic semantic enrichment for VPC domains | OpenSearch | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-opensearch-service-vpc/) |
+| Replication rules per registry raised to 25 | ECR | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ecr-increased-replication-rules-limit) |
+| Built-in visual file editor | CloudShell | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-cloudshell-visual-file-editor/) |
+| Routing steps and agent proficiency reporting | Connect | skipped | Low-Med | — |
+| R8i and R8i-Flex in Canada West; Quick M365 extensions GA | EC2, Quick | skipped | Low | Region and GA expansions |
+
+**Worth revisiting:** Network Firewall hit counts is the strongest held item and
+should be written as soon as AWS documents it. Rulesets accumulate because
+nobody can prove a rule is dead; hit counts are that proof. Re-probe the
+developer guide before assuming it is still undocumented.
+
+---
+
 ## 14 August 2026 — no daily deep-dive; covered in weekly #2's inventory
 
 Three announcements. None became a daily: Saturday's slot went to a held item
