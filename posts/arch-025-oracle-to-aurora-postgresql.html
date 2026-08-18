@@ -1,0 +1,264 @@
+---
+title: 'AWS Architecture Series #25 — Oracle to Aurora PostgreSQL: What "Converted" Actually Means'
+date: '2026-08-18T09:00:00'
+slug: aws-architecture-oracle-to-aurora-postgresql
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-08-18'
+verified_claims:
+  - claim: "The ROWID pseudocolumn is unique to Oracle, so AWS SCT converts it to a data column; if no primary key exists SCT sets the ROWID column as the primary key"
+    source: https://docs.aws.amazon.com/SchemaConversionTool/latest/userguide/CHAP_Source.Oracle.ToPostgreSQL.html
+  - claim: "Oracle system views V$VERSION and V$INSTANCE are converted to aws_oracle_ext.v$version and aws_oracle_ext.v$instance"
+    source: https://docs.aws.amazon.com/SchemaConversionTool/latest/userguide/CHAP_Source.Oracle.ToPostgreSQL.html
+  - claim: "By default SCT emulates Oracle TO_CHAR, TO_DATE and TO_NUMBER parameters that PostgreSQL does not support, and using native PostgreSQL functions instead makes the converted code work faster"
+    source: https://docs.aws.amazon.com/SchemaConversionTool/latest/userguide/CHAP_Source.Oracle.ToPostgreSQL.html
+  - claim: "Converting NUMBER primary and foreign key columns to BIGINT requires ensuring the source holds no floating point values in those columns, to avoid data loss"
+    source: https://docs.aws.amazon.com/SchemaConversionTool/latest/userguide/CHAP_Source.Oracle.ToPostgreSQL.html
+  - claim: "Materialized views can be converted either as tables or as materialized views, chosen by a conversion setting"
+    source: https://docs.aws.amazon.com/SchemaConversionTool/latest/userguide/CHAP_Source.Oracle.ToPostgreSQL.html
+  - claim: "When source and target run in different time zones, the function emulating Oracle SYSDATE returns different values from the source function unless a default time zone is set"
+    source: https://docs.aws.amazon.com/SchemaConversionTool/latest/userguide/CHAP_Source.Oracle.ToPostgreSQL.html
+problem: "The conversion report says most of the schema converts automatically and the project is scoped against that number. The remainder is understood as a backlog of small rewrites. It is not — a large part of what counted as converted was not translated into PostgreSQL, it was emulated by an Oracle compatibility layer that now ships inside your database."
+builds: "A migration that separates three outcomes the report presents as one: converted to native PostgreSQL, emulated by an extension pack you now depend on, and genuinely left for a human. The middle category decides whether you have left Oracle or brought a piece of it with you."
+catch: "The emulation is well made and almost invisible, which is the problem. Nothing in the running system distinguishes native behaviour from a compatibility shim, so the dependency is discovered years later by whoever asks whether it can be removed."
+---
+
+<div class="container">
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The reason for the project is the licence. Move off Oracle, onto Aurora PostgreSQL, stop
+      paying. The assessment comes back saying most of the schema converts automatically, and
+      that number becomes the plan: some weeks of automated conversion, a backlog of manual
+      fixes, done.
+    </p>
+    <p>
+      The number is accurate. What it does not tell you is what <em>converted</em> means, and
+      the answer is three different things wearing one label.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Converted, emulated, and left alone are not the same outcome</strong></div>
+      <div class="challenge-body">
+        <p>
+          Some Oracle constructs have a PostgreSQL equivalent and are genuinely translated.
+          Some have none, and AWS SCT reproduces the Oracle behaviour through an
+          <strong>extension pack</strong> installed into the target database &#8212; the
+          <code>aws_oracle_ext</code> schema. Oracle's <code>V$VERSION</code> and
+          <code>V$INSTANCE</code> views become <code>aws_oracle_ext.v$version</code> and
+          <code>aws_oracle_ext.v$instance</code>.
+        </p>
+        <p>
+          Both count as converted. Only the first has actually left Oracle behind. The second
+          has moved Oracle behaviour into a compatibility layer that is now part of your
+          production database and that somebody has to own.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The emulation has a cost, and it is the default</strong></div>
+      <div class="challenge-body">
+        <p>
+          Oracle's <code>TO_CHAR</code>, <code>TO_DATE</code> and <code>TO_NUMBER</code> accept
+          formatting parameters PostgreSQL does not support. By default SCT
+          <em>&#8220;emulates the usage of these parameters in the converted code&#8221;</em>.
+        </p>
+        <p>
+          There is a setting to use the native PostgreSQL functions instead, and AWS states the
+          consequence plainly: <em>&#8220;In this case, the converted code works
+          faster.&#8221;</em> So the default is the slower path, chosen for safety, and it
+          applies to every converted call unless somebody decides otherwise before conversion
+          runs.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>One setting can lose data, and it reads as a tuning option</strong></div>
+      <div class="challenge-body">
+        <p>
+          Oracle's <code>NUMBER</code> has no exact PostgreSQL counterpart. SCT offers to convert
+          <code>NUMBER</code> primary and foreign key columns to <code>BIGINT</code>, which
+          <em>&#8220;improves the performance of your converted code&#8221;</em>.
+        </p>
+        <p>
+          The caveat is one sentence: <em>&#8220;Make sure that your source doesn't include
+          floating point values in these columns to avoid data loss.&#8221;</em> Nothing checks
+          it. It is a manual assertion about data you may never have inspected, attached to an
+          option presented as a performance improvement.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>ROWID becomes a column, and possibly your primary key</strong></div>
+      <div class="challenge-body">
+        <p>
+          <code>ROWID</code> is a physical row address and is <em>&#8220;unique to
+          Oracle&#8221;</em>. SCT preserves the information by turning it into a real data
+          column &#8212; and <em>&#8220;If no primary key exists, AWS SCT sets the ROWID column
+          as the primary key.&#8221;</em>
+        </p>
+        <p>
+          That is a sensible rescue for a table that had no key. It is also a schema decision
+          made by a tool, on exactly the tables least likely to have been reviewed, and it is
+          not a translation of anything &#8212; it is a new column that did not exist in the
+          source.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Three outcomes hide behind one word in the report. Separating them before the project is
+      scoped is most of the work of making the estimate real.
+    </p>
+
+    <h3>Native conversion</h3>
+    <p>
+      Where PostgreSQL has the same concept, the conversion is genuine. Sequences convert, with
+      an option to populate them with the last value generated on the source so migrated values
+      do not overlap existing ones. Partitioning converts across range, list, multicolumn range,
+      hash and the composite combinations. This is what people assume the whole report means.
+    </p>
+
+    <h3>Emulation, which is a dependency</h3>
+    <p>
+      Where PostgreSQL has no equivalent, Oracle behaviour is reproduced. System views become
+      extension-pack objects. Date and number formatting parameters are emulated.
+      <code>SYSDATE</code> is emulated, and that emulation is time-zone sensitive: if source and
+      target run in different zones the emulating function <em>&#8220;returns different values
+      compared to the source function&#8221;</em> unless you set a default time zone for it.
+      There is also an option to use the third-party
+      <a href="https://github.com/orafce/orafce">orafce</a> extension for some functions.
+    </p>
+    <p>
+      Each of those is a correct engineering decision and a long-term obligation. You have moved
+      off the Oracle licence and onto an Oracle compatibility surface, and only the first of
+      those two has a line item.
+    </p>
+
+    <h3>Decisions the tool makes on your behalf</h3>
+    <p>
+      Several conversion settings change the shape of the result rather than its correctness, and
+      they are chosen once, before conversion, for the whole schema:
+    </p>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Setting</th><th>What it decides</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Materialized view conversion</td><td>Whether a materialized view stays one or becomes a plain table</td></tr>
+          <tr><td>Convert procedures to functions</td><td>Offered because PostgreSQL 10 and earlier had no procedures; changes every call site</td></tr>
+          <tr><td>Ignore disabled triggers and constraints</td><td>Whether deactivated source objects are carried across at all</td></tr>
+          <tr><td>Convert system generated constraint names using source names</td><td>Whether auto-named constraints keep names your code may reference</td></tr>
+          <tr><td>Generate row ID as identity or character domain</td><td>The data type of a column that did not exist in the source</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The materialized view setting is the one worth pausing on. A materialized view converted to
+      a table holds the same rows on day one and never refreshes, so the difference shows up as
+      data quietly going stale rather than as an error.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Matters</h2>
+    <p>
+      None of this is a defect. The extension pack is the right answer to constructs PostgreSQL
+      genuinely lacks, and emulating rather than silently changing semantics is the conservative
+      and correct choice. AWS documents all of it.
+    </p>
+    <p>
+      The problem is that the conversion percentage gets read as a measure of how much Oracle you
+      have escaped, and it is not. It measures how much did not need a human that week. A schema
+      reported as almost fully converted can arrive on Aurora carrying an Oracle compatibility
+      schema, a slower default path through every date and number format call, a primary key
+      invented by a tool, and one setting that trades correctness for speed on an assertion
+      nobody verified.
+    </p>
+    <p>
+      None of that fails a test. It runs, and the results match. The bill arrives years later,
+      when somebody asks why a PostgreSQL database contains an <code>aws_oracle_ext</code> schema
+      and whether it can be removed.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take this</th><th>Because</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Reading the assessment</td>
+            <td>Split the converted total into native, emulated and manual before scoping</td>
+            <td>Only the first has left Oracle; the second is a dependency with no line item</td>
+          </tr>
+          <tr>
+            <td>Date and number formatting</td>
+            <td>Check whether the source uses Oracle-specific format strings; if not, turn emulation off</td>
+            <td>The default is emulation, and AWS states the native path is faster</td>
+          </tr>
+          <tr>
+            <td>NUMBER keys to BIGINT</td>
+            <td>Query the source for non-integer values in those columns before enabling it</td>
+            <td>The guard is a sentence in the docs, not a check in the tool, and the failure is data loss</td>
+          </tr>
+          <tr>
+            <td>Tables with no primary key</td>
+            <td>Choose the key yourself before conversion</td>
+            <td>Otherwise SCT makes the generated ROWID column the primary key</td>
+          </tr>
+          <tr>
+            <td>Materialized views</td>
+            <td>Decide per workload, and record which became plain tables</td>
+            <td>A view converted to a table stops refreshing; the symptom is stale data, not an error</td>
+          </tr>
+          <tr>
+            <td>SYSDATE and time zones</td>
+            <td>Set the default time zone for SYSDATE emulation unless source and target match</td>
+            <td>The emulating function otherwise returns different values from the source</td>
+          </tr>
+          <tr>
+            <td>The extension pack</td>
+            <td>Record it as an owned component with a removal plan, or accept it permanently and say so</td>
+            <td>It is invisible at runtime, so the decision defaults to permanent by silence</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The point of leaving Oracle is usually to stop paying for Oracle. A conversion that
+      reproduces Oracle semantics inside PostgreSQL achieves that, and it is a legitimate
+      outcome &#8212; the licence is gone and the behaviour is preserved, which is often exactly
+      what the business asked for.
+    </p>
+    <div class="callout">
+      <p>
+        It only goes wrong when nobody names it. Decide, before the conversion runs, whether you
+        are migrating to PostgreSQL or to PostgreSQL emulating Oracle. Both are defensible. The
+        one that hurts is arriving at the second while believing you chose the first.
+      </p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/SchemaConversionTool/latest/userguide/CHAP_Source.Oracle.ToPostgreSQL.html">Migrating from Oracle to RDS for PostgreSQL or Aurora PostgreSQL with AWS SCT</a></li>
+      <li><a href="https://docs.aws.amazon.com/dms/latest/oracle-to-aurora-postgresql-migration-playbook/chap-oracle-aurora-pg.html">Oracle to Aurora PostgreSQL migration playbook</a></li>
+      <li><a href="https://docs.aws.amazon.com/SchemaConversionTool/latest/userguide/CHAP_Converting.App.html">Converting application SQL using AWS SCT</a></li>
+    </ul>
+  </div>
+</div>
