@@ -1,0 +1,205 @@
+---
+title: "Azure Architecture Series #5 — Resource Types and API Versions: The Dependency You Pin Without Noticing"
+date: 2026-08-18
+slug: azure-architecture-resource-types-api-versions
+labels: [Azure, "Azure Architecture Series"]
+verified: '2026-08-18'
+verified_claims:
+  - claim: "The type element of a resource is a combination of the namespace of the resource provider and the resource type, such as Microsoft.Storage/storageAccounts"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/syntax
+  - claim: "apiVersion is a required element on every resource and is the version of the REST API to use for creating the resource"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/syntax
+  - claim: "When creating a new template, Microsoft advises setting apiVersion to the latest version of the resource being deployed"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/syntax
+  - claim: "As long as the template works as needed, Microsoft advises continuing to use the same API version, because doing so minimises the risk of a new API version changing how the template works"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/syntax
+  - claim: "Microsoft advises updating the API version only when you want to use a new feature introduced in a later version"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/syntax
+  - claim: "The values for a resource's properties are the same as the values provided in the request body for the REST API PUT operation that creates the resource"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/syntax
+  - claim: "apiProfile is an API version that serves as a collection of API versions for resource types, used to avoid specifying an API version for each resource, and is especially helpful when deploying to different environments such as Azure Stack and global Azure"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/syntax
+  - claim: "A template is limited to 800 resources, 256 parameters, 256 variables and 64 outputs"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/syntax
+  - claim: "The API version corresponds to a version of the resource provider's REST API operations, and a provider releases a new version of the REST API as it enables new features"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types
+  - claim: "Resource Explorer displays the valid API versions and valid locations for a resource type"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types
+  - claim: "An API version that is not supported for the resource type is one of the documented causes of the NoRegisteredProviderFound error"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/troubleshooting/error-register-resource-provider
+  - claim: "The NoRegisteredProviderFound error message gives suggestions for the supported locations and API versions, and the template can be changed to use a suggested value"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/troubleshooting/error-register-resource-provider
+problem: "A template that has deployed cleanly for three years is asked to enable a property somebody read about in the documentation, and the property is silently ignored. Nothing errors, the deployment succeeds, and the setting is simply absent afterwards — because the template is speaking to a version of the API that predates the feature, and nobody has looked at apiVersion since the file was written."
+builds: "Resource types as provider-plus-type, apiVersion as the REST contract a template speaks through, and why Microsoft advises leaving it alone rather than keeping it current — plus the two failure shapes that follow, one loud and one silent."
+catch: "The loud failure names the wrong culprit. NoRegisteredProviderFound reports a location and an API version together, and an unsupported API version produces the same message as an unregistered provider or an unsupported region. The silent failure is worse: a property that a later API version introduced is simply not applied by an older one."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">Azure Architecture Series · #005 · Foundations</div>
+  <h1 class="post-title">Resource Types and API Versions: The Dependency You Pin Without Noticing</h1>
+  <p class="post-subtitle">Every resource in a template declares which version of Azure's API it is talking to. Most people set it once by copying an example, and never think about it again — which is, unusually, close to the right answer.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Azure Resource Manager · Templates · Foundations</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A team has a Bicep file that has deployed storage accounts cleanly for three years. Someone reads the documentation for a property that hardens the account, adds it, and deploys. The deployment succeeds. The property is not set.
+    </p>
+    <p>
+      No error, no warning, no line in the log. They add it again with different casing, then in a different place in the file, then start suspecting policy is stripping it. Two hours later somebody notices the top of the resource declaration: an <code>apiVersion</code> from three years ago, pinned when the file was written, faithfully doing exactly what it was told.
+    </p>
+    <p>
+      The property they are trying to set was introduced in a later version of the storage provider's REST API. The template is not calling that version. It is calling the one it has always called, which has no such property — so Resource Manager passes the request to a contract in which that field does not exist.
+    </p>
+
+    <div class="callout amber">
+      <strong>The unusual part of this topic</strong>
+      <p>Almost every other pinned dependency in software should be kept current. This one should not. Microsoft's own guidance is to set the latest version when you write the template and then <em>keep using it</em> — because staying put is what minimises the risk of a new version changing how your template behaves. The cost of that advice is exactly the failure above, and it is a cost worth paying.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Every resource in a template carries two strings that decide what it is talking to. <code>type</code> is the resource provider namespace plus the resource type — <code>Microsoft.Storage/storageAccounts</code>, in the shape established in <a href="/blog/azure-architecture-resource-providers-registration/">#4</a>. <code>apiVersion</code> is the version of that provider's REST API you want to use to create the resource. Both are required, and neither has a default.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/az-005-api-versions.svg" alt="Diagram: a resource declaration showing type as resource provider namespace plus resource type and apiVersion as the REST API contract, with the provider shipping new versions over time while a template stays pinned to the one it was written against" />
+      <figcaption>The provider's list of valid versions grows. Your template's does not. That gap is the whole topic.</figcaption>
+    </figure>
+
+    <h3>What an API version actually is</h3>
+    <p>
+      It is not a version of Azure, or of the service, or of the resource. It is a version of the <em>resource provider's REST API operations</em> — and a provider releases a new one as it enables new features. Old versions keep working, so the list of valid versions for a single type is a long history, all of it still deployable.
+    </p>
+    <p>
+      This is also why a template's <code>properties</code> block looks the way it does. The values there are the same values you would put in the request body of the REST API PUT operation that creates the resource. A template is a description of an API call, and <code>apiVersion</code> is which version of that call you are making.
+    </p>
+
+    <h3>Why pinning is the recommendation</h3>
+    <p>
+      Because a template is infrastructure that must behave identically every time it runs. If the version floated to whatever was newest, a file that had not been edited in months could start behaving differently, on a schedule set by Microsoft rather than by you — new defaults, changed validation, altered response shapes. Pinning makes deployments reproducible, which is the entire point of writing them down.
+    </p>
+    <p>
+      So the guidance has three parts, and the middle one is the one people skip: set the latest version <strong>when you create the template</strong>; keep using it as long as the template works; update it <strong>only when you want a feature a later version introduced</strong>. Updating for its own sake buys nothing and risks something.
+    </p>
+
+    <h3>The escape hatch for multi-environment templates</h3>
+    <p>
+      There is an alternative for one specific problem. <code>apiProfile</code> is an API version that stands for a <em>collection</em> of API versions across resource types: set it once at the template level, omit <code>apiVersion</code> on the resources, and Resource Manager uses the version that profile defines for each type.
+    </p>
+    <p>
+      Its purpose is environments that do not move together — deploying the same template to Azure Stack and to global Azure, where the newest version available differs. If you are deploying only to global Azure, it solves a problem you do not have.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Produces Two Very Different Failures</h2>
+    <p>
+      A wrong API version fails in two ways, and only one of them looks like a failure.
+    </p>
+
+    <div class="grid-2">
+      <div class="card">
+        <h4>Loud, and misattributed</h4>
+        <p>An API version that is not supported for the resource type is one of the documented causes of <code>NoRegisteredProviderFound</code> — the same error produced by an unregistered provider and by an unsupported location. The message names a location <em>and</em> a version, so it points at three possible problems at once.</p>
+      </div>
+      <div class="card">
+        <h4>Silent, and expensive</h4>
+        <p>A property introduced in a later version, set in a template pinned to an earlier one, is simply not applied. The deployment succeeds. Nothing reports that a field was ignored. The setting you believe is on is off, which for a security property is the worst possible shape of wrong.</p>
+      </div>
+    </div>
+
+    <p>
+      The loud one has a fast diagnosis that is worth knowing: <strong>the error message suggests the supported locations and API versions.</strong> If your region and version appear in that list, registration is the problem rather than the version. If your version is absent, you have found it.
+    </p>
+    <p>
+      For the silent one there is no error to read, so the habit has to replace the tooling. When adding a property you found in the documentation, check the API version the documentation is describing against the one your resource declares. Resource Explorer lists the valid API versions for a type, which is the fastest way to see how far behind you are.
+    </p>
+
+    <div class="callout">
+      <strong>A template is bounded, which is easy to forget until it is not</strong>
+      <p>A single template is limited to 800 resources, 256 parameters, 256 variables and 64 outputs. Those numbers are generous for a workload and small for an estate — which is why large deployments are composed from modules rather than grown into one enormous file. That composition question is #26 and #28; the limits are worth knowing now, because they are the reason the answer is not one template for everything.</p>
+    </div>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Which API version for a new template</td>
+          <td>The latest available for that resource type</td>
+          <td>It is Microsoft's stated advice, and it buys the longest run before you need a newer feature than the contract offers.</td>
+        </tr>
+        <tr>
+          <td>Whether to keep versions current</td>
+          <td>No — leave them until you need something</td>
+          <td>Staying on a working version minimises the risk of a new version changing behaviour. This is the opposite of how you treat library dependencies, and it is deliberate.</td>
+        </tr>
+        <tr>
+          <td>When to bump a version</td>
+          <td>When you want a feature the later version introduced, as its own change</td>
+          <td>A version bump is a behaviour change to the whole resource, not a line edit. It deserves its own deployment and its own what-if, rather than riding along with a feature commit.</td>
+        </tr>
+        <tr>
+          <td>A property that will not apply</td>
+          <td>Check the API version before anything else</td>
+          <td>It is the only failure in this area that produces no error at all, and every other theory — policy, casing, ordering — takes longer to disprove.</td>
+        </tr>
+        <tr>
+          <td>Templates deployed to Azure Stack and global Azure</td>
+          <td>apiProfile rather than per-resource versions</td>
+          <td>That is precisely what it is for: one profile resolves to versions supported in both environments.</td>
+        </tr>
+        <tr>
+          <td>Templates deployed only to global Azure</td>
+          <td>Explicit apiVersion per resource</td>
+          <td>An apiProfile adds indirection to solve a problem you do not have, and makes the version an indirect fact rather than one you can read.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      <code>apiVersion</code> is the most consequential line in a template that nobody reviews. It is copied from an example, it never changes, and for years that is exactly right — until the day it quietly costs an afternoon because a documented property does nothing.
+    </p>
+    <p>
+      The habit worth forming is small: when the documentation and the deployment disagree about whether a feature exists, look at the contract before looking for a bug.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#6 moves outward from the request to the place it lands: regions, geographies and sovereign clouds — what a region actually is, what a geography guarantees about where data stays, and why some Azure clouds are separate deployments of Azure entirely.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Azure Reference</h2>
+    <ul>
+      <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/syntax" target="_blank" rel="noopener">ARM template structure and syntax</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types" target="_blank" rel="noopener">Azure resource providers and types</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/troubleshooting/error-register-resource-provider" target="_blank" rel="noopener">Resource provider registration errors</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
