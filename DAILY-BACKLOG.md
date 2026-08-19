@@ -92,6 +92,33 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 18 August 2026 — covered by post #13
+
+Eleven announcements, two security bulletins, ~14 blog posts. Second IAM item in
+two days: Monday gave role manager creating roles, Tuesday gives a tool that
+derives policy from a Terraform plan.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Policy Autopilot accepts Terraform plan files, scoped to the plan's CRUD functions | IAM | **#13** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/iam-policy-autopilot-now-supports-terraform-plan-files) |
+| AgentCore payments reaches GA | Bedrock AgentCore | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/bedrock-agentcore-payments-ga/) |
+| Supply Chain Security added as the tenth category | Security Hub Extended | open | Med-High | [link](https://aws.amazon.com/blogs/security/security-hub-extended-adds-supply-chain-security-as-its-tenth-category/) |
+| CVE-2026-75935 / 75936 — memory-amplification denial of service in ion-java | Amazon ion-java | open | Med-High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-083-aws/) |
+| Identity federation to external services in European Sovereign Cloud | IAM | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-iam-european-sovereign-cloud/) |
+| CVE-2026-75897 — uncontrolled resource consumption, OpenSearch Dashboards | OpenSearch | open | Medium | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-082-aws/) |
+| Nested virtualization | WorkSpaces | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/nested-virtualization-workspaces/) |
+| August critical security patch updates | Corretto | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-corretto-august-2026-security-updates) |
+| PythonOperator and BashOperator support | MWAA Serverless | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/mwaa-serverless-pythonoperator-bashoperator/) |
+| Data profiling and anomaly detection | SageMaker Unified Studio | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/05/smus-data-profiling) |
+| PostgreSQL 19 Beta 3 in the preview environment | RDS | skipped | Low-Med | beta, preview environment |
+| R8i in Israel (Tel Aviv); S3 Metadata in GovCloud; Bedrock OpenAI in India | EC2, S3, Bedrock | skipped | Low | Region expansions |
+
+**Worth revisiting:** the ion-java CVEs. Ion is embedded in more AWS SDK paths
+than most teams realise, so "do we even use this?" is a real question and a
+short post could answer it usefully.
+
+---
+
 ## 17 August 2026 — covered by post #12
 
 Ten announcements plus 14 blog posts. The strongest item could not be written:

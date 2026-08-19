@@ -1,0 +1,222 @@
+---
+title: 'AWS Daily Intelligence #13 - Policy Autopilot Reads Your Terraform Plan, Not Your Runtime'
+date: '2026-08-19T09:00:00'
+verified: '2026-08-19'
+verified_claims:
+  - claim: "IAM Policy Autopilot is an open-source tool that analyzes your code to deterministically create scoped-down IAM policies"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/08/iam-policy-autopilot-now-supports-terraform-plan-files
+  - claim: "It now accepts Terraform plan files and applies a deterministic analysis to produce a policy scoped to the CRUD functions of the resources in that plan"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/08/iam-policy-autopilot-now-supports-terraform-plan-files
+  - claim: "Generated policies reference specific resource ARNs rather than wildcards when feasible"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/08/iam-policy-autopilot-now-supports-terraform-plan-files
+  - claim: "Existing functionality cross-references Terraform resource definitions with SDK calls in application code to resolve ARNs"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/08/iam-policy-autopilot-now-supports-terraform-plan-files
+  - claim: "The tool is available at no additional cost"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/08/iam-policy-autopilot-now-supports-terraform-plan-files
+labels:
+- AWS
+- AWS Daily Intelligence
+slug: aws-daily-intelligence-iam-policy-autopilot-terraform
+---
+
+<div class="container">
+  <div class="post-header">
+    <div class="post-eyebrow">AWS Daily Intelligence #13</div>
+    <h1 class="post-title">Policy Autopilot Reads Your Terraform Plan, Not Your Runtime</h1>
+    <p class="post-subtitle">A deterministic way to generate the policy your deployment needs. Which is a different policy from the one your application needs, and the distinction is the whole story.</p>
+    <p class="post-meta">19 August 2026 &middot; AWS Identity and Access Management</p>
+  </div>
+
+  <div class="toc">
+    <strong>On this page</strong>
+    <ul>
+      <li><a href="#what-changed">What changed</a></li>
+      <li><a href="#why">Why AWS built this</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#two-policies">The trap: two different policies, one word</a></li>
+      <li><a href="#value">Business value</a></li>
+      <li><a href="#security">Security considerations</a></li>
+      <li><a href="#cost">Cost considerations</a></li>
+      <li><a href="#operations">Operational considerations</a></li>
+      <li><a href="#tradeoffs">Tradeoffs</a></li>
+      <li><a href="#implementation">Implementation guidance</a></li>
+      <li><a href="#practices">Best practices</a></li>
+      <li><a href="#adopt">Who should adopt, who should wait</a></li>
+      <li><a href="#takeaways">Key takeaways</a></li>
+      <li><a href="#references">Official AWS references</a></li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p><strong>IAM Policy Autopilot</strong> is an open-source tool that analyses your code to <em>deterministically</em> create scoped-down IAM policies. It now accepts <strong>Terraform plan files</strong>, applying that same analysis to produce a policy scoped to the CRUD functions of the resources in the plan. Generated policies reference specific resource ARNs rather than wildcards where feasible. It runs on your machine, and there is no additional cost.</p>
+    <p>Two words in that description carry most of the weight. <em>Deterministic</em> means this is static analysis, not inference &mdash; the same input produces the same policy, and you can reason about why each statement is there. <em>Plan</em> means it reads what Terraform intends to create, which is a complete description of your infrastructure and no description at all of your application's behaviour.</p>
+    <p>So this generates the policy your <strong>deployment</strong> needs. That is genuinely useful and it is not the policy your <strong>workload</strong> needs at runtime. Conflating the two is the mistake this post is about, and it matters more this week than most, because the same series covered IAM role manager attaching <code>PowerUserAccess</code> to Lambda roles precisely <em>because</em> runtime permissions cannot be known in advance.</p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>Policy Autopilot previously analysed application source code: it read your SDK calls and worked out which IAM actions they required. That covers the workload, and leaves out the pipeline that creates the workload's infrastructure.</p>
+    <p>Terraform plan file support fills that gap. A plan is Terraform's own statement of what it will create, change or destroy, and it is machine-readable. Feeding it to Autopilot produces the policy the deploying principal needs to carry that plan out.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Input</th><th>What it describes</th><th>Policy produced for</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Application source code</td><td>The SDK calls your workload makes</td><td>The workload's execution role</td></tr>
+          <tr><td><strong>Terraform plan file</strong></td><td>The resources your infrastructure declares</td><td><strong>The deploying principal</strong></td></tr>
+          <tr><td>Both together</td><td>Terraform definitions cross-referenced with SDK calls</td><td>Resolving concrete ARNs in workload policy</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>That third row is the pre-existing capability and it is the more interesting of the two ideas. Application code usually knows the <em>shape</em> of a resource it calls but not its ARN, because the ARN is decided by whatever created it. Reading both sides lets the tool close that loop and emit a concrete ARN instead of a wildcard.</p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why AWS built this</h2>
+    <p>Least privilege for deployment pipelines is a problem almost everyone solves badly, and for an understandable reason: the pipeline principal must be able to create things that do not exist yet, so there is nothing to point an ARN at when you write the policy.</p>
+    <p>The result, near-universally, is a deployment role with broad administrative permissions, justified on the grounds that Terraform "needs to be able to make anything". A plan file undercuts that argument, because a plan is precisely the enumeration of what will be made.</p>
+    <p>The choice of <em>deterministic</em> analysis over inference is the part worth respecting. A generated policy you cannot explain is one nobody will dare narrow later; a deterministic one can be diffed, reviewed and regenerated, and it will not quietly change because a model was updated.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>The tool runs where you run it. It is open source, it is not a service you enrol in, and it does not need access to your account to do the analysis &mdash; it reads artefacts you already have.</p>
+    <p>The generated policy is scoped to the <strong>CRUD functions of the resources in the plan</strong>. That phrasing is precise and worth reading literally: the unit of scoping is the resource in the plan, and the permissions are those needed to create, read, update and delete it. A resource absent from the plan gets no permissions, which is exactly the intent and exactly the limitation.</p>
+    <p>Where it can, the output names specific ARNs rather than wildcards. That is the difference between a policy that is narrow and one that merely looks narrow, and it is only possible where the ARN is determinable from the inputs.</p>
+  </div>
+
+  <div class="section" id="two-policies">
+    <h2>The trap: two different policies, one word</h2>
+    <p>Everyone involved calls both of these "the IAM policy", and they answer different questions.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th></th><th>Deployment policy</th><th>Runtime policy</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Held by</td><td>The pipeline principal</td><td>The workload's execution role</td></tr>
+          <tr><td>Answers</td><td>May I create this infrastructure?</td><td>May I do this while running?</td></tr>
+          <tr><td>Knowable in advance</td><td><strong>Yes</strong> &mdash; the plan enumerates it</td><td>Often not, which is why broad defaults exist</td></tr>
+          <tr><td>Autopilot input</td><td>Terraform plan file</td><td>Application source code</td></tr>
+          <tr><td>Lives for</td><td>The duration of an apply</td><td>The life of the workload</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The asymmetry in the third row is the whole reason this feature is possible. A deployment's permission needs are declarable because deployment <em>is</em> a declaration. A workload's are not, because a workload responds to input.</p>
+    <div class="warning-box">
+      <p><strong>A plan file cannot see runtime behaviour, and no future version will change that.</strong> It does not know which bucket a Lambda reads when a particular message arrives, which secret is fetched only on a failure path, or which cross-account role is assumed under load. Those are properties of execution, not of declared infrastructure. Generating a deployment policy from a plan is not progress toward solving the runtime problem &mdash; it is a different problem, solved.</p>
+    </div>
+    <p>This matters this week in particular. IAM role manager attaches <code>PowerUserAccess</code> to Lambda roles because, in AWS's own words, the permissions a function needs are not known up front. A team that reads about Policy Autopilot and concludes the runtime problem is now solved will narrow the wrong policy and leave the broad one in place.</p>
+    <p>The honest framing: Autopilot's plan-file support removes the excuse for an administrator-level <em>pipeline</em> role. It does nothing about an over-broad <em>execution</em> role, and the two are usually owned by different people.</p>
+  </div>
+
+  <div class="section" id="value">
+    <h2>Business value</h2>
+    <p>The deployment role is one of the most over-permissioned principals in a typical AWS estate, and one of the least examined, because narrowing it has always meant hand-enumerating every resource type a pipeline might touch. That is tedious work that goes stale on the next Terraform change.</p>
+    <p>Generating it from the plan makes it cheap and repeatable. Regenerating on every plan means the policy tracks the infrastructure rather than drifting behind it, which is the property that makes narrowing sustainable rather than a one-off exercise somebody did in 2024.</p>
+    <p>The ARN resolution is the quieter win. A policy full of <code>Resource: "*"</code> passes review because it works; one naming actual ARNs is meaningfully narrower and, crucially, fails loudly when infrastructure changes shape &mdash; which is a feature, because that failure is a review prompt.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p><strong>A generated policy is a starting point, not an attestation.</strong> Deterministic analysis guarantees the output follows from the input; it guarantees nothing about whether the input was complete. A plan generated against one workspace, one variable set or one target does not describe what a different invocation will do.</p>
+    <p><strong>The plan file itself deserves care.</strong> A Terraform plan enumerates your infrastructure and can contain values you would not publish. If plan files start flowing into a policy-generation step in CI, that is a new place they are written and possibly retained.</p>
+    <p><strong>Narrow the pipeline role and you change failure modes.</strong> A pipeline that could do anything failed rarely and mysteriously; one scoped to a plan will fail immediately and specifically when someone adds a resource type the policy has not been regenerated for. That is better, and it needs to be expected, or the first such failure gets fixed by widening the policy again.</p>
+    <div class="warning-box">
+      <p><strong>Do not let a narrow deployment policy stand in for a security review.</strong> A pipeline scoped exactly to its plan can still create wide-open resources &mdash; a public bucket, an over-permissive role &mdash; if that is what the plan declares. Constraining what the pipeline may create says nothing about what it does create.</p>
+    </div>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>No additional cost. It is an open-source tool running on your machine or in your pipeline, so the only cost is the compute it runs on, which is negligible against a Terraform plan you were already generating.</p>
+    <p>The saving is labour, and it is the recurring kind. Hand-narrowing a deployment role is a day of work that decays with every infrastructure change; generating it is a step that stays correct.</p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p><strong>Generate from the same plan you apply.</strong> A policy derived from a plan that is not the one being executed is a policy for infrastructure nobody is creating. Producing both in the same pipeline step is what makes the guarantee mean anything.</p>
+    <p><strong>Expect churn.</strong> Every meaningful infrastructure change alters the required permissions, so the policy becomes a generated artefact that changes with the code. Treat it like a lockfile: regenerate, review the diff, commit.</p>
+    <p><strong>The diff is the review surface.</strong> The single most useful thing this enables is noticing that a change to some module now requires IAM permissions it did not before. That shows up in the generated policy diff and nowhere else in a Terraform review.</p>
+    <p><strong>It complements, rather than replaces, IAM Access Analyzer.</strong> Autopilot works forward from declared intent before anything runs; Access Analyzer works backward from CloudTrail after things have run. Neither sees what the other sees, and the runtime side is where the unused-access analysis still earns its place.</p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Gain</th><th>Cost</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>The deployment role can finally be scoped to what it deploys</td><td>Only to what <em>that plan</em> deploys; it regenerates or it rots</td></tr>
+          <tr><td>Deterministic, so the output is reviewable and diffable</td><td>Static, so it cannot see anything decided at runtime</td></tr>
+          <tr><td>Specific ARNs rather than wildcards where feasible</td><td>Tighter policies fail more often, by design</td></tr>
+          <tr><td>Open source, local, no service to enrol in</td><td>You own running it and keeping it in the pipeline</td></tr>
+          <tr><td>Free</td><td>Easy to mistake for a solution to the runtime problem</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p><strong>1. Start with the pipeline role, not the workload role.</strong> That is what plan-file support addresses, and it is usually the more over-permissioned of the two.</p>
+    <p><strong>2. Generate the policy in the same step that produces the plan.</strong> Two artefacts from one input, so they cannot disagree.</p>
+    <p><strong>3. Commit the generated policy and review its diff.</strong> The diff answers a question no other part of a Terraform review asks: did this change require new permissions?</p>
+    <p><strong>4. Use the source-code analysis separately for workload roles</strong>, and keep the two conversations apart. Different principal, different lifetime, different owner.</p>
+    <p><strong>5. Keep Access Analyzer on the runtime side.</strong> Autopilot reasons about intent before execution; unused-access analysis reasons about behaviour after it. You want both.</p>
+    <p><strong>6. Decide where plan files live in CI</strong> before piping them into a new step, since they describe your infrastructure in detail.</p>
+  </div>
+
+  <div class="section" id="practices">
+    <h2>Best practices</h2>
+    <ul>
+      <li><strong>Say which policy you mean.</strong> "The IAM policy" is ambiguous in every conversation where a pipeline and a workload are both present.</li>
+      <li><strong>Treat generated policy as a build artefact</strong> — regenerated, reviewed and committed, never hand-edited.</li>
+      <li><strong>Do not widen on first failure.</strong> A scoped pipeline role failing on a new resource type is the mechanism working; regenerate instead.</li>
+      <li><strong>Prefer specific ARNs and accept the maintenance.</strong> A wildcard that never fails is not evidence of a correct policy.</li>
+      <li><strong>Keep runtime least-privilege on its own track.</strong> Nothing here narrows an execution role.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt, who should wait</h2>
+    <p><strong>Adopt now if</strong> you deploy with Terraform and your pipeline principal holds broad permissions — which is the common case. It is free, local, and the output is reviewable, so the cost of trying it is one pipeline step.</p>
+    <p><strong>Particularly worth it</strong> for teams already generating plans in CI, where the input exists and the only change is passing it to one more tool.</p>
+    <p><strong>Less relevant if</strong> you deploy with CloudFormation or CDK rather than Terraform, since plan-file support is the new capability here, or if your pipeline role is already narrowed and maintained by hand.</p>
+    <p><strong>Do not adopt it expecting</strong> to fix over-broad execution roles. That is a different problem and this does not touch it.</p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>IAM Policy Autopilot is an open-source tool that deterministically generates scoped-down IAM policies by analysing your code. It runs locally and costs nothing.</li>
+      <li>It now accepts Terraform plan files, producing a policy scoped to the CRUD functions of the resources in that plan.</li>
+      <li>Generated policies name specific resource ARNs rather than wildcards where feasible.</li>
+      <li>The pre-existing capability cross-references Terraform resource definitions with SDK calls in application code to resolve ARNs — closing the gap where code knows a resource but not its ARN.</li>
+      <li><strong>This produces the deployment policy, not the runtime policy.</strong> Different principal, different question, different lifetime.</li>
+      <li>A deployment's permissions are knowable because deployment is a declaration. A workload's often are not, which is why broad execution-role defaults exist.</li>
+      <li>A plan file cannot see runtime behaviour, and no future version will change that — it is a property of the input, not a gap in the tool.</li>
+      <li>Deterministic matters: the policy can be diffed and reviewed, and will not change because a model was updated.</li>
+      <li>Regenerate with every plan. A generated policy that is not regenerated is a hand-written policy with extra steps.</li>
+      <li>Scoping the pipeline says nothing about what the pipeline creates. A narrow deployment role can still deploy a public bucket.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/08/iam-policy-autopilot-now-supports-terraform-plan-files" target="_blank" rel="noopener">IAM Policy Autopilot now supports Terraform plan files</a> &mdash; launch announcement</li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html" target="_blank" rel="noopener">Security best practices in IAM</a> &mdash; least-privilege guidance</li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html" target="_blank" rel="noopener">What is IAM Access Analyzer?</a> &mdash; the runtime-side complement to this tool</li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html" target="_blank" rel="noopener">Policies and permissions in IAM</a> &mdash; identity-based versus resource-based policy types</li>
+    </ul>
+  </div>
+
+  <div class="post-footer">
+    <p>Part of the AWS Daily Intelligence series &mdash; one significant AWS change each weekday, verified against official AWS documentation.</p>
+  </div>
+</div>
