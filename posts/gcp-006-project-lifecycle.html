@@ -1,0 +1,296 @@
+---
+title: "GCP Architecture Series #6 — Deleting a Project: The Undo Button That Only Half Works"
+date: '2026-08-19T09:00:00'
+slug: gcp-architecture-project-lifecycle
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-08-19'
+verified_claims:
+  - claim: "When a project is deleted it is immediately marked for deletion and becomes unusable, entering the DELETE_REQUESTED state"
+    source: https://docs.cloud.google.com/resource-manager/docs/delete-restore-projects
+  - claim: "The project remains in DELETE_REQUESTED for 30 days, during which project owners can restore it"
+    source: https://docs.cloud.google.com/resource-manager/docs/delete-restore-projects
+  - claim: "After the 30 day window the project and all its resources are permanently deleted"
+    source: https://docs.cloud.google.com/resource-manager/docs/delete-restore-projects
+  - claim: "Some services such as Cloud Storage and Pub/Sub might delete resources much sooner than the 30 day window"
+    source: https://docs.cloud.google.com/resource-manager/docs/delete-restore-projects
+  - claim: "Deleting a project requires the resourcemanager.projects.delete permission"
+    source: https://docs.cloud.google.com/resource-manager/docs/delete-restore-projects
+  - claim: "Restoring a project requires the resourcemanager.projects.undelete permission"
+    source: https://docs.cloud.google.com/resource-manager/docs/delete-restore-projects
+  - claim: "Project IDs are unique and permanent, and once a project is fully deleted its ID cannot be reused"
+    source: https://docs.cloud.google.com/resource-manager/docs/delete-restore-projects
+  - claim: "Projects that users have soft-deleted count against your quota, and are fully deleted after 30 days"
+    source: https://docs.cloud.google.com/resource-manager/docs/creating-managing-projects
+  - claim: "A project in the ACTIVE state is in normal operation, and DELETE_REQUESTED is generally reversible by invoking projects.undelete"
+    source: https://docs.cloud.google.com/resource-manager/reference/rest/v3/projects
+  - claim: "A lien placed on a project blocks the project's deletion until the lien is removed"
+    source: https://docs.cloud.google.com/resource-manager/docs/project-liens
+problem: "A team deletes a project believing the 30-day recovery window makes the decision reversible, and discovers on restoring it that the window protects the project record rather than its contents — some services remove data much sooner — while the project has been unusable since the moment it was marked and has been consuming project quota the whole time."
+builds: "The project lifecycle end to end: what happens the instant delete is called, what the 30 days actually guarantee and what they do not, the two permissions that govern the round trip, and why deletion should be treated as final despite having an undo."
+catch: "Restoring returns the project, not necessarily what was in it. Cloud Storage and Pub/Sub are documented as possibly deleting resources much sooner than 30 days, so the undo button is reliable for the container and unproven for the contents."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series · #006 · Foundations</div>
+  <h1 class="post-title">Deleting a Project: The Undo Button That Only Half Works</h1>
+  <p class="post-subtitle">Google Cloud gives you thirty days to change your mind about deleting a project. It is worth knowing precisely what those thirty days cover, because it is less than most people assume.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Google Cloud · Governance · Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A platform team is retiring an old data pipeline. The project is clearly dead — no deployments in eight months, no traffic — and somebody has read that deletion is reversible for thirty days. That fact does most of the persuading, and the project is deleted on a Tuesday.
+    </p>
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>A dashboard broke within the hour</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Deleting does not begin a countdown during which things keep working. The project is marked for deletion immediately and becomes unusable from that moment, so anything still calling it fails at once rather than in thirty days.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat the delete call as the outage, not the end of the window. If you need a soak period, stop using the project and leave it running; deletion is not a staged rollout.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>The restore returned an empty project</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Restoring on day nine brought the project back, and some of what had been inside it was gone. Google documents that some services, naming Cloud Storage and Pub/Sub, might delete resources much sooner than the 30 day window.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Read the window as protecting the project record, not its contents. Anything you would genuinely need back must be backed up or exported before the delete call, not after it.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>Deleting projects did not free up room for new ones</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Soft-deleted projects count against your quota and are only fully deleted after 30 days. A clear-out done to make space makes no space at all until the following month.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Plan quota on a thirty-day lag, and request an increase ahead of a migration rather than deleting your way out of a limit on the day.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>The replacement project could not have the old name</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Project IDs are unique and permanent, and once a project is fully deleted its ID cannot be reused. The rebuild had to be given a slightly different ID, which now differs from every runbook, dashboard and bookmark that referenced the original.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          If a project is being rebuilt rather than retired, build the replacement first under its own ID and migrate. Deleting to reclaim a name does not reclaim it.
+        </p>
+      </div>
+    </div>
+    <p>
+      Every one of those is documented behaviour. None of it contradicts "you have thirty days to restore it" — they are all things that sentence does not say.
+    </p>
+
+    <div class="callout amber">
+      <strong>Two clocks, and only one of them is thirty days</strong>
+      <p>The <strong>project record</strong> is restorable for the full window by an owner. The <strong>data inside it</strong> runs on whatever schedule each service chooses, and at least two services are documented as being much faster. A recovery plan that assumes both clocks are the same is relying on a guarantee Google explicitly declined to make.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The lifecycle has two states worth naming and one transition that is genuinely irreversible.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-006-lifecycle.svg" alt="Diagram: the project lifecycle from ACTIVE through DELETE_REQUESTED to permanent deletion, with the 30-day restore window for the project record drawn against the shorter and undefined window for data in services like Cloud Storage and Pub/Sub" />
+      <figcaption>Two clocks running at once. The project is restorable for thirty days; the contents run on each service's own schedule.</figcaption>
+    </figure>
+
+    <h3>What happens the instant you call delete</h3>
+    <p>
+      The project is <strong>immediately marked for deletion and becomes unusable</strong>, entering <code>DELETE_REQUESTED</code>. There is no grace period during which it keeps serving. Whatever still depends on it starts failing straight away.
+    </p>
+    <p>
+      This is the single most misread part of the lifecycle, because "you have thirty days" sounds like thirty days of continued operation. It is thirty days of being able to <em>undo</em>, which is a different offer entirely.
+    </p>
+
+    <h3>What the thirty days actually cover</h3>
+    <p>
+      The project remains in <code>DELETE_REQUESTED</code> for 30 days, and during that period project owners can restore it. After the window, the project and all its resources are permanently deleted.
+    </p>
+    <p>
+      The qualifier that matters sits right next to it: <strong>some services, such as Cloud Storage and Pub/Sub, might delete resources much sooner</strong>. So the honest reading is that the platform guarantees the project can come back, and makes no equivalent promise about everything that was in it. Restoring on day twenty-nine is not the same operation as restoring on day one, and neither is guaranteed to be lossless.
+    </p>
+    <p>
+      This is also why post #3's phrase &#8212; <code>DELETE_REQUESTED</code> is "generally reversible" &#8212; is worded as carefully as it is. The reversibility is real and it is not total.
+    </p>
+
+    <h3>The two permissions, and why they are separate</h3>
+    <p>
+      Deletion requires <code>resourcemanager.projects.delete</code>. Restoration requires <code>resourcemanager.projects.undelete</code>. They are distinct permissions, which means the ability to undo is a grant somebody has to hold deliberately.
+    </p>
+    <p>
+      Worth checking before you need it. A team that can delete projects but has nobody holding undelete has a one-way door it believes is a revolving one, and it will find that out under time pressure.
+    </p>
+
+    <h3>Quota does not come back until the end</h3>
+    <p>
+      Soft-deleted projects count against your quota, and are fully deleted after 30 days. Deleting projects to make room for new ones therefore does nothing for a month.
+    </p>
+    <p>
+      Combined with the advice from earlier posts &#8212; a project per workload per environment &#8212; this is a real planning constraint rather than trivia. The design that makes the best use of projects is also the one most likely to meet the limit, and the relief valve has a thirty-day delay in front of it.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why to Treat Deletion as Final Anyway</h2>
+    <p>
+      There is an undo button. The argument of this post is that you should design as though there is not, and the reasoning is about which failures the window actually protects you from.
+    </p>
+    <p>
+      It protects against the <strong>wrong project</strong> being deleted &#8212; somebody typing the wrong ID, a script iterating one item too far. That failure is caught in minutes, well inside any service's cleanup schedule, and the restore genuinely works.
+    </p>
+    <p>
+      It does not reliably protect against the <strong>wrong decision</strong>. That is the failure discovered weeks later, when somebody asks for a report that turns out to have been generated from a bucket in a project that was retired. By then the project may restore and the bucket may not, because the data was on a different clock from the moment the delete was called.
+    </p>
+
+    <div class="callout">
+      <strong>The one-sentence version to give a team</strong>
+      <p>Deleting a project stops it working immediately, might destroy some of its data long before the thirty days are up, keeps consuming your project quota until the window closes, and permanently burns the project ID. The undo button covers the container, not the contents.</p>
+    </div>
+
+    <h3>Liens are the control that fits this shape</h3>
+    <p>
+      Post #3 covered liens as a brake on deletion, and this is where their value becomes concrete. A lien blocks a project's deletion until it is removed, which converts an irreversible action into one that requires a deliberate second step by somebody holding a different permission.
+    </p>
+    <p>
+      Given everything above, the argument for putting liens on production projects is not that deletion is hard to undo. It is that the undo is only partial, so the cheapest place to intervene is before the delete call rather than after it.
+    </p>
+
+    <h3>A retirement sequence that survives being wrong</h3>
+    <p>
+      Because the window is weaker than it appears, the order of operations does the work instead:
+    </p>
+    <ul>
+      <li><strong>Stop using it, and leave it running.</strong> This is the soak period people imagine deletion gives them, and it is the only version that actually exists. Anything still calling the project surfaces here rather than after the point of no return.</li>
+      <li><strong>Export or back up anything of value.</strong> Before the delete call, because after it the data is on a schedule you do not control and cannot query.</li>
+      <li><strong>Remove the lien deliberately</strong>, as a separate, recorded step.</li>
+      <li><strong>Delete, and treat the ID as spent.</strong> Not recoverable, not reusable, and not worth planning to reclaim.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>How to treat the 30-day window</td>
+          <td>As protection against the wrong project, not the wrong decision</td>
+          <td>It reliably reverses a mistyped ID caught in minutes. It does not reliably return data, because some services delete much sooner.</td>
+        </tr>
+        <tr>
+          <td>Backing up before retirement</td>
+          <td>Export before the delete call, always</td>
+          <td>After it the project is unusable and its data is on each service's own cleanup schedule, which you cannot inspect or postpone.</td>
+        </tr>
+        <tr>
+          <td>Wanting a soak period</td>
+          <td>Stop using the project and leave it running</td>
+          <td>Deletion is immediate and total in effect from the first second. It is not a staged rollout with a thirty-day tail.</td>
+        </tr>
+        <tr>
+          <td>Who can restore</td>
+          <td>Grant resourcemanager.projects.undelete deliberately, and check it before you need it</td>
+          <td>It is a separate permission from delete. A team that can only delete has a one-way door it believes is reversible.</td>
+        </tr>
+        <tr>
+          <td>Production projects</td>
+          <td>A lien</td>
+          <td>The undo is partial, so the effective place to intervene is before the delete call rather than after it.</td>
+        </tr>
+        <tr>
+          <td>Deleting to reclaim quota</td>
+          <td>Do not — request an increase instead</td>
+          <td>Soft-deleted projects keep consuming quota for the full 30 days, so a clear-out frees nothing this month.</td>
+        </tr>
+        <tr>
+          <td>Deleting to reclaim a project ID</td>
+          <td>Never</td>
+          <td>The ID cannot be reused once the project is fully deleted. Rebuild under a new ID and migrate.</td>
+        </tr>
+        <tr>
+          <td>Scripted clean-ups</td>
+          <td>Dry-run, and require an explicit list rather than a filter</td>
+          <td>The window makes a mistyped ID recoverable, but only if somebody notices quickly. A filter that matches one project too many is discovered late by definition.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout amber">
+      <strong>What "generally reversible" is careful not to say</strong>
+      <p>The API documentation describes <code>DELETE_REQUESTED</code> as generally reversible, and the deletion guide names Cloud Storage and Pub/Sub as services that might remove resources much sooner. Those two statements are consistent, and together they mean the project comes back while its contents are a matter of timing and of which services it used.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Deletion is where the difference between a documented guarantee and an assumed one gets expensive. Google promises the project record can be restored for thirty days, states plainly that some services will not wait that long, and lets those two facts sit side by side because both are true.
+    </p>
+    <p>
+      The mistake is not misreading either sentence. It is hearing "thirty-day recovery" and filing it as "reversible", then designing a retirement process on that word. Everything in this post follows from separating the container from the contents, and the practical consequence is small: back up before you delete, and stop treating the window as permission to skip that step.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#7 takes liens on their own terms: what they block, the separate role required to remove one, why that separation is the point rather than an inconvenience, and where they belong in an estate that is otherwise governed by organization policy.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/delete-restore-projects" target="_blank" rel="noopener">Delete and restore projects</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/creating-managing-projects" target="_blank" rel="noopener">Creating and managing projects</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/reference/rest/v3/projects" target="_blank" rel="noopener">Resource Manager REST API: projects</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/project-liens" target="_blank" rel="noopener">Protecting projects with liens</a></li>
+      <li><a href="https://docs.cloud.google.com/docs/quotas/overview" target="_blank" rel="noopener">Cloud Quotas overview</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
