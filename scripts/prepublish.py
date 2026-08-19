@@ -119,6 +119,47 @@ CHECKS = [
 ]
 
 
+def git_state_is_clean_enough():
+    """Refuse to publish out of a half-finished or stale rebase.
+
+    **Ask git where its directory is; never test a literal `.git/rebase-merge`.**
+    In a worktree `.git` is a *file* pointing elsewhere, so the real state lives
+    under `<repo>/.git/worktrees/<name>/`. Testing the literal path reports "no
+    rebase in progress" while one is stuck.
+
+    That is not hypothetical. On 2026-08-19 a `git rebase` hit a command
+    timeout and died mid-run, leaving a stale `rebase-merge` directory. Every
+    later rebase refused to start, and the hand-rolled check that should have
+    caught it was looking at a path that does not exist in a worktree, so it
+    reported the tree as clean. Recovery cost a detached HEAD and a branch
+    pointer that had to be moved by hand.
+
+    Returns (ok, message).
+    """
+    try:
+        git_dir = subprocess.run(
+            ["git", "rev-parse", "--git-dir"], cwd=ROOT,
+            capture_output=True, text=True, check=True).stdout.strip()
+    except Exception as exc:                                  # noqa: BLE001
+        # Not fatal: a source tree without git still publishes fine.
+        return True, "could not determine the git dir (%s); skipping" % exc
+
+    if not os.path.isabs(git_dir):
+        git_dir = os.path.join(ROOT, git_dir)
+
+    for name in ("rebase-merge", "rebase-apply"):
+        path = os.path.join(git_dir, name)
+        if os.path.isdir(path):
+            return False, (
+                "a rebase is in progress or was left behind:\n"
+                "  %s\n"
+                "Finish it with `git rebase --continue`, abandon it with "
+                "`git rebase --abort`, or if neither applies, remove that "
+                "directory. Publishing from this state pushes a tree git does "
+                "not consider settled." % path)
+    return True, ""
+
+
 def run(script, args):
     print("\n" + "=" * 74)
     print("  %s %s" % (script, " ".join(args)))
@@ -144,6 +185,15 @@ def main():
               "the network checks at all, so there is nothing for --ci to "
               "narrow. Pick one.")
         return 2
+
+    ok, why = git_state_is_clean_enough()
+    if not ok:
+        print("\n" + "=" * 74)
+        print("  GIT STATE")
+        print("=" * 74)
+        print("  " + why.replace("\n", "\n  "))
+        print("\n  DO NOT PUBLISH — resolve the rebase first.")
+        return 1
 
     results, blocked = [], False
     for script, blocking, network, takes_series, takes_posts in CHECKS:
