@@ -92,6 +92,33 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 19 August 2026 — covered by post #14
+
+Sixteen announcements, no security bulletins, 14 blog posts. Third IAM item in
+four days: role manager, Policy Autopilot, and now the managed-policy quota.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Managed policies per role: 20 by default, 25 max; users and groups unchanged | IAM | **#14** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-iam-quota-increase/) |
+| Cost Anomaly Detection supports third-party models on Bedrock | Cost Management | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-cost-anomaly-detection-bedrock-3P/) |
+| Trusted identity propagation for notebooks | SageMaker | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-sagemaker/) |
+| FIPS-compliant private connectivity for Tape and Volume Gateway | Storage Gateway | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/storage-gateway-fips-privatelink/) |
+| Log group tag propagation in centralization | CloudWatch | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-cloudwatch-centralization-tag-propogation/) |
+| GeoIP, RDS and XML processors for pipelines | CloudWatch | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/cloudwatch-geoip-rds-xml/) |
+| External Web Access for Web Search | Bedrock | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-bedrock-web-access-web-search/) |
+| New Availability Zone in Europe (London) | AWS Global | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-new-availability-zone-europe/) |
+| Deny by default for custom permissions | Amazon Quick | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-quick-deny-by-default/) |
+| Marketplace support for Lightsail | Marketplace | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-marketplace-launch-ami-amazon-lightsail) |
+| Web Search domain and date filtering, Europe and Asia Pacific | Bedrock AgentCore | skipped | Low-Med | incremental |
+| In-console monitoring | WorkSpaces Applications | skipped | Low-Med | — |
+| Lambda MicroVMs +5 Regions; R8a Taipei; OpenSearch Ingestion GovCloud; Grok 4.6 | various | skipped | Low | Region and catalogue expansions |
+
+**Worth revisiting:** Storage Gateway FIPS over PrivateLink is the strongest held
+item. Narrow audience, but FIPS plus private connectivity is a combination
+regulated environments actively wait for, and it is rarely written about.
+
+---
+
 ## 18 August 2026 — covered by post #13
 
 Eleven announcements, two security bulletins, ~14 blog posts. Second IAM item in

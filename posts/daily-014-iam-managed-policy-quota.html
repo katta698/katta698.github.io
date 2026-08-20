@@ -1,0 +1,225 @@
+---
+title: 'AWS Daily Intelligence #14 - Twenty Managed Policies Per Role, and the Three Limits That Did Not Move'
+date: '2026-08-20T09:00:00'
+verified: '2026-08-20'
+verified_claims:
+  - claim: "Managed policies per role now default to 20, raisable to a maximum of 25 through Service Quotas"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "Managed policies per user remain at a default of 10 with a maximum of 20, and managed policies per group remain at a default of 10 with a maximum of 10"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "The size of each customer managed policy cannot exceed 6,144 characters, and IAM does not count white space against that limit"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "Aggregate inline policy size per role cannot exceed 10,240 characters"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "A session can pass a maximum of 10 managed policy ARNs, and the JSON policy document plus all passed managed policy ARN characters combined cannot exceed 2,048 characters"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "The quota change is available in all commercial AWS Regions, AWS GovCloud (US) and China Regions"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/08/aws-iam-quota-increase/
+labels:
+- AWS
+- AWS Daily Intelligence
+slug: aws-daily-intelligence-iam-managed-policy-quota
+---
+
+<div class="container">
+  <div class="post-header">
+    <div class="post-eyebrow">AWS Daily Intelligence #14</div>
+    <h1 class="post-title">Twenty Managed Policies Per Role, and the Three Limits That Did Not Move</h1>
+    <p class="post-subtitle">A quota doubling reads as housekeeping. This one removes a constraint that has been shaping how people design roles for a decade.</p>
+    <p class="post-meta">20 August 2026 &middot; AWS Identity and Access Management</p>
+  </div>
+
+  <div class="toc">
+    <strong>On this page</strong>
+    <ul>
+      <li><a href="#what-changed">What changed</a></li>
+      <li><a href="#why">Why AWS built this</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#didnt-move">The trap: three limits that did not move</a></li>
+      <li><a href="#value">Business value</a></li>
+      <li><a href="#security">Security considerations</a></li>
+      <li><a href="#cost">Cost considerations</a></li>
+      <li><a href="#operations">Operational considerations</a></li>
+      <li><a href="#tradeoffs">Tradeoffs</a></li>
+      <li><a href="#implementation">Implementation guidance</a></li>
+      <li><a href="#practices">Best practices</a></li>
+      <li><a href="#adopt">Who should adopt, who should wait</a></li>
+      <li><a href="#takeaways">Key takeaways</a></li>
+      <li><a href="#references">Official AWS references</a></li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>IAM now allows <strong>20 managed policies per role</strong> by default, up from 10, raisable to <strong>25</strong> through Service Quotas. All commercial Regions, GovCloud (US) and China. Nothing to enable, no cost.</p>
+    <p>Read as a quota bump this is trivia. Read as a design constraint it is not, because the limit of 10 has been doing real work: it is the reason teams consolidate permissions into fewer, broader documents, and the reason "we've hit the policy limit" has ended a great many arguments about attaching one more thing to a role.</p>
+    <p>The part worth knowing is what <em>did not</em> move alongside it:</p>
+    <ul>
+      <li><strong>Users stayed at 10</strong> (max 20). <strong>Groups stayed at 10 with a maximum of 10</strong> &mdash; that one cannot be raised at all.</li>
+      <li><strong>Session policies still cap at 10 managed policy ARNs</strong>, with the JSON document and all ARN characters together limited to 2,048.</li>
+      <li><strong>Policy size did not change.</strong> Each managed policy is still 6,144 characters. You can attach twice as many documents, each the same size as before.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>One row in the IAM quota table, and it is the row for roles only.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Resource</th><th>Default quota</th><th>Maximum quota</th><th>Changed?</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Managed policies per role</strong></td><td><strong>20</strong></td><td>25</td><td>Yes, was 10</td></tr>
+          <tr><td>Managed policies per user</td><td>10</td><td>20</td><td>No</td></tr>
+          <tr><td>Managed policies per group</td><td>10</td><td><strong>10</strong></td><td>No, and cannot be raised</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Increases up to the maximum are handled by Service Quotas, and AWS notes that requests up to the maximum quota are automatically approved and completed within a few minutes &mdash; so 25 is a form to fill in rather than a negotiation.</p>
+    <p>The group row is the one to notice. Its default and its maximum are the same number, which means there is no request to make. If your permission model routes through groups, this launch does nothing for you.</p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why AWS built this</h2>
+    <p>Ten stopped being enough some time ago, and the pressure comes from AWS itself. A modern role commonly carries a service-specific managed policy, a couple of AWS managed policies for observability, an organisation-standard baseline, something for the CI pipeline, and whatever a service attached on its behalf. Six or seven arrive without anyone designing anything.</p>
+    <p>The workaround has always been consolidation: merge several small, readable, purpose-named policies into one larger document that nobody can describe in a sentence. That is a worse outcome than the limit was protecting against, and it happens precisely because the limit is per-document rather than per-permission.</p>
+    <p>Doubling it removes an artificial reason to write broader policies. Whether it also removes a useful discipline is the interesting question, and the answer depends entirely on what your ten were doing.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <img src="/blog/assets/diagrams/daily-014-iam-managed-policy-quota.svg" alt="Diagram: the managed policy quota doubled for roles only, users and groups unchanged with groups unable to be raised at all, session policies still capped at ten ARNs, and policy size limits unmoved">
+    <p>There is no architecture to change here &mdash; a quota is a number in a table. What matters is which numbers sit next to it, because a quota only relieves pressure if it is the binding one.</p>
+    <p>Two other IAM limits constrain the same design and are unchanged. Each customer managed policy remains capped at <strong>6,144 characters</strong>, with white space not counted. Aggregate inline policy per role remains <strong>10,240 characters</strong>. So the total policy surface a role can carry has grown by adding documents, not by making any document bigger &mdash; which is the right shape, but worth stating, because "we can now put more permissions on a role" and "we can now attach more policies to a role" are not the same sentence.</p>
+  </div>
+
+  <div class="section" id="didnt-move">
+    <h2>The trap: three limits that did not move</h2>
+    <p>A quota increase invites the assumption that a class of problem is solved. Three places will still meet the old number.</p>
+    <p><strong>1. Session policies still cap at 10.</strong> This is the sharpest one, because it applies to the same roles that just gained headroom. When you assume a role and pass session policies, the documented limits are unchanged: <em>&#8220;You can pass a maximum of 10 managed policy ARNs when you create a session&#8221;</em>, and the JSON document plus all passed ARN characters combined cannot exceed <strong>2,048 characters</strong>.</p>
+    <p>So a role can carry 20 attached policies while a session assuming that role can pass only 10 of its own. Anything building sessions programmatically &mdash; a broker, a federation layer, a CI system that narrows permissions per job &mdash; sits at the old ceiling regardless of today's change.</p>
+    <p><strong>2. Groups cannot be raised at all.</strong> Default 10, maximum 10. Every other adjustable quota in that table has a maximum above its default; this one does not. A design that attaches permissions to groups and adds users to groups gets nothing here, and cannot ask for it.</p>
+    <p><strong>3. Users doubled only in the maximum, not the default.</strong> Users sit at 10 by default with a maximum of 20 &mdash; so a user can reach 20, but only by asking, and only to the number a role now gets for free.</p>
+    <div class="warning-box">
+      <p><strong>The direction of travel is worth reading.</strong> Roles get headroom automatically; users get it on request; groups do not get it. That is consistent with everything else AWS has been saying about identity &mdash; roles are the principal you are meant to be using. If this quota is binding on your users or groups, the constraint is arguably telling you something about the design rather than about the quota.</p>
+    </div>
+  </div>
+
+  <div class="section" id="value">
+    <h2>Business value</h2>
+    <p>The value is the ability to stop merging policies that had no business being merged.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Situation</th><th>Under 10</th><th>Under 20</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Role near the limit, one more grant needed</td><td>Merge two policies into a broader one</td><td>Attach it</td></tr>
+          <tr><td>Small purpose-named policies</td><td>Consolidated into unreadable documents</td><td>Can stay small and named</td></tr>
+          <tr><td>Org baseline plus service policies plus CI</td><td>Competing for slots</td><td>Room for all three</td></tr>
+          <tr><td>Auditing what a role can do</td><td>Fewer, larger, harder to read</td><td>More, smaller, each explainable</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>That last row is the real gain and it is easy to miss. Ten larger policies are harder to audit than twenty small ones, because a policy whose name describes exactly what it grants can be reasoned about without opening it.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p><strong>The limit was doing security work by accident.</strong> Not good work &mdash; it pushed people toward broader documents &mdash; but it did force a periodic reckoning. Hitting the ceiling made somebody look at what was attached and ask whether all of it was still needed. At 20, that prompt arrives half as often, and for many roles never.</p>
+    <p><strong>More policies means more evaluation surface.</strong> Twenty documents at up to 6,144 characters each is a large amount of policy to reason about when answering "can this principal do X". The S3 access-denied improvements covered earlier this week help, but only for explicit denies &mdash; and with more attached policies, an implicit deny becomes correspondingly harder to trace.</p>
+    <p><strong>Nothing here narrows anything.</strong> This is a ceiling, not a grant: no permissions changed and no role gained access. But a raised ceiling tends to get used, and the thing that fills it is rarely a policy someone removed something from.</p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>None. IAM is not metered and quota increases are free.</p>
+    <p>The only cost is the one that does not appear on a bill: a role carrying twenty policies takes longer for a human to understand than one carrying six, and that time is spent during incidents, audits and access reviews rather than at attach time.</p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p><strong>Check what your tooling assumes.</strong> Anything that enumerates attached policies with an expectation of at most 10 &mdash; a compliance check, a drift detector, a dashboard, a home-grown audit script &mdash; will now see up to 20 and should be confirmed rather than assumed correct.</p>
+    <p><strong>Requests to the maximum are automatic.</strong> Going to 25 needs Service Quotas, and AWS states that requests up to the maximum are automatically approved within a few minutes. Worth knowing before anyone plans around a support case.</p>
+    <p><strong>The quota is per role, not per account.</strong> Separately, customer managed policies per account default to 1,500 with a maximum of 10,000, which is the limit that binds when many small policies are the house style.</p>
+    <p><strong>Existing roles are unaffected.</strong> Nothing is reattached, reordered or re-evaluated. The number simply stops being a barrier the next time somebody tries to attach.</p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Gain</th><th>Cost</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>No longer forced to merge unrelated policies</td><td>Nothing now forces the periodic clean-out that hitting 10 caused</td></tr>
+          <tr><td>Small, purpose-named policies stay small and named</td><td>Twenty attachments is more to read than ten</td></tr>
+          <tr><td>Free, automatic, every Region</td><td>Applies to roles only; groups cannot be raised at all</td></tr>
+          <tr><td>25 available on request, approved automatically</td><td>Session policies still cap at 10 ARNs regardless</td></tr>
+          <tr><td>More documents to attach</td><td>Each is still 6,144 characters; total policy per document unchanged</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p><strong>1. Do not use the headroom to defer a clean-up.</strong> If a role was at 10 because nobody had reviewed it, it is now at 10 with room to grow rather than at 10 and forcing a decision. Review it while you remember why.</p>
+    <p><strong>2. Split the policies you merged under duress.</strong> The consolidated documents written to fit under 10 are the ones worth breaking apart, because their names stopped describing their contents.</p>
+    <p><strong>3. Check session-policy paths separately.</strong> Anything passing managed policy ARNs at <code>AssumeRole</code> time is bounded at 10 ARNs and 2,048 combined characters, and today changed neither.</p>
+    <p><strong>4. Confirm any tooling that counted to 10.</strong> Audit scripts and compliance rules with a hardcoded expectation will now be wrong in a direction that looks like a finding.</p>
+    <p><strong>5. If groups are your binding constraint, redesign rather than wait.</strong> The maximum equals the default, so there is no increase to request.</p>
+    <p><strong>6. Watch the account-level policy count</strong> if small policies are your convention &mdash; 1,500 customer managed policies per account by default, 10,000 maximum.</p>
+  </div>
+
+  <div class="section" id="practices">
+    <h2>Best practices</h2>
+    <ul>
+      <li><strong>Prefer many small named policies to few large ones</strong>, now that the limit no longer punishes it.</li>
+      <li><strong>Name a policy after what it grants</strong>, so twenty attachments can be read from the list without opening any of them.</li>
+      <li><strong>Schedule the review the limit used to force.</strong> A ceiling that never gets hit provides no prompt.</li>
+      <li><strong>Do not design around 20 in session-policy paths.</strong> That ceiling is still 10.</li>
+      <li><strong>Treat a role needing 20 policies as a signal</strong> worth a second look, even though it is now permitted.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt, who should wait</h2>
+    <p>There is nothing to adopt &mdash; the quota is already raised on every account, in every commercial Region plus GovCloud (US) and China.</p>
+    <p><strong>It matters most</strong> to organisations with an org-wide baseline policy competing for slots against service and pipeline policies, and to anyone who has merged unrelated permissions into one document purely to fit.</p>
+    <p><strong>It changes nothing</strong> for permission models built on groups, for session-policy-based brokers, or for anyone who was never near ten.</p>
+    <p><strong>The one thing to do deliberately</strong> is decide what now triggers a review of a role's attachments, because hitting the limit used to be that trigger and it will now fire half as often.</p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Managed policies per role default to 20, up from 10, with a maximum of 25 through Service Quotas. All commercial Regions, GovCloud (US) and China.</li>
+      <li>Requests up to the maximum are approved automatically within a few minutes.</li>
+      <li><strong>Users stayed at a default of 10</strong> with a maximum of 20.</li>
+      <li><strong>Groups stayed at 10 with a maximum of 10</strong> — the default equals the maximum, so there is no increase to request.</li>
+      <li><strong>Session policies still cap at 10 managed policy ARNs</strong>, with JSON plus ARN characters limited to 2,048 combined. A role with 20 attached policies does not give a session 20.</li>
+      <li>Policy size did not change: each managed policy is still 6,144 characters, white space not counted.</li>
+      <li>Aggregate inline policy per role is still 10,240 characters.</li>
+      <li>The old limit was quietly forcing consolidation into broader, less readable documents — removing it is a chance to split those back apart.</li>
+      <li>It was also forcing a periodic review. Nothing replaces that prompt, so schedule one.</li>
+      <li>Roles get headroom automatically, users on request, groups not at all. That ordering is the same message AWS has been sending about which principal to use.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/08/aws-iam-quota-increase/" target="_blank" rel="noopener">AWS IAM now supports 20 managed policies per role by default</a> &mdash; launch announcement</li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html" target="_blank" rel="noopener">IAM and AWS STS quotas</a> &mdash; the quota table, character limits and session policy caps</li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_managed-vs-inline.html" target="_blank" rel="noopener">Managed policies and inline policies</a> &mdash; IAM User Guide</li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html" target="_blank" rel="noopener">Policies and permissions in IAM</a> &mdash; including session policies</li>
+    </ul>
+  </div>
+
+  <div class="post-footer">
+    <p>Part of the AWS Daily Intelligence series &mdash; one significant AWS change each weekday, verified against official AWS documentation.</p>
+  </div>
+</div>
