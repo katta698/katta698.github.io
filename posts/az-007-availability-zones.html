@@ -1,0 +1,214 @@
+---
+title: "Azure Architecture Series #7 — Availability Zones: What a Zone Is, and What Zone-Redundant Actually Promises"
+date: 2026-08-20
+slug: azure-architecture-availability-zones
+labels: [Azure, "Azure Architecture Series"]
+verified: '2026-08-20'
+verified_claims:
+  - claim: "Availability zones are separated groups of datacenters within a region, and each availability zone has independent power, cooling and networking infrastructure"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "An availability zone is a logical grouping of one or more physically separate datacenters within a region"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "Availability zones are typically separated by several kilometers and usually are within 100 kilometers of each other"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "Zone-redundant resources are replicated or distributed across multiple availability zones by the service, and Microsoft manages failover to another zone automatically if an outage occurs"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "A resource is resilient to a zone failure as long as it uses two or more zones"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "A zonal resource is deployed to a single availability zone that you select, and zonal deployments do not automatically provide resiliency to availability zone outages"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "For zonal resources, if an outage occurs in an availability zone you are responsible for failover to another zone, because Microsoft does not manage that process for you"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "Azure might place nonzonal resources across any zones in the region, you do not choose which resources go into which zones, and they could experience downtime if that zone has an outage"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "Physical zones are mapped to logical zones in your Azure subscription, different subscriptions might have a different mapping order, and the mapping is assigned automatically when the subscription is created"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "Microsoft strives to achieve inter-zone communication with round-trip latency of less than approximately 2 milliseconds"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "Azure does not charge for data transfer between availability zones in the same region, whether you use private or public IP addressing"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "For each region, Microsoft aims to deploy updates to Azure services within a single availability zone at a time"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "Availability zones do not protect against a full-region outage"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "Some services have extra requirements for availability zone support, such as certain tiers or SKUs"
+    source: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  - claim: "Each geography has at least one region equipped with availability zones"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-overview
+problem: "A team is asked whether their workload survives an availability zone failure and answers yes, because the region has zones and the resources are in it. Nothing they deployed asked for zones, so Azure placed everything wherever it liked — which means the honest answer is that nobody knows, and the test is a zone outage."
+builds: "The three shapes a resource can have in a zoned region — zonal, zone-redundant and nonzonal — what each promises, who performs the failover in each case, and the per-subscription zone numbering that quietly breaks cross-subscription alignment."
+catch: "Zone 1 in your subscription is not zone 1 in anyone else's. Logical zone numbers are mapped to physical zones per subscription, assigned at creation, so two teams pinning resources to zone 1 for locality may be pinning them to different buildings entirely."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">Azure Architecture Series · #007 · Foundations</div>
+  <h1 class="post-title">Availability Zones: What a Zone Is, and What Zone-Redundant Actually Promises</h1>
+  <p class="post-subtitle">Being in a region with availability zones is not the same as using them. The difference is a configuration choice most resources never make, and its default is the one that offers nothing.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Azure Reliability · Availability Zones · Foundations</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      An auditor asks a simple question: if one availability zone in your region fails, does this service keep running? The team checks that the region supports zones, sees that it does, and says yes.
+    </p>
+    <p>
+      The honest answer is that nobody knows. Nothing in their deployment asked for zones. Azure placed those resources wherever it liked across the zones in the region, told nobody which, and if the failed zone happens to be the one holding them, they go down with it.
+    </p>
+    <p>
+      This is not a misconfiguration. It is the default. A resource that does not opt into zonal or zone-redundant placement is <em>nonzonal</em>, and nonzonal means Azure chooses and you are not told.
+    </p>
+
+    <div class="callout amber">
+      <strong>The distinction that the audit question actually turns on</strong>
+      <p>"Our region has availability zones" is a fact about Microsoft's datacenters. "Our workload uses availability zones" is a fact about your configuration. The first is necessary for the second and tells you nothing on its own — and services differ in whether zone support needs configuring, comes automatically, or requires a particular tier or SKU.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      An availability zone is a logical grouping of one or more physically separate datacenters within a region, each zone with independent power, cooling and networking. They are typically several kilometres apart and usually within 100 kilometres of one another — far enough that a local power failure or weather event is unlikely to take two at once, close enough that the network between them stays fast.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/az-007-availability-zones.svg" alt="Diagram: the three deployment shapes in a zoned region — zonal in one selected zone, zone-redundant spread across zones by the service, and nonzonal placed anywhere by Azure — plus two subscriptions mapping logical zone numbers to different physical zones" />
+      <figcaption>Three shapes, three very different promises. The panel at the bottom is the one that surprises people who have been using zones for years.</figcaption>
+    </figure>
+
+    <h3>Zone-redundant: the service does it for you</h3>
+    <p>
+      A zone-redundant resource is replicated or distributed across multiple zones by the service itself. Microsoft spreads the requests, replicates the data, and <strong>manages the failover automatically</strong> when a zone has an outage. For most services Microsoft also chooses which zones to use.
+    </p>
+    <p>
+      The rule for whether it counts is refreshingly blunt: a resource is resilient to a zone failure as long as it uses two or more zones.
+    </p>
+
+    <h3>Zonal: you pick the zone, and you own the consequences</h3>
+    <p>
+      A zonal resource sits in one availability zone that you select. It is isolated from faults in other zones — but it does not survive the failure of its own, and Azure does not move it. <strong>Failover is yours to design, build and execute.</strong>
+    </p>
+    <p>
+      That sounds strictly worse, and for most workloads it is. It exists for the case where inter-zone latency matters more than zone resilience: a chatty set of virtual machines that talk constantly can be pinned to a single zone deliberately. To make zonal resources resilient you deploy separate resources into several zones yourself and handle the failover between them.
+    </p>
+
+    <h3>Nonzonal: the default, and the one in the audit story</h3>
+    <p>
+      If a resource is not configured for zones — either because the region has none or because nobody asked — it is nonzonal. Azure may place it in any zone in the region, you do not choose, and you are not told. If that zone has an outage, the resource may be in it.
+    </p>
+    <p>
+      Most estates contain far more nonzonal resources than their owners believe, because nonzonal is what you get by not deciding.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why Zone 1 Is Not Zone 1</h2>
+    <p>
+      Here is the detail that catches experienced Azure teams. Each datacenter is assigned a <em>physical</em> zone. Your subscription sees <em>logical</em> zone numbers — 1, 2, 3 — and the mapping between the two is assigned per subscription, automatically, when the subscription is created.
+    </p>
+    <p>
+      So subscription A might have physical zone 1 mapped to logical zone 2, while subscription B has that same physical zone as logical zone 3. Both teams say "zone 1" and mean different buildings.
+    </p>
+    <p>
+      This matters in two concrete situations:
+    </p>
+    <ul>
+      <li><strong>Cross-subscription locality.</strong> Two components in different subscriptions pinned to "zone 1" for low latency may be in different physical zones — so you have paid the coordination cost and got none of the benefit.</li>
+      <li><strong>Cross-subscription spread.</strong> Placing replicas in "zone 1 and zone 2" across two subscriptions does not guarantee two distinct physical zones, which is the assumption a resilience design rests on.</li>
+    </ul>
+    <p>
+      The mapping is readable rather than mysterious. From the CLI, <code>az account list-locations</code> returns each region's <code>availabilityZoneMappings</code> for the current subscription, and there is a Check Zone Peers API for comparing across subscriptions. Any design that pins zones across subscription boundaries should be reading that mapping rather than trusting the number.
+    </p>
+
+    <div class="callout">
+      <strong>Two figures that shape design more than they look like they should</strong>
+      <p>Microsoft targets inter-zone round-trip latency below <strong>approximately 2 milliseconds</strong>, which is what makes synchronous replication across zones viable rather than theoretical. And Azure <strong>does not charge for data transfer between availability zones in the same region</strong>, on private or public IP addressing. Together those remove the two objections usually raised against spreading a workload across zones.</p>
+    </div>
+
+    <h3>What zones do not do</h3>
+    <p>
+      They do not protect against a full-region outage. That is what multi-region design is for, and for mission-critical workloads Microsoft's guidance is to be both multi-zone and multi-region.
+    </p>
+    <p>
+      There is one more benefit worth knowing because it is invisible: for each region, Microsoft aims to deploy updates to Azure services <strong>one availability zone at a time</strong>. A workload already spread across zones therefore rides out platform updates in the other zones — but only if it is spread already. The nonzonal resource gets no such protection.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Default posture for production</td>
+          <td>Zone-redundant wherever the service offers it</td>
+          <td>The service handles spreading and failover, inter-zone latency is around 2 ms, and cross-zone traffic is not charged. The usual objections do not survive contact with the numbers.</td>
+        </tr>
+        <tr>
+          <td>When zonal is the right answer</td>
+          <td>Only when inter-zone latency genuinely dominates</td>
+          <td>Zonal buys locality and costs resilience. It is a deliberate trade for chatty components, not a default, and it makes failover your job.</td>
+        </tr>
+        <tr>
+          <td>Auditing what you already run</td>
+          <td>Assume nonzonal until the configuration proves otherwise</td>
+          <td>Nonzonal is what a resource gets by not deciding. Being in a zoned region is not evidence of anything.</td>
+        </tr>
+        <tr>
+          <td>Pinning zones across subscriptions</td>
+          <td>Read availabilityZoneMappings, never trust the number</td>
+          <td>Logical-to-physical mapping is per subscription and assigned at creation, so the same number can mean different datacenters in two subscriptions.</td>
+        </tr>
+        <tr>
+          <td>Choosing a SKU or tier</td>
+          <td>Check zone support before deciding on price</td>
+          <td>Some services only support zones on particular tiers or SKUs, so the cheap tier can quietly remove zone resilience from the design.</td>
+        </tr>
+        <tr>
+          <td>Workloads pinned to one region by data residency</td>
+          <td>Multi-zone, plus backup and restore with honest recovery objectives</td>
+          <td>Zones are the primary way to maximise availability without moving data outside the region — but they do not survive a regional outage, so the recovery plan has to say what happens if the region goes.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Availability zones are the cheapest resilience Azure sells. The network between them is fast, the traffic across them is free, and for zone-redundant services the failover is somebody else's problem. The only real cost is deciding.
+    </p>
+    <p>
+      Which is why the interesting question is never "does this region have zones". It is: for each resource in this workload, which of the three shapes is it, and who performs the failover when a zone goes? If the answer to the second half is "nobody has thought about it", the resource is nonzonal and the honest audit answer is no.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#8 takes the other half of regional resilience: paired regions — what pairing actually promises about sequential updates and recovery priority, what it does not promise, and why many newer regions have no pair at all.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Azure Reference</h2>
+    <ul>
+      <li><a href="https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview" target="_blank" rel="noopener">What are Azure availability zones?</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/reliability/regions-overview" target="_blank" rel="noopener">What are Azure regions?</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/reliability/overview-reliability-guidance" target="_blank" rel="noopener">Azure reliability guides by service</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
