@@ -2,9 +2,36 @@
 
 ## Workflow rules
 
+- **When the post is written, run one command:**
+  ```
+  python scripts/publish.py
+  ```
+  It fetches, rebases, syncs, runs every check, re-checks the remote, reports
+  what changed, and stops before committing. Everything below about ordering is
+  what it already does — read it to understand *why*, not to do it by hand.
 - Always `git pull --rebase` before any edits. Three other worktrees publish to this same branch, so `origin/main` moves without you.
 - Never commit or push without explicit instruction. Jayanth pushes himself.
 - After `sync_blog.py` runs, stage ALL modified files under `blog/` — not just the new post's directory. Older posts get regenerated too (widgets, date format, CSS).
+
+### Why there is one command
+
+Four windows publish to one branch, each reading these same paragraphs, and they
+drifted. In one week: one window pushed without being asked while the other three
+waited; one published in a shape that never triggered the RAG re-index, so its
+posts had no *At a glance* summary for days and nothing reported it; and one ran
+`prepublish.py` **before** its final rebase — checking a tree that was not the
+tree being pushed. That last one is commit `43ef899`, whose entire subject is
+"Run prepublish after the final rebase, not before".
+
+None of that was carelessness. It is what a procedure kept in prose does: every
+session re-derives it, and a re-derivation is an opportunity to differ.
+`prepublish.py` already proved the remedy — it turned "run these four checks"
+into one command and the checks stopped drifting. `publish.py` is the same fix
+applied to the sequence around them.
+
+**If you find yourself typing the steps by hand, the script is the bug report.**
+Fix the script rather than working around it, so the next window inherits the
+fix instead of re-deriving the workaround.
 
 ## Finish the work and stop
 
@@ -140,10 +167,24 @@ straight to remote `main`:
 
 ```
 cd C:\Projects\Engineering\katta698-aws       # or -azure, or -gcp
+# write the post, then:
+python scripts/publish.py       # fetch, rebase, sync, check, re-check, report
+git add blog/ posts/ scripts/ index.html resume.html now.html sw.js
+git commit
+git push origin HEAD:main       # fast-forwards remote main, no merge commit
+```
+
+`publish.py` does the fetch, the rebase and the sync in the order below, and
+stops before committing — so the two git lines after it are the only ones you
+type. It prints the `git add` line for you at the end.
+
+The long form, for when something goes wrong and you need to step through it:
+
+```
 git fetch origin
 git rebase origin/main          # BEFORE running sync, not just before editing
-# write the post, run scripts/sync_blog.py, commit
-git push origin HEAD:main       # fast-forwards remote main, no merge commit
+python scripts/sync_blog.py
+python scripts/prepublish.py    # AFTER the final rebase, not before
 ```
 
 `git push origin HEAD:main` works from any of those branches and needs no merge
@@ -1070,23 +1111,28 @@ is for finding posts by content.
 
 ## After publishing a new arch post
 
-1. Run `python scripts/validate_arch_post.py` — **must report 0 errors.**
-   It checks for unclosed comments (which silently swallow the entire post
-   body), unresolved `{{PLACEHOLDER}}`s, missing sections, empty nav boxes,
-   broken/invalid diagram SVGs, missing alt text, wrong labels, and a missing
-   `posts/` source file (which would leave the post out of RAG).
-2. Run `python scripts/sync_blog.py`
-3. `git add blog/ posts/ scripts/ index.html resume.html now.html sw.js`
-   (broad add — picks up all regenerated pages). **The root files are not
-   optional:** sync regenerates `sw.js` and re-stamps the `?v=` token on
-   `index.html`, `resume.html` and `now.html`. Leaving them out ships a service
-   worker whose precache asks for asset URLs no page requests.
-4. Check `git status` is clean before committing — a leftover modified root
-   file means step 3 was too narrow.
-5. Run `python scripts/prepublish.py --offline` — it runs the three site-wide
-   checks (structure, index completeness, Previous/Next order) that catch damage
-   to pages this post did not touch. Drop `--offline` to check cited links too.
-6. Commit and ask Jayanth to push
+1. **`python scripts/publish.py`** — this is steps 1, 2 and 5 of the old list, in
+   the order that is correct, plus a rebase before the sync and a re-check of the
+   remote afterwards. It stops before committing. Add `--offline` to skip the
+   checks that fetch vendor pages; name a post (`publish.py arch-025`) to scope
+   the per-post checks to it.
+2. `git add blog/ posts/ scripts/ index.html resume.html now.html sw.js`
+   (broad add — picks up all regenerated pages; `publish.py` prints this line for
+   you). **The root files are not optional:** sync regenerates `sw.js` and
+   re-stamps the `?v=` token on `index.html`, `resume.html` and `now.html`.
+   Leaving them out ships a service worker whose precache asks for asset URLs no
+   page requests.
+3. Check `git status` is clean before committing — a leftover modified root
+   file means step 2 was too narrow.
+4. Commit and ask Jayanth to push
+
+What `publish.py` runs on your behalf, so the names are still findable:
+`validate_arch_post.py` (unclosed comments that silently swallow a post body,
+unresolved `{{PLACEHOLDER}}`s, missing sections, empty nav boxes, broken or
+absent diagrams, missing alt text, wrong labels, and a missing `posts/` source
+file that would leave the post out of RAG), then `sync_blog.py`, then
+`prepublish.py` — whose site-wide half catches damage to pages this post never
+touched.
 
 Do not hand-inspect for these problems — the validator exists because every
 check in it corresponds to a bug that shipped or nearly shipped.
