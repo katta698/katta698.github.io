@@ -51,6 +51,7 @@ POSTS = os.path.join(ROOT, 'posts')
 SERIES = {
     'arch': {
         'label': 'Architecture Series',
+        'requires_diagram': True,
         'file_prefix': 'arch-',
         'slug_glob': 'aws-architecture-*',
         'labels': ['AWS', 'AWS Architecture Series'],
@@ -75,6 +76,7 @@ SERIES = {
     },
     'az': {
         'label': 'Azure Architecture Series',
+        'requires_diagram': True,
         'file_prefix': 'az-',
         'slug_glob': 'azure-architecture-*',
         'labels': ['Azure', 'Azure Architecture Series'],
@@ -99,6 +101,7 @@ SERIES = {
     },
     'gcp': {
         'label': 'GCP Architecture Series',
+        'requires_diagram': True,
         'file_prefix': 'gcp-',
         'slug_glob': 'gcp-architecture-*',
         'labels': ['GCP', 'GCP Architecture Series'],
@@ -191,6 +194,7 @@ SERIES = {
     },
     'daily': {
         'label': 'AWS Daily Intelligence',
+        'requires_diagram': True,
         'file_prefix': 'daily-',
         'slug_glob': 'aws-daily-intelligence-*',
         'labels': ['AWS', 'AWS Daily Intelligence'],
@@ -394,8 +398,29 @@ def check_page(slug, spec):
                        'run words together on the home page widget')
 
     # 7. Referenced diagrams must exist and be valid XML.
-    for src in re.findall(r'<img[^>]+src="(/blog/assets/diagrams/[^"]+)"', visible):
+    diagrams = re.findall(r'<img[^>]+src="(/blog/assets/diagrams/[^"]+)"', visible)
+    for src in diagrams:
         check_svg(slug, src)
+
+    # 7b. An explanatory post must HAVE a diagram, not merely have a valid one.
+    #
+    # Checks 7 and 8 validate a diagram that is present -- it parses, it has a
+    # title, its lines fit the canvas, the <img> has alt text. None of them
+    # notices a post with no diagram at all, because an absence looks like a
+    # deliberate choice. It was not: arch-023 through arch-027 shipped without
+    # one over five consecutive days, and arch-009 before them, while the Azure
+    # and GCP series stayed at 100%. Found by a person looking at a page, which
+    # is the same way the empty post-nav and the stale roadmap entries were
+    # found.
+    #
+    # Scoped to the series that explain a design. Roundups are inventories, not
+    # explanations, so the weeklies are exempt; the legacy Weekly Lab uses
+    # inline <symbol>/<use> rather than a file and would false-positive here.
+    if spec.get("requires_diagram") and not diagrams:
+        err(slug, 'no diagram. CLAUDE.md makes a standalone SVG referenced with '
+                  '<img> the standard for this series, and nothing else notices '
+                  'an absent one -- the other diagram checks only validate a '
+                  'diagram that is already there')
 
     # 8. Images need alt text.
     for tag in re.findall(r'<img[^>]*>', visible):
