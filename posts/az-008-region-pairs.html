@@ -1,0 +1,212 @@
+---
+title: "Azure Architecture Series #8 — Paired Regions: What Pairing Promises, and What It Very Clearly Does Not"
+date: 2026-08-21
+slug: azure-architecture-region-pairs
+labels: [Azure, "Azure Architecture Series"]
+verified: '2026-08-21'
+verified_claims:
+  - claim: "Azure regions are independent of each other, and Microsoft associates some regions with another region to form a region pair, where both regions are usually in the same geography"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "A small number of Azure services use region pairs to support geo-replication and geo-redundancy"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "In the unlikely event of a geography-wide outage, one region in every region pair is prioritized for recovery"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "Azure strives to stagger any planned system updates across region pairs, which minimises the impact of a faulty update"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "To meet data residency requirements, almost all regions reside within the same geography as their pair"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "Deploying resources to a region in a pair does not automatically make them more resilient, nor does it provide automatic high availability, disaster recovery capabilities, or failover"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "Microsoft advises not relying on Microsoft-managed failover between pairs as a primary disaster recovery approach, and states that managed failover of geo-redundant storage accounts is only performed in catastrophic situations and after repeated failed recovery attempts"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "Most region pairs are symmetrical, meaning each region is bidirectionally paired with the other, such as West US paired with East US and East US paired with West US"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "Brazil South is paired with South Central US, which is outside the Brazil geography, and South Central US is not paired with Brazil South"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "West India is paired with South India, but South India is paired with Central India"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "West US 3 is paired in one direction with East US, while East US is bidirectionally paired with West US"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "Many newer regions provide multiple availability zones for higher resiliency and do not have a region pair"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "Regions listed as having no pair include Chile Central, Mexico Central, Austria East, Belgium Central, Denmark East, Italy North, Poland Central, Spain Central, Israel Central, Qatar Central, Indonesia Central, Malaysia West and New Zealand North"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "The nonpaired region list totals thirteen regions across four geographies: two in the Americas, six in Europe, two in the Middle East and three in Asia Pacific"
+    derive: "2 + 6 + 2 + 3"
+    expect: "13"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "Many Azure services support geo-replication and geo-redundancy between any arbitrary set of regions and do not rely on region pairs"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+  - claim: "You are not limited to using services within a single region or within your region's pair, and can host services in any region that satisfies your business needs"
+    source: https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+problem: "A disaster recovery plan says the workload fails over to the paired region, and everyone signs it. Nothing in the deployment implements that failover — the plan is describing something Microsoft does for its own recovery sequencing, not something that moves this workload. The gap is discovered during the incident it was written for."
+builds: "What a region pair actually is, the three concrete things pairing provides, the explicit list of things it does not provide, and the two structural surprises: pairing is not always mutual, and many newer regions have no pair at all."
+catch: "Pairing is not necessarily reciprocal. Brazil South is paired with South Central US — in a different geography — and South Central US is not paired back. A design that assumes 'my pair's pair is me' is wrong in at least four documented cases."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">Azure Architecture Series · #008 · Foundations</div>
+  <h1 class="post-title">Paired Regions: What Pairing Promises, and What It Very Clearly Does Not</h1>
+  <p class="post-subtitle">Region pairing is one of the most misread ideas in Azure. It is real, it is documented, and it does almost none of the things disaster recovery plans credit it with.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Azure Reliability · Disaster Recovery · Foundations</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A disaster recovery plan contains a sentence that has survived three annual reviews: "In the event of a regional outage, services fail over to the paired region." Everyone has read it. Nobody has queried it.
+    </p>
+    <p>
+      Nothing in the estate implements it. No replica exists in that region, no traffic manager profile points there, no runbook describes a cutover. The sentence is describing a property of Microsoft's platform operations — how Azure sequences its own recovery — and treating it as a property of this workload.
+    </p>
+    <p>
+      The documentation is unusually direct about this, in bold, in an Important callout: deploying resources to a region in a pair <strong>does not automatically make them more resilient</strong>, and provides no automatic high availability, no disaster recovery capability, and no failover.
+    </p>
+
+    <div class="callout amber">
+      <strong>Where the misreading comes from</strong>
+      <p>Pairing genuinely does something, and the things it does sound like disaster recovery: recovery prioritisation, staggered updates, a partner region in the same geography. It is easy to hear those and conclude the platform will move your workload. It will not. Pairing changes how Microsoft operates the regions; it changes nothing about what you deployed into them.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Azure regions are independent of each other. Microsoft associates some of them with one other region — usually inside the same geography — and that association is the region pair. A <strong>small number</strong> of Azure services use pairs to build their geo-replication and geo-redundancy, geo-redundant storage being the obvious example.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/az-008-region-pairs.svg" alt="Diagram: symmetric region pairs such as UK South and UK West, asymmetric pairs such as Brazil South pointing to South Central US which does not point back, nonpaired regions using availability zones, and panels listing what pairing provides and what it does not" />
+      <figcaption>Three shapes of pairing, and the two panels that matter: what it gives you, and the explicit list of what it does not.</figcaption>
+    </figure>
+
+    <h3>The three things pairing actually provides</h3>
+    <ul>
+      <li><strong>Region recovery sequence.</strong> In a geography-wide outage, one region in every pair is prioritised for recovery. Not both — one. If your workload spans the pair, one side comes back first, and which side is not your choice.</li>
+      <li><strong>Sequential updating.</strong> Azure strives to stagger planned system updates across a pair, so a faulty update cannot land on both at once. This is quiet, continuous, and probably the most valuable of the three.</li>
+      <li><strong>Data residency.</strong> Almost all pairs sit within the same geography, so a service replicating to its pair keeps data inside the residency boundary from <a href="/blog/azure-architecture-regions-geographies/">#6</a>.</li>
+    </ul>
+    <p>
+      Notice what is absent from that list. There is no failover. There is no replication of anything you deployed. Two of the three are things Microsoft does to its own platform, and the third is a property of geography.
+    </p>
+
+    <h3>Even where pairing is used, it is not a DR plan</h3>
+    <p>
+      Microsoft's guidance goes further than "build your own plan". It says explicitly not to rely on Microsoft-managed failover between pairs as a <em>primary</em> disaster recovery approach — and gives the reason with geo-redundant storage: managed failover happens only in catastrophic situations, and only after repeated failed recovery attempts.
+    </p>
+    <p>
+      That is a description of a last resort, on Microsoft's timetable, not a recovery objective you can put in a plan.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why the Pairing Table Is Worth Actually Reading</h2>
+    <p>
+      Two structural facts break the mental model most people carry, and both are visible only if you look at the table rather than assume.
+    </p>
+
+    <h3>Pairing is not always mutual</h3>
+    <p>
+      Most pairs are symmetrical — West US with East US, East US with West US. But some are not, and the documented exceptions are not obscure regions:
+    </p>
+    <ul>
+      <li><strong>Brazil South is paired with South Central US</strong>, which is outside the Brazil geography. South Central US is <em>not</em> paired with Brazil South — it pairs with North Central US.</li>
+      <li><strong>West India is paired with South India</strong>, but South India is paired with Central India.</li>
+      <li><strong>West US 3 is paired in one direction with East US</strong>, while East US is bidirectionally paired with West US.</li>
+    </ul>
+    <p>
+      So "my pair's pair is me" is false in several real cases, and the Brazil example breaks the data residency assumption too: that pair crosses a geography boundary, which is exactly the property the third benefit is usually relied on for.
+    </p>
+
+    <h3>Many regions have no pair at all</h3>
+    <p>
+      Azure keeps expanding, and many newer regions provide multiple availability zones instead of a pair. The current nonpaired list includes Chile Central, Mexico Central, Austria East, Belgium Central, Denmark East, Italy North, Poland Central, Spain Central, Israel Central, Qatar Central, Indonesia Central, Malaysia West and New Zealand North — thirteen regions across four geographies.
+    </p>
+    <p>
+      That is not a gap waiting to be filled. It is the newer design: zones as the primary in-region redundancy, and geo-redundancy arranged between whatever regions you choose. Many Azure services already support replication between any arbitrary pair of regions and do not rely on pairing at all.
+    </p>
+
+    <div class="callout">
+      <strong>The freedom people forget they have</strong>
+      <p>You are not limited to your region's pair. Microsoft's own example puts storage in Canada Central replicating to Canada East, compute in East US, and other resources in West US — one solution, four regions, no pairing relationship required between most of them. Pairing constrains a few specific service features; it does not constrain your architecture.</p>
+    </div>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Whether pairing is your DR plan</td>
+          <td>No, under any circumstances</td>
+          <td>Microsoft states in an Important callout that pairing provides no automatic high availability, disaster recovery or failover. The plan is yours to build whether the region is paired or not.</td>
+        </tr>
+        <tr>
+          <td>Choosing a secondary region</td>
+          <td>Pick what the workload needs, not what the table says</td>
+          <td>Many services replicate between any two regions. Pairing constrains a few service features, not your architecture, and you can span four regions if that is the right design.</td>
+        </tr>
+        <tr>
+          <td>If your primary region has a pair</td>
+          <td>Read the entry in both directions before relying on it</td>
+          <td>Pairing is not always mutual. Brazil South points at South Central US, which points elsewhere, and that pair also crosses a geography boundary.</td>
+        </tr>
+        <tr>
+          <td>If your primary region has no pair</td>
+          <td>Treat that as normal and design zone-first</td>
+          <td>Thirteen regions are listed with no pair, and newer regions are being built that way deliberately, with zones as the in-region redundancy.</td>
+        </tr>
+        <tr>
+          <td>Data residency with a paired service</td>
+          <td>Confirm the pair is in the same geography</td>
+          <td>Almost all are, which means some are not. A geo-redundant service replicating to a pair outside the geography is a residency incident, not a resilience feature.</td>
+        </tr>
+        <tr>
+          <td>What to actually value pairing for</td>
+          <td>Staggered platform updates</td>
+          <td>It is continuous, it needs no configuration, and it is the one benefit that protects you from a class of failure you cannot otherwise mitigate — a faulty update landing everywhere at once.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Region pairing is a real feature that has been quietly recruited into a job it never applied for. It sequences Microsoft's recovery, staggers Microsoft's updates, and keeps most replication inside a geography. It does not move your workload, and the documentation says so in the plainest language Microsoft uses anywhere.
+    </p>
+    <p>
+      The practical test for any DR plan that mentions a paired region: point at the resource that exists in that region today, and the runbook that promotes it. If neither exists, the plan is describing the platform's behaviour rather than your own.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#9 leaves the infrastructure and starts on the commercial layer: subscription types — EA, MCA, CSP and pay-as-you-go — and how the one you have changes what you can automate, delegate and move.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Azure Reference</h2>
+    <ul>
+      <li><a href="https://learn.microsoft.com/en-us/azure/reliability/regions-paired" target="_blank" rel="noopener">Azure region pairs and nonpaired regions</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/reliability/regions-list" target="_blank" rel="noopener">List of Azure regions</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/reliability/regions-multiregion-support" target="_blank" rel="noopener">Azure services that support multiple regions</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

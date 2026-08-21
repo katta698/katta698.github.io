@@ -1,0 +1,197 @@
+---
+title: 'AWS Daily Intelligence #15 - Network Firewall Counts Rule Hits, and Why Zero Does Not Mean Unused'
+date: '2026-08-21T09:00:00'
+verified: '2026-08-21'
+verified_claims:
+  - claim: "Rule hit counts are enabled by default and require no additional configuration to start tracking rule hits"
+    source: https://aws.amazon.com/blogs/security/aws-network-firewall-now-supports-rule-hit-count/
+  - claim: "Rule hit counts are available in all AWS Regions where AWS Network Firewall is supported, except Middle East (UAE) and Middle East (Bahrain)"
+    source: https://aws.amazon.com/blogs/security/aws-network-firewall-now-supports-rule-hit-count/
+  - claim: "Rule hit counts are included with Network Firewall at no additional cost, though standard charges still apply for log storage and querying"
+    source: https://aws.amazon.com/blogs/security/aws-network-firewall-now-supports-rule-hit-count/
+  - claim: "Stateless rules do not support hit count tracking at this time"
+    source: https://aws.amazon.com/blogs/security/aws-network-firewall-now-supports-rule-hit-count/
+  - claim: "Alert logs report traffic that matches stateful rules that have an action that sends an alert, and a stateful rule sends alerts for the rule actions DROP, ALERT and REJECT"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/firewall-logging.html
+  - claim: "Firewall logging is only available for traffic that you forward to the stateful rules engine, forwarded through stateless rule actions and stateless default actions in the firewall policy"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/firewall-logging.html
+  - claim: "A stateful pass rule discontinues inspection of the matching packet and permits it to go to its destination, and rules with pass action are evaluated before rules with other action settings"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/rule-action.html
+labels:
+- AWS
+- AWS Daily Intelligence
+slug: aws-daily-intelligence-network-firewall-rule-hit-count
+---
+
+<div class="container">
+  <div class="post-header">
+    <div class="post-eyebrow">AWS Daily Intelligence #15</div>
+    <h1 class="post-title">Network Firewall Counts Rule Hits, and Why Zero Does Not Mean Unused</h1>
+    <p class="post-subtitle">The feature everyone wanted for pruning dead firewall rules has arrived. The rules it reports as dead are, disproportionately, the ones holding production up.</p>
+    <p class="post-meta">21 August 2026 &middot; AWS Network Firewall</p>
+  </div>
+
+  <div class="toc">
+    <strong>On this page</strong>
+    <ul>
+      <li><a href="#what-changed">What changed</a></li>
+      <li><a href="#why">Why AWS built this</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#trap">The trap: three ways a live rule reports zero</a></li>
+      <li><a href="#value">Business value</a></li>
+      <li><a href="#security">Security considerations</a></li>
+      <li><a href="#cost">Cost considerations</a></li>
+      <li><a href="#operations">Operational considerations</a></li>
+      <li><a href="#implementation">Implementation guidance</a></li>
+      <li><a href="#adopt">Who should adopt, who should wait</a></li>
+      <li><a href="#takeaways">Key takeaways</a></li>
+      <li><a href="#references">Official AWS references</a></li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>AWS Network Firewall now tracks <strong>how many times each stateful rule has matched</strong>, surfaced as a <em>Top Rule Hits</em> widget in the console. It is <strong>on by default</strong>, needs no configuration, costs <strong>nothing extra</strong>, and is available in every Region Network Firewall runs in <strong>except Middle East (UAE) and Middle East (Bahrain)</strong>.</p>
+    <p>This is the feature that firewall teams have been asking for, and the reason is always the same: rulesets accumulate. Rules get added during incidents, during migrations, during audits, and almost none are ever removed, because nobody can prove a rule is safe to delete. A hit counter looks like exactly that proof.</p>
+    <p>It is not, and the gap matters more than the feature. Hit counts are derived from <strong>alert logs</strong>, and alert logs have a narrower scope than the ruleset does. Three distinct categories of rule can be fully live and still report zero:</p>
+    <ul>
+      <li><strong>Stateless rules</strong> are not tracked at all.</li>
+      <li><strong>Pass rules</strong> do not alert, so your allow-list is invisible.</li>
+      <li><strong>Anything the stateful engine never sees</strong> cannot log, and what reaches it is decided elsewhere in the policy.</li>
+    </ul>
+    <p>Every one of those skews the same direction: the rules most likely to show zero are the permissive ones, which are the ones whose deletion breaks traffic rather than merely reducing coverage.</p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>The console's Monitoring section gains a <strong>Top Rule Hits</strong> widget. For each matching rule it shows the hit count with a bar chart, that rule's percentage of total hits, the resource ARN, the Suricata signature ID, the rule description from the <code>msg</code> field, and the timestamp of the last occurrence.</p>
+    <p>There is nothing to turn on. AWS is explicit that no additional configuration is needed to start tracking rule hits. The same data is pushed to CloudWatch Logs and Amazon S3 as alert logs, so it is queryable with CloudWatch Logs Insights and Athena rather than only viewable in the console.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Aspect</th><th>Detail</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Enablement</td><td>On by default, no configuration</td></tr>
+          <tr><td>Rule types covered</td><td>Stateful only &mdash; <strong>stateless rules are not tracked</strong></td></tr>
+          <tr><td>Surfaces</td><td>Console widget, CloudWatch Logs, S3, Logs Insights, Athena</td></tr>
+          <tr><td>Cost</td><td>No additional charge; log storage and query charges unchanged</td></tr>
+          <tr><td>Regions</td><td>All Network Firewall Regions except Middle East (UAE) and Middle East (Bahrain)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why AWS built this</h2>
+    <p>A firewall ruleset is an append-mostly data structure. Rules arrive with a reason and a ticket; they leave only when someone is willing to sign their name against the claim that nothing needs them. In the absence of evidence, the rational choice for every individual engineer is to leave the rule alone, and the aggregate of those rational choices is a ruleset nobody understands.</p>
+    <p>That has a cost beyond tidiness. Suricata evaluates rules in a defined order, so an oversized ruleset is slower to reason about and slower to change safely. It also degrades incident response: when the ruleset is 800 rules and 300 of them are inert, the signal you need during an incident is buried in rules that have not matched anything in years.</p>
+    <p>Hit counts convert that from an argument into a measurement &mdash; provided you understand what is being measured.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>The mechanism is the important part, because it is what produces the blind spots.</p>
+
+    <img src="/blog/assets/diagrams/daily-015-network-firewall-rule-hit-count.svg" alt="Diagram: a packet meets the stateless engine first and only forwarded traffic reaches the stateful engine, where only rules whose action sends an alert produce the alert log entries hit counts derive from, leaving stateless rules, pass rules and never-forwarded traffic all reporting zero">
+
+    <p>Network Firewall has two engines. Packets meet the <strong>stateless</strong> engine first, which can pass them, drop them, or forward them to the <strong>stateful</strong> engine. That routing is not incidental &mdash; AWS states plainly that firewall logging is only available for traffic you forward to the stateful rules engine, and that forwarding happens through stateless rule actions and the policy's stateless default actions.</p>
+    <p>Within the stateful engine, only some actions generate log entries. Alert logs report traffic matching stateful rules that have an action that sends an alert, and the actions that do so are <strong>DROP</strong>, <strong>ALERT</strong> and <strong>REJECT</strong>. <strong>PASS is not among them.</strong></p>
+    <p>So the chain from packet to hit count has two filters in it, both of which discard traffic before it can be counted, and neither of which is visible in the widget that shows you the counts.</p>
+  </div>
+
+  <div class="section" id="trap">
+    <h2>The trap: three ways a live rule reports zero</h2>
+    <p>A zero in the hit count column has at least four possible meanings, and only one of them is "this rule is dead".</p>
+
+    <h3>1. It is a pass rule</h3>
+    <p>Pass rules are the allow-list. They are the rules that say <em>this specific traffic is permitted</em>, and per the documentation a pass rule discontinues inspection of the matching packet and permits it to go to its intended destination, with pass rules evaluated before rules with other action settings. They do not send alerts, so they do not increment a counter.</p>
+    <p>This is the dangerous case, and it is dangerous in a specific way. A pass rule can be matching thousands of packets per second, reporting zero, and be the only thing keeping a business-critical flow alive. Delete it because it looks unused and the traffic falls through to whatever the policy does next &mdash; frequently a drop.</p>
+    <p>You can make a pass rule visible by adding the <code>alert</code> keyword to it, which is worth doing before any pruning exercise and worth undoing afterwards if the log volume is significant.</p>
+
+    <h3>2. It is a stateless rule</h3>
+    <p>Stateless rules do not support hit count tracking. If your policy does meaningful work in the stateless engine &mdash; and policies that care about throughput usually do, because stateless evaluation is cheaper &mdash; that portion of your ruleset is simply absent from this feature. Its absence looks identical to zero activity.</p>
+
+    <h3>3. The traffic never reached the stateful engine</h3>
+    <p>A stateful rule can only match packets that were forwarded to it. If the stateless configuration passes or drops traffic before the forward action, the stateful rule written to catch that traffic will never fire, no matter how much of it there is. The rule is not unused; it is unreachable, which is a different problem with a different fix, and the hit count cannot tell the two apart.</p>
+
+    <h3>4. It really is dead</h3>
+    <p>This case exists too, and it is the one the feature was built for. The point is not that hit counts are unreliable &mdash; it is that a zero needs one more question asked of it before it becomes a deletion.</p>
+  </div>
+
+  <div class="section" id="value">
+    <h2>Business value</h2>
+    <p>The value is real and it is mostly about time. Ruleset reviews currently proceed by asking owners whether they still need a rule, which is slow, produces "yes" by default, and does not scale past a few dozen rules. A hit count replaces most of that conversation with data for the drop, alert and reject rules &mdash; which, in a mature ruleset, is the majority of it.</p>
+    <p>The secondary value is in the percentage column. Knowing that one rule accounts for most of your total hits tells you where your traffic actually is, which is frequently a surprise and occasionally a finding in its own right.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>The failure mode here is a security team pruning a firewall using an incomplete view and believing it to be complete. That is worse than not pruning, because the pruning exercise produces confidence.</p>
+    <p>Two guardrails are worth putting in place before anyone deletes anything:</p>
+    <ul>
+      <li><strong>Enumerate your pass rules separately</strong> and exclude them from any hit-count-driven review, or instrument them with <code>alert</code> first and let them run long enough to be representative.</li>
+      <li><strong>Establish what your stateless configuration forwards</strong> before interpreting stateful zeros. A stateful rule with no path to it is a gap in coverage, and it will look like a candidate for deletion when it is actually a candidate for investigation.</li>
+    </ul>
+    <p>There is also a positive security use that is easy to miss: a drop or reject rule with a sharply rising hit count is a signal, not just an accounting entry. The percentage-of-total view makes that kind of shift visible in a way raw log volume does not.</p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>The feature itself is free. AWS states that rule hit counts are included with Network Firewall at no additional cost, with standard charges continuing to apply for log storage and querying.</p>
+    <p>The cost that can move is logging. Hit counts derive from alert logs, so if you add the <code>alert</code> keyword to pass rules to make them countable, you are adding a log line for every packet those rules match &mdash; and pass rules typically match the high-volume traffic, because that is what allow-lists are for. Do that deliberately and for a bounded window, not permanently and by default.</p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>Counters increment only when a match produces an alert log entry, which ties the usefulness of this feature to your logging configuration being correct and continuous. A period with logging disabled or misconfigured is a period of undercounting that leaves no marker behind &mdash; the counts simply come out lower.</p>
+    <p>For that reason, treat the observation window as a first-class input to any pruning decision. A rule that fires quarterly looks identical to a dead rule over a thirty-day window. Anything tied to a batch job, a seasonal process, a DR test or a partner integration deserves a window long enough to contain at least two of its cycles.</p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <ol>
+      <li><strong>Do nothing to turn it on.</strong> It is already collecting, assuming alert logging is configured for the firewall.</li>
+      <li><strong>Confirm alert logging is enabled and going somewhere durable.</strong> Without it there is nothing to count.</li>
+      <li><strong>Inventory the ruleset by action</strong> before looking at counts, so you know how much of it is pass and stateless &mdash; that is your blind spot, expressed as a number.</li>
+      <li><strong>Pick a window that fits your slowest legitimate cycle</strong>, not the default view. Query in Logs Insights or Athena rather than reading the widget if that window is long.</li>
+      <li><strong>Instrument pass rules with <code>alert</code></strong> for the duration of the review if you intend to include them, and remove it afterwards.</li>
+      <li><strong>Treat every zero as a question.</strong> Unreachable, unlogged, unrepresented, or genuinely unused &mdash; establish which before deleting.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt, who should wait</h2>
+    <p><strong>Adopt now:</strong> anyone running Network Firewall at all. It is free, on, and there is no adoption decision to make &mdash; only a decision about how to read it.</p>
+    <p><strong>Wait before acting on it:</strong> teams whose policies do substantial stateless work, or whose rulesets are pass-heavy. The counts are still worth having, but the fraction of your ruleset they describe may be small enough that a pruning exercise built on them is misleading. Measure that fraction first.</p>
+    <p><strong>Not applicable:</strong> Middle East (UAE) and Middle East (Bahrain), where the feature is not available.</p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Rule hit counts are <strong>on by default, free, and need no configuration</strong>, in all Network Firewall Regions except Middle East (UAE) and Middle East (Bahrain).</li>
+      <li>The console shows hit count, percentage of total, resource ARN, signature ID, the <code>msg</code> description and last occurrence; the same data reaches CloudWatch Logs and S3.</li>
+      <li><strong>Stateless rules are not tracked at all.</strong></li>
+      <li>Counts derive from alert logs, which cover only the stateful actions <strong>DROP, ALERT and REJECT</strong>.</li>
+      <li><strong>PASS rules therefore report zero while fully live</strong> &mdash; and pass rules are the allow-list, so deleting one on the strength of a zero is how this feature breaks production.</li>
+      <li>Alert logging covers <strong>only traffic forwarded to the stateful engine</strong>, so an unreachable rule and a dead rule look the same.</li>
+      <li>Adding <code>alert</code> to pass rules makes them countable, at the cost of logging your highest-volume traffic. Do it for a bounded review window.</li>
+      <li>Match the observation window to the slowest legitimate cycle in your environment, not to the default console view.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/blogs/security/aws-network-firewall-now-supports-rule-hit-count/" target="_blank" rel="noopener">AWS Network Firewall now supports rule hit count</a> &mdash; launch post, enablement, Regions and cost</li>
+      <li><a href="https://docs.aws.amazon.com/network-firewall/latest/developerguide/firewall-logging.html" target="_blank" rel="noopener">Logging network traffic from AWS Network Firewall</a> &mdash; log types, and the stateful-engine-only scope</li>
+      <li><a href="https://docs.aws.amazon.com/network-firewall/latest/developerguide/rule-action.html" target="_blank" rel="noopener">Defining rule actions in AWS Network Firewall</a> &mdash; stateful and stateless actions, and pass evaluation order</li>
+      <li><a href="https://docs.aws.amazon.com/network-firewall/latest/developerguide/monitoring-cloudwatch.html" target="_blank" rel="noopener">AWS Network Firewall metrics in Amazon CloudWatch</a> &mdash; higher-level metrics for both engine types</li>
+    </ul>
+  </div>
+
+  <div class="post-footer">
+    <p>Part of the AWS Daily Intelligence series &mdash; one significant AWS change each weekday, verified against official AWS documentation.</p>
+  </div>
+</div>
