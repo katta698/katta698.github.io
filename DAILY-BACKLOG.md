@@ -92,6 +92,42 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 20 August 2026 — covered by post #15
+
+Twelve announcements plus 15 blog posts. The held Network Firewall item from
+17 August finally became writable: AWS published a Security Blog post for it,
+which is the documentation whose absence blocked it three days ago.
+
+A note on the feed: `fetch_week.py` reported 85 security bulletins dated
+20 August. That is the feed-generation-timestamp artifact — the bulletins feed
+stamps every entry with the fetch time rather than its publication date, the
+same fault documented for the GCP bulletins feed. Those were excluded from the
+ranking and should be excluded from the weekly inventory too.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Rule hit count — on by default, free, all Regions except UAE and Bahrain | Network Firewall | **#15** | High | [link](https://aws.amazon.com/blogs/security/aws-network-firewall-now-supports-rule-hit-count/) |
+| Inbound prefix controls and higher prefix scale | Direct Connect | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-direct-connect-new-prefix-controls) |
+| Certificate authority (CA) rotation with automated lifecycle management | EKS | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-eks-certificate-authority-ca-rotation-automated-lifecycle-management) |
+| Origin Access Control for S3 Multi-Region Access Points | CloudFront | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-cloudfront-oac-s3-mrap) |
+| RDS Switchover Read Replica execution block | ARC Region switch | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/region-switch-rds-switchover-execution-block/) |
+| Default SSM parameter now tracks the latest kernel | Amazon Linux | open | Medium | [link](https://aws.amazon.com/blogs/compute/amazon-linux-default-ssm-parameter-will-now-track-the-latest-kernel/) |
+| Customer managed keys | Timestream for InfluxDB | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-timestream-influxdb-cmk/) |
+| Long-term system table retention with S3 Tables | Redshift | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/redshift-long-term-system-table-retention/) |
+| New Local Zone in Las Vegas, Nevada | Local Zones | skipped | Low | Footprint expansion |
+| C8gd/M8gd/R8gd and P6-B300 in additional Regions | EC2 | skipped | Low | Region expansions |
+| Category-based notifications, multi-channel delivery for partners | Marketplace | skipped | Low | Partner tooling |
+| Partner Central agents MCP Server supports OAuth with AWS Sign-In | Partner Central | skipped | Low | Partner tooling |
+
+**Worth revisiting:** Direct Connect inbound prefix controls is now the
+strongest held item. Prefix limits are a constraint people actually hit on
+hybrid designs, and a control that filters what a customer gateway can
+advertise changes who can break your routing. The Amazon Linux SSM parameter
+change is quieter but sharper than it looks — it changes behaviour under
+automation that nobody will re-read.
+
+---
+
 ## 19 August 2026 — covered by post #14
 
 Sixteen announcements, no security bulletins, 14 blog posts. Third IAM item in
@@ -155,7 +191,7 @@ redirect — so post #12 took the sign-in change instead.
 
 | Item | Service | Status | Importance | Reference |
 | --- | --- | --- | --- | --- |
-| Stateful rule hit counts — enabled by default, all Regions except UAE and Bahrain | Network Firewall | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-network-firewall-stateful-rule-hit-counts/) |
+| Stateful rule hit counts — enabled by default, all Regions except UAE and Bahrain | Network Firewall | **#15** (20 Aug, once documented) | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-network-firewall-stateful-rule-hit-counts/) |
 | Redesigned sign-in: email entry point, third-party providers, session page | AWS Sign-In | **#12** | Med-High | [link](https://aws.amazon.com/blogs/security/updates-to-your-aws-sign-in-experience/) |
 | Batch instance termination | EC2 Auto Scaling | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ec2-auto-scaling-batch-termination) |
 | Cross-Region Inferencing for OpenAI models, expanded API support | Bedrock | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-bedrock-cross-region-openai-v2/) |
@@ -166,10 +202,13 @@ redirect — so post #12 took the sign-in change instead.
 | Routing steps and agent proficiency reporting | Connect | skipped | Low-Med | — |
 | R8i and R8i-Flex in Canada West; Quick M365 extensions GA | EC2, Quick | skipped | Low | Region and GA expansions |
 
-**Worth revisiting:** Network Firewall hit counts is the strongest held item and
-should be written as soon as AWS documents it. Rulesets accumulate because
-nobody can prove a rule is dead; hit counts are that proof. Re-probe the
-developer guide before assuming it is still undocumented.
+**Worth revisiting:** ~~Network Firewall hit counts~~ — **written as post #15
+on 21 August**, once AWS published a Security Blog post for it. Holding it for
+three days was correct: the announcement alone could not be verified, and the
+documentation turned out to contain the part that mattered — hit counts derive
+from alert logs, so pass rules and stateless rules report zero while fully
+live. Writing it on the announcement would have produced a post recommending
+exactly the deletion that breaks production.
 
 ---
 
