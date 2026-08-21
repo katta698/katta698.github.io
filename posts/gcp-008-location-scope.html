@@ -1,0 +1,299 @@
+---
+title: "GCP Architecture Series #8 — Global, Regional, Zonal: The Property That Decides Every Later Design"
+date: '2026-08-21T09:00:00'
+slug: gcp-architecture-location-scope
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-08-21'
+verified_claims:
+  - claim: "Global resources are accessible by resources in any region or zone"
+    source: https://docs.cloud.google.com/compute/docs/regions-zones/global-regional-zonal-resources
+  - claim: "Regional resources are accessible only to resources within the same region"
+    source: https://docs.cloud.google.com/compute/docs/regions-zones/global-regional-zonal-resources
+  - claim: "Zonal resources are accessible only to resources within the same zone, and may access regional and global resources"
+    source: https://docs.cloud.google.com/compute/docs/regions-zones/global-regional-zonal-resources
+  - claim: "VPC networks, firewalls, images, snapshots, instance templates, global static external IP addresses and Cloud Interconnects are global resources"
+    source: https://docs.cloud.google.com/compute/docs/regions-zones/global-regional-zonal-resources
+  - claim: "Subnets, regional static external IP addresses, regional managed instance groups, regional instance templates and Cloud Interconnect attachments are regional resources"
+    source: https://docs.cloud.google.com/compute/docs/regions-zones/global-regional-zonal-resources
+  - claim: "Compute instances, zonal Persistent Disks and Hyperdisks, machine types, zonal managed instance groups, GPUs and Cloud TPUs are zonal resources"
+    source: https://docs.cloud.google.com/compute/docs/regions-zones/global-regional-zonal-resources
+  - claim: "An instance cannot access per-zone resources in a different zone, such as a disk resource"
+    source: https://docs.cloud.google.com/compute/docs/regions-zones/global-regional-zonal-resources
+  - claim: "Instances in one zone can communicate with instances in another zone if both instances belong to the same VPC network"
+    source: https://docs.cloud.google.com/compute/docs/regions-zones/global-regional-zonal-resources
+  - claim: "Regions are collections of zones, and zones have high-bandwidth, low-latency network connections to other zones in the same region"
+    source: https://docs.cloud.google.com/compute/docs/regions-zones
+  - claim: "A zone is a deployment area within a region, named as the region identifier plus a letter suffix, such as us-central1-a"
+    source: https://docs.cloud.google.com/compute/docs/regions-zones
+  - claim: "Putting resources in different zones in a region reduces the risk of an infrastructure outage affecting all resources simultaneously, and putting them in different regions provides an even higher degree of failure independence"
+    source: https://docs.cloud.google.com/compute/docs/regions-zones
+problem: "A team plans a Google Cloud footprint using instincts formed elsewhere and gets the scopes backwards: they assume the network is regional and must be rebuilt per region, that firewall rules are local to where they were written, and that a disk can follow a rebuilt instance into a neighbouring zone. Each assumption produces a design that works in one zone and fails the first time anything moves."
+builds: "The three location scopes, which resources actually sit in each, and the two cross-zone rules that follow — an instance cannot reach a disk in another zone, but can reach an instance in another zone because the network spanning them is global."
+catch: "The VPC network and the firewall rules are global while the subnet is regional. One network spans every region you ever use, and a firewall rule written for one workload applies far wider than the place it was written."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series · #008 · Foundations</div>
+  <h1 class="post-title">Global, Regional, Zonal: The Property That Decides Every Later Design</h1>
+  <p class="post-subtitle">Every Google Cloud resource has a location scope, and it is the quietest important fact on the platform — it decides what can reach the resource, and what fails alongside it.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Google Cloud · Networking · Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A team is asked to make an application multi-region. It runs happily in one zone of one region, and the plan they write is the one their instincts hand them: stand up a second network in the second region, copy the firewall rules across, and peer the two together.
+    </p>
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>The second network they built was never needed</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          A VPC network is a <em>global</em> resource. The existing network already spanned every region in the project. What the second region actually needed was a subnet — subnets are regional — inside the network that was already there.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Add a regional subnet to the existing global network. A second network is a deliberate isolation decision, not a step in expanding to another region.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>The firewall rule they copied was already in force</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Firewalls are global too. The rule written months earlier for the first region was already applying to the new one the moment its instances joined the network. Copying it created a duplicate; the real risk was the rules nobody re-read, which had quietly widened.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Read the existing rules before expanding, not after. Adding a region does not create a fresh security boundary — it enters an existing one.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>The rebuilt instance could not find its disk</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          An instance cannot access per-zone resources in a different zone, such as a disk. Rebuilding into the neighbouring zone to dodge a capacity problem left the data behind, because a zonal Persistent Disk does not follow.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Decide early whether the disk is zonal or regional. Moving a zone is not a redeploy; for zonal disks it is a data migration.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>The machine type was not available in the new zone</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Machine types are zonal resources. A shape that exists in one zone is not guaranteed in the zone next door, so a template that worked in the original zone failed on first launch elsewhere.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Check machine type availability per zone before committing a design to one, and prefer families available across the zones you intend to spread over.
+        </p>
+      </div>
+    </div>
+    <p>
+      All four come from the same root: assuming the scope of a resource rather than looking it up. The scopes are documented plainly, and they are not the ones an instinct formed on another platform supplies.
+    </p>
+
+    <div class="callout amber">
+      <strong>The one-line version</strong>
+      <p>A narrower scope can use a wider one — a zonal instance can use a regional subnet and a global image. The reverse never holds. Almost every surprise in this post is somebody expecting a wider resource to be narrow, or a narrow one to follow them around.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      There are three scopes. Global resources are accessible by resources in any region or zone. Regional resources are accessible only within the same region. Zonal resources are accessible only within the same zone, and may reach regional and global resources above them.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-008-location-scope.svg" alt="Diagram: the three location scopes nested inside one another, listing which Google Cloud resources are global, regional and zonal, with the two cross-zone rules for disks and instance-to-instance communication" />
+      <figcaption>Global contains regional contains zonal. The VPC network and firewall rules sit at the top; subnets are regional; instances, disks and machine types are zonal.</figcaption>
+    </figure>
+
+    <h3>What is actually in each scope</h3>
+    <p>
+      <strong>Global:</strong> VPC networks, firewalls, images, snapshots, instance templates, global static external IP addresses and Cloud Interconnects.
+    </p>
+    <p>
+      <strong>Regional:</strong> subnets, regional static external IP addresses, regional managed instance groups, regional instance templates and Cloud Interconnect attachments.
+    </p>
+    <p>
+      <strong>Zonal:</strong> compute instances, zonal Persistent Disks and Hyperdisks, machine types, zonal managed instance groups, GPUs and Cloud TPUs.
+    </p>
+    <p>
+      Two of those placements do most of the work. The network being global means one network spans your whole estate, so "add a region" is a subnet, not a build. And machine types being zonal means the menu of available shapes is a per-zone question rather than a per-region one.
+    </p>
+
+    <h3>The two cross-zone rules</h3>
+    <p>
+      They sit next to each other in the documentation and they pull in opposite directions, which is why the boundary is easy to misjudge.
+    </p>
+    <p>
+      An instance <strong>cannot</strong> access per-zone resources in a different zone, such as a disk. Storage does not reach across a zone boundary.
+    </p>
+    <p>
+      An instance <strong>can</strong> communicate with an instance in another zone, provided both belong to the same VPC network. Traffic does reach across, because the thing carrying it is global.
+    </p>
+    <p>
+      So a zone boundary is a hard wall for attachment and no wall at all for networking. Designs that treat it as uniformly hard build unnecessary per-zone plumbing; designs that treat it as uniformly soft discover the disk problem during an incident.
+    </p>
+
+    <h3>Zones and regions, precisely</h3>
+    <p>
+      Regions are collections of zones, and zones have high-bandwidth, low-latency network connections to other zones in the same region. A zone is a deployment area within a region, named as the region identifier plus a letter — <code>us-central1-a</code>.
+    </p>
+    <p>
+      That low-latency link between zones in a region is what makes spreading across zones cheap in practice. It is the reason the default answer to "how do I survive an outage" starts with multiple zones rather than multiple regions.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why Scope Is a Failure-Domain Question</h2>
+    <p>
+      Scope reads like an addressing detail. It is really a statement about what fails together, which is why it belongs this early in the series rather than in the networking phase.
+    </p>
+    <p>
+      Google's own guidance puts it plainly: putting resources in different zones in a region reduces the risk of an infrastructure outage affecting all resources simultaneously, and putting them in different regions provides an even higher degree of failure independence.
+    </p>
+    <p>
+      Read alongside the scope list, that produces a design rule. Anything zonal is something you need at least two of, in different zones, if it matters. Anything regional survives a zone but not a region. Anything global is not a redundancy problem at all — it is a blast-radius problem, because a mistake in it applies everywhere at once.
+    </p>
+
+    <div class="callout">
+      <strong>The uncomfortable corollary about global resources</strong>
+      <p>Global is convenient and it is also the widest possible blast radius. A firewall rule is global, so a rule loosened for one workload in one region is loosened for every region on that network. The same property that spares you from rebuilding the network per region removes the natural containment that a per-region network would have given you for free.</p>
+    </div>
+
+    <h3>What to actually decide, and when</h3>
+    <p>
+      The scope of a resource is fixed by the platform, so the decision is not what scope something has — it is which scope you choose when the platform offers both.
+    </p>
+    <p>
+      That choice appears repeatedly: a zonal or regional managed instance group, a zonal or regional Persistent Disk, a regional or global static external IP address. In each pair the wider option costs more or constrains more, and buys survival of a zone failure. Making that choice deliberately, per workload, is most of what "designing for availability" means on this platform.
+    </p>
+    <p>
+      The trap is defaulting. The zonal option is usually the simpler one to create, so an estate drifts toward zonal resources without anyone deciding that the application should not survive a zone.
+    </p>
+
+    <h3>Reading a resource's scope off its name</h3>
+    <p>
+      There is a practical habit worth forming early: the scope is usually visible in how a resource is addressed. A zonal thing needs a zone to identify it, a regional thing needs a region, and a global thing needs neither.
+    </p>
+    <p>
+      When a command or a Terraform resource asks for a zone, it is telling you the thing you are creating will not survive that zone. That is a more reliable signal than memory, and it works for services this post has not covered.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Expanding to a second region</td>
+          <td>Add a subnet to the existing network</td>
+          <td>VPC networks are global and already span every region. A second network is an isolation decision, not an expansion step.</td>
+        </tr>
+        <tr>
+          <td>Firewall rules when adding a region</td>
+          <td>Review the existing ones first</td>
+          <td>Firewalls are global. The new region enters rules already in force rather than starting from a clean boundary.</td>
+        </tr>
+        <tr>
+          <td>Persistent Disk: zonal or regional</td>
+          <td>Regional for anything that must survive a zone</td>
+          <td>An instance cannot attach a disk in another zone, so a zonal disk turns a zone move into a data migration.</td>
+        </tr>
+        <tr>
+          <td>Managed instance groups</td>
+          <td>Regional unless there is a reason not to</td>
+          <td>The zonal variant is easier to create and quietly decides the workload will not survive a zone failure.</td>
+        </tr>
+        <tr>
+          <td>Machine type selection</td>
+          <td>Verify availability in every zone you intend to use</td>
+          <td>Machine types are zonal. A shape present in one zone is not guaranteed next door, and the failure lands at first launch.</td>
+        </tr>
+        <tr>
+          <td>First step toward availability</td>
+          <td>Multiple zones in one region</td>
+          <td>Zones in a region have high-bandwidth, low-latency links, which is what makes spreading across them cheap enough to be the default.</td>
+        </tr>
+        <tr>
+          <td>Changes to a global resource</td>
+          <td>Treat as an estate-wide change</td>
+          <td>Global means every region at once. The blast radius of a mistake is the whole network, not the region you were thinking about.</td>
+        </tr>
+        <tr>
+          <td>Working out an unfamiliar resource's scope</td>
+          <td>Look at what identifies it</td>
+          <td>If it needs a zone to name it, it dies with that zone. That signal generalises to services this post does not list.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout amber">
+      <strong>The default that decides availability without a meeting</strong>
+      <p>Every zonal-or-regional pair has an easier half, and it is always the zonal one. An estate that never makes that choice explicitly ends up single-zone by accumulation — not because anyone decided the application could tolerate losing a zone, but because the simpler option was chosen eight times in a row.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Location scope is the least glamorous topic in this phase and the one that quietly constrains the most. It determines what a resource can attach to, what can talk to it, what fails with it, and how far a mistake in it travels.
+    </p>
+    <p>
+      The part worth carrying into the networking phase is the shape of the assignment: the network is global, its subnets are regional, and the machines are zonal. Almost every design question later in this series is a consequence of those three facts sitting at different levels.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#9 covers multi-region and dual-region locations: what those location types actually mean for storage, how they differ from simply running in two regions, and the choice they force between availability, latency and where your data is allowed to be.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/compute/docs/regions-zones/global-regional-zonal-resources" target="_blank" rel="noopener">Global, regional, and zonal resources</a></li>
+      <li><a href="https://docs.cloud.google.com/compute/docs/regions-zones" target="_blank" rel="noopener">Regions and zones</a></li>
+      <li><a href="https://docs.cloud.google.com/compute/docs/reference/rest/v1/machineTypes" target="_blank" rel="noopener">Compute Engine API: machineTypes</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/cloud-platform-resource-hierarchy" target="_blank" rel="noopener">Resource hierarchy</a></li>
+      <li><a href="https://docs.cloud.google.com/compute/docs/disks" target="_blank" rel="noopener">Storage options for Compute Engine</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
