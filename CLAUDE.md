@@ -123,11 +123,21 @@ window publishes daily, so the word identifies nothing.
 | **arch** | AWS Architecture Series — the next numbered topic in `ROADMAP.md` |
 | **intel** | AWS Daily Intelligence — rank yesterday's news, recommend one, then write on "write" |
 | **weekly** | AWS Weekly Intelligence — the Saturday roundup |
+| **lab** | The Weekly Lab for whichever cloud this window owns — the next week number, from `MORNING.md` |
 
 Set 2026-08-17, after "next daily post" was read as Daily Intelligence when it
 meant the daily architecture post, and a full Daily Intelligence post was
 written and thrown away. The ambiguity was noticed when the trigger words were
 first proposed, and writing it down was skipped — so it happened anyway.
+
+**`lab` is the only one of the four that means something different in each
+window.** In the AWS window it is the AWS Weekly Lab, in Azure the Azure Weekly
+Lab, in GCP the GCP Weekly Lab — the window decides the cloud, exactly as it
+does for `arch`. The other three words are AWS-only, because only AWS runs a
+daily intelligence series and only the AWS window owns three series at once.
+
+Labs have **no fixed publish day** and are never "due today". `MORNING.md`
+reports the next week number per series as an open item; `lab` writes that one.
 
 **If the word is ambiguous, ask before writing.** A one-line question costs
 nothing; a wrong 3,000-word post costs an hour and has to be deleted.
