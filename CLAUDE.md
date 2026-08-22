@@ -45,6 +45,18 @@ What it does, and why each part is there:
 - **Feeds fetched fresh** on Saturday for the Monday–Friday window, and the
   previous day's AWS news on weekdays.
 
+- **The three lab series, as open items rather than due ones.** AWS, Azure and
+  GCP Weekly Lab have no fixed publish day — a lab post's whole claim is that
+  the thing runs, so it goes out when it runs. The brief reports the next week
+  number per series and leaves it at that.
+
+**Lab series are matched on their label, never on the filename.** The AWS labs
+are `week-NN-*` and the GCP series began at `week-01-gcp-landing-zone`, so the
+two share a slug namespace. `_week_num()` in `sync_blog.py` numbers Weekly Lab
+posts by matching `week-(\d+)` against the slug and cannot tell them apart
+either — `AWS Weekly Lab`, `Azure Weekly Lab` and `GCP Weekly Lab` in `labels:`
+are the only thing that does.
+
 **It does not write posts, commit, push, or touch the verification badge.** That
 last one is deliberate and must stay that way: a badge asserts that a human
 checked the figures on a date, and a script stamping one would be making that

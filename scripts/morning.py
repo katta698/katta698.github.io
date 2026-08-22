@@ -56,6 +56,22 @@ WORKTREES = [
     ("gcp",   os.path.join(ENG, "katta698-gcp"),       "gcp"),
 ]
 
+# The three lab series have NO fixed publish day -- they go out when the lab is
+# actually built and working, which is the honest cadence for a post whose whole
+# claim is that the thing runs. So they are never reported as "due today"; they
+# are reported as open, with the week number that comes next.
+#
+# They are matched on their LABEL, not on the filename. The AWS labs are
+# week-NN-* and the GCP series began at week-01-gcp-landing-zone, so filename
+# prefixes cannot separate them -- and `_week_num()` in sync_blog.py, which
+# numbers Weekly Lab posts by matching week-(\d+) against the slug, cannot
+# either. The label is the only thing that distinguishes the series.
+LAB_SERIES = [
+    ("AWS Weekly Lab",   "aws",   52),
+    ("Azure Weekly Lab", "azure", 52),
+    ("GCP Weekly Lab",   "gcp",   52),
+]
+
 # prefix in posts/, roadmap file, human name, which window writes it
 ARCH_SERIES = [
     ("arch", "ROADMAP.md",       "AWS Architecture",   "aws"),
@@ -193,6 +209,52 @@ def next_numbers(today):
                 say("       %s" % _trim(h))
 
 
+def labs():
+    """Open, not due. No fixed day -- see LAB_SERIES."""
+    head("Labs (no fixed day - when the lab actually runs)")
+    posts_dir = os.path.join(ROOT, "posts")
+
+    # One pass over the frontmatter of every post, collecting label -> week
+    # numbers. Reading the whole file would be wasteful; the frontmatter ends at
+    # the second '---' and is never more than a couple of dozen lines.
+    seen = {label: [] for label, _, _ in LAB_SERIES}
+    for fn in os.listdir(posts_dir):
+        if not fn.endswith(".html"):
+            continue
+        try:
+            with io.open(os.path.join(posts_dir, fn), encoding="utf-8") as fh:
+                fm = []
+                for i, line in enumerate(fh):
+                    if i and line.strip() == "---":
+                        break
+                    fm.append(line)
+                    if i > 40:
+                        break
+        except OSError:
+            continue
+        blob = "".join(fm)
+        for label, _, _ in LAB_SERIES:
+            if label in blob:
+                # "Week 15 - ..." in the title is the authority. Fall back to the
+                # slug only if the title has no number.
+                m = (re.search(r"^title:.*?Week\s+(\d+)", blob, re.M | re.I)
+                     or re.search(r"^slug:\s*week-0*(\d+)", blob, re.M))
+                if m:
+                    seen[label].append(int(m.group(1)))
+
+    for label, window, total in LAB_SERIES:
+        nums = sorted(seen[label])
+        if nums:
+            say("  %-18s Week %d of %d done  ->  next is Week %d   (%s window)"
+                % (label, nums[-1], total, nums[-1] + 1, window))
+        else:
+            say("  %-18s nothing published yet  ->  Week 1   (%s window)"
+                % (label, window))
+    say("")
+    say("  These are open items, not due today. A lab post claims the thing runs,")
+    say("  so it publishes when it runs -- not on a day a calendar picked.")
+
+
 def _trim(s, n=140):
     s = re.sub(r"\s+", " ", s)
     return s if len(s) <= n else s[:n - 1] + "…"
@@ -290,6 +352,7 @@ def main():
 
     worktree_report(rebase=not args.no_rebase and not args.offline)
     next_numbers(today)
+    labs()
     aws_daily(today, args.offline)
     feeds(today, args.offline)
 
