@@ -6,6 +6,10 @@
     python scripts/publish.py --offline       # skip the checks that fetch vendor pages
     python scripts/publish.py arch-025        # scope the per-post checks to one post
     python scripts/publish.py --no-rebase     # already rebased by hand
+    python scripts/publish.py --attempts 6    # allow more re-converge rounds
+
+The per-post checks are scoped automatically to whatever is uncommitted under
+posts/, so naming a post is only needed to check something already committed.
 
 It stops before committing. It never commits and never pushes, because Jayanth
 pushes himself -- see CLAUDE.md, which this script exists to stop people
@@ -50,10 +54,23 @@ The order, and why each step is where it is
    nav on all the hand-built pages. Checking the pre-rebase tree checks something
    that will not be pushed.
 
-5. RE-CHECK the remote. If origin moved while steps 2-4 were running -- and with
-   four daily writers it does; ten commits landed in twenty-eight minutes on
-   2026-08-18 -- the tree just verified is already stale, and the honest answer
-   is to run again rather than to push it.
+5. RE-CONVERGE. If origin moved while steps 2-4 were running -- and with four
+   daily writers it does; ten commits landed in twenty-eight minutes on
+   2026-08-18 -- the tree just verified is already stale.
+
+   This used to print "run again" and exit 1. That could not converge: a full
+   run takes five to six minutes at 138 posts, mostly re-fetching every cited
+   page on the site, so by the time the human re-ran it origin had moved again.
+   On 2026-08-22 five consecutive attempts were outrun and the roundup was
+   published by running the checks by hand instead -- which is the drift this
+   script exists to prevent, arriving through the script rather than around it.
+
+   So it now converges by itself. On finding origin has moved it rebases,
+   re-syncs, and re-runs ONLY the site-wide checks, because only those can have
+   changed: whether this post's cited pages resolve does not depend on what
+   another window published. That loop body is a sync plus three fast local
+   checks rather than a full network pass, which is short enough to win the race,
+   and it repeats up to --attempts times before giving up honestly.
 
 6. REPORT what changed and print the exact git add line. Then stop.
 """
@@ -111,6 +128,51 @@ def dirty_tracked():
     return [l for l in git_lines("status", "--porcelain") if not l.startswith("??")]
 
 
+def changed_post_names():
+    """Post filenames this tree is about to publish, for scoping the checks.
+
+    Derived from git rather than passed in. Naming the post by hand was optional,
+    so forgetting it silently ran the expensive network checks across all 138
+    posts -- which is most of why a full run could not finish before another
+    window pushed.
+    """
+    out = []
+    for line in git_lines("status", "--porcelain"):
+        path = line[3:].strip().strip('"')
+        if path.startswith("posts/") and path.endswith(".html"):
+            out.append(os.path.basename(path)[:-len(".html")])
+    return out
+
+
+def prepublish_argv(args, scoped):
+    argv = [sys.executable, os.path.join(HERE, "prepublish.py")]
+    if args.offline:
+        argv.append("--offline")
+    if args.series:
+        argv += ["--series", args.series]
+    return argv + list(scoped)
+
+
+def rebase_onto_origin():
+    """Rebase, stashing tracked changes first. Returns (code, message)."""
+    tracked = dirty_tracked()
+    stashed = False
+    if tracked:
+        code, out = run("git", "stash", "push", "--", *[l[3:] for l in tracked])
+        stashed = code == 0 and "No local changes" not in out
+    code, out = run("git", "rebase", "origin/main")
+    if code:
+        return 1, ("  Rebase failed. Your work is %s.\n  Resolve it, then run "
+                   "again with --no-rebase." %
+                   ("in `git stash`" if stashed else "still in the tree"))
+    if stashed:
+        code, out = run("git", "stash", "pop")
+        if code:
+            return 1, ("  Rebase succeeded but restoring your changes hit a "
+                       "conflict.\n  They are safe in `git stash`.")
+    return 0, ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("posts", nargs="*",
@@ -120,6 +182,9 @@ def main():
                     help="skip the checks that fetch vendor pages")
     ap.add_argument("--no-rebase", action="store_true",
                     help="skip the fetch and rebase; you have already done it")
+    ap.add_argument("--attempts", type=int, default=4,
+                    help="how many times to re-converge when origin moves "
+                         "mid-run (default 4)")
     args = ap.parse_args()
 
     if not args.no_rebase:
@@ -172,24 +237,45 @@ def main():
         return 1
 
     step(4, "Pre-publish checks")
-    argv = [sys.executable, os.path.join(HERE, "prepublish.py")]
-    if args.offline:
-        argv.append("--offline")
-    if args.series:
-        argv += ["--series", args.series]
-    argv += args.posts
-    checks = subprocess.call(argv, cwd=ROOT)
+    scoped = args.posts or changed_post_names()
+    if scoped and not args.posts:
+        print("  scoping the per-post checks to: %s" % ", ".join(scoped))
+    checks = subprocess.call(prepublish_argv(args, scoped), cwd=ROOT)
 
-    step(5, "Did origin move while we worked?")
-    run("git", "fetch", "origin")
-    behind, ahead = behind_ahead()
-    if behind:
-        print("  origin/main gained %d commit(s) DURING this run." % behind)
-        print("  The tree just checked is already stale: Previous/Next and the")
-        print("  index are functions of every post on the site, so run this")
-        print("  again before committing.")
-    else:
-        print("  no, still level with origin/main")
+    step(5, "Re-converge if origin moved")
+    behind = 0
+    for attempt in range(1, max(1, args.attempts) + 1):
+        run("git", "fetch", "origin")
+        behind, _ahead = behind_ahead()
+        if not behind:
+            print("  level with origin/main"
+                  + (" after %d round(s)" % (attempt - 1) if attempt > 1 else ""))
+            break
+        if attempt == args.attempts:
+            print("  origin/main gained %d commit(s) again on the final "
+                  "attempt." % behind)
+            print("  Giving up rather than pushing a stale tree. Run again when "
+                  "the other windows are quiet.")
+            break
+        print("  origin/main gained %d commit(s) during this run "
+              "(round %d of %d)." % (behind, attempt, args.attempts - 1))
+        print("  Rebasing and re-checking the site-wide invariants; the per-post")
+        print("  checks already passed and cannot be changed by another window.")
+        code, out = rebase_onto_origin()
+        if code:
+            print(out)
+            return 1
+        code = subprocess.call([sys.executable, os.path.join(HERE, "sync_blog.py")],
+                               cwd=ROOT)
+        if code:
+            print("\n  sync_blog.py failed during re-converge.")
+            return 1
+        again = subprocess.call([sys.executable, os.path.join(HERE, "prepublish.py"),
+                                 "--sitewide-only"], cwd=ROOT)
+        if again:
+            checks = again
+            print("  site-wide checks FAILED after re-converging.")
+            break
 
     step(6, "What changed")
     changed = git_lines("status", "--porcelain")
@@ -209,7 +295,7 @@ def main():
     print("\n" + "=" * 74)
     if checks or behind:
         print("  NOT READY. %s" % ("Checks failed." if checks
-                                   else "origin moved; run again."))
+                                   else "origin still moving; run again."))
         print("=" * 74)
         return 1
     print("  Ready. Nothing has been committed or pushed -- that is deliberate.")

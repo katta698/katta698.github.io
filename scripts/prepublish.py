@@ -182,6 +182,9 @@ def main():
     ap.add_argument("--ci", action="store_true",
                     help="run the network checks but let them fail only on a "
                          "real defect, not on an unreachable page")
+    ap.add_argument("--sitewide-only", action="store_true",
+                    help="run only the checks that another window's push can "
+                         "invalidate; skip the per-post ones")
     args = ap.parse_args()
 
     if args.ci and args.offline:
@@ -201,6 +204,18 @@ def main():
 
     results, blocked = [], False
     for script, blocking, network, takes_series, takes_posts in CHECKS:
+        # --sitewide-only exists for publish.py's convergence loop. When another
+        # window pushes mid-run, the tree changes underneath us and has to be
+        # re-verified -- but only the site-wide invariants can actually have
+        # changed. Whether THIS post's cited pages resolve does not depend on
+        # what else landed, and re-fetching every link on every retry is what
+        # made the full run slower than the interval between pushes, so it could
+        # never finish against a tree that was still current.
+        #
+        # The site-wide checks are exactly those that take neither --series nor
+        # post names, because they look at every served page by design.
+        if args.sitewide_only and (takes_series or takes_posts):
+            continue
         if network and args.offline:
             results.append((script, "skipped (offline)"))
             continue
