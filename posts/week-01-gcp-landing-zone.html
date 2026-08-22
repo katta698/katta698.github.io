@@ -1,0 +1,650 @@
+---
+title: 'Week 1 — A GCP Landing Zone, and Why It Is Not Two Accounts'
+date: '2026-08-21T08:00:00'
+labels:
+- GCP
+- Terraform
+- GCP Weekly Lab
+slug: week-01-gcp-landing-zone
+---
+<div id="jk-post">
+
+<div class="meta">
+  <span class="stack-badge">Cloud Identity</span>
+  <span class="stack-badge">Resource Manager</span>
+  <span class="stack-badge">Folders</span>
+  <span class="stack-badge">Terraform</span>
+  <span class="stack-badge">HCP Terraform</span>
+</div>
+
+<h1>Week 1 — A GCP Landing Zone, and Why It Is Not Two Accounts</h1>
+
+<p class="post-subtitle">Fifteen months into an AWS lab, I started the Google Cloud one. The first
+thing I got wrong was assuming my account layout would carry over.</p>
+
+<div class="toc">
+  <h2>📋 In This Post</h2>
+  <ol>
+    <li><a href="#why">Why — The Problem This Solves</a></li>
+    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
+    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
+    <li><a href="#build">How We Built It — Step by Step</a></li>
+    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
+    <li><a href="#security">Security — Controls at Every Layer</a></li>
+    <li><a href="#cost">Cost</a></li>
+    <li><a href="#cleanup">Cleanup</a></li>
+    <li><a href="#references">References</a></li>
+    <li><a href="#takeaways">Key Takeaways</a></li>
+  </ol>
+</div>
+
+<h2 id="why">Why — The Problem This Solves</h2>
+
+<p>In AWS I run two accounts. One is governance — Organizations, SCPs, Identity
+Center, the audit trail. The other runs workloads. That split is the backbone of
+everything I have built for fifteen weeks, and when I opened Google Cloud I
+assumed I would rebuild it as two projects.</p>
+
+<p>That is wrong, and it is wrong in a way that quietly costs you the entire
+first phase of a governance roadmap.</p>
+
+<p>An AWS account is a heavyweight boundary. Creating one is a workflow. So you
+ration accounts and pack many workloads into each. A Google Cloud
+<strong>project</strong> is free, appears in seconds, and is the unit that owns
+IAM, quota, API enablement and billing attribution. Ration projects the way you
+ration accounts and every workload ends up sharing one IAM surface and one quota
+pool — precisely what the account split existed to prevent.</p>
+
+<div class="callout amber">
+  <p><strong>The mapping is one level up from where you expect.</strong> The AWS
+  account split maps onto folders. Projects multiply underneath, one per
+  workload, because they are cheap.</p>
+</div>
+
+<h3>Why teams do not already have this</h3>
+
+<p>Because the default path never asks you to. You sign in with a Google account,
+you get a project, and everything works. Projects created that way have
+<strong>no parent</strong> — they sit directly under a personal account with
+nothing above them. No folders. No organization policy. No inherited IAM.</p>
+
+<p>I had six such projects before I started, accumulated over years of
+coursework and API experiments, and not one of them could ever have policy
+applied to it. That is not a configuration mistake. A project owned by a
+<code>@gmail.com</code> account structurally cannot have a parent, because an
+organization hangs off a <em>domain you administer</em>, and nobody administers
+<code>gmail.com</code>.</p>
+
+<h3>The prerequisite nobody mentions</h3>
+
+<p>Folders, organization policy and VPC Service Controls all require an
+organization resource. An organization requires Cloud Identity. Cloud Identity
+requires a domain you own and can prove you own.</p>
+
+<p>So the real first task of a Google Cloud landing zone is not Terraform. It is
+obtaining an organization at all — and as I will get to in Challenges, there is
+no API for that.</p>
+
+<h2 id="skills">What You Need to Know — Skills &amp; Tools</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <h3>Google Cloud</h3>
+    <ul>
+      <li><strong>Cloud Identity Free</strong> — the identity layer that creates the organization</li>
+      <li><strong>Resource Manager</strong> — organizations, folders, projects</li>
+      <li><strong>Cloud IAM</strong> — and specifically how inheritance flows</li>
+      <li><strong>Service Usage</strong> — APIs are opt-in per project</li>
+      <li><strong>Cloud Billing</strong> — separate from the hierarchy, which matters more than it sounds</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Tooling</h3>
+    <ul>
+      <li><strong>Terraform</strong> ≥ 1.9, provider <code>hashicorp/google ~&gt; 6.0</code></li>
+      <li><strong>HCP Terraform</strong> for remote state</li>
+      <li><strong>gcloud CLI</strong> — and both of its credential stores</li>
+      <li>A registered domain you control</li>
+    </ul>
+  </div>
+</div>
+
+<h3>Concepts to understand before starting</h3>
+
+<div class="tag-grid">
+  <span>Organization ≠ account</span>
+  <span>Folder = policy attachment point</span>
+  <span>Project = IAM + quota + billing unit</span>
+  <span>IAM inherits downward</span>
+  <span>Billing is orthogonal to hierarchy</span>
+  <span>ADC ≠ gcloud auth login</span>
+</div>
+
+<p>The two that will bite an AWS engineer hardest:</p>
+
+<p><strong>IAM inherits.</strong> A role granted on a folder applies to every
+project beneath it — including projects that do not exist yet. AWS has no
+equivalent; a role in the hub account grants nothing in the workload account.
+This inverts how often you write bindings. Folder-level grants become few and
+deliberate, and you stop repeating them per project.</p>
+
+<p><strong>Billing is not in the tree.</strong> The billing account is not a node
+in the hierarchy. One billing account funds projects across any folder, and
+moving a project between folders does not change who pays. There is no payer
+account, no consolidated billing to design around. Cost separation comes from
+per-project budgets and labels.</p>
+
+<h2 id="architecture">Architecture — How It Fits Together</h2>
+
+<p>Four folders, four projects, and a state backend that lives outside Google
+Cloud entirely.</p>
+
+<svg viewBox="0 0 860 560" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="GCP landing zone: organization with platform and workloads folders, platform projects, and HCP Terraform managing state"
+     style="width:100%;height:auto;background:#ffffff;border:1px solid #e4e7ec;border-radius:8px">
+  <defs>
+    <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5f6368"/>
+    </marker>
+    <marker id="arwB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4285F4"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="26" font-family="Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#202124">Week 1 — Landing zone</text>
+
+  <!-- Organization -->
+  <rect x="230" y="46" width="400" height="46" rx="6" fill="#E8F0FE" stroke="#4285F4" stroke-width="2"/>
+  <circle cx="256" cy="69" r="11" fill="#4285F4"/>
+  <text x="256" y="74" text-anchor="middle" font-family="Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#fff">O</text>
+  <text x="276" y="65" font-family="Segoe UI,Arial,sans-serif" font-size="13" font-weight="600" fill="#202124">Organization</text>
+  <text x="276" y="81" font-family="Segoe UI,Arial,sans-serif" font-size="11" fill="#5f6368">Cloud Identity on a domain I own</text>
+
+  <!-- inheritance note -->
+  <path d="M 630 69 L 720 69 L 720 300" stroke="#4285F4" stroke-width="1.5" fill="none" stroke-dasharray="4 3" marker-end="url(#arwB)"/>
+  <text x="726" y="180" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#4285F4">IAM and</text>
+  <text x="726" y="194" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#4285F4">org policy</text>
+  <text x="726" y="208" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#4285F4">inherit</text>
+  <text x="726" y="222" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#4285F4">downward</text>
+
+  <line x1="430" y1="92" x2="430" y2="116" stroke="#5f6368" stroke-width="1.5"/>
+  <line x1="210" y1="116" x2="610" y2="116" stroke="#5f6368" stroke-width="1.5"/>
+  <line x1="210" y1="116" x2="210" y2="140" stroke="#5f6368" stroke-width="1.5" marker-end="url(#arw)"/>
+  <line x1="610" y1="116" x2="610" y2="140" stroke="#5f6368" stroke-width="1.5" marker-end="url(#arw)"/>
+
+  <!-- platform folder -->
+  <rect x="60" y="142" width="300" height="230" rx="6" fill="#F1F3F4" stroke="#5f6368" stroke-width="1.5"/>
+  <path d="M 76 158 h 26 l 5 7 h 25 v 16 h -56 z" fill="#F4B400"/>
+  <text x="146" y="174" font-family="Segoe UI,Arial,sans-serif" font-size="12.5" font-weight="700" fill="#202124">folder: platform</text>
+  <text x="76" y="196" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">the &ldquo;governance / hub account&rdquo;</text>
+
+  <rect x="76" y="208" width="268" height="36" rx="4" fill="#fff" stroke="#0F9D58" stroke-width="1.5"/>
+  <rect x="86" y="218" width="16" height="16" rx="3" fill="#0F9D58"/>
+  <text x="112" y="225" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="600" fill="#202124">network-hub</text>
+  <text x="112" y="238" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">Shared VPC host (Week 12)</text>
+
+  <rect x="76" y="250" width="268" height="36" rx="4" fill="#fff" stroke="#0F9D58" stroke-width="1.5"/>
+  <rect x="86" y="260" width="16" height="16" rx="3" fill="#0F9D58"/>
+  <text x="112" y="267" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="600" fill="#202124">logging</text>
+  <text x="112" y="280" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">log sinks, BigQuery</text>
+
+  <rect x="76" y="292" width="268" height="36" rx="4" fill="#fff" stroke="#0F9D58" stroke-width="1.5"/>
+  <rect x="86" y="302" width="16" height="16" rx="3" fill="#0F9D58"/>
+  <text x="112" y="309" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="600" fill="#202124">security</text>
+  <text x="112" y="322" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">Cloud KMS, Secret Manager</text>
+
+  <text x="76" y="352" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">split by blast radius, not convenience</text>
+
+  <!-- workloads folder -->
+  <rect x="460" y="142" width="300" height="230" rx="6" fill="#F1F3F4" stroke="#5f6368" stroke-width="1.5"/>
+  <path d="M 476 158 h 26 l 5 7 h 25 v 16 h -56 z" fill="#F4B400"/>
+  <text x="546" y="174" font-family="Segoe UI,Arial,sans-serif" font-size="12.5" font-weight="700" fill="#202124">folder: workloads</text>
+  <text x="476" y="196" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">the &ldquo;workload account&rdquo;</text>
+
+  <rect x="476" y="208" width="130" height="70" rx="4" fill="#fff" stroke="#DB4437" stroke-width="1.5"/>
+  <path d="M 490 222 h 20 l 4 5 h 18 v 12 h -42 z" fill="#DB4437"/>
+  <text x="490" y="256" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="600" fill="#202124">dev</text>
+  <text x="490" y="270" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">relaxed policy</text>
+
+  <rect x="620" y="208" width="130" height="70" rx="4" fill="#fff" stroke="#DB4437" stroke-width="1.5"/>
+  <path d="M 634 222 h 20 l 4 5 h 18 v 12 h -42 z" fill="#DB4437"/>
+  <text x="634" y="256" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="600" fill="#202124">prod</text>
+  <text x="634" y="270" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">strict policy</text>
+
+  <rect x="476" y="292" width="274" height="36" rx="4" fill="#fff" stroke="#9aa0a6" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="490" y="308" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="600" fill="#5f6368">one project per lab week, per env</text>
+  <text x="490" y="321" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#9aa0a6">Week 20 onwards — teardown = delete the project</text>
+
+  <text x="476" y="352" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">dev/prod are folders so policy can differ</text>
+
+  <!-- seed project -->
+  <rect x="230" y="396" width="180" height="52" rx="6" fill="#fff" stroke="#0F9D58" stroke-width="2"/>
+  <rect x="244" y="412" width="18" height="18" rx="3" fill="#0F9D58"/>
+  <text x="272" y="419" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="700" fill="#202124">lab-seed</text>
+  <text x="272" y="433" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">Terraform identity</text>
+  <line x1="320" y1="92" x2="320" y2="396" stroke="#5f6368" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arw)"/>
+
+  <!-- HCP -->
+  <rect x="480" y="396" width="230" height="52" rx="6" fill="#F5F0FF" stroke="#8C4FFF" stroke-width="2"/>
+  <rect x="496" y="412" width="18" height="18" rx="3" fill="#8C4FFF"/>
+  <text x="524" y="419" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="700" fill="#202124">HCP Terraform</text>
+  <text x="524" y="433" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">state — outside GCP entirely</text>
+
+  <!-- terraform apply -->
+  <rect x="60" y="396" width="140" height="52" rx="6" fill="#fff" stroke="#5f6368" stroke-width="1.5"/>
+  <text x="76" y="419" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="700" fill="#202124">terraform apply</text>
+  <text x="76" y="433" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">local, against ADC</text>
+
+  <path d="M 200 422 L 226 422" stroke="#5f6368" stroke-width="1.5" fill="none" marker-end="url(#arw)"/>
+  <path d="M 410 422 L 476 422" stroke="#8C4FFF" stroke-width="1.5" fill="none" marker-end="url(#arw)"/>
+  <text x="415" y="414" font-family="Segoe UI,Arial,sans-serif" font-size="9" fill="#8C4FFF">state</text>
+
+  <path d="M 130 396 L 130 380 L 210 380" stroke="#5f6368" stroke-width="1.5" fill="none" marker-end="url(#arw)"/>
+  <text x="140" y="374" font-family="Segoe UI,Arial,sans-serif" font-size="9" fill="#5f6368">creates folders + projects</text>
+
+  <text x="20" y="492" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">Billing account is deliberately absent from this tree — it is orthogonal to the hierarchy and funds every project regardless of folder.</text>
+  <text x="20" y="510" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">Nothing here bills per hour. Organizations, folders, projects and IAM bindings are free.</text>
+</svg>
+
+<div class="callout">
+  <p><strong>Why the platform projects are split three ways.</strong> Each has a
+  different blast radius. Compromise <em>network-hub</em> and an attacker
+  rewrites the network. Compromise <em>logging</em> and they read every log line
+  in the estate. Compromise <em>security</em> and they hold the keys. Collapsed
+  into one project, whoever can rotate a KMS key can also rewrite the network.
+  Solo, that sounds academic — but projects are free, so the correct structure
+  costs nothing.</p>
+</div>
+
+<h2 id="build">How We Built It — Step by Step</h2>
+
+<h3>Step 1 — Get an organization, which you cannot do with Terraform</h3>
+
+<p>There is no <code>gcloud organizations create</code>. The subcommands are
+<code>list</code>, <code>describe</code>, and three IAM verbs. No create, no
+delete. There is no Resource Manager API for it either.</p>
+
+<p>An organization is not provisioned. It <em>appears</em> as a side effect of
+verifying a domain in Cloud Identity. So the first step of an
+infrastructure-as-code landing zone is a web form, and there is no way around
+that.</p>
+
+<p>I signed up for <strong>Cloud Identity Free</strong> — not Workspace, which is
+paid and irrelevant here — using a domain I already owned. Because the domain is
+registered with Google, verification was automatic; no TXT record was needed.</p>
+
+<div class="callout amber">
+  <p><strong>Cloud Identity Free has no mailbox.</strong> My domain has no MX
+  records, so the super-admin address cannot receive email. Set the recovery
+  address to an inbox you actually read, during sign-up, and enrol a second
+  factor immediately. There is no password-reset link for an address that
+  cannot receive mail.</p>
+</div>
+
+<h3>Step 2 — Grant yourself the ability to see your own organization</h3>
+
+<p>Verification created the organization. <code>gcloud organizations list</code>
+then reported <em>zero</em> items for several minutes, which sent me looking for
+a problem that did not exist. More on that in Challenges.</p>
+
+<p>When an organization is created, Google grants your whole domain exactly two
+roles: <code>billing.creator</code> and <code>projectCreator</code>. Nothing
+that lets you see or administer the organization itself. Being Cloud Identity
+super admin does not make you a Google Cloud organization admin — they are
+different systems. You grant it to yourself:</p>
+
+<div class="code-label">bash</div>
+<pre class="code-block"><code>gcloud organizations add-iam-policy-binding $ORG_ID \
+  --member="user:me@example.com" \
+  --role="roles/resourcemanager.organizationAdmin"</code></pre>
+
+<p>Then <code>folderCreator</code>, because — and this is easy to miss —
+Organization Administrator lets you <em>manage</em> folders but does not include
+<code>resourcemanager.folders.create</code>. Week 1 fails without it.</p>
+
+<h3>Step 3 — Cross the billing boundary</h3>
+
+<p>My billing account belonged to the old personal identity. The new
+organization admin is a different principal and inherits nothing from it. No
+organization-level role reaches a billing account that sits outside the
+organization.</p>
+
+<p>Signed in as the <em>old</em> identity:</p>
+
+<div class="code-label">bash</div>
+<pre class="code-block"><code>gcloud billing accounts add-iam-policy-binding $BILLING_ACCOUNT \
+  --member="user:me@example.com" \
+  --role="roles/billing.user"</code></pre>
+
+<p>Without this, <code>google_project</code> creation fails on the billing
+association, and the error does not obviously point at a cross-identity
+permission problem.</p>
+
+<h3>Step 4 — A seed project, and where state lives</h3>
+
+<p>I built a small bootstrap configuration that creates one project to anchor the
+lab, enables seven APIs on it, and nothing else.</p>
+
+<p>My first design put Terraform state in a GCS bucket that the same
+configuration creates — which means the configuration cannot store its own state
+until after it has run once. The standard dance: apply with local state, add the
+backend block, <code>terraform init -migrate-state</code>.</p>
+
+<p>I then moved it to HCP Terraform, to match the AWS lab and keep one workspace
+list across both clouds. Doing both in one afternoon made something obvious that
+I would not otherwise have noticed:</p>
+
+<div class="callout green">
+  <p><strong>Had I started on HCP, the chicken-and-egg would not have existed.</strong>
+  A cloud-native backend needs a bucket that Terraform must create before it can
+  store state. HCP needs nothing to pre-exist inside Google Cloud. That is a real
+  argument for an external backend at the bootstrap layer, separate from any
+  consistency argument.</p>
+</div>
+
+<h3>Step 5 — The hierarchy, in Terraform</h3>
+
+<p>Folders first. <code>dev</code> and <code>prod</code> are folders rather than a
+label on a project, because the entire point is that policy attaches to them. An
+organization policy on <code>workloads/prod</code> constrains every project
+beneath it, including ones that do not exist yet. A label constrains nothing.</p>
+
+<div class="code-label">terraform</div>
+<pre class="code-block"><code>resource "google_folder" "platform" {
+  display_name = "platform"
+  parent       = "organizations/${var.org_id}"
+}
+
+resource "google_folder" "workloads" {
+  display_name = "workloads"
+  parent       = "organizations/${var.org_id}"
+}
+
+resource "google_folder" "prod" {
+  display_name = "prod"
+  parent       = google_folder.workloads.name
+}</code></pre>
+
+<p>Then a project-factory module every later week reuses, so projects are never
+created ad hoc:</p>
+
+<div class="code-label">terraform</div>
+<pre class="code-block"><code>resource "google_project" "this" {
+  name            = var.display_name
+  project_id      = var.project_id
+  folder_id       = var.folder_id
+  billing_account = var.billing_account
+
+  # The default network ships with permissive firewall rules nobody chose.
+  # Every network in this lab is created explicitly.
+  auto_create_network = false
+
+  labels = local.labels
+}
+
+resource "google_project_service" "this" {
+  for_each = toset(var.activate_apis)
+
+  project            = google_project.this.project_id
+  service            = each.value
+  disable_on_destroy = false
+}</code></pre>
+
+<p><code>activate_apis</code> defaults to an empty list. A project that enables
+nothing has the smallest possible surface, and each week adds only what it uses.
+For contrast, an old personal project of mine had 38 APIs enabled from years of
+experimenting — none of them costing anything, all of them latent blast radius.</p>
+
+<h3>Verifying it actually works</h3>
+
+<p>Building and proving are different claims. Three checks, in increasing order
+of how much I trust them.</p>
+
+<p><strong>1. Terraform agrees with itself.</strong> A second plan should report
+no changes, and the exit code says so without reading prose:</p>
+
+<div class="code-label">bash</div>
+<pre class="code-block"><code>terraform plan -detailed-exitcode   # 0 = no changes, 2 = drift</code></pre>
+
+<p><strong>2. The cloud agrees with Terraform.</strong> State can be confidently
+wrong, so I query Google Cloud directly rather than trusting it:</p>
+
+<div class="code-label">bash</div>
+<pre class="code-block"><code>gcloud resource-manager folders list --organization=$ORG_ID
+gcloud projects describe my-lab-seed \
+  --format="value(projectId,lifecycleState,parent.id)"</code></pre>
+
+<p>The <code>parent.id</code> field is the one that matters — it is the
+difference between a project that is <em>in</em> the hierarchy and one that
+merely exists.</p>
+
+<p><strong>3. The console shows what I claim it shows.</strong></p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-01-gcp-landing-zone/docs/blog/screenshots/02-resource-hierarchy.png"
+       alt="Google Cloud Manage resources page showing the organization with platform and workloads folders and the lab seed project"/>
+  <figcaption>The hierarchy in Manage resources. The organization ID is masked by
+  the capture tooling before the file is written — see Security.</figcaption>
+</figure>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-01-gcp-landing-zone/docs/blog/screenshots/01-hcp-workspace.png"
+       alt="HCP Terraform workspace showing 15 resources and local execution mode"/>
+  <figcaption>The HCP workspace: 15 resources, execution mode Local. Local
+  execution means there is no run history to show — that arrives in Week 5.</figcaption>
+</figure>
+
+<h2 id="challenges">Challenges — What Actually Went Wrong</h2>
+
+<div class="challenge-card">
+  <h3>1. <code>gcloud organizations list</code> lied</h3>
+  <p>The organization existed and was <code>ACTIVE</code>. The CLI reported
+  <em>Listed 0 items</em> for several minutes afterwards, and I went looking for
+  a provisioning delay that was not the problem.</p>
+  <p>The cause: <code>gcloud</code> queries the <strong>v3</strong> Resource
+  Manager API, which returns only organizations you hold
+  <code>resourcemanager.organizations.get</code> on. A raw <strong>v1</strong>
+  <code>organizations:search</code> call with the same credentials returned it
+  immediately. Zero items is not evidence of absence — it is evidence of missing
+  permission, and the two look identical from the CLI.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>2. Verifying the domain did not create the organization</h3>
+  <p>I expected the organization at verification. It appeared only when the new
+  admin account first signed in to the Cloud console and accepted the terms.
+  Combined with the previous item, this produced a stretch where I could not tell
+  whether the organization did not exist yet or existed and was invisible.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>3. Terraform ignored the credentials I had just created</h3>
+  <p><code>gcloud auth login</code> authenticates the CLI. The Terraform provider
+  reads <strong>Application Default Credentials</strong>, a separate store. Two
+  logins, two token files, and only one of them is what Terraform uses.</p>
+  <p>Worse, the ADC consent screen has checkboxes that are <strong>not ticked by
+  default</strong>. Clicking through produced a confident-looking success followed
+  by <em>&ldquo;cloud-platform scope is required but not consented&rdquo;</em>. The
+  page looks complete when nothing is selected.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>4. Projects are slow, and folders are not</h3>
+  <p>Measured on the apply: folders created in <strong>11–12 seconds</strong>.
+  Projects took <strong>3m15s, 3m50s and 5m33s</strong>. Nothing was wrong — that
+  is just how long project creation takes. Worth knowing before you assume an
+  apply has hung, and worth designing around if a week creates many projects.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>5. My screenshot tooling leaked an organization ID</h3>
+  <p>The worst one, and the most instructive. My redaction pass masked text nodes
+  and <code>value</code> <em>attributes</em>. The Cloud console renders the
+  organization ID in a read-only <code>&lt;input&gt;</code>, whose displayed
+  content is the DOM <em>property</em> — a different thing that the attribute pass
+  never touched. My verification step then checked <code>innerText</code>, which
+  excludes input values entirely.</p>
+  <p>So the redactor missed it, the assertion designed to catch exactly that
+  missed it too, and a screenshot with a visible organization ID was written to
+  disk and reported as verified. Both layers now read form-control values.</p>
+  <p>The lesson generalises: a verification step that shares an assumption with
+  the thing it verifies is not a verification step.</p>
+</div>
+
+<h2 id="security">Security — Controls at Every Layer</h2>
+
+<ul>
+  <li><strong>No service account keys anywhere.</strong> Not one, in the whole
+  lab. Local runs use ADC; CI moves to Workload Identity Federation in Week 5.
+  If something appears to need a key, that is a signal to redesign, not to
+  create one.</li>
+
+  <li><strong>Least API enablement.</strong> Two or three APIs per project,
+  explicit in code, rather than whatever accumulates.</li>
+
+  <li><strong>No default network.</strong> <code>auto_create_network = false</code>
+  everywhere, so the permissive default firewall rules never exist to be
+  forgotten about.</li>
+
+  <li><strong>Blast-radius separation.</strong> Network, logging and key
+  management in three separate projects with three separate IAM surfaces.</li>
+
+  <li><strong><code>prevent_destroy</code> on the seed project.</strong> The
+  project that anchors the lab should not be removable by a mistyped command.</li>
+
+  <li><strong>No account identifiers in the repository.</strong> Organization ID,
+  billing account ID and project numbers live only in a gitignored
+  <code>terraform.tfvars</code>. I swept the staged content before the first push
+  and found two of my own documents had leaked a billing account ID into prose —
+  caught before publishing, not after.</li>
+
+  <li><strong>Screenshots are redacted programmatically.</strong> The capture
+  script masks identifiers, then refuses to write the file if any survive, and
+  refuses to write it if the page turns out to be a sign-in screen. That last
+  guard exists because an expired session once produced two published figures
+  that were both pictures of a login form.</li>
+</ul>
+
+<h2 id="cost">Cost</h2>
+
+<p><strong>Zero.</strong> Not &ldquo;a few cents&rdquo; — actually nothing.</p>
+
+<div class="grid-2">
+  <div class="card">
+    <h3>Free by design</h3>
+    <ul>
+      <li>Cloud Identity Free at this user count</li>
+      <li>The organization resource</li>
+      <li>Folders — no charge, no quota cost</li>
+      <li>Projects — free; you pay for what runs in them</li>
+      <li>IAM bindings and API enablement</li>
+      <li>HCP Terraform free tier</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Worth doing anyway</h3>
+    <p>Set a budget alert before deploying anything with a per-hour price. A
+    landing zone costs nothing, but it is the thing every future week bills
+    through, and the guardrail is easier to add now than to remember later.</p>
+  </div>
+</div>
+
+<p>This is the part that makes the &ldquo;projects are free&rdquo; argument
+concrete. Doing the hierarchy <em>correctly</em> — four folders, three separated
+platform projects — cost exactly the same as doing it badly.</p>
+
+<h2 id="cleanup">Cleanup</h2>
+
+<p><strong>There is none, deliberately.</strong> Week 1 is permanent
+infrastructure; every later week sits inside the hierarchy it creates, so tearing
+it down orphans the entire lab.</p>
+
+<p>The cleanup script refuses to run without an explicit flag:</p>
+
+<div class="code-label">bash</div>
+<pre class="code-block"><code>if [[ "${1:-}" != "--i-really-mean-it" ]]; then
+  echo "Refusing: week 01 is permanent infrastructure." &gt;&amp;2
+  exit 1
+fi</code></pre>
+
+<p>One thing I did tear down: the GCS state bucket, once state moved to HCP. A
+bucket named <code>-tfstate-</code> holding an out-of-date state file is a trap
+for whoever reads it next, including me in six months. Deleting it required
+<code>force_destroy = true</code> first, because it was versioned and non-empty.</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li><a href="https://docs.cloud.google.com/resource-manager/docs/cloud-platform-resource-hierarchy">Resource hierarchy</a> — organizations, folders, projects</li>
+  <li><a href="https://docs.cloud.google.com/resource-manager/docs/creating-managing-organization">Creating and managing organizations</a></li>
+  <li><a href="https://docs.cloud.google.com/resource-manager/docs/creating-managing-folders">Creating and managing folders</a></li>
+  <li><a href="https://docs.cloud.google.com/iam/docs/overview">IAM overview</a> — including policy inheritance</li>
+  <li><a href="https://docs.cloud.google.com/identity/docs/set-up-cloud-identity-admin">Set up Cloud Identity</a></li>
+  <li><a href="https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/google_folder">Terraform <code>google_folder</code></a></li>
+  <li><a href="https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/google_project">Terraform <code>google_project</code></a></li>
+  <li><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab">The code for this week</a></li>
+</ul>
+
+<h2 id="takeaways">Key Takeaways</h2>
+
+<ol>
+  <li><strong>The AWS account split maps onto folders, not projects.</strong> A
+  project is free and disposable and owns IAM, quota and billing attribution. If
+  you find yourself rationing projects, you have imported a constraint that does
+  not exist here.</li>
+
+  <li><strong>IAM inherits downward, and that changes how much you write.</strong>
+  A folder binding covers projects that do not exist yet. Folder-level grants
+  should be few and deliberate.</li>
+
+  <li><strong>Billing is orthogonal to the hierarchy.</strong> There is no payer
+  account to design around. Cost separation is budgets and labels.</li>
+
+  <li><strong>You cannot script your way to an organization.</strong> No API, no
+  Terraform resource. It appears when a domain is verified and someone from that
+  domain signs in. Plan for a manual first step.</li>
+
+  <li><strong>An empty CLI result is not proof of absence.</strong>
+  <code>organizations list</code> returning zero meant &ldquo;you lack a
+  permission&rdquo;, not &ldquo;nothing exists&rdquo;.</li>
+
+  <li><strong>Two credential stores.</strong> <code>gcloud auth login</code> and
+  <code>gcloud auth application-default login</code> are not the same thing, and
+  Terraform only cares about the second.</li>
+</ol>
+
+<h3>What I&rsquo;d do differently in production</h3>
+
+<ul>
+  <li><strong>Do not use the super admin as a daily driver.</strong> I granted
+  Organization Administrator to the same identity that owns Cloud Identity
+  super-admin. That is one account away from total compromise. In production
+  these are separate identities, with super admin kept as break-glass. I am
+  doing that split properly in Week 7, and I am flagging it here rather than
+  quietly leaving it.</li>
+
+  <li><strong>Remote execution from day one.</strong> These workspaces run local
+  execution, so there is no run history and no approval gate — a plan I read on my
+  own laptop is the only record. Real teams need Workload Identity Federation and
+  remote runs before the first apply, not in Week 5.</li>
+
+  <li><strong>Organization policy in the same change as the folders.</strong> I
+  created <code>dev</code> and <code>prod</code> as separate folders precisely so
+  they could carry different constraints, and then did not add any constraints —
+  that is Week 2. For a real landing zone, an empty <code>prod</code> folder that
+  enforces nothing is a false sense of separation.</li>
+
+  <li><strong>Budget alerts before the hierarchy, not after.</strong> Nothing here
+  costs money, which made it easy to defer the guardrail. The right order is
+  guardrail first.</li>
+
+  <li><strong>Group-based IAM, not user-based.</strong> Every binding I wrote
+  names a user. Production binds to groups so that access survives people joining
+  and leaving. Week 9.</li>
+</ul>
+
+<p>Next week: organization policy — putting actual constraints on the folders
+this week created, and finding out which of them Google enforces the way I
+expect.</p>
+
+</div>

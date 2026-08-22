@@ -828,7 +828,7 @@ CHATGPT_MARKERS = [
 # At 3 the series label evicted the most specific tag, and the Kubernetes pill
 # disappeared entirely because its only three posts were all in the series.
 MAX_TAGS = 4
-CATEGORY_ORDER = ["All", "AWS Architecture Series", "Azure Architecture Series", "GCP Architecture Series", "AWS Weekly Lab", "AWS Daily Intelligence", "AWS Weekly Intelligence", "Azure Weekly Intelligence", "GCP Weekly Intelligence", "30 Days of AWS Terraform", "AWS", "Azure", "GCP", "Terraform", "Databases & Ops", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
+CATEGORY_ORDER = ["All", "AWS Architecture Series", "Azure Architecture Series", "GCP Architecture Series", "AWS Weekly Lab", "GCP Weekly Lab", "AWS Daily Intelligence", "AWS Weekly Intelligence", "Azure Weekly Intelligence", "GCP Weekly Intelligence", "30 Days of AWS Terraform", "AWS", "Azure", "GCP", "Terraform", "Databases & Ops", "Kubernetes", "GitOps", "AI", "Tech", "Career", "Health", "Life"]
 
 NAV_SVG = """<svg width="30" height="30" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
   <rect width="80" height="80" rx="16" fill="#11140F"/>
@@ -1974,6 +1974,7 @@ CLOUD_BY_LABEL = [
     ("Azure Weekly Intelligence", "cloud cloud-azure"),
     ("GCP Architecture Series", "cloud cloud-gcp"),
     ("GCP Weekly Intelligence", "cloud cloud-gcp"),
+    ("GCP Weekly Lab", "cloud cloud-gcp"),
     ("AWS Architecture Series", "cloud cloud-aws"),
     ("AWS Daily Intelligence", "cloud cloud-aws"),
     ("AWS Weekly Intelligence", "cloud cloud-aws"),
@@ -2470,6 +2471,10 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
          "date": p["date_fmt"], "y": p["date"].year}
         for p in lab_posts
     ])
+    # The GCP weekly lab. Selected by tag, not by slug: both weekly labs number
+    # their posts "week-NN", so _week_num() matches either and the tag is the
+    # only thing that keeps AWS Week 1 and GCP Week 1 apart.
+    gcplab_posts = sorted([p for p in posts if "GCP Weekly Lab" in p["tags"]], key=_week_num)
     arch_series_json = json.dumps([
         {"n": i+1, "slug": p["slug"], "title": p["title"].split(" — ", 1)[-1] if " — " in p["title"] else p["title"], "date": p["date_fmt"], "y": p["date"].year}
         for i, p in enumerate(reversed(arch_posts))
@@ -2526,6 +2531,10 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     _lab_feed = [
         _feed_item(p, _week_num(p), _re.sub(r'^Week \d+\s*[-–—]\s*', '', p["title"]))
         for p in sorted(lab_posts, key=_week_num, reverse=True)[:3]
+    ]
+    _gcplab_feed = [
+        _feed_item(p, _week_num(p), _re.sub(r'^Week \d+\s*[-–—]\s*', '', p["title"]))
+        for p in sorted(gcplab_posts, key=_week_num, reverse=True)[:3]
     ]
     # Daily Intelligence — titles read "AWS Daily Intelligence #N - Topic"
     # (hyphen separator, unlike the arch series' em dash).
@@ -2606,6 +2615,8 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
                    "href": "/blog/?tag=gcp+architecture+series"},
         "lab":    {"items": _lab_feed,    "count": len(lab_posts),
                    "href": "/blog/?tag=aws+weekly+lab"},
+        "gcplab": {"items": _gcplab_feed, "count": len(gcplab_posts),
+                   "href": "/blog/?tag=gcp+weekly+lab"},
         "daily":  {"items": _daily_feed,  "count": len(daily_posts),
                    "href": "/blog/?tag=aws+daily+intelligence"},
         "weekly": {"items": _weekly_feed, "count": len(weekly_posts),
@@ -3056,7 +3067,8 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
         ['arch','Arch',      'aws',   'AWS Architecture Series — one enterprise pattern at a time, with the decisions and trade-offs behind it'],
         ['az','Azure',       'azure', 'Azure Architecture Series — the same treatment, on Azure, from the basics upward'],
         ['gcp','GCP',        'gcp',   'GCP Architecture Series — the same treatment, on Google Cloud, from the basics upward'],
-        ['lab','Lab',        'aws',   'AWS Weekly Lab — one production-grade platform capability built end to end each week'],
+        ['lab','AWS Lab',    'aws',   'AWS Weekly Lab — one production-grade platform capability built end to end each week'],
+        ['gcplab','GCP Lab', 'gcp',   'GCP Weekly Lab — the same weekly build, on Google Cloud, from the landing zone up'],
         ['daily','Daily',    'aws',   'AWS Daily Intelligence — what AWS shipped, and whether it actually changes anything'],
         ['weekly','AWS Wk',  'aws',   'AWS Weekly Intelligence — everything AWS shipped that week, ranked, in one place'],
         ['azweekly','Az Wk', 'azure', 'Azure Weekly Intelligence — everything Azure shipped that week, ranked, in one place'],
@@ -3551,7 +3563,8 @@ def main():
         _series_entry("AWS Architecture Series", "AWS Architecture", "aws+architecture+series"),
         _series_entry("Azure Architecture Series", "Azure Architecture", "azure+architecture+series"),
         _series_entry("GCP Architecture Series", "GCP Architecture", "gcp+architecture+series"),
-        _series_entry("AWS Weekly Lab", "Weekly Lab", "aws+weekly+lab", total=52),
+        _series_entry("AWS Weekly Lab", "AWS Weekly Lab", "aws+weekly+lab", total=52),
+        _series_entry("GCP Weekly Lab", "GCP Weekly Lab", "gcp+weekly+lab", total=53),
         _series_entry("AWS Daily Intelligence", "AWS Daily", "aws+daily+intelligence"),
         _series_entry("AWS Weekly Intelligence", "AWS Weekly", "aws+weekly+intelligence"),
         # Azure and GCP weekly were publishing but absent from this list, so the
