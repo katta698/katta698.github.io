@@ -339,6 +339,46 @@ Two files per post:
 
 **Always edit `blog/<slug>/index.html` for live fixes. `posts/` is for RAG only.**
 
+## Never write about this publishing pipeline failing — ALL series
+
+**Standing instruction, confirmed with Jay 2026-08-21 and reconfirmed 2026-08-22.
+Applies to every post in every series — AWS, Azure, GCP, weekly labs,
+architecture, intelligence. Permanently.**
+
+Do not put lines like these into a published post:
+
+- *"The screenshot tooling leaked a member account ID"*
+- *"The redaction placeholder rendered as an HTML tag"*
+- *"two of my own documents had leaked a billing account ID into prose"*
+
+Not as a challenge card, not as an aside, not as a footnote.
+
+**Describe the control, never the incident.**
+
+| | |
+| --- | --- |
+| Right | "The capture script masks organization IDs, billing account IDs and project numbers, and refuses to write the file if any survive redaction." |
+| Wrong | "It once failed to, and here is what went wrong." |
+
+**Why.** A post whose subject is handling account data carefully undercuts itself
+by opening with a time it did not. It invites the reader to distrust every other
+figure in the series, and it is off-topic — the reader came for the cloud, not
+for the author's screenshot script.
+
+**Scope: this is only about the blog, capture and publishing tooling.** Real
+failures against a cloud provider are exactly what a Challenges section is for,
+and they should stay honest and specific — an API that returned an empty list
+instead of a permission error, a resource that took five minutes, a consent
+screen that silently skipped a scope. Keep those.
+
+If a tooling failure produces a genuinely generalisable lesson, state it as a
+design rule in the Security section, with the code linked as the evidence.
+
+**Already published under the old habit:** `posts/week-15-cloudtrail-audit-forensics.html`
+carries two such lines in its Challenges section. Left in place deliberately —
+editing published content is Jay's call, not a silent cleanup. Raise it, do not
+rewrite it.
+
 ## Verification badge — REQUIRED on every technical post, ALL series
 
 Applies to **every** series: AWS Weekly Lab, Architecture Series, and AWS Daily
