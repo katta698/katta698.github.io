@@ -2,6 +2,12 @@
 
 ## Workflow rules
 
+- **At the start of the day, read `MORNING.md` in this folder.** It is written
+  into all four worktrees by a scheduled task at logon, and says what is due
+  today, which number each series is on with its roadmap line, and — on
+  Saturdays — the state of every feed the roundups depend on. Re-run it by hand
+  with `python scripts/morning.py` when the brief is stale, which on a Saturday
+  means any time you start writing hours after logon.
 - **When the post is written, run one command:**
   ```
   python scripts/publish.py
@@ -12,6 +18,41 @@
 - Always `git pull --rebase` before any edits. Three other worktrees publish to this same branch, so `origin/main` moves without you.
 - Never commit or push without explicit instruction. Jayanth pushes himself.
 - After `sync_blog.py` runs, stage ALL modified files under `blog/` — not just the new post's directory. Older posts get regenerated too (widgets, date format, CSS).
+
+### The morning brief
+
+`scripts/morning.py` runs once, from the `main` window's scheduled task, and
+covers all four worktrees. **Do not run it in each window.** Four copies would
+mean four rebases racing each other and four identical feed fetches; the whole
+point is that the work happens once and the *output* is shared.
+
+It writes `MORNING.md` into every worktree rather than only into `main`, because
+a window can only be in one directory at a time — a brief that existed only in
+the site folder would be one the three cloud windows could not read. The file is
+gitignored: it is a briefing, not content.
+
+What it does, and why each part is there:
+
+- **What is due today**, from the cadence rules rather than from memory: three
+  architecture posts every day, AWS Daily Intelligence Tuesday to Saturday, the
+  three Weekly Intelligence roundups on Saturday. Seven posts land on a Saturday.
+- **All four worktrees** fetched and reported, and rebased when clean. Never when
+  dirty — sweeping a half-written post into a stash is not a thing a background
+  task should do. A dirty worktree is reported and left alone.
+- **The next number per series**, with the matching roadmap line. Where a number
+  matches more than one line it prints all of them rather than choosing, because
+  the AWS roadmap restarts numbering per phase and a wrong pick costs a post.
+- **Feeds fetched fresh** on Saturday for the Monday–Friday window, and the
+  previous day's AWS news on weekdays.
+
+**It does not write posts, commit, push, or touch the verification badge.** That
+last one is deliberate and must stay that way: a badge asserts that a human
+checked the figures on a date, and a script stamping one would be making that
+claim on nobody's behalf. See the verification section below.
+
+It exists because the mechanical half of a publishing morning is forgettable and
+its failure mode is silent. A roundup built from a truncated feed looks exactly
+like a complete one.
 
 ### Why there is one command
 
