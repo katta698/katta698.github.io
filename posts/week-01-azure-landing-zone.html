@@ -1,0 +1,381 @@
+---
+title: 'Week 1 — The Policy Was Perfect and It Governed Nothing'
+date: '2026-08-22T11:20:00'
+labels:
+- Azure
+- Terraform
+- Azure Weekly Lab
+slug: week-01-azure-landing-zone
+---
+<div id="jk-post">
+
+<div class="meta">
+  <span class="stack-badge">Management Groups</span>
+  <span class="stack-badge">Azure Policy</span>
+  <span class="stack-badge">Subscription Alias API</span>
+  <span class="stack-badge">Entra Workload Identity</span>
+  <span class="stack-badge">Terraform</span>
+  <span class="stack-badge">HCP Terraform</span>
+</div>
+
+<h1>Week 1 — The Policy Was Perfect and It Governed Nothing</h1>
+
+<p class="post-subtitle">A deny rule that was correctly written, correctly
+assigned, and enforcing — while deployments it should have blocked sailed
+straight through. The assignment was not the problem.</p>
+
+<div class="toc">
+  <h2>📋 In This Post</h2>
+  <ol>
+    <li><a href="#why">Why — The Problem This Solves</a></li>
+    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
+    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
+    <li><a href="#build">How We Built It — Step by Step</a></li>
+    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
+    <li><a href="#results">What Compliance Actually Reported</a></li>
+    <li><a href="#security">Security — Controls at Every Layer</a></li>
+    <li><a href="#cost">Cost</a></li>
+    <li><a href="#cleanup">Cleanup</a></li>
+    <li><a href="#references">References</a></li>
+    <li><a href="#takeaways">Key Takeaways</a></li>
+  </ol>
+</div>
+
+<h2 id="why">Why — The Problem This Solves</h2>
+
+<p>Azure gives you three nested scopes: management groups, subscriptions and
+resource groups. Almost every landing zone that goes wrong goes wrong because
+somebody picked one of them as the <em>real</em> boundary and treated the other
+two as packaging.</p>
+
+<p>They are not three sizes of the same box. They answer three different
+questions, and the answers are not interchangeable.</p>
+
+<div class="grid-2">
+  <div class="card">
+    <h3>What is allowed here?</h3>
+    <p><strong>Management group.</strong> Policy and RBAC inherit downward, to
+    subscriptions that do not exist yet. Holds no resources — nothing deploys
+    into one.</p>
+  </div>
+  <div class="card">
+    <h3>What is the ceiling?</h3>
+    <p><strong>Subscription.</strong> Quota is counted per subscription per
+    region. Also the billing boundary and the resource-provider registration
+    boundary.</p>
+  </div>
+</div>
+
+<p>And the third: <strong>a resource group answers what dies together.</strong>
+It is the only one of the three whose deletion is atomic and complete.</p>
+
+<p>That last fact settles a question people argue about for weeks. If you want a
+disposable unit — one per experiment, one per week, one per feature branch — it
+has to be a resource group, because a cancelled Azure subscription is
+<em>not deleted</em>. It enters a retention period, still exists, still appears
+in listings, and can still be reactivated. A design that tears down subscriptions
+never actually tears anything down.</p>
+
+<div class="callout amber">
+  <p><strong>The design falls out of the three answers.</strong> Disposable unit
+  → resource group. Quota and blast-radius separation → subscription. Policy
+  posture → management group. Nothing about that requires taste; it requires
+  reading what each scope actually does.</p>
+</div>
+
+<h2 id="skills">What You Need to Know — Skills &amp; Tools</h2>
+
+<ul>
+  <li><strong>Azure Policy</strong> — definitions, initiatives, assignments, and
+  the difference between an effect and an enforcement mode.</li>
+  <li><strong>Policy aliases</strong> — the property paths a rule can test, and
+  what the <code>[*]</code> wildcard changes about the test.</li>
+  <li><strong>Management group hierarchy</strong> — inheritance, and the fact
+  that a subscription has exactly one parent.</li>
+  <li><strong>Microsoft Customer Agreement billing</strong> — billing account,
+  billing profile, invoice section, and the Subscription Alias API that creates
+  subscriptions programmatically against them.</li>
+  <li><strong>Entra workload identity federation</strong> — trading an OIDC
+  token for an Azure access token, so CI never holds a client secret.</li>
+  <li><strong>Terraform with the AzureRM provider</strong>, version 5.x. It is
+  not a drop-in for 4.x: <code>subscription_id</code> is now required on the
+  provider block, and <code>skip_provider_registration</code> has been replaced
+  by <code>resource_provider_registrations</code>.</li>
+</ul>
+
+<h2 id="architecture">Architecture — How It Fits Together</h2>
+
+<div class="code-label">The hierarchy</div>
+<pre class="code-block">Tenant Root Group          ← nothing is ever assigned here
+└── Katta Platform         ← intermediate root; blast radius stops here
+    ├── Platform
+    │   ├── Connectivity   → sub-connectivity    hub network, firewall, private DNS
+    │   └── Management     → sub-management      logs, key vault, backup
+    ├── Landing Zones
+    │   └── Landing Zones - Dev → sub-lab-dev    one resource group per experiment
+    ├── Sandbox            → the pre-existing subscription, quarantined
+    └── Decommissioned     ← deny-all parking for cancelled subscriptions
+</pre>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-01-landing-zone/docs/blog/screenshots/01-management-group-tree.png"
+       alt="Azure portal management groups blade showing four subscriptions nested across nine management groups"/>
+  <figcaption>Four subscriptions in nine groups. Tenant and subscription IDs are
+  masked by the capture tooling before the file is written — see Security.</figcaption>
+</figure>
+
+<p>Three decisions in that tree are worth defending.</p>
+
+<p><strong>Nothing is assigned at Tenant Root Group.</strong> An assignment there
+reaches every subscription in the tenant, forever, including any created later by
+anyone for any reason — and undoing it needs elevated access. The intermediate
+root is what keeps a mistake survivable.</p>
+
+<p><strong>Connectivity and Management are separate.</strong> Whoever can rewrite
+the hub network's routing should not, by the same grant, be able to read every
+diagnostic log in the estate or rotate an encryption key. Splitting them costs
+nothing, because management groups are free.</p>
+
+<p><strong>Decommissioned exists because cancellation is not deletion.</strong>
+A retired subscription needs somewhere to sit under a deny-all assignment for its
+retention window. That node is not tidiness; it is a direct consequence of how
+Azure behaves.</p>
+
+<h2 id="build">How We Built It — Step by Step</h2>
+
+<p>Bootstrap creates the tree, the CI identity and the subscriptions. Everything
+after that is one workspace per week.</p>
+
+<p>The custom rule denies a public IP on a network interface. The alias is the
+part that has to be right:</p>
+
+<div class="code-label">The policy rule</div>
+<pre class="code-block">Microsoft.Network/networkInterfaces/ipConfigurations[*].publicIpAddress.id
+</pre>
+
+<p>The <code>[*]</code> matters. A network interface can carry several IP
+configurations. Without the wildcard the rule inspects only the first, and
+happily admits an interface whose <em>second</em> configuration is public. With
+it, the condition is true if any configuration has one.</p>
+
+<p>The effect is a <strong>parameter</strong>, not a constant, which is what lets
+the same definition be assigned twice — reporting first, enforcing second —
+without editing it.</p>
+
+<div class="code-label">Two stages, on purpose</div>
+<pre class="code-block">./scripts/deploy.sh report     # enforce = false → evaluates, blocks nothing
+./scripts/validate.sh          # all three attempts succeed; two are non-compliant
+
+./scripts/deploy.sh enforce    # enforce = true  → denies
+./scripts/validate.sh          # two rejected, the compliant one still deploys
+</pre>
+
+<p>Introducing a deny to an environment nobody has measured is how a guardrail
+causes the outage it exists to prevent. Report-only mode tells you what
+<em>would</em> have been blocked before anything is.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-01-landing-zone/docs/blog/screenshots/03-policy-assignments.png"
+       alt="Azure Policy assignments blade listing two Lab baseline initiative assignments scoped to Landing Zones - Dev and Platform"/>
+  <figcaption>Both assignments are initiatives at management group scope. Neither
+  one names a subscription anywhere — that is what makes them apply to
+  subscriptions created later.</figcaption>
+</figure>
+
+<div class="callout">
+  <p><strong>The third test is not padding.</strong> A rule that only ever blocks
+  has been shown to be <em>on</em>, not to be <em>correct</em>. Proving the
+  compliant path still deploys is what separates a guardrail from an outage.</p>
+</div>
+
+<h2 id="challenges">Challenges — What Actually Went Wrong</h2>
+
+<div class="challenge-card">
+  <h3>The deny that did not deny</h3>
+  <p>Enforcing mode was on. The assignment reported
+  <code>enforcementMode: Default</code>. The effect read <code>Deny</code>. The
+  allowed-locations list was right. A storage account in a banned region deployed
+  anyway.</p>
+  <p>Every property of the assignment was correct. The subscription simply was
+  not underneath it — created but never placed, so it still sat at the Tenant
+  Root Group, on a different branch entirely. Policy flows downward to whatever
+  is beneath it, and nothing was beneath it.</p>
+  <p><strong>Creating a subscription and placing it in the hierarchy are two
+  separate operations.</strong> The Subscription Alias API creates it at the
+  tenant root; moving it is a second call. An unplaced subscription inherits no
+  policy and no role assignments, and looks completely healthy right up until
+  something is supposed to stop you and does not.</p>
+  <p>The tell was in the portal all along: the management group list showed
+  <strong>0</strong> subscriptions against Landing Zones - Dev. I was reading the
+  assignment instead, because an assignment is easy to inspect and looks
+  convincing. Check placement first — every field can be right while the policy
+  governs an empty branch.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>Thirty-four minutes for one subscription</h3>
+  <p>Three subscriptions requested concurrently produced an apply that sat for an
+  hour and committed nothing to state. Requested one at a time, the first
+  completed in about ten minutes and the second failed outright:</p>
+  <pre class="code-block">performing AliasCreate: Failure sending request: StatusCode=0
+-- Original Error: context deadline exceeded</pre>
+  <p><code>StatusCode=0</code> means no HTTP response was ever received — the
+  client gave up, Azure refused nothing. Retried with an explicit 60-minute
+  timeout it succeeded, taking <strong>33 minutes 59 seconds</strong>.</p>
+  <p>This is the worst failure mode available, because Azure often completes the
+  creation anyway. You are left with a subscription that exists and is absent
+  from state, and subscriptions cannot be deleted.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>"100% (0 out of 0)" is not a pass</h3>
+  <p>The compliance blade reported the assignment as <strong>Compliant, 100%</strong>.
+  It had never evaluated anything.</p>
+  <p><code>Microsoft.PolicyInsights</code> was not registered on the subscription.
+  Policy still <em>evaluates and denies</em> without it — enforcement runs in
+  Azure Resource Manager, not in that provider — so the guardrail was working
+  perfectly. What breaks is reading the results back: the scan API fails with
+  <code>SubscriptionNotRegistered</code>, and the portal renders the empty result
+  as a green tick.</p>
+  <p>A green tick against a scope that has never been examined looks identical to
+  a green tick against a clean one. Only the denominator tells them apart.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>The rejection that explained the wrong thing</h3>
+  <p>A storage account in the wrong region was refused with this reason:</p>
+  <pre class="code-block">Denied by the lab baseline. Network interfaces may not carry a public IP...</pre>
+  <p>Correct rejection, nonsense explanation. A <code>nonComplianceMessage</code>
+  with no <code>policyDefinitionReferenceId</code> applies to <em>every</em>
+  policy in the initiative, so one generic string was emitted for all three
+  rules. Someone reading that goes and debugs their networking.</p>
+  <p>A wrong explanation is worse than no explanation. Messages are now set per
+  policy reference.</p>
+</div>
+
+<h2 id="results">What Compliance Actually Reported</h2>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-01-landing-zone/docs/blog/screenshots/02-policy-compliance.png"
+       alt="Azure Policy compliance blade showing the dev landing zones assignment non-compliant at 15 percent with 17 non-compliant resources"/>
+  <figcaption>After a forced scan: 15% compliant, 17 non-compliant resources
+  across 3 policies. The platform assignment above it reads 100% (0 out of 0) —
+  nothing has been deployed into that scope yet.</figcaption>
+</figure>
+
+<p>Both rows are worth reading carefully, because they say opposite things and
+look similar.</p>
+
+<p>The dev row is real: <strong>15% (3 of 20)</strong>, seventeen violations. Every
+one of those resources was created while the assignment was in report-only mode,
+and switching to enforcing removed none of them.</p>
+
+<p>The platform row is <strong>100% (0 out of 0)</strong> — an empty scope, not a
+clean one. Same green tick, entirely different meaning.</p>
+
+<h2 id="security">Security — Controls at Every Layer</h2>
+
+<p><strong>No client secrets.</strong> CI authenticates through federated
+credentials on an Entra app registration — HCP Terraform presents an OIDC token,
+Entra exchanges it because issuer, audience and subject match. There is no
+<code>azuread_application_password</code> anywhere in the repository.</p>
+
+<p><strong>Not Owner.</strong> The CI identity holds Contributor, Role Based
+Access Control Administrator and Management Group Contributor, scoped to the
+intermediate root. Owner bundles "can deploy" and "can grant roles" with no way
+to separate them; split, the grant-roles half is a visible line in the audit
+trail.</p>
+
+<p><strong>Nine identities, seven revoked.</strong> Auditing access by listing
+app registrations found five. Auditing from the <em>assignment</em> side — every
+role assignment, resolved back to its principal — found nine, because
+registrations created by portal wizards and shell sessions have no owner and
+never appear in an owner-filtered list. Seven held standing Contributor or Owner
+on the subscription. All seven lost it.</p>
+
+<p><strong>Screenshots that refuse to leak.</strong> Captures run through
+Playwright against a signed-in profile. The tooling masks the tenant ID,
+subscription IDs, billing identifiers and object IDs across text nodes,
+attributes and form-control values, then <em>asserts</em> they are absent and
+exits non-zero rather than write the file. It also refuses to save a sign-in
+page — checked by URL first, then DOM, and re-checked immediately before the
+shutter.</p>
+
+<h2 id="cost">Cost</h2>
+
+<p><strong>$0.</strong> Management groups are free. Subscriptions created through
+the alias API are free — a subscription is a billing container, and an empty one
+bills nothing. App registrations, federated credentials, policy definitions,
+assignments and compliance evaluation are all free.</p>
+
+<p>The test bed was a virtual network, a subnet, two network interfaces and a
+handful of storage accounts, all created and destroyed within the session — under
+a penny in total.</p>
+
+<p>Budgets exist on all three subscriptions before anything with an hourly price
+lands in them, alerting at 50% actual and 90% forecast. Forecast, not actual: an
+actual-spend alert at 90% of a monthly budget arrives after the money is already
+committed.</p>
+
+<h2 id="cleanup">Cleanup</h2>
+
+<p>This is the week where "delete the resource group" is not the whole answer,
+and that is the part worth carrying forward.</p>
+
+<p>The definition, the initiative and both assignments live at
+<strong>management group scope</strong> — outside every resource group, in a part
+of the hierarchy that resource-group deletion cannot reach. Delete the group by
+hand and the guardrails remain, still evaluating, still denying, with nothing
+left in the subscription to explain where they came from.</p>
+
+<p>An orphaned deny assignment whose source nobody can find is a genuinely nasty
+thing to inherit. <code>terraform destroy</code> removes both because Terraform
+tracks both, and the cleanup script verifies afterwards that the assignment is
+actually gone rather than assuming it.</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li><a href="https://learn.microsoft.com/en-us/azure/governance/policy/concepts/effect-basics">Azure Policy effect basics</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/governance/policy/how-to/policy-safe-deployment-practices">Safe deployment of Azure Policy assignments</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/governance/policy/concepts/definition-structure-policy-rule">Policy rule structure and aliases</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/governance/management-groups/overview">Management groups overview</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/cost-management-billing/manage/programmatically-create-subscription-microsoft-customer-agreement">Create MCA subscriptions programmatically</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation">Workload identity federation</a></li>
+</ul>
+
+<h2 id="takeaways">Key Takeaways</h2>
+
+<ul>
+  <li><strong>Verify placement before you verify configuration.</strong> An
+  assignment is easy to read and looks convincing, and every field can be correct
+  while it governs an empty branch. Ask what is underneath the scope first.</li>
+
+  <li><strong>The only proof a deny works is a deployment that got denied.</strong>
+  Reading the assignment verifies the wrong object. That is why this week ships a
+  test script rather than a screenshot of a portal blade.</li>
+
+  <li><strong>Enforcing does not clean up.</strong> Seventeen non-compliant
+  resources created during report-only mode were still there afterwards. Policy
+  evaluates on write; it blocks the next deployment and has no opinion about what
+  already exists. Remediation is a different mechanism.</li>
+
+  <li><strong>A green tick with a zero denominator means nothing was
+  examined.</strong> Register <code>Microsoft.PolicyInsights</code> before you
+  trust a compliance number, because enforcement works fine without it.</li>
+
+  <li><strong>Targeted applies leave half-built objects.</strong> Creating a
+  subscription with <code>-target</code> created the subscription and skipped its
+  management group placement and its budget, because those are separate resources
+  rather than attributes. It looked finished for two days.</li>
+
+  <li><strong>The error message is the product.</strong> A guardrail whose
+  rejection sends someone to debug the wrong subsystem has made the platform
+  worse, not safer. Per-policy messages cost one line each.</li>
+</ul>
+
+<p>Next week: policy as code — initiatives, exemptions, and
+<code>deployIfNotExists</code> with the remediation identity that everybody
+forgets to grant.</p>
+
+</div>
