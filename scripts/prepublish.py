@@ -113,6 +113,10 @@ CHECKS = [
     ("verify_claims.py",        True,  True,  True,  True),
     ("check_prose.py",          True,  False, True,  True),
     ("check_page_structure.py", True,  False, False, False),
+    # Diagrams, not prose: an inline SVG that leans on currentColor renders
+    # correctly inline and vanishes once blog.js lightboxes it. Every other
+    # check here is about content, so nothing caught that until a reader did.
+    ("check_theme_render.py",   True,  False, True,  True),
     ("check_index_complete.py", True,  False, False, False),
     ("fix_series_nav.py",       True,  False, False, False),
     ("audit_claims.py",         False, False, False, True),
