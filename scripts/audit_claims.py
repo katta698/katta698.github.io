@@ -41,8 +41,13 @@ NUMBER_RE = re.compile(r"""
   | \d[\d,]*(?:\.\d+)?\s?(?:x|×)\b      # 3.5x  6.9×
   | \d[\d,]*(?:\.\d+)?\s?(?:GB|TB|MB|KB|GiB|TiB)\b
   | \d[\d,]*(?:\.\d+)?\s?(?:ms|hours?|days?|weeks?|months?|years?|minutes?)\b
-  | \b\d{4,}\b                          # 1,000 / 8760 style counts
+  | \b\d{1,3}(?:,\d{3})+\b              # 5,000 / 8,192 -- comma-grouped
+  | \b\d{4,}\b                          # 8760 style counts
 """, re.X | re.I)
+
+# A bare year is a date, not a claim. Without this, every post reports "2026"
+# as an untraced figure -- noise that hides the real ones.
+YEAR_RE = re.compile(r"^(?:19|20)\d\d$")
 
 # Phrases that signal a number was computed rather than quoted. These are the
 # ones that have actually been wrong here.
@@ -53,7 +58,20 @@ DERIVED_RE = re.compile(
 
 
 def normalise(s):
-    return re.sub(r"[\s,]", "", str(s)).lower().rstrip(".")
+    """Compare figures by value, not by formatting.
+
+    The body writes "5000" where the claim writes "5,000", and the body "$20"
+    where the claim writes "$20.00". Those are the same figure, and reporting
+    them as untraced sends someone off to re-verify a number that was already
+    verified -- which is the failure mode that makes a report get ignored.
+
+    Strip separators, then drop trailing decimal zeros so 20.00 == 20, while
+    leaving 0.0000166667 alone.
+    """
+    out = re.sub(r"[\s,]", "", str(s)).lower().rstrip(".")
+    if "." in out:
+        out = out.rstrip("0").rstrip(".")
+    return out
 
 
 def audit(path):
@@ -75,6 +93,8 @@ def audit(path):
     seen = set()
     for n in body_nums:
         k = normalise(n)
+        if YEAR_RE.match(k):
+            continue
         if k not in seen:
             seen.add(k)
             uniq.append(n.strip())
@@ -96,13 +116,21 @@ def audit(path):
 
 def main():
     args = [a for a in sys.argv[1:]]
-    # Both architecture series. Coverage is the same question on either cloud,
-    # and a report that silently omits a series is how a badge with 0% traced
-    # figures goes unnoticed.
-    files = sorted(glob.glob(os.path.join(ROOT, "posts", "arch-*.html"))
-                   + glob.glob(os.path.join(ROOT, "posts", "az-*.html"))
-                   + glob.glob(os.path.join(ROOT, "posts", "azw-*.html"))
-                   + glob.glob(os.path.join(ROOT, "posts", "gcp-*.html")))
+    # Every series that can carry a badge, not just the architecture ones.
+    #
+    # The comment here used to say "a report that silently omits a series is
+    # how a badge with 0% traced figures goes unnoticed" -- while omitting
+    # four series. It scanned arch-, az-, azw- and gcp- only, so the Weekly
+    # Lab, both intelligence series and the GCP weekly were invisible to the
+    # one script whose job is finding unbacked badges. Weeks 13, 14 and 15
+    # shipped verification badges with no verified_claims at all and nothing
+    # reported it, because nothing looked.
+    #
+    # The badge rule in CLAUDE.md is explicitly "ALL series". This list is the
+    # part that has to agree with it, so derive it from the post prefixes that
+    # exist rather than from the ones somebody remembered.
+    files = sorted(f for f in glob.glob(os.path.join(ROOT, "posts", "*.html"))
+                   if not os.path.basename(f).startswith("_"))
     if args:
         files = [f for f in files if any(a in os.path.basename(f) for a in args)]
 

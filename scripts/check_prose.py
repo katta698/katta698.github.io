@@ -167,8 +167,14 @@ def prose(raw):
     # the two <code> spans were deleted into nothing and the two "and"s landed
     # side by side. A false positive is worse here than a miss: the whole
     # premise of this checker is that every hit is real and needs no judgement.
-    body = re.sub(r"<code>.*?</code>", "\n", body, flags=re.S)
-    body = re.sub(r"<pre>.*?</pre>", "\n", body, flags=re.S)
+    # Match the opening tag with any attributes. `<code>` alone misses
+    # `<code class="inline">`, which is what the house style actually emits --
+    # so every attributed code span leaked its contents into "prose" and was
+    # checked as if it were English. That is how `aws sso login` came to be
+    # reported as the retired product name "AWS SSO": it is a CLI command, the
+    # rename would break it, and the rule was never meant to see it.
+    body = re.sub(r"<code\b[^>]*>.*?</code>", "\n", body, flags=re.S)
+    body = re.sub(r"<pre\b[^>]*>.*?</pre>", "\n", body, flags=re.S)
     body = re.sub(r"https?://\S+", "\n", body)
     # A newline, not a space: an element boundary is a break between phrases,
     # and collapsing it hides that from the doubled-word check.
