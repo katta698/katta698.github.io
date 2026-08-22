@@ -1,0 +1,287 @@
+---
+title: 'AWS Architecture Series #29 — Strangler Fig: The Routing Layer Is the Migration'
+date: '2026-08-22T09:00:00'
+slug: aws-architecture-strangler-fig-routing-dual-write
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-08-22'
+verified_claims:
+  - claim: "An Application Load Balancer forward action can reference at most 5 target groups, and that quota is not adjustable"
+    source: https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-limits.html
+  - claim: "An Application Load Balancer allows 100 rules excluding default rules, which is adjustable, but only 5 condition values per rule and 5 match evaluations per rule, neither of which is adjustable"
+    source: https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-limits.html
+  - claim: "The maximum percentage of traffic you can send to a CloudFront staging distribution in a weight-based configuration is 15 percent"
+    source: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/continuous-deployment-quotas-considerations.html
+  - claim: "CloudFront sends all requests to the primary distribution during peak traffic hours regardless of what is specified in the continuous deployment policy, and peak traffic refers to traffic on the CloudFront service rather than traffic on your distribution"
+    source: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/continuous-deployment-quotas-considerations.html
+  - claim: "You cannot use CloudFront continuous deployment with a distribution that supports HTTP/3, and session stickiness idle duration is limited to 300 to 3600 seconds"
+    source: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/continuous-deployment-quotas-considerations.html
+  - claim: "A Route 53 weighted record takes an integer between 0 and 255, and if you set Weight to 0 for all of the records in the group, traffic is routed to all resources with equal probability"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resource-record-sets-values-weighted.html
+  - claim: "All records in a group of weighted records must share the same TTL, and if you specify different values Route 53 changes the TTL for all of the records to the last value that you set"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resource-record-sets-values-weighted.html
+  - claim: "A weighted pair of 1 and 255 sends about 0.39 percent of traffic to the record weighted 1, since Route 53 responds based on the ratio of a record's weight to the sum of all weights"
+    derive: "1 / (1 + 255) * 100"
+    expect: "0.39"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/routing-policy-weighted.html
+problem: "The monolith cannot be replaced in one release, so it gets replaced a piece at a time behind a routing layer. Every account of this pattern spends its time on how to split the code and almost none on the router — which is the component that decides whether the migration is reversible, and the one with the hard quotas."
+builds: "A migration whose unit of progress is a routing rule rather than a release: each slice of functionality moves when its rule moves, rollback is the same operation in reverse, and the shape of the router is chosen against its documented limits rather than discovered at them."
+catch: "The three obvious AWS routing primitives each have a documented behaviour that inverts what an operator expects under pressure. CloudFront quietly stops splitting traffic during peak hours. Route 53 treats all-weights-zero as equal distribution, not as off. An ALB forward action stops at five target groups and will not be raised."
+---
+
+<div class="container">
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The strangler fig is the least controversial pattern in migration work. Put a routing layer
+      in front of the old system, build each new capability behind it, move traffic per capability,
+      and delete the old system when nothing routes to it any more. Nobody argues with it.
+    </p>
+    <p>
+      What gets argued about is the code: where the seams are, which service comes out first,
+      whether the boundary is right. Those are real questions, and they are also the questions that
+      a team can answer at a whiteboard. The router is treated as plumbing &mdash; an ALB, some
+      rules, done.
+    </p>
+    <p>
+      It is not plumbing. It is the only component that touches every slice of the migration, it is
+      the mechanism by which every rollback happens, and unlike the code, it has quotas that were
+      set by somebody else.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The router is the rollback plan</strong></div>
+      <div class="challenge-body">
+        <p>
+          In a strangler fig migration there is no release to revert. The new service is already
+          deployed; what changed was a routing decision. So the quality of your rollback is exactly
+          the quality of your router &mdash; how fast a weight change takes effect, whether it can
+          be scoped to one slice, and whether anything else moves when it does.
+        </p>
+        <p>
+          A team that has not measured that has not got a rollback plan. It has an intention.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Progress is measured in rules, and rules run out</strong></div>
+      <div class="challenge-body">
+        <p>
+          Each slice in flight needs its own routing expression, and slices overlap: one at 100%,
+          three ramping, two held at zero pending a data backfill. That is six live expressions for
+          a migration that has barely started.
+        </p>
+        <p>
+          An ALB gives you <strong>100 rules</strong>, which is generous and adjustable. It gives
+          you <strong>5 target groups per forward action</strong>, which is neither. If your mental
+          model is "one target group per version per slice", you meet that ceiling sooner than the
+          rule count suggests.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Dual-write is a consistency decision wearing a migration costume</strong></div>
+      <div class="challenge-body">
+        <p>
+          Routing reads is easy. Routing writes means both systems believe they own the data, and
+          the moment you write to both you have taken on a distributed transaction without calling
+          it one. Whichever way you resolve it &mdash; old system authoritative, new system
+          authoritative, or events reconciling both &mdash; you have chosen a consistency model.
+        </p>
+        <p>
+          The pattern does not choose it for you, and the routing layer cannot enforce it.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>Knowing when to cut is a decision nobody schedules</strong></div>
+      <div class="challenge-body">
+        <p>
+          The failure mode of this pattern is not a bad cutover. It is a migration that reaches 95%
+          and stops, because the remaining 5% is the hard part and the pain has already gone. The
+          organisation now runs two systems permanently and calls it a transition.
+        </p>
+        <p>
+          The router makes that state comfortable, which is precisely why it needs a scheduled end.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      There are three places on AWS to put the split, and they behave differently enough that the
+      choice is architectural rather than a matter of taste.
+    </p>
+
+    <img src="/blog/assets/diagrams/arch-029-strangler-fig-routing-dual-write.svg" alt="Diagram: the three places to split traffic in a strangler fig migration on AWS, comparing Route 53 weighted records, Application Load Balancer listener rules and CloudFront continuous deployment, with the documented limit and the counter-intuitive failure mode of each, alongside the dual-write decision the router cannot make">
+
+    <h3>Route 53 weighted records: coarse, slow, and it lies about zero</h3>
+    <p>
+      Weighted records take an integer <strong>between 0 and 255</strong>, and Route 53 answers
+      queries in proportion to a record's weight over the sum of all weights. A pair weighted 1 and
+      255 sends about <strong>0.39%</strong> of traffic to the first &mdash; a genuinely small
+      canary, which is the main argument for using DNS at all.
+    </p>
+    <p>
+      Two things make it a poor primary mechanism. The first is TTL: every record in the group must
+      share one, and if you set them differently <em>&#8220;Route 53 changes the value of TTL for
+      all of the records to the last value that you set&#8221;</em>. Your rollback is not fast; it is
+      TTL-fast, and resolvers that ignore TTL are not fast at all.
+    </p>
+    <p>
+      The second is the trap. <em>&#8220;If you set Weight to 0 for all of the records in the group,
+      traffic is routed to all resources with equal probability.&#8221;</em> The instinct under
+      pressure &mdash; zero everything, stop the bleeding &mdash; produces an even split across
+      every resource in the group. The control that looks like an off switch is a shuffle.
+    </p>
+
+    <h3>Application Load Balancer: the right default, with a hard ceiling</h3>
+    <p>
+      Listener rules are where most strangler fig migrations belong. Routing is per-request rather
+      than per-resolver, changes take effect immediately, and conditions can express the seam
+      properly &mdash; path, header, method, source.
+    </p>
+    <p>
+      Plan against the two quotas that do not move. A forward action references at most
+      <strong>5 target groups</strong>, and a rule allows at most <strong>5 condition values</strong>
+      and <strong>5 match evaluations</strong>. None of the three is adjustable. The 100-rule limit
+      is adjustable and is rarely what you hit first.
+    </p>
+
+    <h3>CloudFront continuous deployment: not a migration tool</h3>
+    <p>
+      It looks like exactly the right thing &mdash; a staging distribution, a weight, real
+      production traffic. It is worth reading the quota page before building on it.
+    </p>
+    <p>
+      The weight ceiling is <strong>15%</strong>, so it cannot complete a cutover. Session
+      stickiness is bounded at <strong>300&ndash;3600 seconds</strong>. It cannot be used at all with
+      a distribution that supports <strong>HTTP/3</strong>. And the decisive one:
+      <em>&#8220;CloudFront sends all requests to the primary distribution during peak traffic
+      hours, regardless of what's specified in the continuous deployment policy&#8221;</em> &mdash;
+      where peak refers to load on the CloudFront service, not on your distribution.
+    </p>
+    <p>
+      Your canary can therefore stop being a canary at a time you did not choose and cannot observe,
+      and it will do so under exactly the traffic conditions you most wanted to test. That is
+      acceptable for validating a CDN configuration change, which is what the feature is for. It is
+      not a basis for migrating an application.
+    </p>
+
+    <h3>The dual-write decision sits underneath all three</h3>
+    <p>
+      None of these primitives has an opinion about your data. Once writes are in scope you are
+      choosing between the old system remaining the system of record while the new one shadows it,
+      the new one taking the record with a backfill and a reconciliation job, or both emitting
+      events into a log that is the actual source of truth.
+    </p>
+      <p>
+      The reason this belongs in a routing discussion is sequencing: the write decision determines
+      how reversible a routing change is. If the new service has begun accepting authoritative
+      writes, moving the weight back does not undo them, and the router's rollback story quietly
+      stops being true.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Matters</h2>
+    <p>
+      Every one of the limits above is knowable in advance and none of them is discovered
+      comfortably. A team finds the five-target-group ceiling when it adds the sixth slice, which is
+      several months in, with the routing topology already committed to. A team finds the CloudFront
+      peak-hour behaviour when its canary metrics look implausibly clean and somebody eventually
+      asks why.
+    </p>
+    <p>
+      The deeper point is that this pattern moves risk out of the release process and into
+      configuration. That is a real improvement &mdash; configuration changes faster and reverts
+      faster than deployments. But it also means the safety properties everyone assumes are now
+      properties of a router's documented behaviour rather than of a deployment pipeline that was
+      designed and tested.
+    </p>
+    <p>
+      Read the quota pages for the primitive you have chosen. They are short, and each of the three
+      contains at least one sentence that contradicts what an experienced engineer would assume.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take this</th><th>Because</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Where to put the split</td>
+            <td>ALB listener rules by default</td>
+            <td>Per-request, immediate, and the seam can be expressed as a condition rather than a hostname</td>
+          </tr>
+          <tr>
+            <td>Using CloudFront continuous deployment</td>
+            <td>Only for CDN configuration changes, never for application migration</td>
+            <td>15% ceiling, no HTTP/3, and all traffic reverts to primary during CloudFront-wide peak hours</td>
+          </tr>
+          <tr>
+            <td>Using Route 53 weights</td>
+            <td>Reserve for whole-stack or cross-Region moves, with a short uniform TTL</td>
+            <td>TTL is shared across the group and rewritten to the last value set; rollback is only as fast as resolver caches</td>
+          </tr>
+          <tr>
+            <td>Emergency stop on weighted DNS</td>
+            <td>Set the target's weight to 0 and leave the others non-zero</td>
+            <td>Zeroing every record in the group distributes traffic evenly instead of stopping it</td>
+          </tr>
+          <tr>
+            <td>Slice topology</td>
+            <td>Budget against 5 target groups per action, not against the 100-rule limit</td>
+            <td>The rule count is adjustable; the per-action target group count is not</td>
+          </tr>
+          <tr>
+            <td>Writes</td>
+            <td>Decide the system of record before the first write routes, not after</td>
+            <td>Once the new service writes authoritatively, reversing the route no longer reverses the change</td>
+          </tr>
+          <tr>
+            <td>The last 5%</td>
+            <td>Put a date on decommissioning the old system when the first slice moves</td>
+            <td>The pattern makes running both systems indefinitely comfortable, which is how migrations stall</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The strangler fig is usually taught as a way to think about decomposition. In practice the
+      decomposition is the part teams are good at, and the router is the part that decides whether
+      any of it can be undone.
+    </p>
+    <div class="callout">
+      <p>
+        <strong>Read the quota page before you draw the diagram.</strong> Three primitives, three
+        documented behaviours that invert what an operator expects: CloudFront stops splitting under
+        peak load, Route 53 turns all-zero into an even split, and an ALB forward action stops at
+        five target groups and will not be raised. None of those is obscure. All of them are found
+        late.
+      </p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-limits.html">Quotas for your Application Load Balancers</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/continuous-deployment-quotas-considerations.html">Quotas and other considerations for CloudFront continuous deployment</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resource-record-sets-values-weighted.html">Values specific for weighted records, Amazon Route 53</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/routing-policy-weighted.html">Weighted routing, Amazon Route 53</a></li>
+    </ul>
+  </div>
+</div>
