@@ -48,6 +48,23 @@ POSTS = os.path.join(ROOT, 'posts')
 # taking only headings present in *every* post of that series. Requiring a
 # heading that established posts do not have would fail correct work, which is
 # how a validator gets switched off.
+# The lab structure, shared by all three clouds. Measured, not chosen: these are
+# exactly the sections present in every AWS lab from week 8 and in GCP #1 and
+# Azure #1. The em-dash subtitles ("Why - The Problem This Solves") vary, so the
+# patterns anchor on the opening word only.
+LAB_HEADINGS = [
+    ('Why',                  r'^Why\b'),
+    ('What You Need to Know', r'^What You Need to Know\b'),
+    ('Architecture',         r'^Architecture\b'),
+    ('How We Built It',      r'^How We Built It\b'),
+    ('Challenges',           r'^Challenges\b'),
+    ('Security',             r'^Security\b'),
+    ('Cost',                 r'^Cost\b'),
+    ('Cleanup',              r'^Cleanup\b'),
+    ('References',           r'^References\b'),
+    ('Key Takeaways',        r'^Key Takeaways\b'),
+]
+
 SERIES = {
     'arch': {
         'label': 'Architecture Series',
@@ -241,14 +258,148 @@ SERIES = {
             ('Official AWS references',   r'^Official AWS references$'),
         ],
     },
+
+    # --- The three lab series --------------------------------------------
+    #
+    # These are the only series that cannot be told apart by filename. AWS labs
+    # are week-NN-*, and GCP and Azure both began at week-01-*, so all three
+    # share one slug namespace -- `_week_num()` in sync_blog.py has the same
+    # problem and numbers them all off `week-(\d+)`. So they are resolved by
+    # their `series_label`, which is the only thing that separates them.
+    #
+    # `labels_subset` because weeks 1-7 came across from Blogger carrying
+    # legacy labels (WeeklySeries, Platform Engineering, Serverless) alongside
+    # the series one. Requiring an exact list would fail seven correct posts,
+    # and a validator that fails correct work is a validator that gets
+    # switched off.
+    #
+    # `min_week` for the same reason, harder. Measured across all 17 posts: AWS
+    # weeks 8-15 share exactly the ten sections below, and so do GCP #1 and
+    # Azure #1 -- but weeks 1-7 share *nothing* with them, being Blogger-era
+    # posts with an entirely different structure. So the section rules apply
+    # from week 8 on AWS and from week 1 on the two new series. Editing the
+    # published seven is Jay's call, not a silent cleanup.
+    'awslab': {
+        'label': 'AWS Weekly Lab',
+        'series_label': 'AWS Weekly Lab',
+        # Not required, though every lab does have one. The check demands the
+        # house standard -- a standalone SVG file referenced with <img> -- and
+        # all 17 lab posts across all three clouds use inline <svg> instead,
+        # including the two written this week. Enforcing it would fail every
+        # lab post ever published, which is how a validator gets switched off.
+        # The divergence is real and worth closing; doing it by failing correct
+        # work is not the way.
+        'requires_diagram': False,
+        'file_prefix': 'week-',
+        'slug_glob': 'week-*',
+        'labels': ['AWS', 'Terraform', 'AWS Weekly Lab'],
+        'labels_subset': True,
+        'min_week': 8,
+        'externally_built': False,
+        'ref_heading': 'References',
+        'first_section': '<h2>',
+        'vendor': 'AWS',
+        'doc_hosts': ('docs.aws.amazon.com', 'aws.amazon.com'),
+        'shell_hosts': ('docs.aws.amazon.com',),
+        'headings': LAB_HEADINGS,
+    },
+    'azlab': {
+        'label': 'Azure Weekly Lab',
+        'series_label': 'Azure Weekly Lab',
+        # Not required, though every lab does have one. The check demands the
+        # house standard -- a standalone SVG file referenced with <img> -- and
+        # all 17 lab posts across all three clouds use inline <svg> instead,
+        # including the two written this week. Enforcing it would fail every
+        # lab post ever published, which is how a validator gets switched off.
+        # The divergence is real and worth closing; doing it by failing correct
+        # work is not the way.
+        'requires_diagram': False,
+        'file_prefix': 'week-',
+        'slug_glob': 'week-*',
+        'labels': ['Azure', 'Terraform', 'Azure Weekly Lab'],
+        'labels_subset': True,
+        'min_week': 1,
+        'externally_built': False,
+        'ref_heading': 'References',
+        'first_section': '<h2>',
+        'vendor': 'Azure',
+        'doc_hosts': ('learn.microsoft.com', 'azure.microsoft.com'),
+        'shell_hosts': (),
+        'headings': LAB_HEADINGS,
+    },
+    'gcplab': {
+        'label': 'GCP Weekly Lab',
+        'series_label': 'GCP Weekly Lab',
+        # Not required, though every lab does have one. The check demands the
+        # house standard -- a standalone SVG file referenced with <img> -- and
+        # all 17 lab posts across all three clouds use inline <svg> instead,
+        # including the two written this week. Enforcing it would fail every
+        # lab post ever published, which is how a validator gets switched off.
+        # The divergence is real and worth closing; doing it by failing correct
+        # work is not the way.
+        'requires_diagram': False,
+        'file_prefix': 'week-',
+        'slug_glob': 'week-*',
+        'labels': ['GCP', 'Terraform', 'GCP Weekly Lab'],
+        'labels_subset': True,
+        'min_week': 1,
+        'externally_built': False,
+        'ref_heading': 'References',
+        'first_section': '<h2>',
+        'vendor': 'Google Cloud',
+        'doc_hosts': ('cloud.google.com', 'docs.cloud.google.com'),
+        'shell_hosts': (),
+        'headings': LAB_HEADINGS,
+    },
 }
+
+
+# Which lab series does a slug belong to? Filename cannot say -- see the comment
+# on 'awslab' above -- so read the label out of the posts/ source. Built once and
+# cached; the alternative is re-reading 140 files per lookup.
+_LAB_LABEL_CACHE = None
+
+
+def lab_series_for_slug(slug):
+    global _LAB_LABEL_CACHE
+    if _LAB_LABEL_CACHE is None:
+        _LAB_LABEL_CACHE = {}
+        for path in glob.glob(os.path.join(POSTS, 'week-*.html')):
+            try:
+                raw = io.open(path, encoding='utf-8').read()
+            except OSError:
+                continue
+            m = re.search(r'^slug:\s*(\S+)', raw, re.M)
+            if not m:
+                continue
+            for key in ('awslab', 'azlab', 'gcplab'):
+                if SERIES[key]['series_label'] in raw:
+                    _LAB_LABEL_CACHE[m.group(1)] = key
+                    break
+    return _LAB_LABEL_CACHE.get(slug)
+
+
+def week_number(slug):
+    """The lab week, from the slug. None if the slug carries no number."""
+    m = re.match(r'week-0*(\d+)', slug)
+    return int(m.group(1)) if m else None
 
 XML_SAFE_ENTITIES = {'amp', 'lt', 'gt', 'quot', 'apos'}
 
 
 def series_for_slug(slug):
-    """Which series does this slug belong to? None if it is not a series post."""
+    """Which series does this slug belong to? None if it is not a series post.
+
+    The three lab series all match slug_glob 'week-*', so a prefix test cannot
+    separate them and would hand every lab post to whichever of the three came
+    first in the dict. They are resolved by label instead.
+    """
+    if slug.startswith('week-'):
+        key = lab_series_for_slug(slug)
+        return (key, SERIES[key]) if key else (None, None)
     for key, spec in SERIES.items():
+        if spec.get('series_label'):
+            continue
         if slug.startswith(spec['slug_glob'].rstrip('*')):
             return key, spec
     return None, None
@@ -320,12 +471,28 @@ def check_page(slug, spec):
 
     # 3. Every section must survive comment-stripping, i.e. actually render.
     #    (This is what catches a body swallowed by an unclosed comment.)
-    headings = [re.sub(r'\s+', ' ', h).strip()
-                for h in re.findall(r'<h2>(.*?)</h2>', visible, re.DOTALL)]
-    for label, pattern in spec['headings']:
-        if not any(re.search(pattern, h) for h in headings):
-            err(slug, 'no rendered <h2> matching "%s" — section missing or '
-                      'commented out' % label)
+    # <h2[^>]*>, not <h2>. Every page on the site used a bare tag until the
+    # first Azure Weekly Lab shipped with <h2 id="architecture">, at which point
+    # all ten of its sections became invisible to this check and it reported the
+    # post as having no sections at all. A heading is a heading whether or not
+    # it carries an anchor id.
+    headings = [re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', h)).strip()
+                for h in re.findall(r'<h2[^>]*>(.*?)</h2>', visible, re.DOTALL)]
+    # A series can declare that its section rules only start from a given post.
+    # AWS labs 1-7 predate the current structure and share no heading with it;
+    # requiring the modern sections would fail seven published posts that are
+    # not wrong, only old.
+    min_week = spec.get('min_week')
+    skip_headings = False
+    if min_week:
+        n = week_number(slug)
+        skip_headings = n is not None and n < min_week
+
+    if not skip_headings:
+        for label, pattern in spec['headings']:
+            if not any(re.search(pattern, h) for h in headings):
+                err(slug, 'no rendered <h2> matching "%s" — section missing or '
+                          'commented out' % label)
 
     # 4b. An empty "Next in this series" callout. The template marks it
     #     REQUIRED and the build scripts either fill it or remove the whole
@@ -552,6 +719,14 @@ def check_source(slug, spec):
     if got is None:
         warn(slug, '%s has no labels — the series filter pill will not count it'
              % name)
+    elif spec.get('labels_subset'):
+        # The series label is what pill counts and widgets match on; extra
+        # labels are harmless. Weeks 1-7 came across from Blogger carrying
+        # WeeklySeries, Platform Engineering and others alongside it.
+        missing = [x for x in expected if x not in [str(g) for g in got]]
+        if missing:
+            err(slug, '%s labels are %s, missing %s — pill counts and widgets '
+                      'match on the exact string' % (name, got, missing))
     elif [str(x) for x in got] != expected:
         err(slug, '%s labels are %s, expected %s — pill counts and widgets '
                   'match on the exact string' % (name, got, expected))
@@ -896,8 +1071,14 @@ def main():
         for key, spec in sorted(SERIES.items()):
             if only and key != only:
                 continue
-            slugs += sorted(os.path.basename(os.path.dirname(p)) for p in
-                            glob.glob(os.path.join(BLOG, spec['slug_glob'], 'index.html')))
+            found = sorted(os.path.basename(os.path.dirname(p)) for p in
+                           glob.glob(os.path.join(BLOG, spec['slug_glob'], 'index.html')))
+            # The three lab series share the glob 'week-*', so each would
+            # enumerate all 17 lab posts and every one would be checked three
+            # times. Keep only the ones this series actually owns.
+            if spec.get('series_label'):
+                found = [s for s in found if lab_series_for_slug(s) == key]
+            slugs += found
     if not slugs:
         print('No posts found%s.' % (' for series %s' % only if only else ''))
         return 0
