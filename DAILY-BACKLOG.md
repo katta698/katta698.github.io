@@ -92,6 +92,37 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 21 August 2026 — covered by post #16
+
+A thin day: six announcements plus 15 blog posts, with one clear winner. Three
+security bulletins, against the 85 the feed reported for 20 August — which
+confirms that count was the feed-generation-timestamp artifact and not a real
+day of bulletins.
+
+Glue 6.0 was chosen on merit, and the migration guide turned out to contradict
+the launch post in two useful ways: Python is 3.13 rather than 3.12, and the
+Iceberg v3 headline is narrower than announced — Athena cannot read v3 tables
+at all.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| 6.0 GA — Spark 4.1.1, Iceberg v3, 30% price reduction | Glue | **#16** | High | [link](https://aws.amazon.com/blogs/aws/aws-glue-6-0-now-available-with-30-lower-price-and-full-apache-iceberg-v3-support/) |
+| Reduced pricing for OpenAI GPT-5.6 Sol | Bedrock | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/bedrock-openai-gpt-56-sol-reduced-pricing/) |
+| Argo CD capability now supports custom configuration | EKS | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-eks-argo-cd-configuration) |
+| Open and click tracking override parameters | SES | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ses-adds-open-click-tracking-override/) |
+| Client-side network failure visibility with NEL | CloudFront | open | Medium | [link](https://aws.amazon.com/blogs/networking-and-content-delivery/gain-visibility-into-client-side-network-failures-with-nel/) |
+| Managers can chat with their data | Connect | skipped | Low-Med | Feature announcement |
+| Automatic download status tracking in Monitor | Deadline Cloud | skipped | Low | Narrow |
+
+**Worth revisiting:** SES open and click tracking overrides. Link rewriting for
+click tracking breaks more transactional mail than people expect — it changes
+the URL a recipient sees, and per-message control over it is the kind of thing
+teams have previously solved by running a second configuration set. NEL is the
+other one worth a look: client-side failures are the errors that never reach
+your logs at all, which makes them the ones nobody has numbers for.
+
+---
+
 ## 20 August 2026 — covered by post #15
 
 Twelve announcements plus 15 blog posts. The held Network Firewall item from
