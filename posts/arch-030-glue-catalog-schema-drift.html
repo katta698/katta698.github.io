@@ -1,0 +1,438 @@
+---
+title: 'AWS Architecture Series #30 — Glue Catalog and Schema Drift: A Table Has Four Schemas'
+date: '2026-08-23T09:00:00'
+slug: aws-architecture-glue-catalog-schema-drift
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-08-23'
+verified_claims:
+  - claim: "By default a Glue crawler considers both data compatibility and schema similarity, and when two JSON files under one include path have schemas A:int,B:int and C:int,D:int it creates two tables named year_2017 and year_2018 rather than one table or an error"
+    source: https://docs.aws.amazon.com/glue/latest/dg/crawler-grouping-policy.html
+  - claim: "Setting the crawler configuration Grouping TableGroupingPolicy to CombineCompatibleSchemas makes the crawler still consider data compatibility but ignore the similarity of the specific schemas within the include path"
+    source: https://docs.aws.amazon.com/glue/latest/dg/crawler-grouping-policy.html
+  - claim: "Setting SchemaChangePolicy UpdateBehavior to LOG stops a crawler changing an existing table schema at all, and CrawlerOutput Tables AddOrUpdateBehavior of MergeNewColumns adds new columns without overwriting the existing schema"
+    source: https://docs.aws.amazon.com/glue/latest/dg/crawler-schema-changes-prevent.html
+  - claim: "CrawlerOutput Partitions AddOrUpdateBehavior of InheritFromTable is the setting that updates all new and existing partitions with metadata from the table, which is to say partition schemas do not inherit from the table unless it is set"
+    source: https://docs.aws.amazon.com/glue/latest/dg/crawler-schema-changes-prevent.html
+  - claim: "Athena reads Parquet by name by default, defined as SERDEPROPERTIES parquet.column.index.access = false, and reads ORC by index by default, defined as orc.column.index.access = true"
+    source: https://docs.aws.amazon.com/athena/latest/ug/handling-schema-updates-chapter.html
+  - claim: "Reading by name allows adding columns in the middle of the table and removing columns but loses the ability to rename columns; reading by index allows renaming columns but loses the ability to remove them or add them in the middle"
+    source: https://docs.aws.amazon.com/athena/latest/ug/handling-schema-updates-chapter.html
+  - claim: "CSV and TSV allow all schema manipulations except reordering columns and adding columns at the beginning of the table, and cannot remove columns"
+    source: https://docs.aws.amazon.com/athena/latest/ug/handling-schema-updates-chapter.html
+  - claim: "For Parquet and ORC, changing a column's data type works only for partitioned tables"
+    source: https://docs.aws.amazon.com/athena/latest/ug/handling-schema-updates-chapter.html
+  - claim: "In Athena a table and its partitions must use the same data format but their schemas may differ, and if the table's schema changes the schemas for partitions are not updated to remain in sync with it"
+    source: https://docs.aws.amazon.com/athena/latest/ug/updates-and-partitions.html
+  - claim: "For Parquet and ORC read by name, Athena uses column name-based schema verification, which eliminates HIVE_PARTITION_SCHEMA_MISMATCH errors for partitioned tables; for CSV, JSON and Avro it uses index-based verification and raises the error"
+    source: https://docs.aws.amazon.com/athena/latest/ug/updates-and-partitions.html
+  - claim: "The Glue Schema Registry has 8 compatibility modes — NONE, DISABLED, BACKWARD, BACKWARD_ALL, FORWARD, FORWARD_ALL, FULL, FULL_ALL — with BACKWARD recommended and DISABLED preventing versioning for a schema entirely"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "The Schema Registry is limited to 100 registries and 10,000 schema versions per AWS Region for an account, both stated as hard limits, with a 170KB size limit for schema payloads"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "The Number of Schema Versions quota is 10,000 per Region and is listed as not adjustable, while Max table versions per table is 100,000 and is adjustable"
+    source: https://docs.aws.amazon.com/general/latest/gr/glue.html
+  - claim: "An hourly crawler that rewrote the table schema on every run would take about 11.4 years to reach the 100,000 table-versions-per-table quota"
+    derive: "100000 / (24 * 365)"
+    expect: "11.4"
+    source: https://docs.aws.amazon.com/general/latest/gr/glue.html
+  - claim: "Max partitions per account is 20,000,000 and Max partitions per table is 10,000,000, so exactly two tables at the per-table ceiling exhaust the account quota"
+    derive: "20000000 / 10000000"
+    expect: "2"
+    source: https://docs.aws.amazon.com/general/latest/gr/glue.html
+  - claim: "ResolveChoice on a Glue DynamicFrame accepts the actions cast, make_cols, make_struct and project in a specs tuple, and additionally MATCH_CATALOG when passed as the choice parameter, where project drops values that are not of the specified type"
+    source: https://docs.aws.amazon.com/glue/latest/dg/aws-glue-api-crawler-pyspark-transforms-ResolveChoice.html
+problem: "Schema drift is discussed as an upstream data-quality problem, as though the damage were done by the team that added a field. The damage is done afterwards, in the catalog, by four separate mechanisms that disagree with each other quietly and resolve the disagreement in four different ways — none of which raises an error."
+builds: "A catalog whose schema has an owner: the crawler discovers partitions rather than redefining tables, partition metadata is forced to inherit, the storage format is chosen for the kind of change the data actually undergoes, and enforcement sits upstream of the writer wherever the writer is something you control."
+catch: "The three defaults a team is most likely to leave alone are the three that hurt. A crawler meeting an incompatible schema does not fail — it creates a second table named after a partition value and reports success. Partition schemas never follow the table unless told to. And Parquet and ORC, the two formats treated as interchangeable, have exactly opposite column-access defaults, so the same rename is safe in one and fatal in the other."
+---
+
+<div class="container">
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Every account of schema drift starts in the same place: an upstream team added a field, or
+      renamed one, or changed an integer to a string, and now the dashboard is wrong. The story is
+      told as a data-quality problem, and the remedy proposed is always some version of "talk to
+      the upstream team".
+    </p>
+    <p>
+      That is worth doing and it does not fix this. The upstream change is an event lasting one
+      deploy. What turns it into six weeks of wrong numbers is what happens next, in the AWS Glue
+      Data Catalog, where a set of defaults decides on your behalf what the change meant. Those
+      defaults are documented, they are reasonable in isolation, and three of them do the opposite
+      of what an operator assumes.
+    </p>
+    <p>
+      The thing that makes this hard to reason about is that the catalog does not hold a schema for
+      your table. It holds several, they are edited by different processes at different times, and
+      the query engine reconciles them at read time without telling anybody it did.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>A table does not have "a" schema</strong></div>
+      <div class="challenge-body">
+        <p>
+          There is a table-level schema, which is what the console shows and what everyone means by
+          the word. There is separately <strong>one schema per partition</strong>, and a table may
+          have up to <strong>10,000,000</strong> of them. There is a table version history. And if
+          the data arrives on a stream, there may be a Glue Schema Registry entry sitting upstream
+          of the producer, enforcing something entirely different.
+        </p>
+        <p>
+          Four artefacts, four owners in practice, and no operation that reconciles them. Athena is
+          a schema-on-read engine: it applies a schema when reading, and it does not change or
+          rewrite the underlying data. Whatever disagreement exists is resolved per query.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The crawler's answer to an incompatible schema is a second table</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the one that surprises people, and it is spelled out in AWS's own documentation.
+          A crawler pointed at one include path finds two JSON files whose schemas are
+          <code>A:int, B:int</code> and <code>C:int, D:int</code>. By default it decides they are
+          not sufficiently similar &mdash; and it creates <strong>two tables</strong>, named
+          <code>year_2017</code> and <code>year_2018</code> after the partition values.
+        </p>
+        <p>
+          No error. No warning. The crawler run is green. The query that has been running against
+          the original table for a year keeps working, keeps returning rows, and quietly stops
+          including anything from the newer prefix.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Parquet and ORC have opposite defaults</strong></div>
+      <div class="challenge-body">
+        <p>
+          Two columnar formats, treated by most teams as an interchangeable choice made once and
+          never revisited. Athena reads <strong>Parquet by name</strong> and <strong>ORC by
+          index</strong>, and those defaults are exactly inverted with respect to each other.
+        </p>
+        <p>
+          So renaming a column is a safe operation in ORC and a breaking one in Parquet. Adding a
+          column in the middle of the table is safe in Parquet and breaking in ORC. The same
+          migration script, run against two tables in the same database, produces two different
+          outcomes for reasons nothing in the script mentions.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">4</span><strong>The failure mode is a wrong answer, not an outage</strong></div>
+      <div class="challenge-body">
+        <p>
+          Nothing here pages anybody. A dropped column reads as <code>NULL</code>. A split table
+          reads as a decline in volume. A type coercion reads as a distribution shifting. Each of
+          those is indistinguishable, from the consuming end, from a real change in the business.
+        </p>
+        <p>
+          Which means the detection budget belongs on the catalog, not on the job. The job
+          succeeded. The job was always going to succeed.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The design question is not "how do I stop schemas changing" &mdash; they change, that is what
+      upstream systems do. It is "which of the four artefacts is authoritative, and what is allowed
+      to edit it".
+    </p>
+
+    <img src="/blog/assets/diagrams/arch-030-glue-catalog-schema-drift.svg" alt="Diagram: the four places a schema lives around one Glue Data Catalog table — the Schema Registry upstream of the producer, the table-level schema, the per-partition schema and the table version history — with the drift behaviour and quota of each, followed by the opposite column-access defaults of Parquet and ORC, the position-only identity of CSV, and the crawler's default of creating two tables when schemas differ">
+
+    <h3>The crawler is a policy engine, and its defaults are opinions</h3>
+    <p>
+      A crawler is usually installed as though it were a discovery tool that reports what is in the
+      bucket. It is closer to a scheduled process with write access to your table definitions, and
+      its behaviour is set by two independent knobs that are easy to confuse.
+    </p>
+    <p>
+      The <code>SchemaChangePolicy</code> governs whether it may edit at all. Setting
+      <code>UpdateBehavior</code> to <code>LOG</code> stops it changing an existing schema entirely.
+      The <code>Configuration</code> document governs what it does when it is allowed to edit, and
+      it has separate settings for tables and for partitions:
+    </p>
+    <pre><code># Discover new columns, but never overwrite a schema that was corrected by hand,
+# and force every partition to carry the table's schema rather than its own.
+aws glue update-crawler \
+  --name sales-events \
+  --schema-change-policy UpdateBehavior=LOG,DeleteBehavior=LOG \
+  --configuration '{
+    "Version": 1.0,
+    "Grouping":      { "TableGroupingPolicy": "CombineCompatibleSchemas" },
+    "CrawlerOutput": {
+      "Tables":     { "AddOrUpdateBehavior": "MergeNewColumns" },
+      "Partitions": { "AddOrUpdateBehavior": "InheritFromTable" }
+    }
+  }'</code></pre>
+    <p>
+      Three of those four settings are corrections to a default. <code>MergeNewColumns</code> adds
+      new columns without overwriting the existing schema, which matters the moment anybody has
+      fixed a type by hand &mdash; without it, the next crawl reverts the fix.
+      <code>InheritFromTable</code> is the setting AWS describes as "update all new and existing
+      partitions with metadata from the table"; its absence is why partition schemas drift away
+      from the table and stay there. And <code>CombineCompatibleSchemas</code> is what asks for one
+      table rather than a table per partition value: the crawler still checks data compatibility
+      &mdash; format, compression, path structure &mdash; but stops splitting on schema similarity.
+    </p>
+
+    <h3>Partitions carry their own schema, and the forgiving formats are the dangerous ones</h3>
+    <p>
+      AWS states the rule plainly: a table and its partitions must use the same data format, but
+      their schemas may differ. A new partition usually inherits the table's schema at creation, and
+      after that the two are independent. If the table's schema changes, partition schemas are not
+      updated to stay in sync.
+    </p>
+    <p>
+      What happens next depends entirely on the format, and the relationship is the reverse of what
+      you would want:
+    </p>
+    <ul>
+      <li>
+        <strong>CSV, JSON and Avro</strong> are verified by <em>index</em>. A mismatch raises
+        <code>HIVE_PARTITION_SCHEMA_MISMATCH</code> and the query fails, naming the partition and
+        the column. Loud, immediate, and the workaround is to drop and recreate the partition.
+      </li>
+      <li>
+        <strong>Parquet, and ORC read by name</strong>, are verified by <em>column name</em>. AWS
+        notes that this "eliminates <code>HIVE_PARTITION_SCHEMA_MISMATCH</code> errors for tables
+        with partitions". It does &mdash; by matching what it can and leaving the rest alone.
+      </li>
+    </ul>
+    <p>
+      Read that second bullet as an operator rather than as a developer. The format that never
+      raises the error is not the format with no drift; it is the format that resolves drift
+      silently, one partition at a time, and returns a result set that looks complete. The noisy
+      formats fail a query. The quiet ones change an answer.
+    </p>
+    <p>
+      One more asymmetry worth knowing before it is discovered under pressure: for Parquet and ORC,
+      changing a column's data type works <em>only</em> for partitioned tables. On an unpartitioned
+      table it is not a supported operation at all.
+    </p>
+
+    <h3>The format is the drift policy, chosen years before the drift</h3>
+    <p>
+      Storage format is usually decided on compression ratio and scan cost. It is also, and more
+      consequentially, a decision about which schema changes your platform will survive. The
+      SerDe properties <code>parquet.column.index.access</code> and
+      <code>orc.column.index.access</code> toggle the access method, so this is a choice rather than
+      a fact &mdash; but it is a choice made in <code>CREATE TABLE</code>, and AWS warns that these
+      properties are <em>not</em> automatically propagated to each partition.
+    </p>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Change</th><th>CSV / TSV</th><th>JSON</th><th>Avro</th><th>Parquet (by name, default)</th><th>ORC (by index, default)</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Rename a column</td><td>Yes</td><td>No</td><td>No</td><td>No</td><td>Yes</td></tr>
+          <tr><td>Add a column at the end</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+          <tr><td>Add a column at the front or middle</td><td>No</td><td>Yes</td><td>Yes</td><td>Yes</td><td>No</td></tr>
+          <tr><td>Remove a column</td><td>No</td><td>Yes</td><td>Yes</td><td>Yes</td><td>No</td></tr>
+          <tr><td>Reorder columns</td><td>No</td><td>Yes</td><td>Yes</td><td>Yes</td><td>No</td></tr>
+          <tr><td>Change a column's type</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Partitioned tables only</td><td>Partitioned tables only</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The Parquet and ORC columns are near mirror images, which is the practical point: there is no
+      "columnar" behaviour to reason about, only two specific behaviours. And CSV's row is a useful
+      reminder of why it keeps causing trouble in a lake &mdash; with no column names in the format,
+      position is the only identity a column has, so removing one is not a supported operation and
+      never will be.
+    </p>
+
+    <h3>Where the Schema Registry stops the problem instead of recording it</h3>
+    <p>
+      Everything above is reconciliation after the fact. The Glue Schema Registry is the only
+      component in this picture that refuses a change before it is written, and it is worth being
+      precise about where it applies: it enforces schemas on streaming producers, integrating with
+      Apache Kafka, Amazon MSK, Kinesis Data Streams, Managed Service for Apache Flink and Lambda.
+      It has nothing to say about a partner dropping a CSV in a bucket.
+    </p>
+    <p>
+      Within that scope it is genuinely a contract. Eight compatibility modes govern what a new
+      version may do relative to a checkpoint version: <code>NONE</code>, <code>DISABLED</code>,
+      <code>BACKWARD</code>, <code>BACKWARD_ALL</code>, <code>FORWARD</code>,
+      <code>FORWARD_ALL</code>, <code>FULL</code> and <code>FULL_ALL</code>. AWS recommends
+      <code>BACKWARD</code>, which lets consumers read both the current and the previous version,
+      and is the right default for the common case where consumers are upgraded after producers.
+      <code>DISABLED</code> is the one to know about for a schema that must never move: it prevents
+      versioning entirely, so no new version can be added at all.
+    </p>
+    <p>
+      The quota to design around is <strong>10,000 schema versions per Region per account</strong>,
+      and unlike almost everything else in Glue it is <strong>not adjustable</strong>. Every new
+      schema consumes a version, so that is also the ceiling on distinct schemas. Compare that with
+      the catalog side, where <em>Max table versions per table</em> is 100,000 and adjustable
+      &mdash; an hourly crawler rewriting the schema on every single run would need about
+      <strong>11.4 years</strong> to exhaust it. Table versions are not going to be your constraint.
+      Schema versions can be, and there is no support ticket for it.
+    </p>
+
+    <h3>What the job does when a column already holds two types</h3>
+    <p>
+      When drift has already happened and both shapes exist in the data, a Glue DynamicFrame
+      represents the column as a <code>ChoiceType</code> and makes you say what it means. The
+      resolutions available to <code>ResolveChoice</code> are not equivalent, and one of them loses
+      data by design:
+    </p>
+    <ul>
+      <li><code>cast</code> &mdash; coerce to a named type, for example <code>cast:long</code>.</li>
+      <li><code>make_cols</code> &mdash; flatten into <code>columnA_int</code> and
+        <code>columnA_string</code>. Ugly, and it keeps every row.</li>
+      <li><code>make_struct</code> &mdash; a struct holding both, preserving the distinction
+        without widening the table.</li>
+      <li><code>project</code> &mdash; keep only values of one type. <strong>Rows of the other type
+        are dropped.</strong></li>
+      <li><code>MATCH_CATALOG</code> &mdash; cast each choice to the corresponding type in a named
+        catalog table, which requires <code>database</code> and <code>table_name</code>.</li>
+    </ul>
+    <p>
+      <code>project</code> is the one that reads as tidy in a code review and shows up later as a
+      row count nobody can explain. On a lake you do not control, <code>make_cols</code> is the
+      honest default: it makes the drift visible in the schema itself, which is where somebody will
+      eventually look.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Matters</h2>
+    <p>
+      Platform engineering has good instincts for availability failures and poor ones for
+      correctness failures, because the feedback loops are so different. An availability failure
+      announces itself within minutes to the person on call. A correctness failure announces itself
+      in a meeting, weeks later, as a question about why a number moved &mdash; and by then the
+      partition that caused it is one of several hundred thousand.
+    </p>
+    <p>
+      Schema drift is the second kind, and the catalog is where it becomes irreversible. Not
+      because the data is lost &mdash; the objects in S3 are untouched, and schema-on-read means
+      nothing was rewritten &mdash; but because the interpretation was wrong for a period nobody can
+      now delimit. Restating a quarter is not a technical problem.
+    </p>
+    <p>
+      The scale figures are worth holding in mind, because they explain why manual reconciliation
+      stops being available so quickly. A table may hold up to 10,000,000 partitions, each with its
+      own schema, and the account ceiling is 20,000,000 &mdash; so exactly two tables at the
+      per-table maximum exhaust it. Long before those numbers, the population of partition schemas
+      is past the point where anyone will audit it by hand. Whatever policy is in place when the
+      partitions are created is the policy you have.
+    </p>
+    <p>
+      Which is the argument for spending the effort at configuration time rather than on detection.
+      Detection is still worth having, and the highest-value alarm is an unusual one: <strong>alert
+      on the number of tables in a database</strong>. A crawler quietly splitting a table into
+      <code>year_2017</code> and <code>year_2018</code> is invisible in every job metric and obvious
+      in a table count.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take this</th><th>Because</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Who owns the table schema</td>
+            <td>Not the crawler. <code>UpdateBehavior=LOG</code> with <code>MergeNewColumns</code></td>
+            <td>Keeps discovery of new columns while stopping the next crawl from reverting a type somebody corrected by hand</td>
+          </tr>
+          <tr>
+            <td>Partition metadata</td>
+            <td>Set <code>Partitions AddOrUpdateBehavior=InheritFromTable</code> on every crawler</td>
+            <td>Partition schemas do not follow the table by default, and there is no later operation that reconciles them</td>
+          </tr>
+          <tr>
+            <td>Table grouping</td>
+            <td><code>TableGroupingPolicy=CombineCompatibleSchemas</code> on any partitioned prefix</td>
+            <td>The default is to split one table into several named after partition values, silently, and report success</td>
+          </tr>
+          <tr>
+            <td>Storage format</td>
+            <td>Parquet, left at its read-by-name default</td>
+            <td>Survives adds, removes and reorders — the changes that actually occur — and name-based verification avoids partition mismatch errors</td>
+          </tr>
+          <tr>
+            <td>Renaming a column in Parquet</td>
+            <td>Do not. Add the new name, backfill, deprecate the old one</td>
+            <td>Rename is the one operation read-by-name cannot absorb, and inverting the SerDe property to allow it breaks everything else</td>
+          </tr>
+          <tr>
+            <td>Where to enforce the contract</td>
+            <td>Schema Registry when the producer is a stream you control; a validation step and a quarantine prefix when it is not</td>
+            <td>The registry rejects an incompatible version before it is written, but only integrates with streaming producers</td>
+          </tr>
+          <tr>
+            <td>Schema Registry sizing</td>
+            <td>Budget against 10,000 schema versions per Region, per account</td>
+            <td>It is a hard limit, not adjustable, and every new schema consumes one</td>
+          </tr>
+          <tr>
+            <td>Resolving a column with two types</td>
+            <td><code>make_cols</code>, not <code>project</code></td>
+            <td><code>project</code> silently drops every row of the non-selected type; <code>make_cols</code> puts the drift in the schema where it will be seen</td>
+          </tr>
+          <tr>
+            <td>Detection</td>
+            <td>Alarm on table count per database, and on partition count per table</td>
+            <td>The two drift outcomes that raise no error both show up there and nowhere else</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The Glue Data Catalog is a Hive metastore with an AWS interface, and it inherits the
+      assumption Hive was built on: that a schema is metadata describing files, applied when
+      somebody reads them. That assumption is what makes the catalog cheap, fast to populate and
+      able to sit over a bucket somebody else writes to. It is also what makes every mechanism in
+      this post a reconciliation rather than a guarantee.
+    </p>
+    <p>
+      Configured deliberately, that is a reasonable trade and it holds up well. Left on its defaults
+      &mdash; a crawler with write access, partitions that do not inherit, and a format chosen for
+      compression ratio &mdash; it is four sources of truth with no arbiter, and the arbitration
+      happens per query, invisibly, in favour of whatever the reader can match.
+    </p>
+    <div class="callout">
+      <p>
+        <strong>Next in this series</strong>
+      </p>
+      <p>
+        <strong>#31 &mdash; Iceberg on S3: why table formats arrived.</strong> Everything above is
+        the case for the defence of schema-on-read. Table formats exist because a decade of that
+        argument was lost: they move schema, partitioning and history into the data itself, where a
+        rename is a recorded operation rather than a reinterpretation. Having seen what drift costs
+        in a catalog, the next post is about what it costs to stop it.
+      </p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/glue/latest/dg/crawler-grouping-policy.html">Creating a single schema for each Amazon S3 include path, AWS Glue</a></li>
+      <li><a href="https://docs.aws.amazon.com/glue/latest/dg/crawler-schema-changes-prevent.html">Preventing a crawler from changing an existing schema, AWS Glue</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/handling-schema-updates-chapter.html">Handle schema updates, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/updates-and-partitions.html">Update tables with partitions, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html">AWS Glue Schema registry</a></li>
+      <li><a href="https://docs.aws.amazon.com/glue/latest/dg/aws-glue-api-crawler-pyspark-transforms-ResolveChoice.html">ResolveChoice class, AWS Glue PySpark transforms</a></li>
+      <li><a href="https://docs.aws.amazon.com/general/latest/gr/glue.html">AWS Glue endpoints and quotas</a></li>
+    </ul>
+  </div>
+</div>
