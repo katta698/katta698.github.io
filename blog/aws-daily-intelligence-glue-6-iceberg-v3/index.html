@@ -71,7 +71,7 @@
       <div class="post-info">
         <span>Aug 22, 2026</span>
         <span class="post-info-dot"></span>
-        <span>8 min read</span>
+        <span>12 min read</span>
       </div>
     </header>
     <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 22 August 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
@@ -271,6 +271,13 @@
 <p>The Iceberg v3 additions are the VARIANT type with variant shredding, nanosecond-precision timestamps, and the Geometry and Geography geospatial types.</p>
 <img alt="Diagram: the Glue 5.1 to 6.0 runtime jump alongside the breaking changes it carries, and the reach of Iceberg v3 — writable from Spark DataFrames but not DynamicFrames or Visual ETL, and unreadable by Athena SQL, which errors with Cannot read unsupported version 3" src="/blog/assets/diagrams/daily-016-glue-6-iceberg-v3.svg"/>
 </div>
+<div class="section" id="architecture">
+<h2>Architecture</h2>
+<p>There is no topology to redraw for a runtime release — a Glue job lands on a stack of pinned versions, and an upgrade replaces the stack. What makes this one worth reading architecturally is that one component in that stack writes a property into your data which outlives the job that wrote it.</p>
+<p>Four layers move together here, and they fail in different places at different times. The <strong>language and engine layer</strong> breaks at build time, loudly, when a custom JAR will not load. The <strong>filesystem and SDK layer</strong> — S3A as the only S3 filesystem, AWS SDK for Java v2 only — breaks at job start, when configuration or an import no longer resolves. The <strong>semantics layer</strong>, ANSI mode on by default, breaks at runtime, on a row that previously overflowed quietly to <code>NULL</code>. All three are contained by the job: they are found by running it.</p>
+<p>The fourth is not contained by anything. The <strong>table format layer</strong> is the only one whose choice is written into storage, because <code>format-version</code> is a property of the table rather than of the job. A job writing v3 leaves behind a table that some other engine now has to be able to read, and Athena cannot. So the boundary that decides this upgrade is not the one between Glue 5.1 and 6.0 — it is the one between what a Glue job can write and what everything downstream can read.</p>
+<p>That asymmetry is the reason to take the runtime decision and the format decision separately. Moving the runtime is reversible by setting <code>GlueVersion</code> back. Writing v3 tables is not reversible by changing a job setting, because the artefact left behind is the table.</p>
+</div>
 <div class="section" id="trap">
 <h2>The trap: Athena cannot read v3</h2>
 <p>This is the sentence to carry away, and it is in AWS's own known limitations:</p>
@@ -303,6 +310,24 @@
 <p>Coverage of Iceberg v3 usually leads with deletion vectors and row lineage. Neither arrives here. The migration guide is explicit that both <em>“are already supported by AWS Glue ETL since AWS Glue 5.1”</em> — deletion vectors as merge-on-read using Roaring Bitmaps in Puffin files, and row lineage through <code>first-row-id</code> metadata.</p>
 <p>If those were the reason to upgrade, you may already have them.</p>
 </div>
+<div class="section" id="value">
+<h2>Business value</h2>
+<p>The value splits cleanly in two, and only one half is available to everybody.</p>
+<div class="table-scroll">
+<table>
+<thead>
+<tr><th>What the release offers</th><th>Who can actually take it</th></tr>
+</thead>
+<tbody>
+<tr><td>A newer runtime, plus Spark Declarative Pipelines, Spark Connect and Arrow-native Python UDFs</td><td>Anyone whose dependencies survive the Scala and SDK breaks</td></tr>
+<tr><td>Lower cost per unit of work — from a lower stated rate, and from jobs finishing sooner</td><td>Anyone, once the effective rate is confirmed for their Region; billing is per second, so runtime is half of it</td></tr>
+<tr><td>Iceberg v3 types: VARIANT with shredding, nanosecond timestamps, Geometry and Geography</td><td>Spark DataFrame jobs only, and only where nothing downstream reads through Athena</td></tr>
+<tr><td>Deletion vectors and row lineage</td><td>Everyone already on Glue 5.1 — these are not new in this release</td></tr>
+</tbody>
+</table>
+</div>
+<p>Stated plainly: the cost and runtime benefits are broadly available, and the headline feature is narrowly available. A team that upgrades for the price and keeps its tables at v2 collects most of the value of this release while taking the least of its risk.</p>
+</div>
 <div class="section" id="cost">
 <h2>Cost considerations</h2>
 <p>AWS states 30% lower pricing than previous Glue versions. The public pricing page lists a single ETL and interactive sessions rate of <strong>$0.44 per DPU-hour, billed by the second</strong>, and does not break that rate out by Glue version — so confirm the effective rate for your Region and version before modelling the saving, rather than assuming it lands automatically.</p>
@@ -320,6 +345,25 @@
 <p>Two things to check before flipping anything: every <code>--extra-jars</code> entry needs recompiling for Scala 2.13 and Spark 4.1, and <code>--additional-python-modules</code> still works but is now deprecated in favour of <code>--python-virtual-env</code>. Python code needs a pass for 3.13, which removes several long-deprecated standard library modules.</p>
 <p>For estates with many jobs, AWS points at Generative AI upgrades for Apache Spark, which handles Glue 2.0 and later.</p>
 </div>
+<div class="section" id="tradeoffs">
+<h2>Tradeoffs</h2>
+<div class="table-scroll">
+<table>
+<thead>
+<tr><th>Gain</th><th>Cost</th></tr>
+</thead>
+<tbody>
+<tr><td>Lower stated pricing, billed by the second</td><td>The pricing page lists one ETL rate and does not break it out by Glue version — confirm before modelling a saving</td></tr>
+<tr><td>A current Spark, Scala and Python</td><td>Every custom JAR needs recompiling, and the Scala step is a binary break</td></tr>
+<tr><td>One S3 filesystem and one AWS SDK to reason about</td><td>EMRFS configuration must be removed, and <code>com.amazonaws</code> imports no longer exist</td></tr>
+<tr><td>ANSI mode surfaces arithmetic that used to pass silently</td><td>It throws where the result was previously <code>NULL</code>, so it surfaces on real data rather than at build time</td></tr>
+<tr><td>Iceberg v3 types are available today</td><td>Athena cannot read v3 at all, and fine-grained access control does not apply to VARIANT columns</td></tr>
+<tr><td>The new types work in Spark DataFrames</td><td>They do not work in DynamicFrames, which is what most existing Glue code is written against, nor in Visual ETL</td></tr>
+<tr><td>Upgrading is a configuration change with no API changes</td><td>All of the actual work is in the dependencies, which that configuration change does not describe</td></tr>
+</tbody>
+</table>
+</div>
+</div>
 <div class="section" id="implementation">
 <h2>Implementation guidance</h2>
 <ol>
@@ -331,6 +375,18 @@
 <li><strong>Benchmark one real job on 5.1 and 6.0</strong> and compare DPU-seconds, not just the rate. Billing is per second, so runtime is half the cost story.</li>
 <li><strong>If you use DynamicFrames or Visual ETL</strong>, plan on the v3 types being unavailable to you regardless of runtime version.</li>
 </ol>
+</div>
+<div class="section" id="practices">
+<h2>Best practices</h2>
+<ul>
+<li><strong>Leave <code>format-version</code> at 2 unless nothing downstream uses Athena.</strong> It is the one choice in this release that writes itself into storage and cannot be undone by changing a job setting.</li>
+<li><strong>Separate the runtime upgrade from the format decision.</strong> Take the engine and the price now; take v3 when the engines that read your tables agree on it.</li>
+<li><strong>Inventory and recompile before flipping <code>GlueVersion</code>.</strong> Custom JARs against the new Scala, and a grep for <code>com.amazonaws</code> across Scala and Java jobs.</li>
+<li><strong>Rehearse ANSI mode in a non-production account.</strong> It is the only breaking change that appears as a thrown exception on real rows rather than at build or start time.</li>
+<li><strong>Benchmark DPU-seconds, not the rate.</strong> Billing is per second, so a shorter run is as much of the saving as a cheaper one — compare one real job on both versions.</li>
+<li><strong>Move from <code>--additional-python-modules</code> to <code>--python-virtual-env</code>.</strong> The old flag still works and is deprecated, so migrate while nothing is forcing the issue.</li>
+<li><strong>Do not upgrade for deletion vectors or row lineage.</strong> Both have shipped since Glue 5.1; if they are your reason, you may already have them.</li>
+</ul>
 </div>
 <div class="section" id="adopt">
 <h2>Who should adopt, who should wait</h2>
