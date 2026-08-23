@@ -130,9 +130,9 @@ window publishes daily, so the word identifies nothing.
 
 | He says | He means |
 | --- | --- |
-| **arch** | AWS Architecture Series — the next numbered topic in `ROADMAP.md` |
+| **arch** | The Architecture Series for whichever cloud this window owns — the next numbered topic in that cloud's roadmap |
 | **intel** | AWS Daily Intelligence — rank yesterday's news, recommend one, then write on "write" |
-| **weekly** | AWS Weekly Intelligence — the Saturday roundup |
+| **weekly** | The Saturday roundup for whichever cloud this window owns |
 | **lab** | The Weekly Lab for whichever cloud this window owns — the next week number, from `MORNING.md` |
 
 Set 2026-08-17, after "next daily post" was read as Daily Intelligence when it
@@ -140,11 +140,17 @@ meant the daily architecture post, and a full Daily Intelligence post was
 written and thrown away. The ambiguity was noticed when the trigger words were
 first proposed, and writing it down was skipped — so it happened anyway.
 
-**`lab` is the only one of the four that means something different in each
-window.** In the AWS window it is the AWS Weekly Lab, in Azure the Azure Weekly
-Lab, in GCP the GCP Weekly Lab — the window decides the cloud, exactly as it
-does for `arch`. The other three words are AWS-only, because only AWS runs a
-daily intelligence series and only the AWS window owns three series at once.
+**Three of the four are per-window; only `intel` is AWS-only.** `arch`,
+`weekly` and `lab` all mean "for whichever cloud this window owns" — the window
+decides the cloud. `intel` is the exception, because only AWS runs a daily
+intelligence series.
+
+`weekly` was written here as AWS-only, and that was simply wrong: all three
+clouds publish a roundup every Saturday, and on 22 August 2026 AWS #3, Azure #2
+and GCP #2 all went out. The file said one thing while three windows did
+another, which matters because these words are typed into all three panes at
+once in MobaXterm's multi-execution mode — a word that means something in only
+one window cannot be broadcast. Corrected 2026-08-23.
 
 Labs have **no fixed publish day** and are never "due today". `MORNING.md`
 reports the next week number per series as an open item; `lab` writes that one.
