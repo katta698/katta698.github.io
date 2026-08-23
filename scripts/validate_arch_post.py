@@ -589,10 +589,48 @@ def check_page(slug, spec):
                   'an absent one -- the other diagram checks only validate a '
                   'diagram that is already there')
 
-    # 8. Images need alt text.
+    # 8. Images need alt text, and a diagram's alt text has to say something.
+    #
+    #    `'alt=' not in tag` was the entire check, which passes alt="" -- the
+    #    markup that tells a screen reader the image is decorative and should be
+    #    skipped. A diagram carrying the post's architecture is the exact
+    #    opposite of decorative, and an empty alt is indistinguishable from a
+    #    filled one unless somebody reads the tag.
+    #
+    #    THE EMPTY-ALT RULE IS SCOPED TO DIAGRAMS, and must stay that way.
+    #    alt="" is correct HTML for a genuinely decorative image, and this site
+    #    has 431 of them: the brand mark in every page header carries
+    #    alt="" aria-hidden="true" (145 pages), and the Blogger-migrated posts
+    #    carry 286 more on inline content images. Applying the rule to every
+    #    <img> reported all 431 as errors on its first run -- a validator
+    #    failing the build over correct markup, which is worse than no check.
+    #
+    #    The "Diagram:" prefix is CLAUDE.md's house standard and is deliberately
+    #    a WARNING, not an error. 9 of the 72 diagram images on the site predate
+    #    the rule and open with "Diagram showing ..." or end with "... diagram".
+    #    Making that blocking would fail the build for every window, on every
+    #    publish, over wording in six posts nobody is editing -- the validator
+    #    would be reporting history rather than the post being published.
     for tag in re.findall(r'<img[^>]*>', visible):
         if 'alt=' not in tag:
             err(slug, 'an <img> is missing alt text')
+            continue
+        if '/blog/assets/diagrams/' not in tag:
+            continue
+        # Both quoting styles: a single-quoted alt is legal HTML, and matching
+        # only double quotes would silently skip the tag rather than check it.
+        m = re.search(r'''alt\s*=\s*(?:"([^"]*)"|'([^']*)')''', tag)
+        if m is None:
+            continue
+        alt = (m.group(1) if m.group(1) is not None else m.group(2)).strip()
+        if not alt:
+            err(slug, 'a diagram <img> has an empty alt="" — that marks it '
+                      'decorative and hides the post\'s architecture from '
+                      'screen readers. Describe what the diagram shows.')
+        elif not alt.startswith('Diagram:'):
+            warn(slug, 'diagram alt text should start with "Diagram:" and '
+                       'describe the content, not the picture (CLAUDE.md). '
+                       'Got: %r' % (alt[:60] + ('...' if len(alt) > 60 else '')))
 
     # 9. The cache-busting token must match the stylesheet it claims to name.
     #    sync_blog.py stamps sync-built pages with md5(blog.css)[:8] and never
