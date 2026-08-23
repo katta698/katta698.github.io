@@ -1,0 +1,385 @@
+---
+title: "GCP Architecture Series #10 — Premium and Standard Network Tiers: Where Traffic Leaves Google's Backbone"
+date: '2026-08-23T09:00:00'
+slug: gcp-architecture-network-tiers
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-08-23'
+verified_claims:
+  - claim: "With Premium Tier, traffic from an internet user enters Google's network through peering or transit networks in a Google point of presence (PoP) that's as close as possible to the internet user"
+    source: https://docs.cloud.google.com/network-tiers/docs/overview
+  - claim: "With Standard Tier, traffic from an internet user enters Google's network through a PoP as close as possible to the region of the Standard Tier IP address, and outbound traffic is sent through a peering or transit network in a PoP near that region"
+    source: https://docs.cloud.google.com/network-tiers/docs/overview
+  - claim: "The closest peering PoPs for Standard Tier might not be in the same country as the region of the Standard Tier IP address, and their selection doesn't optimize for performance"
+    source: https://docs.cloud.google.com/network-tiers/docs/overview
+  - claim: "Google's network consists of an extensive private fiber network with over 200 points of presence around the globe"
+    source: https://docs.cloud.google.com/network-tiers/docs/overview
+  - claim: "Google offers a 99.99% uptime SLA for Premium Tier VMs and a 99.9% uptime SLA for Standard Tier VMs, where a VM that loses external connectivity for more than a minute is considered to be in downtime"
+    source: https://docs.cloud.google.com/network-tiers/docs/overview
+  - claim: "Premium Tier is the default at both the project level and the resource level, and the resource-level tier takes precedence where both are set"
+    source: https://docs.cloud.google.com/network-tiers/docs/overview
+  - claim: "All global external IP addresses must use Premium Tier; global external Application Load Balancers and global external proxy Network Load Balancers are not supported on Standard Tier"
+    source: https://docs.cloud.google.com/network-tiers/docs/overview
+  - claim: "Cloud CDN is always Premium Tier and cannot be used with Standard Tier"
+    source: https://docs.cloud.google.com/network-tiers/docs/overview
+  - claim: "Cloud VPN gateways are not supported on Standard Tier, while Cloud NAT gateways are supported on both tiers"
+    source: https://docs.cloud.google.com/network-tiers/docs/overview
+  - claim: "Google Cloud designates separate pools of external IP addresses for Premium Tier and Standard Tier, an address cannot be moved between pools, and changing the tier of an instance with an ephemeral IP address changes its IP address"
+    source: https://docs.cloud.google.com/network-tiers/docs/overview
+  - claim: "Changing an existing load balancer between tiers requires deleting the existing forwarding rule and creating a new one"
+    source: https://docs.cloud.google.com/network-tiers/docs/overview
+  - claim: "Standard Tier is available to resources that use regional external IP addresses in all regions"
+    source: https://docs.cloud.google.com/network-tiers/docs/overview
+  - claim: "Regardless of tier, the network is designed to keep traffic between VM instances in the same or different regions on Google's network, including when a load balancer is on the path"
+    source: https://docs.cloud.google.com/network-tiers/docs/overview
+  - claim: "Premium Tier internet data transfer out from us-central1 to North America is free for the first 1 GiB, then $0.12 per GiB to 1,024 GiB, $0.11 per GiB to 10,240 GiB, and $0.08 per GiB above that"
+    source: https://cloud.google.com/vpc/network-pricing
+  - claim: "Standard Tier data transfer out from us-central1 is $0.085 per GiB from 200 to 10,240 GiB, $0.065 per GiB to 153,600 GiB, and $0.045 per GiB above that, with the first 200 GiB per month free"
+    source: https://cloud.google.com/network-tiers/pricing
+  - claim: "Always Free usage limits apply to Premium Tier and do not apply to Standard Tier"
+    source: https://cloud.google.com/network-tiers/pricing
+  - claim: "10 TiB of monthly egress from us-central1 to North America costs $1,136.52 on Premium Tier"
+    derive: "1023 * 0.12 + 9216 * 0.11"
+    expect: "1136.52"
+    source: https://cloud.google.com/vpc/network-pricing
+  - claim: "The same 10 TiB costs $853.40 on Standard Tier"
+    derive: "10040 * 0.085"
+    expect: "853.40"
+    source: https://cloud.google.com/network-tiers/pricing
+  - claim: "Standard Tier saves 24.9% on 10 TiB of monthly egress from us-central1"
+    derive: "(1023 * 0.12 + 9216 * 0.11 - 10040 * 0.085) / (1023 * 0.12 + 9216 * 0.11) * 100"
+    expect: "24.9"
+    source: https://cloud.google.com/vpc/network-pricing
+  - claim: "At the first paid band the Standard rate is 29.2% below the Premium rate"
+    derive: "(0.12 - 0.085) / 0.12 * 100"
+    expect: "29.2"
+    source: https://cloud.google.com/network-tiers/pricing
+  - claim: "Above 10,240 GiB the gap narrows to 18.75%, because Premium falls to $0.08 while Standard falls to $0.065"
+    derive: "(0.08 - 0.065) / 0.08 * 100"
+    expect: "18.75"
+    source: https://cloud.google.com/network-tiers/pricing
+problem: "A team moves a service to Standard Tier to cut egress cost, reading the tier as a discount on the same network. It is not a discount on the same network — it is a different path. Inbound traffic stops entering Google at the point of presence nearest the user and starts entering near the region instead, and the tier is welded to an IP address that cannot move between the two pools."
+builds: "What Google's network does with a packet under each tier, which resources and services each tier supports, the two rate cards side by side, and what a switch costs in latency, in feature reach and in changed IP addresses."
+catch: "The headline rates are 29.2% apart, but a realistic 10 TiB month is only 24.9% apart, and above 10,240 GiB the gap is 18.75% — the discount shrinks exactly as the bill grows large enough to be worth chasing."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series · #010 · Foundations</div>
+  <h1 class="post-title">Premium and Standard Network Tiers: Where Traffic Leaves Google's Backbone</h1>
+  <p class="post-subtitle">Post #9 was about how stale the surviving copy may be. This one is about the path a packet takes to reach a user — and a setting, chosen once, that decides how much of that path belongs to Google.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Google Cloud · Networking · Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A platform team is asked to bring the egress bill down. They find Network Service Tiers, read that Standard Tier is cheaper than Premium Tier, and switch a regional service across. The rate card was accurate; three of the four consequences were not in it.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>Users far from the region got slower, and nothing had been deployed</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Under Premium Tier, traffic from an internet user enters Google's network at a point of presence as close as possible to <em>the user</em>. Under Standard Tier it enters at a PoP as close as possible to <em>the region of the IP address</em>. The application did not move; the place where the public internet ends and Google's network begins did.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Decide the tier by where the users are relative to the region, not by the rate card. If the distance between them is small, Standard is giving up little. If it is an ocean, that ocean is now crossed on transit networks.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>The global load balancer on next quarter's plan became impossible</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          All global external IP addresses must use Premium Tier, and global external Application Load Balancers and global external proxy Network Load Balancers are not supported on Standard Tier at all. Standard Tier is a regional service.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat "will this ever need one address in front of backends in several regions?" as the first question, before cost. A yes settles the tier on its own.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>The IP address changed, and things downstream were holding it</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Google Cloud keeps separate pools of external IP addresses for the two tiers, and an address cannot be moved between them. Change the tier of an instance with an ephemeral address and the address changes with it. Change a load balancer's tier and the forwarding rule has to be deleted and recreated.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Plan a tier change as an address change: DNS, allowlists at partners, and anything holding the literal address in a config file. It is not a toggle, even though it looks like one.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>Cloud CDN could not be added afterwards</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Cloud CDN is always Premium Tier, and cannot be used with Standard Tier. The obvious next move for a latency complaint — put a CDN in front of it — was unavailable on the tier the team had just chosen to save money.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Check the feature list before the price list. Cloud VPN gateways are Premium-only too; Cloud NAT works on both.
+        </p>
+      </div>
+    </div>
+
+    <div class="callout amber">
+      <strong>What the tier actually selects</strong>
+      <p>Not a quality setting on one network. It selects <strong>which network carries the long haul</strong> — Google's private backbone, or the transit providers between a PoP near your region and your user. Everything else about the two tiers follows from that one difference.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Google's network is an extensive private fiber network with <strong>over 200 points of presence</strong> around the globe. A PoP is where that network meets someone else's — a peering or transit network that can reach the user. The tier decides which PoP gets used.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-010-network-tiers.svg" alt="Diagram: the two Network Service Tiers compared by where traffic crosses between the public internet and Google's backbone, with the per-gibibyte rate cards and a ten-tebibyte worked example" />
+      <figcaption>Premium hands the packet to Google as early as possible and back to the internet as late as possible. Standard does the opposite. The rate cards are the price of that difference.</figcaption>
+    </figure>
+
+    <h3>Premium Tier: cross over near the user</h3>
+    <p>
+      Inbound, traffic from an internet user enters Google's network through peering or transit networks in a PoP that is as close as possible to that user. Google achieves this by advertising next hops for Premium Tier addresses in PoPs across the entire global network, with equivalent BGP metrics — which encourages the networks carrying the user's traffic to hand it over at whichever PoP is nearest to them.
+    </p>
+    <p>
+      Outbound, traffic is sent on the BGP best path, which typically routes it across Google's global network to a PoP as close as possible to the user before handing it to a peering or transit network. Google is explicit that this is typical rather than guaranteed: where an internet user's network peers with Google in several places, choosing the best path can select a PoP that is <em>not</em> the closest one to the user.
+    </p>
+
+    <h3>Standard Tier: cross over near the region</h3>
+    <p>
+      Inbound, traffic enters through a PoP as close as possible to <strong>the region of the Standard Tier IP address</strong>, achieved by advertising the best BGP metrics only with next hops in PoPs near that region. Outbound leaves the same way — through a peering or transit network in a PoP near the region — and normally exits from the same region as the sending VM or bucket, regardless of where the traffic is going.
+    </p>
+    <p>
+      Two details in that description are worth pulling out, because they are easy to skim past and they shape expectations. The closest peering PoPs <strong>might not be in the same country</strong> as the region. And their selection is made to minimise distance travelled on Google's own network — it explicitly <strong>does not optimise for performance</strong>.
+    </p>
+    <p>
+      There is also a documented escape hatch in the opposite direction: Standard Tier traffic might be routed as Premium Tier in rare circumstances, such as when no peering or transit network at the closest PoPs can reach the user at all.
+    </p>
+
+    <h3>Neither tier affects traffic between your own resources</h3>
+    <p>
+      Regardless of tier, the network is designed to keep traffic between VM instances in the same or different regions on Google's network, including when a load balancer is on the path — whether the addresses involved are publicly or privately routable. The tier is a statement about the path to and from the <em>internet</em>, not about internal traffic.
+    </p>
+
+    <h3>What each tier can carry</h3>
+    <p>
+      Standard Tier is available to resources using regional external IP addresses in all regions, so availability is not the constraint. Support is.
+    </p>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Resource or service</th><th>Premium Tier</th><th>Standard Tier</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Global external Application Load Balancer, global external proxy Network Load Balancer</td><td>Yes, with a global external IP address</td><td>Not supported</td></tr>
+        <tr><td>Regional external Application, proxy and passthrough Network Load Balancers</td><td>Yes, regional IP address</td><td>Yes, regional IP address</td></tr>
+        <tr><td>VM instances, including GKE node VMs</td><td>Yes, regional IP address</td><td>Yes, regional IP address</td></tr>
+        <tr><td>Cloud NAT gateways</td><td>Yes</td><td>Yes</td></tr>
+        <tr><td>Cloud VPN gateways</td><td>Yes</td><td>Not supported</td></tr>
+        <tr><td>Cloud CDN</td><td>Always Premium Tier</td><td>Not supported</td></tr>
+        <tr><td>Cloud Storage</td><td>Premium by default, whether or not the bucket is a load balancer backend</td><td>Only as a backend of an external Application Load Balancer, in the same region as the forwarding rule</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>The SLA difference is exactly one nine</h3>
+    <p>
+      Google offers a <strong>99.99% uptime SLA for Premium Tier VMs</strong> and <strong>99.9% for Standard Tier VMs</strong>. The definition behind both is the same: a VM that loses external connectivity for more than a minute is considered to be in downtime.
+    </p>
+    <p>
+      One nine sounds small next to a per-gibibyte saving. Over a month it is the difference between roughly four minutes and roughly forty-three of permitted downtime, and it is downtime on the path to your users rather than inside your application.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why the Saving Is Smaller Than the Rate Card Suggests</h2>
+    <p>
+      Both tiers are billed per GiB of data transfer out, based on the source region, with ingress free either way. Taking <code>us-central1</code> as the source and North America as the destination:
+    </p>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Monthly volume from us-central1</th><th>Premium Tier, to North America</th><th>Standard Tier</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Free allowance</td><td>First 1 GiB free (Always Free)</td><td>First 200 GiB free</td></tr>
+        <tr><td>Up to 1,024 GiB</td><td>$0.12 per GiB</td><td rowspan="2">$0.085 per GiB to 10,240 GiB</td></tr>
+        <tr><td>1,024 to 10,240 GiB</td><td>$0.11 per GiB</td></tr>
+        <tr><td>10,240 to 153,600 GiB</td><td rowspan="2">$0.08 per GiB above 10,240 GiB</td><td>$0.065 per GiB</td></tr>
+        <tr><td>Above 153,600 GiB</td><td>$0.045 per GiB</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      Compare the first paid rates and Standard is <strong>29.2%</strong> below Premium. That is the number the decision usually gets made on, and it is the most flattering one available.
+    </p>
+
+    <h3>A month of 10 TiB, worked through</h3>
+    <p>
+      Ten tebibytes is 10,240 GiB. On Premium that is 1 GiB free, 1,023 GiB at $0.12 and 9,216 GiB at $0.11 — <strong>$1,136.52</strong>. On Standard it is 200 GiB free and 10,040 GiB at $0.085 — <strong>$853.40</strong>.
+    </p>
+    <p>
+      The saving is $283.12, or <strong>24.9%</strong> — not 29.2%, because Premium's own volume discount has already started and Standard's has not. Keep going and the gap keeps closing: above 10,240 GiB Premium is $0.08 and Standard is $0.065, a difference of <strong>18.75%</strong>.
+    </p>
+
+    <div class="callout">
+      <strong>The shape of the trade, stated once</strong>
+      <p>The discount is largest on the volumes small enough not to matter, and smallest on the volumes large enough to justify a project. The latency change, meanwhile, applies to every request from every user at every volume. That asymmetry is the argument, and it does not depend on anybody's numbers being newer than these.</p>
+    </div>
+
+    <h3>The free allowance, and a wording worth reading twice</h3>
+    <p>
+      Always Free usage limits apply to Premium Tier and <strong>do not</strong> apply to Standard Tier — Standard has a free allowance of its own instead. The pricing page describes it as the first 200 GiB per month free, per account, calculated across all regions. The Network Service Tiers documentation describes 200 GB per month in each region you use, across all your projects, on a per-SKU basis.
+    </p>
+    <p>
+      Those are not the same allowance, and the difference is a factor of however many regions you run in. Plan against the pricing page's reading, which is the smaller of the two: an allowance you were not entitled to turns into a bill, while one you did not claim is a rounding error.
+    </p>
+
+    <h3>When Standard is genuinely the right answer</h3>
+    <p>
+      Google's own framing is the useful one: applications that are not latency or performance sensitive, and deployments that fit within a single region. In practice that points at a specific and quite common shape of workload.
+    </p>
+    <p>
+      <strong>Bulk transfer out of one region</strong> — backups, log shipping, dataset delivery, replication to another provider — where the receiver is a machine that does not care about a few tens of milliseconds, the volume is large, and the whole thing lives in one region anyway.
+    </p>
+    <p>
+      <strong>Regional services with regional users.</strong> If the audience and the region are in the same place, entering Google's network near the region and entering it near the user are nearly the same instruction, and Standard is close to free money.
+    </p>
+    <p>
+      <strong>Not</strong> anything user-facing and globally distributed, anything that might want Cloud CDN, and anything that will grow into a second region. The tier is chosen per resource, so these can coexist inside one project — Standard on the batch egress path, Premium on the front door.
+    </p>
+
+    <h3>The setting is chosen at creation, again</h3>
+    <p>
+      Premium is the default at the project level and at the resource level, and where both are set the resource wins. That much is easy to change.
+    </p>
+    <p>
+      What is not easy is the address. The two tiers draw from separate pools, an address cannot move between them, and a Standard Tier address in one region cannot move to another region even within the same tier. So changing the tier of a VM with an ephemeral address changes its address, and changing a load balancer's tier means deleting the forwarding rule and creating a new one.
+    </p>
+    <p>
+      That puts network tier alongside the project ID from post #5 and the bucket location from post #9: a field with a sensible default, cheap to set and expensive to revisit.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Anything user-facing across regions</td>
+          <td>Premium Tier</td>
+          <td>All global external IP addresses must use Premium, and global load balancers are not supported on Standard at all.</td>
+        </tr>
+        <tr>
+          <td>Bulk egress from a single region</td>
+          <td>Standard Tier</td>
+          <td>The receiver is not latency sensitive, and the volume is where the saving actually shows up on an invoice.</td>
+        </tr>
+        <tr>
+          <td>Users concentrated near the region</td>
+          <td>Standard Tier is defensible</td>
+          <td>Entering Google's network near the region and near the user amount to nearly the same path when the two are close together.</td>
+        </tr>
+        <tr>
+          <td>Anything that might want a CDN later</td>
+          <td>Premium Tier</td>
+          <td>Cloud CDN is always Premium. Choosing Standard removes the standard remedy for the latency complaint Standard can cause.</td>
+        </tr>
+        <tr>
+          <td>Cloud VPN gateway</td>
+          <td>Premium Tier — no choice</td>
+          <td>Standard Tier is not supported for Cloud VPN gateways. Cloud NAT, by contrast, works on either.</td>
+        </tr>
+        <tr>
+          <td>Setting the tier</td>
+          <td>Per resource, not per project</td>
+          <td>The resource-level setting takes precedence, so one project can run Standard on a batch path and Premium at the front door.</td>
+        </tr>
+        <tr>
+          <td>Planning a tier change on live traffic</td>
+          <td>Treat it as an IP address change</td>
+          <td>Separate address pools per tier. Ephemeral addresses change; load balancers need the forwarding rule deleted and recreated.</td>
+        </tr>
+        <tr>
+          <td>Writing the SLA into a design</td>
+          <td>99.99% Premium, 99.9% Standard</td>
+          <td>Same definition of downtime in both — external connectivity lost for more than a minute. One nine is roughly forty minutes a month.</td>
+        </tr>
+        <tr>
+          <td>Modelling the saving</td>
+          <td>Compute it on your actual volume</td>
+          <td>The 29.2% headline gap is 24.9% at 10 TiB and 18.75% above 10,240 GiB. The discount shrinks as the bill grows.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout amber">
+      <strong>Why "Standard is the cheap version of the same thing" is the wrong instinct</strong>
+      <p>It is a different path, sold by the gibibyte. Premium buys distance on Google's own fibre and a feature set — global addresses, Cloud CDN, Cloud VPN — that Standard does not have and cannot be given. A tier is not a discount code applied to one network; it is a choice of which network does the carrying.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Network Service Tiers is one of the few settings on Google Cloud that changes physics rather than policy. Most of this series so far has been about where a resource sits in a hierarchy, or how a request is authorised. This one decides how many kilometres of somebody else's network sit between your region and your user.
+    </p>
+    <p>
+      Which is why the useful habit is to state the geography before opening the pricing page. Where are the users, where is the region, and how far apart are they? If the answer is "the same city", Standard is a saving with almost no cost attached. If the answer is "another continent", the rate card is describing a trade nobody in the meeting has priced.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#11 covers billing accounts, subaccounts and the payments profile: the objects money actually attaches to, how they relate to the resource hierarchy from post #1, and why the billing account sits outside the place most people go looking for it.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/network-tiers/docs/overview" target="_blank" rel="noopener">Network Service Tiers overview</a></li>
+      <li><a href="https://docs.cloud.google.com/network-tiers/docs/using-network-service-tiers" target="_blank" rel="noopener">Using Network Service Tiers</a></li>
+      <li><a href="https://cloud.google.com/network-tiers/pricing" target="_blank" rel="noopener">Network Service Tiers pricing</a></li>
+      <li><a href="https://cloud.google.com/vpc/network-pricing" target="_blank" rel="noopener">VPC network pricing</a></li>
+      <li><a href="https://cloud.google.com/compute/sla" target="_blank" rel="noopener">Compute Engine Service Level Agreement</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
