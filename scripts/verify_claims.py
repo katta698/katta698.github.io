@@ -94,7 +94,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POSTS = os.path.join(ROOT, "posts")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from validate_arch_post import SERIES                          # noqa: E402
+from validate_arch_post import SERIES, lab_series_for_slug     # noqa: E402
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
@@ -305,6 +305,23 @@ def check_post(path, cache, verbose):
     return name, rows
 
 
+def slug_of(path):
+    """The post's own slug, for resolving which lab series it belongs to.
+
+    The filename stem will not do. `week-08-s3-intelligent-storage` carries
+    slug `week-8-s3-intelligent-storage-platform`, and week-09 differs too, so
+    passing the stem to lab_series_for_slug() returns None for those two and
+    would drop them from the run entirely -- trading a double-count for a
+    silently skipped post, which is the worse of the two.
+    """
+    try:
+        raw = io.open(path, encoding="utf-8").read()
+    except OSError:
+        return None
+    m = re.search(r"^slug:\s*(\S+)", raw, re.M)
+    return m.group(1) if m else None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("posts", nargs="*", help="substring of a post filename")
@@ -318,11 +335,32 @@ def main():
     args = ap.parse_args()
 
     specs = SERIES if not args.series else {args.series: SERIES[args.series]}
-    files = []
+    # awslab, azlab and gcplab all declare file_prefix 'week-', so a prefix test
+    # alone hands every lab post to all three: each one was fetched, checked and
+    # counted three times, and one defective claim reported as MISSING=3. The
+    # totals line overstated how much was wrong, and a second real defect would
+    # have been hard to see among the duplicates.
+    #
+    # They are separated by their series_label, which is the only thing that
+    # tells them apart -- the same rule sync_blog.py's _week_num() and
+    # validate_arch_post.series_for_slug() already follow. Resolve through
+    # lab_series_for_slug() rather than reimplementing it here; this file having
+    # its own copy of the collection logic is how it missed the rule to begin
+    # with.
+    files, seen = [], set()
     for key, spec in sorted(specs.items()):
         for f in sorted(os.listdir(POSTS)):
-            if f.startswith(spec["file_prefix"]) and f.endswith(".html"):
-                files.append((key, os.path.join(POSTS, f)))
+            if not (f.startswith(spec["file_prefix"]) and f.endswith(".html")):
+                continue
+            path = os.path.join(POSTS, f)
+            if spec.get("series_label"):
+                slug = slug_of(path)
+                if not slug or lab_series_for_slug(slug) != key:
+                    continue
+            if path in seen:
+                continue
+            seen.add(path)
+            files.append((key, path))
     if args.posts:
         files = [(k, p) for k, p in files
                  if any(a in os.path.basename(p) for a in args.posts)]
