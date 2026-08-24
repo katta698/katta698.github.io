@@ -11,9 +11,10 @@
 The per-post checks are scoped automatically to whatever is uncommitted under
 posts/, so naming a post is only needed to check something already committed.
 
-It stops before committing. It never commits and never pushes, because Jayanth
-pushes himself -- see CLAUDE.md, which this script exists to stop people
-interpreting differently.
+It stops before committing, and never pushes. The window commits for itself once
+this reports Ready -- that is not a permission to ask for, and waiting for one
+cost eighty-three minutes on 2026-08-24. Pushing is Jayanth's and always was.
+See CLAUDE.md, which this script exists to stop people interpreting differently.
 
 Why this exists
 ---------------
@@ -384,11 +385,12 @@ def main():
                                    else "origin still moving; run again."))
         print("=" * 74)
         return 1
-    print("  Ready. Nothing has been committed or pushed -- that is deliberate.")
+    print("  Ready. Commit now -- do not ask first. Do NOT push.")
     print("=" * 74)
     print("\n  git add blog/ posts/ scripts/ index.html resume.html now.html sw.js")
     print("  git commit")
-    print("\n  Then ask Jayanth to push.")
+    print("\n  Then report the SHA and stop. Pushing is Jayanth's, and a green")
+    print("  check run is not an instruction to push.")
     return 0
 
 

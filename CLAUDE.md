@@ -16,7 +16,17 @@
   what changed, and stops before committing. Everything below about ordering is
   what it already does — read it to understand *why*, not to do it by hand.
 - Always `git pull --rebase` before any edits. Three other worktrees publish to this same branch, so `origin/main` moves without you.
-- Never commit or push without explicit instruction. Jayanth pushes himself.
+- **Commit as soon as `publish.py` reports every check green. Never push.**
+  Jayanth pushes himself, and that is the part that matters — a push is public
+  and irreversible, a local commit is neither. Commit, print the SHA, stop.
+  See "Commit without asking, push only when told" below.
+- **End every turn that touched a post by naming where it is.** One line, from:
+  *source written · diagram · page built · checks green · committed · pushed*.
+  Set 2026-08-24, after a turn ended having written only the `posts/` file and
+  said nothing, so the post read as finished when it had no diagram, no served
+  page and no checks run. Nothing in the repo catches that — the validators only
+  fire when something invokes them, and nothing had. The cost lands on Jayanth,
+  who has to ask.
 - After `sync_blog.py` runs, stage ALL modified files under `blog/` — not just the new post's directory. Older posts get regenerated too (widgets, date format, CSS).
 
 ### The morning brief
@@ -533,6 +543,18 @@ figures -- break-evens, ratios, "N times cheaper", effective rates -- are where
 every error here has actually happened. Recompute them from the cited numbers
 before publishing, and write the inputs into the claim so the arithmetic can be
 repeated.
+
+**Write each figure the way the cited page writes it.** `verify_claims.py`
+looks for the claim's figures in the literal text of the source page, so a claim
+saying `10,000,000` fails against a page that says "10 million" — the fact is
+right, the check cannot see it. Copy the vendor's own formatting into the
+`claim:` line and put the arithmetic in `derive:`, which is evaluated and does
+not care about formatting.
+
+Cost a run on arch-031, 2026-08-24, and it is written down here because it will
+cost the Azure and GCP windows one each otherwise. `[MISSING]` in the
+`verify_claims.py` output means this before it means a wrong fact — re-read the
+page's wording before assuming the claim is wrong.
 
 **Run `--check-links` before publishing.** It fetches every cited page.
 Status codes are not sufficient on their own: `docs.aws.amazon.com` is
@@ -1227,7 +1249,33 @@ is for finding posts by content.
    page requests.
 3. Check `git status` is clean before committing — a leftover modified root
    file means step 2 was too narrow.
-4. Commit and ask Jayanth to push
+4. Commit. Do not ask first, and do not push — see below.
+
+## Commit without asking, push only when told
+
+**When `publish.py` prints "Ready", commit. Then stop and say the SHA.**
+
+Set 2026-08-24. The rule used to gate committing and pushing together, and the
+cost was measured that morning: arch-031 passed every check at 08:52 and was
+committed at 10:21, because the window was waiting to be told. Eighty-three
+minutes of a publishing day spent on a message that was never going to change
+the outcome — the checks had already decided it.
+
+The two halves are not the same risk and should not share a rule:
+
+| | |
+| --- | --- |
+| **Commit** | Local, reversible, invisible to every reader. Nothing is claimed by making one. |
+| **Push** | Public, near-irreversible, triggers the Pages deploy and the RAG re-index. |
+
+So committing is now the last step of writing a post, not a separate permission.
+Pushing is unchanged and stays Jayanth's: **never `git push` unless asked in
+that many words.** A green check run is not an instruction to push.
+
+**A failed check is still a full stop.** This is authority to commit work the
+scripts have passed, not authority to commit past them. If `publish.py` reports
+anything but Ready, fix it or report it — never commit and never use
+`--no-verify`.
 
 What `publish.py` runs on your behalf, so the names are still findable:
 `validate_arch_post.py` (unclosed comments that silently swallow a post body,
