@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #31 — Iceberg on S3: Why Table Formats Arrived | Jayanth Katta Blog</title>
+<meta name="description" content="A table format is adopted as a correctness fix — atomic commits, real deletes, schema evolution that means something — and it delivers all of it. What arrives with it is an operating cost nobody budgeted: a table whose file list is now a data structure that must be pruned on a schedule. AWS offers three different owners for that schedule, with different defaults, expressed in different units, and every one of their failure modes is a quiet deletion or a silently suspended job."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="Iceberg on S3: Why Table Formats Arrived"/>
+<meta property="og:description" content="A table format is adopted as a correctness fix — atomic commits, real deletes, schema evolution that means something — and it delivers all of it. What arrives with it is an operating cost nobody budgeted: a table whose file list is now a data structure that must be pruned on a schedule. AWS offers three different owners for that schedule, with different defaults, expressed in different units, and every one of their failure modes is a quiet deletion or a silently suspended job."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-iceberg-table-formats/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="Iceberg on S3: Why Table Formats Arrived"/>
+<meta name="twitter:description" content="A table format is adopted as a correctness fix — atomic commits, real deletes, schema evolution that means something — and it delivers all of it. What arrives with it is an operating cost nobody budgeted: a table whose file list is now a data structure that must be pruned on a schedule. AWS offers three different owners for that schedule, with different defaults, expressed in different units, and every one of their failure modes is a quiet deletion or a silently suspended job."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-iceberg-table-formats/"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=42af2572"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Home</a></li>
+    <li><a href="/blog/" class="active">Blog</a></li>
+    <li><a href="/resume.html">Resume</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+  <button class="hamburger" id="hamburger-btn" aria-label="Menu">
+    <span></span><span></span><span></span>
+  </button>
+</nav>
+<div class="mobile-menu" id="mobile-menu">
+  <a href="/">Home</a>
+  <a href="/resume.html">Resume</a>
+  <button class="theme-toggle" id="nav-theme-btn-mobile" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon-m">🌙</span><span id="theme-label-text-m">Dark</span>
+  </button>
+</div>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #31 — Iceberg on S3: Why Table Formats Arrived…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #31 — Iceberg on S3: Why Table Formats Arrived</h1>
+      <p class="post-description">A table format is adopted as a correctness fix — atomic commits, real deletes, schema evolution that means something — and it delivers all of it. What arrives with it is an operating cost nobody budgeted: a table whose file list is now a data structure that must be pruned on a schedule. AWS offers three different owners for that schedule, with different defaults, expressed in different units, and every one of their failure modes is a quiet deletion or a silently suspended job.</p>
+      <div class="post-info">
+        <span>Aug 24, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>18 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 24 August 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-iceberg-table-formats" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The previous post ended on a table with four schemas and no arbiter, and that is the honest
+      summary of schema-on-read: the catalog describes files, the description is applied at query
+      time, and when the description and the files disagree the reader decides. Table formats are
+      what happened when a decade of that argument was lost. Apache Iceberg does not add a feature
+      to that model &mdash; it moves the table's definition out of the catalog and into the data,
+      so that the list of files belonging to a table is a written, versioned artefact rather than
+      whatever a <code>LIST</code> against a prefix returned this morning.
+    </p>
+    <p>
+      That change lands cleanly. Athena describes it in one sentence: each Iceberg table maintains
+      a versioned manifest of the S3 objects that it contains. From that single property everything
+      the format is known for follows. A commit is atomic because it swaps one pointer. A delete is
+      real because the row's absence is recorded rather than inferred. Time travel exists because
+      the old manifest was never overwritten. Schema evolution means something because columns have
+      identity independent of their name and position.
+    </p>
+    <p>
+      The part that does not land cleanly is what those manifests cost to keep. A Hive table on S3
+      has no maintenance: objects arrive, the crawler notices, and nothing accumulates that a reader
+      must traverse. An Iceberg table accumulates snapshots, manifests, metadata files and &mdash;
+      on AWS in particular &mdash; delete files, all of which a query engine reads before it reads
+      any data. Left alone, an Iceberg table gets slower and more expensive in a way a Hive table
+      does not.
+    </p>
+    <p>
+      So the format solves a correctness problem and creates a scheduling problem. AWS answers the
+      scheduling problem three separate times: manually through Athena's <code>OPTIMIZE</code> and
+      <code>VACUUM</code>, automatically through AWS Glue Data Catalog table optimizers, and
+      automatically-and-not-yours through S3 Tables. The three have different defaults, expressed in
+      different units, with different things they refuse to do. Choosing between them is the actual
+      architecture decision, and it is made after the interesting part &mdash; picking the format
+      &mdash; is already over and everyone has moved on.
+    </p>
+    <div class="callout">
+      <p>
+        <strong>The distinction that matters throughout</strong>
+      </p>
+      <p>
+        Schema-on-read fails by <em>changing an answer</em>. A table format fails by <em>deleting a
+        file</em> or by <em>stopping</em>. Both are quiet, but they are quiet in opposite
+        directions: the first returns a plausible result set from a table nobody has broken, the
+        second returns a correct result set from a table that is degrading, or that has lost the
+        history you were relying on. The monitoring that catches one does not catch the other.
+      </p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The design question is not "should we use Iceberg" &mdash; for a mutable analytic table on S3
+      that is close to settled. It is "which component owns this table's file list, and what is it
+      allowed to delete".
+    </p>
+
+    <img src="/blog/assets/diagrams/arch-031-iceberg-table-formats.svg" alt="Diagram: how a Hive table on S3 resolves a query by listing prefixes and reading catalog partitions compared with how an Iceberg table resolves one through a catalog pointer, metadata file, snapshot, manifest list and manifests, followed by the three AWS owners of Iceberg table maintenance with their default retention and compaction thresholds, and the ways each of them deletes files or stops working without raising an error">
+
+    <h3>What actually changed: the file list stopped being a directory listing</h3>
+    <p>
+      In the Hive model a table is a prefix plus a set of partitions in the catalog, and the files in
+      a partition are whatever is under its location. The catalog does not know how many objects
+      exist, which is why the scale numbers do not line up: Athena will query a Glue table with
+      10 million partitions, but it cannot read more than 1 million partitions in a single scan.
+      That is a factor of ten between what the catalog is willing to hold and what a query can
+      traverse, and the gap is bridged by hoping the predicates prune well.
+    </p>
+    <p>
+      Iceberg replaces the enumeration with a tree. A pointer in the catalog names the current
+      metadata file; the metadata file names a snapshot; the snapshot names a manifest list; the
+      manifest list names manifests; the manifests name data files, each with per-column bounds. A
+      query prunes at the manifest level using those bounds, so the work is proportional to what the
+      predicate matches rather than to how the data is laid out. This is why hidden partitioning is
+      not a marketing phrase: the partition transform is recorded in the table, so a query filtering
+      on a timestamp gets partition pruning without the analyst knowing a partition column exists,
+      and the transform can be changed later without rewriting the query or the old data.
+    </p>
+    <p>
+      Two consequences that are easy to miss. First, the catalog's role shrinks to holding one
+      pointer and swapping it atomically &mdash; which is why Athena is explicit that it supports
+      AWS Glue optimistic locking only, and warns that modifying an Iceberg table through any other
+      lock implementation "will cause potential data loss and break transactions". The atomicity
+      everything else rests on is a property of that one swap. Second, the metadata is now a read
+      cost. Every query walks the tree before it touches data, and the tree grows with every commit
+      until something prunes it.
+    </p>
+
+    <h3>Row-level change is real, and the write mode is not yours to choose</h3>
+    <p>
+      <code>UPDATE</code>, <code>DELETE</code> and <code>MERGE INTO</code> in Athena follow the
+      Iceberg v2 positional delete specification and enforce snapshot isolation. Athena only creates
+      and operates on v2 tables, and supports Iceberg 1.4.2 with Parquet, ORC and Avro data files.
+      That is a genuine capability and it is the reason most teams arrive here: erasure requests,
+      late-arriving corrections and CDC upserts stop being a full-partition rewrite.
+    </p>
+    <p>
+      What is worth knowing before designing around it is that Athena implements exactly one of the
+      two Iceberg write modes. It always uses merge-on-read. The documentation is unusually direct
+      about the consequence:
+    </p>
+    <div class="callout">
+      <p>
+        Athena SQL does not currently support the copy-on-write approach. <code>UPDATE</code>,
+        <code>MERGE INTO</code> and <code>DELETE FROM</code> always use merge-on-read with
+        positional deletes, regardless of specified table properties. If you have set
+        <code>write.update.mode</code>, <code>write.merge.mode</code> or
+        <code>write.delete.mode</code> to copy-on-write, the queries will not fail &mdash; Athena
+        ignores those properties and keeps using merge-on-read.
+      </p>
+    </div>
+    <p>
+      Read that as an operator. A table property set deliberately, reviewed in a pull request, and
+      present in the table's metadata is inert, and nothing announces it. The effect is not
+      cosmetic: merge-on-read defers the cost of a delete to every subsequent read, and the deferred
+      cost only comes back down when compaction merges the delete files into data files. So on
+      Athena, compaction is not a storage-cost optimisation that can be postponed &mdash; it is the
+      second half of every <code>DELETE</code> that has been run.
+    </p>
+    <p>
+      Which makes the compaction thresholds worth reading as policy rather than as tuning knobs.
+      <code>optimize_rewrite_delete_file_threshold</code> defaults to <strong>2</strong>: a data file
+      with fewer than two associated delete files is not rewritten, deliberately, to let delete
+      files accumulate and make the eventual rewrite worth its cost.
+      <code>optimize_rewrite_data_file_threshold</code> defaults to <strong>5</strong>, and both are
+      capped below 50. Raising them buys cheaper compaction and slower reads, in that order.
+    </p>
+    <pre><code>-- Compaction is charged by data scanned, and only partition columns
+-- may appear in the predicate. Scope it, or the table is rewritten.
+OPTIMIZE sales.orders REWRITE DATA USING BIN_PACK
+  WHERE event_date &gt;= DATE '2026-08-01';
+
+-- Snapshot expiry and orphan removal. Set the retention first --
+-- the default is five days, and this is what ends time travel.
+ALTER TABLE sales.orders SET TBLPROPERTIES (
+  'vacuum_max_snapshot_age_seconds' = '2592000',   -- 30 days
+  'vacuum_min_snapshots_to_keep'    = '10'
+);
+VACUUM sales.orders;</code></pre>
+
+    <h3>Three owners of maintenance, three sets of defaults</h3>
+    <p>
+      The same three jobs &mdash; compact files, expire snapshots, remove unreferenced files &mdash;
+      are offered by three AWS surfaces, and picking one is picking a set of defaults that will
+      probably never be revisited.
+    </p>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th></th><th>Athena OPTIMIZE / VACUUM</th><th>Glue Data Catalog optimizers</th><th>S3 Tables</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Runs</td><td>When you run it</td><td>Continuously, when thresholds are exceeded</td><td>Continuously, managed by S3</td></tr>
+          <tr><td>Compaction trigger</td><td>Fewer than 5 candidate data files, skip</td><td>More than 100 files, each below 75% of target</td><td>Not exposed</td></tr>
+          <tr><td>Target file size</td><td>Table property, per table</td><td><code>write.target-file-size-bytes</code>, default 512 MB</td><td>512 MB default, 64&ndash;512 MB range</td></tr>
+          <tr><td>Snapshot retention default</td><td>432,000 seconds, minimum 1 snapshot</td><td>Set when the optimizer is created</td><td>120 hours, minimum 1 snapshot</td></tr>
+          <tr><td>Metadata file retention</td><td>100 files</td><td>Handled by the optimizer</td><td>Not exposed</td></tr>
+          <tr><td>File formats</td><td>Parquet, ORC, Avro</td><td>Parquet only</td><td>Parquet, Avro, ORC</td></tr>
+          <tr><td>Statistics for the planner</td><td><code>use_iceberg_statistics</code>, opt in</td><td>Glue column statistics</td><td>On by default</td></tr>
+          <tr><td>Fails by</td><td>Not being run</td><td>Auto-suspending after 4 consecutive failures</td><td>Failing the whole table's snapshot job</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The row worth staring at is snapshot retention. Athena's default is 432,000 seconds and S3
+      Tables' default is 120 hours. Those are the same number &mdash; five days &mdash; written in
+      two units, on two surfaces, in two consoles. It is a sensible default for a storage bill and a
+      poor one for the reason most people say they want a table format. If the recovery story is "we
+      can roll the table back", the untouched version of that story lasts until Friday.
+    </p>
+
+    <h3>Time travel is a retention policy wearing a feature's clothes</h3>
+    <p>
+      The syntax is deliberately unremarkable: <code>FOR TIMESTAMP AS OF</code> for a point in time,
+      <code>FOR VERSION AS OF</code> with a <code>bigint</code> snapshot ID for a specific commit.
+      Both replaced the <code>FOR SYSTEM_TIME AS OF</code> and <code>FOR SYSTEM_VERSION AS OF</code>
+      forms from Athena engine version 2, which is worth knowing when inheriting a query that will
+      not parse.
+    </p>
+    <pre><code>-- What the table said before this morning's load
+SELECT * FROM sales.orders FOR TIMESTAMP AS OF (current_timestamp - interval '1' day);
+
+-- Diff a snapshot against the current state
+SELECT c.order_id
+FROM sales.orders c
+FULL JOIN sales.orders FOR VERSION AS OF 949530903748831860 p
+  ON c.order_id = p.order_id
+WHERE c.order_id IS NULL OR p.order_id IS NULL;</code></pre>
+    <p>
+      The warning attached to <code>VACUUM</code> is the whole story: run a snapshot expiration and
+      you can no longer time travel to expired snapshots. There is no separate archive, no recycle
+      bin and no soft delete. Retention <em>is</em> the feature, and the two automated owners both
+      ship it at five days.
+    </p>
+    <p>
+      One asymmetry that catches people: <code>vacuum_min_snapshots_to_keep</code> takes precedence
+      over the age. If the minimum remaining snapshots are older than
+      <code>vacuum_max_snapshot_age_seconds</code>, they are kept and the age is ignored. So a table
+      that has not been written to in a month still has its last snapshot, and a table written to
+      every minute has five days. The retention that results depends on the write rate, which is not
+      how anybody reads that setting.
+    </p>
+
+    <h3>Every failure mode here is a deletion or a stop</h3>
+    <p>
+      This is the part that repays reading the limitations pages rather than the launch posts. None
+      of the following raises an error at the time it matters.
+    </p>
+    <ul>
+      <li>
+        <strong>Two tables, one prefix.</strong> When multiple Glue Data Catalog tables share the
+        same S3 location and have optimizers enabled, one table's snapshot retention or orphan file
+        deletion may delete files still referenced by the other. This is not a corner case in
+        practice &mdash; a table and its <code>_backup</code>, or two catalog entries pointed at one
+        curated path, gets there quickly.
+      </li>
+      <li>
+        <strong>An S3 lifecycle rule over the table path.</strong> AWS states it plainly: lifecycle
+        expiration rules applying to Iceberg table storage locations can delete manifest and data
+        files still referenced by active snapshots. The standard "expire everything older than 90
+        days" rule, applied at the bucket level for cost hygiene, is a data-loss mechanism on an
+        Iceberg prefix.
+      </li>
+      <li>
+        <strong>Iceberg-native retention on an S3 table.</strong> Setting
+        <code>history.expire.max-snapshot-age-ms</code> or
+        <code>history.expire.min-snapshots-to-keep</code> as a table property does not configure S3
+        Tables snapshot management &mdash; it makes it <em>fail for the entire table</em>, regardless
+        of the value. Any user-defined tag or branch does the same. The table keeps working, nothing
+        expires, metadata grows, and the only signal is
+        <code>GetTableMaintenanceJobStatus</code>.
+      </li>
+      <li>
+        <strong>Four failures and compaction stops.</strong> Glue automatically suspends a compaction
+        optimizer after four consecutive failures, to avoid burning compute. Correct behaviour, and
+        it means an optimizer enabled six months ago is not evidence that compaction ran last night.
+      </li>
+      <li>
+        <strong>The million-file ceiling.</strong> Glue snapshot retention and orphan file deletion
+        delete at most 1,000,000 files per run. Anything eligible beyond that stays in table storage
+        as orphan files &mdash; so the job reports success while the backlog it was meant to clear
+        persists.
+      </li>
+      <li>
+        <strong>Orphan deletion has an epoch.</strong> The Glue orphan file deletion optimizer only
+        removes files created <em>after</em> the optimizer's own creation date. Files created before
+        or on that date are never deleted. Enabling it to clean up years of accumulated debris does
+        precisely nothing to the debris.
+      </li>
+      <li>
+        <strong>VACUUM without delete permission.</strong> If the query execution role lacks
+        <code>s3:DeleteObject</code>, the <code>VACUUM</code> query succeeds and no files are
+        removed. A green query history and a growing bill.
+      </li>
+    </ul>
+
+    <h3>Where S3 Tables changes the shape of the problem</h3>
+    <p>
+      S3 Tables is a bucket type whose subresource is a table, and the argument for it is not only
+      that maintenance becomes somebody else's job. It is a request-rate argument. A general purpose
+      bucket gives at least 3,500 <code>PUT</code>, <code>COPY</code>, <code>POST</code> or
+      <code>DELETE</code> requests, or 5,500 <code>GET</code> and <code>HEAD</code> requests, per
+      second per partitioned prefix, with no limit on the number of prefixes &mdash; a fine model
+      when the key layout spreads naturally, and a poor one for an Iceberg table whose commits
+      concentrate on a metadata path. AWS states S3 Tables deliver up to 10x higher transactions per
+      second than Iceberg tables in general purpose buckets, and that is the number to weigh, rather
+      than the maintenance automation.
+    </p>
+    <p>
+      The defaults are opinionated in a useful direction. Compaction targets 512 MB, configurable
+      between 64 MB and 512 MB, with a strategy of <code>auto</code> that applies sort compaction to
+      a table with a defined sort order and binpack to one without. S3 Tables applies the Parquet
+      row-group default of 128 MB, so a compacted file at the default target holds four row groups
+      &mdash; the unit a scan actually skips. Iceberg statistics and Parquet column indexes are on by
+      default here and opt-in everywhere else, through <code>use_iceberg_statistics</code> and
+      <code>use_iceberg_parquet_column_index</code>, which is a real difference in query plans and
+      not a footnote.
+    </p>
+    <p>
+      The constraint to design against is the quota shape: <strong>10 table buckets per Region per
+      account</strong>, each holding up to 10,000 namespaces and 10,000 tables, all adjustable only
+      by contacting Support. Ten is a small number if the instinct is one bucket per team or per
+      environment. Namespaces are the intended axis of separation, and they are cheap; buckets are
+      not.
+    </p>
+
+    <h3>The parts that are still sharp</h3>
+    <p>
+      Two limits worth surfacing before they are found during an audit. Athena does not support DDL
+      on Iceberg tables registered with Lake Formation, and Lake Formation cannot manage permissions
+      for <code>VACUUM</code>, <code>MERGE</code>, <code>UPDATE</code> or <code>OPTIMIZE</code> on
+      Iceberg tables at all &mdash; it governs read access. If the governance model assumes Lake
+      Formation mediates everything, maintenance operations sit outside it and need IAM.
+    </p>
+    <p>
+      And a data-fidelity one: Iceberg supports microsecond precision on timestamps; Athena supports
+      milliseconds, on both reads and writes, and retains only milliseconds for time columns
+      rewritten during manual compaction. For most analytics that is invisible. For event ordering,
+      idempotency keyed on an event timestamp, or anything reconciling against a source system that
+      records microseconds, it is a silent truncation performed by a maintenance job.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <p>
+      The previous post argued that schema-on-read fails by changing answers, and that the failure is
+      invisible in every job metric. Table formats fix that class of failure convincingly: the schema
+      is in the data, column identity survives a rename, a commit either happened or did not, and the
+      state of the table on any past day is a query rather than a restore. If the problem is
+      correctness, the argument is over.
+    </p>
+    <p>
+      What the format does is trade a correctness risk for an operational one, and operational risks
+      are only better if they are actually operated. An Iceberg table with no maintenance owner does
+      not return wrong answers. It returns right answers, slowly, at rising cost, with a history that
+      quietly stopped being retained &mdash; and the first symptom is a bill or a failed recovery,
+      both of which arrive long after the decision that caused them.
+    </p>
+    <p>
+      That is why the monitoring has to change with the format. On a Hive table the useful alarms
+      were about drift: table count per database, partition count per table. On an Iceberg table they
+      are about maintenance liveness. <strong>The highest-value signal is the maintenance job's own
+      status</strong>, because every automated owner has a documented way of stopping while the table
+      carries on serving: a Glue optimizer auto-suspends after four failures, and S3 Tables snapshot
+      management fails for a whole table if somebody adds a branch or sets an Iceberg retention
+      property. Alarm on job status and on metadata file count per table, and the two failures that
+      produce no error become the two seen first.
+    </p>
+    <p>
+      The second-order point is about who is allowed to delete. A Hive table on S3 tolerated a
+      bucket-wide lifecycle rule, a shared prefix and a tidy-up script, because nothing but the
+      objects themselves mattered. An Iceberg table's correctness depends on files that look
+      unreferenced and are not, so every one of those habits becomes a way to lose data. The rule
+      that follows is blunt: one table, one prefix, one deleter.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take this</th><th>Because</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Who owns maintenance</td>
+            <td>Exactly one owner per table, recorded somewhere a human reads</td>
+            <td>The three surfaces overlap, and two of them deleting against one table is how files referenced by a live snapshot disappear</td>
+          </tr>
+          <tr>
+            <td>Snapshot retention</td>
+            <td>Set it explicitly, on day one, to the recovery window actually being promised</td>
+            <td>Both automated defaults are five days — 432,000 seconds on Athena, 120 hours on S3 Tables — and expiry is irreversible</td>
+          </tr>
+          <tr>
+            <td>Retention on an S3 table</td>
+            <td><code>PutTableMaintenanceConfiguration</code>, never <code>history.expire.*</code></td>
+            <td>The Iceberg-native property does not configure snapshot management; it makes it fail for the whole table, silently</td>
+          </tr>
+          <tr>
+            <td>Prefix layout</td>
+            <td>One table per S3 location, never shared, never nested under another table</td>
+            <td>Shared locations let one table's optimizer delete another's live files, and break orphan detection in both directions</td>
+          </tr>
+          <tr>
+            <td>Lifecycle rules</td>
+            <td>Exclude every Iceberg table path from bucket-level expiration</td>
+            <td>Lifecycle expiry deletes manifest and data files that are still referenced by active snapshots</td>
+          </tr>
+          <tr>
+            <td>Deletes on Athena</td>
+            <td>Budget compaction as part of the delete, not as cleanup</td>
+            <td>Athena is merge-on-read only and ignores copy-on-write table properties, so read cost stays elevated until <code>OPTIMIZE</code> runs</td>
+          </tr>
+          <tr>
+            <td>OPTIMIZE scope</td>
+            <td>Always a partition predicate; never a bare <code>OPTIMIZE</code> on a large table</td>
+            <td>It is charged by data scanned, and any file containing one matching row is rewritten</td>
+          </tr>
+          <tr>
+            <td>Glue managed compaction</td>
+            <td>Only for Parquet tables, and re-check that it is still enabled</td>
+            <td>ORC and Avro are not supported, and four consecutive failures suspend the optimizer without further notice</td>
+          </tr>
+          <tr>
+            <td>S3 Tables bucket count</td>
+            <td>Separate by namespace, not by bucket</td>
+            <td>10 table buckets per Region per account, increasable only through Support; namespaces go to 10,000</td>
+          </tr>
+          <tr>
+            <td>Detection</td>
+            <td>Alarm on maintenance job status and metadata file count per table</td>
+            <td>A stopped optimizer and a failed snapshot job both leave a table answering every query correctly</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Table formats arrived because the alternative had run out of room. Schema-on-read made a lake
+      cheap to fill and impossible to guarantee, and every mechanism built on top of it &mdash;
+      crawler policies, partition inheritance, format-specific access rules &mdash; was
+      reconciliation after the fact. Iceberg's answer is not cleverer reconciliation. It is to write
+      the table down.
+    </p>
+    <p>
+      What that buys is a real transaction boundary, and what it costs is that a table is now a
+      living data structure with a maintenance schedule. The AWS surfaces around it are good and
+      getting better &mdash; managed compaction, S3 Tables' automated maintenance, and the request
+      rates that come with a purpose-built bucket type are genuine improvements over rolling it
+      yourself. But every one of them defaults to five days of history, and every one of them has a
+      documented way of stopping without saying so.
+    </p>
+    <p>
+      Which turns the interesting question away from the format and onto ownership. The format has
+      made the table honest. Whether the estate stays healthy depends on something much duller:
+      knowing, per table, which component is allowed to delete a file, and having an alarm on whether
+      it still is.
+    </p>
+    <div class="callout">
+      <p>
+        <strong>Next in this series</strong>
+      </p>
+      <p>
+        <strong>#32 &mdash; Redshift or Athena: when a warehouse earns its keep.</strong> Two posts
+        of catalog and table format have been about making files behave like a table. The next one
+        asks the opposite question: at what point does the query engine stop being the cheap part,
+        and what does a warehouse give that a well-maintained Iceberg table on S3 does not.
+      </p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg.html" target="_blank" rel="noopener">Query Apache Iceberg tables, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-creating-tables.html" target="_blank" rel="noopener">Create Iceberg tables, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-updating-iceberg-table-data.html" target="_blank" rel="noopener">Update Iceberg table data, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-time-travel-and-version-travel-queries.html" target="_blank" rel="noopener">Perform time travel and version travel queries, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-data-optimization.html" target="_blank" rel="noopener">Optimize Iceberg tables, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/optimize-statement.html" target="_blank" rel="noopener">OPTIMIZE, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/vacuum-statement.html" target="_blank" rel="noopener">VACUUM, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/service-limits.html" target="_blank" rel="noopener">Service Quotas, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/glue/latest/dg/compaction-management.html" target="_blank" rel="noopener">Compaction optimization, AWS Glue</a></li>
+      <li><a href="https://docs.aws.amazon.com/glue/latest/dg/orphan-file-deletion.html" target="_blank" rel="noopener">Deleting orphan files, AWS Glue</a></li>
+      <li><a href="https://docs.aws.amazon.com/glue/latest/dg/optimizer-notes.html" target="_blank" rel="noopener">Table optimizers, considerations and limitations, AWS Glue</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables-maintenance.html" target="_blank" rel="noopener">Maintenance for tables, Amazon S3 Tables</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables-regions-quotas.html" target="_blank" rel="noopener">S3 Tables Regions, endpoints and service quotas, Amazon S3</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html" target="_blank" rel="noopener">Best practices design patterns: optimizing Amazon S3 performance</a></li>
+      <li><a href="https://aws.amazon.com/s3/features/tables/" target="_blank" rel="noopener">Amazon S3 Tables</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/gcp-architecture-network-tiers/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">GCP Architecture Series #10 — Premium and Standard Network Tiers: Where Traffic Leaves Google's Backbone</span></a><a href="/blog/azure-architecture-quotas-and-limits/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">Azure Architecture Series #11 — Quotas and Limits: Where They Are Counted, and How to Raise Them</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-iceberg-table-formats/';
+      this.page.identifier = 'aws-architecture-iceberg-table-formats';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var FORM_ID='xzdqqvqd';
+  var rating=0;
+  var btn=document.getElementById('fb-btn'),overlay=document.getElementById('fb-overlay');
+  var stars=document.querySelectorAll('.fb-star');
+  btn.addEventListener('click',function(){overlay.classList.add('open');});
+  overlay.addEventListener('click',function(e){if(e.target===overlay)overlay.classList.remove('open');});
+  document.getElementById('fb-skip').addEventListener('click',function(){overlay.classList.remove('open');});
+  stars.forEach(function(s){
+    s.addEventListener('click',function(){
+      rating=parseInt(s.getAttribute('data-v'));
+      stars.forEach(function(x){x.classList.toggle('on',parseInt(x.getAttribute('data-v'))<=rating);});
+    });
+  });
+  document.getElementById('fb-send').addEventListener('click',function(){
+    var msg=document.getElementById('fb-text').value;
+    fetch('https://formspree.io/f/'+FORM_ID,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({rating:rating,message:msg,page:window.location.pathname})
+    });
+    document.getElementById('fb-modal').innerHTML='<div class="fb-thanks"><span>&#10003;</span><strong>Thanks for your feedback!</strong><p style="color:#879196;font-size:13px;margin-top:0.35rem;">It means a lot.</p></div>';
+    setTimeout(function(){overlay.classList.remove('open');},2000);
+  });
+})();
+</script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=8b784b84"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

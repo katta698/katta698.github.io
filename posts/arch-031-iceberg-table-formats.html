@@ -1,0 +1,542 @@
+---
+title: 'AWS Architecture Series #31 — Iceberg on S3: Why Table Formats Arrived'
+date: '2026-08-24T09:00:00'
+slug: aws-architecture-iceberg-table-formats
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-08-24'
+verified_claims:
+  - claim: "Athena supports Apache Iceberg version 1.4.2, only creates and operates on Iceberg v2 tables, and supports the Parquet, ORC and Avro file formats for Iceberg on engine version 3"
+    source: https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg.html
+  - claim: "Athena supports AWS Glue optimistic locking only, and using Athena to modify an Iceberg table with any other lock implementation will cause potential data loss and break transactions"
+    source: https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg.html
+  - claim: "Although Iceberg supports microsecond precision for the timestamp data type, Athena supports only millisecond precision in both reads and writes, and retains only millisecond precision for time columns rewritten during manual compaction"
+    source: https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg.html
+  - claim: "Athena does not support DDL operations on Iceberg tables registered with Lake Formation, and Lake Formation cannot manage permissions for VACUUM, MERGE, UPDATE or OPTIMIZE on Iceberg tables"
+    source: https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg.html
+  - claim: "Athena SQL does not support the copy-on-write approach: UPDATE, MERGE INTO and DELETE FROM always use merge-on-read with positional deletes, and a table configured with write.update.mode, write.merge.mode or write.delete.mode set to copy-on-write does not fail because Athena ignores the property"
+    source: https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-updating-iceberg-table-data.html
+  - claim: "VACUUM removes snapshots older than vacuum_max_snapshot_age_seconds, which defaults to 432000 seconds, keeps at least vacuum_min_snapshots_to_keep snapshots, which defaults to 1, and retains vacuum_max_metadata_files_to_keep previous metadata files, which defaults to 100"
+    source: https://docs.aws.amazon.com/athena/latest/ug/vacuum-statement.html
+  - claim: "The default VACUUM snapshot retention of 432000 seconds is 120 hours, the same retention S3 Tables snapshot management applies by default as MaximumSnapshotAge"
+    derive: "432000 / 3600"
+    expect: "120"
+    source: https://docs.aws.amazon.com/athena/latest/ug/vacuum-statement.html
+  - claim: "If the query execution role lacks s3:DeleteObject on the bucket holding the Iceberg data, the VACUUM query will succeed but the files will not be deleted"
+    source: https://docs.aws.amazon.com/athena/latest/ug/vacuum-statement.html
+  - claim: "After a snapshot expiration operation you can no longer time travel to expired snapshots"
+    source: https://docs.aws.amazon.com/athena/latest/ug/vacuum-statement.html
+  - claim: "optimize_rewrite_data_file_threshold defaults to 5 and optimize_rewrite_delete_file_threshold defaults to 2, and both must be positive numbers less than 50"
+    source: https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-creating-tables.html
+  - claim: "Only partition columns are allowed in the WHERE predicate of OPTIMIZE REWRITE DATA, a non-partition column causes the query to fail, and the compaction action is charged by the amount of data scanned during the rewrite"
+    source: https://docs.aws.amazon.com/athena/latest/ug/optimize-statement.html
+  - claim: "Time travel uses FOR TIMESTAMP AS OF and version travel uses FOR VERSION AS OF with a bigint snapshot ID, replacing the FOR SYSTEM_TIME AS OF and FOR SYSTEM_VERSION AS OF clauses of Athena engine version 2"
+    source: https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-time-travel-and-version-travel-queries.html
+  - claim: "Athena supports querying AWS Glue tables that have 10 million partitions, but Athena cannot read more than 1 million partitions in a single scan"
+    source: https://docs.aws.amazon.com/athena/latest/ug/service-limits.html
+  - claim: "The gap between the 10 million partitions a Glue table may hold and the 1 million partitions Athena can read in one scan is a factor of ten"
+    derive: "10000000 / 1000000"
+    expect: "10"
+    source: https://docs.aws.amazon.com/athena/latest/ug/service-limits.html
+  - claim: "AWS Glue Data Catalog compaction starts when a table or any of its partitions has more than 100 files, each file must be smaller than 75% of the target file size, and the target is write.target-file-size-bytes which defaults to 512 MB"
+    source: https://docs.aws.amazon.com/glue/latest/dg/compaction-management.html
+  - claim: "Glue managed compaction ignores any file at or above 384 MB, which is 75% of the 512 MB default target file size"
+    derive: "512 * 0.75"
+    expect: "384"
+    source: https://docs.aws.amazon.com/glue/latest/dg/compaction-management.html
+  - claim: "AWS Glue Data Catalog managed compaction supports compaction only for Parquet format tables"
+    source: https://docs.aws.amazon.com/glue/latest/dg/compaction-management.html
+  - claim: "When compaction operations fail four consecutive times, AWS Glue catalog table optimization automatically suspends the optimizer, and it must be re-enabled through the console or API"
+    source: https://docs.aws.amazon.com/glue/latest/dg/optimizer-notes.html
+  - claim: "The Glue snapshot retention and orphan file deletion processes have a maximum limit of deleting 1,000,000 files per run, and files eligible beyond that threshold continue to exist in table storage as orphan files"
+    source: https://docs.aws.amazon.com/glue/latest/dg/optimizer-notes.html
+  - claim: "When multiple Glue Data Catalog tables share the same Amazon S3 location and have optimizers enabled, the snapshot retention or orphan file deletion optimizer for one table may delete files that are still referenced by the other table"
+    source: https://docs.aws.amazon.com/glue/latest/dg/optimizer-notes.html
+  - claim: "Amazon S3 lifecycle expiration rules that apply to Iceberg table storage locations can delete manifest and data files that are still referenced by active snapshots"
+    source: https://docs.aws.amazon.com/glue/latest/dg/optimizer-notes.html
+  - claim: "The Glue orphan file deletion optimizer only removes files created after the optimizer's creation date, and files created before or on that date are never deleted"
+    source: https://docs.aws.amazon.com/glue/latest/dg/orphan-file-deletion.html
+  - claim: "S3 Tables compaction is enabled by default with a target file size of 512MB, configurable between 64MB and 512MB, and the default strategy auto applies sort compaction to tables with a defined sort order and binpack to those without"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables-maintenance.html
+  - claim: "S3 Tables snapshot management defaults are MinimumSnapshots of 1 and MaximumSnapshotAge of 120 hours, and objects referenced only by an expired snapshot are marked noncurrent and deleted after the NoncurrentDays in the unreferenced file removal policy"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables-maintenance.html
+  - claim: "If a user-defined tag or branch exists on an S3 table, or if the history.expire.max-snapshot-age-ms or history.expire.min-snapshots-to-keep Iceberg table property is set, snapshot management fails for the entire table and Amazon S3 will not expire or remove any snapshots"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables-maintenance.html
+  - claim: "S3 Tables applies the Parquet row-group default size of 128 MB"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables-maintenance.html
+  - claim: "A 512 MB compacted file at the S3 Tables Parquet row-group default of 128 MB holds four row groups"
+    derive: "512 / 128"
+    expect: "4"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables-maintenance.html
+  - claim: "S3 Tables quotas are 10 table buckets per AWS Region in an account, 10,000 namespaces per table bucket and 10,000 tables per table bucket, and all three require contacting Support to increase"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables-regions-quotas.html
+  - claim: "S3 Tables deliver up to 10x higher transactions per second compared to storing Iceberg tables in general purpose Amazon S3 buckets"
+    source: https://aws.amazon.com/s3/features/tables/
+  - claim: "An application can achieve at least 3,500 PUT/COPY/POST/DELETE or 5,500 GET/HEAD requests per second per partitioned Amazon S3 prefix, and there are no limits to the number of prefixes in a bucket"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html
+  - claim: "Iceberg statistics are turned on by default when you use S3 Tables while other Iceberg tables use the use_iceberg_statistics table property, and Athena uses Parquet column indexes by default with S3 Tables while other tables use use_iceberg_parquet_column_index"
+    source: https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-data-optimization.html
+problem: "A table format is adopted as a correctness fix — atomic commits, real deletes, schema evolution that means something — and it delivers all of it. What arrives with it is an operating cost nobody budgeted: a table whose file list is now a data structure that must be pruned on a schedule. AWS offers three different owners for that schedule, with different defaults, expressed in different units, and every one of their failure modes is a quiet deletion or a silently suspended job."
+builds: "An Iceberg estate where exactly one component owns maintenance per table, retention is set deliberately rather than inherited from a five-day default, no S3 prefix is shared between two tables or touched by a lifecycle rule, and the maintenance job's own status is the thing being alarmed on — because a stopped optimizer produces a table that still answers every query correctly while it grows."
+catch: "The three defaults most likely to be left alone are the three that hurt. Time travel expires after five days on both Athena's VACUUM and S3 Tables snapshot management, so the recovery story built on it is a five-day story. Athena silently ignores copy-on-write even when the table property asks for it. And expressing snapshot retention the Iceberg-native way, with history.expire.max-snapshot-age-ms, does not override S3 Tables maintenance — it makes it fail for the entire table."
+---
+
+<div class="container">
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The previous post ended on a table with four schemas and no arbiter, and that is the honest
+      summary of schema-on-read: the catalog describes files, the description is applied at query
+      time, and when the description and the files disagree the reader decides. Table formats are
+      what happened when a decade of that argument was lost. Apache Iceberg does not add a feature
+      to that model &mdash; it moves the table's definition out of the catalog and into the data,
+      so that the list of files belonging to a table is a written, versioned artefact rather than
+      whatever a <code>LIST</code> against a prefix returned this morning.
+    </p>
+    <p>
+      That change lands cleanly. Athena describes it in one sentence: each Iceberg table maintains
+      a versioned manifest of the S3 objects that it contains. From that single property everything
+      the format is known for follows. A commit is atomic because it swaps one pointer. A delete is
+      real because the row's absence is recorded rather than inferred. Time travel exists because
+      the old manifest was never overwritten. Schema evolution means something because columns have
+      identity independent of their name and position.
+    </p>
+    <p>
+      The part that does not land cleanly is what those manifests cost to keep. A Hive table on S3
+      has no maintenance: objects arrive, the crawler notices, and nothing accumulates that a reader
+      must traverse. An Iceberg table accumulates snapshots, manifests, metadata files and &mdash;
+      on AWS in particular &mdash; delete files, all of which a query engine reads before it reads
+      any data. Left alone, an Iceberg table gets slower and more expensive in a way a Hive table
+      does not.
+    </p>
+    <p>
+      So the format solves a correctness problem and creates a scheduling problem. AWS answers the
+      scheduling problem three separate times: manually through Athena's <code>OPTIMIZE</code> and
+      <code>VACUUM</code>, automatically through AWS Glue Data Catalog table optimizers, and
+      automatically-and-not-yours through S3 Tables. The three have different defaults, expressed in
+      different units, with different things they refuse to do. Choosing between them is the actual
+      architecture decision, and it is made after the interesting part &mdash; picking the format
+      &mdash; is already over and everyone has moved on.
+    </p>
+    <div class="callout">
+      <p>
+        <strong>The distinction that matters throughout</strong>
+      </p>
+      <p>
+        Schema-on-read fails by <em>changing an answer</em>. A table format fails by <em>deleting a
+        file</em> or by <em>stopping</em>. Both are quiet, but they are quiet in opposite
+        directions: the first returns a plausible result set from a table nobody has broken, the
+        second returns a correct result set from a table that is degrading, or that has lost the
+        history you were relying on. The monitoring that catches one does not catch the other.
+      </p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The design question is not "should we use Iceberg" &mdash; for a mutable analytic table on S3
+      that is close to settled. It is "which component owns this table's file list, and what is it
+      allowed to delete".
+    </p>
+
+    <img src="/blog/assets/diagrams/arch-031-iceberg-table-formats.svg" alt="Diagram: how a Hive table on S3 resolves a query by listing prefixes and reading catalog partitions compared with how an Iceberg table resolves one through a catalog pointer, metadata file, snapshot, manifest list and manifests, followed by the three AWS owners of Iceberg table maintenance with their default retention and compaction thresholds, and the ways each of them deletes files or stops working without raising an error">
+
+    <h3>What actually changed: the file list stopped being a directory listing</h3>
+    <p>
+      In the Hive model a table is a prefix plus a set of partitions in the catalog, and the files in
+      a partition are whatever is under its location. The catalog does not know how many objects
+      exist, which is why the scale numbers do not line up: Athena will query a Glue table with
+      10 million partitions, but it cannot read more than 1 million partitions in a single scan.
+      That is a factor of ten between what the catalog is willing to hold and what a query can
+      traverse, and the gap is bridged by hoping the predicates prune well.
+    </p>
+    <p>
+      Iceberg replaces the enumeration with a tree. A pointer in the catalog names the current
+      metadata file; the metadata file names a snapshot; the snapshot names a manifest list; the
+      manifest list names manifests; the manifests name data files, each with per-column bounds. A
+      query prunes at the manifest level using those bounds, so the work is proportional to what the
+      predicate matches rather than to how the data is laid out. This is why hidden partitioning is
+      not a marketing phrase: the partition transform is recorded in the table, so a query filtering
+      on a timestamp gets partition pruning without the analyst knowing a partition column exists,
+      and the transform can be changed later without rewriting the query or the old data.
+    </p>
+    <p>
+      Two consequences that are easy to miss. First, the catalog's role shrinks to holding one
+      pointer and swapping it atomically &mdash; which is why Athena is explicit that it supports
+      AWS Glue optimistic locking only, and warns that modifying an Iceberg table through any other
+      lock implementation "will cause potential data loss and break transactions". The atomicity
+      everything else rests on is a property of that one swap. Second, the metadata is now a read
+      cost. Every query walks the tree before it touches data, and the tree grows with every commit
+      until something prunes it.
+    </p>
+
+    <h3>Row-level change is real, and the write mode is not yours to choose</h3>
+    <p>
+      <code>UPDATE</code>, <code>DELETE</code> and <code>MERGE INTO</code> in Athena follow the
+      Iceberg v2 positional delete specification and enforce snapshot isolation. Athena only creates
+      and operates on v2 tables, and supports Iceberg 1.4.2 with Parquet, ORC and Avro data files.
+      That is a genuine capability and it is the reason most teams arrive here: erasure requests,
+      late-arriving corrections and CDC upserts stop being a full-partition rewrite.
+    </p>
+    <p>
+      What is worth knowing before designing around it is that Athena implements exactly one of the
+      two Iceberg write modes. It always uses merge-on-read. The documentation is unusually direct
+      about the consequence:
+    </p>
+    <div class="callout">
+      <p>
+        Athena SQL does not currently support the copy-on-write approach. <code>UPDATE</code>,
+        <code>MERGE INTO</code> and <code>DELETE FROM</code> always use merge-on-read with
+        positional deletes, regardless of specified table properties. If you have set
+        <code>write.update.mode</code>, <code>write.merge.mode</code> or
+        <code>write.delete.mode</code> to copy-on-write, the queries will not fail &mdash; Athena
+        ignores those properties and keeps using merge-on-read.
+      </p>
+    </div>
+    <p>
+      Read that as an operator. A table property set deliberately, reviewed in a pull request, and
+      present in the table's metadata is inert, and nothing announces it. The effect is not
+      cosmetic: merge-on-read defers the cost of a delete to every subsequent read, and the deferred
+      cost only comes back down when compaction merges the delete files into data files. So on
+      Athena, compaction is not a storage-cost optimisation that can be postponed &mdash; it is the
+      second half of every <code>DELETE</code> that has been run.
+    </p>
+    <p>
+      Which makes the compaction thresholds worth reading as policy rather than as tuning knobs.
+      <code>optimize_rewrite_delete_file_threshold</code> defaults to <strong>2</strong>: a data file
+      with fewer than two associated delete files is not rewritten, deliberately, to let delete
+      files accumulate and make the eventual rewrite worth its cost.
+      <code>optimize_rewrite_data_file_threshold</code> defaults to <strong>5</strong>, and both are
+      capped below 50. Raising them buys cheaper compaction and slower reads, in that order.
+    </p>
+    <pre><code>-- Compaction is charged by data scanned, and only partition columns
+-- may appear in the predicate. Scope it, or the table is rewritten.
+OPTIMIZE sales.orders REWRITE DATA USING BIN_PACK
+  WHERE event_date &gt;= DATE '2026-08-01';
+
+-- Snapshot expiry and orphan removal. Set the retention first --
+-- the default is five days, and this is what ends time travel.
+ALTER TABLE sales.orders SET TBLPROPERTIES (
+  'vacuum_max_snapshot_age_seconds' = '2592000',   -- 30 days
+  'vacuum_min_snapshots_to_keep'    = '10'
+);
+VACUUM sales.orders;</code></pre>
+
+    <h3>Three owners of maintenance, three sets of defaults</h3>
+    <p>
+      The same three jobs &mdash; compact files, expire snapshots, remove unreferenced files &mdash;
+      are offered by three AWS surfaces, and picking one is picking a set of defaults that will
+      probably never be revisited.
+    </p>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th></th><th>Athena OPTIMIZE / VACUUM</th><th>Glue Data Catalog optimizers</th><th>S3 Tables</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Runs</td><td>When you run it</td><td>Continuously, when thresholds are exceeded</td><td>Continuously, managed by S3</td></tr>
+          <tr><td>Compaction trigger</td><td>Fewer than 5 candidate data files, skip</td><td>More than 100 files, each below 75% of target</td><td>Not exposed</td></tr>
+          <tr><td>Target file size</td><td>Table property, per table</td><td><code>write.target-file-size-bytes</code>, default 512 MB</td><td>512 MB default, 64&ndash;512 MB range</td></tr>
+          <tr><td>Snapshot retention default</td><td>432,000 seconds, minimum 1 snapshot</td><td>Set when the optimizer is created</td><td>120 hours, minimum 1 snapshot</td></tr>
+          <tr><td>Metadata file retention</td><td>100 files</td><td>Handled by the optimizer</td><td>Not exposed</td></tr>
+          <tr><td>File formats</td><td>Parquet, ORC, Avro</td><td>Parquet only</td><td>Parquet, Avro, ORC</td></tr>
+          <tr><td>Statistics for the planner</td><td><code>use_iceberg_statistics</code>, opt in</td><td>Glue column statistics</td><td>On by default</td></tr>
+          <tr><td>Fails by</td><td>Not being run</td><td>Auto-suspending after 4 consecutive failures</td><td>Failing the whole table's snapshot job</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The row worth staring at is snapshot retention. Athena's default is 432,000 seconds and S3
+      Tables' default is 120 hours. Those are the same number &mdash; five days &mdash; written in
+      two units, on two surfaces, in two consoles. It is a sensible default for a storage bill and a
+      poor one for the reason most people say they want a table format. If the recovery story is "we
+      can roll the table back", the untouched version of that story lasts until Friday.
+    </p>
+
+    <h3>Time travel is a retention policy wearing a feature's clothes</h3>
+    <p>
+      The syntax is deliberately unremarkable: <code>FOR TIMESTAMP AS OF</code> for a point in time,
+      <code>FOR VERSION AS OF</code> with a <code>bigint</code> snapshot ID for a specific commit.
+      Both replaced the <code>FOR SYSTEM_TIME AS OF</code> and <code>FOR SYSTEM_VERSION AS OF</code>
+      forms from Athena engine version 2, which is worth knowing when inheriting a query that will
+      not parse.
+    </p>
+    <pre><code>-- What the table said before this morning's load
+SELECT * FROM sales.orders FOR TIMESTAMP AS OF (current_timestamp - interval '1' day);
+
+-- Diff a snapshot against the current state
+SELECT c.order_id
+FROM sales.orders c
+FULL JOIN sales.orders FOR VERSION AS OF 949530903748831860 p
+  ON c.order_id = p.order_id
+WHERE c.order_id IS NULL OR p.order_id IS NULL;</code></pre>
+    <p>
+      The warning attached to <code>VACUUM</code> is the whole story: run a snapshot expiration and
+      you can no longer time travel to expired snapshots. There is no separate archive, no recycle
+      bin and no soft delete. Retention <em>is</em> the feature, and the two automated owners both
+      ship it at five days.
+    </p>
+    <p>
+      One asymmetry that catches people: <code>vacuum_min_snapshots_to_keep</code> takes precedence
+      over the age. If the minimum remaining snapshots are older than
+      <code>vacuum_max_snapshot_age_seconds</code>, they are kept and the age is ignored. So a table
+      that has not been written to in a month still has its last snapshot, and a table written to
+      every minute has five days. The retention that results depends on the write rate, which is not
+      how anybody reads that setting.
+    </p>
+
+    <h3>Every failure mode here is a deletion or a stop</h3>
+    <p>
+      This is the part that repays reading the limitations pages rather than the launch posts. None
+      of the following raises an error at the time it matters.
+    </p>
+    <ul>
+      <li>
+        <strong>Two tables, one prefix.</strong> When multiple Glue Data Catalog tables share the
+        same S3 location and have optimizers enabled, one table's snapshot retention or orphan file
+        deletion may delete files still referenced by the other. This is not a corner case in
+        practice &mdash; a table and its <code>_backup</code>, or two catalog entries pointed at one
+        curated path, gets there quickly.
+      </li>
+      <li>
+        <strong>An S3 lifecycle rule over the table path.</strong> AWS states it plainly: lifecycle
+        expiration rules applying to Iceberg table storage locations can delete manifest and data
+        files still referenced by active snapshots. The standard "expire everything older than 90
+        days" rule, applied at the bucket level for cost hygiene, is a data-loss mechanism on an
+        Iceberg prefix.
+      </li>
+      <li>
+        <strong>Iceberg-native retention on an S3 table.</strong> Setting
+        <code>history.expire.max-snapshot-age-ms</code> or
+        <code>history.expire.min-snapshots-to-keep</code> as a table property does not configure S3
+        Tables snapshot management &mdash; it makes it <em>fail for the entire table</em>, regardless
+        of the value. Any user-defined tag or branch does the same. The table keeps working, nothing
+        expires, metadata grows, and the only signal is
+        <code>GetTableMaintenanceJobStatus</code>.
+      </li>
+      <li>
+        <strong>Four failures and compaction stops.</strong> Glue automatically suspends a compaction
+        optimizer after four consecutive failures, to avoid burning compute. Correct behaviour, and
+        it means an optimizer enabled six months ago is not evidence that compaction ran last night.
+      </li>
+      <li>
+        <strong>The million-file ceiling.</strong> Glue snapshot retention and orphan file deletion
+        delete at most 1,000,000 files per run. Anything eligible beyond that stays in table storage
+        as orphan files &mdash; so the job reports success while the backlog it was meant to clear
+        persists.
+      </li>
+      <li>
+        <strong>Orphan deletion has an epoch.</strong> The Glue orphan file deletion optimizer only
+        removes files created <em>after</em> the optimizer's own creation date. Files created before
+        or on that date are never deleted. Enabling it to clean up years of accumulated debris does
+        precisely nothing to the debris.
+      </li>
+      <li>
+        <strong>VACUUM without delete permission.</strong> If the query execution role lacks
+        <code>s3:DeleteObject</code>, the <code>VACUUM</code> query succeeds and no files are
+        removed. A green query history and a growing bill.
+      </li>
+    </ul>
+
+    <h3>Where S3 Tables changes the shape of the problem</h3>
+    <p>
+      S3 Tables is a bucket type whose subresource is a table, and the argument for it is not only
+      that maintenance becomes somebody else's job. It is a request-rate argument. A general purpose
+      bucket gives at least 3,500 <code>PUT</code>, <code>COPY</code>, <code>POST</code> or
+      <code>DELETE</code> requests, or 5,500 <code>GET</code> and <code>HEAD</code> requests, per
+      second per partitioned prefix, with no limit on the number of prefixes &mdash; a fine model
+      when the key layout spreads naturally, and a poor one for an Iceberg table whose commits
+      concentrate on a metadata path. AWS states S3 Tables deliver up to 10x higher transactions per
+      second than Iceberg tables in general purpose buckets, and that is the number to weigh, rather
+      than the maintenance automation.
+    </p>
+    <p>
+      The defaults are opinionated in a useful direction. Compaction targets 512 MB, configurable
+      between 64 MB and 512 MB, with a strategy of <code>auto</code> that applies sort compaction to
+      a table with a defined sort order and binpack to one without. S3 Tables applies the Parquet
+      row-group default of 128 MB, so a compacted file at the default target holds four row groups
+      &mdash; the unit a scan actually skips. Iceberg statistics and Parquet column indexes are on by
+      default here and opt-in everywhere else, through <code>use_iceberg_statistics</code> and
+      <code>use_iceberg_parquet_column_index</code>, which is a real difference in query plans and
+      not a footnote.
+    </p>
+    <p>
+      The constraint to design against is the quota shape: <strong>10 table buckets per Region per
+      account</strong>, each holding up to 10,000 namespaces and 10,000 tables, all adjustable only
+      by contacting Support. Ten is a small number if the instinct is one bucket per team or per
+      environment. Namespaces are the intended axis of separation, and they are cheap; buckets are
+      not.
+    </p>
+
+    <h3>The parts that are still sharp</h3>
+    <p>
+      Two limits worth surfacing before they are found during an audit. Athena does not support DDL
+      on Iceberg tables registered with Lake Formation, and Lake Formation cannot manage permissions
+      for <code>VACUUM</code>, <code>MERGE</code>, <code>UPDATE</code> or <code>OPTIMIZE</code> on
+      Iceberg tables at all &mdash; it governs read access. If the governance model assumes Lake
+      Formation mediates everything, maintenance operations sit outside it and need IAM.
+    </p>
+    <p>
+      And a data-fidelity one: Iceberg supports microsecond precision on timestamps; Athena supports
+      milliseconds, on both reads and writes, and retains only milliseconds for time columns
+      rewritten during manual compaction. For most analytics that is invisible. For event ordering,
+      idempotency keyed on an event timestamp, or anything reconciling against a source system that
+      records microseconds, it is a silent truncation performed by a maintenance job.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Matters</h2>
+    <p>
+      The previous post argued that schema-on-read fails by changing answers, and that the failure is
+      invisible in every job metric. Table formats fix that class of failure convincingly: the schema
+      is in the data, column identity survives a rename, a commit either happened or did not, and the
+      state of the table on any past day is a query rather than a restore. If the problem is
+      correctness, the argument is over.
+    </p>
+    <p>
+      What the format does is trade a correctness risk for an operational one, and operational risks
+      are only better if they are actually operated. An Iceberg table with no maintenance owner does
+      not return wrong answers. It returns right answers, slowly, at rising cost, with a history that
+      quietly stopped being retained &mdash; and the first symptom is a bill or a failed recovery,
+      both of which arrive long after the decision that caused them.
+    </p>
+    <p>
+      That is why the monitoring has to change with the format. On a Hive table the useful alarms
+      were about drift: table count per database, partition count per table. On an Iceberg table they
+      are about maintenance liveness. <strong>The highest-value signal is the maintenance job's own
+      status</strong>, because every automated owner has a documented way of stopping while the table
+      carries on serving: a Glue optimizer auto-suspends after four failures, and S3 Tables snapshot
+      management fails for a whole table if somebody adds a branch or sets an Iceberg retention
+      property. Alarm on job status and on metadata file count per table, and the two failures that
+      produce no error become the two seen first.
+    </p>
+    <p>
+      The second-order point is about who is allowed to delete. A Hive table on S3 tolerated a
+      bucket-wide lifecycle rule, a shared prefix and a tidy-up script, because nothing but the
+      objects themselves mattered. An Iceberg table's correctness depends on files that look
+      unreferenced and are not, so every one of those habits becomes a way to lose data. The rule
+      that follows is blunt: one table, one prefix, one deleter.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Take this</th><th>Because</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Who owns maintenance</td>
+            <td>Exactly one owner per table, recorded somewhere a human reads</td>
+            <td>The three surfaces overlap, and two of them deleting against one table is how files referenced by a live snapshot disappear</td>
+          </tr>
+          <tr>
+            <td>Snapshot retention</td>
+            <td>Set it explicitly, on day one, to the recovery window actually being promised</td>
+            <td>Both automated defaults are five days — 432,000 seconds on Athena, 120 hours on S3 Tables — and expiry is irreversible</td>
+          </tr>
+          <tr>
+            <td>Retention on an S3 table</td>
+            <td><code>PutTableMaintenanceConfiguration</code>, never <code>history.expire.*</code></td>
+            <td>The Iceberg-native property does not configure snapshot management; it makes it fail for the whole table, silently</td>
+          </tr>
+          <tr>
+            <td>Prefix layout</td>
+            <td>One table per S3 location, never shared, never nested under another table</td>
+            <td>Shared locations let one table's optimizer delete another's live files, and break orphan detection in both directions</td>
+          </tr>
+          <tr>
+            <td>Lifecycle rules</td>
+            <td>Exclude every Iceberg table path from bucket-level expiration</td>
+            <td>Lifecycle expiry deletes manifest and data files that are still referenced by active snapshots</td>
+          </tr>
+          <tr>
+            <td>Deletes on Athena</td>
+            <td>Budget compaction as part of the delete, not as cleanup</td>
+            <td>Athena is merge-on-read only and ignores copy-on-write table properties, so read cost stays elevated until <code>OPTIMIZE</code> runs</td>
+          </tr>
+          <tr>
+            <td>OPTIMIZE scope</td>
+            <td>Always a partition predicate; never a bare <code>OPTIMIZE</code> on a large table</td>
+            <td>It is charged by data scanned, and any file containing one matching row is rewritten</td>
+          </tr>
+          <tr>
+            <td>Glue managed compaction</td>
+            <td>Only for Parquet tables, and re-check that it is still enabled</td>
+            <td>ORC and Avro are not supported, and four consecutive failures suspend the optimizer without further notice</td>
+          </tr>
+          <tr>
+            <td>S3 Tables bucket count</td>
+            <td>Separate by namespace, not by bucket</td>
+            <td>10 table buckets per Region per account, increasable only through Support; namespaces go to 10,000</td>
+          </tr>
+          <tr>
+            <td>Detection</td>
+            <td>Alarm on maintenance job status and metadata file count per table</td>
+            <td>A stopped optimizer and a failed snapshot job both leave a table answering every query correctly</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Table formats arrived because the alternative had run out of room. Schema-on-read made a lake
+      cheap to fill and impossible to guarantee, and every mechanism built on top of it &mdash;
+      crawler policies, partition inheritance, format-specific access rules &mdash; was
+      reconciliation after the fact. Iceberg's answer is not cleverer reconciliation. It is to write
+      the table down.
+    </p>
+    <p>
+      What that buys is a real transaction boundary, and what it costs is that a table is now a
+      living data structure with a maintenance schedule. The AWS surfaces around it are good and
+      getting better &mdash; managed compaction, S3 Tables' automated maintenance, and the request
+      rates that come with a purpose-built bucket type are genuine improvements over rolling it
+      yourself. But every one of them defaults to five days of history, and every one of them has a
+      documented way of stopping without saying so.
+    </p>
+    <p>
+      Which turns the interesting question away from the format and onto ownership. The format has
+      made the table honest. Whether the estate stays healthy depends on something much duller:
+      knowing, per table, which component is allowed to delete a file, and having an alarm on whether
+      it still is.
+    </p>
+    <div class="callout">
+      <p>
+        <strong>Next in this series</strong>
+      </p>
+      <p>
+        <strong>#32 &mdash; Redshift or Athena: when a warehouse earns its keep.</strong> Two posts
+        of catalog and table format have been about making files behave like a table. The next one
+        asks the opposite question: at what point does the query engine stop being the cheap part,
+        and what does a warehouse give that a well-maintained Iceberg table on S3 does not.
+      </p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg.html">Query Apache Iceberg tables, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-creating-tables.html">Create Iceberg tables, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-updating-iceberg-table-data.html">Update Iceberg table data, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-time-travel-and-version-travel-queries.html">Perform time travel and version travel queries, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-data-optimization.html">Optimize Iceberg tables, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/optimize-statement.html">OPTIMIZE, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/vacuum-statement.html">VACUUM, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/service-limits.html">Service Quotas, Amazon Athena</a></li>
+      <li><a href="https://docs.aws.amazon.com/glue/latest/dg/compaction-management.html">Compaction optimization, AWS Glue</a></li>
+      <li><a href="https://docs.aws.amazon.com/glue/latest/dg/orphan-file-deletion.html">Deleting orphan files, AWS Glue</a></li>
+      <li><a href="https://docs.aws.amazon.com/glue/latest/dg/optimizer-notes.html">Table optimizers, considerations and limitations, AWS Glue</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables-maintenance.html">Maintenance for tables, Amazon S3 Tables</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables-regions-quotas.html">S3 Tables Regions, endpoints and service quotas, Amazon S3</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html">Best practices design patterns: optimizing Amazon S3 performance</a></li>
+      <li><a href="https://aws.amazon.com/s3/features/tables/">Amazon S3 Tables</a></li>
+    </ul>
+  </div>
+</div>
