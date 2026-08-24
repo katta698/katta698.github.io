@@ -45,6 +45,10 @@ The order, and why each step is where it is
    it in. Syncing first regenerates the whole index without it, which removes a
    published post from the site with no error anywhere.
 
+   Untracked generated files that origin/main has since started tracking are
+   removed first, because git will not check out over an untracked file and the
+   rebase would abort having done nothing. See clear_regenerated_collisions().
+
 3. SYNC. Regenerates every served page, the index, cards.json, rss.xml,
    stats.json and sw.js from posts/.
 
@@ -128,6 +132,77 @@ def dirty_tracked():
     return [l for l in git_lines("status", "--porcelain") if not l.startswith("??")]
 
 
+def untracked_files():
+    """Untracked paths as files, never as directories.
+
+    Plain `--porcelain` collapses a wholly-untracked directory into one entry
+    ending in a slash, so `blog/page/7/index.html` is reported as
+    `blog/page/7/` and never matches a path in origin/main's tree. `-uall`
+    is what makes the collision check below see the actual files.
+    """
+    return [l[3:].strip().strip('"')
+            for l in git_lines("status", "--porcelain", "-uall")
+            if l.startswith("??")]
+
+
+def clear_regenerated_collisions():
+    """Delete untracked generated files that origin/main has started tracking.
+
+    git refuses to check out a commit that would overwrite an untracked file,
+    so the rebase in step 2 aborts with "untracked working tree files would be
+    overwritten" and does nothing at all. It only names the first colliding
+    path, which makes it read like a merge problem rather than what it is.
+
+    The trigger is the site crossing a pagination boundary. This window's sync
+    produces blog/page/7/index.html as a new untracked file; another window
+    publishes first and commits that same path; now the rebase that would pick
+    up their post cannot run. Nothing is at stake in the file -- step 3 rebuilds
+    every one of these from posts/ a moment later -- but the rebase never gets
+    that far, and it happened on 2026-08-24 when Azure #11 landed mid-run.
+
+    Untracked files are still not stashed, for the reason dirty_tracked()
+    gives. This is narrower: a path that is untracked here AND already tracked
+    on origin/main is a file another window has published, so the copy in this
+    tree is regenerated output by definition. Removal is limited to blog/ on
+    top of that. A collision anywhere else -- two windows writing the same
+    posts/ file -- is a real conflict and stops the run for a human.
+
+    Returns (ok, removed_paths).
+    """
+    _, out = run("git", "ls-tree", "-r", "--name-only", "origin/main")
+    upstream = set(out.splitlines())
+    colliding = [p for p in untracked_files() if p in upstream]
+    if not colliding:
+        return True, []
+
+    outside = [p for p in colliding if not p.startswith("blog/")]
+    if outside:
+        print("  These files are untracked here and already tracked on")
+        print("  origin/main, and they are not generated output:")
+        for p in outside:
+            print("     %s" % p)
+        print("  Another window has published them. Resolve by hand.")
+        return False, []
+
+    for p in colliding:
+        os.remove(os.path.join(ROOT, p))
+        parent = os.path.dirname(os.path.join(ROOT, p))
+        if os.path.isdir(parent) and not os.listdir(parent):
+            os.rmdir(parent)
+    return True, colliding
+
+
+def report_cleared(removed):
+    if not removed:
+        return
+    print("  removed %d regenerated file(s) origin now tracks; sync rebuilds "
+          "them:" % len(removed))
+    for p in removed[:5]:
+        print("     %s" % p)
+    if len(removed) > 5:
+        print("     ... and %d more" % (len(removed) - 5))
+
+
 def changed_post_names():
     """Post filenames this tree is about to publish, for scoping the checks.
 
@@ -160,6 +235,11 @@ def rebase_onto_origin():
     if tracked:
         code, out = run("git", "stash", "push", "--", *[l[3:] for l in tracked])
         stashed = code == 0 and "No local changes" not in out
+    ok, removed = clear_regenerated_collisions()
+    if not ok:
+        return 1, ("  Rebase not attempted. Your work is %s." %
+                   ("in `git stash`" if stashed else "still in the tree"))
+    report_cleared(removed)
     code, out = run("git", "rebase", "origin/main")
     if code:
         return 1, ("  Rebase failed. Your work is %s.\n  Resolve it, then run "
@@ -212,6 +292,12 @@ def main():
                 code, out = run("git", "stash", "push", "--",
                                 *[l[3:] for l in tracked])
                 stashed = code == 0 and "No local changes" not in out
+            ok, removed = clear_regenerated_collisions()
+            if not ok:
+                print("\nRebase not attempted. Your work is %s." %
+                      ("in `git stash`" if stashed else "still in the tree"))
+                return 1
+            report_cleared(removed)
             code, out = run("git", "rebase", "origin/main")
             if code:
                 print(out.strip())
