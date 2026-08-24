@@ -132,16 +132,16 @@ discovering in November. Two mitigations, both cheap:
 ## Phase 1 — Foundations and governance (#1–#30)
 
 1. Organizations, folders and projects: why the project is the unit that matters — **published**
-2. Cloud Identity and Google Workspace as the identity source
-3. The Resource Manager API: the control plane every request passes through
-4. Enabling services, and why an API must be turned on before it exists
-5. Project IDs, numbers and names, and which of them are permanent
-6. Project lifecycle: creation, soft delete, restore and purge
-7. Liens: preventing the deletion nobody meant to make
-8. Zonal, regional and global: the location scope of a resource
-9. Multi-region and dual-region locations
-10. Google's network, and the Premium versus Standard network tiers
-11. Billing accounts, subaccounts and the payments profile
+2. Cloud Identity and Google Workspace as the identity source — **published**
+3. The Resource Manager API: the control plane every request passes through — **published**
+4. Enabling services, and why an API must be turned on before it exists — **published**
+5. Project IDs, numbers and names, and which of them are permanent — **published**
+6. Project lifecycle: creation, soft delete, restore and purge — **published**
+7. Liens: preventing the deletion nobody meant to make — **published**
+8. Zonal, regional and global: the location scope of a resource — **published**
+9. Multi-region and dual-region locations — **published**
+10. Google's network, and the Premium versus Standard network tiers — **published**
+11. Billing accounts, subaccounts and the payments profile — **published**
 12. Linking billing, and what breaks the moment it is disabled
 13. Billing export to BigQuery, and why the console is not the source of truth
 14. Reading a Google Cloud invoice
