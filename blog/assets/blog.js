@@ -935,8 +935,37 @@
   });
   pop.addEventListener('click', function () { close(false); });
 
+  // Browsers take the PDF's default filename from document.title, so the save
+  // dialog offered "AWS Architecture Series #29 - Strangler Fig ... | Jayanth
+  // Katta Blog.pdf" -- the site suffix belongs in a browser tab, not in a
+  // filename. Swap in a clean title for the duration of the print, then put the
+  // real one back so the tab and any bookmark are unaffected.
   wrap.querySelector('.pa-pdf').addEventListener('click', function () {
+    var original = document.title;
+    var h1 = document.querySelector('h1');
+    var name = (h1 ? h1.textContent : original)
+      .replace(/\s*\|\s*Jayanth Katta Blog\s*$/, '')
+      // Characters Windows and macOS refuse in a filename, plus the em dashes
+      // these titles use throughout. A browser silently mangles them otherwise.
+      .replace(/[\/:*?"<>|]/g, ' ')
+      .replace(/[‐-―]/g, '-')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+
+    var restore = function () {
+      document.title = original;
+      window.removeEventListener('afterprint', restore);
+    };
+    window.addEventListener('afterprint', restore);
+
+    document.title = name || original;
     window.print();
+
+    // afterprint is not reliable everywhere -- Safari has historically not
+    // fired it, and a cancelled dialog can skip it too. Without this the tab
+    // would keep the stripped title for the rest of the session.
+    setTimeout(restore, 5000);
   });
 
   if (meta) {
