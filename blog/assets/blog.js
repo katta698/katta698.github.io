@@ -840,7 +840,14 @@
   // own router, and encoding roughly triples punctuation-heavy prose. The
   // CLIPBOARD has no such limit. Capping copied text at the URL's budget sent
   // people a prompt that stopped mid-sentence for no reason at all.
-  var LINK_BUDGET = 900;
+  // Raised from 900 on 2026-08-25 after testing on a phone: the ChatGPT and
+  // Claude apps both received the prompt intact, so the original figure was
+  // more cautious than it needed to be. 3,000 raw is roughly 6-9k once
+  // encoded, which stays inside the ~8k a router or proxy typically accepts
+  // while tripling what arrives in the chat. If a vendor ever starts
+  // truncating, this is the number to lower -- not the copy path, which is
+  // not a URL and has no such limit.
+  var LINK_BUDGET = 3000;
   var COPY_BUDGET = 40000;
 
   function paragraphs() {
