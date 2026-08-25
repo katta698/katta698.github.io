@@ -956,16 +956,31 @@
     var restore = function () {
       document.title = original;
       window.removeEventListener('afterprint', restore);
+      window.removeEventListener('focus', restore);
+      document.removeEventListener('visibilitychange', onVisible);
     };
+    var onVisible = function () {
+      // Only once the page is genuinely back in front. On mobile the share
+      // sheet hides the page; restoring while it is still up would rename the
+      // file out from under the save.
+      if (document.visibilityState === 'visible') restore();
+    };
+
     window.addEventListener('afterprint', restore);
+    window.addEventListener('focus', restore);
+    document.addEventListener('visibilitychange', onVisible);
 
     document.title = name || original;
     window.print();
 
-    // afterprint is not reliable everywhere -- Safari has historically not
-    // fired it, and a cancelled dialog can skip it too. Without this the tab
-    // would keep the stripped title for the rest of the session.
-    setTimeout(restore, 5000);
+    // A 5s timer was wrong, and mobile is where it showed: tapping Save as PDF
+    // opens a share sheet, and picking Files, choosing a folder and confirming
+    // routinely takes longer than that. The timer restored the site title
+    // BEFORE the OS read it to name the file, so the PDF came out named after
+    // the site rather than the post. The restore is now driven by the page
+    // coming back into focus, with a 10-minute backstop purely so a tab that
+    // never regains focus does not keep the stripped title forever.
+    setTimeout(restore, 600000);
   });
 
   if (meta) {
