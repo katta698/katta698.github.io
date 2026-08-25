@@ -807,10 +807,24 @@
 // The URL alone would be cleaner, but only models that can browse could read it;
 // the excerpt makes it work everywhere, at the cost of a length budget.
 (function () {
+  // Under the header meta, not above Previous/Next. Both actions are decided
+  // early rather than after reading: "save this for later" is a decision made
+  // before the first paragraph, and "explain this" is reached for mid-post,
+  // when the reader is nowhere near the bottom. The site already has floating
+  // .back-top and .ask-launcher controls, so a reader deep in a post is not
+  // short of things to press -- what was missing was something visible at the
+  // point the decision is actually made.
+  //
+  // .post-info, NOT .post-header-meta. The header runs eyebrow, h1,
+  // description, then .post-info -- the date and read-time line. Anchoring to
+  // .post-header-meta put the row ABOVE the title, because that class is the
+  // eyebrow rather than the meta line its name suggests. Present on all 150
+  // post pages, sync-built and hand-built alike; checked before moving here.
   var body = document.querySelector('.post-body');
+  var meta = document.querySelector('.post-info');
   var anchor = document.querySelector('nav.post-nav') ||
                document.getElementById('disqus_thread');
-  if (!body || !anchor || document.querySelector('.pa-line')) return;
+  if (!body || !(meta || anchor) || document.querySelector('.pa-line')) return;
 
   // Vendors whose prefill parameter is documented enough to rely on. Two, not
   // five: each is an undocumented ?q= that can change without notice and fails
@@ -925,5 +939,12 @@
     window.print();
   });
 
-  anchor.parentNode.insertBefore(wrap, anchor);
+  if (meta) {
+    // After the date line, which closes the header block -- so the row belongs
+    // to the header rather than interrupting the title-to-body run.
+    meta.parentNode.insertBefore(wrap, meta.nextSibling);
+    wrap.classList.add('pa-top');
+  } else {
+    anchor.parentNode.insertBefore(wrap, anchor);
+  }
 })();
