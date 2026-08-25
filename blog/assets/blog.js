@@ -793,3 +793,137 @@
 // site loads — the portfolio root and resume include it directly, and the
 // block above injects it here. That makes it the one place registration
 // reaches the whole origin rather than just /blog/.
+
+// ---------------------------------------------------------------------------
+// "Read this with AI" and "Save as PDF", on every post page.
+//
+// Injected from here rather than written into a template, and that is the whole
+// reason it reaches every post: the 32 arch, Azure and GCP pages are
+// externally_built, so sync_blog.py never regenerates them. A template change
+// would reach ~118 of 150 posts and silently miss the rest. blog.js loads on
+// every blog surface including those pages.
+//
+// The prompt carries the title, the canonical URL and the opening paragraphs.
+// The URL alone would be cleaner, but only models that can browse could read it;
+// the excerpt makes it work everywhere, at the cost of a length budget.
+(function () {
+  var body = document.querySelector('.post-body');
+  var anchor = document.querySelector('nav.post-nav') ||
+               document.getElementById('disqus_thread');
+  if (!body || !anchor || document.querySelector('.pa-line')) return;
+
+  // Vendors whose prefill parameter is documented enough to rely on. Two, not
+  // five: each is an undocumented ?q= that can change without notice and fails
+  // silently -- an empty chat window, no error. "Copy prompt" is the one that
+  // cannot break, and it covers Gemini, Perplexity and Grok as well.
+  var VENDORS = [
+    { name: 'ChatGPT', url: 'https://chatgpt.com/?q=' },
+    { name: 'Claude',  url: 'https://claude.ai/new?q=' }
+  ];
+
+  // Practical ceiling for a URL that has to survive a browser, a redirect and a
+  // vendor's own router. Encoding roughly triples punctuation-heavy prose, so
+  // the raw excerpt budget is deliberately well under the encoded limit.
+  var EXCERPT_BUDGET = 900;
+
+  function excerpt() {
+    var out = [];
+    var ps = body.querySelectorAll('p');
+    for (var i = 0; i < ps.length && out.join(' ').length < EXCERPT_BUDGET; i++) {
+      var t = (ps[i].textContent || '').replace(/\s+/g, ' ').trim();
+      if (t.length > 40) out.push(t);          // skip captions and one-liners
+    }
+    var s = out.join('\n\n');
+    return s.length > EXCERPT_BUDGET ? s.slice(0, EXCERPT_BUDGET) + '…' : s;
+  }
+
+  function prompt() {
+    var title = (document.querySelector('h1') || {}).textContent || document.title;
+    var canon = document.querySelector('link[rel=canonical]');
+    var url = canon ? canon.href : location.href;
+    return 'Explain this article to me, and tell me what I should take away ' +
+           'from it.\n\nTitle: ' + title.trim() + '\nURL: ' + url +
+           '\n\nIt opens:\n\n' + excerpt();
+  }
+
+  var wrap = document.createElement('div');
+  wrap.className = 'pa-line';
+  wrap.innerHTML =
+    '<span class="pa-menu">' +
+      '<button type="button" class="pa-trig" aria-haspopup="true" aria-expanded="false">' +
+        'Read this with AI <span aria-hidden="true">▾</span></button>' +
+      '<span class="pa-pop" role="menu"></span>' +
+    '</span>' +
+    '<span class="pa-right"><button type="button" class="pa-pdf">Save as PDF</button></span>';
+
+  var menu = wrap.querySelector('.pa-menu');
+  var trig = wrap.querySelector('.pa-trig');
+  var pop  = wrap.querySelector('.pa-pop');
+
+  VENDORS.forEach(function (v) {
+    var a = document.createElement('a');
+    a.href = v.url + encodeURIComponent(prompt());
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.setAttribute('role', 'menuitem');
+    a.textContent = v.name;
+    pop.appendChild(a);
+  });
+
+  var copy = document.createElement('button');
+  copy.type = 'button';
+  copy.setAttribute('role', 'menuitem');
+  copy.textContent = 'Copy prompt';
+  copy.addEventListener('click', function () {
+    var text = prompt();
+    var done = function () {
+      copy.textContent = 'Copied';
+      setTimeout(function () { copy.textContent = 'Copy prompt'; }, 1600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+    // execCommand is deprecated but is the only path on a non-secure origin or
+    // an older browser, and this must not be the button that does nothing.
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) { /* nothing to do */ }
+      document.body.removeChild(ta);
+    }
+  });
+  pop.appendChild(copy);
+
+  function close(refocus) {
+    if (!menu.classList.contains('open')) return;
+    menu.classList.remove('open');
+    trig.setAttribute('aria-expanded', 'false');
+    if (refocus) trig.focus();
+  }
+
+  trig.addEventListener('click', function (e) {
+    e.stopPropagation();
+    var open = menu.classList.toggle('open');
+    trig.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) { var f = pop.querySelector('a,button'); if (f) f.focus(); }
+  });
+
+  // The three things a menu has to get right and usually does not.
+  document.addEventListener('click', function (e) {
+    if (!menu.contains(e.target)) close(false);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' || e.key === 'Esc') close(true);
+  });
+  pop.addEventListener('click', function () { close(false); });
+
+  wrap.querySelector('.pa-pdf').addEventListener('click', function () {
+    window.print();
+  });
+
+  anchor.parentNode.insertBefore(wrap, anchor);
+})();
