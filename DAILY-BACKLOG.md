@@ -92,6 +92,42 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 24 August 2026 — covered by post #17
+
+Nine announcements plus 12 blog posts. Monday's news, and a genuinely
+architectural winner: EKS lifting the one-external-OIDC-provider-per-cluster
+limit to ten. The announcement omits all three of the things that decide how you
+plan it — a Kubernetes 1.32 floor, a 12 KB configuration budget shared by all
+ten providers, and the fact that `usernamePrefix` stops being cosmetic the
+moment a second directory exists.
+
+The version floor turned out to be smaller than it reads. Checked against the
+release calendar, 1.31 is the only still-runnable version excluded, and its
+extended support ends 26 November 2026 — so the gate is a deadline the estate
+already had.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Multiple external OIDC identity providers per cluster, up to 10 | EKS | **#17** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-eks-multiple-oidc-providers) |
+| Automatic detection and repair of container instances with impaired agent connectivity | ECS | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ecs-agent-connectivity-health) |
+| Shared DNS views for multi-account environments with Route 53 Global Resolver | Route 53 | open | Med-High | [link](https://aws.amazon.com/blogs/networking-and-content-delivery/shared-dns-views-for-multi-account-environments-with-amazon-route-53-global-resolver/) |
+| CloudFront Functions unified logging | CloudFront | open | Medium | [link](https://aws.amazon.com/blogs/networking-and-content-delivery/cloudfront-functions-unified-logging/) |
+| MLflow now supports customer managed keys | SageMaker | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/sagemaker-mlflow-custom-keys) |
+| Preserving RAM shares and Lake Formation permissions through an Organizations migration | AWS Organizations | open | Medium | [link](https://aws.amazon.com/blogs/architecture/how-a-global-payment-processor-preserved-aws-ram-shares-and-lake-formation-permissions-during-an-aws-organizations-migration/) |
+| PostgreSQL 18.4, 17.10, 16.14, 15.18 and 14.23 | Aurora | skipped | Low-Med | Minor version support |
+| Enhanced support for Ray | SageMaker HyperPod | skipped | Low-Med | Narrow audience |
+| GPT-5.6 Terra and Luna in GovCloud (US) | Bedrock | skipped | Low | Region expansion |
+| MySQL minor version 8.4.11; ParallelCluster 3.16 on-node diagnostics; Connect information extraction | RDS, ParallelCluster, Connect | skipped | Low | — |
+
+**Worth revisiting:** the ECS agent-connectivity repair item is the strongest
+held candidate from this day. An instance whose agent has lost connectivity but
+whose EC2 status checks still pass is the classic ECS failure that looks healthy
+from every direction except the one that matters, and automatic remediation of
+it is worth a post on its own. Route 53 Global Resolver shared DNS views is the
+other: multi-account DNS is solved badly almost everywhere.
+
+---
+
 ## 21 August 2026 — covered by post #16
 
 A thin day: six announcements plus 15 blog posts, with one clear winner. Three
