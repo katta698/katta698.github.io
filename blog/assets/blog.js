@@ -835,29 +835,48 @@
     { name: 'Claude',  url: 'https://claude.ai/new?q=' }
   ];
 
-  // Practical ceiling for a URL that has to survive a browser, a redirect and a
-  // vendor's own router. Encoding roughly triples punctuation-heavy prose, so
-  // the raw excerpt budget is deliberately well under the encoded limit.
-  var EXCERPT_BUDGET = 900;
+  // Two budgets, because the two paths have different limits and conflating
+  // them was the bug: a URL must survive a browser, a redirect and a vendor's
+  // own router, and encoding roughly triples punctuation-heavy prose. The
+  // CLIPBOARD has no such limit. Capping copied text at the URL's budget sent
+  // people a prompt that stopped mid-sentence for no reason at all.
+  var LINK_BUDGET = 900;
+  var COPY_BUDGET = 40000;
 
-  function excerpt() {
+  function paragraphs() {
     var out = [];
     var ps = body.querySelectorAll('p');
-    for (var i = 0; i < ps.length && out.join(' ').length < EXCERPT_BUDGET; i++) {
+    for (var i = 0; i < ps.length; i++) {
       var t = (ps[i].textContent || '').replace(/\s+/g, ' ').trim();
       if (t.length > 40) out.push(t);          // skip captions and one-liners
     }
-    var s = out.join('\n\n');
-    return s.length > EXCERPT_BUDGET ? s.slice(0, EXCERPT_BUDGET) + '…' : s;
+    return out;
   }
 
-  function prompt() {
+  // Trim on a boundary, never mid-word. The old version sliced at a fixed count
+  // and ended "...what changed was a routing decision. So th" -- which reads as
+  // a broken feature rather than a deliberate excerpt. Prefer the end of a
+  // paragraph, fall back to the end of a sentence, and only then cut at a space.
+  function trimTo(text, budget) {
+    if (text.length <= budget) return text;
+    var cut = text.slice(0, budget);
+    var para = cut.lastIndexOf('\n\n');
+    if (para > budget * 0.5) return cut.slice(0, para).trim() + '\n\n[...continues at the URL above]';
+    var dot = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('.\n'));
+    if (dot > budget * 0.5) return cut.slice(0, dot + 1).trim() + ' [...continues at the URL above]';
+    var space = cut.lastIndexOf(' ');
+    return cut.slice(0, space > 0 ? space : budget).trim() + ' [...continues at the URL above]';
+  }
+
+  function prompt(budget) {
     var title = (document.querySelector('h1') || {}).textContent || document.title;
     var canon = document.querySelector('link[rel=canonical]');
     var url = canon ? canon.href : location.href;
+    var text = trimTo(paragraphs().join('\n\n'), budget);
+    var lead = budget >= COPY_BUDGET ? 'The article:' : 'It opens:';
     return 'Explain this article to me, and tell me what I should take away ' +
            'from it.\n\nTitle: ' + title.trim() + '\nURL: ' + url +
-           '\n\nIt opens:\n\n' + excerpt();
+           '\n\n' + lead + '\n\n' + text;
   }
 
   var wrap = document.createElement('div');
@@ -876,7 +895,7 @@
 
   VENDORS.forEach(function (v) {
     var a = document.createElement('a');
-    a.href = v.url + encodeURIComponent(prompt());
+    a.href = v.url + encodeURIComponent(prompt(LINK_BUDGET));
     a.target = '_blank';
     a.rel = 'noopener';
     a.setAttribute('role', 'menuitem');
@@ -889,7 +908,8 @@
   copy.setAttribute('role', 'menuitem');
   copy.textContent = 'Copy prompt';
   copy.addEventListener('click', function () {
-    var text = prompt();
+    // The clipboard is not a URL: send the whole post, not an opening.
+    var text = prompt(COPY_BUDGET);
     var done = function () {
       copy.textContent = 'Copied';
       setTimeout(function () { copy.textContent = 'Copy prompt'; }, 1600);
