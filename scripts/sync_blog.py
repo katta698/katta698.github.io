@@ -2085,10 +2085,33 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     # So both widgets are scoped to the posts the catalogue can actually
     # describe, and the footer says which posts those are. A non-AWS series gets
     # its own widget when there is a catalogue behind it, not a share of this one.
-    NON_AWS_SERIES = ("Azure Architecture Series", "GCP Architecture Series",
-                      "GCP Weekly Intelligence")
+    # Scoped by the CLOUD label, not by a list of series names. It was a list,
+    # and the list went stale the moment new series started: it named three
+    # series while six non-AWS ones existed, so Azure Weekly Intelligence,
+    # Azure Weekly Lab and GCP Weekly Lab were all counted as AWS. The widget
+    # is headed "AWS" and was listing azure dns, azure monitor, azure policy,
+    # bigquery and cloud iam underneath it.
+    #
+    # Every post carries its cloud as a bare label -- AWS, Azure or GCP -- and
+    # has since those series began, so this needs no maintenance when a series
+    # is added. Posts with no cloud label at all (health, career) stay in scope
+    # deliberately: they contribute no services and belong in the domain
+    # donut's "Non-AWS" slice, which is where they have always been.
+    # LOWERCASE, and that is the whole point. p["tags"] is a lower-cased
+    # space-joined string built for the DOM filter -- 'azure weekly lab azure
+    # terraform' -- so the previous test, `"Azure Architecture Series" in
+    # p["tags"]`, could never match anything. The exclusion list had been there
+    # since the Azure series began and had never once excluded a post; the
+    # widget headed "AWS" was listing Azure DNS, Azure Policy, BigQuery, Cloud
+    # IAM and Vertex AI underneath it the entire time.
+    #
+    # Scoped by cloud rather than by series name so a new series cannot
+    # reintroduce it. Posts with no cloud tag (health, career) stay in scope
+    # deliberately -- they contribute no services and belong in the domain
+    # donut's "Non-AWS" slice, where they have always been.
+    NON_AWS_CLOUDS = ("azure", "gcp")
     aws_scope = [(p, t) for p, t in zip(posts, post_texts)
-                 if not any(s in p["tags"] for s in NON_AWS_SERIES)]
+                 if not any(c in [t.lower() for t in p["tags"]] for c in NON_AWS_CLOUDS)]
     aws_posts = [p for p, _ in aws_scope]
     aws_texts = [t for _, t in aws_scope]
 
