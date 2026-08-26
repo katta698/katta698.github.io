@@ -1,0 +1,463 @@
+---
+title: 'Week 2 — The Error Named a Deployment. The Fault Was a Role.'
+date: '2026-08-26T10:00:00'
+labels:
+- Azure
+- Terraform
+- Azure Weekly Lab
+slug: week-02-policy-as-code
+---
+<div id="jk-post">
+
+<div class="meta">
+  <span class="stack-badge">Azure Policy</span>
+  <span class="stack-badge">deployIfNotExists</span>
+  <span class="stack-badge">Managed Identity</span>
+  <span class="stack-badge">Azure RBAC</span>
+  <span class="stack-badge">Log Analytics</span>
+  <span class="stack-badge">Terraform</span>
+</div>
+
+<div class="post-eyebrow">Azure Platform Engineering Lab · Week 2 of 52</div>
+
+<h1>Week 2 — The Error Named a Deployment. The Fault Was a Role.</h1>
+
+<p class="post-subtitle">A policy that repairs things instead of blocking them
+needs an identity, and an identity needs a grant. Withhold the grant and Azure
+tells you a deployment failed — never that a role is missing.</p>
+
+<div class="post-meta">
+  <span>26 August 2026</span>
+  <span>Terraform · HCP Terraform, local execution</span>
+  <span>Under $1 while running · $0 destroyed</span>
+</div>
+
+<div class="toc">
+  <h2>📋 In This Post</h2>
+  <ol>
+    <li><a href="#why">Why — The Problem This Solves</a></li>
+    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
+    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
+    <li><a href="#build">How We Built It — Step by Step</a></li>
+    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
+    <li><a href="#security">Security — Controls at Every Layer</a></li>
+    <li><a href="#cost">Cost</a></li>
+    <li><a href="#cleanup">Cleanup</a></li>
+    <li><a href="#references">References</a></li>
+    <li><a href="#takeaways">Key Takeaways</a></li>
+  </ol>
+</div>
+
+<h2 id="why">Why — The Problem This Solves</h2>
+
+<p>Last week's guardrail was a <code>deny</code>. A deny is a gate: it decides
+what may enter and has no opinion whatsoever about what is already inside. Point
+one at an estate that has been running for two years and nothing changes — every
+existing violation stays exactly where it is, permanently non-compliant and
+permanently ignored.</p>
+
+<p>The effects that <em>do</em> reach inside are <code>modify</code> and
+<code>deployIfNotExists</code>. They rewrite tags and deploy missing
+configuration on your behalf. And that phrase — <em>on your behalf</em> — is the
+whole of this week, because work done on your behalf needs an identity, and an
+identity that can change your estate needs a role assignment.</p>
+
+<div class="callout amber">
+  <p><strong>This is where policy stops being about policy.</strong> A deny needs
+  no permissions, because refusing is not an action. The moment an effect acts,
+  you are designing an access model — and the interesting question becomes not
+  "what does this rule enforce" but "how much power did I have to hand over to
+  enforce it".</p>
+</div>
+
+<h2 id="skills">What You Need to Know — Skills &amp; Tools</h2>
+
+<ul>
+  <li><strong>Policy effects that act</strong> — <code>modify</code> and
+  <code>deployIfNotExists</code>, and why both carry a managed identity while
+  <code>deny</code> and <code>audit</code> do not.</li>
+  <li><strong><code>roleDefinitionIds</code></strong> — the field inside a
+  definition that declares which roles its identity will need. It is set by the
+  definition author, not the person assigning it.</li>
+  <li><strong>User-assigned versus system-assigned managed identity</strong>, and
+  what changes about ordering when the principal ID exists before the thing that
+  uses it.</li>
+  <li><strong>Remediation tasks</strong> — the job that applies an effect to
+  resources that already exist, as distinct from evaluation, which only decides
+  whether they comply.</li>
+  <li><strong>Azure RBAC scope</strong> — granting at a management group so the
+  identity reaches everything the assignment governs, and nothing else.</li>
+</ul>
+
+<h2 id="architecture">Architecture — How It Fits Together</h2>
+
+<div class="arch-container">
+<svg style="width:100%;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" width="100%" role="img"
+     aria-label="Week 2 architecture: the ordering that removes the remediation race, and the three stages. First a user-assigned identity is created so its principal ID exists, then three role assignments are granted to it at the dev landing zone management group, then it is attached to the policy assignment, with depends_on forcing that order. Below, three stages: audit with no grants changes nothing, deployIfNotExists with no grants fails every deployment, and deployIfNotExists with the three grants remediates everything to fully compliant.">
+  <style>
+    /* Every colour here is fixed. blog.js re-parents this SVG into a lightbox
+       with its own colour context, so a diagram that inherits colour from its
+       surroundings washes out to near-invisible there while looking correct
+       inline. Depending on nothing outside this file is what makes it render
+       the same inline, in the lightbox, and in either theme. */
+    .b    { fill: none; stroke: #aab2bd; stroke-width: 1.5; }
+    .bx   { fill: none; stroke: #6b7280; stroke-width: 1.5; }
+    .t    { fill: #1f2937; font: 600 14px system-ui, sans-serif; }
+    .s    { fill: #5b6470; font: 400 12px system-ui, sans-serif; }
+    .m    { fill: #374151; font: 400 12px ui-monospace, monospace; }
+    .n    { fill: #6b7280; font: 600 12px system-ui, sans-serif; }
+    .ar   { stroke: #8b939e; stroke-width: 1.5; fill: none; }
+    .fail { fill: none; stroke: #c62828; stroke-width: 2; }
+    .failt{ fill: #c62828; font: 600 12px system-ui, sans-serif; }
+    .okb  { fill: none; stroke: #2e7d32; stroke-width: 2; }
+    .okt  { fill: #2e7d32; font: 600 12px system-ui, sans-serif; }
+    .warn { fill: none; stroke: #b45309; stroke-width: 2; }
+    .warnt{ fill: #b45309; font: 600 12px system-ui, sans-serif; }
+  </style>
+  <defs>
+    <marker id="a2" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="#8b939e"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1000" height="700" fill="#ffffff"/>
+
+  <rect class="bx" x="24" y="16" width="952" height="212" rx="8"/>
+  <text class="t" x="44" y="42">The ordering that removes the race</text>
+  <text class="s" x="292" y="42">a user-assigned identity can be granted before anything evaluates</text>
+
+  <rect class="b" x="52" y="60" width="252" height="96" rx="6"/>
+  <text class="n" x="70" y="84">1 — create the identity</text>
+  <text class="m" x="70" y="106">id-wk02-policy-</text>
+  <text class="m" x="70" y="122">remediation</text>
+  <text class="s" x="70" y="142">principal_id exists now</text>
+
+  <path class="ar" d="M308,108 L344,108" marker-end="url(#a2)"/>
+
+  <rect class="b" x="348" y="60" width="288" height="104" rx="6"/>
+  <text class="n" x="366" y="84">2 — grant it, at mg-lz-dev</text>
+  <text class="s" x="366" y="106">Monitoring Contributor</text>
+  <text class="s" x="366" y="124">Log Analytics Contributor</text>
+  <text class="s" x="366" y="142">Tag Contributor</text>
+
+  <path class="ar" d="M640,108 L676,108" marker-end="url(#a2)"/>
+
+  <rect class="b" x="680" y="60" width="270" height="96" rx="6"/>
+  <text class="n" x="698" y="84">3 — attach to the assignment</text>
+  <text class="m" x="698" y="106">assign-remediation-dev</text>
+  <text class="s" x="698" y="126">identity { UserAssigned }</text>
+  <text class="s" x="698" y="144">at mg-lz-dev</text>
+
+  <rect class="warn" x="52" y="176" width="898" height="38" rx="6"/>
+  <text class="warnt" x="70" y="200">depends_on is load-bearing: Terraform sees step 3 reference the identity, not the grants — without it, 3 may run before 2.</text>
+
+  <text class="t" x="24" y="264">Three stages. Only the role assignments change.</text>
+
+  <rect class="b" x="24" y="280" width="304" height="230" rx="6"/>
+  <text class="n" x="44" y="304">Stage 1 — audit</text>
+  <text class="s" x="44" y="330">effects</text>
+  <text class="m" x="112" y="330">AuditIfNotExists</text>
+  <text class="s" x="44" y="352">grants</text>
+  <text class="m" x="112" y="352">none</text>
+  <text class="s" x="44" y="386">2 storage accounts flagged.</text>
+  <text class="s" x="44" y="404">Nothing is changed.</text>
+  <rect class="b" x="44" y="424" width="264" height="66" rx="5"/>
+  <text class="s" x="60" y="448">The identity still exists —</text>
+  <text class="s" x="60" y="466">a definition containing a</text>
+  <text class="s" x="60" y="482">deployment demands one.</text>
+
+  <rect class="fail" x="348" y="280" width="304" height="230" rx="6"/>
+  <text class="failt" x="368" y="304">Stage 2 — the deliberate failure</text>
+  <text class="s" x="368" y="330">effects</text>
+  <text class="m" x="436" y="330">DeployIfNotExists</text>
+  <text class="s" x="368" y="352">grants</text>
+  <text class="failt" x="436" y="352">withheld</text>
+  <text class="s" x="368" y="386">storage-diagnostics  2 of 2 failed</text>
+  <text class="s" x="368" y="404">inherit-tag  4 of 4 failed</text>
+  <rect class="fail" x="368" y="424" width="264" height="66" rx="5"/>
+  <text class="failt" x="384" y="448">PolicyAuthorizationFailed</text>
+  <text class="s" x="384" y="468">names a deployment, not the</text>
+  <text class="s" x="384" y="484">role that is missing</text>
+
+  <rect class="okb" x="672" y="280" width="304" height="230" rx="6"/>
+  <text class="okt" x="692" y="304">Stage 3 — remediation</text>
+  <text class="s" x="692" y="330">effects</text>
+  <text class="m" x="760" y="330">DeployIfNotExists</text>
+  <text class="s" x="692" y="352">grants</text>
+  <text class="okt" x="760" y="352">all three</text>
+  <text class="s" x="692" y="386">storage-diagnostics  2 of 2 done</text>
+  <text class="s" x="692" y="404">inherit-tag  4 of 4 done</text>
+  <rect class="okb" x="692" y="424" width="264" height="66" rx="5"/>
+  <text class="okt" x="708" y="448">Compliant — 100% (5 of 5)</text>
+  <text class="s" x="708" y="468">Same definitions, same</text>
+  <text class="s" x="708" y="484">assignment, same identity.</text>
+
+  <rect class="bx" x="24" y="534" width="952" height="120" rx="8"/>
+  <text class="t" x="44" y="560">Why the tag rule is a custom copy of a built-in</text>
+
+  <rect class="b" x="52" y="576" width="440" height="60" rx="6"/>
+  <text class="s" x="70" y="598">Built-in “Inherit a tag from the resource group”</text>
+  <text class="warnt" x="70" y="620">roleDefinitionIds names Contributor</text>
+
+  <path class="ar" d="M500,606 L536,606" marker-end="url(#a2)"/>
+
+  <rect class="b" x="540" y="576" width="410" height="60" rx="6"/>
+  <text class="s" x="558" y="598">This week’s copy — identical rule, one line changed</text>
+  <text class="okt" x="558" y="620">roleDefinitionIds names Tag Contributor</text>
+
+  <text class="s" x="24" y="678">An assignment cannot grant less than its definition demands, so the only place to reduce that blast radius is the definition itself.</text>
+</svg>
+</div>
+
+<p>Two rules, one initiative, assigned once at the dev landing zone management
+group. <code>deployIfNotExists</code> sends a storage account's diagnostics to a
+Log Analytics workspace when no such setting exists. <code>modify</code> copies a
+<code>cost-center</code> tag down from the resource group.</p>
+
+<h2 id="build">How We Built It — Step by Step</h2>
+
+<h3>User-assigned, and the ordering that follows from it</h3>
+
+<p>A policy assignment holds exactly one managed identity either way, so this is
+not a question of how many. It is a question of when its principal ID exists.</p>
+
+<p>A <strong>system-assigned</strong> identity does not exist until the
+assignment that owns it exists. Its principal ID cannot be known before then, so
+the role assignment can only be created afterwards — and Azure begins evaluating
+the moment the assignment appears. The window between "the assignment exists"
+and "its identity can do anything" is real, and every remediation that starts
+inside it fails. Replace the assignment later and every grant attached to the old
+principal is orphaned, naming an object ID that no longer resolves.</p>
+
+<p>A <strong>user-assigned</strong> identity inverts that: create it, grant it,
+then hand it over.</p>
+
+<div class="code-label">The ordering, in Terraform</div>
+<pre class="code-block">resource "azurerm_user_assigned_identity" "remediation" { ... }
+
+resource "azurerm_role_assignment" "remediation" {
+  for_each     = var.grant_remediation_roles ? local.roles : {}
+  scope        = var.lz_dev_management_group_id
+  principal_id = azurerm_user_assigned_identity.remediation.principal_id
+}
+
+resource "azurerm_management_group_policy_assignment" "dev" {
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.remediation.id]
+  }
+  depends_on = [azurerm_role_assignment.remediation]
+}</pre>
+
+<p>The <code>depends_on</code> is not decoration. Terraform sees the assignment
+reference the <em>identity</em>, not the grants, so without it the assignment is
+free to be created first — reintroducing exactly the race that user-assigned was
+chosen to remove.</p>
+
+<h3>Three stages, and the middle one is meant to fail</h3>
+
+<div class="code-label">Run in this order</div>
+<pre class="code-block">./scripts/deploy.sh audit       auditIfNotExists, no grants
+./scripts/deploy.sh no-grants   deployIfNotExists — identity attached, holding nothing
+./scripts/deploy.sh remediate   the same, with the three grants in place</pre>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-02-policy-as-code/docs/blog/screenshots/01-audit-stage-compliance.png"
+       alt="Azure Policy compliance blade showing the lab remediation initiative non-compliant with two non-compliant resources at Landing Zones - Dev"/>
+  <figcaption>Stage 1. Two storage accounts flagged, nothing altered — the
+  control the other two stages are measured against.</figcaption>
+</figure>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-02-policy-as-code/docs/blog/screenshots/02-policies-to-remediate.png"
+       alt="Azure Policy Remediation blade listing two policies with four and two resources to remediate at Landing Zones - Dev"/>
+  <figcaption>Both rules, with what each would touch: four resources for the tag,
+  two for diagnostics.</figcaption>
+</figure>
+
+<p>Four for the tag, not two. The Log Analytics workspace and the remediation
+identity are resources in that group too, and they are missing the tag exactly as
+the storage accounts are. <strong>A policy at management group scope does not
+exempt the lab's own machinery from itself.</strong></p>
+
+<p>Stage 2 fails every deployment. Stage 3 changes nothing but the three role
+assignments — same definitions, same initiative, same assignment, same identity —
+and the same rules that could not write a single tag now finish the job:</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-02-policy-as-code/docs/blog/screenshots/03-after-remediation-compliance.png"
+       alt="Azure Policy compliance blade showing the lab remediation initiative compliant at 100 percent, five of five resources, with zero non-compliant resources"/>
+  <figcaption>Stage 3, after a forced re-scan: <strong>Compliant, 100% (5 of 5),
+  zero non-compliant.</strong> The difference between this and total failure is
+  three role assignments.</figcaption>
+</figure>
+
+<h2 id="challenges">Challenges — What Actually Went Wrong</h2>
+
+<div class="challenge-card">
+  <h3>Only one of the two failures tells you anything</h3>
+  <p>Both effects failed for the same reason — an identity holding no roles — and
+  they reported it completely differently.</p>
+  <p><code>modify</code> names the missing permission and the principal:</p>
+  <pre class="code-block">The 'PATCH' request failed with status code: 'Forbidden'. Inner Error: 'The
+client '…' with object id '…' does not have authorization to perform action
+'Microsoft.Resources/tags/write' over scope '…/providers/Microsoft.Resources/
+tags/default' or the scope is invalid.</pre>
+  <p><code>deployIfNotExists</code> says only that something is missing:</p>
+  <pre class="code-block">Evaluation of DeployIfNotExists policy was unsuccessful. The policy assignment
+'…/assign-remediation-dev' resource identity does not have the necessary
+permissions to create deployment '…/PolicyDeployment_12003642577558566238'.</pre>
+  <p>Not which permission. Not at which scope. Not which of the two roles is
+  absent. It points at a deployment name, so it gets debugged as a deployment
+  problem — and the fault is a role assignment that was never made.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>An audit-only assignment still carries an identity</h3>
+  <p>Assigning the initiative with every effect set to
+  <code>AuditIfNotExists</code> and <code>Disabled</code> was refused outright:</p>
+  <pre class="code-block">ResourceIdentityRequired: … must include a 'managed identity' when assigning
+'DeployIfNotExists' policy definitions or policy definitions that contain a
+deployment in the effect details</pre>
+  <p>The <em>definition</em> decides whether an identity is required, not the
+  effect you assign it with. So "it is only auditing, there is no identity" is
+  false. What separates a safe audit stage from a dangerous one is not the
+  identity's presence — it is whether that identity holds any role assignments.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>One remediation at a time, per assignment, per rule, per scope</h3>
+  <p>A second request while one is running is refused:</p>
+  <pre class="code-block">InvalidCreateRemediationRequest: … are already running for policy assignment
+'…/assign-remediation-dev', definition reference ID 'storage-diagnostics' on a
+scope conflicting with requested scope.</pre>
+  <p>Worth knowing before you write a loop that fans out remediation across
+  rules, and worth knowing if two people are working the same subscription.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>The task reports failure before it reports what failed</h3>
+  <p>A remediation task's <code>provisioningState</code> reaches
+  <code>Failed</code> while <code>successfulDeployments</code> and
+  <code>failedDeployments</code> are both still <code>0</code>. Read at that
+  instant it says "failed without attempting anything", which is not what
+  happened — the counters fill in afterwards.</p>
+  <p>Any script that polls for a terminal state and immediately reads the
+  counters will publish a number that is wrong for a few seconds and wrong
+  forever in your notes.</p>
+</div>
+
+<h2 id="security">Security — Controls at Every Layer</h2>
+
+<p><strong>The definition decides how much power you hand over.</strong> Azure
+ships a built-in that does exactly what this week's tag rule does — <em>Inherit a
+tag from the resource group if missing</em> — and its <code>roleDefinitionIds</code>
+names <strong>Contributor</strong>. Assign that built-in and you have granted
+Contributor over every subscription beneath the scope, permanently, in order to
+write a tag.</p>
+
+<p>An assignment cannot grant less than its definition demands. So the only place
+that decision can be made is the definition, and this week ships its own copy —
+identical rule, one line different:</p>
+
+<div class="code-label">The only line that differs from the built-in</div>
+<pre class="code-block">"roleDefinitionIds": [
+  "/providers/Microsoft.Authorization/roleDefinitions/4a9ae827-6dc8-4573-8ac7-8239d42aa03f"
+]</pre>
+
+<p>Tag Contributor. Write tags, nothing else.</p>
+
+<p><strong>Two roles for diagnostics, not one.</strong> Monitoring Contributor
+writes the diagnostic setting on the storage account; Log Analytics Contributor
+writes to the workspace it points at. One grants the write on the source, the
+other on the destination, and dropping either produces a remediation that fails
+on the half you did not grant.</p>
+
+<p><strong>Granted at the assignment's own scope.</strong> All three roles sit at
+<code>mg-lz-dev</code> — the same management group the initiative is assigned at,
+so the identity reaches everything the policy governs and nothing beyond it.</p>
+
+<h2 id="cost">Cost</h2>
+
+<p><strong>Under $1 while running, $0 now.</strong> Policy definitions,
+assignments, compliance evaluation and remediation tasks are free at any scale.
+The test bed was a Log Analytics workspace and two Standard LRS storage accounts
+holding nothing, up for a few hours.</p>
+
+<p>The workspace is the only part that can bill: it ingests a few MB of storage
+metrics against a 5 GB per month free allocation, and retention was left at the
+30-day free floor. Retention beyond that floor is the part of Log Analytics that
+costs money, and it is easy to raise without noticing.</p>
+
+<h2 id="cleanup">Cleanup</h2>
+
+<p>Three kinds of thing were created and only one dies with the resource group.</p>
+
+<p>The workspace, the storage accounts, the identity and the diagnostic settings
+the policy itself deployed all live <em>in</em> the group. The definitions, the
+initiative and the assignment live on the management group tree. And the three
+role assignments live on the tree too — which is the part that bites.</p>
+
+<div class="callout amber">
+  <p><strong>Deleting the resource group deletes the identity, but not its
+  grants.</strong> What remains is three role assignments at <code>mg-lz-dev</code>
+  naming a principal ID that no longer resolves — which the portal renders as
+  "Identity not found". They grant nothing and they accumulate: every re-run of
+  the week leaves three more. Cleanup has to check by principal ID, because
+  checking by name finds nothing to check.</p>
+</div>
+
+<p>Verified after teardown: resource group gone, <strong>zero</strong> orphaned
+role assignments, no assignments left on the tree.</p>
+
+<p>One thing is deliberately <em>not</em> deleted. The remediation task records
+survive the assignment they ran against — six of them, three failed and three
+succeeded. They are history rather than infrastructure: no cost, no permissions,
+no effect. They are also the only surviving evidence of what this week actually
+did, and a teardown that quietly removes its own audit trail is worse than one
+that leaves it.</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li><a href="https://learn.microsoft.com/en-us/azure/governance/policy/concepts/effect-deploy-if-not-exists">Azure Policy deployIfNotExists effect</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/governance/policy/concepts/effect-modify">Azure Policy modify effect</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/governance/policy/how-to/remediate-resources">Remediate non-compliant resources</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/governance/policy/how-to/get-compliance-data">Get compliance data — evaluation triggers</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles">Azure built-in roles</a></li>
+</ul>
+
+<h2 id="takeaways">Key Takeaways</h2>
+
+<ul>
+  <li><strong>Read the definition's <code>roleDefinitionIds</code> before you
+  assign it.</strong> That field is the permission bill, written by whoever
+  authored the rule. A built-in that looks harmless can demand Contributor over
+  everything below the scope.</li>
+
+  <li><strong>An assignment cannot grant less than its definition demands.</strong>
+  If the bill is too high, the fix is a custom definition — not a narrower
+  assignment, which is not a thing that exists.</li>
+
+  <li><strong>A missing role does not announce itself.</strong>
+  <code>deployIfNotExists</code> reports a failed deployment and names the
+  deployment. Check the identity's role assignments first, before you debug
+  anything about the template.</li>
+
+  <li><strong>Audit-only does not mean identity-free.</strong> A definition
+  containing a deployment demands an identity whatever effect you assign. The
+  safety comes from withholding the grants, not from withholding the identity.</li>
+
+  <li><strong>Grants outlive the identity they were made for.</strong> Delete the
+  resource group and the role assignments remain, naming a principal that no
+  longer exists. Check by principal ID at teardown, or they accumulate silently.</li>
+
+  <li><strong>Policy at a management group governs your own tooling too.</strong>
+  Four resources needed the tag, not two — the workspace and the remediation
+  identity among them. Nothing is exempt for being infrastructure.</li>
+</ul>
+
+<p>Next week: the module factory — Azure Verified Modules, a private registry,
+and what it takes for a module to be worth depending on.</p>
+
+</div>

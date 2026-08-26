@@ -76,8 +76,16 @@ def check_file(path):
             continue
 
         where = f"{os.path.basename(path)} svg#{i}"
-        if "currentColor" in svg:
-            n = svg.count("currentColor")
+
+        # Judge the markup, not the prose about it. A diagram that explains why
+        # it avoids currentColor names the token in a CSS or XML comment, and
+        # flagging that is a false positive on a correct file -- which is how a
+        # guard stops being read.
+        markup = re.sub(r"/\*.*?\*/", "", svg, flags=re.S)
+        markup = re.sub(r"<!--.*?-->", "", markup, flags=re.S)
+
+        if "currentColor" in markup:
+            n = markup.count("currentColor")
             problems.append(
                 f"{where}: uses currentColor ({n}x). A lightboxed diagram has no "
                 f"promise about the colour around it — use explicit colours."
