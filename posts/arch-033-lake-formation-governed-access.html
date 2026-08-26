@@ -1,0 +1,453 @@
+---
+title: 'AWS Architecture Series #33 — Lake Formation and Governed Access'
+date: '2026-08-26T09:00:00'
+slug: aws-architecture-lake-formation-governed-access
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-08-26'
+verified_claims:
+  - claim: "If the table is not managed by Lake Formation, the second call from the analytic engine is made directly to Amazon S3"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/how-it-works.html
+  - claim: "If the user is authorized to access the table, Lake Formation provides temporary access to the integrated analytical engine, and using the temporary access the analytical engine fetches the data from Amazon S3 and performs necessary filtering such as column, row, or cell filtering. This process is called credential vending"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/how-it-works.html
+  - claim: "Lake Formation sets Super permission on all databases and tables in the Data Catalog to a group called IAMAllowedPrincipals by default, and when you use Lake Formation to manage permissions you need to first revoke the IAMAllowedPrincipals permission on the resources, or opt in the principals and the resources to hybrid access mode"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/lf-permissions-reference.html
+  - claim: "It is the responsibility of the integrated analytics service to apply the column filtering when processing a query"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/lf-permissions-reference.html
+  - claim: "The hybrid access mode enforces only CREATE_TABLE, CREATE_PARTITION, UPDATE_TABLE permissions by default, and opted in principals will require both Lake Formation permissions and IAM permissions to access the data, while non-opted-in principals will continue to access data using only IAM permissions"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/hybrid-access-mode.html
+  - claim: "Before registering the data location in hybrid access mode for cross-account sharing you need to update the Cross account version settings to version 4"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/hybrid-access-mode.html
+  - claim: "With the named resource method, the number of grants required is n(P) x n(R), and with the LF-TBAC method, using a single LF-Tag, the total of the number of grants to principals and assignments to resources is n(P) + n(R)"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/tag-based-access-control.html
+  - claim: "The named resource method costs 180,000 grants for the estate described in this post"
+    derive: "200 * 900"
+    expect: "180000"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/tag-based-access-control.html
+  - claim: "A single LF-Tag costs 1,100 operations for that same estate"
+    derive: "200 + 900"
+    expect: "1100"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/tag-based-access-control.html
+  - claim: "Tables inherit LF-Tags from databases and columns inherit LF-Tags from tables, and inherited values can be overridden"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/tag-based-access-control.html
+  - claim: "Lake Formation quotas per Region are 30 data lake administrators, 1,000 LF-Tags per account, 1,000 tag values per LF-Tag, 50 LF-Tag policies per principal per resource type, 10,000 registered paths, a registered path length of 700, and 20 subfolders in an Amazon S3 path"
+    source: https://docs.aws.amazon.com/general/latest/gr/lake-formation.html
+  - claim: "Creating permissions listed above or using permissions by integrated services are provided at no charge"
+    source: https://aws.amazon.com/lake-formation/pricing/
+  - claim: "Filters apply only to read operations, therefore you can grant only the SELECT Lake Formation permission with filters"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/data-filtering.html
+  - claim: "There is no limit to the number of data filters that can be defined on a table, but there is a limit of 100 data filter for a single principal on a table"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/data-filtering-notes.html
+  - claim: "You can include or exclude five-levels of nested fields in a data filter, and cell-level security is not supported on nested columns, views, and resource links"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/data-filtering-notes.html
+  - claim: "The array, and map data types aren't supported in row filter expressions, and the struct data type is supported"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/data-filtering-notes.html
+  - claim: "You can't apply column filtering on partition keys, and a principal with the SELECT permission on a subset of columns in a table can't be granted the ALTER, DROP, DELETE, or INSERT permission on that table"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/data-filtering-notes.html
+  - claim: "AWS Glue 5.0 or higher supports fine-grained access control via Lake Formation only for Apache Hive and Apache Iceberg tables"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/data-filtering-notes.html
+  - claim: "When permissions on a subset of rows are granted to an external AWS account and the data lake administrator of the external account grants those permissions to a principal in that account, the principal's effective filter predicate is the intersection of the account's predicate and any predicate that was directly granted to the principal"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/data-filtering-notes.html
+  - claim: "If the grantee account is in the same organization as the grantor account, the shared resource is available immediately to the grantee, and if the grantee account is not in the same organization, AWS RAM sends an invitation to the grantee account to accept or reject the resource grant"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/cross-account-permissions.html
+  - claim: "To grant cross-account permissions to Organizations and organizational units using the LF-TBAC method you need to update the Cross account version settings to Version 3 or above"
+    source: https://docs.aws.amazon.com/lake-formation/latest/dg/cross-account-permissions.html
+problem: "A data platform grows to hundreds of tables and a dozen consuming teams, and access is still decided by S3 bucket policies and per-team IAM roles. A new requirement arrives that those tools cannot express — hide two columns from most analysts, and show EU rows only to EU staff — so the team installs Lake Formation, writes the grants, and finds that nothing changes. Everyone can still read everything, because the Data Catalog carries a blanket Super grant to IAMAllowedPrincipals and the engines are still reading S3 directly."
+builds: "A governed lake with three moving parts held apart: a Data Catalog whose permissions are expressed as LF-Tags rather than as one grant per principal per table, S3 locations registered in hybrid access mode so enforcement arrives per principal instead of all at once, and bucket policies narrowed until the registered role is the only thing that can read the objects. The tag model is what makes it maintainable; the hybrid mode is what makes the migration survivable; removing direct S3 access is what makes any of it enforcement rather than decoration."
+catch: "Lake Formation is not in the S3 data path. It vends temporary credentials to engines that agree to ask for them, and the filtering is applied by the engine on the way out. A principal holding s3:GetObject on the bucket reads every column of every row regardless of what you granted, and nothing logs a denial, because nothing was ever asked."
+---
+
+<div class="container">
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A retail analytics platform has been running for four years. Roughly 900 tables sit across 40
+      Glue databases, all of it Parquet on S3, queried by Athena from the BI tool, by EMR from the
+      data science team, and by Redshift Spectrum from a warehouse that a finance team owns. Access
+      is decided the way it was decided on day one: one IAM role per consuming team, and a bucket
+      policy that lists those roles.
+    </p>
+    <p>
+      That worked until the requirements stopped being expressible in it. Legal wants two columns on
+      the customer table &mdash; date of birth and national ID &mdash; visible only to a named group
+      of six people. The EU entity wants its analysts to see EU rows and nothing else, from the same
+      tables everyone else queries. A partner account needs three tables, and only three, without
+      being handed a role in the platform account.
+    </p>
+    <p>
+      None of that is a prefix. Columns and rows are not directories, and no arrangement of S3 paths
+      makes them one without physically forking the data into copies that then have to be kept in
+      step. The team does the correct thing: they install Lake Formation, register the bucket, write
+      the grants.
+    </p>
+    <p>
+      Nothing changes. Every analyst can still read every column. No error appears anywhere.
+    </p>
+    <p>
+      There are two reasons, and both of them are the default state of the system rather than a
+      mistake anyone made. The first is that <strong>Lake Formation sets <code>Super</code> on all
+      databases and tables in the Data Catalog to a group called <code>IAMAllowedPrincipals</code> by
+      default</strong>, which means access is still decided entirely by the IAM policies that were
+      already there. The second is deeper and does not go away when you revoke that grant: Lake
+      Formation is not a gate in front of S3. It is an authorisation plane that an engine consults
+      voluntarily, and the EMR job reading <code>s3://lake/customer/</code> with an instance profile
+      is not consulting anything.
+    </p>
+
+    <div class="callout amber">
+      <strong>The failure that produces no signal</strong>
+      <p>A denied Lake Formation request appears in CloudTrail. A request that was never made does not. When a principal reads the objects directly with <code>s3:GetObject</code>, there is no metadata call, no permission evaluation, and no filtering &mdash; so the grant you wrote is not violated, it is simply never consulted. Every audit built on "show me the denials" reports a clean lake.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The whole design follows from one mechanism, so it is worth stating precisely before anything
+      else. AWS calls it <strong>credential vending</strong>.
+    </p>
+
+    <img src="/blog/assets/diagrams/arch-033-lake-formation-governed-access.svg" alt="Diagram: how Lake Formation enforces access, showing the four-step credential vending path from principal to integrated engine to Data Catalog to Lake Formation to S3, the direct S3 path that consults none of it, the three states a Data Catalog resource can be in as an AWS Glue resource, a Lake Formation resource or a hybrid resource, and the arithmetic that makes tag-based access control scale where named-resource grants do not">
+
+    <h3>Four steps, and the one that decides everything</h3>
+    <p>
+      A principal submits a query to an integrated engine &mdash; Athena, EMR, Glue or Redshift
+      Spectrum. The engine asks the Data Catalog for the table. The Data Catalog checks that
+      principal's Lake Formation permissions and returns only the metadata they are allowed to see.
+      Then the catalog tells the engine whether the underlying location is registered with Lake
+      Formation, and if it is, the engine requests temporary credentials. AWS's description of the
+      last step is the load-bearing sentence:
+    </p>
+    <blockquote>
+      <p>
+        "If the user is authorized to access the table, Lake Formation provides temporary access to
+        the integrated analytical engine. Using the temporary access, the analytical engine fetches
+        the data from Amazon S3, and performs necessary filtering such as column, row, or cell
+        filtering."
+      </p>
+    </blockquote>
+    <p>
+      Read that again with an architect's eye. <strong>The engine does the filtering.</strong> Lake
+      Formation never sees a row. It hands out short-lived credentials and trusts the engine to
+      restrict what it returns &mdash; which AWS states outright elsewhere: "It is the responsibility
+      of the integrated analytics service to apply the column filtering when processing a query."
+    </p>
+    <p>
+      And the fall-through case is documented just as plainly: <strong>"If the table is not managed
+      by Lake Formation, the second call from the analytic engine is made directly to Amazon
+      S3."</strong> The bucket policy and the IAM policy decide, and Lake Formation is not in the
+      conversation at all.
+    </p>
+
+    <h3>Two permission planes, and they are not the same plane</h3>
+    <p>
+      Lake Formation implements permissions on two levels, and conflating them is the most common
+      source of "I granted <code>SELECT</code> and it still says access denied":
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h4>Metadata permissions</h4>
+        <p>Grants on Data Catalog objects &mdash; catalogs, databases, tables, views. <code>SELECT</code>, <code>INSERT</code>, <code>DELETE</code>, <code>ALTER</code>, <code>DROP</code>, <code>DESCRIBE</code>, <code>CREATE_TABLE</code>, <code>CREATE_DATABASE</code>, <code>Super</code>. These control what a principal can see and do in the catalog, and they are what most people mean when they say "Lake Formation permissions".</p>
+      </div>
+      <div class="card">
+        <h4>Storage access</h4>
+        <p>Managed on your behalf for S3 locations you registered, via a role that Lake Formation assumes. This is the plane that produces the temporary credentials. If the location was never registered, this plane does not exist for that data and the metadata grants govern the catalog entry while the objects stay wide open.</p>
+      </div>
+    <p>
+      There is a third grant that belongs to neither and confuses everyone the first time:
+      <code>DATA_LOCATION_ACCESS</code>. It is the only data location permission, and it does not
+      govern reading. AWS is explicit: it "is not needed to query or update underlying data. This
+      permission applies only to creating Data Catalog resources." It answers "may this principal
+      create a table pointing at this prefix", not "may this principal read it".
+    </p>
+
+    <h3>Three states, not two</h3>
+    <p>
+      The migration becomes tractable once you stop thinking of Lake Formation as a switch. A Data
+      Catalog resource is in one of three states, and the third one is the whole reason the migration
+      is survivable:
+    </p>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>State</th><th>What decides access</th><th>What it costs you to be here</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>AWS Glue resource</strong></td>
+            <td>IAM policies and the bucket policy alone. <code>IAMAllowedPrincipals</code> holds <code>Super</code>, so Lake Formation permissions are not enforced.</td>
+            <td>Nothing works differently, and nothing is governed. This is where every catalog starts and where a freshly installed Lake Formation still is.</td>
+          </tr>
+          <tr>
+            <td><strong>Lake Formation resource</strong></td>
+            <td>Lake Formation permissions, enforced. The location is registered and <code>IAMAllowedPrincipals</code> has been revoked.</td>
+            <td>Enforcement begins the instant you revoke, for everybody at once. Every job that was relying on IAM alone breaks in the same minute.</td>
+          </tr>
+          <tr>
+            <td><strong>Hybrid resource</strong></td>
+            <td>Both, per principal. Opted-in principals need Lake Formation permissions <em>and</em> IAM permissions; everyone else continues on IAM alone.</td>
+            <td>A per-principal ramp instead of a cliff. Hybrid access mode enforces only <code>CREATE_TABLE</code>, <code>CREATE_PARTITION</code> and <code>UPDATE_TABLE</code> by default.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Note what hybrid mode does <em>not</em> do: it does not weaken enforcement for the principals
+      you opted in. They need both sets of permissions, which is strictly more restrictive, not less.
+      What it buys is the ability to move one team at a time.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Model Works</h2>
+
+    <h3>Tag algebra is the only part that scales</h3>
+    <p>
+      Named-resource grants &mdash; "principal P gets <code>SELECT</code> on table T" &mdash; are
+      correct and unmaintainable. AWS gives the arithmetic directly: with the named resource method
+      the number of grants required is <code>n(P) x n(R)</code>; with tag-based access control using
+      a single LF-Tag, the total of grants to principals and assignments to resources is
+      <code>n(P) + n(R)</code>.
+    </p>
+    <p>
+      At the scale in the challenge above &mdash; 200 principals across 900 tables &mdash; that is
+      <strong>180,000 grants against 1,100 operations</strong>. And 1,100 overstates it, because
+      tables inherit LF-Tags from databases and columns inherit from tables, with inherited values
+      overridable. Tagging 40 databases covers 900 tables; the exceptions are where you spend the
+      assignments.
+    </p>
+    <p>
+      The number that matters is not the initial write. It is the revoke. Reversing a person's access
+      under the named-resource model means finding every grant they hold across 900 tables; under
+      LF-TBAC it means removing one tag expression from one principal.
+    </p>
+
+    <h3>The filter lives with the data, not with the engine</h3>
+    <p>
+      The alternative implementations of column and row security are all engine-local: a Redshift RLS
+      policy, an Athena view, a Spark job that projects a subset. Each of them is a correct answer to
+      the requirement and each of them is scoped to one engine, so a lake read by three engines
+      carries three copies of the policy, drifting independently. A Lake Formation data filter is
+      attached to the table in the catalog, and every integrated engine reads the same one.
+    </p>
+    <p>
+      Filters apply only to read operations, so <code>SELECT</code> is the only permission you can
+      grant with one. That constraint is doing something useful: it means the filter cannot be
+      confused with a write control, and a principal who can write can never be one who sees a
+      partial table.
+    </p>
+
+    <h3>Cell-level security is an intersection, and intersections compose</h3>
+    <p>
+      A data filter carries a column specification and a row filter expression. All columns plus a
+      row expression is row-level security; specific columns plus the all-rows wildcard is
+      column-level security; both together is cell-level. One primitive, three behaviours, which is
+      why the model stays small enough to reason about.
+    </p>
+    <p>
+      It composes across accounts too, and in the safe direction. When a row-restricted grant is made
+      to an external account and that account's data lake administrator re-grants it internally, the
+      principal's effective predicate is the <em>intersection</em> of the two. Grant
+      <code>dept='hr'</code> to the account, and a principal separately granted
+      <code>country='us'</code> sees only rows where both hold. A re-grant downstream can narrow
+      access and cannot widen it.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Design Decisions</h2>
+
+    <h3>1. Register in hybrid access mode, and never flip a live location to enforced</h3>
+    <p>
+      Registering a location with enforcement on is a single action that changes the access rules for
+      everything under that prefix, for everyone, immediately. On a four-year-old lake nobody knows
+      the full list of principals reading it, which means the blast radius is unknown by definition.
+    </p>
+    <p>
+      Hybrid access mode turns that into a per-principal migration: opt in one team, grant them Lake
+      Formation permissions, confirm their jobs still run, move to the next. AWS does add one caution
+      worth honouring &mdash; it does not recommend converting a location that is <em>already</em>
+      registered with enforcement back to hybrid, though it is possible. Go hybrid first, on the way
+      in. It is a ramp, not a rescue.
+    </p>
+    <p>
+      Two ordering details that will bite otherwise. Before switching an already-registered location
+      to hybrid, opt in the principals currently using Lake Formation permissions and grant
+      <code>Super</code> to <code>IAMAllowedPrincipals</code> on the tables, or existing access
+      breaks in the switch. And for cross-account sharing from a hybrid location, update the cross
+      account version settings to <strong>version 4</strong> first &mdash; that version carries the
+      RAM policies needed when <code>IAMAllowedPrincipals</code> holds <code>Super</code>.
+    </p>
+
+    <h3>2. Take away direct S3 access, or you have built a reporting tool</h3>
+    <p>
+      This is the decision the whole post exists for. Registering a location does not remove anyone's
+      ability to read the bucket; it adds a way for engines to read it without their own permissions.
+      Until the bucket policy and the IAM policies stop granting <code>s3:GetObject</code> on the
+      lake prefixes to consuming roles, the Lake Formation grants are advisory.
+    </p>
+    <p>
+      The end state is that the role registered with Lake Formation is the only identity with read
+      access to the data prefixes, and every consuming principal reaches the data exclusively through
+      an integrated engine. Anything that cannot go through an integrated engine &mdash; a bespoke
+      reader, a partner's own tooling, a Lambda parsing Parquet directly &mdash; needs an explicit,
+      named, reviewed exception, because it is one.
+    </p>
+    <div class="callout amber">
+      <strong>Check this before you believe any of the rest</strong>
+      <p>Take a consuming role, remove its Lake Formation grants entirely, and run <code>aws s3 cp</code> against a data file as that role. If the bytes come back, the governance model is decoration and every column filter in the catalog is a suggestion.</p>
+    </div>
+
+    <h3>3. Design the tag vocabulary before granting anything</h3>
+    <p>
+      LF-Tags are a key with a set of allowed values &mdash; <code>classification=public,internal,restricted</code>,
+      <code>domain=finance,retail,supply</code>. The vocabulary is a data model, and like any data
+      model it is far cheaper to get right on paper than to re-derive across 900 tagged objects.
+    </p>
+    <p>
+      The quotas are generous enough that they will not shape the design, which is itself worth
+      knowing so nobody optimises against them: per Region you get 1,000 LF-Tags per account, 1,000
+      values per LF-Tag, 50 LF-Tag policies per principal per resource type, 10,000 registered paths,
+      a registered path length of 700, and 20 subfolders in an S3 path. All are adjustable.
+    </p>
+    <p>
+      One that is <em>not</em> generous, and does shape the design: <strong>30 data lake
+      administrators per Region</strong>. Data lake administrator is a powerful role &mdash; among
+      other things, only a data lake administrator can opt principals into hybrid access mode &mdash;
+      and the low ceiling is a hint about how many you are meant to have. Grant it to a small number
+      of automation roles and named people, not to a team.
+    </p>
+
+    <h3>4. Know the filtering constraints that quietly invalidate a design</h3>
+    <p>
+      These are the ones that turn up after the model is drawn, and each of them has redrawn one:
+    </p>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table>
+        <thead>
+          <tr><th>Constraint</th><th>What it forecloses</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>You cannot apply column filtering to partition keys.</td>
+            <td>Any design that hides a partitioning dimension &mdash; hiding <code>region</code> while partitioning by it. Choose partition keys knowing they are permanently visible.</td>
+          </tr>
+          <tr>
+            <td>A principal with <code>SELECT</code> on a subset of columns cannot also hold <code>ALTER</code>, <code>DROP</code>, <code>DELETE</code> or <code>INSERT</code> on that table.</td>
+            <td>The "writer who also queries a redacted view of their own table" role. Split it into two roles, which is the better design anyway.</td>
+          </tr>
+          <tr>
+            <td>Granting <code>SELECT</code> with the grant option and column filtering requires an include list, not an exclude list.</td>
+            <td>Delegated administration expressed as "everything except these two columns". Delegation has to enumerate what is allowed.</td>
+          </tr>
+          <tr>
+            <td>Cell-level security is not supported on nested columns, views, or resource links.</td>
+            <td>Row-plus-column policies on a struct-heavy schema, and on the resource links that cross-account consumers query through. Row and column filtering separately are supported on nested columns; the combination is not.</td>
+          </tr>
+          <tr>
+            <td><code>array</code> and <code>map</code> are not supported in row filter expressions; <code>struct</code> is.</td>
+            <td>Predicates over a tags map or an events array. The discriminator has to be a scalar or a struct field.</td>
+          </tr>
+          <tr>
+            <td>100 data filters for a single principal on a table.</td>
+            <td>Per-tenant filters granted to one shared role. There is no limit on filters defined per table &mdash; the ceiling is per principal, which is exactly the shape a naive multi-tenant design hits.</td>
+          </tr>
+          <tr>
+            <td>Nested fields can be included or excluded to five levels.</td>
+            <td>Deeply nested event schemas. Below five levels, the filter cannot address the field.</td>
+          </tr>
+          <tr>
+            <td>Glue 5.0 or higher supports fine-grained access control via Lake Formation only for Hive and Iceberg tables.</td>
+            <td>Assuming Spark jobs inherit filtering on any format. Table format is now an access-control decision, which is the second time in three posts it has been one.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>5. Share across accounts with tags, and expect the invitation step</h3>
+    <p>
+      Cross-account grants are implemented through AWS RAM, and the behaviour differs by relationship
+      in a way that shows up as "the share silently did nothing": if the grantee account is in the
+      same organization, the resource is available immediately; if it is not, RAM sends an invitation
+      that the grantee account's data lake administrator must accept before anything appears.
+      Partner shares fail here, not in the grant.
+    </p>
+    <p>
+      Two more things to set before the first cross-account share rather than after. Granting to
+      organizations or OUs with LF-TBAC requires cross account version settings at version 3 or above.
+      And Athena and Redshift Spectrum require <em>resource links</em> in the consumer account to
+      include shared resources in queries &mdash; the consumer sees the share and still cannot query
+      it until the link exists.
+    </p>
+
+    <h3>Tradeoffs and alternatives</h3>
+    <div class="grid-2">
+      <div class="card">
+        <h4>Prefix-per-tenant with bucket policies</h4>
+        <p>Still the right answer when the boundary genuinely is a prefix and there is one engine. It costs nothing, adds no dependency, and is understood by everyone. It cannot express a column or a row, and it multiplies by the number of engines &mdash; each one needs its own policy saying the same thing.</p>
+      </div>
+      <div class="card">
+        <h4>Engine-native row and column security</h4>
+        <p>Redshift RLS and Athena views are mature and often faster to ship for a single consumer. Choose them when the data is read by one engine and will stay that way. The moment a second engine arrives, the policy exists twice and the second copy is the one that will be wrong.</p>
+      </div>
+      <div class="card">
+        <h4>Physical separation into curated copies</h4>
+        <p>Redacted copies per audience are unambiguous and need no runtime authorisation at all. They cost storage, a pipeline per copy, and a permanent question about whether the copies agree. Reasonable for a small number of stable audiences; unworkable as a general model.</p>
+      </div>
+      <div class="card">
+        <h4>What Lake Formation costs</h4>
+        <p>Creating permissions, and their use by integrated services, is at no charge. The costs are indirect: a dependency on the Lake Formation endpoint in the query path, a role with broad read access on the lake, and the operational surface of a second authorisation model that must be reasoned about alongside IAM rather than instead of it.</p>
+      </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The thing worth carrying out of this is that Lake Formation governs a <em>path</em>, not a
+      dataset. It is a permission model that engines opt into by asking for credentials, and its
+      filtering is applied by those engines on the way out. That is a perfectly sound design &mdash;
+      it is how the same policy reaches Athena, EMR, Glue and Redshift Spectrum without being written
+      four times &mdash; but it means the control is only as strong as the absence of every other
+      path to the same bytes.
+    </p>
+    <p>
+      Which inverts the usual order of work. The catalog grants are the visible part, and they are
+      the part that produces a satisfying screen full of green. The part that decides whether any of
+      it is true is the S3 policy you removed afterwards, and nothing in the Lake Formation console
+      will tell you whether you removed it. A governed lake is not the one with the most grants. It
+      is the one where the registered role is the only identity that can open the file.
+    </p>
+    <p>
+      The rest is arithmetic and sequencing. Tag expressions instead of named grants, because
+      <code>n(P) + n(R)</code> is a permission model a team can still revoke from in year three and
+      <code>n(P) x n(R)</code> is not. Hybrid access mode instead of a flip, because the list of
+      principals reading a mature lake is not knowable in advance and a per-principal ramp does not
+      require it to be.
+    </p>
+    <div class="callout">
+      <p>
+        <strong>Next in this series</strong>
+      </p>
+      <p>
+        <strong>#34 &mdash; Streaming versus batch: the latency and cost curve.</strong> Six posts
+        have been about the shape of the data at rest and who may read it. The next one asks what it
+        costs to stop waiting &mdash; and where on the latency curve the price stops being linear.
+      </p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/lake-formation/latest/dg/how-it-works.html">AWS Lake Formation: How it works</a></li>
+      <li><a href="https://docs.aws.amazon.com/lake-formation/latest/dg/lf-permissions-reference.html">Lake Formation permissions reference</a></li>
+      <li><a href="https://docs.aws.amazon.com/lake-formation/latest/dg/hybrid-access-mode.html">Hybrid access mode, AWS Lake Formation</a></li>
+      <li><a href="https://docs.aws.amazon.com/lake-formation/latest/dg/notes-hybrid.html">Hybrid access mode considerations and limitations</a></li>
+      <li><a href="https://docs.aws.amazon.com/lake-formation/latest/dg/tag-based-access-control.html">Lake Formation tag-based access control</a></li>
+      <li><a href="https://docs.aws.amazon.com/lake-formation/latest/dg/data-filtering.html">Data filtering and cell-level security in Lake Formation</a></li>
+      <li><a href="https://docs.aws.amazon.com/lake-formation/latest/dg/data-filtering-notes.html">Data filtering limitations, AWS Lake Formation</a></li>
+      <li><a href="https://docs.aws.amazon.com/lake-formation/latest/dg/cross-account-permissions.html">Cross-account data sharing in Lake Formation</a></li>
+      <li><a href="https://docs.aws.amazon.com/general/latest/gr/lake-formation.html">AWS Lake Formation endpoints and quotas</a></li>
+      <li><a href="https://aws.amazon.com/lake-formation/pricing/">AWS Lake Formation pricing</a></li>
+    </ul>
+  </div>
+</div>
