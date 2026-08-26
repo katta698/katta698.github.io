@@ -92,6 +92,41 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 25 August 2026 — covered by post #18
+
+Fourteen announcements plus 11 blog posts and one security bulletin. Tuesday's
+news, and the only item that changes an architecture rather than a
+configuration: Lambda functions accepting full IAM resource-based policies. The
+announcement sells it as flexibility and omits the part that matters
+operationally — `PutResourcePolicy` replaces the entire existing policy,
+including every statement S3, EventBridge, SNS and API Gateway appended through
+`AddPermission` when their triggers were configured.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Full IAM resource-based policies on functions — Deny, multiple principals, all condition keys | Lambda | **#18** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-lambda-full-iam-resource-based-policies/) |
+| Capacity Reservation Resource Groups accept Capacity Blocks and interruptible reservations | EC2 | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/capacity-reservation-resource-groups-ec2) |
+| MicroVMs support PrivateLink | Lambda | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/lambda-microvms-supports-privatelink) |
+| CVE-2026-78379 — consent bypass in Strands Agents Tools `python_repl` | Security bulletin | open | Med-High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-089-aws/) |
+| Managed runtimes in public preview for Node.js 26 and Python 3.15 | Lambda | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-lambda-node-js-python-public-preview/) |
+| Batch runs on ECS Managed Instances | Batch | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-batch-on-ecs-managed-instances/) |
+| Java plugin for the AWS SDK | IAM Roles Anywhere | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/iam-roles-anywhere-java/) |
+| Managed external secrets for Cisco Security Platform and Netskope | Secrets Manager | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/secrets-manager-cisco-netskope/) |
+| Native InfluxDB routing for time-series data | IoT Core | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-iot-core-influxdb/) |
+| Cross-cloud analytics with S3 Tables and BigQuery, parts 1 and 2 — part 2 is Lake Formation-based | Big Data blog | open | Medium | [link](https://aws.amazon.com/blogs/big-data/enable-cross-cloud-analytics-with-amazon-s3-tables-and-google-bigquery-part-2-access-control-with-lake-formation/) |
+| Enhanced DDoS Protection | GameLift Servers | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-gamelift-servers-enhanced-ddos-protection) |
+| Customer profile updates on open cases | Connect | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-connect-cases-flexible-profiles/) |
+| PostgreSQL 18.6/17.11/16.15/15.19/14.24; latest SQL Server CU; Oracle July 2026 RU | RDS | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-rds-postgresql-18-6-17-11-16-15-15-19-14-24/) |
+| M8i and M8i-flex in Canada West (Calgary) | EC2 | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/ec2-m8i-m8i-flex-canada-west/) |
+
+**Worth revisiting:** the Capacity Reservation Resource Groups change is the
+strongest held item from this day. Mixing Capacity Blocks for ML, interruptible
+ODCRs and standard ODCRs in one group with a prioritisation order and automatic
+fallback to On-Demand is a real capacity-planning pattern, and the announcement
+does not explain what happens at the boundaries between reservation types.
+
+---
+
 ## 24 August 2026 — covered by post #17
 
 Nine announcements plus 12 blog posts. Monday's news, and a genuinely
