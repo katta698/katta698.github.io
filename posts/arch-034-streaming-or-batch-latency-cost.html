@@ -1,0 +1,435 @@
+---
+title: 'AWS Architecture Series #34 — Streaming or Batch: Latency Is Priced Per Hour, Not Per Gigabyte'
+date: '2026-08-27T09:00:00'
+slug: aws-architecture-streaming-or-batch-latency-cost
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-08-27'
+verified_claims:
+  - claim: "One shard costs $0.015 per hour"
+    source: https://aws.amazon.com/kinesis/data-streams/pricing/
+  - claim: "A single provisioned shard costs $10.80 over a thirty-day month"
+    derive: "0.015 * 24 * 30"
+    expect: "10.8"
+    source: https://aws.amazon.com/kinesis/data-streams/pricing/
+  - claim: "Per-stream charges = 30 * 24 * 0.040 (rate) = $28.80"
+    derive: "30 * 24 * 0.040"
+    expect: "28.8"
+    source: https://aws.amazon.com/kinesis/data-streams/pricing/
+  - claim: "Extended data retention costs an extra $0.020 per shard hour"
+    source: https://aws.amazon.com/kinesis/data-streams/pricing/
+  - claim: "Enhanced fan-out costs an extra $0.015 per shard"
+    source: https://aws.amazon.com/kinesis/data-streams/pricing/
+  - claim: "Enhanced fan-out data retrievals carry a charge of $0.013 per GB"
+    source: https://aws.amazon.com/kinesis/data-streams/pricing/
+  - claim: "Enhanced fan-out costs an extra $0.015 per shard, charged per consumer, so five consumers on one shard over a thirty-day month"
+    derive: "5 * 0.015 * 24 * 30"
+    expect: "54"
+    source: https://aws.amazon.com/kinesis/data-streams/pricing/
+  - claim: "Message propagation delay is an average of around 200 ms if you have one consumer reading from the stream, and this average goes up to around 1000 ms if you have five consumers"
+    source: https://docs.aws.amazon.com/streams/latest/dev/enhanced-consumers.html
+  - claim: "Enhanced fan-out is typically an average of 70 ms whether you have one consumer or five consumers"
+    source: https://docs.aws.amazon.com/streams/latest/dev/enhanced-consumers.html
+  - claim: "An enhanced fan-out pipe provides up to 2 MB/sec of data per shard, independently of any other pipes or of the total number of consumers"
+    source: https://docs.aws.amazon.com/streams/latest/dev/enhanced-consumers.html
+  - claim: "With On-demand Standard and Provisioned streams, you can register up to 20 consumers per stream to use enhanced fan-out, and with On-demand Advantage mode up to 50"
+    source: https://docs.aws.amazon.com/streams/latest/dev/enhanced-consumers.html
+  - claim: "Each shard can support up to 1 MB/sec or 1,000 records/sec write throughput or up to 2 MB/sec or 2,000 records/sec read throughput"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "Each shard can support up to five read transactions per second, and each read transaction can provide up to 10,000 records with an upper quota of 10 MB per transaction"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "For Amazon S3 the buffering size range is 1-128 MB with a default of 5, and the buffering interval range is 0-900 seconds with a default of 300"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/create-configure-backup.html
+  - claim: "Firehose uses multi-part upload for S3 destination when you configure a buffer time interval less than 60 seconds to offer lower latencies, and due to multi-part upload for S3 destination you will see some increase in S3 PUT API costs"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/create-configure-backup.html
+  - claim: "When you configure buffering interval as zero seconds, Firehose will not buffer data and will deliver data within a few seconds"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/create-configure-backup.html
+  - claim: "Amazon Data Firehose uses at-least-once semantics for data delivery, and delivery retries by Amazon Data Firehose might introduce duplicates if the original data-delivery request eventually goes through"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/basic-deliver.html
+  - claim: "A single Data Processing Unit (DPU) provides 4 vCPU and 16 GB of memory"
+    source: https://aws.amazon.com/glue/pricing/
+  - claim: "You are billed in increments of 1 second, rounded up to the nearest second, with a 1-minute minimum duration per run"
+    source: https://aws.amazon.com/glue/pricing/
+  - claim: "AWS will bill you 6 DPU * 0.25 hour * $0.44, or $0.66"
+    derive: "6 * 0.25 * 0.44"
+    expect: "0.66"
+    source: https://aws.amazon.com/glue/pricing/
+  - claim: "A job consuming one DPU-hour per run at $0.44 per DPU-hour, scheduled hourly across a thirty-day month"
+    derive: "0.44 * 24 * 30"
+    expect: "316.8"
+    source: https://aws.amazon.com/glue/pricing/
+  - claim: "The transport floor of a single shard is worth about 24.5 runs of a job billed at $0.44"
+    derive: "(0.015 * 24 * 30) / 0.44"
+    expect: "24.5"
+    source: https://aws.amazon.com/glue/pricing/
+  - claim: "By default, new data streams created with the on-demand capacity mode have 4 MB/s of write and 8 MB/s of read throughput, and in US East (N. Virginia) they scale up to 10 GB/s of write and 20 GB/s read throughput"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+problem: "A team asked to make a nightly report real time prices the change by data volume, because that is how batch bills. Streaming does not bill that way, and the estimate is wrong in both directions."
+builds: "A cost model for freshness across three regimes - Glue batch, Firehose micro-batch, and Kinesis Data Streams - showing which term dominates in each and where the two curves actually cross."
+catch: "Streaming cost is a function of time and consumer count, not of volume. A stream carrying nothing bills the same as one carrying a gigabyte a second, and the fifth consumer that takes propagation delay from 200 ms to 1000 ms costs nothing until you buy it back - at which point the fan-out costs five times the stream it is reading."
+---
+
+<div class="container">
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      An order platform runs a nightly Glue job. It reads the previous day&#8217;s events from S3,
+      joins them against a dimension table, writes Parquet, and a BI tool picks it up at 06:00. Ten
+      DPUs, about six minutes a run, thirty runs a month. Nobody has ever looked at the line item.
+    </p>
+    <p>
+      Then the operations team asks for the same numbers &#8220;in real time&#8221;, because a
+      fulfilment decision that currently waits until tomorrow costs money today. The request is
+      reasonable and the answer sounds simple: replace the nightly job with a stream.
+    </p>
+    <p>
+      The estimate that follows is where this goes wrong. The team prices the change the way it
+      prices everything else &#8212; per gigabyte. We move roughly 400 GB a day, streaming is a
+      bit more expensive per gigabyte than batch, so call it double. That model is not slightly
+      off. It is the wrong model, and it is wrong in both directions at once: it overestimates what
+      the stream costs to carry the data, and it completely misses the two terms that actually
+      decide the bill.
+    </p>
+    <div class="callout amber">
+      <p>
+        <strong>The question is not &#8220;streaming or batch&#8221;.</strong> It is
+        <em>how fresh, and read by how many</em>. Those are two different axes, they are priced by
+        two different mechanisms, and only one of them has anything to do with how much data there
+        is.
+      </p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Freshness on AWS is not a dial you turn smoothly from twenty-four hours down to one second.
+      It is three regimes with different billing mechanics, and moving between them changes which
+      term dominates.
+    </p>
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-034-latency-cost-curve.svg" alt="Diagram: two monthly cost curves plotted against freshness on a logarithmic cost axis. The batch curve starts low at daily runs and rises steeply through hourly and every five minutes, running off the top of the chart at once a minute. The streaming line stays flat at the ten dollar eighty shard floor across the whole range and steps up only at the right, where five enhanced fan-out consumers are added. The two curves cross just left of a daily schedule.">
+      <figcaption>
+        Batch cost rises with freshness. Streaming cost is flat in freshness and rises with fan-out.
+        The curves cross at roughly one run a day &#8212; far earlier than the intuition that
+        streaming is the expensive option would suggest.
+      </figcaption>
+    </figure>
+    <h3>Regime one: batch, measured in hours</h3>
+    <p>
+      AWS Glue bills DPU-hours. A single Data Processing Unit (DPU) provides 4 vCPU and 16 GB of
+      memory, and you are billed in increments of 1 second, rounded up to the nearest second, with
+      a 1-minute minimum duration per run. AWS&#8217;s own worked example on the pricing page:
+      <code class="inline">AWS will bill you 6 DPU * 0.25 hour * $0.44, or $0.66</code>.
+    </p>
+    <p>
+      The property that matters here is the one nobody writes down: between runs, this costs nothing
+      at all. Cost is <em>runs &times; DPU-hours</em>, and the idle term is zero.
+    </p>
+    <h3>Regime two: micro-batch, measured in minutes</h3>
+    <p>
+      Amazon Data Firehose buffers and delivers. For Amazon S3 the buffering size range is
+      1&#8211;128 MB with a default of 5, and the buffering interval range is 0&#8211;900 seconds
+      with a default of 300. There is no shard to provision and no hourly charge for having the
+      stream exist &#8212; you pay per GB ingested, and a Firehose stream carrying nothing costs
+      nothing.
+    </p>
+    <p>
+      This regime is where most &#8220;real time&#8221; requests actually land, and it is by some
+      distance the cheapest way to buy a large improvement in freshness. Going from a nightly job
+      to a five-minute buffer is a change of two orders of magnitude in staleness, and the billing
+      mechanism does not change shape at all.
+    </p>
+    <h3>Regime three: real time, measured in milliseconds</h3>
+    <p>
+      Kinesis Data Streams provisions capacity. <code class="inline">One shard costs $0.015 per
+      hour</code>, and each shard can support up to 1 MB/sec or 1,000 records/sec write throughput
+      or up to 2 MB/sec or 2,000 records/sec read throughput. That hourly charge accrues whether or
+      not a byte is written.
+    </p>
+    <p>
+      On the read side, each shard can support up to five read transactions per second, and each
+      read transaction can provide up to 10,000 records with an upper quota of 10 MB per
+      transaction. Five transactions per second is the whole shard&#8217;s budget, shared by every
+      consumer polling it &#8212; which is the mechanism behind the number in the next section.
+    </p>
+    <div class="callout">
+      <p>
+        <strong>The step between regime two and regime three is not gradual.</strong> AWS documents
+        the exact point: <em>Firehose uses multi-part upload for S3 destination when you configure
+        a buffer time interval less than 60 seconds to offer lower latencies. Due to multi-part
+        upload for S3 destination, you will see some increase in S3 PUT API costs.</em> Sixty
+        seconds is a cliff edge in the pricing model, and it is written into the buffering hints
+        documentation rather than into the pricing page.
+      </p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why the Curve Bends Where It Does</h2>
+    <p>
+      Write the two cost functions down and the whole argument falls out.
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h3>Batch</h3>
+        <p>
+          <strong>cost = runs &times; DPU-hours &times; rate</strong>
+        </p>
+        <p>
+          Freshness is <em>runs</em>. It is a multiplier on the whole expression, so halving
+          staleness doubles the bill. Volume appears only inside DPU-hours, and for a job whose
+          runtime is dominated by startup rather than by data, it barely appears at all.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Streaming</h3>
+        <p>
+          <strong>cost = shards &times; hours &times; (1 + fan-out) &times; rate</strong>
+        </p>
+        <p>
+          Freshness does not appear. Neither does volume, except as the thing that decides how many
+          shards you need. What multiplies is <em>hours</em>, which is fixed at 720 a month, and
+          <em>consumers</em>.
+        </p>
+      </div>
+    </div>
+    <h3>The batch curve is steep because the minimum is not the data</h3>
+    <p>
+      That ten-DPU job costs $0.44 a run. Run it nightly and the month is $13.20. Run it hourly and
+      the month is $316.80. Run it every five minutes and it is over $3,800. The <em>data has not
+      changed</em>. What changed is that a job with a 1-minute minimum duration per run, whose real
+      work takes six minutes, is being asked to pay its startup cost 8,640 times instead of 30.
+    </p>
+    <h3>The streaming line is flat because you already bought the whole hour</h3>
+    <p>
+      A single provisioned shard costs $10.80 over a thirty-day month, and it costs that whether the
+      consumer reads every 200 milliseconds or once a day. Freshness in regime three is free at the
+      margin because it was included in the purchase.
+    </p>
+    <p>
+      Which puts the crossing point somewhere most teams would not guess. The transport floor of a
+      single shard is worth about 24.5 runs of a job billed at $0.44 &#8212; so a nightly job, at
+      thirty runs, has <em>already</em> spent more than the stream it was chosen instead of.
+    </p>
+    <div class="callout amber">
+      <p>
+        <strong>Read that comparison carefully, because it is a scale comparison and not a
+        substitution.</strong> The shard moves bytes; the Glue job transforms them. Replacing the
+        job with a stream does not remove the compute &#8212; something still has to process what
+        comes off the shard. The point is narrower and more useful: the transport layer stops being
+        the deciding term almost immediately. Teams routinely reject streaming to avoid a $10.80
+        line item while paying $316.80 for the run frequency that was supposed to be the cheap
+        option.
+      </p>
+    </div>
+    <h3>The term that actually makes streaming expensive</h3>
+    <p>
+      Fan-out. AWS publishes the number and it is not subtle: message propagation delay is an
+      average of around 200 ms if you have one consumer reading from the stream, and this average
+      goes up to around 1000 ms if you have five consumers. Adding consumers to a shared-throughput
+      stream degrades latency five-fold, and costs nothing, because they are all dividing the same
+      five read transactions per second.
+    </p>
+    <p>
+      Buying it back is enhanced fan-out. It is typically an average of 70 ms whether you have one
+      consumer or five consumers, and an enhanced fan-out pipe provides up to 2 MB/sec of data per
+      shard, independently of any other pipes or of the total number of consumers. It is also where
+      the money goes: enhanced fan-out costs an extra $0.015 per shard, plus a charge of $0.013 per
+      GB on retrievals.
+    </p>
+    <p>
+      Five enhanced fan-out consumers on a single shard cost $54.00 a month &#8212; five times what
+      the shard itself costs. The fan-out is more expensive than the stream.
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Configuration</th>
+            <th>Propagation delay</th>
+            <th>Monthly, one shard</th>
+            <th>What you are paying for</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>One shared-throughput consumer</td>
+            <td>~200 ms</td>
+            <td>$10.80</td>
+            <td>The shard hour, nothing else</td>
+          </tr>
+          <tr>
+            <td>Five shared-throughput consumers</td>
+            <td>~1000 ms</td>
+            <td>$10.80</td>
+            <td>The same shard, five ways &#8212; latency is the price</td>
+          </tr>
+          <tr>
+            <td>Five enhanced fan-out consumers</td>
+            <td>~70 ms</td>
+            <td>$64.80 plus retrievals</td>
+            <td>Dedicated 2 MB/sec pipes, one per consumer</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Design Decisions</h2>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <span class="num">1</span>
+        <strong>Fan-out is the cost driver, so fan out once</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Five teams each registering an enhanced fan-out consumer against the same stream is five
+          consumer-shard-hour charges for data that is identical in all five cases. The propagation
+          delay each of them needs is usually not the same, and often only one of them needs
+          milliseconds at all.
+        </p>
+        <p class="fix-label">Design rule</p>
+        <p>
+          One enhanced fan-out consumer for the path that genuinely needs 70 ms. Everything else
+          reads a Firehose delivery of the same stream from S3. You pay for the low-latency pipe
+          once, and the four consumers who were going to poll a dashboard get a five-minute buffer
+          that costs no shard-hours at all.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <span class="num">2</span>
+        <strong>Sixty seconds is a price boundary, not a preference</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          The buffering interval range starts at zero, and when you configure buffering interval as
+          zero seconds, Firehose will not buffer data and will deliver data within a few seconds.
+          It is one number in a console field, so it gets set low by whoever is testing and then
+          never revisited. Below 60 seconds the delivery mechanism changes to multi-part upload and
+          the S3 PUT API costs rise with it.
+        </p>
+        <p class="fix-label">Design rule</p>
+        <p>
+          Sixty seconds is the floor unless somebody can name the decision that the extra
+          fifty-nine seconds changes. If they can name it, that path belongs in regime three on a
+          real stream, not in a Firehose buffer tuned down until it approximates one.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <span class="num">3</span>
+        <strong>A provisioned shard bills on the clock, so match the mode to the duty cycle</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Provisioned mode is the cheaper rate and the wrong default for anything bursty. The shard
+          hour accrues at 3 a.m. on a Sunday for a stream that only carries traffic during business
+          hours. On-demand removes the shard decision entirely &#8212; by default, new data streams
+          created with the on-demand capacity mode have 4 MB/s of write and 8 MB/s of read
+          throughput, and in US East (N. Virginia) they scale up to 10 GB/s of write and 20 GB/s
+          read throughput &#8212; but it carries its own hourly charge:
+          <code class="inline">Per-stream charges = 30 * 24 * 0.040 (rate) = $28.80</code>.
+        </p>
+        <p class="fix-label">Design rule</p>
+        <p>
+          On-demand while the traffic shape is unknown or spiky; provisioned once it is steady and
+          measured. Both have a floor, and neither floor is avoidable by sending less data. The only
+          way to stop paying is to not have the stream.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <span class="num">4</span>
+        <strong>Extended retention costs more than the shard it extends</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Extended data retention costs an extra $0.020 per shard hour, against a shard that costs
+          $0.015 per hour. Turning on seven-day retention more than doubles the stream&#8217;s
+          floor, and it is usually enabled to cover a replay scenario that S3 already covers
+          &#8212; because the same records were being delivered to S3 by Firehose the whole time.
+        </p>
+        <p class="fix-label">Design rule</p>
+        <p>
+          Retention on the stream buys you replay for consumers that read <em>the stream</em>. If
+          the replay story is &#8220;reprocess last Tuesday&#8221;, that is an S3 and Athena job,
+          and it is cheaper by an order of magnitude. Extend retention for consumer outages measured
+          in hours, not for reprocessing measured in days.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <span class="num">5</span>
+        <strong>The 1-minute minimum makes frequent small batch jobs pathological</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          A job billed at one DPU-hour of $0.44 per run costs $316.80 a month when it runs hourly.
+          The instinct when a report is stale is to schedule the job more often, and each doubling
+          of frequency doubles the bill for processing the same data. With a 1-minute minimum
+          duration per run, a job whose useful work is seconds long pays for a minute regardless.
+        </p>
+        <p class="fix-label">Design rule</p>
+        <p>
+          Past roughly hourly, stop increasing the schedule and change the regime. A Firehose
+          stream into S3 with a five-minute buffer delivers fresher data than a fifteen-minute Glue
+          schedule, with no per-run minimum to pay 2,880 times a month.
+        </p>
+      </div>
+    </div>
+
+    <div class="callout">
+      <p>
+        <strong>Next in this series:</strong> Amazon Data Firehose uses at-least-once semantics for
+        data delivery, and delivery retries by Amazon Data Firehose might introduce duplicates if
+        the original data-delivery request eventually goes through. Every design in this post
+        therefore hands the consumer a record it may have seen before. Post #35 takes up
+        idempotency &#8212; the property that makes at-least-once delivery safe to build on, and
+        the one distributed systems cannot do without.
+      </p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The reason the per-gigabyte estimate fails is that it answers a question about volume when the
+      bill is a question about time. Batch charges for work and stops; streaming charges for
+      readiness and does not. A stream is a standing offer to deliver a record within 200
+      milliseconds, and you pay for the standing offer whether or not anyone takes it up.
+    </p>
+    <p>
+      Which reframes the design conversation usefully. &#8220;How fresh do you need this?&#8221; is
+      the wrong opening question, because the honest answer is always &#8220;fresher&#8221;. The
+      question that produces an architecture is: <em>what decision changes if this arrives in one
+      second rather than five minutes, and who is making it?</em> If there is a decision and a
+      person, you are in regime three and the enhanced fan-out charge is the price of the answer.
+      If there is not, five minutes costs almost nothing &#8212; and one second costs what five
+      minutes would have, every hour, forever.
+    </p>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/kinesis/data-streams/pricing/">Amazon Kinesis Data Streams pricing</a></li>
+      <li><a href="https://docs.aws.amazon.com/streams/latest/dev/enhanced-consumers.html">Develop enhanced fan-out consumers with dedicated throughput</a></li>
+      <li><a href="https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html">Kinesis Data Streams quotas and limits</a></li>
+      <li><a href="https://docs.aws.amazon.com/firehose/latest/dev/create-configure-backup.html">Configure buffering hints, Amazon Data Firehose</a></li>
+      <li><a href="https://docs.aws.amazon.com/firehose/latest/dev/basic-deliver.html">Understand data delivery in Amazon Data Firehose</a></li>
+      <li><a href="https://aws.amazon.com/glue/pricing/">AWS Glue pricing</a></li>
+      <li><a href="https://docs.aws.amazon.com/glue/latest/dg/monitor-debug-capacity.html">Monitoring for DPU capacity planning, AWS Glue</a></li>
+    </ul>
+  </div>
+</div>

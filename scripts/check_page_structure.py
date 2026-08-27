@@ -35,6 +35,38 @@ NAV_OPEN = re.compile(r"<nav[^>]*>")
 NAV_CLOSE = re.compile(r"</nav>")
 
 
+def draft_slugs():
+    """Slugs of posts carrying `draft: true` in posts/ front matter.
+
+    sync_blog.py builds Previous/Next from `visible_posts`, which excludes
+    drafts, so a draft's served page has an empty post-nav by design and not by
+    breakage. Without this, any committed draft fails rule 5 and blocks the
+    publish of every window -- which is what a week-16 lab draft did on
+    2026-08-27 to an architecture post that never touched it.
+
+    Read from posts/ rather than from a marker in the page: `draft: true` is the
+    single source of truth sync_blog.py itself reads, so the two cannot drift.
+    """
+    out = set()
+    for f in glob.glob(os.path.join(ROOT, "posts", "*.html")):
+        try:
+            raw = io.open(f, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        if not raw.startswith("---"):
+            continue
+        fm = raw.split("---", 2)[1]
+        if not re.search(r"^draft:\s*true\s*$", fm, re.M):
+            continue
+        m = re.search(r"^slug:\s*(\S+)\s*$", fm, re.M)
+        if m:
+            out.add(m.group(1).strip("'\""))
+    return out
+
+
+DRAFT_SLUGS = draft_slugs()
+
+
 def inside_header_nav(html, pos):
     """True if `pos` falls inside the FIRST nav element (the site header)."""
     before = html[:pos]
@@ -80,8 +112,11 @@ def check(path):
     navs = re.findall(r'<nav class="post-nav".*?</nav>', html, re.S)
     if len(navs) > 1:
         out.append("%d post-nav elements; expected at most one" % len(navs))
+    #    A draft is excluded from visible_posts, so it has no neighbours to link
+    #    and its empty post-nav is correct until the draft flag comes off.
+    is_draft = os.path.basename(os.path.dirname(path)) in DRAFT_SLUGS
     for n in navs:
-        if "post-nav-link" not in n:
+        if "post-nav-link" not in n and not is_draft:
             out.append("post-nav is present but empty")
 
     # 6. The page must actually be UTF-8. PowerShell has corrupted these before.
