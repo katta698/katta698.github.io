@@ -1,0 +1,651 @@
+---
+title: 'Week 16 - AWS DevOps Agent: The Agent Was Right, and I Still Had to Check'
+date: '2026-08-29T09:00:00'
+draft: true
+labels:
+- AWS
+- Terraform
+- AWS Weekly Lab
+slug: week-16-devops-agent-investigations
+verified: '2026-08-26'
+verified_claims:
+  - claim: "AWS DevOps Agent is priced at $0.0083 per agent-second, billed per second, with no charge while the agent is idle or waiting for work"
+    source: https://aws.amazon.com/devops-agent/pricing/
+  - claim: "$0.0083 per agent-second is approximately $0.50 per minute"
+    derive: "0.0083 * 60"
+    expect: "0.498"
+    source: https://aws.amazon.com/devops-agent/pricing/
+  - claim: "The AWS DevOps Agent pricing page names three billed usage categories - investigations (incident response), evaluations (site reliability), and on-demand SRE tasks - and does not list system learning among them"
+    source: https://aws.amazon.com/devops-agent/pricing/
+  - claim: "New AWS DevOps Agent customers receive a 2-month free trial including up to 20 hours of investigations per trial month"
+    source: https://aws.amazon.com/devops-agent/pricing/
+  - claim: "A standard CloudWatch metric alarm is $0.10 per alarm per month"
+    source: https://aws.amazon.com/cloudwatch/pricing/
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Platform Engineering Lab &middot; Week 16 of 52</div>
+  <div class="post-title">The agent was right, and I still had to check</div>
+  <div class="post-subtitle">An investigating agent does not return a metric. It returns a <em>narrative</em> &mdash; and a narrative is persuasive whether or not it is correct. So this week is an evaluation rather than a demonstration: break something in a known way, write the answer down before asking, and grade the agent against the CloudTrail record built in Week 15. It passed twice, including against a deliberate decoy. Then I found I had left the answer key lying in the room.</div>
+  <div class="post-meta">
+    <span>26 August 2026</span>
+    <span>Terraform &middot; HCP &middot; awscc</span>
+    <span>$23.28 spent &middot; $0 destroyed</span>
+  </div>
+</div>
+
+  <div class="toc">
+    <h3>&#128203; In This Post</h3>
+    <ol>
+      <li><a href="#why">Why &mdash; The Problem This Solves</a></li>
+      <li><a href="#what">What You Need to Know &mdash; Skills &amp; Tools</a></li>
+      <li><a href="#architecture">Architecture &mdash; How It Fits Together</a></li>
+      <li><a href="#how">How We Built It &mdash; Step by Step</a></li>
+      <li><a href="#challenges">Challenges &mdash; What Actually Went Wrong</a></li>
+      <li><a href="#security">Security &mdash; Controls at Every Layer</a></li>
+      <li><a href="#cost">Cost</a></li>
+      <li><a href="#cleanup">Cleanup</a></li>
+      <li><a href="#references">References</a></li>
+      <li><a href="#takeaways">Key Takeaways</a></li>
+    </ol>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why &mdash; The Problem This Solves</h2>
+
+    <p>Every incident ends with somebody writing a sentence. <em>&ldquo;The IAM change at 14:02 removed the parameter read, and that is why orders stopped.&rdquo;</em> That sentence is the deliverable &mdash; it is what goes in the postmortem, what the next person reads, and what the fix is built on.</p>
+
+    <p>An investigating agent writes that sentence for you, in about sixteen minutes, at three in the morning. That is genuinely useful. It is also the exact reason to be careful, because <strong>a fluent wrong sentence and a fluent right one look identical.</strong> A metric that is wrong is visibly wrong. A narrative that is wrong reads like an explanation.</p>
+
+    <p>So the question this week asks is not <em>can an agent investigate</em>. AWS&rsquo;s marketing covers that, and the answer is obviously yes. The question is <strong>how would I know if it were wrong</strong> &mdash; and that has to be answered before an agent&rsquo;s conclusion is allowed to shorten anybody&rsquo;s outage.</p>
+
+    <h3>What makes an answer gradeable</h3>
+
+    <p>You cannot grade a conclusion against your impression of it. You need a fact that exists independently of the agent, recorded before the agent was asked.</p>
+
+    <p>Two things make that possible here, and both were already in the account:</p>
+
+    <ul>
+      <li><strong>Week 15&rsquo;s organization trail.</strong> An IAM policy deletion is a CloudTrail management event with a principal, a timestamp, a source IP and a user agent attached to it. That is a fact, not an opinion, and it is not something the agent produces &mdash; it is something the agent can be measured against.</li>
+      <li><strong>A break chosen so that every obvious explanation is wrong.</strong> Revoke <code>ssm:GetParameter</code> from a running function&rsquo;s execution role. No deploy, no code change, no config change, same package hash. The function simply starts failing, and the only evidence anywhere is one IAM event.</li>
+    </ul>
+
+    <p>Write the truth down first, ask with no hints, then mark the answer. That is the whole method, and it is the part that most &ldquo;we tried an AI agent&rdquo; write-ups skip.</p>
+  </div>
+
+  <div class="section" id="what">
+    <h2>What You Need to Know &mdash; Skills &amp; Tools</h2>
+
+    <table class="tbl">
+      <thead><tr><th>Concept</th><th>What actually matters</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Agent space</strong></td><td>Not a container &mdash; a boundary. Everything the agent can see or reach comes from this resource and the associations hung off it, which makes the blast radius reviewable in a pull request instead of discoverable in a console.</td></tr>
+        <tr><td><strong>Associations</strong></td><td>One per thing the agent may touch. The AWS one carries an <code>account_type</code> that decides whether the agent may only look or may also act.</td></tr>
+        <tr><td><strong>The <code>awscc</code> provider</strong></td><td>Generates resources from the CloudFormation registry rather than being hand-written, so a service appears there as soon as its CFN types go LIVE. This is the only IaC path to DevOps Agent today.</td></tr>
+        <tr><td><strong>Per-second billing with no ceiling</strong></td><td>$0.0083 per agent-second of active work, nothing when idle, and <strong>no budget, duration or task cap anywhere in the schema</strong>. Every prior week in this series leaned on a service-enforced limit. There is none here.</td></tr>
+        <tr><td><strong>OAuth <code>client_credentials</code></strong></td><td>Machine-to-machine grant, no user in the loop. ServiceNow will only issue it once three separate settings agree &mdash; and it reports all three failures with the same unhelpful error.</td></tr>
+        <tr><td><strong>Ground truth</strong></td><td>The thing that turns &ldquo;the agent seemed clever&rdquo; into a mark out of two. Has to be written before the question is asked, or it is just a reaction to the answer.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture &mdash; How It Fits Together</h2>
+
+    <p>Three parts, and the third is the one that matters. A small scheduled workload that can be broken cleanly; an agent space whose reach is entirely declared in Terraform; and the CloudTrail trail from Week 15 sitting underneath both, recording what actually happened so the agent&rsquo;s story can be marked against it.</p>
+
+    <div class="arch-container">
+<svg style="width:100%;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 660" width="100%" role="img"
+     aria-label="Week 16 architecture: an AWS DevOps Agent agent space, deployed by HCP Terraform through the awscc provider, with two associations - a monitor-only AWS account role and a ServiceNow service. A scheduled Lambda workload reads SSM and writes S3, watched by a CloudWatch errors alarm. A human deletes an IAM policy, breaking the workload; the agent investigates through the Operator App and returns a narrative, which is graded against the Week 15 CloudTrail organization trail.">
+<defs>
+<symbol id="i-s3" viewBox="0 0 64 64"><g id="Icon-Architecture/48/Arch_Amazon-Simple-Storage-Service_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Icon-Architecture-BG/48/Storage" fill="#7AA116">
+            <rect id="Rectangle" x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <g id="Icon-Service/48/Amazon-Simple-Storage-Service_48" transform="translate(10.999800, 10.000200)" fill="#FFFFFF">
+            <path d="M36.759,23.948 L36.993,22.131 C39.166,23.385 39.842,24.121 40.037,24.424 C39.713,24.485 38.832,24.509 36.759,23.948 L36.759,23.948 Z M19.5,11 C9.125,11 2.382,8.488 2,6.696 L2,6.511 C2.349,5.392 8.14,2 19.5,2 C30.84,2 36.632,5.381 37,6.505 L37,6.616 C36.724,8.446 29.961,11 19.5,11 L19.5,11 Z M34.818,23.362 C30.053,21.797 23.912,18.979 21.594,17.888 C21.535,16.786 20.628,15.906 19.512,15.906 C18.358,15.906 17.418,16.845 17.418,18 C17.418,19.154 18.358,20.094 19.512,20.094 C19.969,20.094 20.389,19.942 20.733,19.693 C23.132,20.822 29.619,23.798 34.558,25.38 L32.837,38.724 C32.583,40.352 27.919,42 19.497,42 C11.072,42 6.405,40.352 6.155,38.751 L2.435,9.814 C5.945,11.915 12.749,13 19.5,13 C26.25,13 33.054,11.915 36.565,9.815 L34.818,23.362 Z M39,6.5 C39,3.431 30.661,0 19.5,0 C8.339,0 -3.55271368e-15,3.431 -3.55271368e-15,6.5 L-3.55271368e-15,7.043 L4.174,39.033 C4.875,43.516 15.123,44 19.497,44 C23.869,44 34.113,43.516 34.818,39.007 L36.501,25.947 C37.778,26.279 38.812,26.456 39.616,26.455 C40.606,26.455 41.273,26.203 41.697,25.697 C42.047,25.281 42.185,24.756 42.085,24.221 C41.857,23 40.403,21.712 37.37,20.044 L37.27,19.989 L39,7.044 L39,6.5 Z" id="Amazon-Simple-Storage-Service-Icon_48_Squid"></path>
+        </g>
+    </g></symbol>
+<symbol id="i-lambda" viewBox="0 0 64 64"><g id="Icon-Architecture/48/Arch_AWS-Lambda_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Icon-Architecture-BG/48/Compute" fill="#ED7100">
+            <rect id="Rectangle" x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M22.6794094,52 L13.5740701,52 L23.8376189,30.41 L28.3997494,39.861 L22.6794094,52 Z M24.7269406,27.667 C24.5606285,27.321 24.2120702,27.103 23.8306478,27.103 L23.8276601,27.103 C23.4452418,27.104 23.0966835,27.325 22.9323632,27.672 L11.0973143,52.569 C10.9499239,52.879 10.9708374,53.243 11.1540795,53.534 C11.3353298,53.824 11.6540117,54 11.9955989,54 L23.309802,54 C23.695208,54 24.0447622,53.777 24.2100784,53.428 L30.4044577,40.284 C30.5329264,40.01 30.5319305,39.692 30.3994783,39.42 L24.7269406,27.667 Z M51.0082382,52 L41.985557,52 L26.9547262,19.578 C26.7914017,19.226 26.4388599,19 26.0524581,19 L20.1279625,19 L20.1349337,12 L31.8146251,12 L46.7747483,44.42 C46.9380728,44.774 47.2906147,45 47.6790082,45 L51.0082382,45 L51.0082382,52 Z M52.0041191,43 L48.3143803,43 L33.354257,10.58 C33.1909326,10.226 32.8383907,10 32.450993,10 L19.1400486,10 C18.5913182,10 18.1451636,10.447 18.1441677,10.999 L18.1362006,19.999 C18.1362006,20.265 18.2407681,20.519 18.4269979,20.707 C18.6142235,20.895 18.8671772,21 19.1310857,21 L25.4170861,21 L40.4479168,53.422 C40.6112413,53.774 40.9627873,54 41.350185,54 L52.0041191,54 C52.5548412,54 53,53.552 53,53 L53,44 C53,43.448 52.5548412,43 52.0041191,43 L52.0041191,43 Z" id="AWS-Lambda_Icon_48_Squid" fill="#FFFFFF"></path>
+    </g></symbol>
+<symbol id="i-cw" viewBox="0 0 64 64"><g id="Icon-Architecture/48/Arch_Amazon-CloudWatch_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Icon-Architecture-BG/48/Management-Governance" fill="#E7157B">
+            <rect id="Rectangle" x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M42.184,39.3811216 C42.184,37.1282698 40.347,35.2954581 38.089,35.2954581 C35.831,35.2954581 33.995,37.1282698 33.995,39.3811216 C33.995,41.6339735 35.831,43.4667852 38.089,43.4667852 C40.347,43.4667852 42.184,41.6339735 42.184,39.3811216 L42.184,39.3811216 Z M44.184,39.3811216 C44.184,42.7344587 41.45,45.4622252 38.089,45.4622252 C34.729,45.4622252 31.995,42.7344587 31.995,39.3811216 C31.995,36.0277846 34.729,33.3000181 38.089,33.3000181 C41.45,33.3000181 44.184,36.0277846 44.184,39.3811216 L44.184,39.3811216 Z M50.743,49.6157337 L45.846,45.2157884 C45.524,45.6398194 45.17,46.0379097 44.785,46.4050706 L49.671,50.8030205 C49.997,51.0953525 50.505,51.0714072 50.802,50.744155 C51.096,50.4179006 51.07,49.9110588 50.743,49.6157337 L50.743,49.6157337 Z M38.089,47.091502 C42.351,47.091502 45.818,43.6324067 45.818,39.3811216 C45.818,35.1298366 42.351,31.6707413 38.089,31.6707413 C33.829,31.6707413 30.362,35.1298366 30.362,39.3811216 C30.362,43.6324067 33.829,47.091502 38.089,47.091502 L38.089,47.091502 Z M52.081,48.1341194 C53.227,49.1667597 53.319,50.9357173 52.288,52.0801021 C51.735,52.6897091 50.971,53 50.205,53 C49.538,53 48.868,52.7655358 48.333,52.2866302 L43.172,47.6412457 C41.691,48.5521641 39.954,49.0869421 38.089,49.0869421 C32.725,49.0869421 28.362,44.7328919 28.362,39.3811216 C28.362,34.0293514 32.725,29.6753012 38.089,29.6753012 C43.454,29.6753012 47.818,34.0293514 47.818,39.3811216 C47.818,40.8447769 47.482,42.2286146 46.897,43.4757646 L52.081,48.1341194 Z M17.697,23.5383254 C17.697,23.9394088 17.72,24.3384968 17.767,24.722619 C17.802,25.0059715 17.713,25.2913194 17.524,25.5048315 C17.375,25.6714508 17.177,25.7831954 16.961,25.8241019 C15.084,26.3079961 12,27.7716514 12,32.1566309 C12,35.4800363 13.836,37.3138458 15.377,38.2676661 C16.049,38.6897017 16.64,38.9052092 17.138,38.9101978 L26.127,38.9101978 L26.127,40.9056378 L17.127,40.9056378 C16.243,40.8966584 15.3,40.577388 14.317,39.9588015 C12.708,38.9640747 10,36.6214281 10,32.1566309 C10,26.8876715 13.526,24.8642953 15.71,24.117003 C15.702,23.924443 15.697,23.7308853 15.697,23.5383254 C15.697,19.1603299 18.673,14.6217015 22.621,12.9784566 C27.232,11.0508615 32.119,12.0066773 35.687,15.5336176 C36.734,16.5672555 37.604,17.8084192 38.285,19.2361566 C39.203,18.5507229 40.304,18.1745825 41.459,18.1745825 C43.874,18.1745825 46.587,19.9684831 47.122,23.8895228 C50.58,24.7216213 54,27.27778 54,32.2174919 C54,35.1078868 52.864,37.4565197 50.713,39.0089721 L49.541,37.3926656 C51.173,36.2143583 52,34.4733368 52,32.2174919 C52,27.2388689 47.811,25.9997007 46.01,25.6983892 C45.743,25.6534918 45.505,25.5018384 45.351,25.2793468 C45.208,25.071821 45.15,24.8184001 45.186,24.5709656 C44.931,21.5319104 43.141,20.1700225 41.459,20.1700225 C40.402,20.1700225 39.409,20.6858438 38.734,21.5857873 C38.514,21.8791169 38.156,22.0297727 37.786,21.9748981 C37.422,21.9210212 37.118,21.6715912 36.993,21.3263801 C36.359,19.5743837 35.446,18.1027466 34.281,16.9513777 C32.851,15.5396039 28.933,12.506535 23.391,14.81925 C20.198,16.1492108 17.697,19.9784603 17.697,23.5383254 L17.697,23.5383254 Z" id="Amazon-CloudWatch_Icon_48_Squid" fill="#FFFFFF"></path>
+    </g></symbol>
+<symbol id="i-eb" viewBox="0 0 64 64"><g id="Icon-Architecture/48/Arch_Amazon-EventBridge_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Icon-Architecture-BG/48/Application-Integration" fill="#E7157B">
+            <rect id="Rectangle" x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M43.2617752,52 C41.6961147,52 40.4226302,50.736 40.4226302,49.182 C40.4226302,47.628 41.6961147,46.364 43.2617752,46.364 C44.8274357,46.364 46.1009202,47.628 46.1009202,49.182 C46.1009202,50.736 44.8274357,52 43.2617752,52 L43.2617752,52 Z M36.5437415,39 L28.4000902,39 L24.3277608,32 L28.4000902,25 L36.5437415,25 L40.6160709,32 L36.5437415,39 Z M22.7459802,17.636 C21.1803197,17.636 19.9058277,16.372 19.9058277,14.818 C19.9058277,13.264 21.1803197,12 22.7459802,12 C24.3106333,12 25.5851253,13.264 25.5851253,14.818 C25.5851253,16.372 24.3106333,17.636 22.7459802,17.636 L22.7459802,17.636 Z M43.2617752,44.364 C42.7197383,44.364 42.206919,44.473 41.7192872,44.636 L38.6161763,39.438 L42.6522355,32.5 C42.8315712,32.19 42.8315712,31.81 42.6522355,31.5 L37.9975691,23.5 C37.8182335,23.19 37.4857573,23 37.125071,23 L28.8010766,23 L26.0243968,18.349 C26.9865627,17.468 27.6001324,16.217 27.6001324,14.818 C27.6001324,12.162 25.4229172,10 22.7459802,10 C20.0680358,10 17.8908206,12.162 17.8908206,14.818 C17.8908206,17.475 20.0680358,19.636 22.7459802,19.636 C23.2880172,19.636 23.8008365,19.527 24.2884682,19.364 L26.8535722,23.659 L22.2926036,31.5 C22.1122605,31.81 22.1122605,32.19 22.2926036,32.5 L26.9462626,40.5 C27.1255982,40.81 27.4580744,41 27.8187607,41 L37.125071,41 C37.1512661,41 37.1754462,40.992 37.1996263,40.99 L39.9833586,45.651 C39.0211927,46.532 38.4076231,47.783 38.4076231,49.182 C38.4076231,51.838 40.5848382,54 43.2617752,54 C45.9387122,54 48.1159273,51.838 48.1159273,49.182 C48.1159273,46.525 45.9387122,44.364 43.2617752,44.364 L43.2617752,44.364 Z M47.9335692,25.636 C46.3679087,25.636 45.0934167,24.372 45.0934167,22.818 C45.0934167,21.264 46.3679087,20 47.9335692,20 C49.4982222,20 50.7727142,21.264 50.7727142,22.818 C50.7727142,24.372 49.4982222,25.636 47.9335692,25.636 L47.9335692,25.636 Z M50.9792525,26.539 C52.0734013,25.655 52.7877213,24.325 52.7877213,22.818 C52.7877213,20.162 50.6105062,18 47.9335692,18 C47.2958194,18 46.6903098,18.13 46.1331603,18.353 L43.4048407,14.432 C43.21543,14.162 42.9051189,14 42.5746578,14 L33.5071257,14 L33.5071257,16 L42.0467259,16 L44.4576819,19.466 C43.6083564,20.334 43.0784096,21.515 43.0784096,22.818 C43.0784096,25.475 45.2556247,27.636 47.9335692,27.636 C48.3678032,27.636 48.7818872,27.561 49.1838811,27.454 L51.8295855,32 L47.9809219,38.616 L49.725918,39.616 L53.8647426,32.5 C54.0450858,32.19 54.0450858,31.81 53.8647426,31.5 L50.9792525,26.539 Z M17.7084624,43.636 C16.1428019,43.636 14.8683099,42.372 14.8683099,40.818 C14.8683099,39.264 16.1428019,38 17.7084624,38 C19.2731155,38 20.5476075,39.264 20.5476075,40.818 C20.5476075,42.372 19.2731155,43.636 17.7084624,43.636 L17.7084624,43.636 Z M20.6221627,44.647 C21.7928819,43.767 22.5626146,42.386 22.5626146,40.818 C22.5626146,38.162 20.3853994,36 17.7084624,36 C17.00724,36 16.3443026,36.155 15.742823,36.421 L13.1706664,32 L17.6429747,24.311 L15.8979785,23.311 L11.1345017,31.5 C10.9551661,31.81 10.9551661,32.19 11.1345017,32.5 L14.1086522,37.614 C13.337912,38.468 12.8533028,39.583 12.8533028,40.818 C12.8533028,43.475 15.030518,45.636 17.7084624,45.636 C18.0762012,45.636 18.4308425,45.588 18.7744012,45.511 L21.5954112,49.568 C21.7838143,49.838 22.0931179,50 22.4245866,50 L31.4921186,50 L31.4921186,48 L22.9545335,48 L20.6221627,44.647 Z" id="AWS-EventBridge_Icon_48_Squid" fill="#FFFFFF"></path>
+    </g></symbol>
+<symbol id="i-cloudtrail" viewBox="0 0 64 64"><title>Icon-Architecture/48/Arch_AWS-CloudTrail_48</title>
+    <g id="Icon-Architecture/48/Arch_AWS-CloudTrail_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Icon-Architecture-BG/48/Management-Governance" fill="#E7157B">
+            <rect id="Rectangle" x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M20,41.9738788 L23,41.9738788 L23,39.9608181 L20,39.9608181 L20,41.9738788 Z M22,37.9477575 L28,37.9477575 L28,35.9346969 L22,35.9346969 L22,37.9477575 Z M46.96,30.0636056 C46.734,27.7294618 45.556,26.0133276 43.712,25.3922984 C42.238,24.8970855 40.629,25.1990446 39.351,26.1361243 C38.666,24.6927599 37.688,23.1115007 36.702,22.1331533 C33.472,18.9253412 29.741,18.1754761 25.616,19.9077148 C22.259,21.3118245 19.389,25.410416 19.036,29.1396108 C17.19,29.7938555 15.008,31.2412461 14.074,33.5411678 L15.926,34.3021047 C16.653,32.5114873 18.62,31.288553 20.247,30.8708429 C20.69,30.757105 21,30.3554994 21,29.895515 C21,26.8195584 23.566,22.9454232 26.385,21.7657697 C29.789,20.3354901 32.623,20.9092124 35.298,23.5664524 C36.359,24.6192831 37.535,26.7611796 38.06,28.2236682 C38.184,28.5719277 38.488,28.8225537 38.852,28.8779129 C39.222,28.9372982 39.579,28.783299 39.799,28.4873791 C40.616,27.3942872 41.929,26.9181984 43.078,27.3016864 C44.3,27.7123508 45,29.0248663 45,30.9020453 C45,31.3942387 45.354,31.8139618 45.836,31.8944842 C49.926,32.5789248 52,34.6151357 52,37.9477575 C52,43.7806007 46.611,43.9829133 46,43.9869394 L29,43.9869394 L29,46 L46,46 C48.767,46 54,44.3170813 54,37.9477575 C54,33.8421204 51.509,31.0661098 46.96,30.0636056 L46.96,30.0636056 Z M22,46 L26,46 L26,43.9869394 L22,43.9869394 L22,46 Z M25,41.9738788 L36,41.9738788 L36,39.9608181 L25,39.9608181 L25,41.9738788 Z M11,41.9738788 L18,41.9738788 L18,39.9608181 L11,39.9608181 L11,41.9738788 Z M13,37.9477575 L19,37.9477575 L19,35.9346969 L13,35.9346969 L13,37.9477575 Z M14,46 L20,46 L20,43.9869394 L14,43.9869394 L14,46 Z M10,46 L12,46 L12,43.9869394 L10,43.9869394 L10,46 Z" id="AWS-CloudTrail_Icon_48_Squid" fill="#FFFFFF"></path>
+    </g></symbol>
+<symbol id="i-ssm" viewBox="0 0 64 64">
+    <title>Icon-Architecture/48/Arch_AWS-Systems-Manager_48</title>
+    <g id="Icon-Architecture/48/Arch_AWS-Systems-Manager_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="Icon-Architecture-BG/48/Management-Governance" fill="#E7157B">
+            <rect id="Rectangle" x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M38,43.9987971 L47,43.9987971 L47,45.9990376 L38,45.9990376 L38,46.9991579 L36,46.9991579 L36,45.9990376 L33,45.9990376 L33,43.9987971 L36,43.9987971 L36,42.9986768 L38,42.9986768 L38,43.9987971 Z M41,38.9981956 L47,38.9981956 L47,40.9984362 L41,40.9984362 L41,41.9985565 L39,41.9985565 L39,40.9984362 L33,40.9984362 L33,38.9981956 L39,38.9981956 L39,37.9980753 L41,37.9980753 L41,38.9981956 Z M45,33.9975941 L47,33.9975941 L47,35.9978347 L45,35.9978347 L45,36.997955 L43,36.997955 L43,35.9978347 L33,35.9978347 L33,33.9975941 L43,33.9975941 L43,32.9974738 L45,32.9974738 L45,33.9975941 Z M17,36.997955 L24,36.997955 L24,38.9981956 L17,38.9981956 C16.179,38.9981956 15.249,38.9981956 14.313,38.4011238 C12.703,37.3830013 10,34.9967143 10,30.4771707 C10,25.1185261 13.545,23.0692796 15.73,22.3161891 L15.698,21.7741239 C15.696,17.2675818 18.671,12.6600276 22.616,10.9958274 C27.229,9.03459154 32.118,10.0057083 35.692,13.5961402 C36.738,14.6432662 37.608,15.9074182 38.289,17.3635934 C39.7,16.3064662 41.548,15.9694257 43.27,16.5344936 C45.527,17.2755828 46.949,19.322829 47.164,22.083161 C51.701,23.1062841 54,25.7666041 54,29.9971129 L52,29.9971129 C52,25.4555667 48.578,24.3374322 46.004,23.8923786 C45.734,23.845373 45.496,23.6893542 45.344,23.4623269 C45.198,23.2453008 45.144,22.9792688 45.191,22.723238 C45.163,20.5179728 44.239,18.9577851 42.646,18.4347222 C41.222,17.9656658 39.649,18.4837281 38.738,19.7228771 C38.52,20.0189127 38.158,20.1729313 37.787,20.1189248 C37.421,20.0649183 37.114,19.812888 36.99,19.4648461 C36.354,17.6746308 35.441,16.1754504 34.275,15.0083101 C32.847,13.5721373 28.927,10.484766 23.396,12.838049 C20.199,14.1862112 17.696,18.0856802 17.696,21.7151168 L17.773,22.9872698 C17.802,23.4663274 17.486,23.8973792 17.021,24.0163936 C15.146,24.4934509 12,25.9666281 12,30.4771707 C12,33.8595775 13.841,35.7358032 15.385,36.7129207 C15.812,36.9849534 16.254,36.997955 17,36.997955 L17,36.997955 Z M52,41.5234993 L50.899,41.4604917 C50.432,41.4364889 49.975,41.761528 49.867,42.2395855 C49.615,43.3587201 49.176,44.4198477 48.562,45.3929647 C48.301,45.8070145 48.377,46.3480796 48.741,46.6731187 L49.563,47.4062069 L47.407,49.5624663 L46.678,48.745368 C46.352,48.3783238 45.81,48.305315 45.397,48.5643462 C44.424,49.1804203 43.361,49.6204732 42.24,49.8735037 C41.764,49.9815167 41.435,50.4175691 41.463,50.9066279 L41.525,51.9997594 L38.475,51.9997594 L38.537,50.9046277 C38.565,50.416569 38.236,49.9795164 37.76,49.8725035 C36.641,49.6194731 35.579,49.1784201 34.605,48.5633461 C34.193,48.3013146 33.65,48.3763236 33.325,48.7433677 L32.593,49.5634664 L30.437,47.4062069 L31.257,46.675119 C31.621,46.3500799 31.697,45.8080147 31.437,45.394965 C30.822,44.4228481 30.383,43.3617204 30.131,42.2395855 C30.023,41.7625281 29.563,41.4354887 29.099,41.4604917 L28,41.5234993 L28,38.4731324 L29.103,38.53614 C29.549,38.5601429 30.027,38.2351038 30.135,37.7590465 C30.388,36.6419122 30.827,35.5817846 31.442,34.6086676 C31.703,34.1946178 31.627,33.6535527 31.263,33.3285136 L30.437,32.5904248 L32.594,30.4341655 L33.33,31.2592647 C33.655,31.6243086 34.197,31.6993177 34.609,31.4392864 C35.58,30.8272128 36.64,30.38816 37.76,30.1351295 C38.236,30.0271165 38.565,29.5910641 38.537,29.1030054 L38.475,27.9968723 L41.525,27.9968723 L41.463,29.1040055 C41.435,29.5920642 41.764,30.0291168 42.24,30.1371298 C43.357,30.3891601 44.417,30.829213 45.388,31.4412866 C45.8,31.702318 46.343,31.6263089 46.668,31.261265 L47.406,30.4341655 L49.563,32.5904248 L48.739,33.3265134 C48.375,33.6515525 48.299,34.1926176 48.56,34.6066674 C49.174,35.5787843 49.613,36.6389118 49.866,37.7580464 C49.974,38.2351038 50.432,38.5601429 50.898,38.53614 L52,38.4731324 L52,41.5234993 Z M52.943,36.415885 L51.6,36.4928942 C51.368,35.7248019 51.061,34.9827126 50.681,34.2746274 L51.686,33.3785196 C51.891,33.1954976 52.012,32.9354663 52.02,32.6604333 C52.027,32.3854002 51.921,32.1193682 51.727,31.9253449 L48.072,28.2709053 C47.878,28.0758818 47.602,27.9588678 47.337,27.97787 C47.062,27.985871 46.802,28.1068856 46.619,28.3119102 L45.72,29.3210316 C45.013,28.9409859 44.272,28.633949 43.506,28.4029212 L43.582,27.0537589 C43.598,26.7787258 43.5,26.5096935 43.311,26.3096694 C43.122,26.1096453 42.859,25.9966317 42.584,25.9966317 L37.416,25.9966317 C37.141,25.9966317 36.878,26.1096453 36.689,26.3096694 C36.5,26.5096935 36.402,26.7787258 36.418,27.0537589 L36.494,28.4009209 C35.727,28.6319487 34.985,28.9389857 34.278,29.3180312 L33.381,28.3119102 C33.197,28.1068856 32.938,27.985871 32.663,27.97787 C32.402,27.9618681 32.122,28.0758818 31.928,28.2709053 L28.273,31.9253449 C28.079,32.1193682 27.973,32.3854002 27.98,32.6604333 C27.988,32.9354663 28.109,33.1954976 28.314,33.3785196 L29.321,34.2766277 C28.94,34.9847128 28.633,35.725802 28.401,36.4928942 L27.057,36.415885 C26.788,36.3998831 26.513,36.498895 26.313,36.6869176 C26.113,36.8759403 26,37.1399721 26,37.4150051 L26,42.5816266 C26,42.8566597 26.113,43.1206914 26.313,43.3097142 C26.513,43.4977368 26.789,43.5977488 27.057,43.5807468 L28.396,43.5037375 C28.628,44.2748303 28.935,45.0179196 29.315,45.7260048 L28.314,46.6181121 C28.109,46.8021342 27.988,47.0611654 27.98,47.3361985 C27.973,47.6112316 28.079,47.8772636 28.273,48.072287 L31.928,51.7267266 C32.122,51.9207499 32.399,52.0277628 32.663,52.0187617 C32.938,52.0107607 33.198,51.8907463 33.381,51.6847215 L34.273,50.6846012 C34.982,51.0656471 35.725,51.3736841 36.494,51.605712 L36.418,52.9428728 C36.402,53.2179059 36.5,53.4869383 36.689,53.6869623 C36.878,53.8869864 37.141,54 37.416,54 L42.584,54 C42.859,54 43.122,53.8869864 43.311,53.6869623 C43.5,53.4869383 43.598,53.2179059 43.582,52.9428728 L43.506,51.6077123 C44.276,51.3756843 45.02,51.0676473 45.729,50.6866015 L46.619,51.6847215 C46.802,51.8897462 47.062,52.0107607 47.337,52.0187617 C47.577,52.0307631 47.878,51.9207499 48.072,51.7267266 L51.727,48.072287 C51.921,47.8772636 52.027,47.6112316 52.02,47.3361985 C52.012,47.0611654 51.891,46.8021342 51.686,46.6191122 L50.683,45.7240046 C51.063,45.0159194 51.37,44.27283 51.602,43.5037375 L52.943,43.5807468 C53.211,43.5967487 53.487,43.4977368 53.687,43.3097142 C53.887,43.1206914 54,42.8566597 54,42.5816266 L54,37.4150051 C54,37.1399721 53.887,36.8759403 53.687,36.6869176 C53.487,36.498895 53.212,36.4008832 52.943,36.415885 L52.943,36.415885 Z" id="AWS-Systems-Manager_Icon_48_Squid" fill="#FFFFFF"></path>
+    </g>
+</symbol>
+<marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+  <path d="M0,0 L10,5 L0,10 z" fill="#6c757d"/>
+</marker>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+  <path d="M0,0 L10,5 L0,10 z" fill="#E7157B"/>
+</marker>
+<marker id="ap" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+  <path d="M0,0 L10,5 L0,10 z" fill="#8C4FFF"/>
+</marker>
+</defs>
+<style>
+  .lbl  { font: 600 13px system-ui,-apple-system,Segoe UI,sans-serif; fill: #1a1a1a; }
+  .sub  { font: 400 11px system-ui,-apple-system,Segoe UI,sans-serif; fill: #555; }
+  .band { font: 700 12px system-ui,-apple-system,Segoe UI,sans-serif; fill: #6c757d; letter-spacing: .08em; }
+  .edge { font: 400 11px system-ui,-apple-system,Segoe UI,sans-serif; fill: #6c757d; }
+  .edgr { font: 600 11px system-ui,-apple-system,Segoe UI,sans-serif; fill: #E7157B; }
+  .node { fill: #fff; stroke: #d5d5d5; stroke-width: 1.5; rx: 8; }
+  .grp  { fill: #fafafa; stroke: #c9c9c9; stroke-width: 1.5; stroke-dasharray: 6 4; rx: 12; }
+  .mono { font-family: ui-monospace,Menlo,Consolas,monospace; }
+</style>
+
+<!-- ============ BAND 1 : deploy ============ -->
+<text class="band" x="40" y="28">DEPLOYED BY</text>
+<rect class="node" x="40" y="40" width="1100" height="58"/>
+<text class="lbl" x="62" y="64">HCP Terraform &#8212; VCS-driven workspace, OIDC dynamic credentials</text>
+<text class="sub" x="62" y="84">The <tspan class="mono">hashicorp/aws</tspan> provider has no DevOps Agent resources (issue #46894). Everything below is created through <tspan class="mono">awscc</tspan>, which generates from the CloudFormation registry.</text>
+
+<!-- ============ BAND 2 : the workload ============ -->
+<text class="band" x="40" y="136">THE OBSERVED WORKLOAD</text>
+<rect class="grp" x="40" y="148" width="520" height="262"/>
+
+<rect class="node" x="64" y="180" width="150" height="58"/>
+<use href="#i-eb" x="76" y="195" width="28" height="28"/>
+<text class="lbl" x="112" y="204">EventBridge</text>
+<text class="sub" x="112" y="220">rate(5 minutes)</text>
+
+<rect class="node" x="248" y="180" width="164" height="58"/>
+<use href="#i-lambda" x="260" y="195" width="28" height="28"/>
+<text class="lbl" x="296" y="204">Lambda</text>
+<text class="sub" x="296" y="220">order processor</text>
+
+<rect class="node" x="64" y="286" width="150" height="58"/>
+<use href="#i-ssm" x="76" y="301" width="28" height="28"/>
+<text class="lbl" x="112" y="310">SSM Parameter</text>
+<text class="sub" x="112" y="326">processing-mode</text>
+
+<rect class="node" x="248" y="286" width="164" height="58"/>
+<use href="#i-s3" x="260" y="301" width="28" height="28"/>
+<text class="lbl" x="296" y="310">S3</text>
+<text class="sub" x="296" y="326">order records</text>
+
+<rect class="node" x="440" y="232" width="104" height="58"/>
+<use href="#i-cw" x="452" y="247" width="28" height="28"/>
+<text class="lbl" x="488" y="256">CloudWatch</text>
+<text class="sub" x="488" y="272">Errors, 300s</text>
+
+<line x1="214" y1="209" x2="242" y2="209" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="286" y1="238" x2="200" y2="282" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="330" y1="238" x2="330" y2="282" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="412" y1="224" x2="436" y2="250" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a)"/>
+<text class="edge" x="150" y="270">reads config</text>
+<text class="edge" x="338" y="266">writes</text>
+
+<!-- the break -->
+<rect x="64" y="366" width="472" height="26" rx="6" fill="#fdeef4" stroke="#E7157B" stroke-width="1.5"/>
+<text class="edgr" x="76" y="384">THE BREAK &#8212; a human deletes the config-read inline policy. Code unchanged.</text>
+<line x1="300" y1="366" x2="300" y2="242" stroke="#E7157B" stroke-width="1.8" stroke-dasharray="5 3" marker-end="url(#ar)"/>
+
+<!-- ============ BAND 2b : the agent ============ -->
+<text class="band" x="616" y="136">THE AGENT &#8212; AGENT SPACE IS THE BLAST RADIUS</text>
+<rect class="grp" x="616" y="148" width="524" height="262"/>
+
+<rect class="node" x="640" y="176" width="200" height="58"/>
+<text class="lbl" x="654" y="200">Operator App</text>
+<text class="sub" x="654" y="218">where a human asks</text>
+
+<rect class="node" x="640" y="262" width="200" height="76" style="stroke:#8C4FFF;stroke-width:2"/>
+<text class="lbl" x="654" y="288">AgentSpace</text>
+<text class="sub" x="654" y="306">week16-agent</text>
+<text class="sub" x="654" y="324">no budget or duration cap</text>
+
+<rect class="node" x="880" y="176" width="236" height="58"/>
+<text class="lbl" x="894" y="200">Association &#8212; AWS account</text>
+<text class="sub" x="894" y="218">account_type = &quot;monitor&quot; &#183; the only value</text>
+
+<rect class="node" x="880" y="262" width="236" height="76"/>
+<text class="lbl" x="894" y="288">Association &#8212; ServiceNow</text>
+<text class="sub" x="894" y="306">OAuth client_credentials</text>
+<text class="sub" x="894" y="324">registered; no ticket produced</text>
+
+<line x1="740" y1="234" x2="740" y2="258" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="840" y1="288" x2="876" y2="228" stroke="#8C4FFF" stroke-width="1.5" marker-end="url(#ap)"/>
+<line x1="840" y1="298" x2="876" y2="298" stroke="#8C4FFF" stroke-width="1.5" marker-end="url(#ap)"/>
+<text class="edge" x="640" y="362">No actions-role property exists in the schema &#8212; the agent recommends, it never changes anything.</text>
+
+<!-- agent reads the workload -->
+<path d="M636,290 C592,290 592,263 548,263" fill="none" stroke="#8C4FFF" stroke-width="1.8" marker-end="url(#ap)"/>
+<text class="edge" x="448" y="310">reads metrics, logs,</text>
+<text class="edge" x="448" y="324">config, CloudTrail</text>
+
+<!-- ============ BAND 3 : grading ============ -->
+<text class="band" x="40" y="452">THE GRADER &#8212; WEEK 15, ALREADY IN THIS ACCOUNT</text>
+<rect class="grp" x="40" y="464" width="1100" height="152"/>
+
+<rect class="node" x="64" y="498" width="240" height="88"/>
+<use href="#i-cloudtrail" x="76" y="514" width="28" height="28"/>
+<text class="lbl" x="112" y="524">CloudTrail</text>
+<text class="sub" x="112" y="540">organization trail</text>
+<text class="sub" x="76" y="562">DeleteRolePolicy &#8212; who, when,</text>
+<text class="sub" x="76" y="576">from where. Fact, not opinion.</text>
+
+<rect class="node" x="368" y="498" width="300" height="88"/>
+<text class="lbl" x="384" y="524">Ground truth, written FIRST</text>
+<text class="sub" x="384" y="544">docs/ground-truth.md, stamped by</text>
+<text class="sub" x="384" y="560">break_it.sh before the agent is asked</text>
+<text class="sub" x="384" y="576">anything at all</text>
+
+<rect class="node" x="732" y="498" width="384" height="88" style="stroke:#FF9900;stroke-width:2"/>
+<text class="lbl" x="748" y="524">The claim vs the fact</text>
+<text class="sub" x="748" y="544">An agent returns a narrative. Narratives persuade</text>
+<text class="sub" x="748" y="560">whether or not they are correct &#8212; so grade the</text>
+<text class="sub" x="748" y="576">conclusion, do not admire it.</text>
+
+<line x1="304" y1="542" x2="364" y2="542" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a)"/>
+<line x1="668" y1="542" x2="728" y2="542" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a)"/>
+<path d="M924,410 C924,440 924,450 924,494" fill="none" stroke="#8C4FFF" stroke-width="1.8" marker-end="url(#ap)"/>
+<text class="edge" x="932" y="446">the agent&#8217;s answer</text>
+</svg>
+    </div>
+
+    <h3>The agent reads and recommends. It never acts &mdash; and through Terraform, it cannot</h3>
+
+    <p>Nothing here does auto-remediation. The agent investigates, names a cause, and produces a mitigation <em>plan</em>; a human ran the repair. That matters given the premise of the week: an agent that can act on a wrong narrative is a different risk category from one that can only propose it, and nothing here has earned the promotion.</p>
+
+    <p>I originally wrote that up as a design decision. Reading the CloudFormation schemas shows it is not one, which is more interesting:</p>
+
+    <ul>
+      <li><strong><code>AccountType</code> has exactly one legal value &mdash; <code>monitor</code>.</strong> Writing <code>account_type = "monitor"</code> reads like a restraint. It is the only value the enum accepts.</li>
+      <li><strong>Neither resource has an actions-role property.</strong> <code>AWS::DevOpsAgent::AgentSpace</code> exposes <code>Name</code>, <code>Description</code>, <code>KmsKeyArn</code>, <code>Locale</code>, <code>OperatorApp</code> and <code>Tags</code>. The Association&rsquo;s only role field is <code>AssumableRoleArn</code>, which is the read role. There is nowhere to put an actions role.</li>
+    </ul>
+
+    <p>The console reports <em>Actions role status: Not configured</em>, so the capability plainly exists &mdash; it is simply not reachable from the IaC path. <strong>Any account built entirely through Terraform gets a read-only agent whether or not that was the intention</strong>, and granting it the ability to act means stepping outside the code that describes the rest of your estate. Worth knowing before you plan a remediation workflow around it.</p>
+  </div>
+
+  <div class="section" id="how">
+    <h2>How We Built It &mdash; Step by Step</h2>
+
+    <h3>Step 1 &mdash; Deploy via HCP Terraform</h3>
+
+    <p>Same pattern as every week in this series: a VCS-connected HCP workspace using OIDC dynamic credentials, so no AWS keys exist anywhere.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/01b-hcp-workspace-variables.png" alt="HCP workspace variables for Week 16, including the OIDC environment variables and the ServiceNow OAuth credentials marked sensitive">
+      <figcaption>The two OIDC environment variables every workspace in this series needs, plus this week&rsquo;s additions: the ServiceNow instance URL, its short instance ID, and the OAuth client ID and secret &mdash; the secret marked sensitive so it is write-only from here on.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/01-hcp-runs.png" alt="HCP Terraform run list showing the applied Week 16 run">
+      <figcaption>24 managed resources &mdash; the agent space, both associations, three IAM roles and the whole observed workload &mdash; showing as <strong>32</strong> in the workspace, which counts data sources too. Note the run list rather than the total &mdash; <strong>the first attempt errored.</strong> ServiceNow would not issue a token until three separate settings agreed, so the run that actually applied is the one titled for the fix. That story is in Challenges.</figcaption>
+    </figure>
+
+    <div class="callout amber">
+      <p><strong>The provider does not exist yet.</strong> <code>hashicorp/aws</code> has no <code>aws_devopsagent_*</code> resources &mdash; scanning the installed v6.60.0 binary finds the string as a bare prefix with nothing behind it, and <a href="https://github.com/hashicorp/terraform-provider-aws/issues/46894" target="_blank" rel="noopener">issue #46894</a> asking for them is still open. Everything here uses <code>awscc</code> instead, which generates from the CloudFormation registry and therefore had the resources on day one. The trade is real: machine-generated shapes, CloudFormation naming, and thin documentation. That is the price of being early, and it is worth paying rather than clicking through a console.</p>
+    </div>
+
+    <h3>Step 2 &mdash; The agent space, and what it is allowed to reach</h3>
+
+    <p>The space itself is small. Two IAM roles trusting the <code>aidevops.amazonaws.com</code> service principal do the real work &mdash; one for the agent, one for the Operator App &mdash; and both are constrained twice over, by <code>aws:SourceAccount</code> and by <code>aws:SourceArn</code>, so a confused deputy in another account cannot borrow them.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/02-agent-space.png" alt="AWS DevOps Agent console listing one agent space named week16-agent">
+      <figcaption>One agent space, created by Terraform. Account ID redacted.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/04-agent-space-detail.png" alt="Agent space detail showing the primary AWS account source as Valid, with Actions role status Not configured">
+      <figcaption>The primary source is <strong>Valid</strong>; the <strong>Actions role status</strong> is <em>Not configured</em>, and stays that way. The agent can read this account and recommend changes to it. It cannot make them.</figcaption>
+    </figure>
+
+    <p>The AWS association also carries a <code>resources</code> list, left empty here so the agent sees the whole account. That is deliberate for a lab &mdash; the agent has to <em>find</em> the broken workload rather than be handed it, and pointing it at the function would test recall instead of diagnosis. In production this is the tightening point: the schema accepts specific ARNs and tags, and that scoping, far more than the IAM policy, is the practical blast-radius control.</p>
+
+    <h3>Step 3 &mdash; Wire up ServiceNow (setup only &mdash; nothing was filed)</h3>
+
+    <p>An investigation nobody reads is not an investigation. Weeks 1&ndash;3 turned a ServiceNow ticket into infrastructure; the intent here was the reverse &mdash; an incident becoming a ticket, written by the agent.</p>
+
+    <div class="callout amber">
+      <p><strong>Be clear about what this week actually proved.</strong> The registration works &mdash; the service is associated, and the OAuth client issues a token on demand, which I re-verified against the instance after the fact. <strong>But no ticket was created.</strong> Both investigations were started by hand from the Operator App rather than from a ServiceNow incident, and neither wrote anything back: zero incidents on the instance for the day. So this section is <em>wiring proven, loop not closed</em>. The OAuth debugging below is the durable part; the integration itself is set up and untested, and I would rather label it that way than imply a ticket appeared.</p>
+    </div>
+
+    <p>The OAuth endpoint has no Terraform path, so it is a documented manual prerequisite rather than a hidden one. In ServiceNow: <strong>System OAuth &rarr; Application Registry &rarr; Create an OAuth API endpoint for external clients</strong>.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/05-snow-oauth-registry.png" alt="ServiceNow Application Registries list with an OAuth Client entry named AWS DevOps Agent">
+      <figcaption>The new OAuth client sitting alongside ServiceNow&rsquo;s built-ins. Client ID redacted.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/06-snow-oauth-entity.png" alt="The ServiceNow OAuth client record showing Client Type set to Integration as a Service and an OAuth Application User assigned">
+      <figcaption>The two fields that actually decide whether this works: <strong>Client Type = Integration as a Service</strong>, and an <strong>OAuth Application User</strong> assigned. Both default to something else. See Challenges.</figcaption>
+    </figure>
+
+    <p>With those in place, Terraform registers the service and associates it. Registration takes the full <code>https://&lt;instance&gt;.service-now.com</code>; the association takes the bare instance name.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/03-capability-providers.png" alt="Capability Providers page showing ServiceNow registered, with fourteen other capabilities available">
+      <figcaption>ServiceNow registered by Terraform, not by clicking. Fourteen other capability providers sit available and unregistered &mdash; each one would widen what the agent can reach.</figcaption>
+    </figure>
+
+    <h3>Step 4 &mdash; Write down the answer before asking the question</h3>
+
+    <p>This is the step that makes the rest mean anything. <code>break_it.sh</code> confirms the workload is healthy first (breaking something already broken produces an investigation with two causes and no way to tell which one was found), records what it is about to do with a timestamp, and only then does it.</p>
+
+    <pre><code>aws iam delete-role-policy \
+  --role-name week16-agent-processor \
+  --policy-name config-read</code></pre>
+
+    <p>The ledger it writes names the cause, the expected symptom, and explicitly what did <em>not</em> change &mdash; then states the marking scheme: <em>a correct answer names the policy detachment; naming the AccessDeniedException is the symptom, not the cause.</em></p>
+
+    <h4>What actually happens next, mechanically</h4>
+
+    <p>Nothing pushes an error anywhere. The failure surfaces because the workload keeps running and starts failing in public:</p>
+
+    <div class="flow">
+      <div class="flow-step"><strong>Every 5 minutes</strong> &mdash; the EventBridge rule invokes the function. That schedule is the point: a break shows up as a change in a working series rather than as silence.</div>
+      <div class="flow-step"><strong>Line 39 raises</strong> &mdash; the handler reads its config on every invocation, and the call is deliberately <em>not</em> wrapped in a try/except.</div>
+      <div class="flow-step"><strong>The exception goes unhandled</strong> &mdash; so Lambda records a failed invocation and publishes <code>Errors = 1</code>.</div>
+      <div class="flow-step"><strong>The alarm evaluates</strong> &mdash; <code>Sum(Errors) &gt;= 1</code> over one 300-second period, and flips to ALARM.</div>
+    </div>
+
+    <pre><code># handler.py - the whole failure surface, on purpose
+config = ssm.get_parameter(Name=PARAM_NAME)["Parameter"]["Value"]</code></pre>
+
+    <p>Not catching that is a design decision, not an oversight. <strong>A workload that swallows its own failure gives an investigator nothing to find</strong> &mdash; the errors never reach CloudWatch, the alarm never fires, and the only evidence is an absence. Letting it raise leaves a real, attributable stack trace in the logs, which is what the agent is being asked to work from.</p>
+
+    <p>It also produces a second signal I did not plan and the agent used anyway: the function now <em>fails faster than it succeeds</em>, dropping from ~550&nbsp;ms to ~200&nbsp;ms, because it dies before doing any work. The agent read that as evidence of failing fast rather than timing out, and said so before it had found the cause.</p>
+
+    <h3>Step 5 &mdash; Ask with no hints at all</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/09-start-investigation-dialog.png" alt="The Start an investigation dialog with a bare symptom description and an empty investigation starting point field">
+      <figcaption>The prompt names the symptom and nothing else. The <strong>Investigation starting point</strong> field &mdash; where you would normally paste an alarm, a metric or a log line &mdash; is deliberately left empty. Anything in it would be handing over the answer and then admiring the recall.</figcaption>
+    </figure>
+
+    <h3>Step 6 &mdash; Watch the working, not just the conclusion</h3>
+
+    <p>The timeline tab is the most useful screen in the product, and the one that decides whether the conclusion is trustworthy. It shows the agent forming a symptom statement, then fanning out into three named subagents in parallel, each with its own tool-call count and duration.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/14-investigation-timeline.png" alt="Investigation timeline showing three parallel subagents: check-lambda-logs, check-cloudtrail-changes and check-ssm-and-s3, with tool call counts and durations">
+      <figcaption><code>check-lambda-logs</code> (8 tool calls, 1m13s), <code>check-cloudtrail-changes</code> (14 calls, 2m17s), <code>check-ssm-and-s3</code> (7 calls, 48s) &mdash; running concurrently. It also noticed the function was last modified 54 minutes before the failures started, and correctly declined to treat that as the cause.</figcaption>
+    </figure>
+
+    <h3>Step 7 &mdash; The answer, and the gap it declared</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/15-root-cause.png" alt="Root cause tab naming the deleted config-read inline policy, with an investigation gaps section reporting access denied on lambda GetFunction">
+      <figcaption>The cause, with the principal and the timestamp: <code>DeleteRolePolicy</code> at 15:57:32Z. Matches the ledger. Note the <strong>Investigation gaps</strong> panel underneath &mdash; it reports being denied <code>lambda:GetFunction</code> rather than quietly guessing around the hole.</figcaption>
+    </figure>
+
+    <p>That gaps panel deserves more attention than the conclusion. AWS&rsquo;s own managed policy, <code>AIDevOpsAgentAccessPolicy</code>, does not grant <code>lambda:GetFunction</code>, so the agent could not read the full function configuration. It said so, in the output, unprompted. <strong>An agent that reports what it could not see is far more usable than one that returns the same confident paragraph either way</strong> &mdash; that panel is where you find out whether to believe the rest.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/16-mitigation-plan.png" alt="Mitigation plan with prepare, pre-validate and apply steps, each with copyable AWS CLI commands">
+      <figcaption>A staged plan &mdash; save the current policy as a rollback point, validate the parameter exists, then apply &mdash; with runnable commands at each step. The remediation itself is subtly wrong, which is covered in Challenges. Account ID redacted.</figcaption>
+    </figure>
+
+    <h3>Step 8 &mdash; Run it again, with a decoy in the way</h3>
+
+    <p>One pass proves very little. The true cause was the only change in the window, which is the easiest possible version of the problem. So the second run put something more attractive in front of it:</p>
+
+    <div class="flow">
+      <div class="flow-step"><strong>17:27:38Z</strong> &mdash; a real Terraform apply, changing the function timeout from 15s to 20s. Entirely innocent.</div>
+      <div class="flow-step"><strong>17:28:49Z</strong> &mdash; the same IAM policy deleted again. The true cause, <strong>71 seconds later</strong>.</div>
+    </div>
+
+    <p>A recent deploy is the most attractive explanation in any incident, and here it is wrong. The prompt was identical, word for word, so the decoy was the only variable.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/22-decoy-summary.png" alt="Decoy investigation summary with an error rate chart annotated with both the Terraform timeout change and the IAM policy deletion">
+      <figcaption>Look at the <strong>Error rate over time</strong> chart: the Terraform timeout change is plotted on it, annotated by name, right beside the policy deletion markers. It saw the deploy, placed it on the timeline, and declined to rank it as the cause. That is a stronger result than simply missing it.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/23-decoy-root-cause.png" alt="Decoy investigation root cause reconstructing the full sequence of deletion, brief restoration, and second deletion">
+      <figcaption>It reconstructed the entire sequence rather than the most recent change: deleted at 15:57:32Z, <strong>briefly re-added at 17:24:41Z with one successful invocation observed</strong>, deleted again at 17:28:59Z. That middle event was my own repair and the single manual invoke I used to verify it &mdash; neither was in the prompt, and neither is visible in the alarm.</figcaption>
+    </figure>
+
+    <p>It also proposed a better remediation than the one in my ledger: alongside restoring the policy, an SCP denying manual deletion of Terraform-managed policies. That addresses recurrence, which a restore does not.</p>
+
+    <div class="callout amber">
+      <p><strong>Do not over-read this result.</strong> A Lambda <em>timeout</em> change is a weak decoy &mdash; the failure signature is <code>AccessDeniedException</code>, so nothing about the symptom points at it. This shows the agent is not naively ranking by recency. It does <em>not</em> show it can separate two plausible permission-shaped causes, and I have not tested that. A stronger decoy would corrupt the SSM parameter name in the same apply.</p>
+    </div>
+
+    <h3>Verifying it actually works</h3>
+
+    <p>Two claims needed proving, and neither is proved by the investigation reading well.</p>
+
+    <p><strong>That the conclusion matches the record.</strong> Both runs were marked against <code>docs/ground-truth.md</code>, written before either question was asked, and against CloudTrail. Both named the policy detachment as the cause and the <code>AccessDeniedException</code> as the symptom &mdash; the distinction the marking scheme was built around. The decoy run&rsquo;s three reported timestamps all check out against the trail.</p>
+
+    <div class="callout red">
+      <p><strong>The limitation that matters most, and it is not the contamination.</strong> This post opens by asking how you would know if the agent were wrong. Two investigations ran and <em>the agent was never wrong about root cause</em> &mdash; so the marking scheme was only ever exercised against correct answers. I have no evidence it would catch a false conclusion, because it never had to.</p>
+      <p>That is the same defect as testing a smoke detector by not setting a fire. <strong>N&nbsp;=&nbsp;2, one failure mode, one account, one afternoon.</strong> What this week demonstrates is the <em>shape</em> of an answer &mdash; write the truth down first, keep an independent record, fix the marking scheme before you look &mdash; and one instance of it earning its keep, when grading caught a mitigation plan that would have deepened drift. It does not establish that the method reliably separates right answers from confident wrong ones. Doing that means running it against a break where the agent is expected to fail, which is a harder experiment to design and the honest next step.</p>
+    </div>
+
+    <p><strong>That the workload actually recovers.</strong> Restoring the policy and declaring victory is not verification. The alarm has to come back on its own:</p>
+
+    <pre><code>RESTORED  17:53:18Z
+alarm OK  17:58:34Z    (5m16s - one evaluation period)</code></pre>
+
+    <p>That recovery is only observable because this week&rsquo;s alarm uses a 300-second period. Week 15 used <code>Period: 86400</code> with <code>Statistic: Maximum</code>, which latched &mdash; one event pinned it in ALARM and every later detection was a non-transition, so nothing was ever sent again. The short period here is a direct correction of that.</p>
+
+    <h3>The six links between a Lambda error and a fix &mdash; and which ones this build actually has</h3>
+
+    <p>It is easy to read a post like this and conclude the thing is ready to sit on-call. It is not, and the gap is not in the agent. Here is the full chain from a function throwing an exception to somebody having fixed it, marked against what was really built:</p>
+
+    <table class="tbl">
+      <thead><tr><th>#</th><th>Link</th><th>How it works</th><th>This build</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><strong>CloudWatch notices</strong></td><td>Unhandled exception &rarr; <code>Errors</code> metric &rarr; alarm enters ALARM in one 5-minute period</td><td><strong>Built</strong></td></tr>
+        <tr><td>2</td><td><strong>Somebody is told</strong></td><td>SNS topic on <code>alarm_actions</code> &rarr; email, Slack or PagerDuty</td><td><strong>Not built</strong></td></tr>
+        <tr><td>3</td><td><strong>The investigation starts itself</strong></td><td>Alarm &rarr; EventBridge &rarr; Lambda &rarr; the agent&rsquo;s webhook</td><td><strong>Not built</strong></td></tr>
+        <tr><td>4</td><td><strong>The agent investigates</strong></td><td>Reads metrics, logs, config and CloudTrail; returns a cause and a plan</td><td><strong>Built &mdash; started by hand</strong></td></tr>
+        <tr><td>5</td><td><strong>Findings reach a human</strong></td><td>A ServiceNow incident, or a Slack message</td><td><strong>Wired, zero tickets</strong></td></tr>
+        <tr><td>6</td><td><strong>The fix is applied</strong></td><td>A human, or an agent holding the actions role</td><td><strong>Human only</strong></td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout red">
+      <p><strong>Link 2 is the one that should be uncomfortable.</strong> The alarm in this build has no <code>alarm_actions</code> and there is no SNS topic anywhere in the stack. It changes state correctly and tells nobody. I knew about both breaks because I caused them, and I knew about the recovery because I sat polling the CLI in a loop. As an answer to &ldquo;how would I find out something is broken&rdquo;, that is no answer at all &mdash; and it is five lines of Terraform, which is exactly why it is worth calling out rather than quietly leaving as an exercise.</p>
+    </div>
+
+    <p><strong>Links 2 and 3 are what turn this from a demonstration into operations</strong>, and neither involves the agent being any cleverer. Notification is a topic and a subscription. Automatic investigation is AWS&rsquo;s documented alarm-to-webhook path, and it is what makes the agent proactive rather than something you remember to go and ask.</p>
+
+    <h4>Why link 6 should stay human for this particular failure</h4>
+
+    <p>The tempting last step is to close the loop and let the agent apply its own plan. For this failure class specifically, I would not, and the reason is visible earlier in this post.</p>
+
+    <p>The cause was a human deleting a <em>Terraform-managed</em> IAM policy. The correct repair is therefore <code>terraform apply</code> &mdash; reconcile the drift back to the declared state. A remediation that instead patches the permission back leaves an account that no longer matches its code, and the next apply produces a surprise for whoever runs it.</p>
+
+    <p>That is not hypothetical here. <strong>The first investigation&rsquo;s own mitigation plan proposed exactly that mistake</strong> &mdash; adding <code>ssm:GetParameter</code> to the <code>baseline</code> policy rather than restoring the deleted <code>config-read</code> resource. Service restored, drift deepened, incident closed. Auto-applying that plan would have produced a green dashboard and a worse estate.</p>
+
+    <p>So the order I would build these in is 2, then 3, then 5 &mdash; notification, automatic start, findings delivery. Action comes last, after enough graded conclusions to know how often the plan is the one you would have written yourself.</p>
+  </div>
+
+  <div class="section" id="challenges">
+    <h2>Challenges &mdash; What Actually Went Wrong</h2>
+
+    <h3>1. I left the answer key in the room</h3>
+
+    <p>The first investigation&rsquo;s root cause ends with a sentence I did not expect: <em>&ldquo;The SSM parameter&rsquo;s own description confirms this was a deliberate break.&rdquo;</em></p>
+
+    <p>It did. Because I wrote it, in the Terraform, months of good intentions ago:</p>
+
+    <pre><code>resource "aws_ssm_parameter" "config" {
+  description = "Read on every invocation. Revoking the role's ssm:GetParameter is the deliberate break."
+}</code></pre>
+
+    <p>That description is a comment to a human reader and a <strong>signpost to anything that can read the AWS API</strong>. The agent read it, and it named the exact mechanism the test was about.</p>
+
+    <p>How much does it invalidate? Less than it first appears, but not nothing. The description says which permission matters; it does not say who removed it, when, or from where, and the causal chain came from CloudTrail. The decoy run reconstructed a repair and a re-break that the description contains no trace of. But the first run is weakened, and I would rather say so than quietly drop it.</p>
+
+    <div class="callout red">
+      <p><strong>The general lesson, and it applies well beyond this lab:</strong> your resource descriptions, tags, names and comments are <em>inputs to the agent</em>, not annotations for humans. If you are evaluating one, scrub the environment of anything that describes the scenario. If you are running one for real, the reverse holds &mdash; good descriptions make it better, and that is a reason to write them.</p>
+    </div>
+
+    <h3>2. <code>service_id = "aws"</code> is a reserved literal that appears in no schema</h3>
+
+    <p>Every association requires a <code>service_id</code>, and the obvious reading is that it references an <code>awscc_devopsagent_service</code> resource. For AWS itself, it does not. The <code>ServiceType</code> enum contains only third-party integrations &mdash; ServiceNow, GitLab, Dynatrace, PagerDuty and the MCP servers &mdash; and <code>list-services</code> on a fresh account returns empty. There is nothing to reference and no way to create one.</p>
+
+    <p>The value is the literal string <code>"aws"</code>. It appears in the CloudFormation schema nowhere, the Terraform provider schema nowhere, and the CLI skeleton nowhere. I found it in AWS&rsquo;s own published Terraform sample. This is the sharpest edge of using a service that is newer than its provider: the documentation has not caught up with the API, and the only reliable source is working example code.</p>
+
+    <h3>3. The instance ID is the short name &mdash; a trap I read about rather than fell into</h3>
+
+    <p>Registration takes the full <code>https://&lt;instance&gt;.service-now.com</code>. The association takes the bare instance name. Passing the URL to both is documented to fail with <code>GeneralServiceException: instanceId ... does not match the registered ServiceNow instance</code> &mdash; which reads as <em>these two values disagree</em>, when in fact they agree perfectly and only the format is wrong.</p>
+
+    <p><strong>In the interest of not dressing up a design decision as a war story: I did not hit this.</strong> I read it before writing the association and carried the short name as a separate Terraform variable rather than deriving it from the URL, so the mistake was never available to make. It earns a place here because the error text points away from the fix, and because &ldquo;two variables that look redundant&rdquo; is exactly the kind of thing a later reader deletes to tidy up.</p>
+
+    <h3>4. Three ServiceNow settings, one error message</h3>
+
+    <p>Getting <code>client_credentials</code> to issue a token took three separate fixes, and the failures arrived in an order that pointed away from each one in turn: AWS reported <em>&ldquo;check your service credentials&rdquo;</em>, then ServiceNow returned <code>401 access_denied</code>, then <code>unauthorized_client</code>. All three looked like a wrong secret. None of them were.</p>
+
+    <ol>
+      <li>The <code>client_credentials</code> grant is <strong>disabled by default</strong> and enabled by a system property, not by anything on the OAuth record.</li>
+      <li><strong>Client Type</strong> must be <em>Integration as a Service</em>. The default is not.</li>
+      <li>An <strong>OAuth Application User</strong> must be assigned. Without one there is no identity for the token to act as, and ServiceNow reports that as an unauthorized <em>client</em>.</li>
+    </ol>
+
+    <p>If you are debugging this, check all three before touching the secret. The error text will not lead you to any of them.</p>
+
+    <h3>5. The mitigation plan was correct and would have deepened the drift</h3>
+
+    <p>The first run&rsquo;s plan proposed adding <code>ssm:GetParameter</code> to the existing <code>baseline</code> inline policy. That restores service immediately and it is a perfectly reasonable operator instinct.</p>
+
+    <p>It is also not what happened. What happened is that a <em>separate</em> policy called <code>config-read</code> &mdash; a Terraform-managed resource &mdash; was deleted. Following the plan would leave <code>baseline</code> carrying a permission Terraform does not know about, and the next <code>terraform apply</code> would recreate <code>config-read</code> alongside it. The incident closes; the estate drifts further.</p>
+
+    <p>Notably, the <em>decoy</em> run did not make this mistake &mdash; it proposed restoring the original policy document and adding an SCP. Same agent, same account, two runs, two different qualities of remediation. That variance is itself the finding, and it is the argument for reading the plan rather than running it.</p>
+
+    <h3>6. There is no spend ceiling, anywhere</h3>
+
+    <p>Weeks 14 and 15 both capped Athena at 10&nbsp;GB per query at the workgroup level, so a mistake was bounded by configuration. The <code>AgentSpace</code> schema has no equivalent: <code>Name</code>, <code>Description</code>, <code>KmsKeyArn</code>, <code>Locale</code>, <code>OperatorApp</code>, <code>Tags</code>, and nothing else. No budget, no maximum duration, no task cap. The only quota bounds how <em>many</em> tasks run concurrently, never how <em>long</em> one runs.</p>
+
+    <p>So the control is observation rather than configuration, which is a genuinely weaker position and worth naming as such:</p>
+
+    <pre><code>./scripts/measure_usage.sh</code></pre>
+
+    <p>Run before and after anything the agent does. It reads the usage meter, converts hours to dollars, and prints the absence of a limit rather than hiding it.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security &mdash; Controls at Every Layer</h2>
+
+    <ul>
+      <li><strong>The agent reads and recommends; it never acts</strong> &mdash; and note this is enforced by the service rather than chosen by me. <code>AccountType</code> accepts only <code>monitor</code>, and no actions-role property exists on either CloudFormation resource, so the whole IaC path is read-only. An agent that can act on a wrong narrative is a different risk category from one that can only propose it</li>
+      <li><strong>Both service roles double-scoped</strong> &mdash; <code>aws:SourceAccount</code> pins the caller to this account and <code>aws:SourceArn</code> pins it to an agent space ARN in this account and region, against the confused-deputy case. The service namespace is <code>aidevops</code>, not <code>devops-agent</code>; getting it wrong yields a trust policy that looks right and never matches</li>
+      <li><strong>AWS managed policies rather than hand-rolled read access</strong> &mdash; <code>AIDevOpsAgentAccessPolicy</code> and <code>AIDevOpsOperatorAppAccessPolicy</code>. Hand-writing least-privilege across every service an investigator might touch is how you end up with <code>ReadOnlyAccess</code> by accident</li>
+      <li><strong>The association&rsquo;s <code>resources</code> list is the real blast-radius control</strong> &mdash; empty here so the agent must find the workload, but in production this scopes the agent to a stack or a tag far more effectively than IAM does</li>
+      <li><strong>The OAuth secret is write-only</strong> &mdash; marked sensitive in HCP, never in state output, never in a repo</li>
+      <li><strong>Every capability is declared in Terraform</strong> &mdash; fourteen other providers sit available and unregistered. Each would widen what the agent can reach, and each would be a reviewable line in a pull request rather than a click</li>
+      <li><strong>Spend is observed, not capped</strong> &mdash; stated plainly because it is the one control this week does not have</li>
+    </ul>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost</h2>
+
+    <p>Prices as of August 2026 &mdash; verify at the <a href="https://aws.amazon.com/devops-agent/pricing/" target="_blank" rel="noopener">DevOps Agent pricing page</a>.</p>
+
+    <table class="tbl">
+      <thead><tr><th>Item</th><th>Rate</th><th>This build</th></tr></thead>
+      <tbody>
+        <tr><td>Agent active work</td><td>$0.0083 / agent-second (~$0.50 / min)</td><td>billed per second</td></tr>
+        <tr><td>Idle agent space</td><td>free</td><td>$0.00, verified on every meter</td></tr>
+        <tr><td>Investigations &times; 2</td><td>~0.168 hrs each, flat</td><td>$10.06</td></tr>
+        <tr><td><code>system learning</code>, one-time</td><td>not listed on the pricing page</td><td>$13.22</td></tr>
+        <tr><td>Lambda, EventBridge, SSM, S3</td><td>&mdash;</td><td>effectively free at lab volume</td></tr>
+        <tr><td>CloudWatch alarm &times; 1</td><td>$0.10 / alarm / month</td><td>$0.10/month</td></tr>
+        <tr><td><strong>Total spent this week</strong></td><td></td><td><strong>$23.28</strong></td></tr>
+        <tr><td><strong>Destroyed</strong></td><td></td><td><strong>$0</strong></td></tr>
+      </tbody>
+    </table>
+
+    <h3>Three things the meter taught that the pricing page does not</h3>
+
+    <p><strong>An investigation costs a flat rate regardless of effort.</strong> Sampling the meter every ninety seconds through both runs produced the same figure each time &mdash; 0.168 hours, $5.03. The decoy run did visibly more work: more steps, more tool calls, a longer wall-clock. It cost the same. Whatever &ldquo;agent-second&rdquo; measures, it is not proportional to the investigating I could observe.</p>
+
+    <p><strong>The meter reads zero while the work is happening.</strong> Seven consecutive samples during the first investigation reported 0.0 hours, then the full 0.168 posted at once after completion. If you are watching the meter as a live guardrail, it will tell you nothing until it is too late to intervene &mdash; which materially weakens &ldquo;observation&rdquo; as a substitute for a spend cap.</p>
+
+    <p><strong><code>system learning</code> is a billed category that the pricing page does not name.</strong> It was the single largest line this week at $13.22, and it appeared once &mdash; the agent mapping the account on first use. It did not recur for the second investigation. The published categories are investigations, evaluations and on-demand SRE tasks; this is none of them. Budget for a one-off charge on first use that you cannot find a rate card for.</p>
+
+    <div class="callout">
+      <p><strong>On the free trial:</strong> new DevOps Agent customers get two months including up to 20 hours of investigations per month. At the flat ~0.168 hours per investigation observed here, that is a great deal of investigating. It arrives as a billing credit rather than a usage limit, so it cannot be read from the API &mdash; and a credit is not a ceiling.</p>
+    </div>
+  </div>
+
+  <div class="section" id="cleanup">
+    <h2>Cleanup</h2>
+
+    <p>Queue a destroy from the HCP UI. Everything this week creates is a Terraform resource, including the agent space and both associations, so nothing is left behind by design.</p>
+
+    <p><strong>The agent space is the one to confirm.</strong> Left behind it costs nothing while idle &mdash; genuinely nothing, verified on every meter &mdash; which is exactly what makes it easy to forget. What persists is not a bill but a <em>standing grant</em>: a role in your account that a managed AWS service can assume to read it. That is a thing to remove deliberately, not a thing to leave lying around because it is free.</p>
+
+    <p>The ServiceNow OAuth endpoint is not managed by Terraform and does not disappear with the stack. Deactivate the Application Registry record, or the credential outlives the lab.</p>
+
+    <p>The observed workload tears down with everything else. The S3 bucket carries <code>force_destroy</code> and a seven-day lifecycle rule, so teardown never needs a manual empty.</p>
+  </div>
+
+  <div class="section" id="references">
+    <h2>References</h2>
+
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/devopsagent/latest/userguide/about-aws-devops-agent.html" target="_blank" rel="noopener">About AWS DevOps Agent</a> &mdash; AWS DevOps Agent User Guide</li>
+      <li><a href="https://aws.amazon.com/blogs/mt/announcing-general-availability-of-aws-devops-agent/" target="_blank" rel="noopener">Announcing General Availability of AWS DevOps Agent</a> &mdash; AWS Cloud Operations Blog</li>
+      <li><a href="https://aws.amazon.com/devops-agent/pricing/" target="_blank" rel="noopener">AWS DevOps Agent pricing</a> &mdash; the three published billing categories</li>
+      <li><a href="https://registry.terraform.io/providers/hashicorp/awscc/latest/docs/resources/devopsagent_agent_space" target="_blank" rel="noopener"><code>awscc_devopsagent_agent_space</code></a>, <a href="https://registry.terraform.io/providers/hashicorp/awscc/latest/docs/resources/devopsagent_association" target="_blank" rel="noopener"><code>_association</code></a> and <a href="https://registry.terraform.io/providers/hashicorp/awscc/latest/docs/resources/devopsagent_service" target="_blank" rel="noopener"><code>_service</code></a> &mdash; Terraform Registry</li>
+      <li><a href="https://github.com/hashicorp/terraform-provider-aws/issues/46894" target="_blank" rel="noopener">terraform-provider-aws issue #46894</a> &mdash; the request for native <code>aws_devopsagent_*</code> resources, still open</li>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/week-16-devops-agent-investigations" target="_blank" rel="noopener">Full source for this week</a> &mdash; Terraform, the break and repair scripts, both investigation transcripts and the ground-truth ledger</li>
+    </ul>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key Takeaways</h2>
+
+    <ul>
+      <li><strong>An agent returns a narrative, and narratives persuade regardless of accuracy.</strong> A wrong metric looks wrong. A wrong explanation reads like an explanation. That asymmetry is the entire reason to grade rather than admire.</li>
+      <li><strong>Write the ground truth down before you ask.</strong> Anything recorded afterwards is a reaction to the answer, not a test of it. This is one shell script and it is the difference between an evaluation and an anecdote.</li>
+      <li><strong>Your resource descriptions are inputs to the agent.</strong> I put the answer in an SSM parameter description and the agent quoted it back. Scrub the environment before evaluating; write them well before operating.</li>
+      <li><strong>The declared gaps matter more than the conclusion.</strong> Being told it was denied <code>lambda:GetFunction</code> is what makes the rest believable. An agent that returns the same confident paragraph whether or not it could see the evidence is the one to worry about.</li>
+      <li><strong>Read the mitigation plan; do not run it.</strong> One run proposed a fix that would have restored service and deepened Terraform drift. The other proposed a better remediation than mine. Same agent, same account, different runs.</li>
+      <li><strong>It did not fall for a recent deploy sitting 71 seconds in front of the true cause</strong> &mdash; it plotted the deploy on the timeline and ranked it correctly. That is a real result, and a weak decoy; do not read it as more than it is.</li>
+      <li><strong>Observation is a weaker control than a limit, especially when the meter lags.</strong> No budget, no duration cap, and a meter that reads zero until the work is finished. Know that before you let something autonomous loose.</li>
+      <li><strong>Through Terraform, this agent can only ever read.</strong> <code>AccountType</code> accepts exactly one value, and no actions-role property exists on either CloudFormation resource &mdash; so an estate built entirely in code gets a read-only agent whether or not anyone decided that. The console shows the capability exists, which means enabling remediation requires stepping outside the code that describes everything else you run. Know which of your guardrails you chose and which the service chose for you.</li>
+      <li><strong>Being early costs documentation.</strong> <code>service_id = "aws"</code> exists in no schema and no CLI skeleton. When a service outruns its provider, working sample code is the only reliable source.</li>
+    </ul>
+
+    <h3>What I&rsquo;d do differently in production</h3>
+
+    <ul>
+      <li><strong>Scope the association to resources or tags rather than the whole account.</strong> Empty is right for a lab, where finding the workload is the test. In a real estate that scoping is the practical blast-radius control, and it is more effective than tightening the IAM policy.</li>
+      <li><strong>Put a spend alarm on the usage meter, since the service offers no cap.</strong> It will fire late, because the meter posts late &mdash; but late is better than at the end of the month, and it is the only mechanism available.</li>
+      <li><strong>Wire the alarm to the agent, which this build did not.</strong> Every investigation here was started by hand in the console. AWS documents the automatic path &mdash; a CloudWatch alarm to EventBridge to a Lambda that calls the agent&rsquo;s webhook &mdash; and the alarm built here fired correctly on both breaks and then went nowhere. Hand-starting was right for a grading exercise, because it controls exactly what the agent is told. It is also the reason nothing in this post should be read as evidence that the thing is on-call-ready. That is the next build, not this one.</li>
+      <li><strong>Close the ServiceNow loop, then verify a ticket exists.</strong> Registration succeeded and the OAuth client issues tokens, so it is easy to call this done &mdash; and zero incidents were created. &ldquo;The integration is configured&rdquo; and &ldquo;the integration works&rdquo; are separate claims, and only one of them was tested here. Check the destination system, not the source config.</li>
+      <li><strong>Route findings to a ticket that a human closes, and never to an automated action.</strong> The ServiceNow association is meant to be the terminus, and wiring it up is the easy half. Promoting an agent from proposing to acting should follow a track record measured the way this week measures it, not a demo that read well.</li>
+      <li><strong>Run the evaluation periodically, not once.</strong> The model behind this changes without a version bump in your Terraform. A quarterly rerun of the same known break, graded against CloudTrail the same way, is the only way to notice it getting worse.</li>
+      <li><strong>Test with a decoy in the same failure domain.</strong> A timeout change was too easy to dismiss. The honest version corrupts the SSM parameter name in the same apply, so both candidates produce a plausible permission-shaped failure.</li>
+    </ul>
+  </div>
+
+</div>
