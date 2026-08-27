@@ -92,6 +92,42 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 26 August 2026 — covered by post #19
+
+Six announcements, three of them Amazon Connect items or Region expansions.
+A thin day; the top item still earned the slot on its own merits.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| `AdminDeleteSoftwareToken` — admin API to reset a user's TOTP MFA | Cognito | **#19** | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-cognito-totp-reset/) |
+| Memory usage controls, automatic or user-defined | Mountpoint for S3 | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/mountpoint-for-S3-adds-memory-usage-controls) |
+| Cross-Region backup copy and logically air-gapped vault for DocumentDB, nine more Regions | AWS Backup | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-backup-cross-region-air-gapped-docdb/) |
+| Glue 5.1 in European Sovereign Cloud Region | Glue | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-glue-5-1-european-sovereign-cloud) |
+| Unplanned shrinkage in agent schedules | Connect | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-connect-customer-unplanned-shrinkage/) |
+| Points-based scoring in performance evaluations | Connect | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-connect-customer-points-based-scoring-evaluations/) |
+
+**Why Cognito won a thin day.** The previous recovery path for a lost TOTP
+device was recreating the account, so the gap being closed was unusually large
+for a single API operation. The post's substance is not the operation though —
+it is that the outcome branches. `AdminDeleteSoftwareToken` removes the software
+token *and* the TOTP preference but leaves other registered factors intact, so
+an account with SMS registered is silently downgraded rather than reset, and the
+API returns an empty HTTP 200 either way.
+
+**Mountpoint is the strongest held item from this day.** It would have broken a
+run of three identity-adjacent posts (#17 EKS OIDC, #18 Lambda resource-based
+policies, #19 Cognito MFA) and is worth a slot on a day the news is thinner
+still.
+
+**Non-announcement items worth noting from the same day's blogs**, held here
+because they are AWS engineering posts rather than launches: in-place
+ZooKeeper-to-KRaft cluster upgrades for MSK, break-glass access for EKS when
+federated identity fails, and cross-service signal correlation for detecting
+multi-stage attacks. None are announcements, so none belong in a weekly
+inventory, but each is a viable deep-dive subject.
+
+---
+
 ## 25 August 2026 — covered by post #18
 
 Fourteen announcements plus 11 blog posts and one security bulletin. Tuesday's
