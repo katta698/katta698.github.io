@@ -213,46 +213,58 @@
 #jk-post .before-card, #jk-post .after-card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 16px; background: #fafafa; }
 #jk-post .ba-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: #6c757d; margin-bottom: 8px; display: block; }
 #jk-post .ba-item { font-size: 14px; color: #3d3d3d; margin-bottom: 6px; }
-</style><div id="jk-post">
+</style><div id="jk-post"><div class="container">
+<div class="section">
 <h2>Executive summary</h2>
 <p>
-  Amazon Aurora DSQL now lets you add foreign key constraints to new and existing tables, in every Region where Aurora DSQL runs. Until this week the migration guidance was the opposite: keep referential integrity in application code. That advice is now withdrawn, and the database will enforce it for you.
-</p>
+      Amazon Aurora DSQL now lets you add foreign key constraints to new and existing tables, in every Region where Aurora DSQL runs. Until this week the migration guidance was the opposite: keep referential integrity in application code. That advice is now withdrawn, and the database will enforce it for you.
+    </p>
 <p>
-  The interesting part is not that foreign keys arrived. It is <em>how</em> they are enforced. Aurora DSQL has no locks. It could not implement a foreign key the way PostgreSQL does, so it did something else: verify the constraint against the transaction's start-time snapshot, then adjudicate at commit using an implicit <code class="inline">KEY SHARE</code> dependency on the referenced row.
-</p>
+      The interesting part is not that foreign keys arrived. It is <em>how</em> they are enforced. Aurora DSQL has no locks. It could not implement a foreign key the way PostgreSQL does, so it did something else: verify the constraint against the transaction's start-time snapshot, then adjudicate at commit using an implicit <code>KEY SHARE</code> dependency on the referenced row.
+    </p>
 <p>
-  That choice has a consequence the announcement does not mention. Adding a foreign key changes the conflict behaviour of transactions that never touch each other's rows directly. A child insert and a parent delete, running concurrently and touching two different tables, are now a conflict — one of them will fail at commit with <code class="inline">SQLSTATE 40001</code>. On a schema with hot parent rows, turning on referential integrity can raise your serialization-failure rate without a single query changing.
-</p>
+      That choice has a consequence the announcement does not mention. Adding a foreign key changes the conflict behaviour of transactions that never touch each other's rows directly. A child insert and a parent delete, running concurrently and touching two different tables, are now a conflict — one of them will fail at commit with <code>SQLSTATE 40001</code>. On a schema with hot parent rows, turning on referential integrity can raise your serialization-failure rate without a single query changing.
+    </p>
+</div>
+<div class="section" id="what-changed">
 <h2>What changed</h2>
 <p>
-  Aurora DSQL supports the <code class="inline">NO ACTION</code>, <code class="inline">RESTRICT</code>, <code class="inline">CASCADE</code>, <code class="inline">SET NULL</code>, and <code class="inline">SET DEFAULT</code> referential actions. It also supports the <code class="inline">MATCH FULL</code> and <code class="inline">MATCH SIMPLE</code> match types, and deferrable foreign key constraints — a more complete set than the announcement's summary suggests, and enough that most existing PostgreSQL schemas will port without editing their DDL.
-</p>
+      Aurora DSQL supports the <code>NO ACTION</code>, <code>RESTRICT</code>, <code>CASCADE</code>, <code>SET NULL</code>, and <code>SET DEFAULT</code> referential actions. It also supports the <code>MATCH FULL</code> and <code>MATCH SIMPLE</code> match types, and deferrable foreign key constraints — a more complete set than the announcement's summary suggests, and enough that most existing PostgreSQL schemas will port without editing their DDL.
+    </p>
 <p>
-  Constraints can be added to existing tables, not only at creation. Availability is stated plainly: <strong>this feature is available in all AWS Regions where Aurora DSQL is available</strong>, with no separate opt-in and no pricing note, which means it is priced as ordinary read and write activity rather than as a feature.
-</p>
+      Constraints can be added to existing tables, not only at creation. Availability is stated plainly: <strong>this feature is available in all AWS Regions where Aurora DSQL is available</strong>, with no separate opt-in and no pricing note, which means it is priced as ordinary read and write activity rather than as a feature.
+    </p>
 <div class="callout">
 <strong>What the docs said a week ago</strong>
 <p>Aurora DSQL's migration guidance previously told you to implement referential integrity in application code, on the reasoning that it avoids the performance cost of cascading operations. Anyone who designed a DSQL schema against that advice built validation into their service layer. That code is not wrong now — but it is no longer the only option, and the trade-off it was avoiding has changed shape rather than disappeared.</p>
 </div>
+</div>
+<div class="section" id="architecture">
 <h2>Architecture</h2>
 <p>
-  The mechanism is two-step, and both steps matter for reasoning about behaviour under load.
-</p>
+      The mechanism is two-step, and both steps matter for reasoning about behaviour under load.
+    </p>
+<figure class="screenshot">
 <img alt="Diagram: two concurrent Aurora DSQL sessions, one deleting a parent row and one inserting a child row referencing it. The delete commits first and the insert fails at commit with OC000 SQLSTATE 40001, because the foreign key placed an implicit KEY SHARE dependency on the parent row. Three panels below summarise the extra reads on all DML, the widened conflict surface, and the interaction between cascading deletes and the 3,000-row transaction limit." src="/blog/assets/diagrams/daily-020-dsql-foreign-keys.svg"/>
+<figcaption>
+        Nothing blocks and nothing waits. Session B read the parent at its own start snapshot, where
+        the row still existed; the delete landed first, so B is adjudicated out at commit. The cost
+        of the constraint is paid in failed transactions rather than in latency.
+      </figcaption>
+</figure>
 <p>
 <strong>Snapshot verification.</strong> Every transaction runs against a consistent snapshot taken at its start. When you insert a referencing row, DSQL reads the referenced table <em>at that snapshot</em> to confirm the key exists. When you delete a referenced key, it reads the referencing table to confirm no orphans would result. Crucially, AWS is explicit that because this verification reads from the transaction start-time snapshot instead of taking a lock, other transactions can continue to modify both tables in parallel.
-</p>
+    </p>
 <p>
-<strong>Commit-time resolution.</strong> Snapshot verification proves the constraint held when the transaction started — not that it still holds. A concurrent transaction can delete the parent after you checked it. To settle that, Aurora DSQL implicitly applies the <code class="inline">KEY SHARE</code> clause to referenced rows, detecting whether a concurrent change invalidated your snapshot. If it did, the transaction fails with a serialization error.
-</p>
+<strong>Commit-time resolution.</strong> Snapshot verification proves the constraint held when the transaction started — not that it still holds. A concurrent transaction can delete the parent after you checked it. To settle that, Aurora DSQL implicitly applies the <code>KEY SHARE</code> clause to referenced rows, detecting whether a concurrent change invalidated your snapshot. If it did, the transaction fails with a serialization error.
+    </p>
 <h3>Why this widens the conflict surface</h3>
 <p>
-  DSQL's published conflict matrix is the thing to internalise. <code class="inline">SELECT ... FOR KEY SHARE</code> conflicts with <code class="inline">INSERT</code>, <code class="inline">DELETE</code>, an <code class="inline">UPDATE</code> to key columns, or <code class="inline">SELECT ... FOR UPDATE</code> on the same row. It does <em>not</em> conflict with an update to non-key columns.
-</p>
+      DSQL's published conflict matrix is the thing to internalise. <code>SELECT ... FOR KEY SHARE</code> conflicts with <code>INSERT</code>, <code>DELETE</code>, an <code>UPDATE</code> to key columns, or <code>SELECT ... FOR UPDATE</code> on the same row. It does <em>not</em> conflict with an update to non-key columns.
+    </p>
 <p>
-  Because a foreign key applies that clause implicitly to every referenced row, inserting a child row now creates a commit-time dependency on the parent. Two transactions that write to entirely different tables can now fail against each other. Before the constraint existed, they could not.
-</p>
+      Because a foreign key applies that clause implicitly to every referenced row, inserting a child row now creates a commit-time dependency on the parent. Two transactions that write to entirely different tables can now fail against each other. Before the constraint existed, they could not.
+    </p>
 <div class="table-scroll">
 <table>
 <thead>
@@ -264,68 +276,78 @@
 </thead>
 <tbody>
 <tr>
-<td><code class="inline">DELETE</code> the parent</td>
+<td><code>DELETE</code> the parent</td>
 <td><strong>Yes</strong></td>
-<td>The child's implicit <code class="inline">KEY SHARE</code> depends on the row existing</td>
+<td>The child's implicit <code>KEY SHARE</code> depends on the row existing</td>
 </tr>
 <tr>
-<td><code class="inline">UPDATE</code> a <strong>key</strong> column</td>
+<td><code>UPDATE</code> a <strong>key</strong> column</td>
 <td><strong>Yes</strong></td>
 <td>The referenced key itself moved</td>
 </tr>
 <tr>
-<td><code class="inline">UPDATE</code> a <strong>non-key</strong> column</td>
+<td><code>UPDATE</code> a <strong>non-key</strong> column</td>
 <td>No</td>
 <td>The child only depends on the key columns staying stable</td>
 </tr>
 <tr>
 <td>Another child insert on the same parent</td>
 <td>No</td>
-<td>Two <code class="inline">KEY SHARE</code> readers do not conflict with each other</td>
+<td>Two <code>KEY SHARE</code> readers do not conflict with each other</td>
 </tr>
 </tbody>
 </table>
 </div>
+</div>
+<div class="section" id="value">
 <h2>Business value</h2>
 <p>
-  The value is real and mostly about deleted code. Referential integrity implemented in a service layer is a class of bug that is easy to write and hard to test: a check-then-insert in application code is not atomic, so under concurrency it admits exactly the orphan rows it was written to prevent. Pushing the constraint into the database makes the guarantee unconditional rather than best-effort.
-</p>
+      The value is real and mostly about deleted code. Referential integrity implemented in a service layer is a class of bug that is easy to write and hard to test: a check-then-insert in application code is not atomic, so under concurrency it admits exactly the orphan rows it was written to prevent. Pushing the constraint into the database makes the guarantee unconditional rather than best-effort.
+    </p>
 <p>
-  It also removes a migration blocker. A team porting an existing PostgreSQL schema previously had to strip foreign keys and reimplement them, which is both work and a source of behavioural drift between the old system and the new. Most schemas can now move with their DDL intact, and standard ORM tooling that emits <code class="inline">REFERENCES</code> clauses works without the workarounds that DSQL guides previously described.
-</p>
+      It also removes a migration blocker. A team porting an existing PostgreSQL schema previously had to strip foreign keys and reimplement them, which is both work and a source of behavioural drift between the old system and the new. Most schemas can now move with their DDL intact, and standard ORM tooling that emits <code>REFERENCES</code> clauses works without the workarounds that DSQL guides previously described.
+    </p>
+</div>
+<div class="section" id="security">
 <h2>Security considerations</h2>
 <p>
-  Referential integrity is a data-correctness control rather than an access control, but two points are worth noting.
-</p>
+      Referential integrity is a data-correctness control rather than an access control, but two points are worth noting.
+    </p>
 <p>
-  A cascading delete is an authorised deletion of rows the caller may never have named. <code class="inline">ON DELETE CASCADE</code> means a principal with delete permission on the parent table effectively has delete permission on every referencing row, transitively. DSQL manages permissions through schema-level grants, so a grant that looks narrow at the table level can be considerably wider once cascades are in place. Model the blast radius of a cascade as part of the permission, not separately from it.
-</p>
+      A cascading delete is an authorised deletion of rows the caller may never have named. <code>ON DELETE CASCADE</code> means a principal with delete permission on the parent table effectively has delete permission on every referencing row, transitively. DSQL manages permissions through schema-level grants, so a grant that looks narrow at the table level can be considerably wider once cascades are in place. Model the blast radius of a cascade as part of the permission, not separately from it.
+    </p>
 <p>
-  Second, constraint violations are informative. An error revealing that a referenced key does not exist tells the caller something about data they may not be permitted to read. Where a table is multi-tenant and the foreign key crosses a tenant boundary, prefer returning a generic failure from the application layer over surfacing the database's message verbatim.
-</p>
+      Second, constraint violations are informative. An error revealing that a referenced key does not exist tells the caller something about data they may not be permitted to read. Where a table is multi-tenant and the foreign key crosses a tenant boundary, prefer returning a generic failure from the application layer over surfacing the database's message verbatim.
+    </p>
+</div>
+<div class="section" id="cost">
 <h2>Cost considerations</h2>
 <p>
-  There is no price for the feature; there is a price for what it does. AWS states it directly: <strong>all DML operations on referenced or referencing tables incur extra reads</strong> to guarantee referential integrity, and advises benchmarking the workload before adding a constraint.
-</p>
+      There is no price for the feature; there is a price for what it does. AWS states it directly: <strong>all DML operations on referenced or referencing tables incur extra reads</strong> to guarantee referential integrity, and advises benchmarking the workload before adding a constraint.
+    </p>
 <p>
-  On a serverless, consumption-priced database, extra reads are not a footnote — they are the bill. Every insert into a child table now also reads the parent table. Every delete from a parent reads the children. A schema with several foreign keys per table multiplies this, and the multiplication lands on the write path, which is usually the hot path.
-</p>
+      On a serverless, consumption-priced database, extra reads are not a footnote — they are the bill. Every insert into a child table now also reads the parent table. Every delete from a parent reads the children. A schema with several foreign keys per table multiplies this, and the multiplication lands on the write path, which is usually the hot path.
+    </p>
 <p>
-  The second cost is retries. A transaction that fails with a serialization error consumed resources and produced nothing, and then runs again. A workload with hot parent rows can pay for the same logical write several times.
-</p>
+      The second cost is retries. A transaction that fails with a serialization error consumed resources and produced nothing, and then runs again. A workload with hot parent rows can pay for the same logical write several times.
+    </p>
+</div>
+<div class="section" id="operations">
 <h2>Operational considerations</h2>
 <p>
-  Three DSQL limits interact with foreign keys in ways worth planning for.
-</p>
+      Three DSQL limits interact with foreign keys in ways worth planning for.
+    </p>
 <p>
 <strong>The 3,000-row transaction cap.</strong> A transaction can modify up to 3,000 rows, regardless of the number of secondary indexes, and that limit applies to all DML. A cascading delete performs deletes on child rows inside the same transaction, so a parent row with a wide fan-out is a candidate for hitting the cap. AWS does not spell out the interaction, so treat this as something to <em>test on your own schema</em> rather than assume in either direction — delete a parent with more children than the cap and see what happens, before a customer does.
-</p>
+    </p>
 <p>
 <strong>One DDL statement per transaction, and DDL separate from DML.</strong> Adding constraints to an existing schema is therefore a sequence of individual statements, not one migration transaction. There is no all-or-nothing schema change here, so a migration that fails halfway leaves some constraints applied and some not. Write the migration to be resumable.
-</p>
+    </p>
 <p>
-<strong>Schema changes can fail live sessions.</strong> Any operation that modifies the schema catalog can produce <code class="inline">OC001</code> — including <code class="inline">ALTER TABLE</code>. Adding a foreign key to a busy table can therefore surface serialization errors in sessions doing nothing but ordinary reads and writes, because their cached catalog went stale. This is safe and retryable, but it is visible, and it belongs in the change plan rather than in the incident channel.
-</p>
+<strong>Schema changes can fail live sessions.</strong> Any operation that modifies the schema catalog can produce <code>OC001</code> — including <code>ALTER TABLE</code>. Adding a foreign key to a busy table can therefore surface serialization errors in sessions doing nothing but ordinary reads and writes, because their cached catalog went stale. This is safe and retryable, but it is visible, and it belongs in the change plan rather than in the incident channel.
+    </p>
+</div>
+<div class="section" id="tradeoffs">
 <h2>Tradeoffs</h2>
 <div class="table-scroll">
 <table>
@@ -355,12 +377,14 @@
 </tbody>
 </table>
 </div>
+</div>
+<div class="section" id="implementation">
 <h2>Implementation guidance</h2>
 <p>
-  Add constraints where the parent is stable and the fan-out is bounded, and benchmark before committing to them on a hot path.
-</p>
+      Add constraints where the parent is stable and the fan-out is bounded, and benchmark before committing to them on a hot path.
+    </p>
 <div class="code-block">
-<div class="code-header"><span class="code-lang">SQL — constraint plus the retry the constraint makes more likely</span></div>
+<div class="code-header"><span class="code-lang">sql</span><span class="code-dots"></span></div>
 <pre><code>-- DDL and DML need separate transactions, and only one DDL each.
 ALTER TABLE orders
   ADD CONSTRAINT fk_orders_product
@@ -371,10 +395,10 @@ ALTER TABLE orders
 -- against the 3,000-row limit on your own data.</code></pre>
 </div>
 <p>
-  On the client side, the retry is no longer optional. AWS notes that the logic resembles standard PostgreSQL deadlock handling, but that <strong>OCC requires your applications to exercise this logic more frequently</strong>. Both <code class="inline">OC000</code> and <code class="inline">OC001</code> arrive as <code class="inline">SQLSTATE 40001</code> and both are safe to retry.
-</p>
+      On the client side, the retry is no longer optional. AWS notes that the logic resembles standard PostgreSQL deadlock handling, but that <strong>OCC requires your applications to exercise this logic more frequently</strong>. Both <code>OC000</code> and <code>OC001</code> arrive as <code>SQLSTATE 40001</code> and both are safe to retry.
+    </p>
 <div class="code-block">
-<div class="code-header"><span class="code-lang">Python — retry on serialization failure with backoff and jitter</span></div>
+<div class="code-header"><span class="code-lang">python</span><span class="code-dots"></span></div>
 <pre><code>import random, time
 import psycopg
 
@@ -390,49 +414,58 @@ def run_with_retry(conn_factory, work, attempts=5):
             time.sleep((2 ** attempt) * 0.05 + random.uniform(0, 0.05))</code></pre>
 </div>
 <p>
-  The transaction body must be idempotent for this to be safe. That is the same requirement DSQL already placed on every write, so a correctly built DSQL application should need no change — but a schema newly acquiring foreign keys will exercise the path far more often than before.
-</p>
+      The transaction body must be idempotent for this to be safe. That is the same requirement DSQL already placed on every write, so a correctly built DSQL application should need no change — but a schema newly acquiring foreign keys will exercise the path far more often than before.
+    </p>
+</div>
+<div class="section" id="best-practices">
 <h2>Best practices</h2>
 <p>
 <strong>Keep referenced keys stable.</strong> This is AWS's own guidance and it is the highest-leverage design decision here. Key columns are those in a unique, non-partial, non-expression index; everything else is a non-key column, and a concurrent update to a non-key column does not conflict. So if a parent row carries a value that changes often, move it off the referenced key. A hot parent row whose key never moves will not reject its children.
-</p>
+    </p>
 <p>
-<strong>Prefer <code class="inline">RESTRICT</code> to <code class="inline">CASCADE</code> as the default.</strong> Cascades are convenient and they hide unbounded work inside an innocuous statement — work that runs against a hard 3,000-row transaction limit and an authorisation model that does not see it. Use cascade where the fan-out is small and known.
-</p>
+<strong>Prefer <code>RESTRICT</code> to <code>CASCADE</code> as the default.</strong> Cascades are convenient and they hide unbounded work inside an innocuous statement — work that runs against a hard 3,000-row transaction limit and an authorisation model that does not see it. Use cascade where the fan-out is small and known.
+    </p>
 <p>
 <strong>Spread the key range.</strong> DSQL's standing advice — random primary keys, avoid contention on single keys — matters more once foreign keys exist, because the constraint concentrates commit-time dependencies onto parent rows.
-</p>
+    </p>
 <p>
 <strong>Benchmark on the write path, not the read path.</strong> The extra reads land on inserts, updates and deletes. A read-heavy benchmark will show almost nothing and tell you almost nothing.
-</p>
+    </p>
+</div>
+<div class="section" id="who">
 <h2>Who should adopt this</h2>
 <p>
 <strong>Adopt now:</strong> teams migrating an existing PostgreSQL schema to Aurora DSQL, who were facing the work of stripping and reimplementing constraints. The migration blocker is gone and the schema can move mostly intact.
-</p>
+    </p>
 <p>
 <strong>Adopt selectively:</strong> teams already running on DSQL with application-level integrity. The application code works; the case for change is removing a class of concurrency bug, not fixing a live problem. Add constraints to the relationships where an orphan would be a correctness incident, and leave the rest.
-</p>
+    </p>
 <p>
-<strong>Benchmark first:</strong> anyone with hot parent rows — a tenants table, a popular product, a status lookup referenced by every row in the system. This is exactly the shape where the implicit <code class="inline">KEY SHARE</code> turns independent writes into conflicting ones, and where the serialization rate can move sharply.
-</p>
+<strong>Benchmark first:</strong> anyone with hot parent rows — a tenants table, a popular product, a status lookup referenced by every row in the system. This is exactly the shape where the implicit <code>KEY SHARE</code> turns independent writes into conflicting ones, and where the serialization rate can move sharply.
+    </p>
+</div>
+<div class="section" id="takeaways">
 <h2>Key takeaways</h2>
 <ul>
 <li>Aurora DSQL now supports foreign keys on new and existing tables, in all Regions where DSQL runs, with a fuller set of referential actions and match types than the announcement implies.</li>
-<li>Enforcement is lock-free: snapshot verification during the transaction, then commit-time adjudication via an implicit <code class="inline">KEY SHARE</code> on referenced rows.</li>
-<li>The cost is not latency but failed commits. A child insert now conflicts with a concurrent parent delete or key-column update, and the loser fails with <code class="inline">SQLSTATE 40001</code>.</li>
+<li>Enforcement is lock-free: snapshot verification during the transaction, then commit-time adjudication via an implicit <code>KEY SHARE</code> on referenced rows.</li>
+<li>The cost is not latency but failed commits. A child insert now conflicts with a concurrent parent delete or key-column update, and the loser fails with <code>SQLSTATE 40001</code>.</li>
 <li>An update to a <em>non-key</em> column on the parent does not conflict — which makes "keep the referenced key stable" the main design lever.</li>
 <li>All DML on referenced or referencing tables incurs extra reads. On a consumption-priced database that is a direct bill increase on the write path, and AWS explicitly says to benchmark first.</li>
-<li>Cascading deletes run inside the 3,000-row transaction limit. Test a wide parent on your own schema before trusting <code class="inline">ON DELETE CASCADE</code> in production.</li>
+<li>Cascading deletes run inside the 3,000-row transaction limit. Test a wide parent on your own schema before trusting <code>ON DELETE CASCADE</code> in production.</li>
 </ul>
+</div>
+<div class="section" id="reference">
 <h2>Official AWS references</h2>
 <ul>
-<li><a href="https://aws.amazon.com/about-aws/whats-new/2026/08/aurora-dsql-foreign-key-constraints/" rel="noopener" target="_blank">AWS What's New — Amazon Aurora DSQL now supports foreign key constraints</a></li>
-<li><a href="https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-foreign-key-constraints.html" rel="noopener" target="_blank">AWS Documentation — Working with foreign key constraints in Aurora DSQL</a></li>
-<li><a href="https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-concurrency-control.html" rel="noopener" target="_blank">AWS Documentation — Concurrency control in Aurora DSQL</a></li>
-<li><a href="https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-postgresql-compatibility-migration-guide.html" rel="noopener" target="_blank">AWS Documentation — Migrating from PostgreSQL to Aurora DSQL</a></li>
+<li><a href="https://aws.amazon.com/about-aws/whats-new/2026/08/aurora-dsql-foreign-key-constraints/">Amazon Aurora DSQL now supports foreign key constraints, AWS What's New</a></li>
+<li><a href="https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-foreign-key-constraints.html">Working with foreign key constraints in Aurora DSQL</a></li>
+<li><a href="https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-concurrency-control.html">Concurrency control in Aurora DSQL</a></li>
+<li><a href="https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-postgresql-compatibility-migration-guide.html">Migrating from PostgreSQL to Aurora DSQL</a></li>
 </ul>
 </div>
 </div>
+</div></div>
     <div class="post-tags">
       <span class="post-tags-label">Topics:</span>
       <span class="tag-badge">AWS Daily Intelligence</span> <span class="tag-badge">AWS</span>
