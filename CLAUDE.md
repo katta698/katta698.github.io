@@ -991,6 +991,62 @@ a custom-built architecture page and its served page would never be generated.
 `gcpweekly-` clears that check because the fourth character is not a hyphen. Do
 not "tidy" it to `gcp-weekly-`.
 
+### The Complete inventory section, and why it is not the AWS one
+
+Build it with `python scripts/build_weekly_inventory_gcp.py <start> <end>`.
+There is a **separate** builder from AWS's on purpose: `build_weekly_inventory.py`
+imports `WHATS_NEW` from `fetch_week.py` and knows nothing about GCP, and the two
+clouds do not publish anything like the same shape.
+
+**The reason GCP had no inventory for its first two roundups is volume.**
+Measured for 17-21 August 2026: Azure 14 items, AWS 63, GCP **282**. AWS prints
+one row per announcement; at 282 rows that stops being an inventory a reader
+uses.
+
+The volume is not evenly spread, and that is what makes a format possible:
+
+- **Container Optimized OS alone was 147 of the 282**, and 131 of those were
+  one-line kernel CVE fixes. Excluding it the week was 135 notes &mdash; the same
+  order as AWS, and entirely printable.
+- **Those 131 notes carry only 49 distinct CVEs.** COS ships one release note per
+  milestone, so one kernel CVE fixed in cos-129, cos-125, cos-121 and cos-117 is
+  four separate notes. **They are not duplicates** &mdash; this is exactly the
+  same-text/same-product case the dedup rules above say must NOT be collapsed.
+
+So the builder **rolls up** rather than deduplicates: the count stays 131, and
+the rendering becomes one sentence naming the releases and listing all 49 CVE
+ids. Nothing is dropped and no count is altered.
+
+**The roll-up rule keys on repetition, not size.** A (product, type) group is
+rolled up only when it has at least `ROLLUP_MIN` notes *and* has fewer distinct
+summaries than notes. A size threshold would have hidden Gemini Enterprise's 9
+distinct features and GKE's 9 distinct changes from the same week. Where a
+rolled-up group is not CVEs, the builder lists its distinct texts underneath, so
+rolling up costs the reader no information.
+
+**Completeness is asserted, not claimed.** Every raw note lands in exactly one of
+three buckets &mdash; collapsed across products, rolled up, or listed &mdash; and
+the script exits non-zero if they do not sum to the raw total. The same
+arithmetic is printed into the post as a table, so a reader can check it.
+
+**Link validation here is mostly anchor validation.** A GCP note's link is the
+day anchor on the release-notes page (`.../release-notes#August_17_2026`); only
+Cloud Blog items have their own URL. Measured for that week: 282 notes, **11
+distinct URLs**. The page answers 200 whether or not the fragment exists, so a
+status check alone passes every dead anchor. Measured 28 August 2026,
+`id="August_17_2026"` is in the served HTML and `id="August_99_2026"` is not, so
+`check()` fetches the body and asserts the id is present.
+
+**`parse_daynotes_ctx()` is the parser; `parse_daynotes()` is a projection of
+it.** Do not add a second parser &mdash; drift between two is the failure this
+whole file exists to prevent. The context field is the sub-release heading
+(`<h3 id="cos-129-...">`), which `NOTE_RE` deliberately does not treat as a
+delimiter, so it arrives inside the body of the note that introduces it.
+
+**Do not add "Complete inventory" to the required headings in
+`validate_arch_post.py`.** GCP weeklies #1 and #2 have no such section and it
+would fail them retroactively.
+
 Everything else carries over from the AWS weekly section below: scope by news
 date, never repeat an announcement but do follow up on a genuine one, a quiet
 week stays quiet, and no process commentary in the post.

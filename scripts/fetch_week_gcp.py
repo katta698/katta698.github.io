@@ -125,6 +125,19 @@ PRODUCT_SPLIT_RE = re.compile(r'<h2 class="release-note-product-title">(.*?)</h2
 NOTE_RE = re.compile(r"<h3>(.*?)</h3>(.*?)(?=<h3>|$)", re.S)
 PUBLISHED_RE = re.compile(r"Published:\s*</strong>\s*(\d{4}-\d\d-\d\d)")
 
+# The sub-release heading a run of notes sits under. Google marks it with an h3
+# that carries an id, which NOTE_RE deliberately does not treat as a delimiter --
+# so it arrives inside the body of the note that introduces it, and every note
+# after it belongs to it until the next one.
+#
+# This is what explains Container Optimized OS. In the week of 17-21 August 2026
+# it emitted 131 security notes carrying only 49 distinct CVEs, because one
+# kernel CVE is fixed once per milestone and each fix is its own note. Without
+# the milestone the inventory has 131 lines that look like duplicates and are
+# not; with it, they collapse to one honest sentence. Do NOT resolve that by
+# deduplicating -- same text and same product is a real repeat (see CLAUDE.md).
+CTX_RE = re.compile(r'<h3 id="[^"]*">(.*?)</h3>', re.S)
+
 
 def fetch(url):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -145,12 +158,17 @@ def _entries(raw):
     return ET.fromstring(raw).findall(".//" + ATOM + "entry")
 
 
-def parse_daynotes(raw):
+def parse_daynotes_ctx(raw):
     """Explode the combined feed: one entry per day, many notes inside it.
 
-    Returns [(date, product, kind, summary, link)]. The day is taken from the
-    entry, not from anything inside the content, because the content carries no
-    per-note date -- the day *is* the entry.
+    Returns [(date, product, kind, summary, link, context)]. The day is taken
+    from the entry, not from anything inside the content, because the content
+    carries no per-note date -- the day *is* the entry.
+
+    `context` is the sub-release the note sits under (a Container Optimized OS
+    milestone, a GKE channel version), or "" where the product does not use one.
+    It is what makes a run of identically-worded notes explainable rather than
+    merely repetitive; see CTX_RE.
     """
     out = []
     for e in _entries(raw):
@@ -166,11 +184,27 @@ def parse_daynotes(raw):
             body = chunks[i + 1] if i + 1 < len(chunks) else ""
             notes = NOTE_RE.findall(body)
             if not notes:
-                out.append((day, product, "Note", text_of(body), link))
+                out.append((day, product, "Note", text_of(body), link, ""))
                 continue
+            # Reset per product block: a milestone belongs to the product that
+            # declared it and must not leak into the next product's notes.
+            ctx = ""
             for kind, note_body in notes:
-                out.append((day, product, text_of(kind, 30), text_of(note_body), link))
+                m = CTX_RE.search(note_body)
+                if m:
+                    ctx = text_of(m.group(1), 60).split(" ")[0]
+                out.append((day, product, text_of(kind, 30), text_of(note_body),
+                            link, ctx))
     return sorted(out, key=lambda r: r[0], reverse=True)
+
+
+def parse_daynotes(raw):
+    """The 5-tuple view every existing caller expects.
+
+    A projection of parse_daynotes_ctx rather than a second parser, so the two
+    cannot drift -- the failure this whole file exists to prevent.
+    """
+    return [r[:5] for r in parse_daynotes_ctx(raw)]
 
 
 def parse_bulletin(raw):
@@ -236,6 +270,39 @@ def load(source):
 def gather():
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         return list(pool.map(load, SOURCES))
+
+
+def _pad(fn):
+    """Give a 5-tuple parser the 6-tuple shape. Only the combined release-notes
+    feed has a sub-release structure; bulletins and blog posts have none, and an
+    empty context is the honest value rather than a missing field."""
+    def inner(raw):
+        return [r + ("",) for r in fn(raw)]
+    return inner
+
+
+PARSERS_CTX = {"daynotes": parse_daynotes_ctx,
+               "bulletin": _pad(parse_bulletin),
+               "gkebull": _pad(parse_gkebull),
+               "rss": _pad(parse_rss)}
+
+
+def load_ctx(source):
+    name, url, kind = source
+    try:
+        return name, kind, PARSERS_CTX[kind](fetch(url)), None
+    except Exception as exc:                                  # noqa: BLE001
+        return name, kind, [], "%s: %s" % (type(exc).__name__, exc)
+
+
+def gather_ctx():
+    """gather(), but every row carries the sub-release context field.
+
+    Used by build_weekly_inventory_gcp.py, which cannot explain a run of
+    identically-worded notes without knowing which release each belongs to.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        return list(pool.map(load_ctx, SOURCES))
 
 
 def probe_product(slug):

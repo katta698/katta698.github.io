@@ -301,6 +301,22 @@ SERIES = {
         'vendor': 'AWS',
         'doc_hosts': ('docs.aws.amazon.com', 'aws.amazon.com'),
         'shell_hosts': ('docs.aws.amazon.com',),
+        # First-party docs for the *tooling* this series is explicitly about.
+        # Every lab series carries 'Terraform' in its own labels, and a lab that
+        # wires HCP Terraform to a cloud necessarily makes claims about both
+        # products: TFC_GCP_PROVIDER_AUTH and terraform_run_phase are HashiCorp's
+        # identifiers, and no amount of Google documentation describes them.
+        # Dropping such a claim would leave those names printed in the post with
+        # nothing behind them, which is worse than citing the vendor that owns
+        # them -- the badge would cover fewer of the post's figures, not more.
+        #
+        # This is still first-party documentation. It is deliberately a separate
+        # key from doc_hosts so that the architecture and intelligence series
+        # cannot inherit it, and so that adding a host here is a visible decision
+        # rather than a quiet widening of what "the vendor's own docs" means.
+        # Probed 2026-08-28: developer.hashicorp.com returns a real HTTP 404 for
+        # a missing page, so it needs no shell_hosts entry.
+        'tool_doc_hosts': ('developer.hashicorp.com',),
         'headings': LAB_HEADINGS,
     },
     'azlab': {
@@ -325,6 +341,22 @@ SERIES = {
         'vendor': 'Azure',
         'doc_hosts': ('learn.microsoft.com', 'azure.microsoft.com'),
         'shell_hosts': (),
+        # First-party docs for the *tooling* this series is explicitly about.
+        # Every lab series carries 'Terraform' in its own labels, and a lab that
+        # wires HCP Terraform to a cloud necessarily makes claims about both
+        # products: TFC_GCP_PROVIDER_AUTH and terraform_run_phase are HashiCorp's
+        # identifiers, and no amount of Google documentation describes them.
+        # Dropping such a claim would leave those names printed in the post with
+        # nothing behind them, which is worse than citing the vendor that owns
+        # them -- the badge would cover fewer of the post's figures, not more.
+        #
+        # This is still first-party documentation. It is deliberately a separate
+        # key from doc_hosts so that the architecture and intelligence series
+        # cannot inherit it, and so that adding a host here is a visible decision
+        # rather than a quiet widening of what "the vendor's own docs" means.
+        # Probed 2026-08-28: developer.hashicorp.com returns a real HTTP 404 for
+        # a missing page, so it needs no shell_hosts entry.
+        'tool_doc_hosts': ('developer.hashicorp.com',),
         'headings': LAB_HEADINGS,
     },
     'gcplab': {
@@ -349,6 +381,22 @@ SERIES = {
         'vendor': 'Google Cloud',
         'doc_hosts': ('cloud.google.com', 'docs.cloud.google.com'),
         'shell_hosts': (),
+        # First-party docs for the *tooling* this series is explicitly about.
+        # Every lab series carries 'Terraform' in its own labels, and a lab that
+        # wires HCP Terraform to a cloud necessarily makes claims about both
+        # products: TFC_GCP_PROVIDER_AUTH and terraform_run_phase are HashiCorp's
+        # identifiers, and no amount of Google documentation describes them.
+        # Dropping such a claim would leave those names printed in the post with
+        # nothing behind them, which is worse than citing the vendor that owns
+        # them -- the badge would cover fewer of the post's figures, not more.
+        #
+        # This is still first-party documentation. It is deliberately a separate
+        # key from doc_hosts so that the architecture and intelligence series
+        # cannot inherit it, and so that adding a host here is a visible decision
+        # rather than a quiet widening of what "the vendor's own docs" means.
+        # Probed 2026-08-28: developer.hashicorp.com returns a real HTTP 404 for
+        # a missing page, so it needs no shell_hosts entry.
+        'tool_doc_hosts': ('developer.hashicorp.com',),
         'headings': LAB_HEADINGS,
     },
 }
@@ -911,10 +959,11 @@ def check_verification(slug, name, fm, parsed, body, spec):
             err(slug, '%s verified_claims[%d] source is not https: %s' % (name, i, src))
             continue
         host = src.split('/')[2]
-        if not any(host == h or host.endswith('.' + h) for h in spec['doc_hosts']):
+        allowed = tuple(spec['doc_hosts']) + tuple(spec.get('tool_doc_hosts', ()))
+        if not any(host == h or host.endswith('.' + h) for h in allowed):
             err(slug, "%s verified_claims[%d] cites %s. Verification means %s's own "
                       'documentation (%s), not a blog quoting it secondhand.'
-                % (name, i, host, spec['vendor'], ', '.join(spec['doc_hosts'])))
+                % (name, i, host, spec['vendor'], ', '.join(allowed)))
             continue
         if src.rstrip('/') not in ref.replace('&amp;', '&'):
             warn(slug, '%s verified_claims[%d] cites %s, which is not in the post\'s '
