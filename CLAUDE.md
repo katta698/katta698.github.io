@@ -1275,8 +1275,33 @@ The two halves are not the same risk and should not share a rule:
 | **Push** | Public, near-irreversible, triggers the Pages deploy and the RAG re-index. |
 
 So committing is now the last step of writing a post, not a separate permission.
-Pushing is unchanged and stays Jayanth's: **never `git push` unless asked in
-that many words.** A green check run is not an instruction to push.
+Pushing stays Jayanth's decision: **never push on your own initiative.** A green
+check run is not an instruction to push.
+
+**But when he asks, push — and read the ask the way a person would.** The
+trigger is intent, not a magic word. All of these mean go live:
+
+> push · publish · ship it · make it live · go · send it · "pushed?" · "did you push?"
+
+**"Publish" means push.** This is the one that went wrong, on 2026-08-28. The
+word collides with `publish.py`, whose final line is *"Do NOT push"* — so the
+window read "publish" as the script's meaning (rebase, check, stop) rather than
+the English one, answered three consecutive push instructions as though they
+were questions about state, and left arch-035 sitting committed for twenty
+minutes while saying it was waiting to be told. It had been told three times.
+
+A question phrased as a question is still an instruction when the answer is
+obviously "no, and you want me to." If Jayanth asks "pushed?" about work that is
+committed and green, the reply is to push it, not to report that it is unpushed
+and ask for a different word.
+
+**Do not ask for confirmation you have already been given.** Re-asking after a
+clear instruction is not caution — it spends his time to buy the window nothing,
+which is the same cost the 83-minute commit delay above was written down to stop.
+
+If a push genuinely should not happen — a failed check, a dirty tree, origin
+moved — say *that specific reason* and stop. "I need the exact word" is not a
+reason.
 
 **A failed check is still a full stop.** This is authority to commit work the
 scripts have passed, not authority to commit past them. If `publish.py` reports
