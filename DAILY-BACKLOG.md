@@ -92,6 +92,29 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 27 August 2026 — covered by post #20
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Foreign key constraints on new and existing tables; NO ACTION/RESTRICT/CASCADE/SET NULL/SET DEFAULT, MATCH FULL/SIMPLE, deferrable | Aurora DSQL | **#20** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aurora-dsql-foreign-key-constraints/) |
+| Recovery Plans for orchestrated application recovery — ordering and dependencies across waves | Elastic Disaster Recovery | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/elastic-disaster-recovery-plans/) |
+| Cross-Region and cross-account backup copy | FSx for NetApp ONTAP | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/fsx-ontap-cross-region-backup-copy/) |
+| Cross-Region and cross-account backup support for FSx for NetApp ONTAP — the AWS Backup half of the pair above | AWS Backup | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-backup-amazon-fsx-netapp-cross-account-region/) |
+| Streaming ingestion accepts 10MiB records from Kinesis Data Streams | Redshift | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/redshift-streaming-supports-kds-10mib-records) |
+| Agent Toolkit for AWS integration for AI-assisted warehouse management | Redshift | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/redshift-agenttoolkit-for-ai-assisted-datawarehouse-mgmt) |
+| Guardrails extended to tool interactions via the Strands Agents SDK (Security Blog) | Bedrock | open | Medium | [link](https://aws.amazon.com/blogs/security/extend-amazon-bedrock-guardrails-to-tool-interactions-using-the-strands-agents-sdk/) |
+| Geospatial and variant types in Iceberg v3 on Glue 6.0 (Big Data Blog) | Glue | open | Medium | [link](https://aws.amazon.com/blogs/big-data/build-with-geospatial-and-variant-types-in-iceberg-v3-on-aws-glue-6-0/) |
+| AgentCore expands to two new Regions | Bedrock | skipped | Low-Med | — |
+| X8i in Milan and Spain; EVS adds i7i.metal-48xl; Connect Cape Town analytics and scheduling metric refresh; Cosmos3 and Muse-Glimmer/Qwen models on JumpStart | EC2, EVS, Connect, SageMaker | skipped | Low | — |
+
+**Worth revisiting:** Elastic Disaster Recovery Recovery Plans is the strongest
+unwritten item of the day — orchestrated, dependency-ordered recovery is a real
+architecture topic and DR has had one post (#8, Route 53 ARC) in the whole
+series. The two FSx/Backup items are one story told twice and should be written
+as a single post on cross-account backup isolation, not as two.
+
+---
+
 ## 26 August 2026 — covered by post #19
 
 Six announcements, three of them Amazon Connect items or Region expansions.
