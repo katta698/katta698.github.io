@@ -117,6 +117,14 @@ CHECKS = [
     # correctly inline and vanishes once blog.js lightboxes it. Every other
     # check here is about content, so nothing caught that until a reader did.
     ("check_theme_render.py",   True,  False, True,  True),
+    # The stylesheet half of the same problem. check_theme_render.py asks
+    # whether a diagram survives being re-coloured; this asks whether dark mode
+    # ever reaches an element at all. `code.inline` sat inside the dark
+    # blanket's :not(code) exclusion and kept a white chip on a dark page, on
+    # every post using inline code, until a reader asked about it on
+    # 2026-08-28. Nothing caught it because every other check reads posts and
+    # this lived in blog.css.
+    ("check_dark_theme.py",     True,  False, True,  True),
     ("check_index_complete.py", True,  False, False, False),
     ("fix_series_nav.py",       True,  False, False, False),
     ("audit_claims.py",         False, False, False, True),
