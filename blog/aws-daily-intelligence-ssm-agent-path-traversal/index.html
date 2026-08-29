@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Daily Intelligence #21 - A Path Traversal in the SSM Agent, and Why Scoping SendCommand Was Never a Privilege Boundary | Jayanth Katta Blog</title>
+<meta name="description" content="AWS published two security bulletins yesterday, both path traversal. The one that matters to almost everyone isCVE-2026-81849, in the SSM Agent — the process th…"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-daily-intelligence-ssm-agent-path-traversal/"/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<meta property="og:title" content="AWS Daily Intelligence #21 - A Path Traversal in the SSM Agent, and Why Scoping SendCommand Was Never a Privilege Boundary"/>
+<meta property="og:description" content="AWS published two security bulletins yesterday, both path traversal. The one that matters to almost everyone isCVE-2026-81849, in the SSM Agent — the process th…"/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-daily-intelligence-ssm-agent-path-traversal/"/>
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="AWS Daily Intelligence #21 - A Path Traversal in the SSM Agent, and Why Scoping SendCommand Was Never a Privilege Boundary"/>
+<meta name="twitter:description" content="AWS published two security bulletins yesterday, both path traversal. The one that matters to almost everyone isCVE-2026-81849, in the SSM Agent — the process th…"/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=4c1c861f"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Home</a></li>
+    <li><a href="/blog/" class="active">Blog</a></li>
+    <li><a href="/resume.html">Resume</a></li>
+  </ul>
+
+
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+  <button class="hamburger" id="hamburger-btn" aria-label="Menu">
+    <span></span><span></span><span></span>
+  </button>
+</nav>
+<div class="mobile-menu" id="mobile-menu">
+  <a href="/">Home</a>
+  <a href="/resume.html">Resume</a>
+  <button class="theme-toggle" id="nav-theme-btn-mobile" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon-m">🌙</span><span id="theme-label-text-m">Dark</span>
+  </button>
+</div>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Daily Intelligence #21 - A Path Traversal in t…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS Daily Intelligence</span> <span class="tag-badge">AWS</span></div>
+      <h1>AWS Daily Intelligence #21 - A Path Traversal in the SSM Agent, and Why Scoping SendCommand Was Never a Privilege Boundary</h1>
+      
+      <div class="post-info">
+        <span>Aug 29, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>11 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 29 August 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-daily-intelligence-ssm-agent-path-traversal" data-topics="AWS Daily Intelligence,AWS"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+
+/* ── Post header ── */
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+
+/* ── Layout ── */
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+
+/* ── TOC ── */
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+
+/* ── Callouts ── */
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+
+/* ── Flow steps ── */
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+
+/* ── Code blocks ── */
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post code.inline { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+
+/* ── Skill tags ── */
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+
+/* ── Grid cards ── */
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+
+/* ── Challenge cards ── */
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+
+/* ── Screenshots ── */
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+
+/* ── Tables ── */
+/* clean_html() strips every inline style attribute, so the overflow-x:auto
+   wrapper documented in CLAUDE.md silently becomes a bare div on any
+   sync-built post, and wide tables clip on mobile with no way to scroll.
+   Wrap wide tables in the table-scroll class instead: class attributes
+   survive cleaning, inline styles do not. (Arch posts are unaffected —
+   they bypass clean_html entirely, so inline styles still work there.) */
+/* Weekly Intelligence inventory: AWS's own one-line summary under each linked
+   announcement. A class rather than an inline style because clean_html()
+   strips style attributes. Generated by scripts/build_weekly_inventory.py. */
+#jk-post .inv-gist { display: block; color: #6c757d; font-size: 13px; line-height: 1.5; margin-top: 2px; }
+#jk-post .table-scroll { overflow-x: auto; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+
+/* ── Footer ── */
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+
+/* ── Compatibility: older post markup (Week 1-3, RAG-search post) ── */
+#jk-post .meta { color: #6c757d; font-size: 0.9em; margin-bottom: 24px; }
+#jk-post .meta span { background: #fafafa; border: 1px solid #e5e5e5; padding: 4px 12px; border-radius: 20px; margin-right: 6px; display: inline-block; margin-bottom: 6px; font-size: .85em; }
+#jk-post .stack-badge { background: #C4A484; color: #0f1111; padding: 10px 18px; border-radius: 4px; font-size: 0.85em; font-weight: 700; display: inline-block; margin-bottom: 20px; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+#jk-post .warning-box { background: #fffbeb; border: 1px solid #fde68a; border-radius: 4px; padding: 14px 20px; margin: 18px 0; color: #0f1111; }
+#jk-post .warning-box strong { color: #d97706; }
+#jk-post .tip-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 4px; padding: 14px 20px; margin: 18px 0; color: #0f1111; }
+#jk-post .tip-box strong { color: #1d4ed8; }
+#jk-post .bug-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .bug-label { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 10px 16px; display: block; font-size: 11px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: #cc0c39; }
+#jk-post .bug-title { padding: 12px 16px 0; font-size: 14px; font-weight: 700; color: #0f1111; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .arch-container { margin: 20px 0; border: 1px solid #e5e5e5; border-radius: 4px; overflow: hidden; }
+#jk-post .before-after { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .before-card, #jk-post .after-card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 16px; background: #fafafa; }
+#jk-post .ba-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: #6c757d; margin-bottom: 8px; display: block; }
+#jk-post .ba-item { font-size: 14px; color: #3d3d3d; margin-bottom: 6px; }
+</style><div id="jk-post"><div class="container">
+<div class="section">
+<h2>Executive summary</h2>
+<p>
+      AWS published two security bulletins yesterday, both path traversal. The one that matters to almost everyone is <strong>CVE-2026-81849</strong>, in the SSM Agent — the process that sits on essentially every managed EC2 instance, and runs as root.
+    </p>
+<p>
+      The bulletin's own wording is the whole story: a path traversal vulnerability exists in the <code>aws:downloadContent</code> plugin that permits authenticated users with <em>restricted</em> SendCommand permissions to write files outside the intended directory with root-level access. The word doing the work is <em>restricted</em>. This is not a bug that gives an attacker something they were already allowed to do — it is a bug that dissolves the boundary a scoped IAM policy was drawn to create.
+    </p>
+<p>
+      Affected versions run from <strong>2.0.767.0 to 3.3.4364.0</strong>, which is most of the agent's release history rather than a recent regression. The fix is <strong>3.3.4515.0</strong> or later, and no workaround is offered. If your answer to "what version is the agent on our fleet" is a shrug, that is today's work.
+    </p>
+</div>
+<div class="section" id="what-changed">
+<h2>What changed</h2>
+<p>
+      Two bulletins, both the same vulnerability class, published the same day.
+    </p>
+<div class="table-scroll">
+<table>
+<thead>
+<tr>
+<th>Bulletin</th>
+<th>Component</th>
+<th>Affected</th>
+<th>Fixed in</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CVE-2026-81849</strong></td>
+<td>amazon-ssm-agent, <code>aws:downloadContent</code> plugin</td>
+<td>2.0.767.0 to 3.3.4364.0</td>
+<td><strong>3.3.4515.0</strong></td>
+</tr>
+<tr>
+<td><strong>CVE-2026-81838</strong></td>
+<td>awsdac (diagram-as-code)</td>
+<td>0.10 through 0.23</td>
+<td><strong>0.24</strong></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>
+      The awsdac issue is a Zip Slip: a crafted archive can write files outside the intended cache directory, to any path writable by the user running awsdac. It is the smaller of the two — a developer tool, run interactively, usually not as root — and the mitigation while you upgrade is to process definition files only from sources you trust.
+    </p>
+<p>
+      The SSM Agent issue is the one with fleet-wide reach, and the rest of this post is about that.
+    </p>
+</div>
+<div class="section" id="architecture">
+<h2>Architecture</h2>
+<p>
+      To see why this matters more than a typical agent CVE, it helps to be precise about what a Run Command permission actually is.
+    </p>
+<figure class="screenshot">
+<img alt="Diagram: a caller whose IAM policy allows only one SSM document sends a command; the SSM Agent, running as root, resolves the destination path in the aws:downloadContent plugin; a traversed path writes a file outside the intended directory onto a root-owned path, leading to code execution. Three cards below give the affected versions, the fixed version with no workaround, and the two-week auto-update check interval." src="/blog/assets/diagrams/daily-021-ssm-agent-path-traversal.svg"/>
+<figcaption>The IAM policy bounded which document could run. It never bounded which file the agent would write.</figcaption>
+</figure>
+<h3>What the plugin is for</h3>
+<p>
+      The <code>aws:downloadContent</code> plugin downloads SSM documents and scripts from remote locations, and Systems Manager supports the following source types for downloading scripts and SSM documents: <code>GitHub</code>, <code>Git</code>, <code>HTTP</code>, <code>S3</code>, and <code>SSMDocument</code>. It is ordinary, useful plumbing — the step that fetches a script before another step runs it — and it appears inside AWS-owned documents as well as custom ones.
+    </p>
+<p>
+      It takes a destination on the instance. The agent resolves that destination and writes there. The agent runs as root on Linux and as SYSTEM on Windows, because that is what a management agent has to be to install packages and edit system configuration.
+    </p>
+<h3>Why "scoped SendCommand" is a weaker control than it reads as</h3>
+<p>
+      The standard way to delegate Run Command safely is to grant <code>ssm:SendCommand</code> with the <code>Resource</code> element naming specific document ARNs and specific instance ARNs, often narrowed further by tag. A reviewer looking at that policy concludes: this principal can run <em>these</em> documents on <em>those</em> instances, and nothing else.
+    </p>
+<p>
+      That conclusion has always contained an assumption, and it is the assumption this CVE broke. The policy bounds which document executes. The document's behaviour is then bounded by the plugins it invokes — and those plugins are code running as root, taking parameters from the request. Document scoping narrows <em>intent</em>. It does not narrow <em>blast radius</em>, because there is no mechanism underneath it that constrains what the agent's plugins may touch on disk.
+    </p>
+<p>
+      Read that way, every <code>ssm:SendCommand</code> grant is a conditional grant of root on the target instance, where the condition is the correctness of the plugin implementation. That is not a criticism of the design; it is the nature of a management agent, and it is true of every configuration management tool ever shipped. It is worth saying plainly because the IAM policy is so legible that it invites a stronger reading than it can support.
+    </p>
+</div>
+<div class="section" id="business-value">
+<h2>Business value</h2>
+<p>
+      There is no feature here and no value to capture — only exposure to remove. The business framing that matters is the second-order one: this bulletin is a free test of whether you can answer two questions about your fleet.
+    </p>
+<ul>
+<li><strong>What version of the SSM Agent is running, per instance, right now?</strong> If the answer takes more than a query, agent patching is not a controlled process.</li>
+<li><strong>Who holds <code>ssm:SendCommand</code>, and against which instances?</strong> That list is your practical root-access list, and it is usually longer than the list of people anyone would describe as having root.</li>
+</ul>
+<p>
+      Organisations that can answer both in ten minutes will close this out today. Organisations that cannot have just learned something more valuable than the patch.
+    </p>
+</div>
+<div class="section" id="security">
+<h2>Security considerations</h2>
+<p>
+      The severity comes from the composition, not from the primitive. Path traversal on its own is a familiar bug. Path traversal in a process running as root, reachable by a caller whose permissions were deliberately narrowed, is a privilege escalation with an audit trail that looks completely normal — the CloudTrail record is a <code>SendCommand</code> the principal was authorised to make.
+    </p>
+<p>
+      AWS states the outcome directly: this could enable arbitrary code execution if sensitive system files are overwritten. Overwriting is the mechanism — a writable path plus root ownership reaches things like scheduled jobs, service unit files and authorised key files without needing an exploit of any other component.
+    </p>
+<p>
+      Two implications worth acting on beyond the upgrade:
+    </p>
+<ul>
+<li><strong>Treat the SendCommand grant list as a privileged-access list.</strong> Review it on the same cadence as your break-glass roles, not on the cadence of ordinary application permissions.</li>
+<li><strong>Do not rely on document scoping as an isolation boundary between tenants or environments.</strong> Use separate accounts, or at minimum separate instance profiles and tag-scoped instance ARNs, so that a plugin defect does not cross an environment line.</li>
+</ul>
+</div>
+<div class="section" id="cost">
+<h2>Cost considerations</h2>
+<p>
+      Upgrading the agent is free. Systems Manager charges nothing for Run Command or for State Manager associations in the standard tier, so an account-wide auto-update association adds no line item.
+    </p>
+<p>
+      The cost that is real is operational: an agent restart during the upgrade briefly interrupts in-flight sessions and command executions. On a fleet running long Session Manager sessions or long-running commands, the sensible pattern is a maintenance window rather than an immediate fleet-wide push — and the trade against leaving a root-level path traversal in place for another week is not a close one.
+    </p>
+</div>
+<div class="section" id="operations">
+<h2>Operational considerations</h2>
+<p>
+      This is where most fleets will discover a gap, and it is the reason this post is worth more than "patch it".
+    </p>
+<p>
+      Automatic agent updates are <strong>a setting you turn on</strong>, not a default. When you do turn it on, the documented behaviour is that Systems Manager automatically checks <strong>every two weeks</strong> for a new version of the agent, and if there is a new version, Systems Manager automatically updates the agent to the latest released version using the SSM document <code>AWS-UpdateSSMAgent</code>.
+    </p>
+<p>
+      Two weeks is a perfectly reasonable interval for keeping an agent current. It is not a patch response. "Auto-update is on" answers the question <em>are we drifting</em>; it does not answer <em>are we fixed today</em>, and conflating the two is how a fourteen-day exposure gets recorded as remediated in a ticket.
+    </p>
+<p>
+      Three platform exceptions to check before you assume a single mechanism covers the fleet:
+    </p>
+<ul>
+<li><strong>Bottlerocket.</strong> SSM Agent on the Bottlerocket operating system can't be updated using the Systems Manager Command document <code>AWS-UpdateSSMAgent</code>; updates are managed within the control container. Any EKS estate on Bottlerocket needs a separate answer.</li>
+<li><strong>macOS.</strong> If an instance is running macOS version 11.0 (Big Sur) or later, the instance must have the SSM Agent version <strong>3.1.941.0</strong> or higher to run the <code>AWS-UpdateSSMAgent</code> document — so the oldest machines, which are the ones you most want to update, are the ones the update document cannot reach.</li>
+<li><strong>Immutable images.</strong> Updating running instances does not update the AMI. If the pipeline rebuilds hosts from an image that carries an affected agent, the fleet re-acquires the vulnerability at the next scale-out.</li>
+</ul>
+</div>
+<div class="section" id="tradeoffs">
+<h2>Tradeoffs</h2>
+<div class="table-scroll">
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Speed to patched</th>
+<th>Risk</th>
+<th>Use when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Immediate fleet-wide <code>AWS-UpdateSSMAgent</code> via Run Command</td>
+<td>Minutes</td>
+<td>Agent restart interrupts in-flight sessions and commands</td>
+<td>The exposure outweighs the interruption, which for a root-level traversal is most fleets</td>
+</tr>
+<tr>
+<td>State Manager association, rate expression</td>
+<td>Next scheduled run</td>
+<td>Stays correct afterwards; slow for this specific event</td>
+<td>You want the durable control as well — pair it with a one-off push now</td>
+</tr>
+<tr>
+<td>Maintenance window</td>
+<td>Next window</td>
+<td>Predictable, but the window may be days away</td>
+<td>Workloads genuinely cannot tolerate an unscheduled agent restart</td>
+</tr>
+<tr>
+<td>Rebuild from a refreshed AMI</td>
+<td>Next deployment</td>
+<td>Slowest, but the only one that fixes the source</td>
+<td>Always, in addition to one of the above — not instead of it</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="section" id="implementation">
+<h2>Implementation guidance</h2>
+<p>
+      Find the affected instances first. SSM Inventory records the agent version, so the fleet-wide answer is one query rather than a survey.
+    </p>
+<div class="code-block">
+<div class="code-header"><span class="code-lang">Which managed instances are below the fixed version</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+<pre><code>aws ssm describe-instance-information \
+  --query "InstanceInformationList[?AgentVersion!='3.3.4515.0'].\
+[InstanceId,PlatformType,PlatformName,AgentVersion,PingStatus]" \
+  --output table</code></pre>
+</div>
+<p>
+      That lists everything not on the fixed build, including instances already ahead of it, so read the versions rather than trusting the filter. Then push the update to the ones that need it:
+    </p>
+<div class="code-block">
+<div class="code-header"><span class="code-lang">Update the agent across the fleet</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+<pre><code>aws ssm send-command \
+  --document-name "AWS-UpdateSSMAgent" \
+  --targets "Key=InstanceIds,Values=i-0123456789abcdef0" \
+  --comment "CVE-2026-81849 - agent to 3.3.4515.0 or later"</code></pre>
+</div>
+<p>
+      Target by tag rather than by instance id for anything above a handful of hosts, and stagger it with <code>--max-concurrency</code> if the fleet is large enough that a simultaneous agent restart is itself an event.
+    </p>
+<p>
+      Then make it durable. Turn on <strong>Auto update SSM Agent</strong> on the Settings tab in Fleet Manager if it is off — accepting that it is the drift control, not the incident response — and add the agent version to whatever inventory dashboard your team actually looks at.
+    </p>
+<p>
+      For awsdac, upgrade to 0.24. Until then, process definition files only from sources you trust.
+    </p>
+</div>
+<div class="section" id="best-practices">
+<h2>Best practices</h2>
+<ul>
+<li><strong>Know the agent version the way you know the OS patch level.</strong> The agent is privileged software on every instance and is routinely absent from the patch reporting that covers the OS.</li>
+<li><strong>Enumerate <code>ssm:SendCommand</code> holders and review them as privileged access.</strong> The grant is legible enough to look narrow and powerful enough to be root.</li>
+<li><strong>Scope Run Command by document <em>and</em> by instance, always.</strong> Scoping does not survive a plugin defect, but it bounds which fleet a defect reaches, which is the difference between an incident and an outage.</li>
+<li><strong>Fix the AMI as well as the fleet.</strong> An instance-level patch that the next scale-out undoes is a temporary fix recorded as a permanent one.</li>
+<li><strong>Subscribe to AWS security bulletins.</strong> Both of yesterday's items were published there and nowhere a developer would have noticed them.</li>
+</ul>
+</div>
+<div class="section" id="adopt">
+<h2>Who should adopt this</h2>
+<p>
+      Everyone running the SSM Agent, which in practice means everyone running EC2 — the agent is preinstalled on the current Amazon Linux and Windows Server AMIs, so "we never installed it" is usually wrong.
+    </p>
+<p>
+      Two groups should treat it as urgent rather than routine. Teams that <strong>delegate Run Command to a wide set of engineers or to automation</strong>, because the vulnerability's premise is a caller who already holds a scoped grant. And teams running <strong>multi-tenant or mixed-sensitivity workloads on shared instance fleets</strong>, where the document-scoping assumption is doing isolation work it cannot do.
+    </p>
+<p>
+      Teams running Bottlerocket or macOS fleets should confirm their update path before assuming coverage, for the reasons above.
+    </p>
+</div>
+<div class="section" id="takeaways">
+<h2>Key takeaways</h2>
+<ul>
+<li><strong>Upgrade amazon-ssm-agent to 3.3.4515.0 or later.</strong> Affected versions span 2.0.767.0 to 3.3.4364.0, and no workaround is offered.</li>
+<li><strong>The vulnerability's premise is a restricted caller.</strong> It converts a deliberately narrowed <code>ssm:SendCommand</code> grant into root-level file writes, which is why scoping alone did not contain it.</li>
+<li><strong>Auto-update checks every two weeks.</strong> That is drift control, not incident response; push the update explicitly.</li>
+<li><strong>Bottlerocket and older macOS instances need a different path</strong>, and an unpatched AMI reintroduces the issue at the next scale-out.</li>
+<li><strong>The same day brought CVE-2026-81838</strong>, a Zip Slip in awsdac 0.10 through 0.23, fixed in 0.24 — smaller reach, same class of defect.</li>
+</ul>
+</div>
+<div class="section" id="references">
+<h2>Official AWS references</h2>
+<ul>
+<li><a href="https://aws.amazon.com/security/security-bulletins/rss/2026-091-aws/" rel="noopener" target="_blank">AWS Security Bulletin — CVE-2026-81849, path traversal in the aws:downloadContent plugin in amazon-ssm-agent</a></li>
+<li><a href="https://aws.amazon.com/security/security-bulletins/rss/2026-090-aws/" rel="noopener" target="_blank">AWS Security Bulletin — CVE-2026-81838, Zip Slip path traversal in awsdac</a></li>
+<li><a href="https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent-automatic-updates.html" rel="noopener" target="_blank">AWS Documentation — Automating updates to SSM Agent</a></li>
+<li><a href="https://docs.aws.amazon.com/systems-manager/latest/userguide/documents-command-ssm-plugin-reference.html" rel="noopener" target="_blank">AWS Documentation — Command document plugin reference</a></li>
+<li><a href="https://docs.aws.amazon.com/systems-manager/latest/userguide/run-command.html" rel="noopener" target="_blank">AWS Documentation — AWS Systems Manager Run Command</a></li>
+</ul>
+</div>
+</div>
+</div></div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS Daily Intelligence</span> <span class="tag-badge">AWS</span>
+    </div>
+    <nav class="post-nav"><a href="/blog/week-16-devops-agent-investigations/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">Week 16 - AWS DevOps Agent: The Agent Was Right, and I Still Had to Check</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-daily-intelligence-ssm-agent-path-traversal/';
+      this.page.identifier = 'aws-daily-intelligence-ssm-agent-path-traversal';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var FORM_ID='xzdqqvqd';
+  var rating=0;
+  var btn=document.getElementById('fb-btn'),overlay=document.getElementById('fb-overlay');
+  var stars=document.querySelectorAll('.fb-star');
+  btn.addEventListener('click',function(){overlay.classList.add('open');});
+  overlay.addEventListener('click',function(e){if(e.target===overlay)overlay.classList.remove('open');});
+  document.getElementById('fb-skip').addEventListener('click',function(){overlay.classList.remove('open');});
+  stars.forEach(function(s){
+    s.addEventListener('click',function(){
+      rating=parseInt(s.getAttribute('data-v'));
+      stars.forEach(function(x){x.classList.toggle('on',parseInt(x.getAttribute('data-v'))<=rating);});
+    });
+  });
+  document.getElementById('fb-send').addEventListener('click',function(){
+    var msg=document.getElementById('fb-text').value;
+    fetch('https://formspree.io/f/'+FORM_ID,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({rating:rating,message:msg,page:window.location.pathname})
+    });
+    document.getElementById('fb-modal').innerHTML='<div class="fb-thanks"><span>&#10003;</span><strong>Thanks for your feedback!</strong><p style="color:#879196;font-size:13px;margin-top:0.35rem;">It means a lot.</p></div>';
+    setTimeout(function(){overlay.classList.remove('open');},2000);
+  });
+})();
+</script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance appears within a few hours of publishing.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/hero-media.js?v=2d37b569"></script>
+<script src="/blog/assets/blog.js?v=2d37b569"></script>
+<script>
+  hljs.highlightAll();
+</script>
+</body></html>

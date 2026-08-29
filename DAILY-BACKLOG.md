@@ -92,6 +92,31 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 28 August 2026 — covered by post #21
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| CVE-2026-81849 — path traversal in the `aws:downloadContent` plugin; restricted SendCommand callers write files as root. Affects 2.0.767.0–3.3.4364.0, fixed 3.3.4515.0, no workaround | amazon-ssm-agent | **#21** | High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-091-aws/) |
+| CVE-2026-81838 — Zip Slip in awsdac 0.10–0.23, fixed 0.24; cited alongside #21 as the same defect class | awsdac | cited in #21 | Medium | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-090-aws/) |
+| Data perimeter extended to the Management Console with Private Access (Security Blog) | Console / VPC | open | High | [link](https://aws.amazon.com/blogs/security/extend-your-data-perimeter-to-the-aws-management-console-with-private-access/) |
+| Fine-grained access control — per-user and per-tenant memory isolation through AgentCore Gateway, Cedar policies over 12 Memory operations | Bedrock AgentCore Memory | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/agentcorememory-fine-grained-access-control) |
+| Flexible namespace variables — the other half of the isolation story, same day | Bedrock AgentCore Memory | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/agentcorememory-flexible-namespaces) |
+| CloudWatch agent adds journald log support | CloudWatch | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-cloudwatch-agent-journald/) |
+| Aurora MySQL 3.13, compatible with MySQL 8.0.45, GA | Aurora | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-aurora-mysql-313-available/) |
+| Detect stalled S3 live replication before it becomes a storage bill (Storage Blog) | S3 | open | Medium | [link](https://aws.amazon.com/blogs/storage/detect-stalled-amazon-s3-live-replication-to-prevent-unexpected-storage-costs/) |
+| Continuous modernization pipeline with AWS Transform custom (DevOps Blog) | AWS Transform | open | Medium | [link](https://aws.amazon.com/blogs/devops/build-your-own-continuous-modernization-pipeline-with-aws-transform-custom/) |
+| FedRAMP Class C scope | AWS Transform | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-transform-fedramp-class-c/) |
+| Batch write and discover records in Feature Store; Multi-AZ HA with Inference Components (ML Blog) | SageMaker | skipped | Low-Med | — |
+| C8gn in Paris; P6-B300 in additional Regions; Grok 4.6 on Bedrock in GovCloud; Decathlon Chronos-2 case study; Razor Group lakehouse case study | EC2, Bedrock, Big Data | skipped | Low | — |
+
+**Worth revisiting:** the two AgentCore Memory items are one story — per-tenant
+memory isolation, with namespaces as the shape and Cedar policies as the
+enforcement — and should be written as a single post, not two. The Management
+Console data perimeter item is the strongest unwritten security topic of the
+day and does not age quickly.
+
+---
+
 ## 27 August 2026 — covered by post #20
 
 | Item | Service | Status | Importance | Reference |

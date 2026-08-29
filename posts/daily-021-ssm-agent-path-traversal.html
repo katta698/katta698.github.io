@@ -1,0 +1,300 @@
+---
+title: 'AWS Daily Intelligence #21 - A Path Traversal in the SSM Agent, and Why Scoping SendCommand Was Never a Privilege Boundary'
+date: '2026-08-29T10:00:00'
+slug: aws-daily-intelligence-ssm-agent-path-traversal
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-08-29'
+verified_claims:
+  - claim: "A path traversal vulnerability exists in the aws:downloadContent plugin that permits authenticated users with restricted SendCommand permissions to write files outside the intended directory with root-level access"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-091-aws/
+  - claim: "This could enable arbitrary code execution if sensitive system files are overwritten"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-091-aws/
+  - claim: "The issue affects Amazon amazon-ssm-agent from 2.0.767.0 to 3.3.4364.0"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-091-aws/
+  - claim: "AWS recommends that customers upgrade amazon-ssm-agent to version 3.3.4515.0 or later"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-091-aws/
+  - claim: "CVE-2026-81838 is a Zip Slip issue affecting awsdac versions 0.10 through 0.23, fixed in version 0.24"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-090-aws/
+  - claim: "A crafted archive can write files outside the intended cache directory, to any path writable by the user running awsdac"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-090-aws/
+  - claim: "If you turn on this option, then Systems Manager automatically checks every two weeks for a new version of the agent"
+    source: https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent-automatic-updates.html
+  - claim: "If there is a new version, then Systems Manager automatically updates the agent to the latest released version using the SSM document AWS-UpdateSSMAgent"
+    source: https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent-automatic-updates.html
+  - claim: "SSM Agent on the Bottlerocket operating system can't be updated using the Systems Manager Command document AWS-UpdateSSMAgent"
+    source: https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent-automatic-updates.html
+  - claim: "If an instance is running macOS version 11.0 (Big Sur) or later, the instance must have the SSM Agent version 3.1.941.0 or higher to run the AWS-UpdateSSMAgent document"
+    source: https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent-automatic-updates.html
+  - claim: "The aws:downloadContent plugin downloads SSM documents and scripts from remote locations"
+    source: https://docs.aws.amazon.com/systems-manager/latest/userguide/documents-command-ssm-plugin-reference.html
+  - claim: "Systems Manager supports the following source types for downloading scripts and SSM documents: GitHub, Git, HTTP, S3, and SSMDocument"
+    source: https://docs.aws.amazon.com/systems-manager/latest/userguide/documents-command-ssm-plugin-reference.html
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      AWS published two security bulletins yesterday, both path traversal. The one that matters to almost everyone is <strong>CVE-2026-81849</strong>, in the SSM Agent — the process that sits on essentially every managed EC2 instance, and runs as root.
+    </p>
+    <p>
+      The bulletin's own wording is the whole story: a path traversal vulnerability exists in the <code>aws:downloadContent</code> plugin that permits authenticated users with <em>restricted</em> SendCommand permissions to write files outside the intended directory with root-level access. The word doing the work is <em>restricted</em>. This is not a bug that gives an attacker something they were already allowed to do — it is a bug that dissolves the boundary a scoped IAM policy was drawn to create.
+    </p>
+    <p>
+      Affected versions run from <strong>2.0.767.0 to 3.3.4364.0</strong>, which is most of the agent's release history rather than a recent regression. The fix is <strong>3.3.4515.0</strong> or later, and no workaround is offered. If your answer to "what version is the agent on our fleet" is a shrug, that is today's work.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>
+      Two bulletins, both the same vulnerability class, published the same day.
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Bulletin</th>
+            <th>Component</th>
+            <th>Affected</th>
+            <th>Fixed in</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>CVE-2026-81849</strong></td>
+            <td>amazon-ssm-agent, <code>aws:downloadContent</code> plugin</td>
+            <td>2.0.767.0 to 3.3.4364.0</td>
+            <td><strong>3.3.4515.0</strong></td>
+          </tr>
+          <tr>
+            <td><strong>CVE-2026-81838</strong></td>
+            <td>awsdac (diagram-as-code)</td>
+            <td>0.10 through 0.23</td>
+            <td><strong>0.24</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The awsdac issue is a Zip Slip: a crafted archive can write files outside the intended cache directory, to any path writable by the user running awsdac. It is the smaller of the two — a developer tool, run interactively, usually not as root — and the mitigation while you upgrade is to process definition files only from sources you trust.
+    </p>
+    <p>
+      The SSM Agent issue is the one with fleet-wide reach, and the rest of this post is about that.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      To see why this matters more than a typical agent CVE, it helps to be precise about what a Run Command permission actually is.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-021-ssm-agent-path-traversal.svg" alt="Diagram: a caller whose IAM policy allows only one SSM document sends a command; the SSM Agent, running as root, resolves the destination path in the aws:downloadContent plugin; a traversed path writes a file outside the intended directory onto a root-owned path, leading to code execution. Three cards below give the affected versions, the fixed version with no workaround, and the two-week auto-update check interval." />
+      <figcaption>The IAM policy bounded which document could run. It never bounded which file the agent would write.</figcaption>
+    </figure>
+
+    <h3>What the plugin is for</h3>
+    <p>
+      The <code>aws:downloadContent</code> plugin downloads SSM documents and scripts from remote locations, and Systems Manager supports the following source types for downloading scripts and SSM documents: <code>GitHub</code>, <code>Git</code>, <code>HTTP</code>, <code>S3</code>, and <code>SSMDocument</code>. It is ordinary, useful plumbing — the step that fetches a script before another step runs it — and it appears inside AWS-owned documents as well as custom ones.
+    </p>
+    <p>
+      It takes a destination on the instance. The agent resolves that destination and writes there. The agent runs as root on Linux and as SYSTEM on Windows, because that is what a management agent has to be to install packages and edit system configuration.
+    </p>
+
+    <h3>Why "scoped SendCommand" is a weaker control than it reads as</h3>
+    <p>
+      The standard way to delegate Run Command safely is to grant <code>ssm:SendCommand</code> with the <code>Resource</code> element naming specific document ARNs and specific instance ARNs, often narrowed further by tag. A reviewer looking at that policy concludes: this principal can run <em>these</em> documents on <em>those</em> instances, and nothing else.
+    </p>
+    <p>
+      That conclusion has always contained an assumption, and it is the assumption this CVE broke. The policy bounds which document executes. The document's behaviour is then bounded by the plugins it invokes — and those plugins are code running as root, taking parameters from the request. Document scoping narrows <em>intent</em>. It does not narrow <em>blast radius</em>, because there is no mechanism underneath it that constrains what the agent's plugins may touch on disk.
+    </p>
+    <p>
+      Read that way, every <code>ssm:SendCommand</code> grant is a conditional grant of root on the target instance, where the condition is the correctness of the plugin implementation. That is not a criticism of the design; it is the nature of a management agent, and it is true of every configuration management tool ever shipped. It is worth saying plainly because the IAM policy is so legible that it invites a stronger reading than it can support.
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      There is no feature here and no value to capture — only exposure to remove. The business framing that matters is the second-order one: this bulletin is a free test of whether you can answer two questions about your fleet.
+    </p>
+    <ul>
+      <li><strong>What version of the SSM Agent is running, per instance, right now?</strong> If the answer takes more than a query, agent patching is not a controlled process.</li>
+      <li><strong>Who holds <code>ssm:SendCommand</code>, and against which instances?</strong> That list is your practical root-access list, and it is usually longer than the list of people anyone would describe as having root.</li>
+    </ul>
+    <p>
+      Organisations that can answer both in ten minutes will close this out today. Organisations that cannot have just learned something more valuable than the patch.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      The severity comes from the composition, not from the primitive. Path traversal on its own is a familiar bug. Path traversal in a process running as root, reachable by a caller whose permissions were deliberately narrowed, is a privilege escalation with an audit trail that looks completely normal — the CloudTrail record is a <code>SendCommand</code> the principal was authorised to make.
+    </p>
+    <p>
+      AWS states the outcome directly: this could enable arbitrary code execution if sensitive system files are overwritten. Overwriting is the mechanism — a writable path plus root ownership reaches things like scheduled jobs, service unit files and authorised key files without needing an exploit of any other component.
+    </p>
+    <p>
+      Two implications worth acting on beyond the upgrade:
+    </p>
+    <ul>
+      <li><strong>Treat the SendCommand grant list as a privileged-access list.</strong> Review it on the same cadence as your break-glass roles, not on the cadence of ordinary application permissions.</li>
+      <li><strong>Do not rely on document scoping as an isolation boundary between tenants or environments.</strong> Use separate accounts, or at minimum separate instance profiles and tag-scoped instance ARNs, so that a plugin defect does not cross an environment line.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      Upgrading the agent is free. Systems Manager charges nothing for Run Command or for State Manager associations in the standard tier, so an account-wide auto-update association adds no line item.
+    </p>
+    <p>
+      The cost that is real is operational: an agent restart during the upgrade briefly interrupts in-flight sessions and command executions. On a fleet running long Session Manager sessions or long-running commands, the sensible pattern is a maintenance window rather than an immediate fleet-wide push — and the trade against leaving a root-level path traversal in place for another week is not a close one.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      This is where most fleets will discover a gap, and it is the reason this post is worth more than "patch it".
+    </p>
+    <p>
+      Automatic agent updates are <strong>a setting you turn on</strong>, not a default. When you do turn it on, the documented behaviour is that Systems Manager automatically checks <strong>every two weeks</strong> for a new version of the agent, and if there is a new version, Systems Manager automatically updates the agent to the latest released version using the SSM document <code>AWS-UpdateSSMAgent</code>.
+    </p>
+    <p>
+      Two weeks is a perfectly reasonable interval for keeping an agent current. It is not a patch response. "Auto-update is on" answers the question <em>are we drifting</em>; it does not answer <em>are we fixed today</em>, and conflating the two is how a fourteen-day exposure gets recorded as remediated in a ticket.
+    </p>
+    <p>
+      Three platform exceptions to check before you assume a single mechanism covers the fleet:
+    </p>
+    <ul>
+      <li><strong>Bottlerocket.</strong> SSM Agent on the Bottlerocket operating system can't be updated using the Systems Manager Command document <code>AWS-UpdateSSMAgent</code>; updates are managed within the control container. Any EKS estate on Bottlerocket needs a separate answer.</li>
+      <li><strong>macOS.</strong> If an instance is running macOS version 11.0 (Big Sur) or later, the instance must have the SSM Agent version <strong>3.1.941.0</strong> or higher to run the <code>AWS-UpdateSSMAgent</code> document — so the oldest machines, which are the ones you most want to update, are the ones the update document cannot reach.</li>
+      <li><strong>Immutable images.</strong> Updating running instances does not update the AMI. If the pipeline rebuilds hosts from an image that carries an affected agent, the fleet re-acquires the vulnerability at the next scale-out.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Approach</th>
+            <th>Speed to patched</th>
+            <th>Risk</th>
+            <th>Use when</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Immediate fleet-wide <code>AWS-UpdateSSMAgent</code> via Run Command</td>
+            <td>Minutes</td>
+            <td>Agent restart interrupts in-flight sessions and commands</td>
+            <td>The exposure outweighs the interruption, which for a root-level traversal is most fleets</td>
+          </tr>
+          <tr>
+            <td>State Manager association, rate expression</td>
+            <td>Next scheduled run</td>
+            <td>Stays correct afterwards; slow for this specific event</td>
+            <td>You want the durable control as well — pair it with a one-off push now</td>
+          </tr>
+          <tr>
+            <td>Maintenance window</td>
+            <td>Next window</td>
+            <td>Predictable, but the window may be days away</td>
+            <td>Workloads genuinely cannot tolerate an unscheduled agent restart</td>
+          </tr>
+          <tr>
+            <td>Rebuild from a refreshed AMI</td>
+            <td>Next deployment</td>
+            <td>Slowest, but the only one that fixes the source</td>
+            <td>Always, in addition to one of the above — not instead of it</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      Find the affected instances first. SSM Inventory records the agent version, so the fleet-wide answer is one query rather than a survey.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">Which managed instances are below the fixed version</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>aws ssm describe-instance-information \
+  --query "InstanceInformationList[?AgentVersion!='3.3.4515.0'].\
+[InstanceId,PlatformType,PlatformName,AgentVersion,PingStatus]" \
+  --output table</code></pre>
+    </div>
+    <p>
+      That lists everything not on the fixed build, including instances already ahead of it, so read the versions rather than trusting the filter. Then push the update to the ones that need it:
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">Update the agent across the fleet</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>aws ssm send-command \
+  --document-name "AWS-UpdateSSMAgent" \
+  --targets "Key=InstanceIds,Values=i-0123456789abcdef0" \
+  --comment "CVE-2026-81849 - agent to 3.3.4515.0 or later"</code></pre>
+    </div>
+    <p>
+      Target by tag rather than by instance id for anything above a handful of hosts, and stagger it with <code>--max-concurrency</code> if the fleet is large enough that a simultaneous agent restart is itself an event.
+    </p>
+    <p>
+      Then make it durable. Turn on <strong>Auto update SSM Agent</strong> on the Settings tab in Fleet Manager if it is off — accepting that it is the drift control, not the incident response — and add the agent version to whatever inventory dashboard your team actually looks at.
+    </p>
+    <p>
+      For awsdac, upgrade to 0.24. Until then, process definition files only from sources you trust.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <ul>
+      <li><strong>Know the agent version the way you know the OS patch level.</strong> The agent is privileged software on every instance and is routinely absent from the patch reporting that covers the OS.</li>
+      <li><strong>Enumerate <code>ssm:SendCommand</code> holders and review them as privileged access.</strong> The grant is legible enough to look narrow and powerful enough to be root.</li>
+      <li><strong>Scope Run Command by document <em>and</em> by instance, always.</strong> Scoping does not survive a plugin defect, but it bounds which fleet a defect reaches, which is the difference between an incident and an outage.</li>
+      <li><strong>Fix the AMI as well as the fleet.</strong> An instance-level patch that the next scale-out undoes is a temporary fix recorded as a permanent one.</li>
+      <li><strong>Subscribe to AWS security bulletins.</strong> Both of yesterday's items were published there and nowhere a developer would have noticed them.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt this</h2>
+    <p>
+      Everyone running the SSM Agent, which in practice means everyone running EC2 — the agent is preinstalled on the current Amazon Linux and Windows Server AMIs, so "we never installed it" is usually wrong.
+    </p>
+    <p>
+      Two groups should treat it as urgent rather than routine. Teams that <strong>delegate Run Command to a wide set of engineers or to automation</strong>, because the vulnerability's premise is a caller who already holds a scoped grant. And teams running <strong>multi-tenant or mixed-sensitivity workloads on shared instance fleets</strong>, where the document-scoping assumption is doing isolation work it cannot do.
+    </p>
+    <p>
+      Teams running Bottlerocket or macOS fleets should confirm their update path before assuming coverage, for the reasons above.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li><strong>Upgrade amazon-ssm-agent to 3.3.4515.0 or later.</strong> Affected versions span 2.0.767.0 to 3.3.4364.0, and no workaround is offered.</li>
+      <li><strong>The vulnerability's premise is a restricted caller.</strong> It converts a deliberately narrowed <code>ssm:SendCommand</code> grant into root-level file writes, which is why scoping alone did not contain it.</li>
+      <li><strong>Auto-update checks every two weeks.</strong> That is drift control, not incident response; push the update explicitly.</li>
+      <li><strong>Bottlerocket and older macOS instances need a different path</strong>, and an unpatched AMI reintroduces the issue at the next scale-out.</li>
+      <li><strong>The same day brought CVE-2026-81838</strong>, a Zip Slip in awsdac 0.10 through 0.23, fixed in 0.24 — smaller reach, same class of defect.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/security/security-bulletins/rss/2026-091-aws/" target="_blank" rel="noopener">AWS Security Bulletin — CVE-2026-81849, path traversal in the aws:downloadContent plugin in amazon-ssm-agent</a></li>
+      <li><a href="https://aws.amazon.com/security/security-bulletins/rss/2026-090-aws/" target="_blank" rel="noopener">AWS Security Bulletin — CVE-2026-81838, Zip Slip path traversal in awsdac</a></li>
+      <li><a href="https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent-automatic-updates.html" target="_blank" rel="noopener">AWS Documentation — Automating updates to SSM Agent</a></li>
+      <li><a href="https://docs.aws.amazon.com/systems-manager/latest/userguide/documents-command-ssm-plugin-reference.html" target="_blank" rel="noopener">AWS Documentation — Command document plugin reference</a></li>
+      <li><a href="https://docs.aws.amazon.com/systems-manager/latest/userguide/run-command.html" target="_blank" rel="noopener">AWS Documentation — AWS Systems Manager Run Command</a></li>
+    </ul>
+  </div>
+</div>
