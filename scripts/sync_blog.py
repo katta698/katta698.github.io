@@ -893,7 +893,12 @@ JK_POST_THEME_CSS = """
 
 /* ── Flow steps ── */
 #jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
-#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+/* Flex only when there is an icon to sit beside. A .flow-step holding a bare
+   sentence makes every inline element (strong, em, code) its own flex column,
+   which reads as a scrambled sentence on a narrow screen -- Week 16 shipped
+   exactly that. Without an icon it falls back to normal block flow. */
+#jk-post .flow-step { display: block; padding: 14px 0; }
+#jk-post .flow-step:has(> .flow-icon) { display: flex; gap: 16px; align-items: flex-start; }
 #jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
 #jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
 #jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
@@ -3597,7 +3602,7 @@ def main():
         _series_entry("GCP Architecture Series", "GCP Architecture", "gcp+architecture+series"),
         _series_entry("AWS Weekly Lab", "AWS Weekly Lab", "aws+weekly+lab", total=52),
         _series_entry("Azure Weekly Lab", "Azure Weekly Lab", "azure+weekly+lab", total=52),
-        _series_entry("GCP Weekly Lab", "GCP Weekly Lab", "gcp+weekly+lab", total=53),
+        _series_entry("GCP Weekly Lab", "GCP Weekly Lab", "gcp+weekly+lab", total=52),
         _series_entry("AWS Daily Intelligence", "AWS Daily", "aws+daily+intelligence"),
         _series_entry("AWS Weekly Intelligence", "AWS Weekly", "aws+weekly+intelligence"),
         # Azure and GCP weekly were publishing but absent from this list, so the
