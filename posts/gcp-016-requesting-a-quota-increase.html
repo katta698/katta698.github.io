@@ -1,0 +1,385 @@
+---
+title: "GCP Architecture Series #16 — Requesting a Quota Increase, and Designing So You Do Not Have To"
+date: '2026-08-29T09:00:00'
+slug: gcp-architecture-requesting-a-quota-increase
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-08-29'
+verified_claims:
+  - claim: "To request quota adjustments: Quota Administrator (roles/servicemanagement.quotaAdmin)"
+    source: https://docs.cloud.google.com/docs/quotas/view-manage
+  - claim: "To view quotas: Quota Viewer (roles/servicemanagement.quotaViewer)"
+    source: https://docs.cloud.google.com/docs/quotas/view-manage
+  - claim: "Cloud Quotas adjustment requests are subject to review. If your quota adjustment request requires review, you receive an email acknowledging receipt of your request"
+    source: https://docs.cloud.google.com/docs/quotas/view-manage
+  - claim: "After reviewing your request, you receive an email notification indicating whether your request was approved"
+    source: https://docs.cloud.google.com/docs/quotas/view-manage
+  - claim: "Enter the quota value that you want in the New value field"
+    source: https://docs.cloud.google.com/docs/quotas/view-manage
+  - claim: "If a Request description field appears, enter a description"
+    source: https://docs.cloud.google.com/docs/quotas/view-manage
+  - claim: "To reduce review time, group quota adjustment requests by product and area"
+    source: https://docs.cloud.google.com/docs/quotas/view-manage
+  - claim: "You can request quota decrease adjustments for project-, organization-, and folder-level quotas"
+    source: https://docs.cloud.google.com/docs/quotas/view-manage
+  - claim: "In most cases, quota increase adjustments must be made at the project-level. A limited number of products support organization-level quota increase adjustments"
+    source: https://docs.cloud.google.com/docs/quotas/api-overview
+  - claim: "The quota adjuster observes your resource consumption and proactively submits quota adjustment requests on your behalf"
+    source: https://docs.cloud.google.com/docs/quotas/quota-adjuster
+  - claim: "Quota adjuster checks if the peak usage has approached the quota value during a specified duration"
+    source: https://docs.cloud.google.com/docs/quotas/quota-adjuster
+  - claim: "The quota adjuster only submits quota adjustment requests to increase the value of a quota. It doesn't attempt to lower the value"
+    source: https://docs.cloud.google.com/docs/quotas/quota-adjuster
+  - claim: "For quotas that have a manual quota cap, the quota adjuster doesn't submit quota adjustment requests"
+    source: https://docs.cloud.google.com/docs/quotas/quota-adjuster
+  - claim: "the quota adjuster requires a sufficient volume of historical usage data in order to accurately determine when to request additional quota"
+    source: https://docs.cloud.google.com/docs/quotas/quota-adjuster
+  - claim: "When a Google Cloud service adds or expands quota adjuster support for its quotas, the quota adjuster automatically monitors and adjusts these newly supported quotas"
+    source: https://docs.cloud.google.com/docs/quotas/quota-adjuster
+  - claim: "The ability to delete a QuotaPreference is not supported"
+    source: https://docs.cloud.google.com/docs/quotas/api-overview
+  - claim: "QuotaInfo is a read-only resource that provides information about a particular quota"
+    source: https://docs.cloud.google.com/docs/quotas/api-overview
+  - claim: "The Cloud Quotas API can clone your quota configurations from project to project"
+    source: https://docs.cloud.google.com/docs/quotas/api-overview
+  - claim: "Wait for operations to be done"
+    source: https://docs.cloud.google.com/compute/docs/troubleshooting/troubleshoot-operation-limits
+  - claim: "Rely on error codes, not error messages"
+    source: https://docs.cloud.google.com/compute/docs/troubleshooting/troubleshoot-operation-limits
+  - claim: "Minimize client-side retries to preserve API rate limits"
+    source: https://docs.cloud.google.com/compute/docs/troubleshooting/troubleshoot-operation-limits
+  - claim: "Always make your calls in a retry loop with exponential backoff"
+    source: https://docs.cloud.google.com/compute/docs/troubleshooting/troubleshoot-operation-limits
+  - claim: "Use a client-side rate limiter"
+    source: https://docs.cloud.google.com/compute/docs/troubleshooting/troubleshoot-operation-limits
+  - claim: "Split up your applications across multiple projects"
+    source: https://docs.cloud.google.com/compute/docs/troubleshooting/troubleshoot-operation-limits
+  - claim: "Since system limits can't be modified, we recommend the following best practices to reduce the number of concurrent operations"
+    source: https://docs.cloud.google.com/compute/docs/troubleshooting/troubleshoot-operation-limits
+  - claim: "Project-level quotas restrict your resource usage within a Google Cloud project. Using the resource in one project doesn't affect your available quota in another project"
+    source: https://docs.cloud.google.com/docs/quotas/overview
+  - claim: "System limits are fixed constraints, such as maximum file sizes or database schema limitations, which cannot be increased or decreased"
+    source: https://docs.cloud.google.com/docs/quotas/overview
+  - claim: "Regional quotas are not a subset of project quotas"
+    source: https://docs.cloud.google.com/compute/quotas-limits
+  - claim: "serviceruntime.googleapis.com/quota/limit"
+    source: https://docs.cloud.google.com/monitoring/alerts/using-quota-metrics
+problem: "A quota increase is the most common answer to a capacity problem on Google Cloud and the least reliable one. It is a request, not a setting: it is reviewed by someone, it can be refused, it arrives on nobody's schedule, and it must generally be made per project — so the fix for a launch on Friday is not a form submitted on Friday."
+builds: "What a request actually consists of and who can submit one, why increases are project-scoped when decreases are not, what the quota adjuster does on your behalf and what it deliberately will not do, and the four architectural moves that remove the need to ask at all."
+catch: "The quota adjuster only ever raises a value — it never lowers one, and it skips any quota carrying a manual cap. So a cap set as a cost guardrail silently switches off the automation for that quota, and the two controls interact in a direction nobody expects."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #016 &middot; Foundations</div>
+  <h1 class="post-title">Requesting a Quota Increase, and Designing So You Do Not Have To</h1>
+  <p class="post-subtitle">Post #15 separated the two kinds of quota. This one is about the form you fill in when you hit one &mdash; and the four design choices that mean you never open it.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Google Cloud &middot; Quotas &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The request itself takes about ninety seconds to submit. Everything difficult about quota increases happens either before that or after it.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"We'll raise the quota on the morning of the launch"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          A quota adjustment is not a setting you change; it is a request somebody reviews. Google states that Cloud Quotas adjustment requests are subject to review, that a request requiring review generates an email acknowledging receipt, and that a second email afterwards tells you whether it was approved. No timeframe is published for the step in between, and approval is not promised.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat quota as lead time, not configuration. Raise it when the capacity plan is written, not when the capacity is needed &mdash; and design the launch so that a refusal is survivable rather than fatal.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"Raise it once at the organization and be done"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          That is available for decreases and largely not for increases. Google is explicit: in most cases, quota increase adjustments must be made at the project level, and only a limited number of products support organization-level increases. Decreases are the generous direction &mdash; those can be requested for project-, organization- and folder-level quotas.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Expect to ask per project, and automate it rather than repeating it. The Cloud Quotas API can clone quota configurations from project to project, which is the difference between a new environment being a form-filling exercise and being a script.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"The adjuster is on, so we are covered"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Partly, and with two documented holes. The quota adjuster only submits requests to <em>increase</em> a value and never attempts to lower one; and for quotas that carry a manual quota cap, it does not submit requests at all. It also needs a sufficient volume of historical usage data to judge when to ask, so the newest project &mdash; the one most likely to be surprised &mdash; is the one it can help least.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Enable it, then write down which quotas it is not covering. A cap set for cost control is invisible to the team relying on the automation, and nothing reconciles the two.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"Submit everything in one big request"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Google's own guidance points the other way: to reduce review time, group quota adjustment requests by product and area. A single submission mixing GPUs, API rate limits and storage is one request that cannot clear until its slowest component does.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Split by product and area so each lands with the team that can decide it. Batch for convenience only where the batch is homogeneous.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      There are three ways a quota value changes on Google Cloud, and they are not variations on one mechanism &mdash; they differ in who initiates, what is reviewed, and which direction they can move.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-016-requesting-a-quota-increase.svg" alt="Diagram: the three ways a Google Cloud quota value changes, the roles and review each requires, and the four architectural moves that remove the need to request an increase" />
+      <figcaption>Three routes to a new quota value, what each requires, and the four designs that make the question moot.</figcaption>
+    </figure>
+
+    <h3>Who is allowed to ask</h3>
+    <p>
+      Two roles divide reading from asking. Quota Viewer (<code>roles/servicemanagement.quotaViewer</code>) sees values and usage. Quota Administrator (<code>roles/servicemanagement.quotaAdmin</code>) requests adjustments. The quota adjuster needs its own permissions, <code>cloudquotas.quotas.update</code> and <code>cloudquotas.quotas.get</code>.
+    </p>
+    <p>
+      The split is worth honouring rather than collapsing. A quota value is a commercial commitment as much as a technical one, and the ability to read one is needed by everybody who operates the platform while the ability to raise one is not.
+    </p>
+
+    <h3>The three routes</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Route</th><th>Direction</th><th>Reviewed</th><th>Scope</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Console or API request</td>
+          <td>Up or down</td>
+          <td>Increases are subject to review; you get an email on receipt and another with the decision.</td>
+          <td>Increases generally project-level only. Decreases at project, folder or organization.</td>
+        </tr>
+        <tr>
+          <td>Quota adjuster</td>
+          <td>Up only</td>
+          <td>Submits on your behalf when peak usage approaches the value.</td>
+          <td>Project via the console; folder and organization through the REST API or gcloud CLI.</td>
+        </tr>
+        <tr>
+          <td>Quota preference in code</td>
+          <td>Up or down</td>
+          <td>Same review as a console request.</td>
+          <td>Per dimension combination. Cloneable between projects.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      The request itself is thin. You enter the quota value you want in the <em>New value</em> field, and if a <em>Request description</em> field appears &mdash; which it does for larger increases &mdash; you enter a description. That description is the only place a human reviewer learns why the number is what it is, and it is the only part of the form you can actually do well.
+    </p>
+
+    <div class="callout">
+      <strong>A preference is created and updated, never deleted</strong>
+      <p>Deleting a <code>QuotaPreference</code> is not supported. That has a direct consequence for anyone expressing quotas in infrastructure code: destroying the resource does not return the quota to its default, and a mental model borrowed from ordinary resource lifecycles will be wrong here. Returning to a default means setting the default explicitly. <code>QuotaInfo</code>, by contrast, is read-only &mdash; it reports what a quota is, and cannot change it.</p>
+    </div>
+
+    <h3>What the adjuster is actually doing</h3>
+    <p>
+      The quota adjuster observes resource consumption and proactively submits adjustment requests on your behalf, checking whether peak usage has approached the quota value over a specified duration. Two properties make it worth enabling and two make it insufficient on its own.
+    </p>
+    <ul>
+      <li><strong>It follows the platform.</strong> When a service adds or expands adjuster support for its quotas, the adjuster automatically monitors and adjusts those newly supported quotas &mdash; so coverage grows without anybody revisiting a list.</li>
+      <li><strong>It is one-directional.</strong> It only ever increases. Nothing in it reclaims quota from a project whose usage has fallen, which means it ratchets: values drift upward over the life of a project and never back.</li>
+      <li><strong>A manual cap disables it silently.</strong> For quotas carrying a manual quota cap it submits nothing at all.</li>
+      <li><strong>It needs history.</strong> Sufficient historical usage data is a prerequisite for judging when to ask, so a new project gets the least benefit.</li>
+    </ul>
+
+    <div class="callout amber">
+      <strong>The cap and the adjuster point in opposite directions</strong>
+      <p>A manual quota cap is a sensible cost guardrail &mdash; it stops a runaway workload consuming an unbounded amount of something expensive. The quota adjuster is a sensible availability guardrail &mdash; it stops a growing workload hitting a ceiling unnoticed. Applying both to the same quota does not give you both: the cap wins, and the adjuster stops submitting for it. Nothing warns you, because from each control's own point of view it is working correctly. Decide per quota which risk you are managing, and record the decision somewhere the other team reads.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Designing So You Do Not Have To Ask</h2>
+    <p>
+      A quota increase is the weakest link in a capacity plan because it is the only part that depends on somebody else's calendar. Four designs reduce how often you need one, and three of them are Google's own recommendations for a different problem.
+    </p>
+
+    <h3>1. Spread across projects, because the boundary is real</h3>
+    <p>
+      Project-level quotas restrict usage within one project, and using the resource in one project does not affect available quota in another. That is an isolation guarantee, and it is usable as a capacity strategy rather than only as a blast radius: Google's own advice for reducing concurrent operations is, in as many words, to split up your applications across multiple projects.
+    </p>
+    <p>
+      This is the move with the largest effect and the highest cost. More projects means more billing links, more IAM, more of everything covered earlier in this series. Reach for it when a workload is genuinely separable, not to dodge a form.
+    </p>
+
+    <h3>2. Spread across regions, because regional quota is not project quota</h3>
+    <p>
+      Regional quotas are not a subset of project quotas. A workload that can run in two regions has two independent allowances, and the second one requires no request at all. Where the architecture already wants regional redundancy, the quota headroom is a free consequence of a decision made for other reasons &mdash; which is the best kind.
+    </p>
+
+    <h3>3. Ask for less, by making the client behave</h3>
+    <p>
+      Rate quotas and concurrent operation limits are usually a client problem wearing a capacity costume. Since system limits cannot be modified, Google's recommended practices for reducing concurrent operations are the fix, and every one of them is a change on your side of the wire:
+    </p>
+    <ul>
+      <li><strong>Wait for operations to be done</strong> before starting new ones.</li>
+      <li><strong>Rely on error codes, not error messages</strong> &mdash; which matters more than it sounds, because a rate quota and a concurrent operations limit share the reason string <code>rateLimitExceeded</code>.</li>
+      <li><strong>Minimize client-side retries to preserve API rate limits</strong>, avoiding short polling and using bursting sparingly.</li>
+      <li><strong>Always make your calls in a retry loop with exponential backoff</strong>, and <strong>use a client-side rate limiter</strong>.</li>
+    </ul>
+    <p>
+      A team that does these four things needs a smaller rate quota than a team that does not, for identical work. No form achieves that.
+    </p>
+
+    <h3>4. Ask early, from a metric rather than an incident</h3>
+    <p>
+      The pattern Google documents is to track usage and request an increase when usage is over 80% &mdash; read the current value from <code>QuotaInfo</code>, read usage from the Cloud Monitoring API, and update the quota preference when the threshold is crossed. Because <code>serviceruntime.googleapis.com/quota/limit</code> is itself a time series, that comparison is a ratio and survives the ceiling changing.
+    </p>
+    <p>
+      This is the whole game in one sentence: the request that succeeds comfortably is the one submitted while nothing is wrong. A request submitted during an incident is competing with the incident for the same people's attention, and it is subject to exactly the same review.
+    </p>
+
+    <div class="callout">
+      <strong>Decreases are a design tool, not an admission</strong>
+      <p>Because decreases can be requested at project, folder and organization level, a quota is usable as an organization-wide ceiling on something expensive &mdash; TPUs, GPUs, large machine families &mdash; in a way an increase cannot be. Lowering a quota deliberately, on a folder that should never need the capacity, is one of the few controls that acts before the spend rather than reporting it afterwards. It is the same mechanism as an increase pointed the other way, and it is reviewed far less anxiously.</p>
+    </div>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>When to request</td>
+          <td>At capacity planning, not at launch</td>
+          <td>Requests are subject to review with no published turnaround, and approval is not promised.</td>
+        </tr>
+        <tr>
+          <td>Where to request</td>
+          <td>Per project, and script it</td>
+          <td>Increases must generally be made at project level; the API can clone configurations between projects.</td>
+        </tr>
+        <tr>
+          <td>How to batch</td>
+          <td>Group by product and area</td>
+          <td>Google's stated way to reduce review time; a mixed request waits for its slowest part.</td>
+        </tr>
+        <tr>
+          <td>The description field</td>
+          <td>Write it properly</td>
+          <td>It is the only part of the form a reviewer reads and the only part you control.</td>
+        </tr>
+        <tr>
+          <td>Quota adjuster</td>
+          <td>Enable, then list what it misses</td>
+          <td>It never lowers a value and skips any quota with a manual cap.</td>
+        </tr>
+        <tr>
+          <td>Caps and the adjuster together</td>
+          <td>Pick one per quota, deliberately</td>
+          <td>A manual cap silently stops the adjuster submitting for that quota.</td>
+        </tr>
+        <tr>
+          <td>New projects</td>
+          <td>Do not rely on the adjuster</td>
+          <td>It needs a sufficient volume of historical usage data, which a new project does not have.</td>
+        </tr>
+        <tr>
+          <td>Rate limit pressure</td>
+          <td>Fix the client first</td>
+          <td>Backoff, rate limiting, waiting for operations and less polling reduce the quota you need for the same work.</td>
+        </tr>
+        <tr>
+          <td>Capacity headroom</td>
+          <td>A second region before a bigger number</td>
+          <td>Regional quotas are not a subset of project quotas, so a second region is a second allowance.</td>
+        </tr>
+        <tr>
+          <td>Alerting</td>
+          <td>A ratio against <code>quota/limit</code>, firing near 80%</td>
+          <td>The documented pattern, and a ratio survives the ceiling being raised.</td>
+        </tr>
+        <tr>
+          <td>Capping spend</td>
+          <td>Request a decrease at folder level</td>
+          <td>Decreases are available at project, folder and organization scope, unlike increases.</td>
+        </tr>
+        <tr>
+          <td>Quotas in Terraform</td>
+          <td>Never rely on destroy</td>
+          <td>Deleting a <code>QuotaPreference</code> is not supported; returning to a default means setting it.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The quota increase form is the most-used capacity tool on Google Cloud and the only one that cannot be tested. Everything else in an architecture can be exercised before it matters &mdash; a failover, a scale-out, a restore. A quota request can only be submitted for real, once, at the moment you need it, and then waited on.
+    </p>
+    <p>
+      Which is the argument for arranging not to depend on it. Not because the process is unreasonable &mdash; a cloud that granted every request instantly would be a cloud with no capacity planning at all &mdash; but because a dependency you cannot rehearse belongs at the edge of a design rather than in the middle of one. Ask early, ask per product, let the adjuster handle the routine ratchet, and spend the real effort on the four things that mean a refusal costs you a week of headroom instead of a launch.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#17 leaves quotas for a pair of systems that look interchangeable and are not: labels and tags &mdash; where each is applied, which one policy can read, and why only one of them reaches your billing export.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/docs/quotas/view-manage" target="_blank" rel="noopener">View and manage quotas</a></li>
+      <li><a href="https://docs.cloud.google.com/docs/quotas/quota-adjuster" target="_blank" rel="noopener">Use the quota adjuster</a></li>
+      <li><a href="https://docs.cloud.google.com/docs/quotas/api-overview" target="_blank" rel="noopener">Cloud Quotas API overview</a></li>
+      <li><a href="https://docs.cloud.google.com/docs/quotas/implement-common-use-cases" target="_blank" rel="noopener">Implement common Cloud Quotas use cases</a></li>
+      <li><a href="https://docs.cloud.google.com/docs/quotas/overview" target="_blank" rel="noopener">Cloud Quotas overview</a></li>
+      <li><a href="https://docs.cloud.google.com/docs/quotas/set-up-quota-alerts" target="_blank" rel="noopener">Set up quota alerts and monitoring</a></li>
+      <li><a href="https://docs.cloud.google.com/compute/quotas-limits" target="_blank" rel="noopener">Compute Engine quota and limits overview</a></li>
+      <li><a href="https://docs.cloud.google.com/compute/docs/troubleshooting/troubleshoot-operation-limits" target="_blank" rel="noopener">Troubleshoot Compute Engine concurrent operations quota</a></li>
+      <li><a href="https://docs.cloud.google.com/capacity-planner/docs/enable-quota-adjuster" target="_blank" rel="noopener">Enable the quota adjuster</a></li>
+      <li><a href="https://docs.cloud.google.com/monitoring/alerts/using-quota-metrics" target="_blank" rel="noopener">Chart and monitor quota metrics</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
