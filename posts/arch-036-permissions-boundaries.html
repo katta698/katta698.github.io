@@ -1,0 +1,364 @@
+---
+title: "AWS Architecture Series #36 — The ceiling you can hand to a product team"
+date: '2026-08-29T09:00:00'
+slug: aws-architecture-permissions-boundaries
+labels: [AWS, "AWS Architecture Series"]
+problem: "A platform team wants product teams to create their own IAM roles without being able to create a role more powerful than themselves. Every attempt either blocks the teams entirely or leaves a route to full administrator, and nobody can articulate which of the two a given design is."
+builds: "A working model of the permissions boundary as a set intersection rather than a permission, the delegation pattern that makes self-service role creation safe, and the four documented routes by which access arrives outside the intersection."
+catch: "A boundary bounds identity-based policy and nothing else. A resource-based policy granting to a role session, a role passed to a service with iam:PassRole, a service-linked role, and the boundary document itself are all outside its reach — and every one of those is documented behaviour rather than a gap."
+verified: '2026-08-29'
+verified_claims:
+  - claim: "A permissions boundary is an advanced feature for using a managed policy to set the maximum permissions that an identity-based policy can grant to an IAM entity"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html
+  - claim: "An entity's permissions boundary allows it to perform only the actions that are allowed by both its identity-based policies and its permissions boundaries"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html
+  - claim: "When you use a policy to set the permissions boundary for a user, it limits the user's permissions but does not provide permissions on its own"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html
+  - claim: "The effective permissions are the intersection of both policy types"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html
+  - claim: "implicit denies in permissions boundaries do not limit resource-based policies"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html
+  - claim: "Permissions granted directly to a session are not limited by an implicit deny in an identity-based policy, a permissions boundary, or session policy"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html
+  - claim: "Resource-based policies that grant permissions to an IAM role ARN are limited by an implicit deny in a permissions boundary or session policy"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html
+  - claim: "The NotPrincipal element with a Deny effect will always deny any IAM principal that has a permissions boundary policy attached"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html
+  - claim: "An IAM entity can make a request that is affected by an SCP, a permissions boundary, and an identity-based policy, and the request is allowed only if all three policy types allow it"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html
+  - claim: "You cannot apply a permissions boundary to a service-linked role"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html
+  - claim: "When setting the PassRole permission, you should make sure that a user does not pass a role where the role has more permissions than you want the user to have"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_passrole.html
+  - claim: "The iam:PassedToService condition key can be used to specify the service principal of the service to which a role can be passed"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_passrole.html
+  - claim: "PassRole is not an API call. PassRole is a permission, meaning no CloudTrail logs are generated for IAM PassRole"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_passrole.html
+  - claim: "The size of each managed policy can't exceed 6,144 characters"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "Role policy size can't exceed 10,240 characters"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "A boundary document gets 60 percent of the character budget an inline role policy gets"
+    derive: "6144 / 10240"
+    expect: "0.6"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "Customer managed policies per account defaults to 1500 with a maximum quota of 10000"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #036 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">The ceiling you can hand to a product team</h1>
+  <p class="post-subtitle">A permissions boundary is not a permission. It is one half of a set intersection, and everything surprising about it follows from that — including the four routes by which access arrives outside the set.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>AWS Well-Architected &middot; Security &amp; Identity &middot; Governance</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A platform team owns eighty AWS accounts and is the bottleneck in all of them. Every Lambda function, every ECS task and every CI pipeline needs an IAM role, and every one of those roles arrives as a ticket. The queue is four days long, and the team is four people.
+    </p>
+    <p>
+      The obvious fix is to let product teams create their own roles. The obvious objection is equally clear: a principal that can create a role and attach <code class="inline">AdministratorAccess</code> to it, then assume that role, is an administrator. Granting <code class="inline">iam:CreateRole</code> and <code class="inline">iam:AttachRolePolicy</code> is functionally granting everything, by a route that takes about ninety seconds.
+    </p>
+    <p>
+      So the team tries to write the constraint as an identity policy. They enumerate the managed policies a product team may attach, and it breaks within a week because teams need customer-managed policies too. They try denying <code class="inline">iam:*</code> on anything outside a naming prefix, and teams work around it by naming things to fit. They try an SCP, which applies to every principal in the account including the platform team's own automation, and roll it back the same afternoon.
+    </p>
+    <p>
+      Each attempt is trying to express "you may create roles, but not roles more powerful than you" using a mechanism that has no notion of <em>more powerful than</em>. There is a mechanism that does, and it is not an identity policy, an SCP or a naming convention.
+    </p>
+
+    <div class="callout amber">
+      <strong>The requirement is a ceiling, and only one IAM construct is one</strong>
+      <p>A permissions boundary sets the maximum permissions an identity-based policy can grant to an entity. It is the only mechanism in IAM that lets one principal define the upper bound of another principal it has not met yet. Everything else in the list above is a filter on the *creation call*, which is why every one of them was routed around by changing the call.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      AWS's definition is worth reading as a sentence about sets rather than about permissions: <em>a permissions boundary is an advanced feature for using a managed policy to set the maximum permissions that an identity-based policy can grant to an IAM entity</em>. Two sets are involved, and only one of them can put anything into the answer.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-036-permissions-boundary.svg" alt="Diagram: a permissions boundary as a set intersection — the identity-based policy grants a set of actions, the boundary caps a set and grants nothing, and effective permissions are the actions present in both; below, the four routes by which access arrives outside that intersection" />
+      <figcaption>The boundary is the right-hand set. It can remove an action from the result and can never add one. The four routes at the bottom are the ones that do not pass through this intersection at all.</figcaption>
+    </figure>
+
+    <h3>The intersection, stated precisely</h3>
+    <p>
+      AWS is explicit that <em>an entity's permissions boundary allows it to perform only the actions that are allowed by both its identity-based policies and its permissions boundaries</em>, and that <strong>the effective permissions are the intersection of both policy types</strong>. An explicit deny in either one overrides the allow, which makes three outcomes possible and only one of them an allow.
+    </p>
+    <p>
+      The consequence teams keep rediscovering is the one AWS states directly: when you use a policy to set the permissions boundary for a user, <em>it limits the user's permissions but does not provide permissions on its own</em>. A boundary allowing <code class="inline">s3:*</code> gives nobody S3 access. Attach it to an entity with no identity policy and that entity can do nothing at all, which is the correct behaviour and reliably reads as a bug the first time it happens.
+    </p>
+
+    <h3>Delegation is two boundaries, not one</h3>
+    <p>
+      The pattern that solves the ticket queue needs a boundary in two places, and this is the part that is usually built with only one.
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h4>The boundary the product team must apply</h4>
+        <p>A managed policy defining the maximum any product-team-created role may have — the services in scope, plus explicit denies on the things that must never be reachable regardless of what anyone attaches. This is the ceiling on roles that do not exist yet.</p>
+      </div>
+      <div class="card">
+        <h4>The boundary on the product team itself</h4>
+        <p>A second managed policy, set as the boundary of the delegated principal, whose allow on <code class="inline">iam:CreateRole</code> carries a <code class="inline">iam:PermissionsBoundary</code> condition. Without it the delegate can create roles freely and the first policy is decoration.</p>
+      </div>
+    </div>
+    <p>
+      The condition key is what turns a convention into a control. An allow on <code class="inline">iam:CreateRole</code> that is conditional on <code class="inline">iam:PermissionsBoundary</code> equalling a specific policy ARN means the API call fails unless the boundary is attached at creation. There is no code path in which a role is created first and bounded afterwards, so there is no window.
+    </p>
+
+    <h3>Where the boundary sits relative to everything else</h3>
+    <p>
+      A boundary does not replace organisation-level controls and does not compete with them. AWS's wording for the three-way case is unambiguous: an IAM entity can make a request that is affected by an SCP, a permissions boundary, and an identity-based policy, and <em>the request is allowed only if all three policy types allow it</em>. Each is an independent narrowing, and the SCP is the one that also covers principals no delegation scheme created.
+    </p>
+    <p>
+      This is why "we use boundaries" and "we use SCPs" are not alternative answers to the same question. The SCP bounds the account. The boundary bounds one entity, and is the only one of the two that a platform team can hand to a product team as a self-service contract.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Model Holds Up</h2>
+
+    <h3>It moves the review from the ticket to the policy</h3>
+    <p>
+      Reviewing eighty roles a month is unbounded work whose quality decays with volume. Reviewing one boundary policy is bounded work done once, revisited when the ceiling needs to change. The four-day queue disappears because nothing in the common path requires a human, and the security property is stronger than the one the queue was producing — a reviewer approving the fortieth role of the week is not meaningfully checking it.
+    </p>
+
+    <h3>It fails closed, loudly</h3>
+    <p>
+      Most access controls fail open in their interesting cases: a missing statement grants nothing but also blocks nothing that another statement already allowed. A boundary is an intersection, so a missing entry in the boundary removes the permission entirely. The failure is a denied API call on the product team's first deployment, not a quiet excess of privilege discovered in an audit eighteen months later.
+    </p>
+
+    <h3>The boundary is versioned, diffable and attributable</h3>
+    <p>
+      Because the ceiling is a customer managed policy, it is a document in a repository with a change history and a reviewer. "What could this team do in March" is answerable from a policy version rather than reconstructed from the union of whatever was attached at the time. <strong>Customer managed policies per account defaults to 1500, with a maximum quota of 10000</strong>, so a boundary per team or per workload class is well within reach even in a busy account.
+    </p>
+
+    <h3>It composes with the evaluation order rather than fighting it</h3>
+    <p>
+      The boundary is one of the narrowing gates in AWS's evaluation pipeline, and it behaves exactly as its position predicts — it cannot grant, and it is evaluated after the two gates that can. Nothing about it is special-cased. That is also why its limits are predictable rather than surprising, once you know what it bounds: identity-based policy, and only identity-based policy.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Design Decisions</h2>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>Deny the delegate the ability to edit the boundary</strong>
+      </div>
+      <div class="challenge-body">
+        <p>The boundary is a managed policy, and a managed policy has versions. A delegate holding <code class="inline">iam:CreatePolicyVersion</code> and <code class="inline">iam:SetDefaultPolicyVersion</code> on the boundary policy can publish a version allowing everything and make it the default. Their ceiling is then whatever they chose, and the audit trail shows a routine policy update.</p>
+        <span class="fix-label">Concrete rule</span>
+        <p>The delegate's own boundary carries an explicit deny on <code class="inline">iam:CreatePolicyVersion</code>, <code class="inline">iam:DeletePolicy</code>, <code class="inline">iam:DeletePolicyVersion</code> and <code class="inline">iam:SetDefaultPolicyVersion</code> for both boundary policy ARNs — the one they apply to others and their own — plus a deny on <code class="inline">iam:DeleteRolePermissionsBoundary</code>. A deny is used rather than an omitted allow because an explicit deny survives any policy anyone later attaches.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>Treat iam:PassRole as part of the boundary design, not as an afterthought</strong>
+      </div>
+      <div class="challenge-body">
+        <p>A bounded principal that can pass a role to a service is not constrained by its own boundary in what that service then does. AWS states the risk plainly: when setting the PassRole permission, you should make sure that a user does not pass a role where the role has more permissions than you want the user to have. The service assumes the role and acts with the role's permissions; the passer's ceiling is not in the evaluation at all.</p>
+        <span class="fix-label">The trap</span>
+        <p><strong>PassRole is not an API call. PassRole is a permission, meaning no CloudTrail logs are generated for IAM PassRole.</strong> There is no event to alert on — the evidence is inside the <code class="inline">CreateFunction</code> or <code class="inline">RunInstances</code> record that received the role. Scope <code class="inline">iam:PassRole</code> by resource ARN prefix, and narrow further with the <code class="inline">iam:PassedToService</code> condition key, which can be used to specify the service principal of the service to which a role can be passed.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>Do not rely on a boundary to stop cross-account resource access</strong>
+      </div>
+      <div class="challenge-body">
+        <p>The boundary bounds identity-based policy. AWS is direct that <strong>implicit denies in permissions boundaries do not limit resource-based policies</strong>, and the distinction turns on one detail of the <code class="inline">Principal</code> element. Resource-based policies that grant permissions to an IAM role ARN <em>are</em> limited by an implicit deny in a permissions boundary or session policy. But permissions granted directly to a session are not limited by an implicit deny in an identity-based policy, a permissions boundary, or session policy.</p>
+        <span class="fix-label">Decision signal</span>
+        <p>If the requirement is "this data must not be reachable by that team", write it as an explicit deny — in the boundary, or better in an SCP or RCP where it also covers principals outside the delegation scheme. An implicit deny, which is what a boundary that simply omits the action produces, is exactly the case a resource policy can route around.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>Budget the boundary document before it becomes the architecture</strong>
+      </div>
+      <div class="challenge-body">
+        <p>A boundary must be a managed policy, and <strong>the size of each managed policy can't exceed 6,144 characters</strong>. An inline role policy gets <strong>10,240 characters</strong> — so the ceiling document has exactly 60 percent of the budget of the thing it is bounding. Whitespace is not counted, which helps less than it sounds once the policy carries per-resource ARNs.</p>
+        <span class="fix-label">Implication</span>
+        <p>A boundary written as an enumeration of permitted actions runs out of room in a real platform. Write it as broad service-level allows plus a short list of explicit denies for the things that must never be reachable — the deny list is the part that carries the security value, and it is short. Enumerating allows spends the character budget on the half of the document that only has to be <em>approximately</em> right.</p>
+      </div>
+    </div>
+
+    <h3>What a boundary does and does not reach</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Access arrives via</th>
+            <th>Bounded?</th>
+            <th>Why</th>
+            <th>What to use instead</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Identity-based policy on the entity</strong></td>
+            <td><strong>Yes</strong></td>
+            <td>This is the set the boundary intersects with</td>
+            <td>Nothing — this is the design working</td>
+          </tr>
+          <tr>
+            <td><strong>Resource policy naming the role ARN</strong></td>
+            <td><strong>Yes</strong></td>
+            <td>Limited by an implicit deny in the boundary</td>
+            <td>Nothing further needed</td>
+          </tr>
+          <tr>
+            <td><strong>Resource policy naming the session ARN</strong></td>
+            <td>No</td>
+            <td>Granted directly to the session</td>
+            <td>Explicit deny in an SCP or RCP</td>
+          </tr>
+          <tr>
+            <td><strong>A role passed to a service</strong></td>
+            <td>No</td>
+            <td>The service acts with the passed role's permissions</td>
+            <td>Scoped <code class="inline">iam:PassRole</code> plus <code class="inline">iam:PassedToService</code></td>
+          </tr>
+          <tr>
+            <td><strong>A service-linked role</strong></td>
+            <td>No</td>
+            <td>You cannot apply a permissions boundary to a service-linked role</td>
+            <td>SCP on the service's actions</td>
+          </tr>
+          <tr>
+            <td><strong>Editing the boundary policy itself</strong></td>
+            <td>No</td>
+            <td>The document is an ordinary managed policy with versions</td>
+            <td>Explicit deny on the policy ARNs</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <strong>One genuine footgun, documented and easy to trip</strong>
+      <p>Do not write a resource-based policy that combines <code class="inline">NotPrincipal</code> with a <code class="inline">Deny</code> effect while any of the intended principals carry a boundary. <strong>The NotPrincipal element with a Deny effect will always deny any IAM principal that has a permissions boundary policy attached</strong>, whatever the element lists. AWS recommends <code class="inline">ArnNotEquals</code> on <code class="inline">aws:PrincipalArn</code> instead. Rolling out boundaries can therefore break access on resources whose policies nobody touched.</p>
+    </div>
+
+    <h3>Reference: the delegate's boundary</h3>
+    <p>
+      This is the second of the two policies — the one attached as the boundary of the principal doing the delegating. The first statement is what makes self-service role creation safe; the second and third are what stop the delegate from removing the first.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">Boundary on the delegated platform principal</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CreateRolesOnlyWithBoundary",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:AttachRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:PutRolePermissionsBoundary"
+      ],
+      "Resource": "arn:aws:iam::111122223333:role/app/*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary":
+            "arn:aws:iam::111122223333:policy/ProductTeamCeiling"
+        }
+      }
+    },
+    {
+      "Sid": "NoEditingEitherBoundary",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicy",
+        "iam:DeletePolicyVersion",
+        "iam:SetDefaultPolicyVersion"
+      ],
+      "Resource": [
+        "arn:aws:iam::111122223333:policy/ProductTeamCeiling",
+        "arn:aws:iam::111122223333:policy/PlatformDelegateCeiling"
+      ]
+    },
+    {
+      "Sid": "NoRemovingBoundaries",
+      "Effect": "Deny",
+      "Action": "iam:DeleteRolePermissionsBoundary",
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassOnlyBoundedRolesToCompute",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::111122223333:role/app/*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": [
+            "lambda.amazonaws.com",
+            "ecs-tasks.amazonaws.com"
+          ]
+        }
+      }
+    }
+  ]
+}</code></pre>
+    </div>
+    <p>
+      Note what this document is not doing: it grants the delegate nothing. It is a boundary, so every statement above only survives if a separate identity-based policy grants the same action. The <code class="inline">Allow</code> statements are the ceiling's shape, not permissions — which is the single sentence worth carrying away from the whole model.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The permissions boundary is the only construct in IAM that lets one team define the upper bound of a principal that does not exist yet. That is a genuinely different capability from anything an identity policy offers, and it is what makes self-service infrastructure possible without making everyone an administrator by a ninety-second route.
+    </p>
+    <p>
+      It earns that by being narrow. It bounds identity-based policy and nothing else, so a resource policy naming a session, a role handed to a service, a service-linked role and the boundary document itself all sit outside it. None of those is a defect — each is the documented consequence of what a boundary is — but a design that assumes the boundary is a general-purpose ceiling has four gaps in it, and they are the four that get found.
+    </p>
+    <p>
+      <strong>The test to apply to any boundary you write: for each way this principal can cause an action to happen, does that action pass through an identity-based policy attached to this entity?</strong> Where the answer is yes, the boundary holds. Where it is no — a passed role, a session named in a bucket policy, a service acting on its own linked role — the control has to be an explicit deny somewhere the boundary does not reach.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity — the role trust policy: why a role has two halves, what the <code class="inline">Principal</code> element actually delegates when it names an account, and the conditions that turn "this vendor can assume the role" into something narrower than "anyone in that vendor's account can".</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html" target="_blank" rel="noopener">AWS Documentation — Permissions boundaries for IAM entities</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_passrole.html" target="_blank" rel="noopener">AWS Documentation — Grant a user permissions to pass a role to an AWS service</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html" target="_blank" rel="noopener">AWS Documentation — IAM roles: terms and concepts</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html" target="_blank" rel="noopener">AWS Documentation — IAM and AWS STS quotas</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic.html" target="_blank" rel="noopener">AWS Documentation — Policy evaluation logic</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notprincipal.html" target="_blank" rel="noopener">AWS Documentation — AWS JSON policy elements: NotPrincipal</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
