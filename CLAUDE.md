@@ -169,6 +169,42 @@ Check before doing anything.
 | AWS | `C:\Projects\Engineering\katta698-aws` | `aws` | AWS Architecture, AWS Daily + Weekly Intelligence, Weekly Lab |
 | Azure | `C:\Projects\Engineering\katta698-azure` | `azure` | Azure Architecture, Azure Weekly Intelligence |
 | GCP | `C:\Projects\Engineering\katta698-gcp` | `gcp` | GCP Architecture, GCP Weekly Intelligence |
+| Life | `C:\Projects\Engineering\katta698-life` | `life` | Health, Life, Career and Personal Growth posts |
+
+### The Life window
+
+Added 2026-08-30. The non-technical posts &mdash; `Health`, `Life`, `Career`,
+`Personal Growth`, `Financial Thinking` &mdash; have their own window for the
+same reason the clouds do: a window can only be in one directory at a time, and
+these are written in a different mode from a technical post. Switching a window
+between an IAM policy walkthrough and a 300-word piece about your child is a
+context switch, not a filename change.
+
+**They are not a series and should not be made into one.** No file prefix, no
+`SERIES` entry in `validate_arch_post.py`, no progress widget. The 14 published
+ones use a bare slug filename, and the labels already do the separating &mdash;
+filter pills, the blog index, and exclusion from the AWS service widget and the
+domain donut. Give them a prefix only if they ever publish on a cadence and earn
+a filter pill of their own; that is the moment to rename, once.
+
+**Do not put them in a subdirectory of `posts/`.** All ten scripts that read
+`posts/` use a flat glob &mdash; `posts/*.html` or `os.listdir(POSTS)` &mdash;
+and not one recurses. A post in `posts/life/` is invisible to `sync_blog.py`, to
+the RAG indexer, and to `check_index_complete.py`, which means it would never be
+built, never indexed, and never reported missing. That is the failure with no
+symptom, from a directory rename.
+
+**What a post here looks like**, from the 14 already published: 250&ndash;1,100
+words (usually 300&ndash;550), plain `<p>` flow with no `class="section"`
+scaffolding, one image, no verification badge and no diagram. Under ~500 words
+they carry no headings at all; past ~800 they use `<h2>`s as narrative beats
+rather than as sections. Most end signed *Jay*. The Architecture template does
+not apply and should not be reached for.
+
+**The verification badge does not apply.** There are no vendor facts to check,
+and `validate_arch_post.py` matches no series for these files, so they are not
+checked &mdash; correctly. `publish.py` still runs, and the site-wide half of
+`prepublish.py` still applies.
 
 Site work sits on `main` because it owns the shared files every series depends
 on — `blog.css`, `blog.js`, `sync_blog.py`, the validators and the workflows.
