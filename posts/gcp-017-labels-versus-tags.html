@@ -1,0 +1,408 @@
+---
+title: "GCP Architecture Series #17 — Labels Versus Tags: Two Systems That Look Alike and Are Not"
+date: '2026-08-30T09:00:00'
+slug: gcp-architecture-labels-versus-tags
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-08-30'
+verified_claims:
+  - claim: "A label is a key-value pair that you can assign to Google Cloud resources"
+    source: https://docs.cloud.google.com/resource-manager/docs/labels-overview
+  - claim: "Each resource can have up to 64 labels"
+    source: https://docs.cloud.google.com/resource-manager/docs/labels-overview
+  - claim: "Keys have a minimum length of 1 character and a maximum length of 63 characters, and cannot be empty"
+    source: https://docs.cloud.google.com/resource-manager/docs/labels-overview
+  - claim: "Values can be empty, and have a maximum length of 63 characters"
+    source: https://docs.cloud.google.com/resource-manager/docs/labels-overview
+  - claim: "Keys and values can contain only lowercase letters, numeric characters, underscores, and dashes"
+    source: https://docs.cloud.google.com/resource-manager/docs/labels-overview
+  - claim: "Keys must start with a lowercase letter or international character"
+    source: https://docs.cloud.google.com/resource-manager/docs/labels-overview
+  - claim: "The key portion of a label must be unique within a single resource"
+    source: https://docs.cloud.google.com/resource-manager/docs/labels-overview
+  - claim: "Information about labels is forwarded to the billing system that lets you break down your billed charges by label"
+    source: https://docs.cloud.google.com/resource-manager/docs/labels-overview
+  - claim: "Tags provide a way to create annotations for resources, and in some cases conditionally allow or deny policies based on whether a resource has a specific tag"
+    source: https://docs.cloud.google.com/resource-manager/docs/tags/tags-overview
+  - claim: "The tag key and tag value must be defined before a tag can be attached to a resource"
+    source: https://docs.cloud.google.com/resource-manager/docs/tags/tags-overview
+  - claim: "When a tag value is attached to a resource, by default, all descendants of the resource inherit the same tag value"
+    source: https://docs.cloud.google.com/resource-manager/docs/tags/tags-overview
+  - claim: "You can create a maximum of 1000 tag keys within a given organization or within a given project"
+    source: https://docs.cloud.google.com/resource-manager/docs/tags/tags-creating-and-managing
+  - claim: "For predefined tag values, you can associate up to 1000 values per tag key by default"
+    source: https://docs.cloud.google.com/resource-manager/docs/tags/tags-creating-and-managing
+  - claim: "Each resource can have a maximum of 50 key-value pairs attached"
+    source: https://docs.cloud.google.com/resource-manager/docs/tags/tags-creating-and-managing
+  - claim: "Once all tag values associated with a key have been deleted, you can then delete the key"
+    source: https://docs.cloud.google.com/resource-manager/docs/tags/tags-creating-and-managing
+  - claim: "Tag Viewer (roles/resourcemanager.tagViewer)"
+    source: https://docs.cloud.google.com/resource-manager/docs/tags/tags-creating-and-managing
+  - claim: "Tag User (roles/resourcemanager.tagUser)"
+    source: https://docs.cloud.google.com/resource-manager/docs/tags/tags-creating-and-managing
+  - claim: "Tag Administrator (roles/resourcemanager.tagAdmin)"
+    source: https://docs.cloud.google.com/resource-manager/docs/tags/tags-creating-and-managing
+  - claim: "The following services include policies that can include tags. Referencing tags in these policies allows you to finely tune the way they operate on supported resources"
+    source: https://docs.cloud.google.com/resource-manager/docs/tags/tags-supported-services
+  - claim: "Resources not listed as explicitly supported by policy engine services can't be targeted directly for conditional enforcement of policies"
+    source: https://docs.cloud.google.com/resource-manager/docs/tags/tags-supported-services
+  - claim: "Fields that describe the tag, such as key, value, and namespace"
+    source: https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/standard-usage
+  - claim: "Indicates whether a tag binding is inherited (Tags Inherited = True) or direct/non-inherited (Tags Inherited = False)"
+    source: https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/standard-usage
+  - claim: "The first full month of data with these tags is October 2022"
+    source: https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/standard-usage
+  - claim: "Represents the resource hierarchy that define tag key and values"
+    source: https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/standard-usage
+  - claim: "The resources attached to a tags.key. At any given time, exactly one value can be attached to a resource for a given key"
+    source: https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/standard-usage
+  - claim: "Fields that describe the label, such as key, value"
+    source: https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/standard-usage
+problem: "Labels and tags are both key-value pairs you attach to Google Cloud resources, they are edited in adjacent places in the console, and almost every team treats them as the same idea with two names. They are not related. One is metadata a resource carries; the other is a set of first-class resources with their own IAM, their own hierarchy and their own deletion order — and only one of them can make a policy decision."
+builds: "What each system actually is, why a tag has to exist before it can be used, how tag inheritance works and how it shows up in your billing export, the limits that decide which one fits a job, and the support gap between attaching a tag and being able to enforce on it."
+catch: "Attaching a tag to a resource and enforcing policy on that tag are two different support lists. A resource can accept a tag perfectly happily while remaining impossible to target with a conditional policy — Google states that resources not listed as supported by policy engine services cannot be targeted directly for conditional enforcement."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #017 &middot; Foundations</div>
+  <h1 class="post-title">Labels Versus Tags: Two Systems That Look Alike and Are Not</h1>
+  <p class="post-subtitle">Both are key-value pairs. Both attach to resources. One is a note written on a resource; the other is a resource in its own right, with IAM, inheritance and a deletion order &mdash; and only one of them can deny anything.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>Google Cloud &middot; Resource Manager &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The confusion is reasonable. They are both key-value pairs, both attach to resources, and the console puts them near each other. Then four things happen that make no sense until you know they are unrelated systems.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"Just add a <code>cost-centre</code> tag to that VM"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          You cannot, not directly. The tag key and the tag value must both be defined before a tag can be attached to a resource. A tag key is a resource created under an organization or a project; each permitted value is another resource created under that key. Only then can a binding attach one to a VM. There is no equivalent of typing a new key on the spot &mdash; that is what a label is.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Decide up front which of the two a given piece of metadata is. Anything ad-hoc, high-cardinality or team-owned is a label. Anything policy will read is a tag, and it needs designing before it needs applying.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"We label everything <code>env=prod</code>, so write a policy on that"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Labels cannot be used to set conditions on policies. No amount of labelling discipline produces an enforceable control, because the policy engines do not read labels at all. A label is descriptive; it is forwarded to billing and it is searchable, and that is the extent of its power.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          If a value needs to gate access, it is a tag from the beginning. Re-tagging an estate that was labelled for three years is the expensive version of this decision.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"Delete the tag key, it's obsolete"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Not until everything below it is gone. All the associated bindings must be removed from resources first; once all tag values associated with a key have been deleted, you can then delete the key. A tag is a small dependency tree, not an attribute, and it unwinds in one direction only.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat tag retirement as a migration with three phases &mdash; unbind, delete values, delete key &mdash; and script it. A label, by contrast, is removed by editing the resource, and nothing else is affected.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"This cost is tagged <code>team=platform</code> and nobody tagged it"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Inheritance. When a tag value is attached to a resource, by default all descendants of that resource inherit the same value &mdash; so a tag set once on a folder appears on every project and resource beneath it. Labels do not do this; a label exists only on the resource that carries it.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Read <code>tags.inherited</code> in the billing export, which indicates whether a binding is inherited or direct. It is the field that turns "who set this" from an argument into a query.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The single most useful sentence about these two systems is that a label is <em>metadata on a resource</em> and a tag is <em>a resource</em>. Everything else follows from that.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-017-labels-versus-tags.svg" alt="Diagram: how Google Cloud labels differ from tags — labels as per-resource metadata versus tags as first-class resources with their own IAM roles, inheritance down the hierarchy, and policy engine support" />
+      <figcaption>A label is written on a resource. A tag is a resource, created before use, inherited downward, and readable by policy.</figcaption>
+    </figure>
+
+    <h3>The two systems, side by side</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th></th><th>Label</th><th>Tag</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>What it is</td>
+          <td>A key-value pair you assign to a resource. Metadata, nothing more.</td>
+          <td>Tag keys, tag values and tag bindings are all discrete resources.</td>
+        </tr>
+        <tr>
+          <td>Created</td>
+          <td>By typing it on the resource. No prerequisite.</td>
+          <td>Key and value must be defined before a tag can be attached.</td>
+        </tr>
+        <tr>
+          <td>Where defined</td>
+          <td>On each resource, independently.</td>
+          <td>Under an organization or a project.</td>
+        </tr>
+        <tr>
+          <td>Inheritance</td>
+          <td>None. It exists where it was set.</td>
+          <td>All descendants inherit an attached value by default; a descendant can override it with the same key.</td>
+        </tr>
+        <tr>
+          <td>Policy</td>
+          <td>Cannot be used to set conditions on policies.</td>
+          <td>Read by IAM conditions, Organization Policy and VPC firewall policies.</td>
+        </tr>
+        <tr>
+          <td>Own IAM</td>
+          <td>No. Editing a label is editing the resource.</td>
+          <td>Yes &mdash; Tag Viewer, Tag User, Tag Administrator.</td>
+        </tr>
+        <tr>
+          <td>Billing export</td>
+          <td><code>labels</code>, plus <code>project.labels</code> and <code>system_labels</code>.</td>
+          <td><code>tags</code>, with key, value, namespace and inherited.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>Tags have their own access control, and that is the point</h3>
+    <p>
+      Because a tag is a resource, it comes with roles of its own: Tag Viewer (<code>roles/resourcemanager.tagViewer</code>) to see them, Tag User (<code>roles/resourcemanager.tagUser</code>) to attach and remove them, and Tag Administrator (<code>roles/resourcemanager.tagAdmin</code>) to create, update and delete the definitions.
+    </p>
+    <p>
+      That separation is what makes a tag trustworthy enough to gate access on. If attaching <code>env=prod</code> were merely editing a field on a VM, then anyone who could edit the VM could grant themselves whatever the tag unlocks. Splitting "may attach this tag" from "may edit this resource" is the whole reason the mechanism can carry a security decision, and it is the reason it is heavier than a label.
+    </p>
+
+    <div class="callout">
+      <strong>The namespace is what makes a tag globally unique</strong>
+      <p>A tag key's short name is only unique within the organization or project that defines it. The fully qualified form prefixes the namespace &mdash; which the billing export documents as representing the resource hierarchy that defines the tag key and values, combinable with the short names to produce a globally unique name. It is why an IAM condition is written as <code>resource.matchTag('123456789012/env', 'prod')</code> rather than just <code>env</code>: the numeric prefix is the organization that owns the definition, and without it the expression would be ambiguous.</p>
+    </div>
+
+    <h3>Limits, and what they tell you about intent</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Limit</th><th>Label</th><th>Tag</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Per resource</td>
+          <td>Up to 64 labels.</td>
+          <td>A maximum of 50 key-value pairs attached.</td>
+        </tr>
+        <tr>
+          <td>Definitions available</td>
+          <td>Unbounded &mdash; there is nothing to define.</td>
+          <td>A maximum of 1000 tag keys within an organization or within a project, raisable on request.</td>
+        </tr>
+        <tr>
+          <td>Values per key</td>
+          <td>Any string within the rules.</td>
+          <td>Up to 1000 predefined values per key by default.</td>
+        </tr>
+        <tr>
+          <td>Key rules</td>
+          <td>1 to 63 characters, cannot be empty, must start with a lowercase letter or international character.</td>
+          <td>Defined once as a resource and referenced thereafter.</td>
+        </tr>
+        <tr>
+          <td>Value rules</td>
+          <td>Can be empty, maximum 63 characters.</td>
+          <td>Exactly one value per key can be attached to a resource at any given time.</td>
+        </tr>
+        <tr>
+          <td>Character set</td>
+          <td>Lowercase letters, numerics, underscores and dashes only.</td>
+          <td>Set at definition time.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      The shape of those numbers is the design brief. Labels are cheap, numerous and unconstrained because they describe; tags are capped at a thousand keys per organization because they are meant to be a small, governed vocabulary that policies are written against. A tagging scheme that needs more than a thousand keys is a labelling scheme wearing the wrong hat.
+    </p>
+
+    <div class="callout amber">
+      <strong>Attaching a tag and enforcing on it are two different support lists</strong>
+      <p>Many services let you attach tags to their resources. Far fewer can make a decision based on one. The policy engines that read tags are Identity and Access Management, the Organization Policy Service, and Virtual Private Cloud for network firewall policies &mdash; and Google states directly that resources not listed as explicitly supported by policy engine services cannot be targeted directly for conditional enforcement of policies. So a tag can sit on a resource, appear in your billing export, look entirely correct, and still be unable to deny anything on that resource. Check the second list, not the first, before designing a control around it.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Choosing Between Them</h2>
+    <p>
+      In practice the decision is made once per piece of metadata, and almost always correctly answered by a single question: does anything need to <em>act</em> on this, or only to <em>report</em> on it?
+    </p>
+
+    <h3>Both reach the billing export &mdash; differently</h3>
+    <p>
+      This is the part most often got wrong, including in the closing line of the previous post in this series, which said only one of the two reaches billing. Both do. Information about labels is forwarded to the billing system so that billed charges can be broken down by label, and the standard usage cost export carries <code>labels</code>, <code>project.labels</code> and <code>system_labels</code>. Tags arrived later &mdash; the first full month of data with tags is October 2022 &mdash; and land in a <code>tags</code> struct with key, value, namespace and inherited.
+    </p>
+    <p>
+      The difference that matters for cost work is not presence but provenance. A label in the export was set on that resource by someone. A tag in the export may have been set three levels up the hierarchy, and <code>tags.inherited</code> is the field that tells you which. For a chargeback model that is a significant advantage: you can attribute an entire folder's spend from one binding, and still distinguish the resources that were deliberately tagged from the ones that merely inherited.
+    </p>
+
+    <div class="callout">
+      <strong>The two-question test</strong>
+      <p><strong>Will a policy read it?</strong> If yes, it is a tag, and it must be defined before anything can carry it. <strong>Does it need to apply to a whole branch of the hierarchy at once?</strong> If yes, it is a tag, because inheritance is the only mechanism that does that. Everything else &mdash; owner, ticket reference, application name, anything with hundreds of distinct values, anything a team invents this week &mdash; is a label.</p>
+    </div>
+
+    <h3>Where each one breaks down</h3>
+    <ul>
+      <li><strong>Labels used for governance.</strong> The failure is silent: the labels are all present and correct, and nothing enforces them. Discovered when somebody asks how the control is implemented and the answer is a convention.</li>
+      <li><strong>Tags used for description.</strong> The failure is friction. Every new value needs a definition created by someone holding Tag Administrator, so the vocabulary either ossifies or the role gets handed out widely, which defeats the separation that made tags worth using.</li>
+      <li><strong>Either one used for both.</strong> Workable, and the usual outcome is the tag vocabulary slowly filling with descriptive keys nobody writes policy against, until the thousand-key limit becomes a real conversation.</li>
+    </ul>
+
+    <h3>Inheritance is a commitment, not a convenience</h3>
+    <p>
+      Attaching a tag high in the hierarchy is the most efficient thing you can do with one and the easiest to regret. Every descendant inherits it by default, including resources created afterwards by people who have never heard of the tag, and every policy written against it applies to them the moment they exist.
+    </p>
+    <p>
+      That is exactly what you want for something like <code>environment=production</code> on a folder. It is exactly what you do not want for anything provisional. The override is available &mdash; a descendant can bind a different value using the same key &mdash; but relying on overrides means the effective value of a tag is a hierarchy walk rather than a fact, and the number of people who will reason about that correctly at three in the morning is small.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Metadata a policy will read</td>
+          <td>Tag, designed before applied</td>
+          <td>Labels cannot be used to set conditions on policies.</td>
+        </tr>
+        <tr>
+          <td>Metadata only reports read</td>
+          <td>Label</td>
+          <td>No definition step, no governed vocabulary, and it still reaches billing.</td>
+        </tr>
+        <tr>
+          <td>Applying a value to a whole branch</td>
+          <td>Tag on the folder</td>
+          <td>All descendants inherit an attached value by default; labels have no inheritance.</td>
+        </tr>
+        <tr>
+          <td>High-cardinality values</td>
+          <td>Label</td>
+          <td>Predefined tag values default to 1000 per key; a label value is any conforming string.</td>
+        </tr>
+        <tr>
+          <td>Before designing a tag-based control</td>
+          <td>Check the policy engine list, not the attachment list</td>
+          <td>Resources not listed as supported by policy engines cannot be targeted for conditional enforcement.</td>
+        </tr>
+        <tr>
+          <td>Who may attach a governing tag</td>
+          <td>Tag User, granted narrowly</td>
+          <td>Separating attachment from resource edit is what lets a tag carry a security decision.</td>
+        </tr>
+        <tr>
+          <td>Who may define the vocabulary</td>
+          <td>Tag Administrator, granted very narrowly</td>
+          <td>It creates, updates and deletes the definitions every policy is written against.</td>
+        </tr>
+        <tr>
+          <td>Retiring a tag</td>
+          <td>Unbind, delete values, then delete the key</td>
+          <td>The key cannot be deleted until its values are, and those cannot go while bindings exist.</td>
+        </tr>
+        <tr>
+          <td>Chargeback attribution</td>
+          <td>Tags, and read <code>tags.inherited</code></td>
+          <td>One binding attributes a whole branch, and the field distinguishes deliberate from inherited.</td>
+        </tr>
+        <tr>
+          <td>Writing an IAM condition</td>
+          <td>Fully qualified, with the namespace</td>
+          <td>A short name is unique only within its defining organization or project.</td>
+        </tr>
+        <tr>
+          <td>A tag vocabulary approaching 1000 keys</td>
+          <td>Treat it as a design smell</td>
+          <td>The cap is per organization or project, and describes intent: a small governed set, not an inventory.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The reason these two get conflated is that Google gave them the same shape. A key, a value, a resource to stick them on. If they had been called <em>annotations</em> and <em>attributes</em>, or given visibly different syntax, nobody would spend a year labelling an estate for a governance requirement that labels cannot meet.
+    </p>
+    <p>
+      The distinction worth carrying is not a list of differences but a question about direction. A label is something you write <em>about</em> a resource, and it flows outward to the people reading reports. A tag is something the platform reads <em>from</em> a resource, and it flows inward to the engines deciding what may happen. Metadata that describes, versus metadata that decides. Once a piece of information is on the wrong side of that line, moving it is not an edit &mdash; it is a migration with a definition step, an IAM model and a deletion order.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#18 stays with metadata and asks the harder question: resource naming standards that survive three years &mdash; what a name has to encode, what it must not, and why the fields people most want in a name are the ones that change.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/labels-overview" target="_blank" rel="noopener">Labels overview</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/creating-managing-labels" target="_blank" rel="noopener">Creating and managing labels</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/tags/tags-overview" target="_blank" rel="noopener">Tags overview</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/tags/tags-creating-and-managing" target="_blank" rel="noopener">Creating and managing tags</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/tags/tags-supported-services" target="_blank" rel="noopener">Services that support tags</a></li>
+      <li><a href="https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/standard-usage" target="_blank" rel="noopener">Standard usage cost data schema</a></li>
+      <li><a href="https://docs.cloud.google.com/billing/docs/how-to/bq-examples" target="_blank" rel="noopener">Example queries for Cloud Billing export</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/conditions-overview" target="_blank" rel="noopener">IAM Conditions overview</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
