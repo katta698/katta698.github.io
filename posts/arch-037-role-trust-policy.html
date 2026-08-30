@@ -1,0 +1,331 @@
+---
+title: "AWS Architecture Series #37 — The other half of the role"
+date: '2026-08-30T09:00:00'
+slug: aws-architecture-role-trust-policy
+labels: [AWS, "AWS Architecture Series"]
+problem: "A vendor is onboarded with a role whose trust policy names their AWS account and nothing else. Everyone involved believes access was granted to the vendor. What was granted was the ability of that vendor's IAM administrator to hand the role to anyone, at any point in the future, with no signal on this side of the boundary."
+builds: "A working model of the trust policy as the half of a role that decides identity rather than permission: what each form of the Principal element actually delegates, why the same-account and cross-account cases differ, and why the Condition block is the only part of the document that makes the trusted set smaller."
+catch: "Naming an account ARN in the Principal element does not restrict anything to the root user — it delegates to the account. Naming a role ARN does the opposite of what it looks like too: the ARN is stored as a principal ID, so deleting and recreating that role breaks the trust silently, and the policy keeps rendering as though it still works."
+verified: '2026-08-30'
+verified_claims:
+  - claim: "A role trust policy is a required resource-based policy that is attached to a role in IAM"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html
+  - claim: "The trust policy is attached to the role in the trusting account, and is one-half of the permissions"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html
+  - claim: "When you create a trust policy, you cannot specify a wildcard as part of an ARN in the principal element"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html
+  - claim: "Role chaining limits your AWS Management Console, AWS CLI or AWS API role session to a maximum of one hour"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html
+  - claim: "The account ARN and the shortened account ID behave the same way. Both delegate permissions to the account. Using the account ARN in the Principal element does not limit permissions to only the root user of the account"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html
+  - claim: "If your Principal element in a role trust policy contains an ARN that points to a specific IAM role, then that ARN transforms to the role's unique principal ID when you save the policy"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html
+  - claim: "If you delete the role, then you break the relationship. The policy no longer applies, even if you recreate the role because the new role has a new principal ID that does not match the ID stored in the trust policy"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html
+  - claim: "The service principal in an IAM policy can't be a wildcard Service value"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html
+  - claim: "For IAM role trust policies, we recommend using the non-regionalized service principal name"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html
+  - claim: "You cannot use a wildcard to match part of a principal name or ARN"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html
+  - claim: "When a resource-based policy grants access to a principal in the same account, no additional identity-based policy is required"
+    source: https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html
+  - claim: "A user who wants to access a role in a different account must also have permissions that are delegated from the account administrator"
+    source: https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html
+  - claim: "DurationSeconds can range from 900 seconds up to the maximum session duration set for the role, and the maximum session duration setting can have a value from 1 hour to 12 hours"
+    source: https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html
+  - claim: "AWS does not treat the external ID as a secret. The external ID for a role can be seen by anyone with permission to view the role"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html
+  - claim: "The ExternalId value must have a minimum of 2 characters and a maximum of 1,224 characters"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html
+  - claim: "The ExternalId value must be unique among a provider's customers and controlled by the provider, not its customers"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/confused-deputy.html
+  - claim: "AWS recommends using aws:SourceArn, aws:SourceAccount, aws:SourceOrgID, or aws:SourceOrgPaths in your resource policies wherever an AWS service principal is granted permission to access one of your resources"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/confused-deputy.html
+  - claim: "aws:PrincipalOrgID provides an alternative to listing all the account IDs for all AWS accounts in an organization, and when you add and remove accounts, policies that include the key automatically include the correct accounts and don't require manual updating"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html
+  - claim: "Role trust policy length has a default quota of 2048 characters and a maximum quota of 8192 characters"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "The maximum trust policy length is exactly four times the default"
+    derive: "8192 / 2048"
+    expect: "4"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #037 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">The other half of the role</h1>
+  <p class="post-subtitle">Every role has two policies. One says what the role may do and gets reviewed in a pull request. The other decides who is allowed to become it, is written once during onboarding, and is almost never opened again.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>AWS Well-Architected &middot; Security &amp; Identity &middot; Governance</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A company buys a cloud cost-optimisation tool. Onboarding takes ten minutes: create a role, attach a read-only policy, set the trust policy to the vendor's account ID, send them the role ARN. The vendor's documentation supplies the exact JSON. Two people review it, and both approve, because the permissions policy is read-only and that is the part they were looking at.
+    </p>
+    <p>
+      What the trust policy says is <code class="inline">"Principal": {"AWS": "222233334444"}</code> and <code class="inline">"Action": "sts:AssumeRole"</code>. No condition block. The reviewers read that as <em>the vendor may assume this role</em>.
+    </p>
+    <p>
+      It does not mean that. It delegates to the vendor's <em>account</em>. Every principal in it that their administrator chooses to grant <code class="inline">sts:AssumeRole</code> to — today, and every principal created there for as long as the role exists — can assume it. The company has not granted access to a product; it has trusted another organisation's IAM, permanently, with no visibility into how it is administered and no event on this side when it changes.
+    </p>
+    <p>
+      Eighteen months later the same company adds a CI pipeline that assumes a deployment role via GitHub's OIDC provider. The trust policy names the provider and checks nothing else. It is now assumable from any repository on GitHub. And a service role trusted by <code class="inline">"Service": "cloudtrail.amazonaws.com"</code>, written the same week, will accept a trail configured in an account nobody here has heard of.
+    </p>
+
+    <div class="callout amber">
+      <strong>Three different mistakes, one shape</strong>
+      <p>In each case the <code class="inline">Principal</code> element names a set correctly and the set is far larger than the author pictured. An account is a set of principals. A service principal is a set of everyone who can configure that service. A federated provider is a set of everyone it will issue a token to. The element that makes those sets smaller is the one all three policies left out.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      AWS's own framing is worth taking literally: <em>a role trust policy is a required resource-based policy that is attached to a role in IAM</em>, and <em>the trust policy is attached to the role in the trusting account, and is one-half of the permissions</em>. Half. Not a setting on the role — one of the two documents that together decide whether anything happens.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-037-role-trust-policy.svg" alt="Diagram: a role's two policies, the permissions policy and the trust policy; four forms of the Principal element and what each actually delegates — an account, a role ARN stored as a principal ID, a service principal, a federated provider; and the condition keys that narrow each case" />
+      <figcaption>The Principal element names a set. The Condition block is what makes that set smaller than the whole account, the whole service, or the whole provider.</figcaption>
+    </figure>
+
+    <h3>Same account and cross-account are not the same mechanism</h3>
+    <p>
+      Because the trust policy is a resource-based policy, the union rule from the evaluation model applies to it. Within one account, AWS is explicit: <em>when a resource-based policy grants access to a principal in the same account, no additional identity-based policy is required</em>. A trust policy naming a user or role in the same account is sufficient on its own — the caller needs no <code class="inline">sts:AssumeRole</code> permission anywhere.
+    </p>
+    <p>
+      Across accounts it inverts. <em>A user who wants to access a role in a different account must also have permissions that are delegated from the account administrator</em>, so both sides must agree: the trust policy in the trusting account, and an identity policy in the trusted one. This is the single most useful property in the whole model, and it is the reason the vendor case is not as bad as it could be — the vendor's own administrator still has to grant it. That is also precisely why it is a delegation of trust to their IAM rather than to a product.
+    </p>
+
+    <h3>What each Principal form actually delegates</h3>
+    <p>
+      Four forms, four different sets.
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h4>An account</h4>
+        <p><em>The account ARN and the shortened account ID behave the same way. Both delegate permissions to the account.</em> And the detail that surprises almost everyone: <em>using the account ARN in the Principal element does not limit permissions to only the root user of the account</em>. Writing <code class="inline">:root</code> is not a restriction. It is the whole account.</p>
+      </div>
+      <div class="card">
+        <h4>A role ARN</h4>
+        <p>Narrower, and it carries a trap. <em>If your Principal element in a role trust policy contains an ARN that points to a specific IAM role, then that ARN transforms to the role's unique principal ID when you save the policy.</em> The console renders it back as an ARN, so the transformation is invisible.</p>
+      </div>
+      <div class="card">
+        <h4>A service principal</h4>
+        <p>Trusts the service, not the person who configured it. The service principal cannot be a wildcard <code class="inline">Service</code> value, which is a floor rather than a control. Note also that for IAM role trust policies, AWS recommends using the non-regionalized service principal name, because IAM resources are global.</p>
+      </div>
+      <div class="card">
+        <h4>A federated provider</h4>
+        <p>Trusts every token that provider will issue. For a shared provider such as a CI platform, the provider ARN alone is close to meaningless as a restriction — the narrowing has to come from a condition on the token's own claims.</p>
+      </div>
+    </div>
+
+    <h3>The recreate trap, stated plainly</h3>
+    <p>
+      Because a role ARN is stored as a principal ID, the failure mode is delayed and quiet: <em>if you delete the role, then you break the relationship. The policy no longer applies, even if you recreate the role because the new role has a new principal ID that does not match the ID stored in the trust policy.</em>
+    </p>
+    <p>
+      In an estate where roles are managed by Terraform, a resource replacement — a name change, a forced replacement, a destroy and re-apply in a lower environment — does exactly this. Nothing errors at apply time. The trust policy still renders the same ARN. The failure appears later as an <code class="inline">AccessDenied</code> on assumption, and the policy that is at fault is the one that looks correct.
+    </p>
+
+    <h3>Wildcards do not do what you might reach for</h3>
+    <p>
+      Two rules, and both are absolute. <em>When you create a trust policy, you cannot specify a wildcard as part of an ARN in the principal element</em>, and more generally <em>you cannot use a wildcard to match part of a principal name or ARN</em>. There is no <code class="inline">arn:aws:iam::111122223333:role/app-*</code>. The choices are an exact principal, an account, or <code class="inline">"*"</code> with conditions doing the work — and the third is public access unless the condition block is airtight.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Model Holds Up</h2>
+
+    <h3>It puts the authentication decision in one reviewable document</h3>
+    <p>
+      Everything about who may become a role is in one JSON document attached to that role. There is no equivalent of a group membership list elsewhere, no directory to cross-reference, no inherited setting. That is a genuinely good property, and it is why "read every trust policy in the account" is a finite, worthwhile exercise that most estates have never performed.
+    </p>
+
+    <h3>The conditions are evaluated at assumption, not at use</h3>
+    <p>
+      A condition in a trust policy gates the minting of credentials. Once a session exists, the trust policy is out of the picture — which is why <code class="inline">DurationSeconds</code> matters as a security parameter and not just a convenience. It can range from 900 seconds up to the maximum session duration set for the role, and the maximum session duration setting can have a value from 1 hour to 12 hours. A twelve-hour session is twelve hours during which a tightened trust policy has no effect on the credentials already issued.
+    </p>
+
+    <h3>Role chaining puts a hard ceiling in the right place</h3>
+    <p>
+      <em>Role chaining limits your AWS Management Console, AWS CLI or AWS API role session to a maximum of one hour</em>, regardless of the maximum session duration configured for the individual roles. Chained access — the pattern most likely to be reached through an automation path nobody has fully mapped — is the pattern with the shortest credential life, which is the correct default even though it is usually encountered as an annoyance.
+    </p>
+
+    <h3>It composes with the organisation instead of duplicating it</h3>
+    <p>
+      For access within your own estate there is a condition key that removes the maintenance problem entirely. <code class="inline">aws:PrincipalOrgID</code> provides an alternative to listing all the account IDs for all AWS accounts in an organization, and when you add and remove accounts, policies that include the key automatically include the correct accounts and don't require manual updating. A trust policy written against the organisation does not decay as the organisation grows.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Design Decisions</h2>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>For a third party, require an external ID — and take it from them</strong>
+      </div>
+      <div class="challenge-body">
+        <p>The external ID exists to solve the confused deputy problem: the vendor holds your role ARN, another customer supplies the same ARN, and without something tying the call to <em>you</em>, the vendor can be tricked into acting on your account for someone else. AWS is direct about ownership — the <code class="inline">ExternalId</code> value must be unique among a provider's customers and controlled by the provider, not its customers. If the vendor invites you to invent your own, that is a signal about how they have built their multi-tenancy.</p>
+        <span class="fix-label">The misconception to drop</span>
+        <p><strong>AWS does not treat the external ID as a secret. The external ID for a role can be seen by anyone with permission to view the role.</strong> It is an assertion of circumstance, not a credential — so do not design as though leaking it matters, and do not use it in place of a condition that actually restricts. The value must have a minimum of 2 characters and a maximum of 1,224 characters.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>Never trust a service principal without a source condition</strong>
+      </div>
+      <div class="challenge-body">
+        <p>A service principal is an identifier for a service, and the service acts on behalf of whoever configured it. A bucket policy or trust policy naming <code class="inline">cloudtrail.amazonaws.com</code> with no condition will accept a trail configured in any account, by anyone who knows the resource name. AWS recommends using <code class="inline">aws:SourceArn</code>, <code class="inline">aws:SourceAccount</code>, <code class="inline">aws:SourceOrgID</code>, or <code class="inline">aws:SourceOrgPaths</code> in your resource policies wherever an AWS service principal is granted permission to access one of your resources.</p>
+        <span class="fix-label">Concrete rule</span>
+        <p>Use <code class="inline">aws:SourceArn</code> when one specific resource is the caller, <code class="inline">aws:SourceAccount</code> when it is any resource in a known account, and <code class="inline">aws:SourceOrgID</code> when it is any account in your organisation. Applied at the RCP level, the last of these covers every service integration at once rather than one resource policy at a time.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>For OIDC federation, the provider is the plumbing and the claim is the control</strong>
+      </div>
+      <div class="challenge-body">
+        <p>Naming an OIDC provider ARN in the trust policy establishes that AWS will verify tokens from that issuer. It does not establish <em>whose</em> tokens. On a shared platform, the audience and subject claims are the only thing distinguishing your pipeline from every other tenant of the same issuer, and they belong in the condition block as an exact match wherever possible.</p>
+        <span class="fix-label">The trap</span>
+        <p>A <code class="inline">StringLike</code> condition on a subject claim with a trailing wildcard is where this goes wrong — <code class="inline">repo:my-org/*</code> looks scoped and admits any repository whose subject happens to share that prefix pattern, including branches and environments you did not intend. Prefer <code class="inline">StringEquals</code> on the full claim, and add entries deliberately.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>Budget the document, and use the organisation rather than a list</strong>
+      </div>
+      <div class="challenge-body">
+        <p><strong>Role trust policy length has a default quota of 2048 characters and a maximum quota of 8192 characters</strong> — the ceiling is exactly four times the default, and the increase is one of the quota requests AWS auto-approves. That sounds generous until a trust policy enumerates thirty account IDs with a condition block on each.</p>
+        <span class="fix-label">Implication</span>
+        <p>An enumerated trust policy is not just a size problem, it is a correctness problem: the list is a copy of an org structure that changes without telling it. Use <code class="inline">aws:PrincipalOrgID</code> for your own accounts, and reserve explicit enumeration for principals genuinely outside your organisation — which is a short list by definition.</p>
+      </div>
+    </div>
+
+    <h3>Which Principal, and what to add</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Principal</th>
+            <th>What it delegates</th>
+            <th>Add this condition</th>
+            <th>Fails when</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Account ID or account ARN</strong></td>
+            <td>Every principal in that account, present and future</td>
+            <td><code class="inline">sts:ExternalId</code> for a third party; <code class="inline">aws:PrincipalOrgID</code> or <code class="inline">aws:PrincipalArn</code> internally</td>
+            <td>Never — but the set silently grows with their org</td>
+          </tr>
+          <tr>
+            <td><strong>Role or user ARN</strong></td>
+            <td>That one principal, stored as a principal ID</td>
+            <td>MFA or source identity, if the caller is human</td>
+            <td>The principal is deleted and recreated</td>
+          </tr>
+          <tr>
+            <td><strong>Service principal</strong></td>
+            <td>The service, acting for whoever configured it</td>
+            <td><code class="inline">aws:SourceArn</code>, <code class="inline">aws:SourceAccount</code> or <code class="inline">aws:SourceOrgID</code></td>
+            <td>A cross-Region call from an opt-in Region needs the regionalized name</td>
+          </tr>
+          <tr>
+            <td><strong>OIDC provider</strong></td>
+            <td>Every token that issuer will mint</td>
+            <td>Exact match on the audience and subject claims</td>
+            <td>A wildcard in the subject match widens it back out</td>
+          </tr>
+          <tr>
+            <td><strong><code class="inline">"*"</code></strong></td>
+            <td>Everyone, including anonymous callers</td>
+            <td>Everything the policy is relying on, with no gaps</td>
+            <td>Any gap at all — this is public by default</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Reference: a third-party trust policy that says what it means</h3>
+    <p>
+      The vendor case from the top of this post, written properly. The <code class="inline">Principal</code> is unchanged — it has to be the account, because the vendor's principals are theirs to create — and every narrowing is in the condition block.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">Trust policy &mdash; third-party vendor role</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "VendorAssumesWithTheirOwnExternalId",
+      "Effect": "Allow",
+      "Principal": { "AWS": "222233334444" },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": {
+          "sts:ExternalId": "8f2c1d90-vendor-issued-per-customer"
+        },
+        "ArnLike": {
+          "aws:PrincipalArn": "arn:aws:iam::222233334444:role/CostCollector*"
+        }
+      }
+    }
+  ]
+}</code></pre>
+    </div>
+    <p>
+      Two things are happening. The external ID stops the vendor being confused into acting for another customer. The <code class="inline">aws:PrincipalArn</code> condition narrows the delegation from <em>their whole account</em> to a named role family — and it belongs in a condition rather than in <code class="inline">Principal</code> precisely because condition-key ARNs are not converted to principal IDs, so the vendor can rotate that role without breaking your policy. It is the one place where the recreate trap works in your favour.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The permissions policy gets the attention because it is the one that fails loudly. Get it wrong and someone cannot do their job by Tuesday. Get the trust policy wrong and nothing happens at all, for a long time, until it does.
+    </p>
+    <p>
+      What makes it worth a deliberate review pass is that the mistakes are not subtle once you are looking for them. An account ID with no condition. A service principal with no source. A provider ARN with no claim check. A wildcard subject that was meant to save typing. Each is visible in a two-line read of a document that already exists, and there are usually fewer trust policies in an account than people expect.
+    </p>
+    <p>
+      <strong>The question to ask of every trust policy you own: if the other side reorganised tomorrow and told nobody, would this document still describe who I meant?</strong> An account ID does not survive that question. An organisation ID does. A vendor's external ID does. A specific role ARN survives it only until someone runs a destroy and re-apply.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; IAM Access Analyzer: turning the review this post describes into something a machine does continuously, and the difference between external access findings and unused access findings.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html" target="_blank" rel="noopener">AWS Documentation — IAM roles: terms and concepts</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html" target="_blank" rel="noopener">AWS Documentation — AWS JSON policy elements: Principal</a></li>
+      <li><a href="https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html" target="_blank" rel="noopener">AWS Documentation — AWS STS AssumeRole API reference</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/confused-deputy.html" target="_blank" rel="noopener">AWS Documentation — The confused deputy problem</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html" target="_blank" rel="noopener">AWS Documentation — Access to AWS accounts owned by third parties</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html" target="_blank" rel="noopener">AWS Documentation — AWS global condition context keys</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html" target="_blank" rel="noopener">AWS Documentation — IAM and AWS STS quotas</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
