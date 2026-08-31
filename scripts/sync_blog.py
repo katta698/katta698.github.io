@@ -130,6 +130,7 @@ def stamp_static_pages():
     cleared by hand, one file at a time, before anything else could ship.
     """
     targets = [REPO_ROOT / n for n in ("index.html", "resume.html", "now.html")]
+    targets.append(REPO_ROOT / "intelligence" / "index.html")
     targets += sorted(BLOG_DIR.glob("aws-architecture-*/index.html"))
     targets += sorted(BLOG_DIR.glob("azure-architecture-*/index.html"))
     targets += sorted(BLOG_DIR.glob("gcp-architecture-*/index.html"))
