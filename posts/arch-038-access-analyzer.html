@@ -1,0 +1,312 @@
+---
+title: "AWS Architecture Series #38 — Three analyzers, three questions"
+date: '2026-08-31T09:00:00'
+slug: aws-architecture-access-analyzer
+labels: [AWS, "AWS Architecture Series"]
+problem: "A security team turns on IAM Access Analyzer everywhere, treats the findings as one queue, and works it top to bottom. Six weeks later the queue is longer than when they started, a role that nobody used in a year is still there, and the bill has a line item nobody can explain."
+builds: "A working model of the three analyzer types as three different kinds of evidence — two of them proofs about a policy, one of them an observation about the past — and the Region behaviour that decides both the coverage and the cost of each."
+catch: "External access analyzers are free and must exist in every Region. Unused access analyzers are charged per analyzer and their findings do not change by Region at all. Applying the first habit to the second multiplies the bill by the number of Regions and buys nothing."
+verified: '2026-08-31'
+verified_claims:
+  - claim: "When you enable IAM Access Analyzer, you create an analyzer for your entire organization or your account. The organization or account you choose is known as the zone of trust for the analyzer"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html
+  - claim: "Any access to resources by principals within your zone of trust is considered trusted"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html
+  - claim: "IAM Access Analyzer identifies resources shared with external principals by using logic-based reasoning to analyze the resource-based policies in your AWS environment"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html
+  - claim: "If you add a new policy or change an existing policy, IAM Access Analyzer analyzes the new or updated policy within about 30 minutes"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html
+  - claim: "For external access, IAM Access Analyzer analyzes only policies applied to resources in the same AWS Region where it's enabled"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html
+  - claim: "For unused access, findings for the analyzer do not change based on Region. Creating an unused access analyzer in each Region where you have resources is not required"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html
+  - claim: "The findings highlight unused roles, unused access keys for IAM users, and unused passwords for IAM users"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html
+  - claim: "Service-linked roles aren't analyzed for unused access activity and they aren't included in the total number of IAM roles analyzed"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html
+  - claim: "Creating unused access analyzers across multiple Regions will result in you being charged for each analyzer"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html
+  - claim: "The analyzer will only evaluate permissions for IAM entities that have existed for the entire tracking period, and you can enter a value between 1 and 365 days"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-create-unused.html
+  - claim: "If you set a tracking period of 90 days, only permissions that are at least 90 days old will be analyzed, and findings will be generated if they show no usage during this period"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-create-unused.html
+  - claim: "Similar to external access findings, custom policy checks are built on Zelkova"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-checks-validating-policies.html
+  - claim: "In rare cases, IAM Access Analyzer isn't able to fully determine whether a policy statement grants new or specified access. In those cases, it errs on the side of declaring a false positive by failing the custom policy check"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-checks-validating-policies.html
+  - claim: "Custom policy checks can't check whether an account is a member of a specific AWS organization, therefore they can't compare new access based on condition key values for the aws:PrincipalOrgId and aws:PrincipalAccount condition keys"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-checks-validating-policies.html
+  - claim: "External access analysis and policy validation are provided at no additional charge"
+    source: https://aws.amazon.com/iam/access-analyzer/pricing/
+  - claim: "Unused access analysis is $0.20 per IAM role or IAM user per month for every unused access analyzer you enable"
+    source: https://aws.amazon.com/iam/access-analyzer/pricing/
+  - claim: "AWS's own example prices an organization with 850 IAM roles and users at $170 per month"
+    source: https://aws.amazon.com/iam/access-analyzer/pricing/
+  - claim: "Four Region-local unused access analyzers over the same 850 roles and users cost $680 per month for identical findings"
+    derive: "0.20 * 850 * 4"
+    expect: "680"
+    source: https://aws.amazon.com/iam/access-analyzer/pricing/
+  - claim: "Internal access analysis is $9.00 per resource monitored per Region per month, and AWS's example of 38 resources is $342 per month"
+    source: https://aws.amazon.com/iam/access-analyzer/pricing/
+  - claim: "Custom policy checks are $0.0020 per API call, and AWS's example of 10,000 calls each month is $20 per month"
+    source: https://aws.amazon.com/iam/access-analyzer/pricing/
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #038 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">Three analyzers, three questions</h1>
+  <p class="post-subtitle">IAM Access Analyzer is not one product with three settings. It is three mechanisms answering three different questions, with two different kinds of evidence and two opposite rules about Regions — and one of those rules is where the bill comes from.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Aug 2026</span>
+    <span>AWS Well-Architected &middot; Security &amp; Identity &middot; Governance</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A security team decides to get systematic about IAM. They turn on Access Analyzer across the organisation, in every Region, with every analyzer type available, and route the findings into the ticketing system. This is a good instinct and the setup takes an afternoon.
+    </p>
+    <p>
+      Six weeks later three things have happened. The findings queue is longer than when they started, because the analyzers keep producing and the team keeps triaging. A role that has demonstrably not been used in a year is still in the queue, unresolved, because nobody is confident enough to delete it. And there is a line item on the bill that grew with the number of Regions the platform team enabled, which nobody predicted because the first analyzer they turned on was free.
+    </p>
+    <p>
+      The queue is long for a structural reason rather than a staffing one. It contains two kinds of statement that look identical in a ticket and are not remotely the same claim. One kind says <em>this policy allows an entity outside your zone of trust to reach this resource</em> — a proof about a document, true right now, actionable immediately. The other says <em>nobody used this permission during the tracking period</em> — a statement about the past, which is evidence rather than proof, and which a quarterly batch job can falsify.
+    </p>
+    <p>
+      Working those two through one queue at one confidence level produces exactly what happened: the proofs get treated with the same hesitancy as the observations, and the observations get treated with the same finality as the proofs. Neither gets resolved.
+    </p>
+
+    <div class="callout amber">
+      <strong>The bill has the same root cause as the queue</strong>
+      <p>External access analyzers are free and AWS requires one in every Region you use. Unused access analyzers are charged per analyzer, and their findings do not vary by Region at all. A team that learns the first rule during setup and applies it to the second pays for N copies of one answer — and because the free analyzer came first, nothing in the experience signals that the rule changed.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Start with the concept everything else hangs off. <em>When you enable IAM Access Analyzer, you create an analyzer for your entire organization or your account. The organization or account you choose is known as the zone of trust for the analyzer</em>, and <em>any access to resources by principals within your zone of trust is considered trusted</em>.
+    </p>
+    <p>
+      That single choice determines what counts as a finding. Set the zone of trust to an account and every cross-account grant inside your own organisation is external. Set it to the organisation and those disappear. Neither is wrong; they answer different questions, and picking the account scope by accident is the usual reason a first run produces hundreds of findings that are all intended.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-038-access-analyzer.svg" alt="Diagram: the three IAM Access Analyzer types side by side — external access, internal access and unused access — each with the question it answers, whether its finding is proved or observed, its Region behaviour and its price; below, the Region habit that multiplies the unused access bill, and the cost of custom policy checks" />
+      <figcaption>Two columns prove a property of a policy. The third observes behaviour over a window. Remediating them at the same confidence is the mistake.</figcaption>
+    </figure>
+
+    <h3>External access: a proof, per Region, for free</h3>
+    <p>
+      Access Analyzer <em>identifies resources shared with external principals by using logic-based reasoning to analyze the resource-based policies in your AWS environment</em>. This is not pattern matching and not log analysis — it is automated reasoning over the policy document, which is why a finding is a statement about what the policy permits rather than about what has happened.
+    </p>
+    <p>
+      It is responsive: <em>if you add a new policy or change an existing policy, IAM Access Analyzer analyzes the new or updated policy within about 30 minutes</em>. And it carries the constraint that decides your deployment shape: <strong>for external access, IAM Access Analyzer analyzes only policies applied to resources in the same AWS Region where it's enabled</strong>. One analyzer covers one Region. A Region without one is simply unexamined, silently, and the console gives no hint that a Region is missing.
+    </p>
+    <p>
+      It also covers a specific list — fifteen resource types for external access, from S3 buckets and IAM roles to DynamoDB tables and RDS snapshots. "Access Analyzer is clean" means clean <em>for those types</em>. It is a strong statement, not a total one.
+    </p>
+
+    <h3>Unused access: an observation, Region-independent, priced per principal</h3>
+    <p>
+      The unused access analyzer answers the opposite question and gets its answer a different way. It monitors IAM roles and users continuously, and <em>the findings highlight unused roles, unused access keys for IAM users, and unused passwords for IAM users</em>, plus unused services and actions for principals that are still active.
+    </p>
+    <p>
+      The tracking period is the setting that defines what "unused" means, and it has an edge that is easy to miss. <strong>The analyzer will only evaluate permissions for IAM entities that have existed for the entire tracking period, and you can enter a value between 1 and 365 days.</strong> AWS's own illustration: <em>if you set a tracking period of 90 days, only permissions that are at least 90 days old will be analyzed, and findings will be generated if they show no usage during this period</em>.
+    </p>
+    <p>
+      Read that twice, because it cuts both ways. A ninety-day window is a reasonable definition of unused — and it also means a role created last week, with every permission in the account, is not analysed at all. The tracking period is simultaneously a sensitivity dial and a blind-spot window, and the newest principals are always in the blind spot.
+    </p>
+    <p>
+      Two other properties matter for scoping. <em>Service-linked roles aren't analyzed for unused access activity and they aren't included in the total number of IAM roles analyzed</em>, which is both a coverage gap and a discount. And crucially: <strong>for unused access, findings for the analyzer do not change based on Region. Creating an unused access analyzer in each Region where you have resources is not required.</strong>
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Model Holds Up</h2>
+
+    <h3>It separates proof from evidence, which is what makes remediation possible</h3>
+    <p>
+      An external access finding can be actioned on its own. The reasoning engine has established what the policy permits; no further investigation changes that. An unused access finding cannot — it tells you nobody exercised a permission in a window, which is a strong hint and not a fact about whether the permission is needed. Once a team names that difference, the external queue starts clearing at the speed of change control and the unused queue turns into a periodic campaign with an owner, which is what it always was.
+    </p>
+
+    <h3>The zone of trust makes "intended" expressible</h3>
+    <p>
+      Most access-review tooling drowns in intended access. Access Analyzer's answer is to make the boundary a first-class input rather than a filter applied afterwards: everything inside the zone is trusted by definition and generates nothing. That is why an organisation-scoped analyzer is usually the right first deployment — it starts from a findings list that means something instead of one that has to be triaged down to meaning.
+    </p>
+
+    <h3>The same engine is available before deployment, not only after</h3>
+    <p>
+      Custom policy checks are the same technology pointed at a policy that does not exist yet: <em>similar to external access findings, custom policy checks are built on Zelkova</em>. That is the property that makes them worth putting in CI — a check answering "does this pull request grant access the previous version did not" is the same class of answer as the analyzer's, delivered before the merge rather than thirty minutes after the deploy.
+    </p>
+    <p>
+      Their failure mode is the right way round, too. <em>In rare cases, IAM Access Analyzer isn't able to fully determine whether a policy statement grants new or specified access. In those cases, it errs on the side of declaring a false positive by failing the custom policy check.</em> An occasional unnecessary failed build is the correct price for a gate that does not wave through a widening it could not evaluate.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Design Decisions</h2>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>One unused access analyzer for the organisation, and exactly one</strong>
+      </div>
+      <div class="challenge-body">
+        <p>This is the decision with a number attached. Unused access analysis is <strong>$0.20 per IAM role or IAM user per month for every unused access analyzer you enable</strong>, and AWS is explicit that <em>creating unused access analyzers across multiple Regions will result in you being charged for each analyzer</em>. AWS's own example prices an organization with 850 IAM roles and users at <strong>$170 per month</strong>.</p>
+        <span class="fix-label">The arithmetic</span>
+        <p>Four Region-local analyzers over that same estate is <strong>$680 per month</strong> — four times the cost for findings the documentation states do not change by Region. The reason this happens is not carelessness: external access analyzers genuinely do need to exist per Region, they are free, and they are what a team turns on first. The per-Region habit is learned in a context where it is correct and free, and then carried into one where it is neither.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>Deploy external access analyzers by automation, because a missing Region is silent</strong>
+      </div>
+      <div class="challenge-body">
+        <p>The failure mode of the free analyzer is not cost, it is a coverage gap that produces no signal. A Region with no external access analyzer reports nothing, which is indistinguishable in a dashboard from a Region with nothing wrong. Since these analyzers cost nothing, there is no reason for the deployment to be selective &mdash; every enabled Region, without exception, created by the same mechanism that enables Regions.</p>
+        <span class="fix-label">Concrete rule</span>
+        <p>Create them from the landing zone, in a StackSet or the equivalent, targeting all Regions and driven off the account baseline rather than a ticket. Then add a check that asserts the count of external access analyzers equals the count of enabled Regions, because the thing you are guarding against is an absence.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>Choose the tracking period against the workload's slowest cycle</strong>
+      </div>
+      <div class="challenge-body">
+        <p>A short tracking period brings newer principals into scope sooner and produces more findings that a quarterly or annual process will contradict. A long one is quieter and leaves recently created principals unanalysed for longer. The number to reason from is not a security preference but the period of the slowest legitimate job in the estate &mdash; the quarter-end reconciliation, the annual audit export, the disaster-recovery drill.</p>
+        <span class="fix-label">The trap</span>
+        <p>Whatever the period, the newest principals are the blind spot, and newly created over-permissioned roles are exactly the population you most want to see. Cover that gap somewhere else &mdash; a custom policy check at creation time, or an alert on role creation &mdash; rather than by shortening the tracking period until the findings become noise.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>Put custom policy checks in CI, and know the one thing they cannot see</strong>
+      </div>
+      <div class="challenge-body">
+        <p>At <strong>$0.0020 per API call</strong>, AWS's example of 10,000 calls each month is <strong>$20 per month</strong> &mdash; which is to say a check on every policy change in a busy estate costs less than the meeting to discuss whether to have one. Three checks are available: against a reference policy, against a list of actions or resources, and for public access.</p>
+        <span class="fix-label">The limitation that matters here</span>
+        <p><strong>Custom policy checks can't check whether an account is a member of a specific AWS organization, therefore they can't compare new access based on condition key values for the <code class="inline">aws:PrincipalOrgId</code> and <code class="inline">aws:PrincipalAccount</code> condition keys.</strong> That is directly awkward given that the right way to write a trust policy for your own estate is an organisation condition. The check cannot tell that your organisation condition narrows anything, so those policies need review by a human or by a rule of your own.</p>
+      </div>
+    </div>
+
+    <h3>Which analyzer answers which question</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Analyzer</th>
+            <th>The question</th>
+            <th>Evidence</th>
+            <th>Regions</th>
+            <th>Price</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>External access</strong></td>
+            <td>Can anything outside the zone of trust reach this resource?</td>
+            <td>Proof over the policy</td>
+            <td><strong>One per Region, required</strong></td>
+            <td>No additional charge</td>
+          </tr>
+          <tr>
+            <td><strong>Internal access</strong></td>
+            <td>Which principals inside the organisation can reach this resource?</td>
+            <td>Proof, on resources you nominate</td>
+            <td>Per resource, per Region</td>
+            <td>$9.00 per resource per month</td>
+          </tr>
+          <tr>
+            <td><strong>Unused access</strong></td>
+            <td>Which permissions has nobody used?</td>
+            <td>Observation over the tracking period</td>
+            <td><strong>Region-independent — one is enough</strong></td>
+            <td>$0.20 per role or user per month</td>
+          </tr>
+          <tr>
+            <td><strong>Policy validation</strong></td>
+            <td>Is this policy well formed and conventional?</td>
+            <td>Grammar and best-practice checks</td>
+            <td>n/a</td>
+            <td>No additional charge</td>
+          </tr>
+          <tr>
+            <td><strong>Custom policy checks</strong></td>
+            <td>Does this change grant access the old version did not?</td>
+            <td>Proof, before deployment</td>
+            <td>n/a</td>
+            <td>$0.0020 per call</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <strong>Internal access analysis is the one to adopt narrowly</strong>
+      <p>At <strong>$9.00 per resource monitored per Region per month</strong> it is priced to be pointed at specific things rather than switched on broadly &mdash; AWS's own example of 38 resources across five accounts comes to <strong>$342 per month</strong>. That pricing is a design hint: nominate the handful of resources where "which of our own people can reach this" is a question worth continuous proof, and answer it for everything else with the external analyzer and a review.</p>
+    </div>
+
+    <h3>Reference: the check that belongs on every policy pull request</h3>
+    <p>
+      The reference-policy check, run against the previous version of a policy. It answers one question &mdash; does this change widen access &mdash; and it is the only check in this post that runs before the policy exists in the account.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">Fail the build if the new policy grants access the old one did not</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>aws accessanalyzer check-no-new-access \
+  --existing-policy-document file://policy-main.json \
+  --new-policy-document file://policy-proposed.json \
+  --policy-type IDENTITY_POLICY \
+  --query 'result' --output text
+
+# PASS  -> no new access; merge
+# FAIL  -> the response names the Sid of the widening statement</code></pre>
+    </div>
+    <p>
+      When it fails, the response includes the statement ID of the statement responsible, which is the argument for giving every statement a <code class="inline">Sid</code> even though the element is optional. Without one you get a zero-based statement index and a diff to read by eye; with one, the build failure names the thing that caused it.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The previous post in this series argued for reading every trust policy in the account, and that is a finite exercise worth doing once. It is not worth doing every week, which is the honest limit of any manual review: it establishes a baseline and then decays from the moment it finishes.
+    </p>
+    <p>
+      What Access Analyzer offers is not a replacement for that reading but a way to keep its conclusion true. The external analyzer re-derives the boundary conclusion within about thirty minutes of every policy change. The custom policy check moves the same conclusion earlier still, into the pull request. Between them, the question "has anything widened since we last looked" stops requiring anyone to look.
+    </p>
+    <p>
+      <strong>The thing to keep straight is what each finding is claiming.</strong> A proof about a policy and an observation about a window are both useful and they are not the same kind of statement, and a queue that mixes them will resolve neither. Split them, give the unused campaign an owner and a cadence, let the external findings flow at the speed of change control &mdash; and create exactly one unused access analyzer, because the second one costs the same as the first and tells you nothing new.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; AWS Organizations as an identity boundary: delegated administration, the management account's exemptions, and why the account you run the organisation from should not be the account you run anything else from.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html" target="_blank" rel="noopener">AWS Documentation — Using AWS Identity and Access Management Access Analyzer</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-create-unused.html" target="_blank" rel="noopener">AWS Documentation — Create an IAM Access Analyzer unused access analyzer</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-checks-validating-policies.html" target="_blank" rel="noopener">AWS Documentation — Checks for validating policies</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-resources.html" target="_blank" rel="noopener">AWS Documentation — IAM Access Analyzer supported resource types</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-policy-generation.html" target="_blank" rel="noopener">AWS Documentation — IAM Access Analyzer policy generation</a></li>
+      <li><a href="https://aws.amazon.com/iam/access-analyzer/pricing/" target="_blank" rel="noopener">AWS Pricing — IAM Access Analyzer</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
