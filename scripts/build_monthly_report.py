@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Build the AWS Monthly Intelligence report for a calendar month.
+"""Build a Monthly Intelligence report for a calendar month.
 
     python scripts/build_monthly_report.py 2026-08
+    python scripts/build_monthly_report.py 2026-09 --cloud gcp
 
 Writes a standalone printable HTML file to reports/out/. Open it and print to
 PDF; nothing here touches posts/ or the publishing pipeline.
@@ -43,6 +44,36 @@ section and reads the prose from a sidecar you write:
 
 If that file is absent the report still builds, with the prose sections marked
 as unwritten, so the data can be reviewed before the analysis is done.
+
+Adding a cloud is a CLOUDS entry
+--------------------------------
+Everything that varies by cloud lives in the `CLOUDS` registry at the top of
+this file: which roundups to read, how to parse one, where the live tail comes
+from, whether there is a ranking backlog, and how to render the inventory.
+Nothing below `build()` is cloud-specific. Adding a cloud must not fork the
+file, because the part worth protecting -- the coverage assertion -- is the
+part a fork would quietly diverge on.
+
+Two things are genuinely different for GCP
+------------------------------------------
+**Volume.** Google Cloud publishes around 282 notes in a week against AWS's
+~60, so a month is roughly 1,200 items and one row per item is not a document
+anybody reads. The GCP inventory therefore carries the same three buckets the
+weekly builder produces -- listed, published-under-several-products, and
+repeating runs rolled up -- rather than a flat list.
+
+**Roll up, never deduplicate.** Same-text/same-product notes are separate real
+notes: Container Optimized OS fixes one kernel CVE once per milestone, so 131
+notes can carry 49 distinct CVEs. Collapsing them under-counts the month. The
+counts stay raw; only the rendering is folded. See CLAUDE.md and
+`build_weekly_inventory_gcp.py`, which exists separately from the AWS builder
+for exactly this reason.
+
+**Links.** Most GCP notes share a day-anchor URL on the release-notes page
+(`.../release-notes#August_24_2026`) rather than carrying their own; only Cloud
+Blog items have a distinct link. So there is no per-item link to validate and
+no 404-per-announcement case to render -- the AWS unlinked-item path does not
+apply, and the day anchor is what a reader follows.
 """
 import datetime
 import glob
@@ -59,6 +90,11 @@ from fetch_week import WHATS_NEW, fetch, parse                 # noqa: E402
 # there instead of re-deriving it, so there is one definition of "AWS's own
 # one-line summary" across the weekly and monthly documents.
 from build_weekly_inventory import gists                       # noqa: E402
+# The roll-up rules live with the GCP weekly builder. Import them rather than
+# restating them, so "what counts as a repeating run" has one definition across
+# the weekly and monthly documents -- the same reason gists() is imported above.
+from build_weekly_inventory_gcp import classify, rollup_sentence  # noqa: E402
+import fetch_week_gcp                                          # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POSTS = os.path.join(ROOT, "posts")
@@ -73,8 +109,12 @@ SECTIONS = [
     ("lifecycle", "Lifecycle and deprecation calendar"),
 ]
 
+# Both series name their roundups with the ISO news window, which is what makes
+# a filename enough to establish coverage without parsing the post.
 WEEKLY_RE = re.compile(
     r"weekly-\d+-(\d{4})-(\d{2})-(\d{2})-to-(\d{2})-(\d{2})\.html$")
+GCPWEEKLY_RE = re.compile(
+    r"gcpweekly-\d+-(\d{4})-(\d{2})-(\d{2})-to-(\d{2})-(\d{2})\.html$")
 DAY_RE = re.compile(r"<h3>(\w+day)\s+(\d{1,2})\s+(\w+)\s*&mdash;\s*(\d+)\s+"
                     r"announcements?</h3>")
 LINKED_RE = re.compile(
@@ -89,11 +129,11 @@ def _unescape(s):
     return html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
 
 
-def weekly_windows(year, month):
+def weekly_windows(cloud, year, month):
     """Published weekly roundups whose news window falls inside the month."""
     found = []
-    for path in sorted(glob.glob(os.path.join(POSTS, "weekly-*.html"))):
-        m = WEEKLY_RE.search(path.replace("\\", "/"))
+    for path in sorted(glob.glob(os.path.join(POSTS, cloud["weekly_glob"]))):
+        m = cloud["weekly_re"].search(path.replace("\\", "/"))
         if not m:
             continue
         y, m1, d1, m2, d2 = (int(x) for x in m.groups())
@@ -104,7 +144,7 @@ def weekly_windows(year, month):
     return sorted(found)
 
 
-def read_weekly_inventory(path, year):
+def read_weekly_inventory_aws(path, year):
     """(date, title, url_or_None, gist) for every item in one roundup."""
     text = io.open(path, encoding="utf-8").read()
     i = text.find('id="inventory"')
@@ -135,7 +175,7 @@ def read_weekly_inventory(path, year):
     return items, stated
 
 
-def live_tail(first, last):
+def live_tail_aws(first, last):
     """Announcements from the live feed for [first, last]. May be empty."""
     if first > last:
         return []
@@ -145,10 +185,134 @@ def live_tail(first, last):
     return [(d, t, l, summaries.get(l, "")) for d, t, l in rows]
 
 
-def feed_reach():
+def feed_reach_aws():
     """Oldest date the live What's New feed still carries."""
     rows = parse(fetch(WHATS_NEW))
     return min(r[0] for r in rows) if rows else None
+
+
+# --------------------------------------------------------------------------
+# GCP
+#
+# A GCP roundup's inventory is already bucketed by build_weekly_inventory_gcp.py
+# into listed / cross-product / rolled-up, so it is read back as those three
+# buckets rather than flattened and re-bucketed. Flattening would lose the very
+# thing the roll-up encodes: a run of 131 notes appears once, with its count and
+# its identifiers intact, and there is no way to reconstitute the 131 rows from
+# the rendered form. Re-rolling them would also be a no-op.
+#
+# The live tail is different: it has raw rows, so it goes through classify()
+# and is bucketed by the same rules the weekly builder applied on the Saturday.
+# --------------------------------------------------------------------------
+
+GCP_LI_LISTED = re.compile(
+    r'<li><a href="([^"]+)"><strong>(.*?)</strong></a>'
+    r'<span class="inv-gist">(.*?)</span>'
+    r'<span class="inv-gist">(.*?)</span></li>', re.S)
+GCP_LI_ROLLED = re.compile(
+    r'<li><a href="([^"]+)"><strong>(.*?) \((\d+) notes\)</strong></a>'
+    r'\s*<em>&mdash; (.*?)</em><span class="inv-gist">(.*?)</span>', re.S)
+GCP_LI_CROSS = re.compile(
+    r'<li><a href="([^"]+)"><strong>(.*?)</strong></a>'
+    r'<span class="inv-gist">(.*?)</span>'
+    r'<span class="inv-gist">Published under (\d+) products: (.*?)</span>', re.S)
+GCP_H4 = re.compile(r"<h4>(.*?) &mdash; \d+</h4>")
+
+
+def _section(seg, heading):
+    """The chunk of an inventory under one <h3>, or ''."""
+    i = seg.find("<h3>%s" % heading)
+    if i < 0:
+        return ""
+    j = seg.find("<h3>", i + 4)
+    return seg[i:j if j > 0 else len(seg)]
+
+
+def read_weekly_inventory_gcp(path, year):
+    """(buckets, stated_total) for one published GCP roundup.
+
+    `stated_total` comes from the section heading, which is the number the post
+    itself claims and the number its own reconciliation table sums to. It is
+    reported rather than recomputed, for the same reason the AWS reader reports
+    the stated count: a mismatch between what the post said and what parses back
+    is a fact worth surfacing, not one to paper over.
+    """
+    text = io.open(path, encoding="utf-8").read()
+    i = text.find('id="inventory"')
+    if i < 0:
+        return {"listed": [], "cross": [], "rolled": []}, 0
+    seg = text[i:]
+    m = re.search(r"<h2>Complete inventory &mdash; all (\d+) notes?</h2>", seg)
+    stated = int(m.group(1)) if m else 0
+
+    rolled = []
+    for url, product, n, kind, sentence in GCP_LI_ROLLED.findall(
+            _section(seg, "Repeating runs, rolled up")):
+        rolled.append((_unescape(product), _unescape(kind), int(n),
+                       _unescape(sentence), html.unescape(url)))
+
+    cross = []
+    for url, kind, txt, _n, products in GCP_LI_CROSS.findall(
+            _section(seg, "One change, published under several products")):
+        cross.append((_unescape(kind), _unescape(txt),
+                      [p.strip(" .") for p in _unescape(products).split(",")],
+                      html.unescape(url)))
+
+    listed = []
+    by_product = _section(seg, "Everything else, by product")
+    # Split on the product headings so each <li> is attributed to the <h4> it
+    # sits under; the <li> itself carries the note type, not the product.
+    chunks = GCP_H4.split(by_product)
+    for k in range(1, len(chunks), 2):
+        product = _unescape(chunks[k])
+        for url, kind, gist, when in GCP_LI_LISTED.findall(chunks[k + 1]):
+            listed.append((product, _unescape(kind), _unescape(gist),
+                           _unescape(when), html.unescape(url)))
+    return {"listed": listed, "cross": cross, "rolled": rolled}, stated
+
+
+def _gcp_rows(first, last):
+    """Raw (date, product, kind, summary, link, context) rows in range."""
+    rows = []
+    for _name, _kind, got, err in fetch_week_gcp.gather_ctx():
+        if err:
+            continue
+        rows.extend(r for r in got if first <= r[0] <= last)
+    return rows
+
+
+def live_tail_gcp(first, last):
+    """Buckets for the days after the last published roundup. May be empty."""
+    empty = {"listed": [], "cross": [], "rolled": []}
+    if first > last:
+        return empty, 0
+    rows = _gcp_rows(first, last)
+    if not rows:
+        return empty, 0
+    cross, rolled, listed = classify(rows)
+    out = {
+        "listed": [(r[1], r[2], r[3], r[0].strftime("%a %d %b"), r[4])
+                   for r in listed],
+        "cross": [(g[0][2], text, sorted({x[1] for x in g}),
+                   next((x[4] for x in g if x[4]), ""))
+                  for text, g in cross.items()],
+        "rolled": [(product, kind, len(g), rollup_sentence(g)[0],
+                    next((x[4] for x in g if x[4]), ""))
+                   for (product, kind), g in rolled.items()],
+    }
+    return out, len(rows)
+
+
+def feed_reach_gcp():
+    """Oldest date the combined release-notes feed still carries.
+
+    Measured at 30 day-entries, which is a 30-day window because one entry is
+    one calendar day. That is wider than AWS's 12 days but still short of a
+    month, so the same assemble-from-the-record design applies.
+    """
+    days = [r[0] for r in fetch_week_gcp.parse_daynotes(
+        fetch_week_gcp.fetch(fetch_week_gcp.COMBINED))]
+    return min(days) if days else None
 
 
 def backlog_for_month(year, month):
@@ -181,20 +345,72 @@ def backlog_for_month(year, month):
     return out
 
 
-def build(month_str):
+CLOUDS = {
+    "aws": {
+        "label": "AWS",
+        "feed_name": "AWS What's New feed",
+        "possessive": "AWS's",
+        "unit": "announcement",
+        "weekly_glob": "weekly-*.html",
+        "weekly_re": WEEKLY_RE,
+        "stem": "aws-monthly-%s",
+        # AWS is the only one of the three with a daily series, so it is the
+        # only one with a same-day ranking to report. None is a real answer
+        # here, not a gap: there is no GCP daily intelligence series and one is
+        # not planned (see CLAUDE.md).
+        "backlog": "DAILY-BACKLOG.md",
+        "read_inventory": read_weekly_inventory_aws,
+        "live_tail": live_tail_aws,
+        "feed_reach": feed_reach_aws,
+        "flat_items": True,
+    },
+    "gcp": {
+        "label": "Google Cloud",
+        "feed_name": "Google Cloud release notes, bulletins and blog "
+                     "feeds",
+        "possessive": "Google's",
+        "unit": "note",
+        "weekly_glob": "gcpweekly-*.html",
+        "weekly_re": GCPWEEKLY_RE,
+        "stem": "gcp-monthly-%s",
+        "backlog": None,
+        "read_inventory": read_weekly_inventory_gcp,
+        "live_tail": live_tail_gcp,
+        "feed_reach": feed_reach_gcp,
+        "flat_items": False,
+    },
+}
+
+
+def build(month_str, cloud_key="aws"):
+    cloud = CLOUDS[cloud_key]
     year, month = (int(x) for x in month_str.split("-"))
     first = datetime.date(year, month, 1)
     nxt = datetime.date(year + (month == 12), (month % 12) + 1, 1)
     last = nxt - datetime.timedelta(days=1)
 
-    weeklies = weekly_windows(year, month)
+    weeklies = weekly_windows(cloud, year, month)
+    flat = cloud["flat_items"]
     items = []
+    buckets = {"listed": [], "cross": [], "rolled": []}
+    total = 0
     covered = set()
     sources = []
 
     for start, end, path in weeklies:
-        got, stated = read_weekly_inventory(path, year)
-        items.extend(got)
+        got, stated = cloud["read_inventory"](path, year)
+        if flat:
+            items.extend(got)
+            n = len(got)
+        else:
+            for k in buckets:
+                buckets[k].extend(got[k])
+            # The post's own stated total is authoritative for the month total.
+            # A rolled-up run renders as one entry standing for many notes, so
+            # counting entries would under-count exactly the runs the roll-up
+            # exists to fold.
+            n = stated
+        total += stated if not flat else len(got)
         d = start
         while d <= end:
             covered.add(d)
@@ -204,20 +420,31 @@ def build(month_str):
         label = "Weekly roundup, %s&ndash;%s" % (
             start.strftime("%#d" if os.name == "nt" else "%-d"),
             end.strftime("%#d %B" if os.name == "nt" else "%-d %B"))
-        sources.append((label, start, end, len(got), stated))
+        sources.append((label, start, end, n, stated))
 
     tail_from = max([e for _, e, _ in weeklies] or [first - datetime.timedelta(days=1)])
     tail_from += datetime.timedelta(days=1)
-    reach = feed_reach()
-    tail = live_tail(max(tail_from, reach or tail_from), last)
-    items.extend(tail)
-    if tail or tail_from <= last:
-        d = max(tail_from, reach or tail_from)
+    reach = cloud["feed_reach"]()
+    tail_start = max(tail_from, reach or tail_from)
+    if flat:
+        tail = cloud["live_tail"](tail_start, last)
+        items.extend(tail)
+        tail_n = len(tail)
+    else:
+        tail_buckets, tail_n = cloud["live_tail"](tail_start, last)
+        for k in buckets:
+            buckets[k].extend(tail_buckets[k])
+        tail = tail_buckets if tail_n else None
+        total += tail_n
+    if tail_n or tail_from <= last:
+        d = tail_start
         while d <= last:
             covered.add(d)
             d += datetime.timedelta(days=1)
 
     # Any weekday not covered by a roundup or by the live feed is a hole.
+    # Unchanged and deliberately shared: this is the assertion the document
+    # rests on, and it is the one thing a per-cloud fork would drift on.
     missing = []
     d = first
     while d <= last:
@@ -228,14 +455,16 @@ def build(month_str):
     by_day = {}
     for it in items:
         by_day.setdefault(it[0], []).append(it)
+    if flat:
+        total = len(items)
 
-    backlog = backlog_for_month(year, month)
+    backlog = backlog_for_month(year, month) if cloud["backlog"] else {}
     ranked = [r for rows in backlog.values() for r in rows]
     high = [r for r in ranked if r[3].lower().startswith(("high", "med-high"))]
     shipped = [r for r in ranked if r[2].strip().startswith("**#")]
 
     analysis_path = os.path.join(
-        REPORTS, "aws-monthly-%s-analysis.html" % month_str)
+        REPORTS, (cloud["stem"] % month_str) + "-analysis.html")
     prose = {}
     if os.path.exists(analysis_path):
         text = io.open(analysis_path, encoding="utf-8").read()
@@ -246,26 +475,30 @@ def build(month_str):
                 prose[key] = m.group(1).strip()
 
     os.makedirs(OUT, exist_ok=True)
-    out_path = os.path.join(OUT, "aws-monthly-%s.html" % month_str)
+    out_path = os.path.join(OUT, (cloud["stem"] % month_str) + ".html")
     io.open(out_path, "w", encoding="utf-8", newline="\n").write(
-        render(first, last, by_day, sources, tail, missing, reach,
-               ranked, high, shipped, prose))
+        render(cloud, first, last, by_day, buckets, total, sources, tail,
+               tail_n, missing, reach, ranked, high, shipped, prose))
 
-    total = len(items)
-    print("Month %s: %d announcements across %d day(s) with news"
-          % (month_str, total, len(by_day)))
-    for name, s, e, got, stated in sources:
-        flag = "" if got == stated else "   (stated %d, parsed %d -- "\
-                                        "unlinked 404 entries)" % (stated, got)
-        print("  %-34s %s..%s  %3d%s"
-              % (name.replace("&ndash;", "-"), s.isoformat(), e.isoformat(),
+    print("Month %s (%s): %d %s%s across %d source(s)"
+          % (month_str, cloud["label"], total, cloud["unit"],
+             "" if total == 1 else "s", len(sources) + (1 if tail_n else 0)))
+    for name, s_, e_, got, stated in sources:
+        flag = "" if got == stated else "   (stated %d, parsed %d -- "                                        "unlinked 404 entries)" % (stated, got)
+        print("  %-34s %s..%s  %4d%s"
+              % (name.replace("&ndash;", "-"), s_.isoformat(), e_.isoformat(),
                  got, flag))
-    if tail:
-        print("  %-42s %s..%s  %3d"
-              % ("live feed tail", tail[-1][0].isoformat(),
-                 tail[0][0].isoformat(), len(tail)))
-    print("  backlog: %d item(s) ranked, %d High/Med-High, %d became posts"
-          % (len(ranked), len(high), len(shipped)))
+    if tail_n:
+        print("  %-34s %s..%s  %4d"
+              % ("live feed tail", tail_start.isoformat(), last.isoformat(),
+                 tail_n))
+    if not flat:
+        print("  buckets: %d listed, %d cross-product, %d rolled-up run(s)"
+              % (len(buckets["listed"]), len(buckets["cross"]),
+                 len(buckets["rolled"])))
+    if cloud["backlog"]:
+        print("  backlog: %d item(s) ranked, %d High/Med-High, %d became posts"
+              % (len(ranked), len(high), len(shipped)))
     print("wrote %s" % out_path)
     if not prose:
         print("  NOTE: no analysis sidecar at %s -- prose sections are marked "
@@ -323,17 +556,16 @@ h1{page-break-after:avoid}.box{page-break-inside:avoid}}
 """
 
 
-def render(first, last, by_day, sources, tail, missing, reach,
-           ranked, high, shipped, prose):
-    total = sum(len(v) for v in by_day.values())
+def render(cloud, first, last, by_day, buckets, total, sources, tail, tail_n,
+           missing, reach, ranked, high, shipped, prose):
     o = []
     a = o.append
     a("<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>")
-    a("<title>AWS Monthly Intelligence &mdash; %s</title>"
-      % first.strftime("%B %Y"))
+    a("<title>%s Monthly Intelligence &mdash; %s</title>"
+      % (cloud["label"], first.strftime("%B %Y")))
     a("<style>%s</style></head><body>" % CSS)
 
-    a("<h1>AWS Monthly Intelligence</h1>")
+    a("<h1>%s Monthly Intelligence</h1>" % cloud["label"])
     a("<p class='sub'>%s</p>" % first.strftime("%B %Y"))
     a("<p class='sub'>Coverage %s to %s &middot; prepared %s</p>"
       % (first.strftime("%-d %B") if os.name != "nt"
@@ -347,8 +579,9 @@ def render(first, last, by_day, sources, tail, missing, reach,
     # Completeness, stated up front. This is the claim the document rests on.
     a("<div class='box %s'>" % ("warn" if missing else "ok"))
     a("<strong>Completeness</strong><br>")
-    a("This report covers <strong>%d announcements</strong> from the AWS "
-      "What's New feed, on %d days with news. " % (total, len(by_day)))
+    a("This report covers <strong>%d %s%s</strong> from the %s%s. "
+      % (total, cloud["unit"], "" if total == 1 else "s", cloud["feed_name"],
+         ", on %d days with news" % len(by_day) if cloud["flat_items"] else ""))
     if missing:
         a("<strong>%d weekday(s) could not be covered</strong>: %s. The live "
           "feed reaches back only to %s."
@@ -369,11 +602,14 @@ def render(first, last, by_day, sources, tail, missing, reach,
           "<td style='text-align:right'>%d</td></tr>"
           % (name, s.strftime("%d %b"), e.strftime("%d %b"),
              stated or got))
-    if tail:
+    if tail_n and cloud["flat_items"]:
         days = sorted({t[0] for t in tail})
         a("<tr><td>live What's New feed</td><td>%s &ndash; %s</td>"
           "<td style='text-align:right'>%d</td></tr>"
-          % (days[0].strftime("%d %b"), days[-1].strftime("%d %b"), len(tail)))
+          % (days[0].strftime("%d %b"), days[-1].strftime("%d %b"), tail_n))
+    elif tail_n:
+        a("<tr><td>live feed tail</td><td>after the last roundup</td>"
+          "<td style='text-align:right'>%d</td></tr>" % tail_n)
     a("<tr><th>Total</th><th></th><th style='text-align:right'>%d</th></tr>"
       % total)
     a("</tbody></table>")
@@ -402,34 +638,146 @@ def render(first, last, by_day, sources, tail, missing, reach,
         a("</tbody></table>")
 
     a("<h2>Complete inventory</h2>")
-    a("<p>Every announcement in the month, newest first, with AWS's own "
-      "one-line summary. This section exists so the coverage claim above can "
-      "be checked rather than taken on trust.</p>")
-    a("<div class='inv'>")
-    for day in sorted(by_day, reverse=True):
-        rows = by_day[day]
-        a("<h4>%s &mdash; %d announcement%s</h4>"
-          % (day.strftime("%A %d %B"), len(rows),
-             "" if len(rows) == 1 else "s"))
-        a("<ul>")
-        for _d, title, url, gist in rows:
-            if url:
-                a('<li><a href="%s">%s</a><span class="gist">%s</span></li>'
-                  % (html.escape(url, quote=True), html.escape(title),
-                     html.escape(gist)))
-            else:
-                a('<li><strong>%s</strong><span class="gist">%s</span>'
-                  '<span class="dead">AWS\'s own link for this announcement '
-                  'returns 404 &mdash; recorded here for completeness.</span>'
-                  '</li>' % (html.escape(title), html.escape(gist)))
-        a("</ul>")
-    a("</div>")
+    if cloud["flat_items"]:
+        a("<p>Every announcement in the month, newest first, with AWS's own "
+          "one-line summary. This section exists so the coverage claim above "
+          "can be checked rather than taken on trust.</p>")
+        a("<div class='inv'>")
+        for day in sorted(by_day, reverse=True):
+            rows = by_day[day]
+            a("<h4>%s &mdash; %d announcement%s</h4>"
+              % (day.strftime("%A %d %B"), len(rows),
+                 "" if len(rows) == 1 else "s"))
+            a("<ul>")
+            for _d, title, url, gist in rows:
+                if url:
+                    a('<li><a href="%s">%s</a><span class="gist">%s</span></li>'
+                      % (html.escape(url, quote=True), html.escape(title),
+                         html.escape(gist)))
+                else:
+                    a('<li><strong>%s</strong><span class="gist">%s</span>'
+                      '<span class="dead">AWS\'s own link for this '
+                      'announcement returns 404 &mdash; recorded here for '
+                      'completeness.</span></li>'
+                      % (html.escape(title), html.escape(gist)))
+            a("</ul>")
+        a("</div>")
+    else:
+        _render_inventory_gcp(a, buckets, total)
 
     a("<footer>Built by <code>scripts/build_monthly_report.py</code> from "
-      "published weekly inventories and the live AWS What's New feed. "
-      "Announcement text is AWS's own. Internal document.</footer>")
+      "published weekly inventories and the live %s. %s text is %s own. "
+      "Internal document.</footer>"
+      % (cloud["feed_name"], cloud["unit"].capitalize(), cloud["possessive"]))
     a("</body></html>")
     return "\n".join(o)
+
+
+def _render_inventory_gcp(a, buckets, total):
+    """The month's notes, in the three buckets the weekly builder produces.
+
+    Deliberately not one row per note. A GCP month is roughly 1,200 notes and
+    over half of a typical week is a single product's kernel CVE run, so a flat
+    list is long enough that nobody checks it -- which defeats the only reason
+    the section exists. Nothing is dropped: a rolled-up run states its own raw
+    count and lists its identifiers, so the arithmetic still reconciles.
+    """
+    listed, cross, rolled = (buckets["listed"], buckets["cross"],
+                             buckets["rolled"])
+    rolled_n = sum(r[2] for r in rolled)
+    # One cross-product entry stands for one note per product it was published
+    # under, so the product list is the note count. Recovering it is what lets
+    # the three buckets sum to the month total rather than leaving a gap the
+    # reader has to take on trust.
+    cross_n = sum(len(c[2]) for c in cross)
+    accounted = len(listed) + cross_n + rolled_n
+    a("<p>Every note Google Cloud published in the month, in the same three "
+      "buckets each weekly roundup uses. Runs that repeat the same text once "
+      "per release are folded into a single entry that states its raw count "
+      "and names the releases &mdash; folded, never deduplicated, because "
+      "same-text notes under one product are separate real notes and "
+      "collapsing them would under-count the month.</p>")
+
+    a("<table><thead><tr><th>Bucket</th>"
+      "<th style='text-align:right'>Notes</th><th>Rendering</th></tr></thead>"
+      "<tbody>")
+    a("<tr><td>Listed individually</td><td style='text-align:right'>%d</td>"
+      "<td>One row each, grouped by product.</td></tr>" % len(listed))
+    a("<tr><td>Published under several products</td>"
+      "<td style='text-align:right'>%d</td><td>%d text%s shown once, with "
+      "the products named.</td></tr>"
+      % (cross_n, len(cross), "" if len(cross) == 1 else "s"))
+    a("<tr><td>Repeating runs, rolled up</td>"
+      "<td style='text-align:right'>%d</td><td>%d run%s, each stating its raw "
+      "count.</td></tr>"
+      % (rolled_n, len(rolled), "" if len(rolled) == 1 else "s"))
+    a("<tr><th>Month total</th><th style='text-align:right'>%d</th>"
+      "<th></th></tr>" % total)
+    a("</tbody></table>")
+    # The buckets are the completeness claim, so a gap is stated rather than
+    # left for the reader to find by subtracting. It is not fatal -- the
+    # coverage assertion above is the blocking check -- but an inventory whose
+    # own arithmetic does not close should say so on its face.
+    if accounted != total:
+        a("<div class='box warn'><strong>Buckets do not sum</strong><br>"
+          "The buckets above account for %d of %d notes, a difference of %d. "
+          "Every note is still in exactly one bucket; the gap means a "
+          "published roundup rendered a count this report could not parse "
+          "back.</div>" % (accounted, total, abs(total - accounted)))
+
+    a("<div class='inv'>")
+    if rolled:
+        a("<h4>Repeating runs, rolled up &mdash; %d notes</h4>" % rolled_n)
+        a("<ul>")
+        for product, kind, n, sentence, url in sorted(
+                rolled, key=lambda r: -r[2]):
+            head = "%s (%d notes) &mdash; %s" % (html.escape(product), n,
+                                                 html.escape(kind))
+            a("<li>%s<span class='gist'>%s</span></li>"
+              % (_link(head, url), html.escape(sentence)))
+        a("</ul>")
+
+    if cross:
+        a("<h4>One change, published under several products &mdash; %d</h4>"
+          % len(cross))
+        a("<ul>")
+        for kind, text, products, url in cross:
+            a("<li>%s<span class='gist'>%s</span>"
+              "<span class='gist'>Published under %d products: %s.</span></li>"
+              % (_link(html.escape(kind), url), html.escape(text),
+                 len(products), html.escape(", ".join(products))))
+        a("</ul>")
+
+    if listed:
+        a("<h4>Everything else, by product &mdash; %d</h4>" % len(listed))
+        by_product = {}
+        for product, kind, gist, when, url in listed:
+            by_product.setdefault(product, []).append((kind, gist, when, url))
+        for product in sorted(by_product):
+            rows = by_product[product]
+            a("<h4>%s &mdash; %d</h4>" % (html.escape(product), len(rows)))
+            a("<ul>")
+            for kind, gist, when, url in rows:
+                a("<li>%s<span class='gist'>%s</span>"
+                  "<span class='gist'>%s</span></li>"
+                  % (_link(html.escape(kind), url), html.escape(gist),
+                     html.escape(when)))
+            a("</ul>")
+    a("</div>")
+
+
+def _link(inner, url):
+    """A day anchor, or plain text where a note has no link.
+
+    Unlike AWS, a GCP note usually has no URL of its own -- it shares the day
+    anchor on the release-notes page, and only Cloud Blog items carry a
+    distinct one. So there is nothing here to validate per announcement and no
+    per-item 404 case: a missing link means the source had none, not that the
+    vendor's link is broken.
+    """
+    if not url:
+        return "<strong>%s</strong>" % inner
+    return '<a href="%s">%s</a>' % (html.escape(url, quote=True), inner)
 
 
 def _md(s):
@@ -440,7 +788,13 @@ def _md(s):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    argv = [a for a in sys.argv[1:]]
+    cloud = "aws"
+    if "--cloud" in argv:
+        i = argv.index("--cloud")
+        cloud = argv[i + 1]
+        del argv[i:i + 2]
+    if not argv or cloud not in CLOUDS:
         print(__doc__)
         sys.exit(2)
-    sys.exit(build(sys.argv[1]))
+    sys.exit(build(argv[0], cloud))
