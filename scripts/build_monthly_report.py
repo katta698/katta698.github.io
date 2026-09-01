@@ -95,6 +95,7 @@ from build_weekly_inventory import gists                       # noqa: E402
 # the weekly and monthly documents -- the same reason gists() is imported above.
 from build_weekly_inventory_gcp import classify, rollup_sentence  # noqa: E402
 import fetch_week_gcp                                          # noqa: E402
+import fetch_azure_week                                        # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POSTS = os.path.join(ROOT, "posts")
@@ -115,6 +116,17 @@ WEEKLY_RE = re.compile(
     r"weekly-\d+-(\d{4})-(\d{2})-(\d{2})-to-(\d{2})-(\d{2})\.html$")
 GCPWEEKLY_RE = re.compile(
     r"gcpweekly-\d+-(\d{4})-(\d{2})-(\d{2})-to-(\d{2})-(\d{2})\.html$")
+# The Azure series does not. Its slugs are written for a reader --
+# azw-001-10-14-august-2026 -- so the window has to be recovered from day
+# numbers and a month name rather than read off as ISO dates. Named groups mark
+# it out, and weekly_windows() branches on `monthname` being present; the two
+# ISO series keep their positional form untouched. The optional first month name
+# is for a window that straddles a month boundary
+# (azw-00N-31-august-4-september-2026), which has not occurred yet but is one
+# Monday away: September 2026 begins on a Tuesday.
+AZWEEKLY_RE = re.compile(
+    r"azw-\d+-(?P<d1>\d{1,2})-(?:(?P<m1name>[a-z]+)-)?"
+    r"(?P<d2>\d{1,2})-(?P<monthname>[a-z]+)-(?P<y>\d{4})\.html$")
 DAY_RE = re.compile(r"<h3>(\w+day)\s+(\d{1,2})\s+(\w+)\s*&mdash;\s*(\d+)\s+"
                     r"announcements?</h3>")
 LINKED_RE = re.compile(
@@ -129,6 +141,14 @@ def _unescape(s):
     return html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
 
 
+def _month_number(name):
+    """Month number from a full month name, or None. Locale-independent."""
+    try:
+        return datetime.datetime.strptime(name.capitalize(), "%B").month
+    except (ValueError, AttributeError):
+        return None
+
+
 def weekly_windows(cloud, year, month):
     """Published weekly roundups whose news window falls inside the month."""
     found = []
@@ -136,9 +156,20 @@ def weekly_windows(cloud, year, month):
         m = cloud["weekly_re"].search(path.replace("\\", "/"))
         if not m:
             continue
-        y, m1, d1, m2, d2 = (int(x) for x in m.groups())
-        start = datetime.date(y, m1, d1)
-        end = datetime.date(y, m2, d2)
+        g = m.groupdict()
+        if g.get("monthname"):
+            # Reader-facing slug: day numbers and a month name, not ISO dates.
+            year_ = int(g["y"])
+            end_m = _month_number(g["monthname"])
+            start_m = _month_number(g["m1name"]) if g.get("m1name") else end_m
+            if not end_m or not start_m:
+                continue
+            start = datetime.date(year_, start_m, int(g["d1"]))
+            end = datetime.date(year_, end_m, int(g["d2"]))
+        else:
+            y, m1, d1, m2, d2 = (int(x) for x in m.groups())
+            start = datetime.date(y, m1, d1)
+            end = datetime.date(y, m2, d2)
         if start.year == year and start.month == month:
             found.append((start, end, path))
     return sorted(found)
@@ -315,6 +346,96 @@ def feed_reach_gcp():
     return min(days) if days else None
 
 
+# --------------------------------------------------------------------------
+# Azure
+#
+# An Azure roundup publishes its inventory as a table -- Date / Announcement /
+# Status -- rather than as a day-grouped list, so DAY_RE, LINKED_RE and
+# UNLINKED_RE match nothing against it and a separate reader is required. That
+# is the only genuinely unshared part: the items come back in the same
+# (date, title, url, note) shape the AWS reader produces, so everything below
+# build() treats the two clouds identically.
+#
+# The fourth element is the **Status** Microsoft assigns -- GA, Preview,
+# Retirement, Change -- where AWS carries a one-line summary. It is kept rather
+# than dropped because neither of the other two clouds publishes it: a month's
+# split between GA and Preview is the shape of the release stream, and a
+# Retirement row is a dated commitment. Every row links, so the AWS
+# unlinked-item path does not arise here.
+#
+# There is no roll-up. Azure published 14 announcements in the week of 24-28
+# August, so a month is roughly 50 rows -- a list somebody will actually read,
+# which is the condition the GCP bucketing exists to restore and this cloud
+# never loses.
+# --------------------------------------------------------------------------
+
+AZ_ROW_RE = re.compile(
+    r"<tr><td>(\d{1,2}\s+\w{3})</td>"
+    r'<td><a href="([^"]+)"[^>]*>(.*?)</a></td>'
+    r"<td>(.*?)</td></tr>", re.S)
+
+
+def read_weekly_inventory_azure(path, year):
+    """(date, title, url, status) for every row in one Azure roundup."""
+    text = io.open(path, encoding="utf-8").read()
+    i = text.find('id="inventory"')
+    if i < 0:
+        return [], 0
+    seg = text[i:]
+    m = re.search(r"<h2>Complete inventory &mdash; all (\d+)</h2>", seg)
+    stated = int(m.group(1)) if m else 0
+
+    items = []
+    for datestr, url, title, status in AZ_ROW_RE.findall(seg):
+        try:
+            day = datetime.datetime.strptime(
+                "%s %d" % (_unescape(datestr), year), "%d %b %Y").date()
+        except ValueError:
+            continue
+        items.append((day, _unescape(title), html.unescape(url),
+                      _unescape(status)))
+    return items, stated
+
+
+def live_tail_azure(first, last):
+    """Announcements from the Azure Updates archive for [first, last].
+
+    Uses fetch_azure_week.updates_in_range() rather than re-deriving the query,
+    for the same reason gists() and classify() are imported above: one
+    definition of "what was published in this range" across the weekly and
+    monthly documents. That function returns (date, title, link) and no status,
+    so tail rows carry an empty status -- the Status column is something the
+    roundup's author records when writing it up, not something the range query
+    returns.
+    """
+    if first > last:
+        return []
+    rows, _total, err = fetch_azure_week.updates_in_range(
+        first.isoformat(), last.isoformat())
+    if err:
+        print("live tail: %s" % err, file=sys.stderr)
+        return []
+    return [(d, t, l, "") for d, t, l in rows]
+
+
+def feed_reach_azure():
+    """None -- the Azure Updates archive has no truncation window.
+
+    The other two clouds read a capped feed, so their oldest available date is
+    a real floor on what a live fetch can still recover. Azure's backbone is a
+    JSON API whose date filter is evaluated server-side against the whole
+    archive (measured at 9,873 records), so there is no floor to report and the
+    tail can start wherever the published roundups stop.
+
+    This does not make the month fetchable in one call, because build() only
+    tails the days after the last roundup -- and it should not, since the
+    roundup is the record. A month with a gap in that record still fails the
+    coverage assertion, which is correct: the gap is in what was published, not
+    in what the API can reach.
+    """
+    return None
+
+
 def backlog_for_month(year, month):
     """{date: [(item, service, status, importance)]} from DAILY-BACKLOG.md."""
     path = os.path.join(ROOT, "DAILY-BACKLOG.md")
@@ -363,6 +484,7 @@ CLOUDS = {
         "live_tail": live_tail_aws,
         "feed_reach": feed_reach_aws,
         "flat_items": True,
+        "item_note": "AWS's own one-line summary",
     },
     "gcp": {
         "label": "Google Cloud",
@@ -378,6 +500,27 @@ CLOUDS = {
         "live_tail": live_tail_gcp,
         "feed_reach": feed_reach_gcp,
         "flat_items": False,
+        "item_note": "Google's own text",
+    },
+    "azure": {
+        "label": "Azure",
+        "feed_name": "Azure Updates archive",
+        "possessive": "Microsoft's",
+        "unit": "announcement",
+        "weekly_glob": "azw-*.html",
+        "weekly_re": AZWEEKLY_RE,
+        "stem": "azure-monthly-%s",
+        # No Azure daily intelligence series exists and none is planned, so
+        # there is no same-day ranking to report. None omits the section rather
+        # than rendering it empty.
+        "backlog": None,
+        "read_inventory": read_weekly_inventory_azure,
+        "live_tail": live_tail_azure,
+        "feed_reach": feed_reach_azure,
+        # ~14 announcements a week, so ~50 a month: one row per announcement is
+        # a list a reader will finish, and there is nothing to roll up.
+        "flat_items": True,
+        "item_note": "the status Microsoft assigned it",
     },
 }
 
@@ -639,14 +782,17 @@ def render(cloud, first, last, by_day, buckets, total, sources, tail, tail_n,
 
     a("<h2>Complete inventory</h2>")
     if cloud["flat_items"]:
-        a("<p>Every announcement in the month, newest first, with AWS's own "
-          "one-line summary. This section exists so the coverage claim above "
-          "can be checked rather than taken on trust.</p>")
+        # Cloud-specific wording comes from the registry rather than from a
+        # branch here: two clouds now render flat, and a branch is how the
+        # second one quietly diverges from the first.
+        a("<p>Every %s in the month, newest first, with %s. This section "
+          "exists so the coverage claim above can be checked rather than "
+          "taken on trust.</p>" % (cloud["unit"], cloud["item_note"]))
         a("<div class='inv'>")
         for day in sorted(by_day, reverse=True):
             rows = by_day[day]
-            a("<h4>%s &mdash; %d announcement%s</h4>"
-              % (day.strftime("%A %d %B"), len(rows),
+            a("<h4>%s &mdash; %d %s%s</h4>"
+              % (day.strftime("%A %d %B"), len(rows), cloud["unit"],
                  "" if len(rows) == 1 else "s"))
             a("<ul>")
             for _d, title, url, gist in rows:
@@ -656,10 +802,10 @@ def render(cloud, first, last, by_day, buckets, total, sources, tail, tail_n,
                          html.escape(gist)))
                 else:
                     a('<li><strong>%s</strong><span class="gist">%s</span>'
-                      '<span class="dead">AWS\'s own link for this '
-                      'announcement returns 404 &mdash; recorded here for '
-                      'completeness.</span></li>'
-                      % (html.escape(title), html.escape(gist)))
+                      '<span class="dead">%s own link for this %s returns '
+                      '404 &mdash; recorded here for completeness.</span></li>'
+                      % (html.escape(title), html.escape(gist),
+                         cloud["possessive"], cloud["unit"]))
             a("</ul>")
         a("</div>")
     else:
