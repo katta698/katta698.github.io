@@ -81,6 +81,8 @@ import html
 import io
 import os
 import re
+import shutil
+import subprocess
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -466,6 +468,28 @@ def backlog_for_month(year, month):
     return out
 
 
+# Where the finished PDF is delivered, so all three clouds land in one place
+# regardless of which worktree built them. Each worktree has its own gitignored
+# reports/out/ and nothing merges them -- without this you get three reports in
+# three folders and have to go looking for them.
+#
+# An absolute path on purpose: Google Drive for Desktop mounts here, so any
+# worktree can reach it. If the drive is not mounted the build still succeeds
+# and says the PDF stayed local. A missing sync client is not a reason to fail
+# a report that was otherwise produced correctly.
+DELIVER_TO = r"K:\My Drive\Tech Notes & AWS\Monthly Intelligence"
+
+# Rendered with a headless browser rather than a Python PDF library, because
+# the report is already styled HTML with a print stylesheet -- Chrome applies
+# @media print and paginates the tables, which is the output wanted.
+BROWSERS = [
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+]
+
+
 CLOUDS = {
     "aws": {
         "label": "AWS",
@@ -523,6 +547,47 @@ CLOUDS = {
         "item_note": "the status Microsoft assigned it",
     },
 }
+
+
+def render_pdf(html_path):
+    """Print the report to PDF with a headless browser. Returns the path.
+
+    Not fatal if no browser is found: the HTML is the real artefact and can be
+    printed by hand. A missing Chrome should not lose a correctly built report.
+    """
+    exe = next((b for b in BROWSERS if os.path.exists(b)), None)
+    if not exe:
+        print("  NOTE: no Chrome or Edge found; PDF not rendered.")
+        return None
+    pdf_path = os.path.splitext(html_path)[0] + ".pdf"
+    url = "file:///" + os.path.abspath(html_path).replace("\\", "/")
+    rc = subprocess.call(
+        [exe, "--headless", "--disable-gpu", "--no-pdf-header-footer",
+         "--print-to-pdf=" + pdf_path, url],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if rc != 0 or not os.path.exists(pdf_path):
+        print("  NOTE: the browser did not produce a PDF (exit %s)." % rc)
+        return None
+    return pdf_path
+
+
+def deliver(pdf_path):
+    """Copy the PDF to the shared delivery folder, if it is mounted."""
+    if not pdf_path:
+        return None
+    drive = os.path.splitdrive(DELIVER_TO)[0] + os.sep
+    if not os.path.isdir(drive):
+        print("  NOTE: %s is not mounted; the PDF stayed in reports/out/."
+              % drive)
+        return None
+    try:
+        os.makedirs(DELIVER_TO, exist_ok=True)
+        dest = os.path.join(DELIVER_TO, os.path.basename(pdf_path))
+        shutil.copy2(pdf_path, dest)
+        return dest
+    except OSError as exc:                                     # noqa: BLE001
+        print("  NOTE: could not deliver to %s (%s)." % (DELIVER_TO, exc))
+        return None
 
 
 def build(month_str, cloud_key="aws"):
@@ -643,6 +708,12 @@ def build(month_str, cloud_key="aws"):
         print("  backlog: %d item(s) ranked, %d High/Med-High, %d became posts"
               % (len(ranked), len(high), len(shipped)))
     print("wrote %s" % out_path)
+    pdf = render_pdf(out_path)
+    if pdf:
+        print("wrote %s" % pdf)
+        dest = deliver(pdf)
+        if dest:
+            print("delivered %s" % dest)
     if not prose:
         print("  NOTE: no analysis sidecar at %s -- prose sections are marked "
               "unwritten." % os.path.relpath(analysis_path, ROOT))
