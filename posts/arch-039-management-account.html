@@ -1,0 +1,320 @@
+---
+title: "AWS Architecture Series #39 — The account the guardrails cannot reach"
+date: '2026-09-01T09:00:00'
+slug: aws-architecture-management-account
+labels: [AWS, "AWS Architecture Series"]
+problem: "An organisation's guardrails are reviewed, tested and attached at the root, and the platform team is confident about what any account may do. The build pipeline, the shared VPC and the cost tooling all run in the management account, because that is where the organisation was created and it was convenient. None of those workloads is covered by a single one of the guardrails."
+builds: "A working model of the management account as the one account outside the organisation's own controls, why that exemption is deliberate rather than an oversight, and how delegated administration moves privileged work back inside a boundary instead of outside one."
+catch: "Registering a member account as a delegated administrator does not exempt it from SCPs — AWS states the opposite explicitly. That is not a limitation of delegation; it is the reason delegation is worth doing, because the alternative is doing the same work in the account nothing governs."
+verified: '2026-09-01'
+verified_claims:
+  - claim: "SCPs don't affect users or roles in the management account. They affect only the member accounts in your organization"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
+  - claim: "This also means that SCPs apply to member accounts that are designated as delegated administrators"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
+  - claim: "An SCP restricts permissions for IAM users and roles in member accounts, including the member account's root user"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
+  - claim: "If a permission is blocked at any level above the account, a user or role in the affected account can't use that permission, even if the account administrator attaches the AdministratorAccess IAM policy"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
+  - claim: "SCPs do not affect any service-linked role. Service-linked roles enable other AWS services to integrate with AWS Organizations and can't be restricted by SCPs"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
+  - claim: "You can't use SCPs to restrict any action performed by the management account, or any action performed using permissions that are attached to a service-linked role"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
+  - claim: "SCPs don't affect resource-based policies directly, and they don't affect users or roles from accounts outside the organization"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
+  - claim: "You should not remove the FullAWSAccess policy unless you modify or replace it with a separate policy with allowed actions, otherwise all AWS actions from member accounts will fail"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
+  - claim: "AWS strongly recommends that you don't attach SCPs to the root of your organization without thoroughly testing the impact that the policy has on accounts"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
+  - claim: "If both a permissions boundary and an SCP are present, then the boundary, the SCP, and the identity-based policy must all allow the action"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
+  - claim: "When you disable the SCP policy type in a root, all SCPs are automatically detached, and any attachments of SCPs from before SCPs were disabled are lost and aren't automatically recoverable"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
+  - claim: "We recommend that you use the management account and its users and roles for tasks that must be performed only by that account. Store all of your AWS resources in other AWS accounts in the organization and keep them out of the management account"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_best-practices_mgmt-acct.html
+  - claim: "One important reason to keep your resources in other accounts is because Organizations service control policies do not work to restrict any users or roles in the management account"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_best-practices_mgmt-acct.html
+  - claim: "Separating your resources from your management account also helps you to understand the charges on your invoices"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_best-practices_mgmt-acct.html
+  - claim: "Ensure that the process to recover or reset access to the root user credentials is not reliant on any specific individual to complete"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_best-practices_mgmt-acct.html
+  - claim: "Where possible, AWS recommends delegating responsibilities and services outside the management account, and you can register multiple delegated administrators for services that support this functionality"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_best-practices_mgmt-acct.html
+  - claim: "Organizations turns on service control policies and attaches an SCP to the root that denies both the organizations:LeaveOrganization and account:CloseAccount actions for all member accounts"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_security_default_controls.html
+  - claim: "These controls apply only to organizations created through the AWS Organizations console after July 10, 2026, and don't affect existing organizations"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_security_default_controls.html
+  - claim: "Organizations doesn't currently support these controls when you create an organization using the AWS CLI, AWS SDKs, or CloudFormation, and if you use the CreateOrganization API directly you must configure them manually"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_security_default_controls.html
+  - claim: "From the organization's management account, you can delegate policy management for Organizations to specified member accounts to perform policy actions that are by default available only to the management account"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_delegate_policies.html
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #039 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">The account the guardrails cannot reach</h1>
+  <p class="post-subtitle">Service control policies govern every account in the organisation except the one you administer it from. That single exemption is deliberate, it is documented in four places, and almost every rule about how to run an organisation is a consequence of it.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Security &amp; Identity &middot; Governance</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A company has done the multi-account work properly. There are eighty accounts under an organisation, arranged into OUs by environment and business unit, and the SCPs at each level were written carefully and tested on one account at a time. The platform team can answer, precisely, what any account is permitted to do.
+    </p>
+    <p>
+      Three things also run in the management account. The build pipeline, because that is where the organisation was created and the first CI role was made there in week one. A shared VPC with a Direct Connect attachment, because networking was set up before the account structure settled. And the cost reporting stack, because Cost and Usage Reports are configured from the payer account and it seemed natural to keep the Athena tables beside them.
+    </p>
+    <p>
+      Every one of those workloads is outside every guardrail the company wrote. Not partially, not in edge cases: <strong>SCPs don't affect users or roles in the management account. They affect only the member accounts in your organization.</strong> The deny on <code class="inline">cloudtrail:StopLogging</code>, the Region restriction, the block on creating IAM users — none of them apply to the pipeline role that can already assume its way into every account in the estate.
+    </p>
+    <p>
+      Nobody made a mistake here. Each of those three decisions was locally reasonable, made before the guardrails existed, and never revisited because nothing ever failed. That is the characteristic of this problem: the management account does not behave differently in any way you can observe. It behaves differently only in what it would have stopped.
+    </p>
+
+    <div class="callout amber">
+      <strong>The exemption is not a gap to be closed</strong>
+      <p>The account that authors the guardrails cannot be subject to them. If it were, one bad SCP would lock the organisation out of the only place the SCP can be removed, and the organisation would be unrecoverable. The exemption is the escape hatch that makes root-level policy safe to use at all — which means the correct response is not to try to govern the management account, but to put almost nothing in it.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      AWS states the design rule and the reason in the same breath: <em>we recommend that you use the management account and its users and roles for tasks that must be performed only by that account. Store all of your AWS resources in other AWS accounts in the organization and keep them out of the management account.</em> And then, explicitly, the why — <em>one important reason to keep your resources in other accounts is because Organizations service control policies do not work to restrict any users or roles in the management account.</em>
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-039-management-account.svg" alt="Diagram: the management account sitting outside SCP coverage, with member accounts including a delegated administrator inside it, and a panel listing the four categories of action an SCP cannot restrict" />
+      <figcaption>Delegating administration does not move work outside the guardrail. It moves work inside one, which is the entire argument for doing it.</figcaption>
+    </figure>
+
+    <h3>What the guardrail does reach, which is more than people expect</h3>
+    <p>
+      Inside a member account, an SCP is close to absolute. <em>An SCP restricts permissions for IAM users and roles in member accounts, <strong>including the member account's root user</strong></em>, and <em>if a permission is blocked at any level above the account, a user or role in the affected account can't use that permission, even if the account administrator attaches the <code class="inline">AdministratorAccess</code> IAM policy</em>.
+    </p>
+    <p>
+      That is a genuinely strong property and it is the whole value proposition: a local administrator, acting in good faith or otherwise, cannot exceed the ceiling. It is also why the contrast with the management account is so sharp. The same policy that binds a member account's root user does not bind an ordinary IAM role in the management account.
+    </p>
+
+    <h3>The three other things SCPs do not reach</h3>
+    <p>
+      The management account exemption is the largest, but it is one of four. <em>SCPs do not affect any service-linked role. Service-linked roles enable other AWS services to integrate with AWS Organizations and can't be restricted by SCPs.</em> There is a short list of root-user tasks outside their scope — Enterprise support registration, CloudFront trusted signer functionality, reverse DNS configuration. And <em>SCPs don't affect resource-based policies directly, and they don't affect users or roles from accounts outside the organization</em>, which is the gap that resource control policies were introduced to close.
+    </p>
+    <p>
+      Taken together, these define what an SCP is: a ceiling on <em>principals your organisation manages</em>. Not a ceiling on your resources, not a ceiling on AWS's own integrations, and not a ceiling on the account doing the ceiling-setting.
+    </p>
+
+    <h3>Delegated administration, and the fact that makes it worth doing</h3>
+    <p>
+      The remedy AWS recommends is to move the work out: <em>where possible, we recommend delegating responsibilities and services outside the management account</em>, and <em>you can register multiple delegated administrators for services that support this functionality</em>. For Organizations itself, <em>from the organization's management account, you can delegate policy management for Organizations to specified member accounts to perform policy actions that are by default available only to the management account</em>.
+    </p>
+    <p>
+      Here is the sentence that decides whether delegation is worth the setup, and it reads at first like a limitation: <strong>SCPs apply to member accounts that are designated as delegated administrators.</strong>
+    </p>
+    <p>
+      It is not a limitation. It is the entire point. Delegating SCP management to a security tooling account does not create a second exempt account — it moves privileged work from an account where guardrails are impossible into an account where they apply in full, root user included. The alternative is not "the same work, governed less"; the alternative is doing that work in the management account, where nothing you write can constrain it.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Model Holds Up</h2>
+
+    <h3>It makes the recovery path a design input rather than an afterthought</h3>
+    <p>
+      A control plane that can lock itself out is a control plane nobody will use aggressively. Because the management account is exempt, an SCP that turns out to be catastrophically wrong is always removable, from a known place, by a known identity. That is what allows a platform team to write a genuinely restrictive root-level policy instead of a cautious one — and cautious guardrails are the ones that do not prevent anything.
+    </p>
+
+    <h3>The blast radius of the exemption is a function of one number</h3>
+    <p>
+      How much damage the exemption can do is exactly proportional to how much lives in the management account. That is unusual and useful: most security properties are hard to measure, and this one is a resource count. An organisation whose management account contains an organisation, a billing configuration and nothing else has an exemption with almost nothing behind it.
+    </p>
+
+    <h3>Delegation scales where management-account access does not</h3>
+    <p>
+      There is only one management account, and access to it is the highest-value credential in the estate — so the number of people who can hold it is small and the queue for their attention is not. Delegated administration converts that into per-account access, in accounts that are governed, with as many delegated administrators as there are services that support them. The bottleneck stops being a single account's access list.
+    </p>
+
+    <h3>It separates the invoice from the architecture</h3>
+    <p>
+      A quieter benefit AWS names directly: <em>separating your resources from your management account also helps you to understand the charges on your invoices.</em> The management account is the payer, so its own consumption is mixed into the account that aggregates everyone else's. Workloads there are the hardest spend in the organisation to attribute, and the least likely to be noticed growing.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Design Decisions</h2>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>Inventory the management account, and treat what is there as ungoverned</strong>
+      </div>
+      <div class="challenge-body">
+        <p>This is the first exercise, not the last, and it is finite. List every resource, role and pipeline in the management account, then read each one against the question the guardrails are supposed to answer. A CI role there is not "a CI role with elevated trust" &mdash; it is a principal that no organisation-level control applies to, in the account that can also modify the controls.</p>
+        <span class="fix-label">The order to move things</span>
+        <p>Move by blast radius rather than by ease: anything holding credentials or assuming roles into other accounts first, then anything internet-facing, then everything else. Networking is usually the hardest and the least urgent, because a shared VPC is not a principal. Cost tooling is usually the easiest, since a CUR can be delivered to a bucket in a different account.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>Delegate every service that supports it, and keep delegation itself deliberate</strong>
+      </div>
+      <div class="challenge-body">
+        <p>Delegated administration is the mechanism that lets the management account shrink towards its documented purpose. Register delegated administrators for the services that support them, and site them in the account whose job that work actually is &mdash; security tooling for the detective services, a shared services account for StackSets and Service Catalog.</p>
+        <span class="fix-label">Concrete rule</span>
+        <p>The registration itself is a management-account action and it grants standing privilege in another account, so it belongs under change control with a named owner per service. Review the delegated administrator list on the same cadence as the management account access list, because an unregistered service is visible and a stale delegation is not.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>Check for the leave-and-close SCP rather than assuming you have it</strong>
+      </div>
+      <div class="challenge-body">
+        <p>AWS now applies a baseline automatically: <strong>Organizations turns on service control policies and attaches an SCP to the root that denies both the <code class="inline">organizations:LeaveOrganization</code> and <code class="inline">account:CloseAccount</code> actions for all member accounts.</strong> Without it, a member account can remove itself from the organisation &mdash; and an account that has left is an account every SCP has stopped applying to.</p>
+        <span class="fix-label">Who does not have it</span>
+        <p>These controls apply only to organizations created through the AWS Organizations console <strong>after July 10, 2026</strong>, and don't affect existing organizations. Organizations created with the CLI, the SDKs or CloudFormation don't get them either &mdash; which is to say every organisation built the way a platform team would build one. If yours predates that date or came from <code class="inline">CreateOrganization</code>, you must configure it manually. Check rather than assume.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>Never remove FullAWSAccess, and never test at the root</strong>
+      </div>
+      <div class="challenge-body">
+        <p>Two failure modes with the same shape &mdash; both take out the whole organisation at once, and both are documented warnings rather than discoveries. <strong>You should not remove the FullAWSAccess policy unless you modify or replace it with a separate policy with allowed actions, otherwise all AWS actions from member accounts will fail.</strong> An SCP allow-list that looks complete is not a substitute until it genuinely is.</p>
+        <span class="fix-label">And the rollout</span>
+        <p>AWS strongly recommends that you don't attach SCPs to the root of your organization without thoroughly testing the impact that the policy has on accounts. Create an OU, move accounts into it in small numbers, and use service last accessed data to find out what an account actually uses before deciding what it may use. Note also that disabling the SCP policy type detaches every SCP, and those attachments are lost and aren't automatically recoverable &mdash; disabling is not a reversible toggle.</p>
+      </div>
+    </div>
+
+    <h3>What belongs in the management account, and what does not</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Thing</th>
+            <th>Management account?</th>
+            <th>Why</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>The organisation, OUs and policy authoring</strong></td>
+            <td><strong>Yes</strong></td>
+            <td>Only callable there, and the recovery path depends on it</td>
+          </tr>
+          <tr>
+            <td><strong>Account creation and closure</strong></td>
+            <td><strong>Yes</strong></td>
+            <td>A management-account operation by design</td>
+          </tr>
+          <tr>
+            <td><strong>Billing configuration</strong></td>
+            <td>Yes, configuration only</td>
+            <td>The payer relationship lives here; the reporting stack does not have to</td>
+          </tr>
+          <tr>
+            <td><strong>Detective services — GuardDuty, Security Hub, Access Analyzer</strong></td>
+            <td>No — delegate</td>
+            <td>Delegated administrators exist precisely for this, and the target account stays governed</td>
+          </tr>
+          <tr>
+            <td><strong>CI/CD pipelines and deployment roles</strong></td>
+            <td><strong>No</strong></td>
+            <td>The highest-privilege principals in the estate, in the one account no SCP reaches</td>
+          </tr>
+          <tr>
+            <td><strong>Shared networking</strong></td>
+            <td>No</td>
+            <td>Belongs in a network account; nothing about a transit gateway needs the payer</td>
+          </tr>
+          <tr>
+            <td><strong>Log archive and CUR data</strong></td>
+            <td>No</td>
+            <td>A retention guarantee is only as strong as the SCP over the account holding it</td>
+          </tr>
+          <tr>
+            <td><strong>Any application workload</strong></td>
+            <td><strong>No</strong></td>
+            <td>Ungoverned, and unattributable on the invoice</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <strong>The interaction worth remembering from earlier posts</strong>
+      <p>An SCP is one narrowing gate among several, and they compose rather than override: <strong>if both a permissions boundary and an SCP are present, then the boundary, the SCP, and the identity-based policy must all allow the action.</strong> Three ceilings, one grant. In the management account, one of those three ceilings is simply absent — which is why a permissions boundary on a management-account role is doing more work there than the same boundary anywhere else in the estate.</p>
+    </div>
+
+    <h3>Reference: the baseline SCP, and where to attach it</h3>
+    <p>
+      The policy AWS now attaches for you on new console-created organisations. If yours predates 10 July 2026 or was created by API, this is the one to add first &mdash; it protects the precondition every other guardrail depends on, which is that the account is still in the organisation.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">SCP at the organisation root &mdash; keep member accounts in the organisation</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "DenyLeaveOrganizationAndCloseAccount",
+            "Effect": "Deny",
+            "Action": [
+                "organizations:LeaveOrganization",
+                "account:CloseAccount"
+            ],
+            "Resource": "*"
+        }
+    ]
+}</code></pre>
+    </div>
+    <p>
+      Note the shape: an explicit <code class="inline">Deny</code>, attached at the root, with no conditions. It is the rare guardrail that needs no exceptions, because leaving the organisation is never something a member account should do on its own initiative — and it is evaluated in the deny sweep, so nothing in any member account can override it. Removal stays possible from the management account, which is exactly the escape hatch this whole post is about.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Most security architecture is about drawing boundaries and then verifying that things sit on the correct side of them. The management account is unusual because it is a boundary with a hole in it, the hole is deliberate, and no amount of policy will close it. What is left to decide is not whether the hole exists but how much you put behind it.
+    </p>
+    <p>
+      That reframes the work in a useful way. There is no clever SCP to write here, no condition key that fixes it, and no configuration to review annually. There is an inventory, and the job is to make it shorter. An organisation whose management account holds an organisation and a billing relationship has an exemption that grants an attacker almost nothing; one that also holds the deployment pipeline has an exemption that grants them the estate.
+    </p>
+    <p>
+      <strong>The question to ask of anything running in the management account: if every guardrail we wrote did not exist, would I still be comfortable with this?</strong> For that account, the guardrails genuinely do not exist. The answer has to stand on its own, and for most things it does not — which is the answer.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; the account baseline: what a new account should already have on the day it is created, why the answer is a deployment rather than a checklist, and the controls that are far harder to add to an account than to start it with.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html" target="_blank" rel="noopener">AWS Documentation — Service control policies (SCPs)</a></li>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_best-practices_mgmt-acct.html" target="_blank" rel="noopener">AWS Documentation — Best practices for the management account</a></li>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_security_default_controls.html" target="_blank" rel="noopener">AWS Documentation — Default security controls in AWS Organizations</a></li>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_delegate_policies.html" target="_blank" rel="noopener">AWS Documentation — Delegated administrator for AWS Organizations</a></li>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_rcps.html" target="_blank" rel="noopener">AWS Documentation — Resource control policies (RCPs)</a></li>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_integrate_services_list.html" target="_blank" rel="noopener">AWS Documentation — AWS services that you can use with AWS Organizations</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
