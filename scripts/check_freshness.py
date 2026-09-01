@@ -42,6 +42,7 @@ and the weekly report stays the same size whether the site has 100 posts or
 5,000.
 """
 import argparse
+import collections
 import concurrent.futures
 import datetime
 import glob
@@ -49,6 +50,8 @@ import io
 import os
 import re
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -62,15 +65,30 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 # Reuse the series definitions rather than restating them -- the doc-host
 # allowlist and the shell-host quirk are decided in one place, and a new series
 # added there is picked up here with no edit.
-from validate_arch_post import SERIES, STALE_DAYS, DOCS_SHELL_BYTES  # noqa: E402
+from validate_arch_post import (SERIES, STALE_DAYS, DOCS_SHELL_BYTES,  # noqa: E402
+                                lab_series_for_slug)
 
 UA = "katta698-freshness-check/1.0 (+https://jayanthkatta.com)"
 TIMEOUT = 20
 WORKERS = 6
 
 
+LAB_KEYS = ("awslab", "azlab", "gcplab")
+
+
 def posts_with_badges():
-    """Every post carrying a verification badge, with its series spec."""
+    """Every post carrying a verification badge, with its series spec.
+
+    The three lab series all use the `week-` prefix -- the AWS labs are
+    week-NN-* and both the Azure and GCP series began at week-01 -- so globbing
+    on file_prefix alone hands an Azure lab the AWS allowlist and reports its
+    perfectly good learn.microsoft.com citations as "outside the AWS
+    allowlist". Eleven of sixteen findings were that, on 2026-09-01.
+
+    CLAUDE.md is explicit that lab series are matched on their label and never
+    on the filename, and validate_arch_post.py already resolves it that way. Do
+    the same here rather than inventing a second rule that can drift from it.
+    """
     out = []
     for key, spec in SERIES.items():
         for path in sorted(glob.glob(os.path.join(
@@ -85,6 +103,10 @@ def posts_with_badges():
                 continue
             if not fm.get("verified"):
                 continue
+            if key in LAB_KEYS:
+                # Claim this post only if its label says it is ours.
+                if lab_series_for_slug(fm.get("slug") or "") != key:
+                    continue
             out.append({
                 "name": os.path.basename(path),
                 "series": key,
@@ -97,13 +119,45 @@ def posts_with_badges():
     return out
 
 
-def fetch(url):
+# Statuses that mean "the server declined to answer me", not "the page is
+# gone". A throttle or a bot check says nothing about whether the URL resolves
+# for a reader, so treating them as broken citations is a false positive -- and
+# it is the failure this script actually had. See THROTTLED below.
+UNCHECKABLE_STATUS = {403, 429}
+
+# One in-flight request per host at a time, with a gap between them. The first
+# three weekly runs all failed, and 168 of the 304 "broken citations" they
+# reported were HTTP 429 against learn.microsoft.com -- 190 citations fired at
+# one host from a GitHub runner in seconds. The checker was rate-limiting
+# itself and then reporting the throttle as a dead link.
+HOST_GAP = 0.6            # seconds between requests to the same host
+RETRY_AFTER_CAP = 10      # honour Retry-After, but never sleep longer than this
+
+_host_locks = collections.defaultdict(threading.Lock)
+_host_last = collections.defaultdict(float)
+
+
+def _pace(host):
+    """Serialise requests per host and keep HOST_GAP between them."""
+    with _host_locks[host]:
+        wait = HOST_GAP - (time.monotonic() - _host_last[host])
+        if wait > 0:
+            time.sleep(wait)
+        _host_last[host] = time.monotonic()
+
+
+def fetch(url, _retry=True):
     """GET a URL, reporting status, final location and body size.
 
     Redirects are followed (urllib does that by default) but the final URL is
     compared against the requested one, because a silent 301 is exactly the
     signal this script exists to surface.
+
+    A 429 is retried once, after Retry-After if the server sent one. If it is
+    still throttled the status is returned as-is and the caller files it under
+    "could not check" rather than under "broken".
     """
+    _pace(host_of(url))
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
@@ -111,6 +165,13 @@ def fetch(url):
             return {"status": resp.status, "final": resp.geturl(),
                     "bytes": len(body), "error": None}
     except urllib.error.HTTPError as e:
+        if e.code == 429 and _retry:
+            try:
+                delay = float(e.headers.get("Retry-After", "") or HOST_GAP * 4)
+            except ValueError:
+                delay = HOST_GAP * 4
+            time.sleep(min(delay, RETRY_AFTER_CAP))
+            return fetch(url, _retry=False)
         return {"status": e.code, "final": url, "bytes": 0, "error": None}
     except Exception as e:                       # DNS, TLS, timeout, reset
         return {"status": None, "final": url, "bytes": 0, "error": str(e)[:120]}
@@ -130,7 +191,7 @@ def same_page(a, b):
 def audit(check_network=True):
     posts = posts_with_badges()
     today = datetime.date.today()
-    broken, moved, stale = [], [], []
+    broken, moved, stale, unchecked = [], [], [], []
 
     jobs = []
     for p in posts:
@@ -145,13 +206,23 @@ def audit(check_network=True):
             if isinstance(c, dict) and c.get("source"):
                 jobs.append((p, c["source"]))
 
+    # Fetch each DISTINCT url once. A post cites the same page from several
+    # claims -- az-014 cited get-compliance-data five times -- so fetching per
+    # job both multiplied the traffic that caused the throttling and repeated
+    # every finding five times in the report.
     if check_network and jobs:
+        urls = sorted({u for _, u in jobs})
         with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as ex:
-            results = list(ex.map(lambda j: fetch(j[1]), jobs))
+            fetched = dict(zip(urls, ex.map(fetch, urls)))
+        results = [fetched[u] for _, u in jobs]
     else:
         results = [None] * len(jobs)
 
+    seen = set()
     for (p, url), r in zip(jobs, results):
+        if (p["name"], url) in seen:
+            continue                     # same post, same page, already judged
+        seen.add((p["name"], url))
         host = host_of(url)
         allowed = any(host == h or host.endswith("." + h) for h in p["doc_hosts"])
         if not allowed:
@@ -162,6 +233,10 @@ def audit(check_network=True):
             continue
         if r["error"]:
             broken.append((p["name"], url, "unreachable: %s" % r["error"]))
+        elif r["status"] in UNCHECKABLE_STATUS:
+            # The server declined to answer this checker. That is not evidence
+            # the page is gone, so it must not read as a broken citation.
+            unchecked.append((p["name"], url, "HTTP %d" % r["status"]))
         elif r["status"] and r["status"] >= 400:
             broken.append((p["name"], url, "HTTP %d" % r["status"]))
         elif host in p["shell_hosts"] and r["bytes"] < DOCS_SHELL_BYTES:
@@ -175,10 +250,10 @@ def audit(check_network=True):
             moved.append((p["name"], url, r["final"]))
 
     stale.sort(key=lambda p: p["age"], reverse=True)
-    return posts, broken, moved, stale
+    return posts, broken, moved, stale, unchecked
 
 
-def report(posts, broken, moved, stale, batch):
+def report(posts, broken, moved, stale, unchecked, batch):
     L = []
     add = L.append
     add("# Documentation freshness report")
@@ -191,6 +266,7 @@ def report(posts, broken, moved, stale, batch):
     add("| Broken citations | %d |" % len(broken))
     add("| Moved (redirecting) | %d |" % len(moved))
     add("| Badges older than %d days | %d |" % (STALE_DAYS, len(stale)))
+    add("| Could not check (throttled / bot-blocked) | %d |" % len(unchecked))
     add("")
 
     if broken:
@@ -238,6 +314,25 @@ def report(posts, broken, moved, stale, batch):
             "auto-stamping the badge rules forbid.")
         add("")
 
+    if unchecked:
+        hosts = sorted({host_of(u) for _, u, _ in unchecked})
+        add("## Could not check")
+        add("")
+        add("The server declined to answer this checker -- HTTP 429 (rate "
+            "limited) or 403 (bot protection). That says nothing about whether "
+            "the page resolves for a reader, so these are NOT broken citations "
+            "and do not fail the run. If a host appears here every week, the "
+            "checker is asking too fast for it: raise HOST_GAP.")
+        add("")
+        add("Hosts: %s" % ", ".join(hosts))
+        add("")
+        for name, url, why in unchecked[:20]:
+            add("- **%s** — %s" % (name, why))
+            add("  - %s" % url)
+        if len(unchecked) > 20:
+            add("- ...and %d more" % (len(unchecked) - 20))
+        add("")
+
     if not broken and not moved and not stale:
         add("Nothing to do. Every badged post cites live vendor pages and no "
             "badge is older than %d days." % STALE_DAYS)
@@ -258,8 +353,8 @@ def main():
                     help="exit non-zero when a citation is broken")
     args = ap.parse_args()
 
-    posts, broken, moved, stale = audit(check_network=not args.no_network)
-    text = report(posts, broken, moved, stale, args.stale_batch)
+    posts, broken, moved, stale, unchecked = audit(check_network=not args.no_network)
+    text = report(posts, broken, moved, stale, unchecked, args.stale_batch)
     print(text)
     if args.out:
         io.open(args.out, "w", encoding="utf-8", newline="\n").write(text)
