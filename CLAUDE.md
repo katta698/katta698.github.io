@@ -8,6 +8,18 @@
   Saturdays — the state of every feed the roundups depend on. Re-run it by hand
   with `python scripts/morning.py` when the brief is stale, which on a Saturday
   means any time you start writing hours after logon.
+- **If `MORNING.md` is not there at all, you are not on the laptop — generate
+  it, and work out which cloud you are before writing.** The file is gitignored
+  (it is a briefing, not content), so a session working from a fresh clone —
+  Claude Code on the web, a scheduled agent, CI — never has one. Run
+  `python scripts/morning.py` yourself; it may report the four worktrees as
+  missing, which is correct and not a failure. Everything it actually reads —
+  the roadmaps, `DAILY-BACKLOG.md`, the feeds — is in the repo or on the
+  network. **And there is no window identity in a fresh clone**, so `arch`,
+  `weekly` and `lab` have no cloud attached to them: ask which one, or take it
+  from the request (`gcp arch`). Do not guess — a wrong pick costs a post, and
+  the numbers are already in published URLs. `intel` is unambiguous; it is
+  AWS-only.
 - **When the post is written, run one command:**
   ```
   python scripts/publish.py
