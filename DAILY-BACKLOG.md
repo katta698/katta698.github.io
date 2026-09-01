@@ -92,6 +92,44 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 31 August 2026 — covered by post #22
+
+A heavy Monday: 19 announcements, the most in a single day since 19 August.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| GA — private governed catalog for agents, tools, skills and MCP servers; org-wide auto-detection, approval lifecycle, native MCP endpoint, 5 Regions | AWS Agent Registry | **#22** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-agent-registry-generally-available) |
+| Agents and MCP servers from the registry surfaced in Amazon Quick — the consumer half of the item above | AWS Agent Registry | cited in #22 | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-agent-registry-agents-mcp-servers-quick/) |
+| R9g and R9gd memory optimized instances on Graviton5 — a new processor generation, with its own News Blog post | EC2 | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ec2-r9g-and-r9gd-memory-optimized-instances-are-now-available/) |
+| CVE-2026-83497 — unrestricted Java deserialization in the SQL plugin's cursor pagination; authenticated read/search is enough | OpenSearch | open | High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-092-aws/) |
+| Multicloud connectivity with Microsoft Azure — **Preview** | AWS Interconnect | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aws-announces-AWS-interconnect-multicloud-microsoft-azure-preview/) |
+| Machine-to-machine authorization without a user pool domain | Cognito | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-cognito-get-client-token/) |
+| Apache Iceberg v3 tables | Redshift | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-redshift-supports-apache-iceberg-v3) |
+| IAM Identity Center authentication with enhanced VPC routing | Redshift | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-redshift-supports-idc-evr) |
+| Direct major version upgrades to 8.0 | DocumentDB | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/documentdb-major-version-upgrade-8-0/) |
+| Cross-region routing of contacts across two active Regions | Connect Global Resiliency | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-connect-global-resiliency-cross-region-routing/) |
+| Recursive loop detection now in all commercial Regions | Lambda | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/lambda-recursion-regions) |
+| Workload Credentials Provider as a one-click install for Linux and Windows | AWS | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/workload-credentials-provider-install/) |
+| Cluster Insights for faster diagnosis of cluster status | OpenSearch | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/opensearch-cluster-status-insight/) |
+| AI Toolkit for custom remediations | Automated Security Response | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/automated-security-response-adds-AI-toolkit/) |
+| Active Directory domain join for Windows Server environments | Elastic Beanstalk | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/elastic-beanstalk-active-directory-domain-join/) |
+| Connector restart support | MSK Connect | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-msk-connect-restart/) |
+| 30% better performance and smarter scaling in additional Regions | Aurora Serverless | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-aurora-serverless-performance-improvement-additional-regions/) |
+| Timestream for InfluxDB in 8 more Regions; WorkSpaces Applications in 3 more; Partner Revenue Measurement user agent expansion | Timestream, WorkSpaces, Partner | skipped | Low | — |
+
+**Worth revisiting:** the Graviton5 R9g launch is the strongest unwritten item and
+does not age quickly — a new processor generation is worth a proper price and
+performance post once the pricing pages settle. The OpenSearch CVE was ranked
+High and deliberately not taken: post #21 was already a security bulletin, and
+two consecutive CVE posts would make the series read as a vulnerability feed. It
+is in the September weekly's action list instead, which is the right home for
+"patch this" without a deep-dive.
+
+Saturday 29 August produced one announcement (Kinesis Data Streams delivery to
+general purpose S3 buckets) and Sunday 30 August none.
+
+---
+
 ## 28 August 2026 — covered by post #21
 
 | Item | Service | Status | Importance | Reference |
