@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Building the AWS Monthly Intelligence report — design note</title>
+<style>
+:root{--ink:#1D2322;--mut:#6B6560;--line:#C9C3BC;--bg:#F8F7F5;--tan:#C4A484;
+--warn:#B5654A;--ok:#8A9A5B}
+*{box-sizing:border-box}
+body{font-family:Georgia,'Times New Roman',serif;color:var(--ink);background:#fff;
+margin:0;padding:48px 56px;line-height:1.6;font-size:15px;max-width:900px}
+h1{font-size:28px;margin:0 0 6px;letter-spacing:-.01em}
+h2{font-size:18px;margin:34px 0 10px;padding-bottom:6px;border-bottom:2px solid var(--tan)}
+h3{font-size:15px;margin:22px 0 6px}
+.sub{color:var(--mut);font-size:14px;margin:0}
+.rule{height:3px;background:var(--tan);margin:18px 0 26px;max-width:120px}
+code{font-family:Consolas,'Courier New',monospace;font-size:13px;
+background:var(--bg);padding:1px 4px;border-radius:2px}
+pre{background:var(--bg);border:1px solid var(--line);border-left:3px solid var(--tan);
+padding:12px 14px;overflow-x:auto;font-family:Consolas,'Courier New',monospace;
+font-size:12.5px;line-height:1.45}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:var(--bg);font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
+.box{background:var(--bg);border:1px solid var(--line);border-left:4px solid var(--tan);
+padding:14px 16px;margin:16px 0;font-size:14px}
+.box.warn{border-left-color:var(--warn)}
+.box.ok{border-left-color:var(--ok)}
+ul,ol{margin:10px 0;padding-left:24px}li{margin:6px 0}
+footer{margin-top:40px;padding-top:14px;border-top:1px solid var(--line);
+color:var(--mut);font-size:12px}
+@media print{body{padding:0;font-size:11pt;max-width:none}
+h1,h2,h3{page-break-after:avoid}pre,.box,table{page-break-inside:avoid}
+a{color:var(--ink)}}
+@media (max-width:640px){body{padding:20px 16px;font-size:15px}
+h1{font-size:23px}h2{font-size:17px}
+table{display:block;overflow-x:auto;white-space:nowrap}
+pre{font-size:11.5px}}
+</style>
+</head>
+<body>
+
+<h1>Building the AWS Monthly Intelligence report</h1>
+<p class="sub">Design note &middot; 1 September 2026</p>
+<div class="rule"></div>
+
+<p>
+  This is the reasoning behind <code>scripts/build_monthly_report.py</code> and
+  why it works the way it does rather than the obvious way. It is written down
+  because the obvious way is wrong in a manner that produces no error, and the
+  next person to look at this &mdash; including me &mdash; will be tempted by it
+  again.
+</p>
+
+<h2>1. What prompted it</h2>
+<p>
+  The starting point was a generated monthly report: a nine-page PDF covering
+  August 2026, produced by asking a model to summarise the month. The question
+  was whether it could be printed and handed to a manager.
+</p>
+<p>
+  Checking it was worthwhile, and the result was more nuanced than expected.
+  <strong>Nothing in it was fabricated.</strong> Fifteen of its specific claims
+  were probed against the raw AWS feed and fourteen were there with matching
+  dates. Two figures checked at source came back exactly right: the Glue 6.0
+  &ldquo;30% price reduction&rdquo; and all three ACM email-validation deadlines.
+</p>
+<p>
+  The failure was not accuracy. It was coverage.
+</p>
+<div class="box warn">
+  <strong>The measured gap.</strong> August 2026 produced <strong>245
+  announcements</strong> on the AWS What's New feed. The report covered about 40
+  of them &mdash; roughly 17%. More damagingly, its cover claimed
+  &ldquo;Coverage: August 1 through August 31&rdquo; while <strong>31 August was
+  almost entirely absent</strong>: nineteen announcements that day, including
+  AWS Agent Registry reaching GA, EC2 R9g on Graviton5, and AWS Interconnect
+  with Azure in preview. Whole domains were missing too &mdash; fifteen SageMaker
+  announcements, six Redshift, five WorkSpaces, none of them mentioned.
+</div>
+<p>
+  That is the failure mode to design against, and it is worth naming precisely:
+  <strong>a model reading feeds does not produce wrong facts, it produces silent
+  omissions.</strong> Spot-checking cannot detect it, because every item you
+  check is present. This has been measured on this repo before &mdash;
+  summarising the feed once missed 24 of 66 announcements in a single week, a
+  third of it, with no error raised.
+</p>
+
+<h2>2. The constraint that shapes everything</h2>
+<p>
+  The natural design is the one the weekly builder already uses: fetch the AWS
+  What's New feed, filter to the date range, render. That works for a week and
+  <strong>cannot</strong> work for a month.
+</p>
+<p>
+  The feed is capped at 100 items. Measured on 1 September 2026, those 100 items
+  reached back only to <strong>19 August</strong>. Run a month-long fetch on the
+  1st and the first two-thirds of the month is simply not there &mdash; and
+  nothing in the response says so. The output would look like a complete month
+  and be a third of one.
+</p>
+<div class="box">
+  This is the same constraint that made <code>DAILY-BACKLOG.md</code> necessary
+  in the first place: an item ranked but not written ages out of the feed and is
+  lost. The monthly report inherits the problem and has to inherit the solution.
+</div>
+
+<h2>3. Where the month actually lives</h2>
+<p>
+  The insight that makes this tractable: <strong>the monthly report is not a
+  data-gathering job.</strong> The work has already been done, four times, by
+  the weekly roundups. Each was built from the raw feed on the Saturday it
+  covered, with every link validated, and published. They are the durable record
+  precisely because the feed is not.
+</p>
+<p>So the builder assembles from three sources:</p>
+<table>
+  <thead><tr><th>Source</th><th>Covers</th><th>Why it is trustworthy</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>posts/weekly-*.html</code></td>
+      <td>Every complete Mon&ndash;Fri window in the month</td>
+      <td>Built from the raw feed on the day, links already validated</td>
+    </tr>
+    <tr>
+      <td>Live What's New feed</td>
+      <td>Days after the last weekly window</td>
+      <td>Still within the feed's reach when run on the 1st</td>
+    </tr>
+    <tr>
+      <td><code>DAILY-BACKLOG.md</code></td>
+      <td>Importance ranking per item</td>
+      <td>Assigned on the day it landed, not reconstructed later</td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  The third source is what turns 245 rows into a prioritised document rather
+  than a list. Every announcement was already ranked when it was fresh; the
+  report reuses that judgement instead of re-deriving it a month later, when the
+  context that produced it is gone.
+</p>
+
+<h2>4. Completeness is checked, not claimed</h2>
+<p>
+  This is the part that answers the original failure. The script builds the set
+  of weekdays in the month and asserts each one is covered by a weekly inventory
+  or by the live fetch. Any that is not is <strong>named in the output and on
+  stderr, and the script exits non-zero.</strong>
+</p>
+<pre>COVERAGE HOLE -- these weekdays are in neither a published
+roundup nor the live feed:
+   2026-08-05
+The feed reaches back only to 2026-08-19, so those days cannot
+be recovered now.</pre>
+<p>
+  A short month therefore fails loudly instead of looking complete. That single
+  property is the difference between this and the draft it replaces.
+</p>
+<p>
+  The same arithmetic is printed <em>into</em> the document, as a source table
+  whose rows sum to the stated total. Your manager can check the coverage claim
+  rather than take it on trust &mdash; which is the thing a generated summary
+  structurally cannot offer, because it has no way to prove what it did not
+  miss.
+</p>
+
+<h2>5. Why the analysis is not generated</h2>
+<p>
+  The script fills every data-derived section and stops. The four prose sections
+  &mdash; executive summary, what to act on, what the month had in common, and
+  the lifecycle calendar &mdash; are read from a sidecar file:
+</p>
+<pre>reports/aws-monthly-&lt;YYYY-MM&gt;-analysis.html</pre>
+<p>
+  Two reasons. The first is that finding a month's patterns is the part of the
+  document worth reading, and it is not a summarisation task &mdash; &ldquo;AWS
+  is moving operational lifecycles into the platform&rdquo; is visible across
+  four weeks of ECS, EKS, DRS and Batch announcements and invisible in any one
+  of them.
+</p>
+<p>
+  The second is discipline. Keeping the prose in a file a human writes makes the
+  rule enforceable: <strong>no figure appears in the analysis unless it was read
+  from AWS's own page.</strong> For August that meant checking the two lifecycle
+  claims still open before they went in &mdash; the IoT Device Defender Detect
+  closure and the two Elastic Beanstalk platform-branch retirements &mdash; and
+  it is why the report cites AWS's own one-line summary per announcement rather
+  than a paraphrase. Paraphrase is where the draft's unsupported
+  &ldquo;4,096 dimensions&rdquo; claim came from.
+</p>
+<p>
+  If the sidecar is absent the report still builds, with the prose sections
+  marked unwritten, so the data can be reviewed before the analysis is done.
+</p>
+
+<h2>6. What the first run produced</h2>
+<pre>$ python scripts/build_monthly_report.py 2026-08
+
+Month 2026-08: 245 announcements across 22 day(s) with news
+  Weekly roundup, 3-7 August     2026-08-03..2026-08-07   66
+  Weekly roundup, 10-14 August   2026-08-10..2026-08-14   41
+  Weekly roundup, 17-21 August   2026-08-17..2026-08-21   63
+  Weekly roundup, 24-28 August   2026-08-24..2026-08-28   54
+  live feed tail                 2026-08-29..2026-08-31   21
+  backlog: 190 item(s) ranked, 64 High/Med-High, 21 became posts
+wrote reports/out/aws-monthly-2026-08.html</pre>
+<p>
+  The document contains, in order: a completeness box and source table; the four
+  written sections; how the month was ranked at the time, from the backlog; and
+  the complete inventory of all 245 announcements by day, each with AWS's own
+  summary. Five announcements whose AWS links return 404 are rendered as
+  unlinked text with a note, rather than dropped &mdash; dropping them would
+  break the completeness promise the whole thing rests on.
+</p>
+
+<h2>7. What is deliberately not built</h2>
+<ul>
+  <li>
+    <strong>A published blog post.</strong> The builder produces the internal
+    document only; it never touches <code>posts/</code>. A published monthly
+    would be a different rendering &mdash; trends and lifecycle calendar, no
+    inventory, linking out to the four weeklies &mdash; so that it never
+    republishes an announcement the weekly series already covered.
+  </li>
+  <li>
+    <strong>Mobile styling.</strong> The output has a print stylesheet and no
+    responsive one, so it reads badly on a phone. It needs a viewport meta tag
+    and a <code>max-width: 640px</code> block.
+  </li>
+  <li>
+    <strong>A <code>--no-inventory</code> flag.</strong> The inventory is most
+    of the 113KB and roughly 25 pages of the print. A short version would be
+    about four pages, which is the readable-on-a-phone form.
+  </li>
+  <li>
+    <strong>Any alerting.</strong> Nothing fires on the 1st. The natural home is
+    <code>scripts/morning.py</code>, which already computes what is due from
+    cadence rules and writes <code>MORNING.md</code> into every worktree.
+  </li>
+</ul>
+
+<h2>8. Running it next month</h2>
+<pre># 1. Build the data. Fails loudly if the month cannot be covered.
+python scripts/build_monthly_report.py 2026-09
+
+# 2. Write the four prose blocks, checking every figure at source.
+#    reports/aws-monthly-2026-09-analysis.html
+
+# 3. Rebuild with the analysis in place.
+python scripts/build_monthly_report.py 2026-09
+
+# 4. Open reports/out/aws-monthly-2026-09.html and print to PDF.</pre>
+<div class="box ok">
+  <strong>The one thing to preserve.</strong> If this is ever changed, keep the
+  coverage assertion. Everything else here is convenience; that check is the
+  only reason the document's central claim can be believed.
+</div>
+
+<footer>
+  Internal design note. Source: <code>scripts/build_monthly_report.py</code>,
+  <code>reports/aws-monthly-2026-08-analysis.html</code>, both in
+  katta698/katta698.github.io.
+</footer>
+
+</body>
+</html>
