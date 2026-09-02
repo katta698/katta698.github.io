@@ -92,6 +92,29 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 1 September 2026 — covered by post #23
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| CVE-2026-83551 — HMAC signing key stored in cleartext in pipeline definitions, readable via `DescribePipeline`; a describe permission becomes code execution in another user's pipeline context. Fixed 3.11.0 / 2.256.0, and the fix needs a `pipeline.upsert()` per pipeline | SageMaker Python SDK | **#23** | High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-093-aws/) |
+| Warm-up periods for alarms — delay evaluation for 1 to 2,880 minutes after creation, ending early once the evaluation window fills | CloudWatch | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-cloudwatch-alarms-warmup-period) |
+| Protecting more than 1,000 S3 buckets per account | AWS Backup | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-backup-more-than-1000-s3-buckets/) |
+| Dry run to validate API requests without executing them | Kinesis Data Streams | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-kinesis-data-streams-api/) |
+| Database Insights extends to self-managed PostgreSQL on EC2 | CloudWatch | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/database-insights-self-managed-postgresql/) |
+| Claude Fable 5.1 available on AWS | Bedrock | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/claude-fable-5-1-aws/) |
+| MCP went stateless: is your MCP server deployment well-architected (Architecture Blog) | MCP / Well-Architected | open | Medium | [link](https://aws.amazon.com/blogs/architecture/mcp-went-stateless-is-your-aws-mcp-server-deployment-well-architected/) |
+| Apache Airflow 3.3.1 | MWAA | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-mwaa-apache-airflow-3-3-1/) |
+| Custom apps from natural language; Deadline Cloud job bundle sharing; Connect dashboard compact mode; RDS Custom SQL Server CU and GDR | Quick, Deadline Cloud, Connect, RDS Custom | skipped | Low | — |
+
+**Worth revisiting:** CloudWatch alarm warm-up periods is the strongest unwritten
+item and is a genuinely good architecture topic — every team has worked around
+alarms firing during startup by lengthening evaluation periods, which suppresses
+false positives by trading away detection latency. A native warm-up separates
+the two concerns, and the 1-to-2,880-minute range plus the early-exit default
+are worth a proper post. It does not age.
+
+---
+
 ## 31 August 2026 — covered by post #22
 
 A heavy Monday: 19 announcements, the most in a single day since 19 August.

@@ -1,0 +1,270 @@
+---
+title: 'AWS Daily Intelligence #23 - A Signing Key in Cleartext, and Why Upgrading the SDK Is Only Half the Fix'
+date: '2026-09-02T10:00:00'
+slug: aws-daily-intelligence-sagemaker-pipeline-hmac
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-09-02'
+verified_claims:
+  - claim: "CVE-2026-83551 affects the Amazon SageMaker Python SDK, specifically its @step and @remote decorator pipeline component"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-093-aws/
+  - claim: "An HMAC secret key is stored in cleartext within pipeline definitions and accessible via the DescribePipeline API"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-093-aws/
+  - claim: "The issue affects SageMaker Python SDK v3 before 3.11.0 and SageMaker Python SDK v2 before 2.256.0"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-093-aws/
+  - claim: "AWS recommends upgrading to version 3.11.0 for v3 or 2.256.0 for v2"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-093-aws/
+  - claim: "The fix replaces symmetric HMAC signing with asymmetric ECDSA signing"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-093-aws/
+  - claim: "Users should call pipeline.upsert() to replace stored symmetric keys with asymmetric public keys in existing pipeline definitions"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-093-aws/
+  - claim: "As an interim workaround AWS suggests restricting sagemaker:DescribePipeline IAM permissions to trusted users and using dedicated per-user S3 paths for isolation"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-093-aws/
+  - claim: "The SageMaker Python SDK will automatically translate your existing workspace environment and any associated data processing code and datasets into a SageMaker training job that runs on the SageMaker training platform"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/train-remote-decorator.html
+  - claim: "You can run your local machine learning Python code as a SageMaker training job by annotating your code with an @remote decorator"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/train-remote-decorator.html
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      AWS published <strong>CVE-2026-83551</strong> yesterday, in the Amazon SageMaker Python SDK. An HMAC secret key is stored in cleartext within pipeline definitions and accessible via the <code>DescribePipeline</code> API — which turns a read permission into a code execution permission for anyone else in the account.
+    </p>
+    <p>
+      Affected versions are <strong>v3 before 3.11.0</strong> and <strong>v2 before 2.256.0</strong>. The fix is not a patched check: it replaces symmetric HMAC signing with asymmetric ECDSA signing, so the key that remains in the definition afterwards is a public key and reading it grants nothing.
+    </p>
+    <p>
+      The part worth stopping on is the remediation. Upgrading the SDK protects pipelines you create from now on. It does not touch the definitions you already have, and those still contain the cleartext symmetric key. AWS's own guidance includes a second step that is easy to read past: <strong>call <code>pipeline.upsert()</code> to replace stored symmetric keys with asymmetric public keys in existing pipeline definitions.</strong> A team that runs <code>pip install --upgrade sagemaker</code>, sees the version bump and closes the ticket has done half the work.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Item</th><th>Detail</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Bulletin</strong></td><td>CVE-2026-83551</td></tr>
+          <tr><td><strong>Component</strong></td><td>SageMaker Python SDK, the <code>@step</code> and <code>@remote</code> decorator pipeline component</td></tr>
+          <tr><td><strong>Affected</strong></td><td>v3 before <strong>3.11.0</strong>; v2 before <strong>2.256.0</strong></td></tr>
+          <tr><td><strong>Fixed in</strong></td><td><strong>3.11.0</strong> and <strong>2.256.0</strong></td></tr>
+          <tr><td><strong>Nature of the fix</strong></td><td>Symmetric HMAC signing replaced with asymmetric ECDSA signing</td></tr>
+          <tr><td><strong>Second step</strong></td><td><code>pipeline.upsert()</code> on every existing pipeline</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The interim control, for anyone who cannot upgrade immediately, is to restrict <code>sagemaker:DescribePipeline</code> IAM permissions to trusted users and use dedicated per-user S3 paths for isolation.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      To see why this is more interesting than an ordinary key-handling bug, it helps to know what the decorators actually do.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-023-sagemaker-pipeline-hmac.svg" alt="Diagram: the @remote and @step decorators serialise a function to S3; the pipeline definition holds the HMAC signing key in cleartext; DescribePipeline returns that definition and therefore the key; an attacker forges a signed payload that runs in another user's pipeline context. Below, the ECDSA fix and the re-upsert step that upgrading alone does not perform." />
+      <figcaption>A symmetric key stored beside the payload it authenticates is not a signature. It is a formality.</figcaption>
+    </figure>
+
+    <h3>What is being signed, and why</h3>
+    <p>
+      The <code>@remote</code> decorator lets you run local Python as a SageMaker training job: <em>the SageMaker Python SDK will automatically translate your existing workspace environment and any associated data processing code and datasets into a SageMaker training job that runs on the SageMaker training platform</em>. That translation means serialising your function, its arguments and its dependencies, putting them in S3, and having the training job deserialise and execute them.
+    </p>
+    <p>
+      Deserialising a Python payload and running it is, by construction, arbitrary code execution. So the design signs the payload: the job verifies the signature before executing, and a payload that does not verify is rejected. That is a sound pattern and the right instinct.
+    </p>
+
+    <h3>Where it goes wrong</h3>
+    <p>
+      The signature was an HMAC, which is symmetric — the same key both signs and verifies. The training job needs the key in order to verify, so the key travelled with the pipeline definition. And the pipeline definition is readable through <code>DescribePipeline</code>.
+    </p>
+    <p>
+      That collapses the whole control. Anyone in the account who can call <code>DescribePipeline</code> can read the key, and with the key they can produce a payload that verifies. The bulletin describes the outcome directly: an attacker with account-level access to <code>DescribePipeline</code> could extract the key, forge malicious code payloads, and achieve unauthorized code execution within another user's pipeline context in the same AWS account.
+    </p>
+    <p>
+      Note who that attacker is. Not someone outside the account, and not an administrator. It is any principal holding what reads on paper as a describe-only permission — the sort of grant that goes into a read-only role for a data science team without a second look.
+    </p>
+
+    <h3>Why ECDSA rather than a patch</h3>
+    <p>
+      The fix replaces symmetric HMAC signing with asymmetric ECDSA signing, and that is the only repair available. With an asymmetric scheme the verifier needs the public key and nothing else, so the value that has to travel in the readable definition stops being a secret. The bug was not that the key was stored badly; it was that a symmetric scheme required a secret to be present wherever verification happened, and verification happened somewhere everyone could read.
+    </p>
+    <p>
+      That distinction is why the remediation has two steps. A patched check could be delivered entirely by a version bump. A change of cryptographic scheme has to rewrite the artefacts that carry the old scheme's key, and those artefacts are your existing pipeline definitions.
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      There is nothing to capture here, only exposure to close. The useful framing is what this tells you about a permission model you probably already have.
+    </p>
+    <p>
+      Most organisations grant read-only ML permissions liberally, on the reasonable theory that reading is safe. This is a concrete case where a describe permission on metadata conferred the ability to execute code as somebody else. If your account has a read-only data science role, the question worth asking today is not only whether the SDK is patched — it is which other describe permissions in that role return values rather than just descriptions.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      Three things are worth separating.
+    </p>
+    <ul>
+      <li>
+        <strong>The blast radius is one account, and that is not reassuring.</strong> A multi-tenant ML platform where several teams share an account is exactly the shape this exploits: forging into <em>another user's</em> pipeline context is the whole point of the finding. Teams with per-team accounts are far less exposed, which is a decent argument for that account structure quite apart from this bulletin.
+      </li>
+      <li>
+        <strong>The audit trail will look normal.</strong> A forged payload verifies, so the job runs as a legitimate pipeline execution. There is a <code>DescribePipeline</code> call in CloudTrail beforehand — indistinguishable from the thousands of describe calls a console session makes.
+      </li>
+      <li>
+        <strong>Assume the key is compromised, not just exposed.</strong> Any principal who could read the definition could have taken a copy at any time, and the key is unchanged until you re-upsert. Rotation here is the <code>upsert</code>, which is another reason to treat that step as the fix rather than as tidying up.
+      </li>
+    </ul>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      No cost to the upgrade itself. The re-upsert re-registers each pipeline definition, which is a control-plane call and not a training run, so it does not consume instance time.
+    </p>
+    <p>
+      The only cost worth planning for is the interim control, if you take it. Moving to dedicated per-user S3 paths means changing where the SDK writes its serialised payloads, and if you have lifecycle rules, bucket policies or cost allocation tags keyed to the old prefix layout, those follow. That is small, but it is the kind of small change that is easier to schedule than to discover mid-incident.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      The operational risk in this bulletin is not the vulnerability, it is the shape of the remediation. Version checks are automatable and universally deployed: dependency scanners, SBOM tooling and <code>pip list</code> all report the SDK version, and all of them will report success after the upgrade.
+    </p>
+    <p>
+      Nothing in that toolchain inspects a pipeline definition. So the closing condition for this ticket cannot be "the SDK is on 3.11.0" — it has to be "every pipeline definition in every account has been re-upserted since the upgrade", which nothing measures for you unless you build it.
+    </p>
+    <p>
+      Two practical notes. Pipelines created by people who have left, or by a notebook nobody runs any more, are still in the account and still carry the key — enumerate from <code>ListPipelines</code> rather than from what the team remembers building. And re-upserting on an old SDK version writes the symmetric key back, so the order matters: upgrade everywhere first, then upsert.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Approach</th><th>Closes the exposure?</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Upgrade the SDK only</td>
+            <td><strong>Partly</strong></td>
+            <td>New pipelines are safe. Every existing definition still carries a cleartext symmetric key.</td>
+          </tr>
+          <tr>
+            <td>Upgrade, then re-upsert every pipeline</td>
+            <td><strong>Yes</strong></td>
+            <td>The complete fix. Needs an enumeration step, because "every pipeline" is more than the ones you remember.</td>
+          </tr>
+          <tr>
+            <td>Restrict <code>sagemaker:DescribePipeline</code></td>
+            <td>Interim only</td>
+            <td>AWS's suggested workaround. Reduces who can read the key; the key is still there.</td>
+          </tr>
+          <tr>
+            <td>Per-user S3 paths</td>
+            <td>Interim only</td>
+            <td>Limits the isolation failure rather than the key exposure. Useful alongside, not instead.</td>
+          </tr>
+          <tr>
+            <td>Separate accounts per team</td>
+            <td>Structural</td>
+            <td>Not a response to this bulletin, but it bounds every same-account finding of this class.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      In order, because the order matters.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">1 &mdash; upgrade everywhere the SDK runs</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code># v3
+pip install --upgrade "sagemaker&gt;=3.11.0"
+# v2 line
+pip install --upgrade "sagemaker&gt;=2.256.0,&lt;3"
+
+# Do not forget the places that are not a laptop:
+#   Studio images, notebook lifecycle configs, training containers,
+#   CI runners, and any requirements.txt pinned to an older version.</code></pre>
+    </div>
+    <p>
+      Then enumerate rather than remember. Every pipeline in the account carries the old key until it is rewritten, including ones nobody has run in a year.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">2 &mdash; find every pipeline, then re-upsert each one</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>aws sagemaker list-pipelines \
+  --query 'PipelineSummaries[].[PipelineName,LastModifiedTime]' \
+  --output table
+
+# For each pipeline, from code running the UPGRADED SDK:
+#   pipeline.upsert(role_arn=...)
+# Re-upserting on an old SDK writes the symmetric key straight back.</code></pre>
+    </div>
+    <p>
+      Finally, verify by looking at what the definition now contains rather than at the SDK version — <code>aws sagemaker describe-pipeline --pipeline-name &lt;name&gt;</code> returns the definition, and it is the one place the answer is unambiguous. If you are checking whether you were exposed rather than whether you are fixed, that same call is what an attacker would have made.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <ul>
+      <li><strong>Never store a symmetric key in a structure your verifier reads from a shared location.</strong> If verification has to happen somewhere readable, the scheme has to be asymmetric. That is the general form of this bug and it recurs across systems that sign serialized payloads.</li>
+      <li><strong>Treat describe permissions on metadata as data access.</strong> A describe call that returns configuration returns whatever was put in the configuration, including things nobody intended to publish.</li>
+      <li><strong>Close remediation tickets on the artefact, not the version.</strong> Where a fix changes a stored format, the version check is necessary and not sufficient, and it is the check every tool performs automatically.</li>
+      <li><strong>Enumerate resources from the API when remediating.</strong> The set of pipelines, roles or buckets a team can name is reliably smaller than the set that exists.</li>
+      <li><strong>Subscribe to AWS security bulletins.</strong> This one appeared there and in no release note a data scientist would read.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt this</h2>
+    <p>
+      Anyone using the SageMaker Python SDK's <code>@step</code> or <code>@remote</code> decorators should upgrade and re-upsert this week. If you use SageMaker only through the console, or build pipelines without those decorators, this specific component is not in your path — but check, because the decorators are the convenient way to do it and convenience spreads through a team without an announcement.
+    </p>
+    <p>
+      Treat it as urgent if you run a <strong>multi-tenant ML account</strong> where several teams or several people share one AWS account. That is the configuration the finding describes, and the one where a forged payload runs as somebody else.
+    </p>
+    <p>
+      Everyone else gets a free lesson: go and look at what your read-only ML role can describe.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li><strong>Upgrade to 3.11.0 (v3) or 2.256.0 (v2)</strong>, then <strong>call <code>pipeline.upsert()</code> on every existing pipeline</strong>. The upgrade alone leaves the cleartext key in definitions you already created.</li>
+      <li><strong>The attacker is a principal with a describe permission</strong>, inside your own account. <code>sagemaker:DescribePipeline</code> returned a symmetric signing key, so reading became executing.</li>
+      <li><strong>The fix is a scheme change, not a patch</strong> — symmetric HMAC to asymmetric ECDSA — which is precisely why stored artefacts have to be rewritten.</li>
+      <li><strong>Enumerate with <code>ListPipelines</code></strong>. Pipelines nobody remembers are still holding the key.</li>
+      <li><strong>Interim controls exist</strong>: restrict <code>sagemaker:DescribePipeline</code> to trusted users, and give each user a dedicated S3 path. Neither removes the key.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/security/security-bulletins/rss/2026-093-aws/" target="_blank" rel="noopener">AWS Security Bulletin — CVE-2026-83551, cleartext storage of HMAC signing key in the Amazon SageMaker Python SDK</a></li>
+      <li><a href="https://docs.aws.amazon.com/sagemaker/latest/dg/train-remote-decorator.html" target="_blank" rel="noopener">AWS Documentation — Run your local code as a SageMaker training job</a></li>
+      <li><a href="https://docs.aws.amazon.com/sagemaker/latest/dg/pipelines-sdk.html" target="_blank" rel="noopener">AWS Documentation — SageMaker Pipelines and the Python SDK</a></li>
+      <li><a href="https://aws.amazon.com/security/security-bulletins/" target="_blank" rel="noopener">AWS Security Bulletins</a></li>
+    </ul>
+  </div>
+</div>
