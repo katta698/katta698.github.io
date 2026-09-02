@@ -1,0 +1,349 @@
+---
+title: "AWS Architecture Series #40 — The controls you cannot add later"
+date: '2026-09-02T09:00:00'
+slug: aws-architecture-account-baseline
+labels: [AWS, "AWS Architecture Series"]
+problem: "A platform team has an account baseline written down and mostly applied. An account created eight months ago during a rush turns out to have been missed. Working through the list, most items apply cleanly and a few need remediation — and three of them cannot be applied at all, because what they were supposed to produce was a record of the eight months that have already happened."
+builds: "A working model of account baseline controls split by whether they are reversible or path-dependent, why only the second kind justifies a baseline rather than a checklist, and the ninety-day window that makes an unaudited account look healthy until the moment someone asks a question about it."
+catch: "CloudTrail is on by default and free, so an account with no trail still shows activity in the console. Event history is a rolling ninety days, single account, single Region, with no organisation aggregation — so the absence of a trail is invisible until the day the question is about month four, and by then the answer no longer exists."
+verified: '2026-09-02'
+verified_claims:
+  - claim: "CloudTrail is enabled by default for your AWS account and you automatically have access to the CloudTrail event history"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html
+  - claim: "The event history provides a viewable, searchable, downloadable, and immutable record of the past 90 days of management events in an AWS Region"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html
+  - claim: "There are no CloudTrail charges for viewing the event history"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html
+  - claim: "The event history is limited to the past 90 days of events. For an ongoing record of events in your AWS account, create an event data store or a trail"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html
+  - claim: "The event history doesn't provide organization level event aggregation. To record events across your organization, create an organization event data store or trail"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html
+  - claim: "An event history search is limited to a single AWS account, only returns events from a single AWS Region, and cannot query multiple attributes"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html
+  - claim: "The Event history page on the CloudTrail console only shows management events. It does not show data events, Insights events, or network activity events"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html
+  - claim: "The configuration recorder stores the configuration changes to the resource types in scope as configuration items"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/config-concepts.html
+  - claim: "AWS Config creates a configuration item whenever it detects a change to a resource type that it is recording"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/config-concepts.html
+  - claim: "A configuration history is a collection of the configuration items for a given resource over any time period"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/config-concepts.html
+  - claim: "By default, a customer managed configuration recorder records all supported resources in the AWS Region where AWS Config is running"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/config-concepts.html
+  - claim: "When you enable GuardDuty in an AWS account, GuardDuty automatically starts ingesting the foundational data sources associated with that account, including AWS CloudTrail management events, VPC flow logs, and DNS logs, and you don't need to enable anything else"
+    source: https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html
+  - claim: "When you enable GuardDuty for the first time, GuardDuty automatically enables all protection plans except Runtime Monitoring for your account, and includes them in the 30-day free trial"
+    source: https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html
+  - claim: "You can't directly encrypt existing unencrypted volumes or snapshots"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/ebs-encryption.html
+  - claim: "To encrypt an unencrypted volume, create a snapshot of that volume, and then use the snapshot to create a new encrypted volume"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/ebs-encryption.html
+  - claim: "You cannot change the KMS key that is associated with an existing snapshot or volume"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/ebs-encryption.html
+  - claim: "If you apply a block public access setting to an account, it applies to all buckets and access points that are owned by that account"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+  - claim: "When you apply block public access settings to an account, the settings apply to all AWS Regions globally"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+  - claim: "Block public access settings don't alter existing policies or ACLs. Therefore, removing a block public access setting causes a bucket or object with a public policy or ACL to again be publicly accessible"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+  - claim: "If BlockPublicPolicy is enabled for the entire account, rather than for a specific bucket, Amazon S3 blocks public policies even if a user alters the bucket policy to disable this setting"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #040 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">The controls you cannot add later</h1>
+  <p class="post-subtitle">Most of an account baseline can be applied at any point with the same result. A few items produce a record instead of a setting, and a record you did not make cannot be made afterwards — which is the only argument for a baseline that a checklist cannot answer.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Security &amp; Identity &middot; Governance</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A platform team has an account baseline. It is written down, it is applied by a pipeline, and it is good. During a rush eight months ago an account was created by hand for a proof of concept, the proof of concept became a product, and the account never went through the pipeline. Somebody notices during an audit.
+    </p>
+    <p>
+      Most of the list applies cleanly. Block Public Access goes on at the account level in one call. Encryption by default is a switch. Region restriction is an SCP the account inherits the moment it is moved into the right OU. A handful of items need remediation work — the unencrypted volumes created over eight months have to be snapshotted and rebuilt — and that is annoying, schedulable, and finite.
+    </p>
+    <p>
+      Then the team reaches three items and stops. The organisation trail, the Config recorder and GuardDuty can all be switched on this afternoon, and every one of them will start working immediately. None of them will tell you anything about the eight months that already happened. The auditor's question is not "is this account monitored now". It is "show me who changed the security group on this database, and when".
+    </p>
+    <p>
+      That answer does not exist. It was never written down, and there is no procedure, budget or escalation that creates it now.
+    </p>
+
+    <div class="callout amber">
+      <strong>The distinction that matters is not importance</strong>
+      <p>Every item on a good baseline is important. What separates them is whether the control is a <em>setting</em> — a state the account is in, which can be entered at any time — or a <em>record</em>, whose value is the history it accumulated. Settings applied late are late. Records started late have a hole in them, permanently, and the hole is exactly the period nobody was watching.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Sort the baseline into two columns before designing anything. The sort is mechanical: ask what the control produces, and whether producing it late gives you the same artefact.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-040-account-baseline.svg" alt="Diagram: reversible baseline controls on the left — account-level S3 Block Public Access, EBS encryption by default, Region restriction, root user hardening — against path-dependent controls on the right — organisation CloudTrail trail, Config recorder, GuardDuty, Access Analyzer; below, a timeline showing CloudTrail Event history covering only the past 90 days" />
+      <figcaption>Both columns are expensive to add late. Only one of them is possible to add late.</figcaption>
+    </figure>
+
+    <h3>The reversible column, and what lateness actually costs there</h3>
+    <p>
+      These are settings. Switching them on in month eight produces the same state as switching them on in week one, and the bill for the delay comes in two parts: the exposure during the gap, and remediating whatever was created while the setting was off.
+    </p>
+    <p>
+      The second part is not always small. <strong>You can't directly encrypt existing unencrypted volumes or snapshots.</strong> The documented route is to create a snapshot of the volume and then use the snapshot to create a new encrypted volume — per volume, with the downtime that implies, and you cannot change the KMS key that is associated with an existing snapshot or volume either. Eight months of unencrypted volumes is a project. It is, however, a project with an end date.
+    </p>
+    <p>
+      S3 Block Public Access is the cheapest of them and has a property worth knowing. Applied at the account level it applies to all buckets and access points that are owned by that account, and the settings apply to all AWS Regions globally — one call, no Region loop. And because a bucket policy can be edited by anyone with the permission, AWS makes a specific recommendation about where to apply it: if <code class="inline">BlockPublicPolicy</code> is enabled for the entire account rather than for a specific bucket, Amazon S3 blocks public policies <em>even if a user alters the bucket policy to disable this setting</em>.
+    </p>
+
+    <div class="callout">
+      <strong>Block Public Access suppresses; it does not clean up</strong>
+      <p><strong>Block public access settings don't alter existing policies or ACLs. Therefore, removing a block public access setting causes a bucket or object with a public policy or ACL to again be publicly accessible.</strong> Turning it on does not fix the public bucket policy someone wrote — it masks it. The account is safe while the setting is on and reverts the instant it is off, which makes the setting itself a thing to protect with an SCP rather than a remediation you can tick off.</p>
+    </div>
+
+    <h3>The path-dependent column, and why it is not about cost</h3>
+    <p>
+      Nothing in this column is hard or expensive to enable. That is what makes it easy to defer, and deferring it is the only mistake in this post that cannot be corrected.
+    </p>
+    <p>
+      <strong>AWS Config</strong> is the clearest case. <em>The configuration recorder stores the configuration changes to the resource types in scope as configuration items</em>, and <em>AWS Config creates a configuration item whenever it detects a change to a resource type that it is recording</em>. A configuration history is then <em>a collection of the configuration items for a given resource over any time period</em> — which is to say, it is made of the items that were recorded. Turn the recorder on in month eight and the configuration history for months one to seven is not thin or degraded. It is empty, and it always will be.
+    </p>
+    <p>
+      <strong>GuardDuty</strong> is the same shape with a friendlier surface. When you enable it, it automatically starts ingesting the foundational data sources associated with that account — CloudTrail management events, VPC flow logs and DNS logs — and you don't need to enable anything else. Nothing to configure, nothing to wire up, and on first enablement it turns on every protection plan except Runtime Monitoring inside a 30-day free trial. There is no argument against having had it on. There is also no finding it can produce about last March.
+    </p>
+
+    <h3>CloudTrail: ninety days of grace, and why that is worse than nothing</h3>
+    <p>
+      CloudTrail deserves its own treatment because it is the one that hides the problem. <em>CloudTrail is enabled by default for your AWS account and you automatically have access to the CloudTrail event history</em>, which is <em>a viewable, searchable, downloadable, and immutable record of the past 90 days of management events in an AWS Region</em>, and <em>there are no CloudTrail charges for viewing the event history</em>.
+    </p>
+    <p>
+      So an account with no trail at all is not obviously broken. Open the console and there is activity, searchable, going back months. Everything looks fine. The documentation is direct about what you actually have: <strong>the event history is limited to the past 90 days of events. For an ongoing record of events in your AWS account, create an event data store or a trail.</strong>
+    </p>
+    <p>
+      Three further limits compound it, and each one bites precisely when you are under pressure:
+    </p>
+    <ul>
+      <li><em>The event history doesn't provide organization level event aggregation.</em> There is no way to ask a question across the estate.</li>
+      <li><em>An event history search is limited to a single AWS account, only returns events from a single AWS Region, and cannot query multiple attributes.</em> One filter, one Region, one account — and an incident is rarely confined to any of those.</li>
+      <li><em>The Event history page only shows management events. It does not show data events, Insights events, or network activity events.</em> So "who read that object" was never in scope at all.</li>
+    </ul>
+    <p>
+      A rolling ninety-day window that looks like an audit log is the most dangerous shape available. An account with nothing would be noticed. An account with ninety days is noticed on the day someone asks about month four.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Model Holds Up</h2>
+
+    <h3>It gives the baseline an argument a checklist cannot make</h3>
+    <p>
+      "Apply the baseline before the account is used" is a policy everyone agrees with and nobody can defend under schedule pressure, because every individual item sounds deferrable. The two-column split changes the conversation: three of these items are not deferrable in the ordinary sense, because deferring them is a decision to never have the data. That is a different sentence from "we will get to it", and it survives contact with a deadline.
+    </p>
+
+    <h3>It tells you what to automate first</h3>
+    <p>
+      Automation effort is finite and baselines are long. Sorting by column rather than by perceived importance produces an unambiguous order: everything path-dependent goes into account creation itself, because a gap there is permanent, and the reversible items can be enforced by detection and remediation afterwards without loss. That is why these controls belong to account creation and not to a post-creation pipeline that runs "soon".
+    </p>
+
+    <h3>It explains why organisation-level enablement is the right shape</h3>
+    <p>
+      Every control in the path-dependent column has an organisation-level form — an organisation trail, a delegated Config aggregator, GuardDuty enabled for the organisation with auto-enable for new accounts. The reason to prefer those is not convenience. It is that an account cannot be created outside the scope of a control that is applied to the organisation, which removes the failure this whole post is about: the account that skipped the pipeline still gets recorded from its first minute.
+    </p>
+
+    <h3>The reversible column stays honest about its own cost</h3>
+    <p>
+      Calling something reversible is not calling it free. The EBS remediation is real work with real downtime, and the S3 masking behaviour means a late Block Public Access does not leave you in the same place as an early one — it leaves you with public policies still written, suppressed by a setting. The model does not claim lateness is cheap. It claims lateness is <em>payable</em>, which the other column is not.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Design Decisions</h2>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>Enable the recording controls at the organisation, not in the account template</strong>
+      </div>
+      <div class="challenge-body">
+        <p>An account template applies when the template is used. The failure mode in this post is an account created without it, which is a category of event no template can cover. An organisation trail, an organisation-scoped Config aggregator and GuardDuty with auto-enable for new accounts all apply to accounts that do not exist yet and to accounts created by people who did not read the runbook.</p>
+        <span class="fix-label">Concrete rule</span>
+        <p>If a control has an organisation-level form, use it, even where the per-account form would be easier to write. Then add an SCP denying the actions that would disable it locally &mdash; <code class="inline">cloudtrail:StopLogging</code>, <code class="inline">cloudtrail:DeleteTrail</code>, <code class="inline">config:StopConfigurationRecorder</code>, <code class="inline">guardduty:DeleteDetector</code>. Recording that a member account can switch off is recording with an opt-out.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>Treat the ninety-day window as a detection deadline, not a safety net</strong>
+      </div>
+      <div class="challenge-body">
+        <p>Because event history is free and on by default, an account missing its trail produces no error, no finding and no empty console. The only reliable signal is a check that asks the question directly: does every account in the organisation appear in the organisation trail's coverage, and does every Region have a recorder.</p>
+        <span class="fix-label">The number that matters</span>
+        <p>Ninety days is how long you have to notice. A quarterly reconciliation is therefore <em>exactly</em> the wrong cadence &mdash; it is the interval at which a missed account is discovered at roughly the moment its evidence expires. Run the check monthly, and treat a newly discovered account as an incident with a known data loss rather than a configuration task.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>Protect the Block Public Access setting rather than trusting the cleanup</strong>
+      </div>
+      <div class="challenge-body">
+        <p>Because <strong>block public access settings don't alter existing policies or ACLs</strong>, an account that has had BPA switched on is one API call away from being exactly as public as it was before. The public bucket policies are still there, unmodified, waiting.</p>
+        <span class="fix-label">Two things, not one</span>
+        <p>Deny <code class="inline">s3:PutAccountPublicAccessBlock</code> and <code class="inline">s3:PutBucketPublicAccessBlock</code> in an SCP so the mask cannot be lifted, <em>and</em> run IAM Access Analyzer over the account to find the policies underneath it so they can actually be removed. Doing only the first leaves a loaded control; doing only the second leaves nothing stopping the next one.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>Record everything by default, and narrow deliberately if cost forces it</strong>
+      </div>
+      <div class="challenge-body">
+        <p><strong>By default, a customer managed configuration recorder records all supported resources in the AWS Region where AWS Config is running.</strong> That default is the right starting point, because the resource type you excluded is the one the question will be about, and excluding it is a decision made before you know the question.</p>
+        <span class="fix-label">If you must narrow</span>
+        <p>Narrow by resource type with a written reason, never by Region. A Region with no recorder is not cheaper coverage, it is a blind spot &mdash; and blind spots are where things get put deliberately. If cost is genuinely the constraint, change the recording frequency before changing the scope; a daily configuration item is a weaker record than a change-triggered one, but it is still a record.</p>
+      </div>
+    </div>
+
+    <h3>Sorting a baseline: the two questions</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Control</th>
+            <th>Produces</th>
+            <th>Add late?</th>
+            <th>Cost of lateness</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Organisation CloudTrail trail</strong></td>
+            <td>A record</td>
+            <td><strong>No</strong></td>
+            <td>Everything older than 90 days is gone</td>
+          </tr>
+          <tr>
+            <td><strong>Config recorder</strong></td>
+            <td>A record</td>
+            <td><strong>No</strong></td>
+            <td>No configuration history at all for the gap</td>
+          </tr>
+          <tr>
+            <td><strong>GuardDuty</strong></td>
+            <td>A record</td>
+            <td><strong>No</strong></td>
+            <td>No findings for anything that happened first</td>
+          </tr>
+          <tr>
+            <td><strong>S3 Block Public Access</strong></td>
+            <td>A setting</td>
+            <td>Yes</td>
+            <td>Exposure window; underlying policies remain and are only masked</td>
+          </tr>
+          <tr>
+            <td><strong>EBS encryption by default</strong></td>
+            <td>A setting</td>
+            <td>Yes</td>
+            <td>Snapshot-and-rebuild per existing volume, with downtime</td>
+          </tr>
+          <tr>
+            <td><strong>Region restriction (SCP)</strong></td>
+            <td>A setting</td>
+            <td>Yes</td>
+            <td>Migrating whatever was built in a Region you now deny</td>
+          </tr>
+          <tr>
+            <td><strong>Root MFA, alternate contacts</strong></td>
+            <td>A setting</td>
+            <td>Yes</td>
+            <td>Small, but per-account and easy to lose track of at scale</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Reference: the SCP that keeps the recording on</h3>
+    <p>
+      The controls in the first three rows are worth nothing if a member account can switch them off, and the point of an organisation-level control is that the account cannot opt out. This is the deny that makes that true. It sits in the deny sweep, so no identity policy in any member account overrides it.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">SCP &mdash; the recording controls are not optional</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RecordingIsNotOptional",
+      "Effect": "Deny",
+      "Action": [
+        "cloudtrail:StopLogging",
+        "cloudtrail:DeleteTrail",
+        "cloudtrail:UpdateTrail",
+        "config:StopConfigurationRecorder",
+        "config:DeleteConfigurationRecorder",
+        "config:DeleteDeliveryChannel",
+        "guardduty:DeleteDetector",
+        "guardduty:DisassociateFromMasterAccount",
+        "s3:PutAccountPublicAccessBlock"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:role/OrgSecurityBreakGlass"
+        }
+      }
+    }
+  ]
+}</code></pre>
+    </div>
+    <p>
+      Note what this does not do: it grants nobody the ability to manage any of these services. It is a ceiling, so the security tooling account still needs identity policies allowing the actions it legitimately performs — and because SCPs do not apply to the management account, none of this constrains an administrator there, which is one more reason to keep that account empty.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Most security work is reversible in the sense that matters: you can arrive late, do the work, and end up where you would have been. That is why "we will harden it after launch" is so often a reasonable trade rather than negligence — for most controls, it genuinely is.
+    </p>
+    <p>
+      A small number of controls are not like that, and they are unusually easy to defer precisely because they are cheap, quiet and produce nothing visible on the day you turn them on. Their entire output is a record, and the record is generated in real time or not at all. There is no supplier, no budget line and no escalation that produces last March.
+    </p>
+    <p>
+      <strong>The test to apply to every item on a baseline: if I switch this on a year late, do I end up with the same thing I would have had?</strong> Where the answer is yes, you have a scheduling problem, and scheduling problems have solutions. Where the answer is no, it is not a baseline item at all — it is a property of how accounts are created, and it belongs there rather than on a list someone works through afterwards.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; the log archive account: why the destination for all this recording belongs somewhere nobody can write to, what object lock actually guarantees, and the difference between a backup of your logs and a log you cannot alter.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html" target="_blank" rel="noopener">AWS Documentation — Working with CloudTrail event history</a></li>
+      <li><a href="https://docs.aws.amazon.com/config/latest/developerguide/config-concepts.html" target="_blank" rel="noopener">AWS Documentation — AWS Config terminology and concepts</a></li>
+      <li><a href="https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html" target="_blank" rel="noopener">AWS Documentation — What is Amazon GuardDuty?</a></li>
+      <li><a href="https://docs.aws.amazon.com/ebs/latest/userguide/ebs-encryption.html" target="_blank" rel="noopener">AWS Documentation — Amazon EBS encryption</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html" target="_blank" rel="noopener">AWS Documentation — Blocking public access to your Amazon S3 storage</a></li>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html" target="_blank" rel="noopener">AWS Documentation — Service control policies (SCPs)</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
