@@ -92,6 +92,27 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 2 September 2026 — covered by post #24
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| SnapStart for container image functions — Java 11+, Python 3.12+, .NET 8+, images up to 10 GB; the packaging used by the functions with the heaviest init | Lambda | **#24** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/07/aws-lambda-snapstart-container/) |
+| 60 new resource types recorded — an account recording all supported types picks these up automatically, with the cost that implies | Config | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-config-new-resource-types/) |
+| Managing identity source transition for IAM Identity Center (Security Blog) — moving between identity sources without losing assignments | IAM Identity Center | open | Med-High | [link](https://aws.amazon.com/blogs/security/managing-identity-source-transition-for-aws-iam-identity-center/) |
+| CVE-2026-84851 — uncontrolled recursion in the Ion reader, Amazon Ion-C before 1.1.6 | Ion-C | open | Medium | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-094-aws/) |
+| Agentic CX designer reaches GA | Connect Customer | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/agentic-cx-designer/) |
+| Gateway Load Balancer TCP Reset to reduce traffic interruptions (Networking Blog) | Gateway Load Balancer | open | Medium | [link](https://aws.amazon.com/blogs/networking-and-content-delivery/reduce-traffic-interruptions-with-gateway-load-balancer-tcp-reset/) |
+| Second-generation Outposts racks reach the GovCloud (US) Regions | Outposts | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-outposts-govcloud-us-regions/) |
+| Tool settings and MCP sync for connectors; Unified Studio CI/CD notebook promotion; Web Search in GovCloud; UXC in all commercial Regions; Connect Malay evaluations; RDS SQL Server trace flags | Quick, SageMaker, Bedrock, Connect, RDS | skipped | Low | — |
+
+**Worth revisiting:** the Config resource-type expansion is the strongest
+unwritten item and connects directly to arch #40 and #41 — an account recording
+all supported types starts recording 60 more without anyone deciding to, which
+is the right default and a cost change nobody approved. Worth a post that puts a
+number on it.
+
+---
+
 ## 1 September 2026 — covered by post #23
 
 | Item | Service | Status | Importance | Reference |

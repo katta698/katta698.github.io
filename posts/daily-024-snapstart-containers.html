@@ -1,0 +1,285 @@
+---
+title: 'AWS Daily Intelligence #24 - SnapStart Reaches Container Images, and One Snapshot Becomes Every Environment'
+date: '2026-09-03T10:00:00'
+slug: aws-daily-intelligence-snapstart-container-images
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-09-03'
+verified_claims:
+  - claim: "With SnapStart, Lambda initializes your function when you publish a function version, takes a Firecracker MicroVM snapshot of the memory and disk state of the initialized execution environment, encrypts the snapshot, and intelligently caches it to optimize retrieval latency"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html
+  - claim: "SnapStart supports Java 11 and later, Python 3.12 and later, and .NET 8 and later across ZIP and container image deployment format"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html
+  - claim: "Other managed runtimes such as nodejs24.x and ruby4.0, and OS-only runtimes, are not supported"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html
+  - claim: "SnapStart does not support provisioned concurrency, Amazon Elastic File System, Amazon S3 Files, or ephemeral storage greater than 512 MB"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html
+  - claim: "You can use SnapStart only on published function versions and aliases that point to versions, and you can't use SnapStart on a function's unpublished version"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html
+  - claim: "If your initialization code generates unique content that is included in the snapshot, then the content might not be unique when it is reused across execution environments, including unique IDs, unique secrets, and entropy that's used to generate pseudorandomness"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html
+  - claim: "The state of connections that your function establishes during the initialization phase isn't guaranteed when Lambda resumes your function from a snapshot"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html
+  - claim: "For Java managed runtimes, there's no additional cost for SnapStart"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html
+  - claim: "For every function version that you publish with SnapStart enabled, you pay for the cost of caching and maintaining the snapshot, and you're charged for a minimum of 3 hours"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html
+  - claim: "Each time a function instance is restored from a snapshot, you pay a restoration charge"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html
+  - claim: "Charges apply each time that Lambda re-runs your initialization code to apply software updates"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html
+  - claim: "Lambda SnapStart is available in all commercial Regions except Asia Pacific (New Zealand) and Asia Pacific (Taipei)"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html
+  - claim: "Provisioned concurrency keeps functions initialized and ready to respond in double-digit milliseconds, and should be used if your application has strict cold start latency requirements that can't be adequately addressed by SnapStart"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html
+  - claim: "Container images can be packaged up to 10 GB in size"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/07/aws-lambda-snapstart-container/
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      AWS Lambda SnapStart now works for functions packaged as container images, not only as ZIP archives. Same runtimes as before — <strong>Java 11 and later, Python 3.12 and later, and .NET 8 and later</strong> — and container images can be packaged up to <strong>10 GB</strong>.
+    </p>
+    <p>
+      This is a larger change than it sounds, because of who uses container images. The 10 GB limit is why teams choose that packaging: a model to load, a heavy framework, a pile of native dependencies. Those are precisely the functions with the worst initialisation latency, and until now they were the ones SnapStart could not help.
+    </p>
+    <p>
+      The mechanism is unchanged and worth stating plainly, because every consideration below follows from it: Lambda initialises your function once when you publish a version, takes a Firecracker MicroVM snapshot of the memory and disk state, encrypts it, caches it — and then resumes <em>every</em> execution environment from that one snapshot. Initialisation does not run again. Anything it produced is not regenerated; it is copied.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>
+      SnapStart previously applied to ZIP-packaged functions. It now supports <em>Java 11 and later, Python 3.12 and later, and .NET 8 and later</em> across <strong>ZIP and container image deployment format</strong>, with container images up to 10 GB.
+    </p>
+    <p>
+      What has not changed is the exclusion list, and it is worth reading before planning a migration. <em>Other managed runtimes such as <code>nodejs24.x</code> and <code>ruby4.0</code>, and OS-only runtimes, are not supported.</em> Nor is this available for any function you have not versioned: <em>you can use SnapStart only on published function versions and aliases that point to versions</em>, never on <code>$LATEST</code>.
+    </p>
+    <p>
+      Availability is all commercial Regions except Asia Pacific (New Zealand) and Asia Pacific (Taipei).
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-024-snapstart-containers.svg" alt="Diagram: initialisation runs once at publish and Lambda takes an encrypted Firecracker MicroVM snapshot of memory and disk; every execution environment resumes from that one snapshot, duplicating unique IDs, secrets, entropy and network connection state; below, what SnapStart cannot be combined with and how the cost differs by runtime" />
+      <figcaption>The trick and the hazard are the same fact: initialisation happened once, somewhere else, at a different time.</figcaption>
+    </figure>
+
+    <h3>A snapshot is shared state</h3>
+    <p>
+      The documentation is unusually direct about the consequence, and it is the thing to internalise before enabling this on anything: <strong>if your initialization code generates unique content that is included in the snapshot, then the content might not be unique when it is reused across execution environments. This includes unique IDs, unique secrets, and entropy that's used to generate pseudorandomness.</strong>
+    </p>
+    <p>
+      Read the last clause carefully. It is not only that a UUID generated at init will be the same everywhere — that is obvious once stated. It is that the <em>entropy pool</em> is part of the snapshot, so a random number generator seeded during initialisation produces the same sequence in every environment resumed from it. Code that looks like it generates fresh randomness at request time may not be, if the seeding happened before the snapshot was taken.
+    </p>
+    <p>
+      Two related cases follow the same shape. <em>The state of connections that your function establishes during the initialization phase isn't guaranteed when Lambda resumes your function from a snapshot</em> — connection pools built at init are pools of handles to sockets that were opened minutes or days ago, from a different machine. And ephemeral data fetched at init, such as temporary credentials or a cached timestamp, is frozen at snapshot time and thawed repeatedly.
+    </p>
+
+    <h3>Why container images sharpen this</h3>
+    <p>
+      Nothing about the uniqueness problem is new; it has applied to SnapStart since launch. What is new is the population of functions now eligible.
+    </p>
+    <p>
+      Teams choose container packaging when initialisation is heavy. A ZIP-packaged Python function that imports a couple of libraries has a shallow init and not much opportunity to create something that needed to be unique. A 10 GB image that loads a model, warms a framework, builds a connection pool and fetches a signing key has a deep one. The functions gaining SnapStart today are, on average, the ones with the most initialisation to get wrong.
+    </p>
+
+    <h3>The exclusions are pointed at the same population</h3>
+    <p>
+      <strong>SnapStart does not support provisioned concurrency, Amazon Elastic File System, Amazon S3 Files, or ephemeral storage greater than 512 MB.</strong> That last one deserves attention alongside the headline: a 10 GB container image is permitted, but <code>/tmp</code> above 512 MB is not. A function that ships a large image <em>and</em> writes large intermediate files — which is a common shape for media and ML work — can have one or the other.
+    </p>
+    <p>
+      The EFS exclusion lands in the same place, since a shared filesystem is the other way heavy functions get at large data. Between them, these two limits define which container-packaged functions can actually take the offer.
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      Where it fits, the gain is the one AWS advertises: initialisation latency measured in seconds falls to as low as sub-second, without provisioning anything. For a latency-sensitive API whose p99 is dominated by cold starts on a heavy container function, that is a direct improvement to the number users experience, at no engineering cost beyond validation.
+    </p>
+    <p>
+      The comparison worth making internally is against provisioned concurrency, and the documentation draws it: <em>provisioned concurrency keeps functions initialized and ready to respond in double-digit milliseconds. Use provisioned concurrency if your application has strict cold start latency requirements that can't be adequately addressed by SnapStart.</em> They are also mutually exclusive, so this is a choice rather than a stack: predictable double-digit milliseconds with capacity you pay to keep warm, or sub-second with no reservation.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      The security-relevant half of the uniqueness warning is the phrase <strong>unique secrets</strong>, and it is easy to skim past.
+    </p>
+    <ul>
+      <li>
+        <strong>A secret fetched at init is fetched once, ever.</strong> The common pattern of pulling a credential from Secrets Manager outside the handler — good practice specifically to avoid doing it per invocation — means that value is baked into the snapshot and reused by every environment until the version is republished. Rotation no longer takes effect on the next cold start, because there are no more cold starts.
+      </li>
+      <li>
+        <strong>Anything derived from init-time entropy is shared.</strong> Session tokens, nonces, request IDs and idempotency keys generated from a generator seeded before the snapshot repeat across environments. In a signing or deduplication path that is a correctness failure with security consequences, not just a curiosity.
+      </li>
+      <li>
+        <strong>The snapshot itself is encrypted and Lambda patches it</strong>, which addresses the obvious worry about a memory image sitting in a cache. The residual risk is not the storage, it is what your own code put in memory before the picture was taken.
+      </li>
+    </ul>
+    <p>
+      The remedy in all three cases is the same and is structural: move generation of anything that must be unique, current or secret out of initialisation and into the handler, or into a runtime hook that runs after restore.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      The cost model is not uniform across runtimes, and this is the detail most likely to produce a surprise on a Python or .NET estate.
+    </p>
+    <p>
+      <strong>For Java managed runtimes, there's no additional cost for SnapStart.</strong> That is the case most people have read about, and it does not generalise. Otherwise there are two charges:
+    </p>
+    <ul>
+      <li><strong>Caching</strong> — <em>for every function version that you publish with SnapStart enabled, you pay for the cost of caching and maintaining the snapshot</em>, priced by configured memory, and <em>you're charged for a minimum of 3 hours</em>. You keep paying as long as the version remains active.</li>
+      <li><strong>Restoration</strong> — <em>each time a function instance is restored from a snapshot, you pay a restoration charge</em>, again by configured memory.</li>
+    </ul>
+    <p>
+      Two consequences worth planning for. A CI pipeline that publishes a version per commit creates a cached snapshot per commit, each billed for at least three hours, and they keep accruing until someone deletes the versions — AWS links a version-cleanup pattern from the pricing section, which is a fair indication of how often this bites. And because these functions are memory-heavy by nature, both charges scale with the memory setting that container-packaged functions tend to have set high.
+    </p>
+    <p>
+      One more line that is easy to miss: <strong>charges apply each time that Lambda re-runs your initialization code to apply software updates.</strong> Snapshot maintenance is not free of your own init cost.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      SnapStart requires published versions and aliases, which is a workflow change for teams deploying to <code>$LATEST</code>. That is a healthier deployment model anyway, but it is a change to pipelines, alias routing and rollback procedure rather than a checkbox.
+    </p>
+    <p>
+      The testing implication is the one to plan for. A bug caused by snapshot reuse does not appear on the first invocation — it appears on the second environment, which means it does not appear at all under light load. Duplicate identifiers, a stale credential or a repeating random sequence surface when concurrency scales up, in production, and look like intermittent data corruption rather than a startup problem.
+    </p>
+    <p>
+      So the validation is a load test that forces multiple environments, comparing values across them, not a functional test that confirms the function still returns 200. Failing to do that is how this ships quietly.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Option</th><th>Startup</th><th>Cost shape</th><th>Use when</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>SnapStart</strong></td>
+            <td>As low as sub-second</td>
+            <td>Free on Java managed runtimes; caching plus restore charges otherwise</td>
+            <td>Heavy init, invocations at scale, and init you can audit for uniqueness</td>
+          </tr>
+          <tr>
+            <td><strong>Provisioned concurrency</strong></td>
+            <td>Double-digit milliseconds</td>
+            <td>You pay to keep environments warm whether used or not</td>
+            <td>Strict cold-start requirements SnapStart cannot meet. Mutually exclusive with SnapStart</td>
+          </tr>
+          <tr>
+            <td><strong>Neither</strong></td>
+            <td>Seconds on a heavy container image</td>
+            <td>Nothing extra</td>
+            <td>Batch and asynchronous work where startup latency is not user-visible</td>
+          </tr>
+          <tr>
+            <td><strong>Slim the image instead</strong></td>
+            <td>Improves the underlying problem</td>
+            <td>Engineering time</td>
+            <td>Always worth doing first &mdash; SnapStart hides init cost rather than removing it, and you still pay duration for it</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      Audit before enabling. The question is not whether the function works, but what its initialisation produced.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">What to look for outside the handler</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code># Anything in module scope that is one of these is a finding:
+#   uuid4(), secrets.token_*(), random.seed(), os.urandom() at import
+#   get_secret_value() / assume_role() results cached at import
+#   datetime.now() captured at import
+#   database or HTTP connection pools built at import
+
+# Move to the handler, or to a restore hook that runs after resume.
+def handler(event, context):
+    request_id = uuid.uuid4()          # per invocation, not per snapshot
+    creds = get_cached_credentials()   # refreshed, not frozen
+    ...</code></pre>
+    </div>
+    <p>
+      Then enable it on a version, and test for the failure that only appears at concurrency.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">Publish, alias, and prove uniqueness across environments</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>aws lambda update-function-configuration \
+  --function-name my-heavy-fn \
+  --snap-start ApplyOn=PublishedVersions
+
+aws lambda publish-version --function-name my-heavy-fn
+
+# The test that matters: drive enough concurrency to force several
+# environments, then assert the values that must differ actually do.
+#   - collect a per-invocation identifier from each response
+#   - assert the count of distinct values equals the invocation count
+# A functional test on one environment will pass regardless.</code></pre>
+    </div>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <ul>
+      <li><strong>Treat module-scope code as "runs once for the lifetime of the version".</strong> That is now literally true, and it is a different mental model from "runs once per cold start".</li>
+      <li><strong>Fetch secrets in the handler, or refresh them in a restore hook.</strong> A credential cached at init outlives its rotation.</li>
+      <li><strong>Re-seed anything that generates randomness after restore.</strong> The entropy is in the snapshot.</li>
+      <li><strong>Delete old published versions.</strong> Each one holds a cached snapshot that bills for at least three hours and continues while the version is active.</li>
+      <li><strong>Slim the image anyway.</strong> Duration charges still apply to initialisation code, and to every re-run Lambda performs to apply patches.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt this</h2>
+    <p>
+      Teams running <strong>container-packaged Java, Python 3.12+ or .NET 8+ functions behind a latency-sensitive API</strong> should evaluate it this week. That is the population this launch was built for, and the improvement on a heavy init is the difference between seconds and sub-second.
+    </p>
+    <p>
+      Hold off if the function needs more than 512 MB of ephemeral storage, mounts EFS, or currently uses provisioned concurrency — those are exclusions, not frictions. And if the function is invoked infrequently, note AWS's own caveat that SnapStart works best at scale; a rarely used function pays caching charges for a benefit it seldom collects.
+    </p>
+    <p>
+      Node.js and Ruby estates are unaffected: those runtimes remain unsupported.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li><strong>SnapStart now covers container images up to 10 GB</strong>, for Java 11+, Python 3.12+ and .NET 8+ — the packaging choice used precisely by the functions with the heaviest initialisation.</li>
+      <li><strong>One snapshot becomes every environment</strong>, so unique IDs, secrets and the entropy behind pseudorandomness are duplicated rather than regenerated.</li>
+      <li><strong>The exclusions target the same functions</strong>: no provisioned concurrency, no EFS, no S3 Files, and no ephemeral storage above 512 MB despite the 10 GB image allowance.</li>
+      <li><strong>Cost is free only on Java managed runtimes.</strong> Elsewhere, every published version's snapshot is cached with a three-hour minimum, plus a charge per restore.</li>
+      <li><strong>The failure mode appears at concurrency, not on the first call</strong> — so the validation is a load test that compares values across environments.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html" target="_blank" rel="noopener">AWS Documentation — Improving startup performance with Lambda SnapStart</a></li>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/07/aws-lambda-snapstart-container/" target="_blank" rel="noopener">AWS What's New — Lambda SnapStart for container image functions</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/snapstart-uniqueness.html" target="_blank" rel="noopener">AWS Documentation — Handling uniqueness with Lambda SnapStart</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/snapstart-runtime-hooks.html" target="_blank" rel="noopener">AWS Documentation — Implement code before or after Lambda function snapshots</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/snapstart-best-practices.html" target="_blank" rel="noopener">AWS Documentation — Maximize Lambda SnapStart performance</a></li>
+    </ul>
+  </div>
+</div>
