@@ -1,0 +1,332 @@
+---
+title: "AWS Architecture Series #41 — The log you cannot alter"
+date: '2026-09-03T09:00:00'
+slug: aws-architecture-log-archive
+labels: [AWS, "AWS Architecture Series"]
+problem: "An organisation delivers every trail, every Config snapshot and every flow log to a central bucket, versioned and backed up nightly. Asked whether the audit trail could be tampered with, the team says it is immutable. It is not: it is durable, which is an answer to a different question, and the backup would faithfully preserve whatever an attacker left behind."
+builds: "A working model of the three separate guarantees a log archive needs — blast radius, prevention and detection — what each one actually delivers, and the specific gaps each leaves that the other two are there to close."
+catch: "Object Lock protects an object version, not an object name. A simple DELETE returns 200 OK and inserts a delete marker, so the locked data survives underneath while the archive lists as empty. And in governance mode the S3 console adds the bypass header for you, so for anyone holding the bypass permission the protection is a click, not a barrier."
+verified: '2026-09-03'
+verified_claims:
+  - claim: "S3 Object Lock can help prevent Amazon S3 objects from being deleted or overwritten for a fixed amount of time or indefinitely, using a write-once-read-many (WORM) model"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "Object Lock works only in buckets that have S3 Versioning enabled"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "In compliance mode, a protected object version can't be overwritten or deleted by any user, including the root user in your AWS account, its retention mode can't be changed, and its retention period can't be shortened"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "The only way to delete an object under the compliance mode before its retention date expires is to delete the associated AWS account"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "To override or remove governance-mode retention settings, you must have the s3:BypassGovernanceRetention permission and must explicitly include x-amz-bypass-governance-retention:true as a request header"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "By default, the Amazon S3 console includes the x-amz-bypass-governance-retention:true header, so if you try to delete objects protected by governance mode and have the s3:BypassGovernanceRetention permission, the operation will succeed"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "Retention periods and legal holds don't prevent new versions of the object from being created, or delete markers to be added on top of the object"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "If you issued a simple DELETE request that doesn't specify a version ID, Amazon S3 returns a 200 OK response and inserts a delete marker in the bucket, and that marker becomes the current version of the object"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "If you issued a permanent DELETE request that specifies a version ID, Amazon S3 returns an Access Denied (403 Forbidden) error"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "Legal holds can be freely placed and removed by any user who has the s3:PutObjectLegalHold permission, and a legal hold remains in effect until removed"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "Any user with permissions to place an object retention period can extend a retention period for an object version"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "After you enable Object Lock on a bucket, you can't disable Object Lock or suspend versioning for that bucket"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-configure.html
+  - claim: "S3 buckets with Object Lock can't be used as destination buckets for server access logs"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-configure.html
+  - claim: "You can enable Object Lock for an existing S3 bucket by using the Amazon S3 console, the AWS CLI, AWS SDKs, or Amazon S3 REST API"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-configure.html
+  - claim: "CloudTrail log file integrity validation lets you determine whether a log file was modified, deleted, or unchanged after CloudTrail delivered it"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-intro.html
+  - claim: "Log file integrity validation is built using SHA-256 for hashing and SHA-256 with RSA for digital signing"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-intro.html
+  - claim: "Every hour, CloudTrail creates and delivers a digest file that references the log files for the last hour and contains a hash of each"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-intro.html
+  - claim: "Each digest file also contains the digital signature of the previous digest file if one exists"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-intro.html
+  - claim: "The validation process lets you assert positively that no log files were delivered to your account during a given period of time"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-intro.html
+  - claim: "Enabling log file integrity validation allows CloudTrail to deliver digest log files to your Amazon S3 bucket, but does not validate the integrity of the files"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-intro.html
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #041 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">The log you cannot alter</h1>
+  <p class="post-subtitle">A log archive needs three different guarantees, and they are routinely mistaken for one. Two of them prevent things. The third prevents nothing at all, and is the only one that would tell you.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Security &amp; Identity &middot; Governance</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The previous post argued that the recording controls — an organisation trail, the Config recorder, GuardDuty — have to be on from an account's first minute, because the record they produce cannot be backfilled. Suppose that is done. Everything is delivered to a central bucket, in a dedicated account, versioned, encrypted, and backed up nightly to a second Region.
+    </p>
+    <p>
+      An auditor asks whether the audit trail could have been tampered with. The team says it is immutable. Every word in the sentence before this one is true, and none of them makes it immutable.
+    </p>
+    <p>
+      Versioning means an overwrite creates a new version rather than destroying the old one — until someone with the right permission deletes the version explicitly. The nightly backup means the data survives loss; it does not mean it survives editing, because a backup taken after tampering copies the tampered file faithfully, on schedule, and reports success. Encryption protects the data from being read, which is not the property under discussion. The dedicated account narrows who could do it, and does nothing about the people who administer that account.
+    </p>
+    <p>
+      The archive is durable, private and recoverable. Whether it is <em>accurate</em> is a separate question, and nothing in that list answers it.
+    </p>
+
+    <div class="callout amber">
+      <strong>Durability answers a different question from integrity</strong>
+      <p>A backup exists because things get lost — hardware fails, someone runs the wrong script, a Region has a bad day. An immutable log exists because someone might want the record to say something other than what happened. The first threat is indifferent to your data's contents; the second is <em>about</em> them. Controls built for one are not controls for the other, and the reason the confusion survives is that both produce a second copy.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Three mechanisms, three guarantees. Getting the design right is mostly a matter of not expecting any of them to do another's job.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-041-log-archive.svg" alt="Diagram: three guarantees for a log archive — a separate account bounding blast radius, Object Lock in compliance mode providing prevention, and CloudTrail log file integrity validation providing detection — each with what it does not do; below, the delete marker gap and the distinction between a backup and an immutable log" />
+      <figcaption>Two of these prevent. The third prevents nothing, and is the only one that would tell you afterwards.</figcaption>
+    </figure>
+
+    <h3>The separate account bounds who can try</h3>
+    <p>
+      This is the cheapest of the three and the one people already have. Delivering logs to a bucket in an account that no workload principal can reach means an attacker who compromises a production role has no path to the archive at all — they can generate log entries, and that is the extent of their relationship with it.
+    </p>
+    <p>
+      Its limit is precise: it does nothing about anyone who administers the archive account. And from the earlier post in this series, it does nothing about the management account either, since SCPs do not apply there. A separate account converts "anyone with production access" into "a much smaller list", which is real and is not the same as nobody.
+    </p>
+
+    <h3>Object Lock makes the attempt fail</h3>
+    <p>
+      <strong>S3 Object Lock can help prevent Amazon S3 objects from being deleted or overwritten for a fixed amount of time or indefinitely</strong>, using a write-once-read-many model. It <em>works only in buckets that have S3 Versioning enabled</em>, and the mode you choose decides whether it is a control or a convention.
+    </p>
+    <p>
+      In <strong>compliance mode</strong>, <em>a protected object version can't be overwritten or deleted by any user, including the root user in your AWS account</em>. Its retention mode can't be changed and its retention period can't be shortened. AWS states the consequence with unusual bluntness: <strong>the only way to delete an object under the compliance mode before its retention date expires is to delete the associated AWS account.</strong> That is the strongest guarantee AWS offers about anything, and it is worth understanding as a commitment you are making rather than a feature you are enabling.
+    </p>
+    <p>
+      In <strong>governance mode</strong>, an override is possible: you need <code class="inline">s3:BypassGovernanceRetention</code> and must explicitly include <code class="inline">x-amz-bypass-governance-retention:true</code> as a request header. That reads like a deliberate, two-factor act. It is not, and here is the detail that decides whether governance mode belongs in a log archive at all:
+    </p>
+
+    <div class="callout amber">
+      <strong>The console supplies the bypass header for you</strong>
+      <p><strong>By default, the Amazon S3 console includes the <code class="inline">x-amz-bypass-governance-retention:true</code> header. If you try to delete objects protected by governance mode and have the <code class="inline">s3:BypassGovernanceRetention</code> permission, the operation will succeed.</strong> The explicit header is not a second gate for a console user; it is filled in on their behalf. For anyone holding that permission, governance mode is a click. It is a good control against accident and a poor one against intent.</p>
+    </div>
+
+    <h3>Object Lock protects a version, not a name</h3>
+    <p>
+      This is the property most likely to produce a nasty surprise, and it follows from Object Lock being built on versioning. <em>Retention periods and legal holds don't prevent new versions of the object from being created, or delete markers to be added on top of the object.</em>
+    </p>
+    <p>
+      So the two delete paths behave completely differently. A permanent delete — one that names a version ID — returns <em>an Access Denied (403 Forbidden) error</em>, which is the control working. A simple delete, which names no version, <em>returns a 200 OK response and inserts a delete marker in the bucket, and that marker becomes the current version of the object</em>.
+    </p>
+    <p>
+      Think about what that looks like from the console. The locked data is entirely intact underneath, exactly as designed. The listing is empty. Nobody got an error. An archive that has been "deleted" this way and one that was never written to are visually identical until you look at versions, and the person who did it saw nothing but success.
+    </p>
+
+    <h3>Integrity validation detects, and only detects</h3>
+    <p>
+      CloudTrail log file integrity validation <em>lets you determine whether a log file was modified, deleted, or unchanged after CloudTrail delivered it</em>, built with <em>SHA-256 for hashing and SHA-256 with RSA for digital signing</em>.
+    </p>
+    <p>
+      The mechanism is a hash chain. <em>Every hour, CloudTrail creates and delivers a digest file that references the log files for the last hour and contains a hash of each</em>, and — the part that makes deletion detectable rather than merely modification — <em>each digest file also contains the digital signature of the previous digest file if one exists</em>. Remove an hour and the chain no longer joins up. That is what lets you <em>assert positively that no log files were delivered to your account during a given period of time</em>, which is a much stronger statement than "we found nothing".
+    </p>
+    <p>
+      It prevents nothing. And there is a sentence in the documentation that deserves to be read twice by anyone who has ticked this box: <strong>enabling log file integrity validation allows CloudTrail to deliver digest log files to your Amazon S3 bucket, but does not validate the integrity of the files.</strong> Turning it on produces evidence. Somebody still has to look at it, and nothing in AWS does that on your behalf.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Model Holds Up</h2>
+
+    <h3>Each layer fails in a way the others cover</h3>
+    <p>
+      The delete-marker case is the clean illustration. The separate account makes it unlikely anyone has the permission; Object Lock guarantees the data itself survives; the digest chain is what reveals that anything happened. Remove any one and there is a real scenario left uncovered — an administrator with legitimate access, a version-targeted delete, or a tampering nobody ever notices.
+    </p>
+
+    <h3>Compliance mode moves the guarantee out of IAM</h3>
+    <p>
+      Almost every control discussed in this series is ultimately a policy evaluation, and policy can be changed by someone with permission to change policy. Compliance mode is not that. It is a property of the object, enforced by S3 regardless of what any policy says, and not even the root user is an exception. For the one dataset whose whole value is that it cannot be edited, moving the guarantee outside the permission system is the point.
+    </p>
+
+    <h3>The one-way doors are the right way round</h3>
+    <p>
+      <strong>After you enable Object Lock on a bucket, you can't disable Object Lock or suspend versioning for that bucket.</strong> Retention can be extended by anyone with the permission to set it but not shortened in compliance mode. Every irreversible step available here moves towards more protection and none towards less, which is the correct asymmetry for a control whose adversary may hold administrative credentials.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Design Decisions</h2>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>Compliance mode for the archive, governance mode nowhere near it</strong>
+      </div>
+      <div class="challenge-body">
+        <p>Governance mode protects against accident. In a log archive the threat model explicitly includes intent, and the console's default bypass header means an insider with <code class="inline">s3:BypassGovernanceRetention</code> deletes by clicking. If the archive is the record you would rely on to investigate that person, governance mode is the wrong mode.</p>
+        <span class="fix-label">The commitment you are making</span>
+        <p>Compliance mode is genuinely irreversible &mdash; the only escape before expiry is deleting the account. So choose the retention period against your actual obligation rather than the largest number available, and test the whole pipeline in governance mode first, which AWS explicitly suggests as the way to validate settings before committing.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>Deny the simple delete, not just the permanent one</strong>
+      </div>
+      <div class="challenge-body">
+        <p>Object Lock already fails a version-targeted delete with 403. The gap is the simple delete that returns 200 and writes a delete marker, leaving an archive that lists as empty. Object Lock cannot close this, by design, because a delete marker is a new version rather than a modification of a locked one.</p>
+        <span class="fix-label">Concrete rule</span>
+        <p>Put an explicit <code class="inline">Deny</code> on <code class="inline">s3:DeleteObject</code> and <code class="inline">s3:DeleteObjectVersion</code> for every principal except a named break-glass role, in both the bucket policy and an SCP over the archive account. Then alert on <code class="inline">s3:PutObjectLegalHold</code> and <code class="inline">s3:PutObjectRetention</code> too &mdash; legal holds <em>can be freely placed and removed by any user who has the <code class="inline">s3:PutObjectLegalHold</code> permission</em>, so a hold is not a substitute for retention.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>Schedule the validation, because enabling it does not run it</strong>
+      </div>
+      <div class="challenge-body">
+        <p>The digest files are the evidence and they accumulate whether or not anyone reads them. AWS is explicit that enabling validation delivers digests but <strong>does not validate the integrity of the files</strong>. An organisation that enabled this in 2022 and has never run <code class="inline">aws cloudtrail validate-logs</code> has a hash chain nobody has checked, which is worth exactly as much as no hash chain until the day it is checked.</p>
+        <span class="fix-label">Make it a control, not a capability</span>
+        <p>Run the validation on a schedule &mdash; daily over the previous day, weekly over the previous week &mdash; and alert on failure. That converts detection-in-principle into detection-with-a-latency you can state. Without it, "we would know" is a claim about a command nobody has run.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>Keep the archive bucket single-purpose</strong>
+      </div>
+      <div class="challenge-body">
+        <p>Object Lock brings constraints that are fine for an archive and obstructive anywhere else. <strong>S3 buckets with Object Lock can't be used as destination buckets for server access logs.</strong> Versioning cannot be suspended. Objects cannot be cleaned up early, so lifecycle policy becomes a cost projection rather than a lever.</p>
+        <span class="fix-label">Implication</span>
+        <p>Do not put anything in this bucket you might later want to remove, and do not let it become the general log destination for convenience. The constraints are the product; the moment somebody needs an exception, the exception will be argued for on the archive rather than on a separate bucket that could simply have been created.</p>
+      </div>
+    </div>
+
+    <h3>What each control actually guarantees</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Control</th>
+            <th>Guarantee</th>
+            <th>Stops a simple delete?</th>
+            <th>Would you know?</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Versioning alone</strong></td>
+            <td>Overwrites keep the old version</td>
+            <td>No</td>
+            <td>No</td>
+          </tr>
+          <tr>
+            <td><strong>Nightly backup</strong></td>
+            <td>Durability</td>
+            <td>No &mdash; and it copies the tampered state</td>
+            <td>No</td>
+          </tr>
+          <tr>
+            <td><strong>Separate account</strong></td>
+            <td>Fewer principals can try</td>
+            <td>Only for principals outside it</td>
+            <td>No</td>
+          </tr>
+          <tr>
+            <td><strong>Object Lock, governance</strong></td>
+            <td>Protection from accident</td>
+            <td>No &mdash; console supplies the bypass header</td>
+            <td>No</td>
+          </tr>
+          <tr>
+            <td><strong>Object Lock, compliance</strong></td>
+            <td>The data survives, root user included</td>
+            <td>Data survives; the listing still empties</td>
+            <td>No</td>
+          </tr>
+          <tr>
+            <td><strong>Explicit deny on delete</strong></td>
+            <td>The call fails</td>
+            <td><strong>Yes</strong></td>
+            <td>Via CloudTrail on the archive account</td>
+          </tr>
+          <tr>
+            <td><strong>Integrity validation, run</strong></td>
+            <td>Detection</td>
+            <td>No</td>
+            <td><strong>Yes</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Reference: the two calls that matter</h3>
+    <p>
+      Object Lock can be enabled on an existing bucket now &mdash; by console, CLI, SDK or REST API &mdash; so an archive that predates this design does not need rebuilding. Note the second command is the one nothing runs for you.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">Lock the archive, then actually check the chain</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code># Default retention on the archive bucket. COMPLIANCE is irreversible
+# for the objects it applies to — validate in GOVERNANCE first.
+aws s3api put-object-lock-configuration \
+  --bucket org-log-archive \
+  --object-lock-configuration '{
+      "ObjectLockEnabled": "Enabled",
+      "Rule": { "DefaultRetention": { "Mode": "COMPLIANCE", "Years": 7 } }
+   }'
+
+# The step that turns evidence into detection. Schedule this.
+aws cloudtrail validate-logs \
+  --trail-arn arn:aws:cloudtrail:us-east-1:111122223333:trail/org-trail \
+  --start-time 2026-09-02T00:00:00Z \
+  --end-time   2026-09-03T00:00:00Z</code></pre>
+    </div>
+    <p>
+      The first command is a decision you cannot walk back for seven years. The second is the one that distinguishes an organisation that would notice from one that believes it would.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      "Immutable" is doing a lot of work in most conversations about log archives, and it usually turns out to mean durable. The two are easy to conflate because both produce extra copies, both cost storage, and both are satisfied by the same architecture diagram. They answer different threats, and only one of them is about an adversary who cares what the data says.
+    </p>
+    <p>
+      The three guarantees here are worth naming separately for the same reason the two policy types in an earlier post were: once you can say which one a given control provides, the gaps become obvious rather than requiring an incident to reveal them. A separate account bounds who can try. Compliance-mode Object Lock means the attempt fails. The digest chain means you find out. None of them is optional, and the last one is the only one that does not work by itself.
+    </p>
+    <p>
+      <strong>The question to ask of any archive: if someone with administrative access to it wanted the record to say something different, which control stops them, and which one tells me?</strong> If the answer to the second half is a command nobody has scheduled, the honest position is that you would not know.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; break-glass access: the role that exists to be used when everything else has failed, why it cannot depend on the identity provider, and how to make using it impossible to do quietly.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html" target="_blank" rel="noopener">AWS Documentation — Locking objects with S3 Object Lock</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-configure.html" target="_blank" rel="noopener">AWS Documentation — Configuring S3 Object Lock</a></li>
+      <li><a href="https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-intro.html" target="_blank" rel="noopener">AWS Documentation — Validating CloudTrail log file integrity</a></li>
+      <li><a href="https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-cli.html" target="_blank" rel="noopener">AWS Documentation — Validating CloudTrail log file integrity with the AWS CLI</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/Versioning.html" target="_blank" rel="noopener">AWS Documentation — Retaining multiple versions of objects with S3 Versioning</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/DeleteMarker.html" target="_blank" rel="noopener">AWS Documentation — Working with delete markers</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
