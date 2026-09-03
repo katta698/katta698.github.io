@@ -109,7 +109,7 @@
   function applyTheme(dark) {
     document.body.classList.toggle('dark', dark);
     scheduleDisqusReset(dark);
-    var e = dark ? '☀️' : '🌙', l = dark ? 'Light' : 'Dark';
+    var e = dark ? '◑' : '◐', l = dark ? 'Light' : 'Dark';
     ['theme-icon-moon','theme-icon-moon-m'].forEach(function(id) {
       var el = document.getElementById(id); if (el) el.textContent = e;
     });

@@ -1579,7 +1579,7 @@ def nav_html(show_search=True, show_audio=False):
 {search_btn}
 {audio_btn}
   <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
-    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+    <span id="theme-icon-moon">◐</span><span id="theme-label-text">Dark</span>
   </button>
   <button class="hamburger" id="hamburger-btn" aria-label="Menu">
     <span></span><span></span><span></span>
@@ -1588,7 +1588,7 @@ def nav_html(show_search=True, show_audio=False):
 <div class="mobile-menu" id="mobile-menu">
   <a href="/">Home</a>
   <button class="theme-toggle" id="nav-theme-btn-mobile" aria-label="Toggle dark mode">
-    <span id="theme-icon-moon-m">🌙</span><span id="theme-label-text-m">Dark</span>
+    <span id="theme-icon-moon-m">◐</span><span id="theme-label-text-m">Dark</span>
   </button>
 </div>"""
 
