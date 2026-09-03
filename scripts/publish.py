@@ -387,7 +387,7 @@ def main():
         return 1
     print("  Ready. Commit now -- do not ask first. Do NOT push.")
     print("=" * 74)
-    print("\n  git add blog/ posts/ scripts/ index.html resume.html now.html sw.js")
+    print("\n  git add blog/ posts/ scripts/ _templates/ intelligence/ index.html resume.html now.html sw.js")
     print("  git commit")
     print("\n  Then report the SHA and stop. Pushing is Jayanth's, and a green")
     print("  check run is not an instruction to push.")

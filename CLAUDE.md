@@ -296,7 +296,7 @@ straight to remote `main`:
 cd C:\Projects\Engineering\katta698-aws       # or -azure, or -gcp
 # write the post, then:
 python scripts/publish.py       # fetch, rebase, sync, check, re-check, report
-git add blog/ posts/ scripts/ index.html resume.html now.html sw.js
+git add blog/ posts/ scripts/ _templates/ intelligence/ index.html resume.html now.html sw.js
 git commit
 git push origin HEAD:main       # fast-forwards remote main, no merge commit
 ```
@@ -1351,12 +1351,19 @@ is for finding posts by content.
    remote afterwards. It stops before committing. Add `--offline` to skip the
    checks that fetch vendor pages; name a post (`publish.py arch-025`) to scope
    the per-post checks to it.
-2. `git add blog/ posts/ scripts/ index.html resume.html now.html sw.js`
+2. `git add blog/ posts/ scripts/ _templates/ intelligence/ index.html resume.html now.html sw.js`
    (broad add — picks up all regenerated pages; `publish.py` prints this line for
    you). **The root files are not optional:** sync regenerates `sw.js` and
    re-stamps the `?v=` token on `index.html`, `resume.html` and `now.html`.
    Leaving them out ships a service worker whose precache asks for asset URLs no
    page requests.
+
+   **`_templates/` and `intelligence/` are on this line for the same reason.**
+   `stamp_static_pages()` re-stamps both, and neither was listed, so both were
+   re-stamped on every sync and then left behind — invisible, because nothing
+   reads the template at request time. The cost lands on the next hand-built
+   arch post, which is copied from the template and inherits whatever token was
+   last committed. Caught 2026-09-03 when a rebase refused over the leftover.
 3. Check `git status` is clean before committing — a leftover modified root
    file means step 2 was too narrow.
 4. Commit. Do not ask first, and do not push — see below.
