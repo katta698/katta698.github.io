@@ -3262,7 +3262,9 @@ function toggleBlogAudio(){{
     }}).catch(function(){{}});
   }}else{{
     audio.pause();
-    if(btn)btn.textContent='🎻';
+    /* Today's instrument, not a hardcoded violin -- site-footer.js rotates it
+       daily and publishes it on window.jkInstrument. */
+    if(btn)btn.textContent=(window.jkInstrument&&window.jkInstrument.glyph)||'🎻';
   }}
 }}
 </script>

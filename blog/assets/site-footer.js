@@ -17,6 +17,9 @@
     window.clearTimeout(timer);
     timer = window.setTimeout(function () {
       updateYear();
+      // The instrument is keyed on the date, so a tab left open overnight would
+      // otherwise still be showing yesterday's.
+      paintInstrument();
       scheduleMidnightRefresh();
     }, nextMidnight.getTime() - now.getTime() + 50);
   }
@@ -54,6 +57,7 @@
       '<a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>';
     updateYear();
     buildNavControl();
+    paintInstrument();
     scheduleMidnightRefresh();
   }
 
@@ -223,6 +227,58 @@
   function markFor(day) {
     var set = MARKS[day] || MARKS.thu;
     return set[weekIndex() % set.length];
+  }
+
+  // ---- the instrument on the audio button --------------------------------
+  // It was a fixed violin. One per day now, cycling the whole list, so it
+  // turns over on the same rhythm as the palette mark sitting beside it.
+  //
+  // Unicode has no veena, no mridangam, no nadaswaram, no tabla and no cello.
+  // Where the instrument has no glyph of its own the nearest one of the same
+  // family stands in, and the NAME in the tooltip is what actually says which
+  // instrument it is -- 🪕 is a banjo, but it is the only long-necked plucked
+  // string in the set, so it carries the veena.
+  //
+  // Cello is deliberately absent: its nearest glyph is 🎻, which violin
+  // already has. The button shows a glyph and not a name, so two entries
+  // sharing one would read as the rotation having stalled. Every glyph here is
+  // distinct, which is the same rule the palette marks follow.
+  var INSTRUMENTS = [
+    ['🎻', 'Violin'],
+    ['🎸', 'Guitar'],
+    ['🪕', 'Veena'],
+    ['🪈', 'Flute'],
+    ['🪘', 'Mridangam'],
+    ['🥁', 'Tabla'],
+    ['🎺', 'Nadaswaram'],
+    ['🪗', 'Harmonium'],
+    ['🎷', 'Saxophone'],
+    ['🎹', 'Keyboard']
+  ];
+
+  // Whole days since the epoch, matching weekIndex() above: a property of the
+  // date rather than of the visit, so everyone sees the same instrument today.
+  function instrumentToday() {
+    return INSTRUMENTS[Math.floor(Date.now() / 86400000) % INSTRUMENTS.length];
+  }
+
+  function paintInstrument() {
+    var ins = instrumentToday();
+    // Published so the toggle handlers on both surfaces can restore today's
+    // glyph on pause instead of hardcoding a violin, which is what made the
+    // button snap back to an instrument that was not the one it started as.
+    window.jkInstrument = { glyph: ins[0], name: ins[1] };
+
+    var audio = document.getElementById('beach-audio');
+    if (audio && !audio.paused) return;   // sound is on; the button reads 🔊
+
+    var btn = document.getElementById('audio-toggle');
+    if (btn) {
+      btn.textContent = ins[0];
+      btn.title = ins[1] + ' — toggle beach sounds';
+    }
+    var mIcon = document.getElementById('mobile-audio-icon');
+    if (mIcon) mIcon.textContent = ins[0];
   }
 
   function todayKey() {
