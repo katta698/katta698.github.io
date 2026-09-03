@@ -1,0 +1,356 @@
+---
+title: "GCP Architecture Series #21 — Dry-Run Mode: Testing a Policy Before It Denies Anything"
+date: '2026-09-03T09:00:00'
+slug: gcp-architecture-dry-run-policy
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-09-03'
+verified_claims:
+  - claim: "An organization policy in dry-run mode is created and enforced similarly to other organization policies, and violations of the policy are audit logged, but the violating actions aren't denied"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/dry-run-policy
+  - claim: "An organization policy in dry-run mode does not block any operations when enforced"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/dry-run-policy
+  - claim: "You can set a live organization policy and a dry-run organization policy in the same YAML file, if you define both spec and dryRunSpec"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/dry-run-policy
+  - claim: "Organization policy audit logs for live organization policies and organization policies in dry-run mode are generated based on whether the operation is allowed or denied by the policies enforced on a given resource"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/dry-run-policy
+  - claim: "Attempting to create an organization policy in dry-run mode using any other constraint results in an error"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/dry-run-policy
+  - claim: "Policy Simulator for Organization Policy lets you preview the impact of a new custom constraint or organization policy that enforces a custom or managed constraint before it is enforced on your production environment"
+    source: https://docs.cloud.google.com/policy-intelligence/docs/test-organization-policies
+  - claim: "Policy Simulator cannot test changes to legacy managed constraints"
+    source: https://docs.cloud.google.com/policy-intelligence/docs/test-organization-policies
+  - claim: "Enforcement of most organization policies is not retroactive. If a new organization policy sets a restriction on an action or state that a service is already in, the policy is considered to be in violation, but the service will not stop its original behavior"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/creating-managing-policies
+  - claim: "Changes to organization policies can take up to 15 minutes to be fully enforced"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/using-constraints
+  - claim: "Organization policy administrator (roles/orgpolicy.policyAdmin) IAM role on the organization"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/using-constraints
+  - claim: "Custom constraints are managed by your organization instead of by Google"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/understanding-constraints
+  - claim: "Managed constraints are designed to replace equivalent legacy managed constraints, but with additional flexibility and greater insight from Policy Intelligence tools"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/understanding-constraints
+  - claim: "When an organization policy is set on a resource, all descendants of that resource inherit the organization policy by default"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/understanding-constraints
+problem: "A constraint is a control that refuses operations without caring who is asking, applied across a whole branch of the hierarchy, and enforced from the moment it is set. There is no staging environment for the organization node. Dry-run mode is the answer to that — but it does not cover the constraints most estates are actually built on."
+builds: "What a dry-run policy does and does not do, how it coexists with a live policy on the same constraint, the audit-log query that turns it into an answer, how Policy Simulator differs from it, and which question each of the two tools is actually for."
+catch: "Dry-run mode works with custom constraints, managed constraints, and exactly four legacy managed constraints. Any other constraint returns an error rather than a dry run. Policy Simulator has the same shape of gap — it cannot test changes to legacy managed constraints at all — so the oldest and most widely used constraints are precisely the ones you cannot rehearse."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #021 &middot; Foundations</div>
+  <h1 class="post-title">Dry-Run Mode: Testing a Policy Before It Denies Anything</h1>
+  <p class="post-subtitle">There is no staging environment for an organization node. Two tools exist to rehearse a policy anyway &mdash; and both refuse to touch the constraints most estates were built on.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Google Cloud &middot; Organization Policy &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Post #20 ended by saying no custom constraint should reach production without being watched first. This is how that is done, and the four ways it goes wrong.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"We'll dry-run it first" &mdash; and the command errors</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Dry-run mode is not available for every constraint. It works with custom constraints, with managed constraints, and with four named legacy managed constraints &mdash; restrict service usage, restrict endpoint usage, restrict TLS versions and restrict TLS cipher suites. Google is blunt about the rest: attempting to create an organization policy in dry-run mode using any other constraint results in an error.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Check the constraint's kind before planning a rehearsal. If it is a legacy managed constraint outside those four, there is no dry run, and the rollout plan has to be built on staged scope instead &mdash; one folder at a time rather than one mode at a time.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"The dry run was clean, so it is safe to enforce"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          A dry-run policy only sees operations that actually happen while it is running. It logs what <em>would</em> have been denied, which says nothing about a quarterly batch job, a disaster-recovery rebuild, or the Terraform apply that only runs when someone onboards a new team.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Run it long enough to cover the estate's real cycle, not the sprint. And treat "no violations" as evidence about the window observed, not a property of the policy.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"It is in dry run, but where are the violations?"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Nowhere you will stumble across. Organization policy audit logs are generated based on whether the operation is allowed or denied by the policies enforced on a given resource, and finding the dry-run cases means asking for exactly the combination where the two verdicts differ.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Query for it directly: <code>protoPayload.metadata.dryRunResult = "DENIED" AND protoPayload.metadata.liveResult = "ALLOWED"</code>. That pair &mdash; the dry run refused it, the live policy let it through &mdash; is the definition of a would-be violation.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"What about everything that already exists?"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          A dry run cannot tell you. It observes operations, and an existing non-compliant resource performs no operation by sitting there. This is #19's problem exactly: enforcement is not retroactive, so a resource already in the forbidden state is in violation and keeps running.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          That is the other tool's job. Policy Simulator previews the impact of a proposed policy and returns the resources that violate it &mdash; the standing population, not the traffic.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      There are two rehearsal tools and they answer different questions. Choosing the wrong one produces a confident, clean result about something you were not asking.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-021-dry-run-policy.svg" alt="Diagram: Policy Simulator against existing resources versus dry-run mode against live operations, the dryRunSpec and spec coexisting in one policy, the audit log query that finds would-be violations, and which constraint kinds each tool supports" />
+      <figcaption>Two tools, two questions: what already violates this, and what would it refuse from now on.</figcaption>
+    </figure>
+
+    <h3>The two questions</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th></th><th>Policy Simulator</th><th>Dry-run mode</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Question it answers</td>
+          <td>What already violates this policy?</td>
+          <td>What would this policy refuse from now on?</td>
+        </tr>
+        <tr>
+          <td>Looks at</td>
+          <td>Existing resources, as they stand.</td>
+          <td>Operations, as they happen.</td>
+        </tr>
+        <tr>
+          <td>When</td>
+          <td>Before anything is set. It previews the impact of a new constraint or policy before it is enforced.</td>
+          <td>While it is set. It is created and enforced similarly to other policies.</td>
+        </tr>
+        <tr>
+          <td>Blocks anything</td>
+          <td>No &mdash; nothing is set.</td>
+          <td>No &mdash; it does not block any operations when enforced.</td>
+        </tr>
+        <tr>
+          <td>Output</td>
+          <td>A list of resources that violate the proposed policy.</td>
+          <td>Audit log entries where the dry-run and live verdicts differ.</td>
+        </tr>
+        <tr>
+          <td>Constraint support</td>
+          <td>Custom and managed. It cannot test changes to legacy managed constraints.</td>
+          <td>Custom, managed, and four named legacy managed constraints.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      The pairing is not redundant. The simulator finds the resources that will have to be fixed before enforcement can succeed &mdash; the remediation backlog #19 warned would otherwise be invisible. The dry run finds the workflows that will break after it, which no inventory of existing resources can predict because they have not happened yet.
+    </p>
+
+    <h3>A policy can hold both specs at once</h3>
+    <p>
+      The mechanism is one extra field. A dry-run policy uses <code>dryRunSpec</code> where a live one uses <code>spec</code>, and both may sit in the same document:
+    </p>
+    <pre><code>name: RESOURCE_TYPE/RESOURCE_ID/policies/CONSTRAINT_NAME
+dryRunSpec:
+  rules:
+  - enforce: true</code></pre>
+    <p>
+      You can set a live organization policy and a dry-run organization policy in the same YAML file by defining both <code>spec</code> and <code>dryRunSpec</code>. That is what makes a tightening safe to stage: keep the current live rule enforcing, add the stricter rule as a dry run, and compare the two verdicts on real traffic before promoting one to the other.
+    </p>
+
+    <div class="callout">
+      <strong>Removing a dry run is not the same as removing the policy</strong>
+      <p>Because the two specs are separate fields, they are removed separately. <code>gcloud org-policies set-policy</code> with <code>--update-mask=dryRunSpec</code> clears the dry run and leaves the live policy alone, while <code>gcloud org-policies delete</code> removes both. During an incident, the difference between those two commands is the difference between ending an experiment and dropping a guardrail.</p>
+    </div>
+
+    <h3>The query that turns logs into an answer</h3>
+    <p>
+      A dry run produces nothing you will notice by accident. Audit logs are generated based on whether the operation is allowed or denied by the policies enforced on a resource, so both verdicts are recorded on the same entry and the interesting case is where they disagree:
+    </p>
+    <pre><code>protoPayload.metadata.dryRunResult = "DENIED"
+AND protoPayload.metadata.liveResult = "ALLOWED"</code></pre>
+    <p>
+      Read that as the report: <em>the proposed rule would have refused this, and today's rules permitted it</em>. Every row is a workflow that breaks on the day you promote the dry run, with the principal, the resource and the timestamp attached &mdash; which is precisely the list needed to warn the right team before rather than after.
+    </p>
+
+    <div class="callout amber">
+      <strong>The gap is exactly where you least want it</strong>
+      <p>Both tools exclude legacy managed constraints &mdash; the simulator entirely, dry-run mode except for four. Those are the oldest constraints, the ones with the widest adoption and the most existing documentation, and they are the ones a team reaches for first. So the constraints easiest to adopt are the hardest to rehearse, and the ones that support rehearsal are the ones requiring more work to write. That is worth factoring into the choice made in #20: a managed constraint is preferable to its legacy equivalent partly because it can be tested at all.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Running a Rehearsal That Means Something</h2>
+
+    <h3>How long is long enough</h3>
+    <p>
+      The honest answer is one full cycle of whatever the estate does, and that is rarely a week. A dry run observes operations, so its coverage is the coverage of your traffic:
+    </p>
+    <ul>
+      <li><strong>Daily deploys</strong> are covered within days, and give false confidence quickly.</li>
+      <li><strong>Monthly batch and reporting jobs</strong> need a month, or a deliberate manual run inside the window.</li>
+      <li><strong>Quarterly and annual work</strong> &mdash; DR exercises, certificate rotations, capacity rebuilds &mdash; will not appear at all. Trigger them on purpose or accept that they are untested.</li>
+      <li><strong>Onboarding paths</strong> only run when somebody onboards. If none happened, that path is unobserved.</li>
+    </ul>
+    <p>
+      Add the propagation delay from #19: changes take up to 15 minutes to be fully enforced, so a dry run started and queried in the same ten minutes is measuring nothing.
+    </p>
+
+    <h3>The order that works</h3>
+    <ol>
+      <li><strong>Simulate</strong>, to get the list of existing resources that violate the proposal. Fix or exempt them; this is the remediation project, and it is usually the long pole.</li>
+      <li><strong>Set the dry run</strong> alongside whatever live policy exists, at the scope you intend to enforce at &mdash; a dry run set on a folder inherits to its descendants like any other policy, so scope it where the real one will sit.</li>
+      <li><strong>Query the audit log</strong> for the verdict mismatch, on a schedule rather than once, and route the results to the teams that own the workloads.</li>
+      <li><strong>Promote</strong> by moving the rule from <code>dryRunSpec</code> to <code>spec</code> once the mismatches stop, or once every remaining one is understood and accepted.</li>
+    </ol>
+
+    <div class="callout">
+      <strong>Where there is no dry run, stage the scope instead</strong>
+      <p>For a legacy managed constraint outside the supported four, the only rehearsal available is a smaller blast radius. Set the real policy on one low-risk folder, watch what breaks, then move it up the hierarchy. It is slower and it does deny things &mdash; but it denies them somewhere chosen, which is the entire property a dry run was going to buy. Setting an untestable constraint straight at the organization node is the version of this with no rehearsal at all.</p>
+    </div>
+
+    <h3>Who can do it, and why that matters here</h3>
+    <p>
+      Setting a dry-run policy needs the same role as setting a live one: Organization policy administrator, <code>roles/orgpolicy.policyAdmin</code>, on the organization. There is no lesser permission for the safe version.
+    </p>
+    <p>
+      That is defensible &mdash; a dry run is still a policy object on a production resource, and the field distinguishing it from an enforcing one is a single word. It also means the rehearsal cannot be delegated to the team that owns the workload, which is an argument for routing the audit-log results to them rather than handing over the role.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Finding existing violations</td>
+          <td>Policy Simulator</td>
+          <td>It returns the resources that violate a proposed policy; a dry run cannot see a resource that performs no operation.</td>
+        </tr>
+        <tr>
+          <td>Finding workflows that will break</td>
+          <td>Dry-run mode</td>
+          <td>It logs what would have been denied, on real traffic, without denying it.</td>
+        </tr>
+        <tr>
+          <td>Before planning either</td>
+          <td>Check the constraint's kind</td>
+          <td>Any constraint outside custom, managed and the four named legacy ones errors on dry run.</td>
+        </tr>
+        <tr>
+          <td>Choosing between a legacy and managed constraint</td>
+          <td>Managed, partly for testability</td>
+          <td>The simulator cannot test legacy managed constraints at all.</td>
+        </tr>
+        <tr>
+          <td>Tightening an existing policy</td>
+          <td>Both specs in one file</td>
+          <td><code>spec</code> keeps enforcing while <code>dryRunSpec</code> measures the stricter rule.</td>
+        </tr>
+        <tr>
+          <td>Reading the results</td>
+          <td>Query for the verdict mismatch</td>
+          <td><code>dryRunResult = "DENIED"</code> with <code>liveResult = "ALLOWED"</code> is the definition of a would-be violation.</td>
+        </tr>
+        <tr>
+          <td>How long to run it</td>
+          <td>One full business cycle, not one sprint</td>
+          <td>A dry run only observes operations that occur while it is set.</td>
+        </tr>
+        <tr>
+          <td>Interpreting a clean dry run</td>
+          <td>As evidence about the window, not the policy</td>
+          <td>Quarterly and annual workflows will not have run.</td>
+        </tr>
+        <tr>
+          <td>Where to set the dry run</td>
+          <td>The scope the live policy will occupy</td>
+          <td>It inherits to descendants like any other policy, so a narrower scope rehearses less.</td>
+        </tr>
+        <tr>
+          <td>Ending an experiment</td>
+          <td><code>--update-mask=dryRunSpec</code>, not <code>delete</code></td>
+          <td><code>delete</code> removes the live policy too.</td>
+        </tr>
+        <tr>
+          <td>Untestable constraints</td>
+          <td>Stage the scope, folder by folder</td>
+          <td>A chosen blast radius is the only rehearsal left when dry run is unavailable.</td>
+        </tr>
+        <tr>
+          <td>Delegating the rehearsal</td>
+          <td>Route the logs, not the role</td>
+          <td>Dry run needs <code>policyAdmin</code> on the organization, same as enforcing.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Almost everything else in an architecture can be tried somewhere cheap first. There is a test cluster, a staging project, a canary. Organization Policy has none of that by construction &mdash; the whole point of a control that ignores who is asking is that it sits above the environments, and you cannot have a staging copy of the thing that constrains staging.
+    </p>
+    <p>
+      Dry-run mode and Policy Simulator are the compensation, and they are good ones: between them they answer what already fails and what would fail next, which is most of what a staging environment is for. The uncomfortable part is where they stop. The constraints a team adopts on day one, from a blog post or a benchmark, are largely legacy managed constraints &mdash; and those are the ones neither tool will rehearse. Knowing that in advance turns it from a surprise into a choice: prefer the constraint you can test, and where you cannot, spend the caution on scope instead.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#22 gets concrete: the organization policies worth setting on day one &mdash; which handful actually earn their place in a new estate, what each prevents, and which of them you will be able to rehearse first.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/dry-run-policy" target="_blank" rel="noopener">Create an organization policy in dry-run mode</a></li>
+      <li><a href="https://docs.cloud.google.com/policy-intelligence/docs/test-organization-policies" target="_blank" rel="noopener">Test organization policy changes with Policy Simulator</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/understanding-constraints" target="_blank" rel="noopener">Understanding constraints</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/creating-managing-policies" target="_blank" rel="noopener">Creating and managing organization policies</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/using-constraints" target="_blank" rel="noopener">Using constraints</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/overview" target="_blank" rel="noopener">Introduction to the Organization Policy Service</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
