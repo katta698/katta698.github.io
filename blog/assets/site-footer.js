@@ -46,12 +46,14 @@
       document.body.appendChild(footer);
     }
     footer.classList.add('site-footer');
+    // The palette explanation used to live here as an expandable panel. It moved
+    // into the nav control, which does the same job where readers actually look
+    // -- keeping both was the same thing said twice.
     footer.innerHTML =
       '<p>&copy; <span data-current-year></span> Jayanth Katta &mdash; ' +
-      '<a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>' +
-      paletteNoteMarkup();
+      '<a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>';
     updateYear();
-    wirePaletteNote();
+    buildNavControl();
     scheduleMidnightRefresh();
   }
 
@@ -131,6 +133,98 @@
     catch (e) { return false; }
   }
 
+  // ---- the day's mark ----------------------------------------------------
+  //
+  // The nav control carries an emoji rather than a fixed glyph, and it changes
+  // every day. Each day draws from its OWN set, chosen to echo that day's
+  // ground: clay gets earthenware, teal stone gets water, ash violet gets last
+  // light. A single shuffled pool would have put a cactus on the coldest day of
+  // the week, which is exactly the arbitrariness the palette was built to avoid
+  // -- the day order there was solved, not picked.
+  //
+  // Within a day the set advances by week number, so the mark differs tomorrow
+  // AND differs next Thursday, repeating on a five-week cycle. That is the
+  // impermanence the rotation is about, applied to the control for it.
+  // Six weeks x seven days = 42 slots carrying all 37 marks in the catalogue,
+  // with five deliberate repeats. Two rules hold:
+  //
+  //   * No mark falls on consecutive days, checked across the week wrap as well
+  //     as within a week. Same constraint the ground order was solved for.
+  //   * Each day's set echoes its ground where it can. That holds for about 40
+  //     of the 42 -- 🧵 on teal stone is the one genuinely loose placement, kept
+  //     because covering the whole catalogue was the ask and one weak fit in
+  //     six weeks is the price. 🌱 was dropped: it is not in the catalogue and
+  //     had been added here by mistake.
+  var MARKS = {
+    // stone, peak, mist, cloud -- the coolest ground gets the coldest things
+    mon: ['🪨', '🌫️', '🗻', '☁️', '🌊', '⛅'],
+    // bone: what remains. Shells, dried grass, empty nests, hand-woven craft
+    tue: ['🐚', '🌾', '🪹', '🪸', '🧺', '🪘'],
+    // teal stone: still water over slate
+    wed: ['🌊', '🪸', '🐚', '🌫️', '🪷', '🧵'],
+    // clay: earthenware, fired brick, sun-baked ground, primordial earth
+    thu: ['🏺', '🧱', '🏜️', '🌵', '🛖', '🌋'],
+    // sage: the herb garden, and what is steeped from it
+    fri: ['🌿', '🍃', '🎋', '🪴', '🧉', '🌾'],
+    // ash violet: last light, and what follows it
+    sat: ['🌙', '🕯️', '🥀', '✨', '🌬️', '☄️'],
+    // moss grey: the forest floor, and timber returning to it
+    sun: ['🍄', '🍂', '🪵', '🪺', '🕸️', '🪓']
+  };
+
+  // What each mark is, condensed from the catalogue it came from. Shown beside
+  // the mark rather than left as decoration: an emoji nobody can name is a
+  // glyph, and the whole point of this set is that every one of them was chosen
+  // for a reason.
+  var MARK_MEAN = {
+    '🪨': 'mossy stone; rough edges, permanence',
+    '🏺': 'hand-thrown pottery, cracked earthenware',
+    '🧱': 'clay and silt, fired into something square',
+    '🗻': 'monolithic and quiet; static time',
+    '🏜️': 'sun-baked expanse, raw sandstone',
+    '🌋': 'primordial earth, raw heat',
+    '🪵': 'raw grain, concentric rings of aging',
+    '🍂': 'transience; the cycle, and beautiful decay',
+    '🍄': 'spontaneous growth on a damp forest floor',
+    '🪺': 'fragile geometry, temporary shelter',
+    '🪹': 'twig structure, and what has left it',
+    '🪓': 'the human hand meeting raw timber',
+    '🌾': 'pampas and sun-bleached stalks',
+    '🌿': 'unmanicured weeds; foraging',
+    '🍃': 'an invisible current, seasons passing',
+    '🎋': 'weathered stalks, hollow cores, flexibility',
+    '🪴': 'greenery housed in raw ceramic',
+    '🌵': 'resilient in harsh sun, on little water',
+    '🪷': 'growth rising from muddy water',
+    '🐚': 'tumbled by the sea; sun-bleached calcium',
+    '🪸': 'skeletal sea structure, slow growth',
+    '🌊': 'erosion; stones smoothed over millennia',
+    '🌫️': 'obscured horizons, soft morning damp',
+    '🌬️': 'the invisible hands of nature',
+    '☁️': 'soft, diffused, ever-changing',
+    '⛅': 'hazy light, half withheld',
+    '🌙': 'night cycles; reflective, slow pacing',
+    '🕸️': "nature's temporary lace",
+    '🥀': 'mono no aware — the beauty in aging',
+    '☄️': 'cosmic matter, fleeting light',
+    '✨': 'stardust, used sparingly',
+    '🧺': 'woven willow and seagrass; hand-gathered',
+    '🧵': 'natural fibre, weaving, macramé',
+    '🪘': 'taut hide on hollow wood; old rhythm',
+    '🧉': 'slow mornings, herbal steeping',
+    '🕯️': 'melting wax, ephemeral light',
+    '🛖': 'built entirely from the ground it stands on'
+  };
+
+  // Whole weeks since the epoch. A property of the date, not of the visit, so
+  // two readers on the same day see the same mark.
+  function weekIndex() { return Math.floor(Date.now() / 86400000 / 7); }
+
+  function markFor(day) {
+    var set = MARKS[day] || MARKS.thu;
+    return set[weekIndex() % set.length];
+  }
+
   function todayKey() {
     var k = document.documentElement.getAttribute('data-palette');
     return GROUND[k] ? k : null;
@@ -144,90 +238,116 @@
     return (0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]) < 128;
   }
 
-  function paletteNoteMarkup() {
+
+
+
+  // ---- nav control -------------------------------------------------------
+  //
+  // The footer panel works, but almost nobody scrolls to a footer to discover a
+  // feature. This puts the same control where a reader already goes to change
+  // how the site looks: beside the theme toggle.
+  //
+  // Injected rather than written into the nav markup because that nav exists in
+  // four places -- sync_blog.py, index.html, now.html, resume.html -- and the
+  // ~40 arch pages are never regenerated, so a markup change would miss them.
+  // .theme-toggle is on all of them, which makes it the one reliable anchor.
+  function buildNavControl() {
     var k = todayKey();
-    if (!k) return '';                 // page does not rotate; claim nothing
-    return '' +
-      '<p class="pal-note">' +
-        '<button type="button" class="pal-toggle" aria-expanded="false" ' +
-                'aria-controls="pal-why">' +
-          DAY_NAMES[k] + ' is <span class="pal-name">' + GROUND[k].name + '</span>' +
-          '<span class="pal-caret" aria-hidden="true">&#8964;</span>' +
-        '</button>' +
-      '</p>' +
-      '<div class="pal-why" id="pal-why" hidden></div>';
-  }
+    if (!k) return;                                   // page does not rotate
+    var anchor = document.querySelector('nav .theme-toggle');
+    if (!anchor || document.querySelector('.pal-nav')) return;
 
-  function whyMarkup() {
-    var k = todayKey();
-    var dark = pageIsDark();
-    var swatches = DAYS.map(function (d) {
-      return '<button type="button" class="pal-day' + (d === k ? ' is-today' : '') +
-                   '" data-day="' + d + '" ' +
-                   'title="Preview ' + DAY_NAMES[d] + ' &mdash; ' + GROUND[d].name + '">' +
-               '<span class="pal-sw" style="background:' +
-                 GROUND[d][dark ? 'dark' : 'light'] + '"></span>' +
-               '<span class="pal-ini">' + DAY_NAMES[d].charAt(0) + '</span>' +
-             '</button>';
-    }).join('');
-    return '' +
-      '<p><strong>' + cap(GROUND[k].name) + '</strong> &mdash; ' + GROUND[k].note +
-        '.<br><span class="pal-mean">' + GROUND[k].mean + '</span></p>' +
-      '<div class="pal-week" role="img" aria-label="The seven weekday grounds, ' +
-        'Sunday through Saturday">' + swatches + '</div>' +
-      '<p class="pal-legend">' + DAYS.map(function (d) {
-        return (d === k ? '<b>' : '') + GROUND[d].name + (d === k ? '</b>' : '');
-      }).join(' &middot; ') + '</p>' +
-      '<p class="pal-hint">' +
-        (chosen() ? 'Yours, until you change it. ' +
-                    '<button type="button" class="pal-reset">Follow the day instead</button>'
-                  : 'Pick one to keep it, or let it follow the day.') +
-      '</p>';
-  }
+    var wrap = document.createElement('div');
+    wrap.className = 'pal-nav';
+    wrap.innerHTML =
+      '<button type="button" class="pal-nav-btn" aria-expanded="false" ' +
+              'aria-haspopup="true"><span class="pal-nav-dot"></span></button>' +
+      '<div class="pal-menu" hidden></div>';
+    anchor.parentNode.insertBefore(wrap, anchor);
 
-  function relabel(d) {
-    var lbl = document.querySelector('.pal-toggle');
-    if (!lbl) return;
-    lbl.innerHTML = DAY_NAMES[d] + ' is <span class="pal-name">' + GROUND[d].name +
-      '</span><span class="pal-caret" aria-hidden="true">&#8964;</span>';
-  }
+    var btn  = wrap.querySelector('.pal-nav-btn');
+    var menu = wrap.querySelector('.pal-menu');
+    paintNavDot();
 
-  function wirePaletteNote() {
-    if (!todayKey()) return;
-    var btn = document.querySelector('.pal-toggle');
-    var why = document.getElementById('pal-why');
-    if (!btn || !why) return;
-    // Clicking a day repaints the whole page, live. The seven grounds differ by
-    // 4-5 deltaE -- real, but far below what a row of 24px swatches can show, so
-    // describing the rotation in words was never going to land. Applying it to
-    // the page the reader is already looking at is the only demonstration that
-    // works. data-palette is the same attribute the <head> setter writes, so
-    // every rule keyed on it follows with no reload.
-    why.addEventListener('click', function (e) {
-      if (e.target.classList && e.target.classList.contains('pal-reset')) {
-        try { localStorage.removeItem('paletteDay'); } catch (e3) {}
-        var back = DAYS[new Date().getDay()];
-        document.documentElement.setAttribute('data-palette', back);
-        why.innerHTML = whyMarkup();
-        relabel(back);
-        return;
-      }
-      var day = e.target.closest && e.target.closest('[data-day]');
-      if (!day) return;
-      var d = day.getAttribute('data-day');
-      document.documentElement.setAttribute('data-palette', d);
-      try { localStorage.setItem('paletteDay', d); } catch (e2) {}
-      why.innerHTML = whyMarkup();                       // redraw for the new day
-      relabel(d);
-    });
-
-    btn.addEventListener('click', function () {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
       var open = btn.getAttribute('aria-expanded') === 'true';
-      if (!open && !why.innerHTML) why.innerHTML = whyMarkup();   // build on first open
+      if (!open) menu.innerHTML = menuMarkup();
       btn.setAttribute('aria-expanded', open ? 'false' : 'true');
-      why.hidden = open;
+      menu.hidden = open;
+    });
+
+    menu.addEventListener('click', function (e) {
+      var row = e.target.closest && e.target.closest('[data-day]');
+      if (row) { applyDay(row.getAttribute('data-day'), true); }
+      else if (e.target.closest && e.target.closest('.pal-menu-reset')) { applyDay(null, true); }
+      else { return; }
+      menu.innerHTML = menuMarkup();
+    });
+
+    document.addEventListener('click', function (e) {
+      if (!wrap.contains(e.target) && btn.getAttribute('aria-expanded') === 'true') {
+        btn.setAttribute('aria-expanded', 'false'); menu.hidden = true;
+      }
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { btn.setAttribute('aria-expanded', 'false'); menu.hidden = true; }
     });
   }
+
+  function paintNavDot() {
+    var dot = document.querySelector('.pal-nav-dot');
+    if (!dot) return;
+    var k = todayKey();
+    var m = markFor(k);
+    dot.textContent = m;
+    if (dot.parentNode) {
+      dot.parentNode.title = DAY_NAMES[k] + ' — ' + GROUND[k].name +
+                             ' · ' + m + ' ' + (MARK_MEAN[m] || '');
+    }
+  }
+
+  function menuMarkup() {
+    var k = todayKey(), dark = pageIsDark(), pinned = chosen();
+    var m = markFor(k);
+    // The head of the menu carries what the footer panel used to say: the
+    // colour, what it means, and what today's mark is. Three lines, each a step
+    // dimmer than the last.
+    return '<div class="pal-menu-head">' +
+             '<strong>' + cap(GROUND[k].name) + '</strong> — ' + GROUND[k].note +
+             '<span class="pal-mean">' + GROUND[k].mean + '</span>' +
+             '<span class="pal-mark-line">' + m + ' ' + (MARK_MEAN[m] || '') + '</span>' +
+           '</div>' +
+           DAYS.map(function (d) {
+      var mk = markFor(d);
+      return '<button type="button" class="pal-row' + (d === k ? ' is-on' : '') +
+                   '" data-day="' + d + '" title="' + mk + '  ' + (MARK_MEAN[mk] || '') + '">' +
+               '<span class="pal-chip" style="background:' + GROUND[d][dark ? 'dark' : 'light'] + '"></span>' +
+               '<span class="pal-row-mark">' + mk + '</span>' +
+               '<span class="pal-row-day">' + DAY_NAMES[d] + '</span>' +
+               '<span class="pal-row-name">' + GROUND[d].name + '</span>' +
+             '</button>';
+    }).join('') +
+    '<div class="pal-menu-foot">' +
+      (pinned ? '<button type="button" class="pal-menu-reset">Follow the day</button>'
+              : '<span>Following the day</span>') +
+    '</div>';
+  }
+
+  // One place changes the palette, so the nav menu, the footer panel and the
+  // stored preference cannot drift apart. d === null means "follow the weekday".
+  function applyDay(d, persist) {
+    var day = d || DAYS[new Date().getDay()];
+    document.documentElement.setAttribute('data-palette', day);
+    if (persist) {
+      try {
+        if (d) localStorage.setItem('paletteDay', d);
+        else   localStorage.removeItem('paletteDay');
+      } catch (e) {}
+    }
+    paintNavDot();
+  }
+
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initFooter, { once: true });
