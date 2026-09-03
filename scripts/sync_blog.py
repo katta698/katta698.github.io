@@ -1561,9 +1561,13 @@ def html_head(title, description, canonical, extra="", og_type="website",
 
 
 def nav_html(show_search=True, show_audio=False):
-    search_btn = """  <button class="nav-icon-btn" id="nav-search-btn" aria-label="Search" title="Search posts">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-  </button>""" if show_search else ""
+    # Search removed from the nav. It revealed a client-side filter over titles,
+    # excerpts and tags -- which the 23 filter pills below the hero already do,
+    # by series, tag and year, without a hidden control. Semantic search over
+    # post CONTENT is the Ask widget, which is a different and better tool.
+    # show_search is kept so callers do not all need editing; it now does
+    # nothing.
+    search_btn = ""
     audio_btn = """  <button class="audio-toggle" id="audio-toggle" onclick="toggleBlogAudio()" title="Toggle beach sounds">🎻</button>""" if show_audio else ""
     return f"""<nav class="nav">
   <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
@@ -2744,12 +2748,6 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
   </div>
   <div class="hero-typer">$ <span id="hero-typer-text"></span><span class="hero-typer-cursor">|</span></div>
 </section>
-<div class="search-bar-wrap" id="search-bar-wrap">
-  <div class="search-bar-inner">
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    <input id="blog-search" type="search" placeholder="I'm looking for…" autocomplete="off"/>
-  </div>
-</div>
 <div class="filters">
   {filter_pills}
 </div>
