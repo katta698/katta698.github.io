@@ -212,6 +212,17 @@ STOP_TAGS = {
 }
 
 
+# Regions are places, not services, and there are too many to list. Enumerating
+# GovCloud alone left "AWS Asia Pacific" and "AWS Europe" filed beside EC2 in
+# the service row, where a reader would read them as things to filter by.
+STOP_PATTERNS = re.compile(
+    r"^(?:AWS|Amazon|Azure|Microsoft)\s+(?:"
+    r"Asia\s+Pacific|Europe|US\s+(?:East|West)|Africa|Middle\s+East|"
+    r"South\s+America|Canada|China|Israel|Government|Gov\b|"
+    r"Region|Regions|Availability\s+Zone|Local\s+Zones?"
+    r")\b", re.I)
+
+
 def _canonical(phrase, cloud):
     """Snap a raw title fragment to catalogue names it contains.
 
@@ -294,7 +305,8 @@ def tag(cloud, record):
         names += got
         tiers.append("catalogue")
 
-    names = [n for n in names if n.lower() not in STOP_TAGS]
+    names = [n for n in names
+             if n.lower() not in STOP_TAGS and not STOP_PATTERNS.match(n)]
     # Prefer the longest form of overlapping names, then de-duplicate.
     keep = [n for n in names
             if not any(n != o and n.lower() in o.lower() for o in names)]

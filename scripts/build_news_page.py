@@ -266,6 +266,7 @@ function toggleTheme(){
 applyTheme(localStorage.getItem('theme') !== 'light');
 
 var DATA = [], cloud = 'all', days = 30, svc = '', shown = 60;
+var allSvcs = false;   // is the service pill row expanded?
 var NAMES = {aws:'AWS', azure:'Azure', gcp:'Google Cloud'};
 
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){
@@ -334,17 +335,41 @@ function buildPills(){
 
   var counts = {};
   filtered().forEach(function(r){ r.s.forEach(function(s){ counts[s]=(counts[s]||0)+1; }); });
-  var top = Object.keys(counts).sort(function(a,b){return counts[b]-counts[a] || a.localeCompare(b);}).slice(0,18);
+  var names = Object.keys(counts).sort(function(a,b){
+    return counts[b]-counts[a] || a.localeCompare(b); });
+
+  // Showing the busiest 18 and stopping silently made the row read as the
+  // complete list of services. It was not close: AWS over 7 days has 52, and
+  // all three clouds over 30 days have 208 -- so 190 were hidden with nothing
+  // on the page admitting it. A reader filtering by service would conclude
+  // their service had no news, which is the confidently-incomplete answer this
+  // whole thing exists to avoid.
+  var CAP = 18;
+  var shownNames = allSvcs ? names : names.slice(0, CAP);
+  var rest = names.length - shownNames.length;
+
   document.getElementById('svcs').innerHTML =
     (svc ? '<button class="pill on" data-svc="">&times; ' + esc(svc) + '</button>' : '')
-    + top.filter(function(s){return s!==svc;}).map(function(s){
+    + shownNames.filter(function(s){return s!==svc;}).map(function(s){
         return '<button class="pill" data-svc="' + esc(s) + '">' + esc(s)
-             + ' <span style="opacity:.55">' + counts[s] + '</span></button>';}).join('');
+             + ' <span style="opacity:.55">' + counts[s] + '</span></button>';}).join('')
+    + (rest > 0
+        ? '<button class="pill" data-more="1">+' + rest + ' more service'
+          + (rest === 1 ? '' : 's') + '</button>'
+        : (allSvcs && names.length > CAP
+            ? '<button class="pill" data-more="0">show fewer</button>' : ''));
 }
 
 document.addEventListener('click', function(e){
   var b = e.target.closest('.pill'); if(!b) return;
-  if(b.dataset.cloud) { cloud = b.dataset.cloud; svc = ''; }
+  if(b.dataset.more !== undefined){
+    // Expand/collapse only -- must not reset the result list or the reader
+    // loses their place just for looking at what else is available.
+    allSvcs = b.dataset.more === '1';
+    buildPills();
+    return;
+  }
+  if(b.dataset.cloud) { cloud = b.dataset.cloud; svc = ''; allSvcs = false; }
   else if(b.dataset.days !== undefined) days = parseInt(b.dataset.days, 10);
   else if(b.dataset.svc !== undefined) svc = b.dataset.svc;
   shown = 60; buildPills(); render();
