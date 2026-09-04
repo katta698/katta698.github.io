@@ -200,6 +200,27 @@ document.documentElement.setAttribute('data-palette',p);})();
   #q:focus{outline:none;border-color:var(--accent)}
   .count{font-family:var(--mono);font-size:.72rem;color:var(--text-muted);margin-left:auto;white-space:nowrap}
 
+  /* The control block is sticky, which is right on a desktop and wrong on a
+     phone. Measured on 2026-09-04: 574px tall on an iPhone 14, eating 75% of
+     the viewport and leaving THREE results visible while scrolling. On a
+     1280px desktop the same block is 234px, 32%, and eleven results.
+     Two causes, both fixed here.
+
+     One: it stops being sticky on a narrow screen. Scrolling back to the top
+     for the filters is the normal phone gesture, and it is a far smaller cost
+     than surrendering three quarters of every screenful.
+
+     Two: nineteen service pills wrap to about thirteen rows at 390px. They
+     become a single horizontally-scrollable row, which is the usual mobile
+     pattern and keeps the block short when you do scroll up to it. */
+  @media(max-width:820px){
+    .controls{position:static;top:auto;padding-bottom:.5rem}
+    #svcs{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;
+          scrollbar-width:none;padding-bottom:.3rem}
+    #svcs::-webkit-scrollbar{display:none}
+    .count{margin-left:0}
+  }
+
   .day{font-family:var(--mono);font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;
        color:var(--text-muted);margin:1.4rem 0 .5rem;padding-bottom:.3rem;border-bottom:1px solid var(--border)}
   .item{display:flex;gap:.7rem;padding:.55rem 0;border-bottom:1px solid transparent}
@@ -284,6 +305,11 @@ var DATA = [], cloud = 'all', days = 30, svc = '', shown = 60;
 var allSvcs = false;   // is the service pill row expanded?
 var more = false, MORE = null, moreLoading = false;
 var NAMES = {aws:'AWS', azure:'Azure', gcp:'Google Cloud'};
+// Short form for the per-row chip only. "GOOGLE CLOUD" spelled out is
+// ~180px of a 390px phone screen on EVERY row, forcing the headline to
+// wrap harder for no information -- the filter pill above still says the
+// full name, so nothing is lost.
+var SHORT = {aws:'AWS', azure:'Azure', gcp:'GCP'};
 
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){
   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
@@ -366,7 +392,7 @@ function render(){
     if(r.st) meta.push('<span class="status">' + esc(r.st) + '</span>');
     if(r.s.length) meta.push(esc(r.s.join(' &middot; ').replace(/&amp;middot;/g,'\\u00b7')));
     html += '<div class="item">'
-      + '<span class="chip ' + r.c + '">' + esc(NAMES[r.c] || r.c) + '</span>'
+      + '<span class="chip ' + r.c + '">' + esc(SHORT[r.c] || r.c) + '</span>'
       + '<div class="body">'
       + '<a class="title" href="' + esc(r.u) + '" target="_blank" rel="noopener">' + esc(r.t) + '</a>'
       + (meta.length ? '<div class="meta">' + meta.join(' &middot; ') + '</div>' : '')
