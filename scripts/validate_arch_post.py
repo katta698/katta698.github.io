@@ -585,9 +585,27 @@ def check_page(slug, spec):
             err(slug, 'site nav contains %d link(s) that are not site links: %s '
                       '— something wrote page content into the header'
                 % (len(stray), ', '.join(s[:40] for s in stray)))
-        if len(items) != 3:
-            err(slug, 'site nav has %d links, expected 3 (Home, Blog, Resume)'
-                % len(items))
+        #     The COUNT is a moving target, and hardcoding it caused a false
+        #     failure on every push for a day. d428926 dropped Resume from the
+        #     site nav ("Make the home nav look like the blog nav, and drop
+        #     Resume from both"), so sync-built pages now render Home + Blog,
+        #     while the 85 pages built from the arch template still carry the
+        #     three-link version. Both are legitimate site chrome today; only
+        #     one of them is the intended end state.
+        #
+        #     So: two links is current, three is the legacy arch template and
+        #     is reported as a warning rather than a failure. Anything else
+        #     means something wrote into the nav, which is what this is for.
+        labels = [re.sub(r'<[^>]+>', '', i).strip() for i in items]
+        if labels == ['Home', 'Blog']:
+            pass
+        elif labels == ['Home', 'Blog', 'Resume']:
+            warn(slug, 'site nav still has the legacy Resume link - built from '
+                       'the arch template, which d428926 did not update. '
+                       '85 pages are in this state')
+        else:
+            err(slug, 'site nav is %d link(s): %s - expected Home, Blog'
+                % (len(labels), ', '.join(labels)))
 
     # 5. Wide tables need their own scroll container or the last column is
     #    unreachable on mobile. Which wrapper is valid depends on the series:
