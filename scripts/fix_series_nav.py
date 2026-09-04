@@ -131,9 +131,9 @@ def load_order():
     file does not yet contain the post just built, and using it would set the
     predecessor's Next from an order the new post is missing from.
 
-    It mirrors sync_blog.py's rule deliberately: every post with a usable title
-    and date, sorted by date descending. `check_matches_sync` below verifies that
-    claim against cards.json instead of trusting this comment.
+    It mirrors sync_blog.py's rule deliberately: every non-draft post with a
+    usable title and date, sorted by date descending. `check_matches_sync` below
+    verifies that claim against cards.json instead of trusting this comment.
     """
     out = []
     for path in glob.glob(os.path.join(ROOT, "posts", "*.html")):
@@ -143,6 +143,14 @@ def load_order():
         try:
             fm = yaml.safe_load(raw.split("---", 2)[1]) or {}
         except yaml.YAMLError:
+            continue
+        # Drafts are not in the chain. sync_blog.py drops them from cards.json
+        # and builds their page unlisted, so counting one here put a Next link
+        # on a published page pointing at a post no reader can reach -- and made
+        # check_matches_sync fail for as long as any draft sat in posts/, which
+        # blocks publishing something unrelated. Seen 2026-09-04: a Week 17 lab
+        # draft in the tree tried to become the Next of the newest Azure post.
+        if fm.get("draft"):
             continue
         title, slug, date = fm.get("title"), fm.get("slug"), fm.get("date")
         if not (title and slug and date):

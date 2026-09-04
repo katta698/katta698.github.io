@@ -256,10 +256,20 @@
     ['🎹', 'Keyboard']
   ];
 
-  // Whole days since the epoch, matching weekIndex() above: a property of the
-  // date rather than of the visit, so everyone sees the same instrument today.
+  // Whole days since the epoch in LOCAL time -- a property of the date rather
+  // than of the visit, so everyone in a timezone sees the same instrument today.
+  //
+  // Date.now() straight through counts UTC days, which rolled the instrument
+  // over at 7pm in CDT: five hours before the palette, which keys on
+  // new Date().getDay() and turns at local midnight. Two things that are meant
+  // to change together were changing at different times of day, and the
+  // midnight repaint below was firing five hours after the fact.
   function instrumentToday() {
-    return INSTRUMENTS[Math.floor(Date.now() / 86400000) % INSTRUMENTS.length];
+    var d = new Date();
+    var localDays = Math.floor(
+      (d.getTime() - d.getTimezoneOffset() * 60000) / 86400000);
+    var n = INSTRUMENTS.length;
+    return INSTRUMENTS[((localDays % n) + n) % n];
   }
 
   function paintInstrument() {
