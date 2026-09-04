@@ -1,0 +1,289 @@
+---
+title: 'AWS Daily Intelligence #25 - Aurora MySQL Gets Delayed Replication, and an Hour of Lag Becomes a Recovery Window'
+date: '2026-09-04T10:00:00'
+slug: aws-daily-intelligence-aurora-delayed-replication
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-09-04'
+verified_claims:
+  - claim: "Delayed replication allows a binlog replica to intentionally lag behind its source by a set period of time, giving you a simple safeguard against human error and logical data corruption"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-aurora-mysql-multisourcerep-delayedrep/
+  - claim: "It enables quick recovery if harmful changes occur on the source by stopping replication to the replica before the change is applied and promoting it, without performing a full database restore"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-aurora-mysql-multisourcerep-delayedrep/
+  - claim: "Multi-source replication lets a single Aurora MySQL cluster replicate from multiple source databases at the same time, making it easier to consolidate data from separate MySQL databases"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-aurora-mysql-multisourcerep-delayedrep/
+  - claim: "Both capabilities are supported on Aurora MySQL version 8.4.8 and higher, in all AWS Regions where Aurora MySQL is available"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-aurora-mysql-multisourcerep-delayedrep/
+  - claim: "With delayed replication, you specify the minimum amount of time, in seconds, to delay replication from the source to the read replica"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_MySQL.Replication.ReadReplicas.DelayReplication.html
+  - claim: "Use stored procedures to configure delayed replication. You can't configure delayed replication with the AWS Management Console, the AWS CLI, or the Amazon RDS API"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_MySQL.Replication.ReadReplicas.DelayReplication.html
+  - claim: "Run the mysql.rds_set_configuration stored procedure with the target delay parameter, for example call mysql.rds_set_configuration('target delay', 3600) to specify that replication is delayed by at least one hour for any read replica created from the current DB instance"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_MySQL.Replication.ReadReplicas.DelayReplication.html
+  - claim: "To modify delayed replication for an existing read replica, stop replication, run mysql.rds_set_source_delay, and start replication again"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_MySQL.Replication.ReadReplicas.DelayReplication.html
+  - claim: "After stopping replication to the read replica, you can start replication and then stop it at a specified binary log file location using the mysql.rds_start_replication_until stored procedure"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_MySQL.Replication.ReadReplicas.DelayReplication.html
+  - claim: "Replication stops automatically when the stop point is reached, and the RDS event generated is: Replication has been stopped since the replica reached the stop point specified by the rds_start_replication_until stored procedure"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_MySQL.Replication.ReadReplicas.DelayReplication.html
+  - claim: "If you use GTID-based replication, use the mysql.rds_start_replication_until_gtid stored procedure instead of the mysql.rds_start_replication_until stored procedure"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_MySQL.Replication.ReadReplicas.DelayReplication.html
+  - claim: "You can create up to 15 read replicas from one DB instance within the same Region"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_MySQL.Replication.ReadReplicas.html
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      Aurora MySQL gained two replication features yesterday, on <strong>version 8.4.8 and higher, in all AWS Regions where Aurora MySQL is available</strong>. Multi-source replication is the one with the obvious use case. Delayed replication is the one worth rearranging a recovery plan around.
+    </p>
+    <p>
+      Delayed replication <em>allows a binlog replica to intentionally lag behind its source by a set period of time, giving you a simple safeguard against human error and logical data corruption</em>. You set a delay — say an hour — and the replica applies each change an hour after the source did.
+    </p>
+    <p>
+      That sounds like a defect until you consider the failure it addresses. A <code>DROP TABLE</code> run against production is not a fault; it is a valid statement, executed correctly, and replicated correctly to every standby you own within milliseconds. Multi-AZ does not help. A read replica does not help. Every high-availability mechanism you have faithfully reproduces the mistake. A delayed replica is the only copy that has not been told yet.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Feature</th><th>What it does</th><th>Named use</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Delayed replication</strong></td>
+            <td>A binlog replica intentionally lags the source by a set period</td>
+            <td>Safeguard against human error and logical data corruption; a fallback during upgrades; inspecting earlier data states</td>
+          </tr>
+          <tr>
+            <td><strong>Multi-source replication</strong></td>
+            <td>One cluster replicates from several sources at once</td>
+            <td>Merging shards, or aggregating regional and departmental databases into a central location for reporting and backups</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The recovery claim is the part to read carefully: it enables quick recovery <em>by stopping replication to the replica before the change is applied and promoting it, <strong>without performing a full database restore</strong></em>. That last clause is where the operational value sits, and the rest of this post is about what it costs you.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-025-aurora-delayed-replication.svg" alt="Diagram: a destructive statement applies on the source at 14:12 while a replica with a one-hour delay is still at 13:12; the hour between them is the detection budget, within which you stop replication, replay to just before the bad position and promote. Below, the delay tradeoff between detection time and standby staleness, and the fact that delayed replication is configured only by stored procedure." />
+      <figcaption>The gap between the two timelines is not lag. It is how long you have to notice.</figcaption>
+    </figure>
+
+    <h3>The delay is a detection budget</h3>
+    <p>
+      Set <code>target delay</code> to 3600 and you have bought exactly one hour. Within that hour a destructive statement exists on the source and has not reached the replica, and the whole recovery is available. After it, the replica has applied the statement too and you are back to restoring from a snapshot.
+    </p>
+    <p>
+      So the number is not a performance setting, it is an answer to "how long does it take us to notice a bad statement" — and most teams have not measured that. An hour is the common default and is optimistic for a data corruption discovered by a downstream report. Twenty-four hours is defensible for a database whose damage surfaces in the next day's reconciliation, and expensive for other reasons below.
+    </p>
+
+    <h3>Recovery is three procedure calls, not a restore</h3>
+    <p>
+      The documented sequence is short, and the middle step is the interesting one:
+    </p>
+    <ul>
+      <li><strong>Stop</strong> replication with <code>mysql.rds_stop_replication</code>, before the bad change is sent.</li>
+      <li><strong>Replay forward</strong> to just before the damage. <em>After stopping replication to the read replica, you can start replication and then stop it at a specified binary log file location using the <code>mysql.rds_start_replication_until</code> stored procedure.</em> On GTID-based replication, use <code>mysql.rds_start_replication_until_gtid</code> instead.</li>
+      <li><strong>Promote</strong> the replica to a standalone instance.</li>
+    </ul>
+    <p>
+      That middle step is what makes this better than a point-in-time restore rather than merely faster. You are not choosing a timestamp and hoping; you are replaying the binary log up to a named position and stopping there. And AWS emits a specific RDS event when it lands — <em>Replication has been stopped since the replica reached the stop point specified by the <code>rds_start_replication_until</code> stored procedure</em> — so the stop is observable rather than something you infer.
+    </p>
+
+    <h3>The configuration lives somewhere your tooling cannot see</h3>
+    <p>
+      This is the detail most likely to cause trouble later, and it is stated flatly in the documentation: <strong>use stored procedures to configure delayed replication. You can't configure delayed replication with the AWS Management Console, the AWS CLI, or the Amazon RDS API.</strong>
+    </p>
+    <p>
+      Two calls, depending on timing. Before creating replicas, <code>call mysql.rds_set_configuration('target delay', 3600)</code> on the source, and any replica created afterwards inherits it. For a replica that already exists, stop replication, <code>call mysql.rds_set_source_delay(3600)</code>, start it again.
+    </p>
+    <p>
+      Because none of that is an API call, the delay does not appear in Terraform state, in a CloudFormation template, in Config, or in any drift report. A replica rebuilt by a pipeline comes back with no delay and nothing anywhere says so — the resource exists, is healthy, and is silently no longer the thing your recovery plan assumes.
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      The value is a class of incident that currently has no good answer. Ask what happens today if someone runs a destructive statement against production at 14:12 and it is noticed at 14:40. The honest answer in most estates is a point-in-time restore: a new cluster, a wait proportional to database size, a cutover, and an RTO measured in hours during which the application is down or serving stale data.
+    </p>
+    <p>
+      With an hour of delay the answer becomes: stop replication, replay to 14:11, promote. The database is already running and already warm. AWS's phrase for it — <em>without performing a full database restore</em> — is the entire difference, and it is the difference between an RTO of hours and one of minutes.
+    </p>
+    <p>
+      Multi-source is a smaller story but a real one: <em>merging shards or aggregating data from separate databases, such as regional or departmental instances, into a central location for operational workflows, such as reporting and backups</em>. It removes a category of ETL that exists only to move rows between MySQL instances.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      Delayed replication is a control against insider action as much as against accident, and it is unusual in being effective against a legitimate credential doing a legitimate thing. Nothing in IAM distinguishes an authorised <code>DELETE</code> from a malicious one; the delay does, by giving you time to reach a different conclusion before the second copy is affected.
+    </p>
+    <p>
+      Two consequences follow. The delayed replica must be reachable by fewer people than the source, or it is simply a second copy an attacker deletes second. And the promotion path needs its own authorisation: promoting a replica is a data-plane decision with production consequences, so it belongs behind the same approval as any other break-glass action rather than in the hands of whoever noticed.
+    </p>
+    <p>
+      Worth noting for regulated estates: because the replica holds an earlier state of the data, it also holds data that may have been deleted for a reason. A subject-erasure request executed on the source is, for the length of the delay, not executed on the replica.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      A delayed replica is a full replica and costs like one: instance hours plus storage plus I/O. There is no discount for being behind.
+    </p>
+    <p>
+      The decision that actually costs money is whether this replica can double as something else, and the answer is usually no. It cannot serve current reads, because its data is deliberately stale. It should not be your disaster-recovery standby, because promoting it in a Region failure loses the delay period. It cannot be the reporting replica if the reports need today's numbers. In practice it is a dedicated instance whose only job is to be behind, which is a real line item to justify — and the justification is the RTO difference, so put a number on both sides before proposing it.
+    </p>
+    <p>
+      The headroom is there if you want several: <strong>you can create up to 15 read replicas from one DB instance within the same Region.</strong> Two delays — one short for fast-noticed errors, one long for slow-noticed ones — is a defensible pattern where the data justifies it.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      Three things to get right, in descending order of how likely they are to be missed.
+    </p>
+    <p>
+      <strong>The configuration is invisible to infrastructure as code.</strong> Since the delay is set by stored procedure, add an explicit check that reads the current delay on a schedule and alerts if it is zero or absent. Without it, the failure mode is a replica that looks correct in every dashboard and provides no protection at all.
+    </p>
+    <p>
+      <strong>The runbook has to be written before the incident.</strong> The recovery involves finding a binary log position just before a specific statement, under time pressure, with the delay counting down. That is not a thing to work out at 14:40. Write the sequence, including how you locate the position, and rehearse it — the rehearsal is cheap because it does not touch the source.
+    </p>
+    <p>
+      <strong>Monitor the delay as a value, not as lag.</strong> Standard replica lag alarms will fire continuously on a delayed replica, and the usual response is to silence them — which also silences the alarm for a replica that has genuinely fallen further behind than configured. Alert on the difference between actual lag and intended delay, not on lag itself.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Recovery mechanism</th><th>Handles a valid destructive statement?</th><th>RTO</th><th>Cost</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Multi-AZ failover</td>
+            <td><strong>No</strong> — the statement is on both</td>
+            <td>Seconds</td>
+            <td>Included</td>
+          </tr>
+          <tr>
+            <td>Ordinary read replica</td>
+            <td><strong>No</strong> — replicated within milliseconds</td>
+            <td>Minutes</td>
+            <td>An instance</td>
+          </tr>
+          <tr>
+            <td>Point-in-time restore</td>
+            <td>Yes</td>
+            <td>Hours, scaling with size</td>
+            <td>Included, plus the new cluster</td>
+          </tr>
+          <tr>
+            <td><strong>Delayed replica</strong></td>
+            <td><strong>Yes, within the delay window</strong></td>
+            <td>Minutes</td>
+            <td>A dedicated instance that can do nothing else</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      Set the delay on the source before creating the replica, which is the simpler of the two paths.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">Configure the delay, then create the replica</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>-- On the SOURCE, as the master user. Applies to replicas created after this.
+call mysql.rds_set_configuration('target delay', 3600);
+
+-- On an EXISTING replica, as the master user:
+call mysql.rds_stop_replication;
+call mysql.rds_set_source_delay(3600);
+call mysql.rds_start_replication;</code></pre>
+    </div>
+    <p>
+      The recovery path, which is the one to rehearse. Replication is already stopped by the delay, so the first move is to make sure it stays stopped while you find the position.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">Recovery &mdash; stop, replay to just before, promote</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>-- 1. Stop, so the delay cannot expire while you work.
+call mysql.rds_stop_replication;
+
+-- 2. Replay forward to just before the damaging statement.
+call mysql.rds_start_replication_until(
+  'mysql-bin-changelog.000777',
+  120);
+-- GTID-based replication uses rds_start_replication_until_gtid instead.
+-- Replication stops automatically at the position and RDS emits an event.
+
+-- 3. Promote the replica to a standalone instance, then repoint the app.</code></pre>
+    </div>
+    <p>
+      Then add the check that infrastructure as code cannot give you: a scheduled query confirming the configured delay is still what you intended, alerting if it is zero.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <ul>
+      <li><strong>Choose the delay from your measured detection time, not from a round number.</strong> The delay is how long you have to notice; if nobody knows how long that takes today, that is the first thing to find out.</li>
+      <li><strong>Do not make this replica do a second job.</strong> Not DR, not reporting, not read scaling. Each of those wants current data and this one is deliberately not current.</li>
+      <li><strong>Alert on delay drift, not on lag.</strong> A delayed replica always looks lagged; the alarm you need is that actual lag no longer matches intended delay.</li>
+      <li><strong>Rehearse the replay-and-promote path.</strong> Finding a binlog position under pressure is the step that goes wrong, and rehearsing it costs nothing on the source.</li>
+      <li><strong>Check the delay exists on a schedule.</strong> It is set by stored procedure, so no drift detection, template or Config rule will tell you it went missing.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt this</h2>
+    <p>
+      Anyone on <strong>Aurora MySQL 8.4.8 or higher whose worst realistic database incident is a bad statement rather than an infrastructure failure</strong> — which, for most mature estates, it is. If your existing answer to "someone dropped a table" is a point-in-time restore with an RTO in hours, this converts that to minutes for the cost of one instance.
+    </p>
+    <p>
+      Multi-source replication is for teams currently running ETL whose only purpose is moving rows between MySQL databases: sharded platforms consolidating for reporting, or a group with per-region databases and central analytics.
+    </p>
+    <p>
+      Skip it if your database is small enough that a point-in-time restore already meets your RTO. The dedicated instance is real money and the gain is proportional to how long a restore takes you.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li><strong>Delayed replication is the only mechanism that survives a correct-but-destructive statement.</strong> Multi-AZ and ordinary replicas reproduce it faithfully within milliseconds.</li>
+      <li><strong>The delay is a detection budget.</strong> Pick it from how long your team actually takes to notice, and accept that the replica is that much staler as a result.</li>
+      <li><strong>Recovery is stop, <code>rds_start_replication_until</code>, promote</strong> — replaying to a named binlog position rather than guessing a timestamp, and <em>without performing a full database restore</em>.</li>
+      <li><strong>It is configured by stored procedure only</strong> — not console, CLI or RDS API — so it is invisible to IaC and to drift detection, and a rebuilt replica silently comes back unprotected.</li>
+      <li><strong>Do not let it double as your DR replica.</strong> Promoting it during a Region failure throws away the delay period.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-aurora-mysql-multisourcerep-delayedrep/" target="_blank" rel="noopener">AWS What's New — Aurora MySQL supports multi-source replication and delayed replication</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_MySQL.Replication.ReadReplicas.DelayReplication.html" target="_blank" rel="noopener">AWS Documentation — Configuring delayed replication with MySQL</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_MySQL.Replication.ReadReplicas.html" target="_blank" rel="noopener">AWS Documentation — Working with MySQL read replicas</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/mysql-stored-proc-replicating.html" target="_blank" rel="noopener">AWS Documentation — MySQL stored procedures for replicating</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_ReadRepl.Promote.html" target="_blank" rel="noopener">AWS Documentation — Promoting a read replica to be a standalone DB instance</a></li>
+    </ul>
+  </div>
+</div>

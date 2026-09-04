@@ -92,6 +92,28 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 3 September 2026 — covered by post #25
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Multi-source replication and delayed replication, 8.4.8+ — a binlog replica that intentionally lags, recovering from a valid destructive statement by stopping before it applies and promoting, without a full restore | Aurora MySQL | **#25** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-aurora-mysql-multisourcerep-delayedrep/) |
+| Amazon Linux 2027 in public preview — a new major release starts the clock on the current one | Amazon Linux | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/announcing-amazon-linux-2027/) |
+| CVE-2026-85012 — OS command injection in the CodeCatalyst blueprints SDK | CodeCatalyst | open | Med-High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-095-aws/) |
+| TCP Reset for faster failure recovery — appliance failover stops waiting for timeouts | Gateway Load Balancer | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-gateway-load-balancer-tcp-reset/) |
+| PrivateLink for FIPS endpoints | S3 | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-s3-privatelink-fips-endpoints) |
+| Managed Daemons support non-critical daemons — a sidecar that can fail without taking the task with it | ECS | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/ecs-managed-daemons-non-critical/) |
+| API support for flat-rate pricing plans | CloudFront | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/cloudfront-flat-rate-pricing-plans-api/) |
+| CVE-2026-85028 — temporary file in a directory with insecure permissions | AWS FPGA Development Kit | open | Low-Med | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-096-aws/) |
+| Aurora MySQL 8.4.8 GA; Redshift rg.large single-node; SES S/MIME signing; MWAA CloudWatch monitoring; SageMaker Workflows Python and Bash operators; Quick Max; WorkSpaces Blackwell GPUs; Transform FSx ONTAP GA; P6-B200 Hyderabad and P6-B300 Jakarta | Aurora, Redshift, SES, MWAA, SageMaker, Quick, WorkSpaces, Transform, EC2 | skipped | Low | — |
+
+**Worth revisiting:** Amazon Linux 2027 entering preview is the strongest
+unwritten item and has a long tail — a new major release resets the support
+clock on AL2023, and the lifecycle inventory argument from arch #40 applies
+directly. Worth writing once the support dates are published rather than now,
+while it is still a preview with no end-of-life dates attached.
+
+---
+
 ## 2 September 2026 — covered by post #24
 
 | Item | Service | Status | Importance | Reference |
