@@ -1,0 +1,314 @@
+---
+title: 'Week 3 — The Pin Held. The Default Moved Anyway.'
+date: '2026-09-04T10:00:00'
+labels:
+- Azure
+- Terraform
+- Azure Weekly Lab
+slug: week-03-module-factory
+---
+<div id="jk-post">
+
+<div class="meta">
+  <span class="stack-badge">Azure Verified Modules</span>
+  <span class="stack-badge">HCP Terraform</span>
+  <span class="stack-badge">Private Registry</span>
+  <span class="stack-badge">Semantic Versioning</span>
+  <span class="stack-badge">Azure Storage</span>
+  <span class="stack-badge">Terraform</span>
+</div>
+
+<div class="post-eyebrow">Azure Platform Engineering Lab · Week 3 of 52</div>
+
+<h1>Week 3 — The Pin Held. The Default Moved Anyway.</h1>
+
+<p class="post-subtitle">A version pin protects a caller from a module changing
+underneath them. It does not protect them from choosing to upgrade — and one of
+the two breaking changes in this week's 2.0.0 produces no error at all.</p>
+
+<div class="post-meta">
+  <span>4 September 2026</span>
+  <span>Terraform · HCP Terraform, local execution</span>
+  <span>Pennies while running · $0 destroyed</span>
+</div>
+
+<div class="toc">
+  <h2>📋 In This Post</h2>
+  <ol>
+    <li><a href="#why">Why — The Problem This Solves</a></li>
+    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
+    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
+    <li><a href="#build">How We Built It — Step by Step</a></li>
+    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
+    <li><a href="#security">Security — Controls at Every Layer</a></li>
+    <li><a href="#cost">Cost</a></li>
+    <li><a href="#cleanup">Cleanup</a></li>
+    <li><a href="#references">References</a></li>
+    <li><a href="#takeaways">Key Takeaways</a></li>
+  </ol>
+</div>
+
+<h2 id="why">Why — The Problem This Solves</h2>
+
+<p>Weeks 1 and 2 built governance: a landing zone with a deny, then policies
+that repair what they find. Both assumed somebody was creating resources
+correctly in the first place. This week is about that somebody — the platform
+team who hands other teams a module and then has to live with every decision
+baked into it.</p>
+
+<p>Microsoft publishes Azure Verified Modules, and they are good. What they are
+not is <em>yours</em>. AVM ships a correct storage account; a platform team needs
+their storage account — the same resource with the arguments already decided, the
+tag their policy enforces already applied, and diagnostics already wired to the
+workspace the estate actually reads. The gap between those two is a wrapper
+module, and the wrapper is the easy part.</p>
+
+<p>The hard part is distribution. Point ten teams at
+<code>../../modules/storage-baseline</code> and every one of them is on whatever
+is in the working tree right now. A relative path has no version. So the
+question "which version of the storage module is the payments team running" has
+no answer — not a hard one, <em>no</em> answer — and the day you fix a default,
+you have changed every consumer simultaneously and told none of them.</p>
+
+<div class="callout amber">
+  <p><strong>A private registry is not a convenience.</strong> It is the thing
+  that makes a version pin mean something. Without it, "pinned" is a sentence in
+  a README. With it, a caller writes <code>version = "1.0.0"</code> and gets
+  exactly that content forever — and the interesting question becomes what
+  happens when you publish 2.0.0 next to it.</p>
+</div>
+
+<h2 id="skills">What You Need to Know — Skills &amp; Tools</h2>
+
+<ul>
+  <li><strong>Azure Verified Modules</strong> — Microsoft's maintained Terraform
+  modules. Worth knowing that they are built on the AzAPI provider, not azurerm:
+  the <code>azurerm</code> in the registry address is a namespace label, not a
+  dependency. Consuming one puts <code>azapi</code>, <code>modtm</code> and
+  <code>random</code> into your lock file whatever your own code uses.</li>
+  <li><strong>HCP Terraform's private registry</strong> — publishing by API
+  rather than a VCS connection, which is what lets a monorepo publish a single
+  subdirectory without splitting each module into its own repository.</li>
+  <li><strong>Semantic versioning as a contract</strong> — and specifically the
+  difference between a breaking change that fails loudly and one that does not
+  fail at all.</li>
+  <li><strong>Exact pins versus ranges</strong>, and why the right answer differs
+  depending on whether you are the module or the caller.</li>
+  <li><strong>A module's <code>version</code> must be a literal.</strong> It
+  cannot be a variable or a <code>-var</code> flag. Staging an upgrade is a code
+  change and a commit, never a runtime switch — which is precisely the property
+  that makes a pin worth anything.</li>
+</ul>
+
+<h2 id="architecture">Architecture — How It Fits Together</h2>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-03-module-factory/docs/blog/diagrams/week-03-architecture.svg" alt="Diagram: the week 3 module factory, showing storage-baseline wrapping an exactly pinned AVM module, publish.sh building a tarball from a git tag and pushing it to the HCP private registry as versions 1.0.0 and 2.0.0, two consumers in one state file pinned to different majors, and the loud and silent breaking changes each version difference produces" style="width:100%;max-width:880px" /></p>
+
+<p>Three pieces. A wrapper module in the lab's monorepo. A publish script that
+turns a git tag into a registry version. And a single Terraform configuration
+holding two consumers of that module, pinned to two different majors — which is
+not a contrived arrangement, it is the permanent condition of any platform team
+that owns a module and has no authority to make everyone upgrade on the same
+day.</p>
+
+<h3>The wrapper pins AVM exactly, and that is deliberate asymmetry</h3>
+
+<p>The wrapper pins <code>Azure/avm-res-storage-storageaccount/azurerm</code> at
+exactly <code>0.10.0</code> — not <code>~&gt; 0.10</code>. That is a different
+decision from the one a consumer of the wrapper makes, and the reason is that a
+wrapper's whole job is to be the stable thing. If it floated, a caller pinned to
+<code>storage-baseline</code> 1.0.0 could still have their storage account change
+underneath them, which is the exact outcome pinning was supposed to prevent. AVM
+is also pre-1.0, where semver permits a minor bump to break.</p>
+
+<h3>One workspace ID in, two diagnostic settings out</h3>
+
+<p>A storage account emits no logs of its own — only the
+<code>Transaction</code> metric. The read, write and delete audit events belong
+to the blob <em>service</em>, a separate ARM resource at
+<code>.../blobServices/default</code> with its own diagnostic setting. Asking
+for <code>allLogs</code> on the account is accepted and produces nothing, which
+is the sort of thing discovered during an incident rather than during a deploy.
+The wrapper takes one workspace ID and creates both settings, so no caller has
+to know that.</p>
+
+<h2 id="build">How We Built It — Step by Step</h2>
+
+<p><strong>1. The module, published from a tag.</strong>
+<code>publish.sh</code> builds the tarball with
+<code>git archive &lt;tag&gt;:&lt;path&gt;</code> — never from the working tree.
+A registry version is immutable, so a tarball built from a dirty checkout
+publishes a version matching no commit, and the only correction available is
+deleting a version other people may already be pinned to.</p>
+
+<p><strong>2. Two versions, one breaking change of each kind.</strong> 2.0.0
+carries exactly two differences from 1.0.0, chosen to be opposites:</p>
+
+<table>
+  <thead>
+    <tr><th></th><th>Change</th><th>How it reaches a caller</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>Loud</strong></td><td><code>log_analytics_workspace_id</code> becomes required</td><td><code>Missing required argument</code>, at plan. Nothing deploys</td></tr>
+    <tr><td><strong>Silent</strong></td><td><code>shared_access_key_enabled</code> defaults <code>true</code> → <code>false</code></td><td>No plan error, no apply error. Whatever authenticated with a shared key stops working at runtime</td></tr>
+  </tbody>
+</table>
+
+<p><strong>3. Two consumers, deployed in stages.</strong> Stage one creates
+<code>app_a</code> on 1.0.0. Stage two adds <code>app_b</code> on 2.0.0 beside
+it and never touches the first block again.</p>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-03-module-factory/docs/blog/screenshots/01-both-accounts-deployed.png" alt="Azure portal resource group blade showing two storage accounts and a Log Analytics workspace" style="width:100%" /></p>
+
+<p>The plan for stage two is the evidence, and it is a claim about a plan rather
+than about a deployment — so the script saves the plan, reports on it, and only
+then applies:</p>
+
+<pre><code>create   module.app_b[0]...azapi_resource.this
+create   module.app_b[0]...containers["data"]
+create   module.app_b[0]...diagnostic_setting_blob
+create   module.app_b[0]...diagnostic_setting_storage_account
+
+module.app_a changes in this plan: 0</code></pre>
+
+<p>Four resources created, every one of them <code>app_b</code>. A new major
+landed in the same state file and the consumer pinned to the old one did not
+move. That is what the pin buys.</p>
+
+<h2 id="challenges">Challenges — What Actually Went Wrong</h2>
+
+<h3>The silent break is only visible on deployed resources</h3>
+
+<p>Both accounts came from the same module, through the same code path, and
+neither call site mentions <code>shared_access_key_enabled</code> at all. Here is
+1.0.0:</p>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-03-module-factory/docs/blog/screenshots/02-v1-shared-key-enabled.png" alt="Azure portal storage account configuration blade with Allow storage account key access set to Enabled" style="width:100%" /></p>
+
+<p>And 2.0.0, with every other setting on the blade identical:</p>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-03-module-factory/docs/blog/screenshots/03-v2-shared-key-disabled.png" alt="Azure portal storage account configuration blade with Allow storage account key access set to Disabled" style="width:100%" /></p>
+
+<p>Nothing in either configuration says so. No plan flagged it. This is the half
+of a major bump that a range constraint hides completely — and a team that
+writes <code>~&gt; 2.0</code> after upgrading has re-armed it for 2.1.0.</p>
+
+<h3>An empty module published, and every signal said success</h3>
+
+<p>The first publish uploaded a valid 45-byte tarball containing nothing.
+<code>git archive &lt;tag&gt;:&lt;path&gt;</code> resolves the path relative to
+the current directory, and the script ran from the week directory with a
+repo-root-relative path — so it did not error. It resolved to an <em>empty
+tree</em>. The upload returned 200, the version reached status <code>ok</code>,
+and a consumer would have met the result as a module with no inputs rather than
+as a failure.</p>
+
+<p>Worse, the obvious guard does not work:
+<code>git rev-parse -q --verify "&lt;tag&gt;^{tree}:&lt;path&gt;"</code> still
+returns a hash for the missed path. The only honest check is counting the files
+in the tarball before uploading, which the script now does.</p>
+
+<h3>A pending version blocks its own retry</h3>
+
+<p>That failed publish created the 1.0.0 version record before it broke. The
+version then sat at status <code>pending</code>, and the retry was refused —
+"already exists, registry versions are immutable". A version awaiting an upload
+it will never receive has to be deleted through the API before republishing.
+Safe here only because nothing was pinned to it yet, which will not be true the
+second time this happens.</p>
+
+<h3>AVM nests deeply enough to hit Windows MAX_PATH</h3>
+
+<p>The AVM storage module pulls <code>avm-utl-interfaces</code> once per
+sub-resource, producing paths like
+<code>.terraform/modules/app_a.storage_account.queues.role_assignments.interfaces/.git/objects/pack/pack-&lt;sha&gt;.pack</code>.
+The clone fails with <code>Filename too long</code> — and it fails with
+<code>core.longpaths=true</code> set <em>and</em> the Windows
+<code>LongPathsEnabled</code> registry value already <code>0x1</code>. The module
+cache is relocatable and the configuration is not, so the fix is to move
+<code>TF_DATA_DIR</code> somewhere short rather than to move the repository.</p>
+
+<h3>A validation that failed on correct resources</h3>
+
+<p>Two checks reported failures against resources that were perfectly correct.
+<code>az</code> renders JSON booleans Python-style — <code>True</code> and
+<code>False</code>, capitalised — and the script compared against lowercase
+<code>"false"</code>. It is the same shape as a check that passes because the
+lookup broke, inverted: a check that fails because the comparison did.</p>
+
+<h2 id="security">Security — Controls at Every Layer</h2>
+
+<ul>
+  <li><strong>The baseline is not optional.</strong> TLS 1.2 minimum, HTTPS-only
+  transport, and anonymous blob access disabled are decided in the module, not
+  passed in by callers. A caller cannot forget them because there is no argument
+  to forget.</li>
+  <li><strong>2.0.0 turns shared keys off by default</strong> — the flipped
+  default that makes this week's point also happens to be the more secure
+  posture. A caller who genuinely needs keys can still ask for them, explicitly,
+  in their own code rather than inheriting it.</li>
+  <li><strong>The tag the estate enforces is applied at creation.</strong> Every
+  account carries <code>cost-center</code>, so week 2's remediation policy never
+  has to touch anything this module made.</li>
+  <li><strong>Diagnostics reach a workspace</strong> — account metrics and blob
+  service audit logs, and in 2.0.0 there is no way to opt out by omission.</li>
+  <li><strong>One honest exception:</strong>
+  <code>public_network_access_enabled</code> is <code>true</code>. The
+  alternative is a private endpoint, and a private endpoint without a linked
+  private DNS zone resolves to the public IP and fails in a way that looks like a
+  firewall problem. The zone estate is week 5; the module moves when it
+  exists.</li>
+</ul>
+
+<h2 id="cost">Cost</h2>
+
+<p>Two Standard LRS storage accounts and one Log Analytics workspace at
+PerGB2018 with 30-day retention. Nothing in this week has a per-hour price —
+no compute, no gateway, no firewall — so the bill is driven entirely by data,
+and this week stored and ingested essentially none. Pennies while running.</p>
+
+<h2 id="cleanup">Cleanup</h2>
+
+<p>Two kinds of thing were created and only one of them should go. The consumers
+— a resource group, a workspace, two storage accounts — cost money and prove
+nothing further, so they are deleted.</p>
+
+<p>The registry versions are <strong>kept</strong>. They cost nothing, they are
+the week's actual output, and deleting a published version is the one
+destructive act a module registry does not forgive: every configuration pinned
+to it stops initialising, including configurations owned by people who were
+never asked. The cleanup script takes a <code>--registry</code> flag to remove
+them and does not do it by default.</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li><a href="https://learn.microsoft.com/en-us/azure/storage/common/storage-account-overview" target="_blank" rel="noopener">Azure storage account overview</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/storage/common/shared-key-authorization-prevent" target="_blank" rel="noopener">Prevent Shared Key authorization for an Azure Storage account</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/storage/blobs/monitor-blob-storage" target="_blank" rel="noopener">Monitor Azure Blob Storage</a></li>
+  <li><a href="https://azure.github.io/Azure-Verified-Modules/" target="_blank" rel="noopener">Azure Verified Modules</a></li>
+  <li><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-03-module-factory" target="_blank" rel="noopener">Week 3 code in the lab repository</a></li>
+</ul>
+
+<h2 id="takeaways">Key Takeaways</h2>
+
+<ul>
+  <li><strong>A relative module path has no version.</strong> Every consumer is
+  on HEAD, and "which version is this team running" has no answer. That is the
+  problem a private registry solves, and it is not really about convenience.</li>
+  <li><strong>The pin protects the caller who does nothing.</strong> A new major
+  landed in the same state file and the 1.0.0 consumer's plan showed zero
+  changes.</li>
+  <li><strong>The dangerous breaking change is the one that does not break
+  anything.</strong> A required input fails loudly at plan and nobody gets hurt.
+  A flipped default applies cleanly and surfaces in production, in whatever was
+  still using the old behaviour.</li>
+  <li><strong>Pin exactly in the module, and exactly in the caller.</strong> A
+  range is a standing agreement to skip reading the diff, and the diff is the
+  actual safety mechanism.</li>
+  <li><strong>An immutable registry is unforgiving in both directions.</strong>
+  It will not let you fix a bad version, and it will not let you retry a failed
+  publish without deleting what the failure left behind.</li>
+</ul>
+
+</div>

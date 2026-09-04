@@ -1,0 +1,232 @@
+---
+title: "Azure Architecture Series #22 — Management Locks: CanNotDelete and ReadOnly"
+date: '2026-09-04T09:00:00'
+slug: azure-architecture-management-locks
+labels: [Azure, "Azure Architecture Series"]
+verified: '2026-09-03'
+verified_claims:
+  - claim: "As an administrator, you can lock an Azure subscription, resource group, or resource to protect them from accidental user deletions and modifications. The lock overrides any user permissions"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "CanNotDelete means authorized users can read and modify a resource, but they can't delete it"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "ReadOnly means authorized users can read a resource, but they can't delete or update it. Applying this lock is similar to restricting all authorized users to the permissions that the Reader role provides"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "Unlike with role-based access control (RBAC), you use management locks to apply a restriction across all users and roles"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "When you apply a lock at a parent scope, all resources within that scope inherit the same lock. Even resources you add later inherit the same parent lock. The most restrictive lock in the inheritance chain takes precedence"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "If you have a Delete lock on a resource and attempt to delete its resource group, the feature blocks the whole delete operation. Even if the resource group or other resources in the resource group are unlocked, the deletion doesn't happen. A partial deletion isn't possible"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "Locks only apply to control plane Azure operations and not to data plane operations"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "Locks prevent the POST method from sending data to the Azure Resource Manager API"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "A read-only lock on a storage account prevents users from listing the account keys. A POST request handles the Azure Storage List Keys operation to protect access to the account keys"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "A read-only lock also prevents the assignment of Azure RBAC roles that are scoped to the storage account or to a data container (blob container or queue)"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "A read-only lock or cannot-delete lock on a storage account doesn't protect its data from being deleted or modified. It also doesn't protect the data in a blob, queue, table, or file"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "A read-only lock on a resource group that contains a virtual machine prevents all users from starting or restarting a virtual machine. These operations require a POST method request"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "A read-only lock on a resource group that contains an automation account prevents all runbooks from starting. These operations require a POST method request"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "A cannot-delete lock on a resource group prevents Resource Manager from automatically deleting deployments in the history. If you reach 800 deployments in the history, your deployments fail"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "A read-only lock on a resource group prevents you from moving existing resources in or out of the resource group"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "Extension resources inherit locks from the resource to which they're applied"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "To create or delete management locks, you need access to Microsoft.Authorization/* or Microsoft.Authorization/locks/* actions. Users assigned to the Owner and the User Access Administrator roles have the required access"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "You can't add a lock to management groups"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "A resource lock doesn't block the subscription cancellation"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+  - claim: "Backups fail when there's a cannot-delete lock on the resource group created by Azure Backup Service. The service supports a maximum of 18 restore points. When locked, the backup service can't clean up restore points"
+    source: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">Azure Architecture Series &middot; #022 &middot; Foundations</div>
+  <h1 class="post-title">Management Locks: CanNotDelete and ReadOnly</h1>
+  <p class="post-subtitle">Two lock types, one of which does roughly what its name suggests. The other blocks operations nobody would call a write &mdash; and when a lock fires, the error names the locked scope, which is frequently not the resource you were touching.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Azure Governance &middot; Resource Manager &middot; Foundations</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Four posts have now been spent on Azure RBAC, and every one of them described a system that grants. Role assignments add permissions. Custom roles add permissions in a narrower shape. Deny assignments subtract, but you cannot create one directly. None of that helps with the most ordinary production accident there is: somebody with entirely legitimate Owner rights deletes the wrong thing.
+    </p>
+    <p>
+      Management locks are the answer to that specific problem, and they sit outside the access-control system rather than inside it. <strong>Unlike with role-based access control (RBAC), you use management locks to apply a restriction across all users and roles.</strong> The lock overrides any user permissions. It is not a permission at all &mdash; it is a property of the scope, applied to everyone who reaches it, including the person who created it.
+    </p>
+    <p>
+      There are exactly two of them. In the portal they are called Delete and Read-only; on the command line they are CanNotDelete and ReadOnly. The first behaves the way its name promises. The second is where estates get hurt, because the set of operations Azure classifies as a write is considerably larger than the set a reasonable engineer would guess.
+    </p>
+
+    <div class="callout amber">
+      <strong>A lock is not a security control</strong>
+      <p>Locks stop accidents, not attackers. Anyone with the rights to create a lock has the rights to remove it, and the removal is a single API call. The protection is against the slip, not the intent &mdash; and it is worth being clear about that before a lock ends up in a compliance document as though it were a boundary.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/az-022-management-locks.svg" style="width:100%;max-width:860px" alt="Diagram: Azure management locks, showing the two lock types CanNotDelete and ReadOnly and which operations each permits or blocks, the fact that locks apply only to control plane requests reaching management.azure.com while data plane requests to the service endpoint pass through untouched, downward inheritance from subscription to resource group to resource with the most restrictive lock winning, and the ScopeLocked error naming the locked parent scope rather than the resource the caller addressed" />
+      <figcaption>The two axes that decide whether a lock fires: which verb the request uses, and whether the request goes to Resource Manager at all. Inheritance runs downward only, and the error names the scope that holds the lock.</figcaption>
+    </figure>
+
+    <h3>The two types, stated precisely</h3>
+    <p>
+      <strong>CanNotDelete means authorized users can read and modify a resource, but they can't delete it.</strong> Reads work, writes work, deletes fail. It is the lock that does what its name says.
+    </p>
+    <p>
+      <strong>ReadOnly means authorized users can read a resource, but they can't delete or update it.</strong> The documentation offers a useful mental model: applying this lock is similar to restricting all authorized users to the permissions that the Reader role provides. That comparison is the right instinct and it is also the source of the trouble, because Reader is defined by which <em>actions</em> it holds, not by whether an operation feels like reading.
+    </p>
+
+    <h3>Inheritance runs downward, and the most restrictive wins</h3>
+    <p>
+      <strong>When you apply a lock at a parent scope, all resources within that scope inherit the same lock. Even resources you add later inherit the same parent lock. The most restrictive lock in the inheritance chain takes precedence.</strong> That last clause matters: locks do not negotiate. A ReadOnly lock on the subscription is not softened by a CanNotDelete lock on a resource group beneath it.
+    </p>
+    <p>
+      The inheritance also reaches sideways in a way that surprises people. <strong>Extension resources inherit locks from the resource to which they're applied.</strong> A diagnostic setting on a storage account is an extension resource, so locking the account locks the diagnostic setting too &mdash; which follows from the resource ID, since the setting's ID has the account's ID as its prefix.
+    </p>
+    <p>
+      There is one scope you cannot use. <strong>You can't add a lock to management groups.</strong> Locks start at the subscription and go down. If the governance requirement is "this must exist across every subscription in the group", a lock is not the mechanism &mdash; that is a policy question, which is where posts #14 through #17 went.
+    </p>
+
+    <h3>Deletion is all or nothing</h3>
+    <p>
+      <strong>If you have a Delete lock on a resource and attempt to delete its resource group, the feature blocks the whole delete operation. Even if the resource group or other resources in the resource group are unlocked, the deletion doesn't happen. A partial deletion isn't possible.</strong>
+    </p>
+    <p>
+      This is the behaviour worth designing around. One lock on one resource makes the entire resource group undeletable, which is either exactly what you wanted or a considerable nuisance six months later when a teardown script fails and nothing in the group explains why.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Is an Architecture Decision and Not a Deployment Flag</h2>
+
+    <h3>What a lock actually intercepts</h3>
+    <p>
+      <strong>Locks only apply to control plane Azure operations and not to data plane operations.</strong> Control plane requests go to <code>management.azure.com</code>; data plane requests go to the service instance, such as a storage account's own blob endpoint. A lock sits in front of the first and is nowhere near the second.
+    </p>
+    <p>
+      The consequence is blunt and worth stating in the plainest available terms. <strong>A read-only lock or cannot-delete lock on a storage account doesn't protect its data from being deleted or modified. It also doesn't protect the data in a blob, queue, table, or file.</strong> A lock protects the resource from being changed. It does not protect what is inside the resource, because deleting a blob never touches Resource Manager.
+    </p>
+
+    <h3>The classification problem</h3>
+    <p>
+      Here is the sentence that explains almost every ReadOnly surprise: <strong>Locks prevent the POST method from sending data to the Azure Resource Manager API.</strong> Azure classifies operations by the verb the REST API uses, and a number of operations that read something to you are implemented as POST.
+    </p>
+    <p>
+      The canonical case is storage account keys. <strong>A read-only lock on a storage account prevents users from listing the account keys. A POST request handles the Azure Storage List Keys operation to protect access to the account keys.</strong> Listing a key is, to any reasonable reader, a read. To Resource Manager it is a POST, so ReadOnly refuses it &mdash; and anything authenticating to that account with a shared key stops working, while the account itself sits there looking perfectly healthy.
+    </p>
+    <p>
+      The same shape recurs across services, and the list is worth reading once in full because the pattern is more useful than the individual entries:
+    </p>
+    <ul>
+      <li><strong>A read-only lock on a resource group that contains a virtual machine prevents all users from starting or restarting a virtual machine.</strong> These operations require a POST method request. A lock intended to stop a VM being deleted stops it being started.</li>
+      <li><strong>A read-only lock on a resource group that contains an automation account prevents all runbooks from starting.</strong> Same cause, and the symptom is scheduled automation that silently stops running.</li>
+      <li><strong>A read-only lock also prevents the assignment of Azure RBAC roles that are scoped to the storage account or to a data container.</strong> So the lock quietly becomes an access-management blocker as well.</li>
+      <li><strong>A read-only lock on a resource group prevents you from moving existing resources in or out of the resource group.</strong></li>
+      <li><strong>A cannot-delete lock on a resource group prevents Resource Manager from automatically deleting deployments in the history. If you reach 800 deployments in the history, your deployments fail.</strong> This one has a fuse on it: the lock causes no problem at all until the eight-hundredth deployment, at which point deployments start failing for a reason with no visible connection to the lock.</li>
+      <li><strong>Backups fail when there's a cannot-delete lock on the resource group created by Azure Backup Service. The service supports a maximum of 18 restore points. When locked, the backup service can't clean up restore points.</strong></li>
+    </ul>
+    <p>
+      Read as a set, these are not exceptions. They are one rule &mdash; a lock blocks POST &mdash; observed through six different services.
+    </p>
+
+    <h3>Measured: what each lock permits, on a live storage account</h3>
+    <p>
+      Deployed to a lab subscription, a Standard LRS storage account in its own resource group, with each lock applied and removed in turn. Every result below is the command line's own output.
+    </p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Lock</th><th>Operation</th><th>Result</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>CanNotDelete</td><td>delete the account</td><td>refused &mdash; <code>(ScopeLocked)</code> &hellip; <em>cannot perform delete operation because following scope(s) are locked</em></td></tr>
+        <tr><td>CanNotDelete</td><td>write a tag</td><td>succeeded</td></tr>
+        <tr><td>ReadOnly</td><td>write a tag</td><td>refused &mdash; <code>(ScopeLocked)</code> &hellip; <em>cannot perform write operation</em></td></tr>
+        <tr><td>ReadOnly</td><td>read the account</td><td>succeeded</td></tr>
+        <tr><td>ReadOnly</td><td>list the account keys</td><td>refused &mdash; <code>(ScopeLocked)</code> &hellip; <em>cannot perform <strong>write</strong> operation</em></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>
+      The last row is the documented behaviour caught in the act, and the wording is the interesting part. Listing keys is refused as a <em>write</em> operation. Azure is not making an exception for key listing; it simply never considered it a read.
+    </p>
+
+    <div class="callout amber">
+      <strong>The error names the locked scope, not the resource you addressed</strong>
+      <p>With a CanNotDelete lock on the <em>resource group</em>, deleting a storage account inside it fails with <code>ScopeLocked</code> &mdash; and the scope named in the message is the resource group, not the account. Measured on a live deployment: the request targeted the storage account, and the error reported the parent. Inspect the account's own locks and you find none, which reads as "the lock is not the problem". Read the scope in the message before anything else; inheritance means it is regularly a level or two above whatever you were trying to change.</p>
+    </div>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <h3>Who can lock, and why that list is short</h3>
+    <p>
+      <strong>To create or delete management locks, you need access to Microsoft.Authorization/* or Microsoft.Authorization/locks/* actions. Users assigned to the Owner and the User Access Administrator roles have the required access.</strong> Contributor cannot &mdash; that is deliberate, and it is the entire governance value of the feature. A team with Contributor on a resource group can build and change freely and cannot remove the lock that stops them deleting the database.
+    </p>
+    <p>
+      It also sets the design rule. A lock is only protection if the people it constrains cannot lift it. Grant the lock-management rights at a scope above the team you are protecting from, or the lock is documentation.
+    </p>
+
+    <h3>Choosing a type, and choosing a scope</h3>
+    <p>
+      CanNotDelete is the default choice for almost everything. It stops the accident that actually happens &mdash; a deletion &mdash; and it leaves normal operations, deployments and configuration changes working. Its cost is limited and predictable: the deployment-history cleanup problem, and the all-or-nothing behaviour on resource group deletion.
+    </p>
+    <p>
+      ReadOnly should be treated as a change freeze rather than a protection setting, applied deliberately and usually temporarily. It breaks starting virtual machines, running runbooks, listing storage keys and assigning roles, and it does so with an error that names a lock rather than the operation. If the goal is "nobody deletes this", ReadOnly is the wrong instrument and CanNotDelete is the right one.
+    </p>
+    <p>
+      On scope: put the lock as close to the thing you mean to protect as you can. A lock on a resource group is inherited by everything in it, including resources added later, which sounds like thoroughness and behaves like a trap when a future resource type turns out to need POST operations nobody anticipated.
+    </p>
+
+    <h3>What a lock does not survive</h3>
+    <p>
+      <strong>A resource lock doesn't block the subscription cancellation.</strong> Locks protect resources from operations inside the subscription; they do not protect the subscription. Anyone weighing a lock as the last line of defence should know that the line ends there.
+    </p>
+    <p>
+      They also do not survive a determined pipeline. A deployment identity holding Owner can remove a lock, apply its changes and recreate it, and nothing about that sequence is exotic. Locks belong in the same category as a confirmation dialog: valuable precisely because most destructive actions are unintentional, and worth nothing against one that is not.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Management locks are a small feature with an unusually wide blast radius, and both facts come from the same design choice: they are enforced at the Resource Manager boundary, by HTTP verb, for everyone. That is what makes them simple to reason about and what makes ReadOnly break a running virtual machine.
+    </p>
+    <p>
+      The useful posture is to treat CanNotDelete as the standing control and ReadOnly as a deliberate, temporary freeze &mdash; and to remember, when something inexplicable fails with <code>ScopeLocked</code>, that the scope in the error message is where the lock lives, not necessarily where you were working.
+    </p>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Azure Reference</h2>
+    <ul>
+      <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources" target="_blank" rel="noopener">Lock your resources to protect your infrastructure</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/control-plane-and-data-plane" target="_blank" rel="noopener">Azure control plane and data plane</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/rest/api/resources/managementlocks" target="_blank" rel="noopener">Management locks REST API</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/cli/azure/lock" target="_blank" rel="noopener">az lock command reference</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
