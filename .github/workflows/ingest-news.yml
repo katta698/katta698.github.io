@@ -1,0 +1,127 @@
+# Keep the announcement store growing without anyone remembering to run it.
+#
+# The three fetchers read the clouds' own feeds, and those feeds are SHORT --
+# AWS What's New holds about 100 items, measured at 12 days on 2026-08-12, and
+# the GCP combined feed truncates at 30. An announcement not written down within
+# days of publication becomes unrecoverable: not "catch up later", gone.
+#
+# So this is not a convenience. Until it existed the store only grew when
+# somebody ran a script by hand, which meant the honest claim about
+# /intelligence/whats-new/ was "a snapshot taken on 4 September" rather than
+# "everything the three clouds have published". A missed fortnight is a
+# permanent hole, and the page would look perfectly healthy containing it.
+#
+# It commits its own output. That is normally discouraged here -- on-publish.yml
+# had its commit step deleted in 111570f precisely because the Actions bot
+# became a third writer on every publish -- but the objection was to a workflow
+# committing in response to a PUSH, racing the person who made it. This is a
+# cron on a path no human edits, like refresh-aws-services.yml.
+name: Ingest cloud announcements
+
+on:
+  schedule:
+    # 05:10 UTC daily = just after midnight in CDT, when none of the four
+    # publishing windows is mid-rebase. Daily rather than weekly because the
+    # AWS window is 12 days: a weekly run leaves only five days of slack, and
+    # one skipped week loses announcements permanently.
+    - cron: "10 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # Never two ingests at once: they would both read, both write, and the second
+  # would overwrite the first's month files with its own view of them.
+  group: ingest-news
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch and store
+        run: |
+          python scripts/news_store.py ingest
+          python scripts/news_tag.py apply
+          python scripts/build_news_page.py
+
+      - name: Verify the store before committing anything
+        # A bad ingest must not be committed. check_news.py catches an emptied
+        # month, a corrupt line, duplicate ids, future dates and a tagging
+        # regression -- all of which are silent, and all of which would
+        # otherwise be published straight to the page.
+        run: python scripts/check_news.py
+
+      - name: Commit and push, regenerating rather than merging on a conflict
+        run: |
+          if git diff --quiet -- intelligence/; then
+            echo "No new announcements."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          summarise() {
+            python - <<'PY'
+          import json, io, subprocess, collections
+          new = json.load(io.open("intelligence/news.json", encoding="utf-8"))["items"]
+          try:
+              old = json.loads(subprocess.run(
+                  ["git", "show", "origin/main:intelligence/news.json"],
+                  capture_output=True, text=True).stdout)["items"]
+          except Exception:
+              old = []
+          seen = {(r["c"], r["d"], r["t"]) for r in old}
+          added = [r for r in new if (r["c"], r["d"], r["t"]) not in seen]
+          per = collections.Counter(r["c"] for r in added)
+          head = "Ingest cloud announcements (%d new)" % len(added)
+          body = ["%s: %d" % (k, v) for k, v in sorted(per.items())]
+          for r in added[:12]:
+              body.append("  %s %-5s %s" % (r["d"], r["c"], r["t"][:70]))
+          if len(added) > 12:
+              body.append("  ... and %d more" % (len(added) - 12))
+          io.open("/tmp/msg.txt", "w", encoding="utf-8").write(
+              head + "\n\n" + "\n".join(body) + "\n")
+          PY
+          }
+
+          # Four worktrees push to this branch all day. On a rejected push the
+          # right move for generated files is to regenerate them from the
+          # rebased tree, never to hand-merge -- the same rule CLAUDE.md sets
+          # for posts.json and the blog index. The jsonl store is idempotent,
+          # so re-running against whatever landed produces the correct union.
+          for attempt in 1 2 3; do
+            git fetch origin main
+            summarise
+            git add intelligence/
+            git commit -F /tmp/msg.txt || true
+
+            if git push origin HEAD:main; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+
+            echo "Push rejected -- origin moved. Rebuilding on top of it."
+            git reset --hard origin/main
+            python scripts/news_store.py ingest
+            python scripts/news_tag.py apply
+            python scripts/build_news_page.py
+            python scripts/check_news.py
+            if git diff --quiet -- intelligence/; then
+              echo "Nothing left to add after rebasing."
+              exit 0
+            fi
+          done
+
+          echo "::error::Could not push after 3 attempts."
+          exit 1

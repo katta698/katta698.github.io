@@ -223,6 +223,15 @@ STOP_PATTERNS = re.compile(
     r")\b", re.I)
 
 
+# A connective left dangling on the end of an extracted name. The Azure pattern
+# allows "for", "of" and "and" INSIDE a name -- "Azure Database for PostgreSQL"
+# needs them -- so it also swallows one at the end: an announcement for a
+# service nobody has catalogued yet came out tagged "Azure Nebula Fabric for",
+# which would have become a pill with a dangling word in it.
+TRAILING_JUNK = re.compile(
+    r"\s+(?:for|of|and|in|on|with|to|the|a|an|is|are|now)$", re.I)
+
+
 def _canonical(phrase, cloud):
     """Snap a raw title fragment to catalogue names it contains.
 
@@ -233,7 +242,14 @@ def _canonical(phrase, cloud):
     only option for Azure: 24 curated entries cannot cover 200 announcements.
     """
     hits = _match_catalogue(phrase, cloud, re.compile(r".*", re.S))
-    return hits or ([phrase] if phrase.lower() not in STOP_TAGS else [])
+    if hits:
+        return hits
+    # Trim any dangling connective before falling back to the raw phrase.
+    prev = None
+    while prev != phrase:
+        prev = phrase
+        phrase = TRAILING_JUNK.sub("", phrase).strip(" .,:-")
+    return [phrase] if phrase and phrase.lower() not in STOP_TAGS else []
 
 # A vendor-branded name appearing anywhere in a title. Capitalisation is the
 # signal: "Azure Files" is a product, "azure files" would be prose. Capped at
