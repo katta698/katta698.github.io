@@ -329,7 +329,23 @@
       '<button type="button" class="pal-nav-btn" aria-expanded="false" ' +
               'aria-haspopup="true"><span class="pal-nav-dot"></span></button>' +
       '<div class="pal-menu" hidden></div>';
-    anchor.parentNode.insertBefore(wrap, anchor);
+    // Where the control goes depends on what the toggle's parent IS, not on
+    // what it looks like. On the home page and the blog the toggle sits in a
+    // flex row (.nav-actions / .mobile-menu) and inserting a sibling puts the
+    // two side by side. On the intelligence pages it sits inside an <li>, which
+    // is display:list-item -- a block -- so the same insert stacked the palette
+    // mark ON TOP of the theme glyph rather than beside it.
+    //
+    // Giving it its own <li> puts it back in the <ul>'s flex row, which is the
+    // row the author actually laid out.
+    var host = anchor.parentNode;
+    if (host.tagName === 'LI' && host.parentNode) {
+      var slot = document.createElement('li');
+      slot.appendChild(wrap);
+      host.parentNode.insertBefore(slot, host);
+    } else {
+      host.insertBefore(wrap, anchor);
+    }
 
     var btn  = wrap.querySelector('.pal-nav-btn');
     var menu = wrap.querySelector('.pal-menu');
