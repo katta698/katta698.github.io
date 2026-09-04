@@ -87,6 +87,111 @@ def check_freshness(data):
                          % (cloud, newest, age, "" if age == 1 else "s"))
 
 
+def configured_feeds(cloud):
+    """Feed names the fetcher is configured to read.
+
+    Imported rather than duplicated: a hardcoded copy here would drift from the
+    fetchers, and a check that disagrees with the thing it checks is worse than
+    no check. Only the SOURCES constant is touched -- nothing is fetched.
+    """
+    mod = {"aws": "fetch_week", "azure": "fetch_azure_week",
+           "gcp": "fetch_week_gcp"}[cloud]
+    try:
+        m = __import__(mod)
+    except Exception:                                        # noqa: BLE001
+        return []
+    out = []
+    for entry in getattr(m, "SOURCES", []):
+        # AWS/Azure store (name, url); GCP stores (name, url, kind).
+        out.append(entry[0] if isinstance(entry, (list, tuple)) else str(entry))
+    return out
+
+
+def check_feed_silence(data):
+    """A single feed going quiet, which cloud-level freshness cannot see.
+
+    Found by a chaos experiment on 2026-09-04. Silencing the largest AWS feed
+    was caught; silencing `Containers` -- 10 records of 517 -- was not, because
+    the other 18 feeds kept the cloud looking fresh. That is precisely how the
+    GCP compute-engine feed stayed frozen for 2,307 days while answering 200.
+
+    Judged against each feed's OWN cadence rather than one number for all of
+    them: What's New publishes daily, a service blog can legitimately go a month
+    between posts, and a single threshold would either miss the first or cry
+    wolf about the second. A feed is quiet when it has been silent for far
+    longer than its own historical median gap.
+
+    A warning, not an error. A feed genuinely can be retired, and this must not
+    block a publish while somebody decides -- but it must not be invisible
+    either, which is the state it was in until now.
+    """
+    today = datetime.date.today()
+    for cloud, rows in data.items():
+        by_feed = collections.defaultdict(list)
+        for r in rows:
+            by_feed[r.get("source", "?")].append(r["date"])
+
+        # A feed with NO records cannot be judged stale -- there is nothing to
+        # measure a gap against -- so staleness alone cannot see a feed that
+        # vanished, or one that never worked from the day it was added. The
+        # configured list is the only place that knows a feed is supposed to
+        # exist. A chaos run that removed a feed's records entirely went
+        # unnoticed until this compared the two.
+        for feed in sorted(set(configured_feeds(cloud)) - set(by_feed)):
+            warnings.append(
+                "%s/%s: configured as a source but has contributed NOTHING to "
+                "the store. Either it has never parsed, or its records were "
+                "lost." % (cloud, feed))
+        for feed, dates in sorted(by_feed.items()):
+            if len(dates) < 4:
+                continue            # too little history to judge a cadence
+            dates = sorted(set(dates))
+            gaps = [(datetime.date.fromisoformat(b)
+                     - datetime.date.fromisoformat(a)).days
+                    for a, b in zip(dates, dates[1:])]
+            gaps.sort()
+            median = gaps[len(gaps) // 2] or 1
+            silent = (today - datetime.date.fromisoformat(dates[-1])).days
+            # Generous: 6x its own median, and never less than 45 days, so a
+            # daily feed must miss ~6 days and a monthly one ~6 months.
+            limit = max(45, median * 6)
+            if silent > limit:
+                warnings.append(
+                    "%s/%s: nothing since %s, %d days (its median gap is %d, "
+                    "so the limit is %d). The feed may have moved or been "
+                    "retired -- check with: python scripts/fetch_week%s.py "
+                    "--audit"
+                    % (cloud, feed, dates[-1], silent, median, limit,
+                       "" if cloud == "aws" else
+                       ("_gcp" if cloud == "gcp" else "_azure")))
+
+
+def check_no_empty_months(data):
+    """A month file that exists but holds nothing is always wrong.
+
+    Found by a chaos experiment on 2026-09-04: emptying a month file took 101
+    AWS records with it and every existing check still passed, because deleting
+    September leaves August's newest record only days old and freshness is
+    satisfied. save_month now writes atomically so this should not happen --
+    this is the check that says so if it does.
+    """
+    for cloud in store.CLOUDS:
+        for ym in store.all_months(cloud):
+            if not store.load_month(cloud, ym):
+                problems.append(
+                    "%s/%s.jsonl exists but parses to zero records. A month "
+                    "file is never legitimately empty -- suspect an "
+                    "interrupted write." % (cloud, ym))
+
+
+def check_no_bad_lines(_data):
+    """Lines that would not parse. load_month skips them to protect the rest of
+    the file; that is the right behaviour and the wrong place to stay quiet."""
+    for path, n in sorted(store.BAD_LINES.items()):
+        problems.append("%s: %d line(s) could not be parsed and were skipped"
+                        % (os.path.relpath(path, ROOT).replace("\\", "/"), n))
+
+
 def check_ids_unique(data):
     for cloud, rows in data.items():
         seen = collections.Counter(r.get("id") for r in rows)
@@ -199,6 +304,9 @@ def main():
 
     data = load_all()
     check_not_empty(data)
+    check_feed_silence(data)
+    check_no_empty_months(data)
+    check_no_bad_lines(data)
     check_freshness(data)
     check_ids_unique(data)
     check_schema(data)

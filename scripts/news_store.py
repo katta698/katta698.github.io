@@ -62,6 +62,11 @@ if SCRIPTS not in sys.path:
 
 CLOUDS = ("aws", "azure", "gcp")
 
+# path -> count of lines that would not parse, filled by load_month(). A reader
+# of this module cannot be made to care, so it is recorded rather than raised;
+# check_news.py is what turns it into a failure.
+BAD_LINES = {}
+
 
 # ── record identity ─────────────────────────────────────────────
 
@@ -127,7 +132,14 @@ def load_month(cloud, ym):
             try:
                 r = json.loads(line)
             except ValueError:
-                # One malformed line must not cost the rest of the month.
+                # One malformed line must not cost the rest of the month -- but
+                # it must not be invisible either. Skipping silently is how a
+                # half-written file reads as a slightly quiet week: a chaos run
+                # dropped a truncated line and the store lost a record with
+                # nothing reported anywhere. Counted here, checked by
+                # check_news.py.
+                BAD_LINES[_path(cloud, ym)] = BAD_LINES.get(
+                    _path(cloud, ym), 0) + 1
                 continue
             if r.get("id"):
                 out[r["id"]] = r
@@ -146,9 +158,28 @@ def save_month(cloud, ym, records):
     rows = sorted(records.values(),
                   key=lambda r: (r.get("date", ""), r.get("headline", ""),
                                  r.get("id", "")))
-    with io.open(p, "w", encoding="utf-8", newline="\n") as fh:
+
+    # Write a temporary file and rename it over the target, rather than opening
+    # the target with "w". Opening for write truncates IMMEDIATELY, so a crash,
+    # a Ctrl-C or a full disk between that moment and the last flush leaves an
+    # empty or half-written month -- and there is no undo, because the old
+    # contents are already gone.
+    #
+    # That is not a theoretical risk. A chaos run on 2026-09-04 emptied a month
+    # of 101 records this way and nothing noticed: freshness still passed,
+    # because deleting September leaves August's newest record only days old.
+    # site-footer.js was destroyed the same way the day before, ending at 0
+    # bytes, when a write failed partway through.
+    #
+    # os.replace is atomic on POSIX and on Windows, so a reader either sees the
+    # whole old file or the whole new one, never a partial.
+    tmp = p + ".tmp"
+    with io.open(tmp, "w", encoding="utf-8", newline="\n") as fh:
         for r in rows:
             fh.write(json.dumps(r, ensure_ascii=False, sort_keys=True) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, p)
     return len(rows)
 
 
