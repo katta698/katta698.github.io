@@ -2773,6 +2773,26 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
   {filter_pills}
 </div>
 <div class="results-count" id="results-count">{total_posts} posts</div>
+<!-- Mobile-only route to the announcement browser. The sidebar card carrying
+     the same link sits ELEVEN screens down on a 390px phone, because the
+     sidebar stacks after all 197 post cards -- measured 2026-09-04, y=9251 of
+     an 11,174px page. That is not a placement, it is a hiding place. On a
+     desktop the same card is 3.1 screens down in a column the reader passes
+     while scrolling, which is why this is hidden above 900px rather than
+     replacing it. -->
+<a class="wn-strip" href="/intelligence/whats-new/">
+  <span class="wn-strip-label">What&rsquo;s new in the cloud</span>
+  <span class="wn-strip-sub" id="wn-strip-sub">AWS, Azure and Google Cloud announcements &rarr;</span>
+</a>
+<script>
+fetch('/intelligence/news.json').then(function(r){{return r.json();}}).then(function(d){{
+  var items = d.items || [], n = 0;
+  var cut = new Date(Date.now() - 7*86400000).toISOString().slice(0,10);
+  items.forEach(function(r){{ if (r.d >= cut) n++; }});
+  if (n) document.getElementById('wn-strip-sub').innerHTML =
+    n + ' announcements in the past 7 days &rarr;';
+}}).catch(function(){{}});
+</script>
 <div class="layout">
   <div>
     <div class="posts-grid" id="posts-grid" data-page="{page}" data-total-pages="{total_pages}" data-years="{index_years}">
