@@ -36,21 +36,33 @@ import news_tag                     # noqa: E402
 
 OUT_DIR = os.path.join(ROOT, "intelligence", "whats-new")
 JSON_OUT = os.path.join(ROOT, "intelligence", "news.json")
+MORE_OUT = os.path.join(ROOT, "intelligence", "news-more.json")
 
-# Announcements and releases only. Blogs are marketing and CVEs are a different
-# question -- including them by default is what buried the Azure answers under
-# 4,353 MSRC notices.
+# Announcements and releases are the default view. Blogs are marketing and CVEs
+# are a different question -- showing them by default is what buried the Azure
+# results under 4,353 MSRC notices.
 KEEP_CLASSES = ("announcement", "release")
+
+# ...but they are NOT excluded from the site. Searching SSM on the page returned
+# "Nothing matches. Try a wider date range" while the AWS Systems Manager agent
+# CVE sat in the store classed `security` and an Amazon Linux SSM item sat there
+# classed `blog`. Neither was in news.json at all, so no date range and no
+# filter change could ever have found them, and the page said the opposite.
+#
+# They go in a SECOND file, fetched only when the reader asks for them. All
+# 6,810 records in one payload is roughly 1.5 MB, which is not a thing to send
+# to a phone on the chance it is wanted; the default view stays ~300 KB.
+MORE_CLASSES = ("blog", "security")
 
 CLOUD_NAME = {"aws": "AWS", "azure": "Azure", "gcp": "Google Cloud"}
 
 
-def collect():
+def collect(classes):
     rows = []
     for cloud in store.CLOUDS:
         for ym in store.all_months(cloud):
             for r in store.load_month(cloud, ym).values():
-                if r.get("class") not in KEEP_CLASSES:
+                if r.get("class") not in classes:
                     continue
                 headline = r["headline"]
                 status = ""
@@ -81,6 +93,7 @@ def collect():
                     "u": r.get("url", ""),
                     "s": r.get("services") or [],
                     "st": status,
+                    "k": r.get("class", ""),
                 })
     rows.sort(key=lambda r: (r["d"], r["t"]), reverse=True)
     return rows
@@ -201,6 +214,8 @@ document.documentElement.setAttribute('data-palette',p);})();
   .title:hover{color:var(--accent);text-decoration:underline}
   .meta{font-family:var(--mono);font-size:.66rem;color:var(--text-muted);margin-top:.2rem}
   .status{color:var(--accent);font-weight:500}
+  .kind{color:var(--text-muted);border:1px solid var(--border);border-radius:3px;
+        padding:0 .3rem;margin-right:.15rem}
   .empty{padding:2.5rem 0;color:var(--text-muted);font-size:.9rem}
   .note{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border);
         font-size:.78rem;line-height:1.7;color:var(--text-muted)}
@@ -267,6 +282,7 @@ applyTheme(localStorage.getItem('theme') !== 'light');
 
 var DATA = [], cloud = 'all', days = 30, svc = '', shown = 60;
 var allSvcs = false;   // is the service pill row expanded?
+var more = false, MORE = null, moreLoading = false;
 var NAMES = {aws:'AWS', azure:'Azure', gcp:'Google Cloud'};
 
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){
@@ -278,15 +294,42 @@ function cutoff(){
   return d.toISOString().slice(0,10);
 }
 
+/* Whole-word containment, done WITHOUT building a regex from the query.
+   Two layers of escaping (Python template -> JS source -> RegExp) turned the
+   boundary into a literal backspace and mangled the character class -- the
+   escaping trap this repo keeps hitting. Scanning by hand needs no escaping at
+   all, cannot be broken by a query containing regex metacharacters, and treats
+   a hyphen as a boundary: "ssm" still finds "amazon-ssm-agent" while refusing
+   "assessments", which is what indexOf was matching. */
+function hasWord(hay, w){
+  if(!w) return true;
+  var H = hay.toLowerCase(), W = w.toLowerCase(), i = -1;
+  while((i = H.indexOf(W, i + 1)) !== -1){
+    var before = i === 0 ? '' : H.charAt(i - 1);
+    var after = H.charAt(i + W.length);
+    if(!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;
+  }
+  return false;
+}
+
+function qWords(q){ return q.split(/\s+/).filter(Boolean); }
+
+function pool(){ return (more && MORE) ? DATA.concat(MORE) : DATA; }
+
 function filtered(){
   var lo = cutoff(), q = document.getElementById('q').value.trim().toLowerCase();
-  return DATA.filter(function(r){
+  return pool().filter(function(r){
     if(r.d < lo) return false;
     if(cloud !== 'all' && r.c !== cloud) return false;
     if(svc && r.s.indexOf(svc) === -1) return false;
     if(q){
-      var hay = (r.t + ' ' + r.s.join(' ')).toLowerCase();
-      if(q.split(/\\s+/).every(function(w){return hay.indexOf(w) !== -1;}) === false) return false;
+      // Whole words, not substrings. indexOf matched INSIDE words, so a search
+      // for SSM answered with "Use assessments (Preview) in Database Center"
+      // -- a-s-s-e-S-S-M-ents. \\b is the right tool here where Python needed a
+      // lookbehind: JavaScript counts a hyphen as a non-word character, so
+      // \\bssm\\b still finds "amazon-ssm-agent" while refusing "assessments".
+      var hay = r.t + ' ' + r.s.join(' ') + ' ' + (r.st || '');
+      if(!qWords(q).every(function(w){ return hasWord(hay, w); })) return false;
     }
     return true;
   });
@@ -297,7 +340,14 @@ function render(){
   document.getElementById('count').textContent =
     rows.length + (rows.length === 1 ? ' announcement' : ' announcements');
   if(!rows.length){
-    list.innerHTML = '<p class="empty">Nothing matches. Try a wider date range, or clear the service filter.</p>';
+    // Say what is NOT being searched. "Try a wider date range" was actively
+    // misleading for SSM: the records existed but were blog and security, so no
+    // date range could ever have reached them.
+    list.innerHTML = '<p class="empty">Nothing matches.'
+      + (more ? ' Try a wider date range, or clear the service filter.'
+              : ' This view covers announcements and releases only &mdash; try'
+                + ' <b>Blogs &amp; bulletins</b> above, or a wider date range.')
+      + '</p>';
     document.getElementById('more').hidden = true;
     return;
   }
@@ -310,6 +360,9 @@ function render(){
         {weekday:'short', day:'numeric', month:'long', year:'numeric'}) + '</p>';
     }
     var meta = [];
+    if(r.k === 'blog' || r.k === 'security')
+      meta.push('<span class="kind">' + esc(r.k === 'blog' ? 'blog post'
+                                            : 'security bulletin') + '</span>');
     if(r.st) meta.push('<span class="status">' + esc(r.st) + '</span>');
     if(r.s.length) meta.push(esc(r.s.join(' &middot; ').replace(/&amp;middot;/g,'\\u00b7')));
     html += '<div class="item">'
@@ -331,7 +384,10 @@ function buildPills(){
   }).join('') + '<span style="width:.6rem"></span>'
    + [[7,'7 days'],[30,'30 days'],[90,'90 days'],[0,'All time']].map(function(p){
     return '<button class="pill' + (p[0]===days?' on':'') + '" data-days="' + p[0] + '">'
-      + p[1] + '</button>';}).join('');
+      + p[1] + '</button>';}).join('')
+   + '<span style="width:.6rem"></span>'
+   + '<button class="pill' + (more?' on':'') + '" data-more-src="' + (more?'0':'1') + '">'
+   + (moreLoading ? 'loading…' : 'Blogs &amp; bulletins') + '</button>';
 
   var counts = {};
   filtered().forEach(function(r){ r.s.forEach(function(s){ counts[s]=(counts[s]||0)+1; }); });
@@ -362,6 +418,22 @@ function buildPills(){
 
 document.addEventListener('click', function(e){
   var b = e.target.closest('.pill'); if(!b) return;
+  if(b.dataset.moreSrc !== undefined){
+    var want = b.dataset.moreSrc === '1';
+    if(want && !MORE){
+      // Fetched on demand: the blog and bulletin records are ~1.2 MB, which is
+      // not something to push at a phone unless it has been asked for.
+      if(moreLoading) return;
+      moreLoading = true; buildPills();
+      fetch('/intelligence/news-more.json').then(function(r){return r.json();})
+        .then(function(d){ MORE = d.items || []; more = true; })
+        .catch(function(){ MORE = []; })
+        .then(function(){ moreLoading = false; shown = 60; buildPills(); render(); });
+      return;
+    }
+    more = want; shown = 60; buildPills(); render();
+    return;
+  }
   if(b.dataset.more !== undefined){
     // Expand/collapse only -- must not reset the result list or the reader
     // loses their place just for looking at what else is available.
@@ -393,15 +465,18 @@ fetch('/intelligence/news.json').then(function(r){return r.json();}).then(functi
 
 
 def build():
-    rows = collect()
+    rows = collect(KEEP_CLASSES)
+    more = collect(MORE_CLASSES)
     per = collections.Counter(r["c"] for r in rows)
     earliest = {c: min((r["d"] for r in rows if r["c"] == c), default="-")
                 for c in store.CLOUDS}
 
     os.makedirs(OUT_DIR, exist_ok=True)
-    io.open(JSON_OUT, "w", encoding="utf-8", newline="\n").write(
-        json.dumps({"generated": datetime.date.today().isoformat(),
-                    "items": rows}, ensure_ascii=False, separators=(",", ":")))
+    for path, payload in ((JSON_OUT, rows), (MORE_OUT, more)):
+        io.open(path, "w", encoding="utf-8", newline="\n").write(
+            json.dumps({"generated": datetime.date.today().isoformat(),
+                        "items": payload},
+                       ensure_ascii=False, separators=(",", ":")))
 
     lede = ("%s announcements from AWS, Azure and Google Cloud, filterable by "
             "service and date. Each one links to the vendor's own page &mdash; "
@@ -435,6 +510,8 @@ def build():
 
     print("  %d announcements -> intelligence/news.json (%.0f KB)"
           % (len(rows), os.path.getsize(JSON_OUT) / 1024.0))
+    print("  %d blog/security -> intelligence/news-more.json (%.0f KB, lazy)"
+          % (len(more), os.path.getsize(MORE_OUT) / 1024.0))
     for c in store.CLOUDS:
         print("     %-6s %5d  from %s" % (c, per[c], earliest[c]))
     print("  page -> intelligence/whats-new/index.html")
