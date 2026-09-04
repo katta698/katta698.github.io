@@ -127,6 +127,12 @@ CHECKS = [
     ("check_dark_theme.py",     True,  False, True,  True),
     ("check_index_complete.py", True,  False, False, False),
     ("fix_series_nav.py",       True,  False, False, False),
+    # The announcement store behind /intelligence/whats-new/. Nothing else in
+    # this list reads it, and every way it breaks is silent: a stalled ingest,
+    # a dead feed or a tagging regression all look exactly like a quiet week.
+    # A stale "what's new" page is worse than no page -- it makes a claim about
+    # the present out of the past, and a reader cannot tell.
+    ("check_news.py",           True,  False, False, False),
     ("audit_claims.py",         False, False, False, True),
 ]
 
