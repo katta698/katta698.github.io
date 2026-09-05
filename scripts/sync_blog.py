@@ -2835,7 +2835,14 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     // not race past and a quiet one does not crawl. ~60px per second.
     requestAnimationFrame(function () {{
       var w = track.scrollWidth / 2;
-      if (w > 0) track.style.animationDuration = Math.round(w / 60) + 's';
+      // Guard the arithmetic. Math.round(w/60) is 0 for anything under 30px,
+      // and animation-duration:0s does not mean "slow", it means the animation
+      // completes instantly and sits frozen at its end state -- indeterminable
+      // from a ticker that has failed. If the width is not yet measurable,
+      // leave the 60s from the stylesheet alone.
+      if (w > 120) {{
+        track.style.animationDuration = Math.max(20, Math.round(w / 60)) + 's';
+      }}
     }});
   }}).catch(function () {{}});
 }})();
