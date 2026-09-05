@@ -133,6 +133,14 @@ CHECKS = [
     # A stale "what's new" page is worse than no page -- it makes a claim about
     # the present out of the past, and a reader cannot tell.
     ("check_news.py",           True,  False, False, False),
+    # The half of a post the other checks cannot see. verify_claims.py checks
+    # quotations and validate_arch_post.py checks arithmetic that carries a
+    # claim; neither can see a sentence written in the author's own voice, and
+    # every factual error found in this series so far has been exactly that.
+    # Blocking only for defects in example policy code, which are unambiguous
+    # and have shipped twice; prose findings are advisory for the same reason
+    # audit_claims.py is.
+    ("check_assertions.py",     True,  False, True,  True),
     ("audit_claims.py",         False, False, False, True),
 ]
 
