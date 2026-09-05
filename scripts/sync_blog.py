@@ -2811,6 +2811,26 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     var track = document.getElementById('wn-ticker-track');
     track.innerHTML = one + one;          // see the note above: exactly twice
     box.hidden = false;
+    // A tap focuses the link, and because each headline opens in a NEW TAB the
+    // focus is still sitting there when the reader comes back -- so
+    // :focus-within kept the crawl paused and it looked like their tap had
+    // broken it. Focus is dropped when the page is shown again, which covers
+    // both a bfcache restore and a return from another tab. Keyboard focus
+    // while the page is actually in use is untouched, because that pause is
+    // wanted.
+    var unstick = function () {{
+      var a = document.activeElement;
+      if (a && a !== document.body && box.contains(a) && a.blur) a.blur();
+    }};
+    window.addEventListener('pageshow', unstick);
+    document.addEventListener('visibilitychange', function () {{
+      if (!document.hidden) unstick();
+    }});
+    // On a touch screen the tap itself should not leave focus behind either.
+    box.addEventListener('click', function () {{
+      if (window.matchMedia('(hover: none)').matches) setTimeout(unstick, 0);
+    }});
+
     // Constant speed regardless of how much news there is, so a busy day does
     // not race past and a quiet one does not crawl. ~60px per second.
     requestAnimationFrame(function () {{
