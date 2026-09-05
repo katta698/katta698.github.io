@@ -2772,47 +2772,51 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
 <div class="filters">
   {filter_pills}
 </div>
-<!-- Mobile-only preview of the announcement browser. The sidebar card
-     carrying the same link sits ELEVEN screens down on a 390px phone, because
-     the sidebar stacks after all 197 post cards -- measured 2026-09-04, y=9251
-     of an 11,174px page. That is not a placement, it is a hiding place.
+<!-- A news crawl, not a carousel. The sidebar card carrying the same link
+     sits ELEVEN screens down on a 390px phone -- measured 2026-09-04, y=9251 of
+     an 11,174px page -- so this is the only version a phone reader meets.
 
-     A horizontal scroller rather than a static link: a link asks the reader to
-     take it on trust that there is something worth tapping, while three
-     headlines they can swipe show it. Cards are 78% of the viewport so the next
-     one always peeks, which is the only honest affordance that a row scrolls --
-     a scrollbar does not exist on touch. Hidden above 900px, where the sidebar
-     card does this job in a column the reader passes anyway. -->
-<section class="wn-rail" id="wn-rail" hidden>
-  <div class="wn-rail-head">
-    <span class="wn-rail-title">What&rsquo;s new in the cloud</span>
-    <a class="wn-rail-all" href="/intelligence/whats-new/">All &rarr;</a>
+     Items are rendered TWICE and the track is translated by exactly -50%, which
+     is what makes the loop seamless: at the moment the animation resets, the
+     second copy is sitting precisely where the first started, so there is no
+     jump and no gap. Any other duplication count leaves a visible seam.
+
+     It pauses on hover and on focus, and stops entirely under
+     prefers-reduced-motion, where it becomes an ordinary scrollable row. A
+     crawl the reader cannot stop is a crawl they cannot read, and motion they
+     did not ask for is a genuine accessibility problem rather than a taste
+     one. -->
+<section class="wn-ticker" id="wn-ticker" hidden aria-label="Latest cloud announcements">
+  <a class="wn-ticker-label" href="/intelligence/whats-new/">What&rsquo;s new</a>
+  <div class="wn-ticker-window">
+    <div class="wn-ticker-track" id="wn-ticker-track"></div>
   </div>
-  <div class="wn-rail-track" id="wn-rail-track"></div>
 </section>
 <script>
 (function () {{
-  var rail = document.getElementById('wn-rail');
-  if (!rail) return;
+  var box = document.getElementById('wn-ticker');
+  if (!box) return;
   fetch('/intelligence/news.json').then(function (r) {{ return r.json(); }})
   .then(function (d) {{
-    var items = (d.items || []).slice(0, 10);
+    var items = (d.items || []).slice(0, 20);
     if (!items.length) return;
     var esc = function (t) {{ return String(t).replace(/[&<>"]/g, function (c) {{
       return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}}[c]; }}); }};
     var SHORT = {{aws: 'AWS', azure: 'Azure', gcp: 'GCP'}};
-    var html = items.map(function (r) {{
-      return '<a class="wn-card" href="' + esc(r.u) + '" target="_blank" rel="noopener">'
-        + '<span class="wn-card-chip ' + r.c + '">' + esc(SHORT[r.c] || r.c) + '</span>'
-        + '<span class="wn-card-title">' + esc(r.t) + '</span>'
-        + '<span class="wn-card-svc">' + esc((r.s || []).join(' · ') || r.d) + '</span>'
-        + '</a>';
+    var one = items.map(function (r) {{
+      return '<a class="wn-tick" href="' + esc(r.u) + '" target="_blank" rel="noopener">'
+        + '<span class="wn-tick-chip ' + r.c + '">' + esc(SHORT[r.c] || r.c) + '</span>'
+        + '<span class="wn-tick-text">' + esc(r.t) + '</span></a>';
     }}).join('');
-    html += '<a class="wn-card wn-card-more" href="/intelligence/whats-new/">'
-          + '<span class="wn-card-title">Browse every announcement</span>'
-          + '<span class="wn-card-svc">AWS, Azure and Google Cloud &rarr;</span></a>';
-    document.getElementById('wn-rail-track').innerHTML = html;
-    rail.hidden = false;
+    var track = document.getElementById('wn-ticker-track');
+    track.innerHTML = one + one;          // see the note above: exactly twice
+    box.hidden = false;
+    // Constant speed regardless of how much news there is, so a busy day does
+    // not race past and a quiet one does not crawl. ~60px per second.
+    requestAnimationFrame(function () {{
+      var w = track.scrollWidth / 2;
+      if (w > 0) track.style.animationDuration = Math.round(w / 60) + 's';
+    }});
   }}).catch(function () {{}});
 }})();
 </script>
