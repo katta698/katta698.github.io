@@ -2976,41 +2976,6 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     </div>
     <style>@keyframes sb-pulse{{0%,100%{{opacity:1}}50%{{opacity:.3}}}}</style>
 
-    <!-- What's new: the unedited companion to the Saturday roundups. It sits
-         here rather than in the nav on purpose -- the site's value is the
-         writing, and a feed aggregator beside "Blog" in the nav quietly
-         reframes it as an aggregator with a blog attached. Here it reads as
-         supporting evidence, which is what it is. -->
-    <div class="sidebar-card" id="whatsnew-widget">
-      <div class="sidebar-title">What&rsquo;s new in the cloud</div>
-      <div style="font-size:.78rem;color:var(--text-muted);line-height:1.55;margin-bottom:.7rem">
-        Every AWS, Azure and Google Cloud announcement, filterable by service and
-        date. Each one links to the vendor&rsquo;s own page &mdash; nothing summarised.
-      </div>
-      <div id="wn-counts" style="display:flex;gap:.35rem;flex-wrap:wrap;margin-bottom:.85rem"></div>
-      <a href="/intelligence/whats-new/" class="ask-cta-btn"
-         style="display:block;text-align:center;text-decoration:none">Browse announcements &rarr;</a>
-    </div>
-    <script>
-    /* Counts come from the same file the page reads, so the widget cannot claim
-       a number the page would contradict. Silent on failure: a sidebar card is
-       not worth an error message. */
-    fetch('/intelligence/news.json').then(function(r){{return r.json();}}).then(function(d){{
-      var items = d.items || [], n = {{aws:0, azure:0, gcp:0}};
-      var cut = new Date(Date.now() - 7*86400000).toISOString().slice(0,10);
-      items.forEach(function(r){{ if(r.d >= cut && n[r.c] !== undefined) n[r.c]++; }});
-      var col = {{aws:'#C4A484', azure:'#5B7B9A', gcp:'#8A9A5B'}};
-      var lab = {{aws:'AWS', azure:'Azure', gcp:'GCP'}};
-      document.getElementById('wn-counts').innerHTML =
-        ['aws','azure','gcp'].map(function(c){{
-          return '<span style="font-family:var(--font-mono);font-size:.66rem;'
-               + 'padding:.16rem .45rem;border-radius:4px;background:' + col[c]
-               + '22;color:' + col[c] + '">' + lab[c] + ' ' + n[c] + '</span>';
-        }}).join('') +
-        '<span style="font-family:var(--font-mono);font-size:.66rem;color:var(--text-muted);'
-        + 'padding:.16rem .2rem">past 7 days</span>';
-    }}).catch(function(){{}});
-    </script>
 
     {progress_widget_html}
 
