@@ -267,7 +267,12 @@ document.documentElement.setAttribute('data-palette',p);})();
 </head>
 <body>
 <nav>
-  <a class="nav-logo" href="/" aria-label="Jayanth Katta home">
+  <!-- The logo stays in its own section, the way the blog's does
+       (/blog/ there, /intelligence/ here). It used to jump to the
+       portfolio, which is what the Portfolio tab beside it is for --
+       so clicking the mark threw the reader out of the section they
+       were reading. -->
+  <a class="nav-logo" href="/intelligence/" aria-label="Cloud intelligence home">
     <img src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true">
     <span class="brand-name">Jayanth Katta</span>
   </a>
