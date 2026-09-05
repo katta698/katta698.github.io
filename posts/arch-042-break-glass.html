@@ -6,7 +6,7 @@ labels: [AWS, "AWS Architecture Series"]
 problem: "An identity provider outage locks every engineer out of every account. The break-glass procedure exists, is documented, and has been signed off. It requires signing in to retrieve a credential from a password manager that authenticates through the identity provider that is down, and the recovery email arrives at an inbox that federates through the same directory."
 builds: "A working model of break-glass as a dependency problem rather than a permissions one: the rule that it may share no link with the normal path, the two places knowledge has to be split, and why a credential that can be used quietly is not a break-glass credential at all."
 catch: "AWS states the trap directly and it is the one almost everyone builds: do not store the root user password with tools that depend on AWS services in an account that is accessed using that same password. The credential that recovers the account cannot live behind the account. Neither can the alert that tells you it was used."
-verified: '2026-09-04'
+verified: '2026-09-05'
 verified_claims:
   - claim: "We strongly recommend you don't access the AWS account root user unless you have a task that requires root user credentials"
     source: https://docs.aws.amazon.com/IAM/latest/UserGuide/root-user-best-practices.html
@@ -34,6 +34,12 @@ verified_claims:
     source: https://docs.aws.amazon.com/IAM/latest/UserGuide/root-user-best-practices.html
   - claim: "Emergency access is a use case for IAM users: in a situation where you can't access your identity provider and you must take action in your AWS account, establishing emergency access IAM users can be part of your resiliency plan, and AWS recommends the emergency user credentials be tightly controlled and secured using multi-factor authentication"
     source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html
+  - claim: "If you use AWS Organizations to manage multiple accounts, one strategy is to centralize root access and remove root user credentials from member accounts, removing the root user credentials, access keys, signing certificates, and deactivating and deleting multi-factor authentication"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/root-user-best-practices.html
+  - claim: "The supported root user MFA types are FIDO Certified hardware security keys, a hardware device that generates a six-digit numeric code based on the time-based one-time password (TOTP) algorithm, and a virtual authenticator application"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/root-user-best-practices.html
+  - claim: "The services that help evaluate root user MFA compliance are AWS Config managed rules to enforce MFA for root user credentials, Security Hub CSPM IAM controls, and a Trusted Advisor security check for MFA on the root account"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/root-user-best-practices.html
   - claim: "We recommend you only use IAM users for use cases not supported by identity federation"
     source: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html
 ---
@@ -93,7 +99,10 @@ verified_claims:
       <strong>In a situation where you can't access your identity provider and you must take action in your AWS account. Establishing emergency access IAM users can be part of your resiliency plan. We recommend that the emergency user credentials be tightly controlled and secured using multi-factor authentication (MFA).</strong>
     </p>
     <p>
-      That is worth reading as an architectural instruction rather than a concession. An IAM user with its own password and its own MFA device depends on nothing outside IAM. No SAML assertion, no directory, no permission set, no third party. It is the only identity in AWS with that property, and the property is the entire reason to accept credentials you would refuse anywhere else.
+      That is worth reading as an architectural instruction rather than a concession. An emergency IAM user with its own password and its own MFA device <strong>removes the corporate identity provider and IAM Identity Center from the authentication chain</strong>. No SAML assertion, no directory, no permission set, no third party between you and the sign-in.
+    </p>
+    <p>
+      Be precise about what that does and does not buy, because the shorter version of this sentence — that it depends on nothing outside IAM — is not true and the difference matters when you are listing dependencies. You still depend on AWS sign-in being available, on the MFA device working, and on a network and a browser to reach the console. What you have removed is the layer most likely to fail independently of AWS and most likely to take your whole workforce with it. That is a narrower claim and it is the one the design actually rests on.
     </p>
 
     <h3>Two tiers, because they fail at different levels</h3>
@@ -106,10 +115,21 @@ verified_claims:
         <p>For the common case: the identity provider is unavailable, or an Identity Center misconfiguration has removed everyone's assignments. This handles the overwhelming majority of real events, needs no root access, and can be scoped to a role rather than to administrator.</p>
       </div>
       <div class="card">
-        <h4>The root user</h4>
-        <p>For the short list of tasks that genuinely require it, and for the case where IAM itself is the problem. AWS is blunt about the threshold: <em>we strongly recommend you don't access the AWS account root user unless you have a task that requires root user credentials.</em></p>
+        <h4>Privileged root access</h4>
+        <p>For the short list of tasks that genuinely require root, and for the case where IAM itself is the problem. AWS is blunt about the threshold: <em>we strongly recommend you don't access the AWS account root user unless you have a task that requires root user credentials.</em></p>
       </div>
     </div>
+    <p>
+      That second tier needs an Organizations-era qualification, because "keep a root password for emergencies" is the wrong reading of it in a modern estate. AWS gives two strategies for member accounts and lists this one first: <strong>centralize root access and remove root user credentials from member accounts</strong> &mdash; password, access keys, signing certificates and MFA &mdash; after which <em>member accounts can't sign in to their root user or perform password recovery for their root user</em>.
+    </p>
+    <p>
+      So the model to build is three-part rather than two, and only the last part involves storing a root credential anywhere:
+    </p>
+    <ul>
+      <li><strong>An emergency IAM user</strong> for the common case, an identity provider or Identity Center failure.</li>
+      <li><strong>Centrally managed privileged root access</strong> for member-account root tasks, performed from the management account or a delegated administrator via <code class="inline">sts:AssumeRoot</code> &mdash; no stored member-account root credential involved at all.</li>
+      <li><strong>Stored root credentials only where they genuinely remain necessary</strong>, which in practice means the management account and any standalone account outside the organisation. Those are the ones the password-and-MFA split below is for.</li>
+    </ul>
 
     <h3>The circular dependency, stated by AWS itself</h3>
     <p>
@@ -203,9 +223,10 @@ verified_claims:
         <strong>Test it on a schedule, and expect the compliance dashboard to go red</strong>
       </div>
       <div class="challenge-body">
-        <p>An untested break-glass credential has an unknown state. Passwords expire, MFA devices desynchronise, custodians leave, phone numbers get reassigned, and none of that produces a signal. The test is not "does the credential exist" but a full rehearsal: two custodians, retrieve, sign in, confirm the alert fired and reached a human, sign out, record it.</p>
+        <p>An untested break-glass credential has an unknown state. Passwords expire, custodians leave, phone numbers get reassigned, devices are lost or replaced &mdash; and a hardware or virtual TOTP token can drift out of sync, which a FIDO security key cannot. None of that produces a signal. The test is not "does the credential exist" but a full rehearsal: two custodians, retrieve, sign in, confirm the alert fired and reached a human, sign out, record it.</p>
         <span class="fix-label">The finding that is not a finding</span>
-        <p>If you follow the advice to remove root credentials from member accounts, be ready for this: <strong>MFA-related rules return noncompliant if you follow the best practice of removing root user credentials</strong>, until those accounts are evaluated as <em>not applicable</em>. Doing the right thing turns the dashboard red first. Know that before someone opens a ticket about it.</p>
+        <p>If you follow the advice to remove root credentials from member accounts, be ready for this: <strong>MFA-related rules return noncompliant if you follow the best practice of removing root user credentials</strong>, until those accounts are evaluated as <em>not applicable</em>. Doing the right thing turns the dashboard red first.</p>
+        <p>Know which checks specifically, so the ticket can be closed with an answer rather than a debate. AWS names three: the Config managed rule that enforces MFA for root user credentials, the Security Hub CSPM IAM controls covering root MFA and root access keys, and the Trusted Advisor check for MFA on the root account. Those are the three that will light up, and they are reporting the absence of a credential you deliberately removed.</p>
       </div>
     </div>
 
