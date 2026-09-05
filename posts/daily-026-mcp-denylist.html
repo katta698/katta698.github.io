@@ -1,0 +1,279 @@
+---
+title: 'AWS Daily Intelligence #26 - Four Bulletins in a Day, and Three of Them Are the Same Bug'
+date: '2026-09-05T10:00:00'
+slug: aws-daily-intelligence-mcp-denylist
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-09-05'
+verified_claims:
+  - claim: "CVE-2026-85787 is an incomplete list of disallowed inputs in the SQL validation component in awslabs postgres-mcp-server, affecting any pypi package version below 1.1.7 and fixed in 1.1.7"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-101-aws/
+  - claim: "An unauthenticated actor could modify data beyond the read-only scope by placing crafted SQL when interacting with the authenticated MCP server"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-101-aws/
+  - claim: "AWS recommends implementing defense-in-depth by running the MCP server with minimal-privilege database credentials, granting only necessary permissions like CONNECT, USAGE, and SELECT for read-only access, and avoiding superuser or master user roles"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-101-aws/
+  - claim: "CVE-2026-85654 is a code injection in the CDK generator in awslabs.dynamodb-mcp-server, affecting versions 2.0.10 through 2.1.5 and fixed in 2.1.6"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-097-aws/
+  - claim: "The flaw involves improper neutralization of special elements used in a template engine in the CDK generator component, and a threat actor could inject malicious code through crafted table, index, or attribute names in data model files"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-097-aws/
+  - claim: "An authorized individual could potentially execute arbitrary code on the host that deploys the generated application through specially crafted data model parameters"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-097-aws/
+  - claim: "Until patching is possible, AWS recommends manually reviewing the contents of dynamodb_data_model.json for unexpected or unintended parameters and refraining from processing data model files from unverified sources"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-097-aws/
+  - claim: "CVE-2026-85786 is an incomplete fix for CVE-2026-75936, a memory-amplification denial of service in Amazon ion-java"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-100-aws/
+  - claim: "CVE-2026-85781 covers unverified access point ownership in the Amazon EFS CSI Driver"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-099-aws/
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      AWS published four security bulletins yesterday. Two are in its own MCP servers, one is an incomplete fix for a bulletin from earlier this year, and one is in the EFS CSI driver. Three of the four are the same bug wearing different clothes.
+    </p>
+    <p>
+      The clearest is <strong>CVE-2026-85787</strong> in <code>awslabs postgres-mcp-server</code>, versions below <strong>1.1.7</strong>. The server offers a read-only mode. Read-only was enforced by <em>an incomplete list of disallowed inputs in the SQL validation component</em>, and the consequence is exactly what that phrase implies: <em>an unauthenticated actor could modify data beyond the read-only scope by placing crafted SQL when interacting with the authenticated MCP server</em>.
+    </p>
+    <p>
+      The interesting part is not the missing keyword. It is where the guarantee was implemented. A database already has a permission system that can express read-only precisely, and the MCP server reimplemented one in application code by enumerating things to reject. AWS's own remediation says so: alongside the upgrade, <strong>run the MCP server with minimal-privilege database credentials, granting only necessary permissions like <code>CONNECT</code>, <code>USAGE</code>, and <code>SELECT</code></strong>. With that in place the validator can still be wrong and nothing happens.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Bulletin</th><th>Component</th><th>Affected</th><th>Fixed in</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>CVE-2026-85787</strong></td>
+            <td><code>awslabs postgres-mcp-server</code></td>
+            <td>below 1.1.7</td>
+            <td><strong>1.1.7</strong></td>
+          </tr>
+          <tr>
+            <td><strong>CVE-2026-85654</strong></td>
+            <td><code>awslabs.dynamodb-mcp-server</code>, CDK generator</td>
+            <td>2.0.10 through 2.1.5</td>
+            <td><strong>2.1.6</strong></td>
+          </tr>
+          <tr>
+            <td><strong>CVE-2026-85786</strong></td>
+            <td><code>ion-java</code></td>
+            <td>an incomplete fix for CVE-2026-75936</td>
+            <td>see the bulletin</td>
+          </tr>
+          <tr>
+            <td><strong>CVE-2026-85781</strong></td>
+            <td>Amazon EFS CSI Driver</td>
+            <td>unverified access point ownership</td>
+            <td>see the bulletin</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-026-mcp-denylist.svg" alt="Diagram contrasting a read-only MCP server enforced by a list of disallowed SQL inputs running against a write-capable database role, with the same server running against a role holding only CONNECT, USAGE and SELECT so a missed statement fails at the database; below, the three bulletins from the same day that share the shape" />
+      <figcaption>The validator is allowed to be wrong, as long as it is not the only thing standing between a query and the data.</figcaption>
+    </figure>
+
+    <h3>Why a SQL denylist cannot work</h3>
+    <p>
+      Deciding whether an arbitrary SQL string mutates data is not a string-matching problem. It is a parsing problem, and a hostile one: comments, string literals, nested statements, common table expressions that write, functions with side effects, procedural blocks, and dialect-specific syntax all give a writer of crafted input more surface than a list of rejected tokens can cover.
+    </p>
+    <p>
+      That is why the phrase in the bulletin — <em>an incomplete list of disallowed inputs</em> — is a description of the design rather than of the defect. Any list of disallowed inputs is incomplete; the only question is whether anybody has found the gap yet. The fix in 1.1.7 closes the gap that was found.
+    </p>
+
+    <h3>The same shape, twice more, on the same day</h3>
+    <p>
+      <strong>CVE-2026-85654</strong> in <code>awslabs.dynamodb-mcp-server</code> is <em>improper neutralization of special elements used in a template engine in the CDK generator component</em>. The server reads a data model file and generates CDK code from it; a <em>threat actor could inject malicious code through crafted table, index, or attribute names in data model files</em>, and the result is that <em>an authorized individual could potentially execute arbitrary code on the host that deploys the generated application</em>.
+    </p>
+    <p>
+      Same failure, different substrate. A table name is data, it was interpolated into a template as though it were code, and the escaping did not cover everything it needed to. Note where the code executes: not on the MCP server, but on <em>the host that deploys the generated application</em> — a CI runner with deployment credentials, which is a considerably better prize than a developer laptop.
+    </p>
+    <p>
+      And <strong>CVE-2026-85786</strong> makes the pattern explicit rather than inferred: it is <em>an incomplete fix for CVE-2026-75936</em>, a memory-amplification denial of service in <code>ion-java</code>. The first attempt at enumerating the cases to handle was also not complete.
+    </p>
+
+    <h3>The unauthenticated detail is worth reading twice</h3>
+    <p>
+      The postgres bulletin says <em>an unauthenticated actor</em> could modify data <em>when interacting with the authenticated MCP server</em>. Those two clauses sit together deliberately. The MCP server holds the database credential; whoever can send it a request inherits whatever that credential can do, without needing any database authentication of their own.
+    </p>
+    <p>
+      That is the general property of every MCP server, not a defect of this one, and it is the thing to hold on to when deciding where such a server may run and who may reach it. The server is a credential-holding proxy. Its read-only claim was the only thing distinguishing "an agent can query our database" from "an agent can change our database".
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      Nothing to gain here, only two upgrades and a design question worth asking once.
+    </p>
+    <p>
+      The question: for every tool your agents can reach, where is the boundary actually enforced? If the answer is "the tool checks", the tool is one bug away from not checking. If the answer is "the credential cannot do it", the tool being wrong is survivable. That distinction costs nothing to apply at setup and is expensive to retrofit, because narrowing a database role after the fact means finding out what the application actually needed.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      Three things follow from these two bulletins, in descending order of how much they generalise.
+    </p>
+    <ul>
+      <li>
+        <strong>Give every MCP server its own credential, scoped to what it is allowed to do.</strong> AWS's own advice for the postgres server is the template: <code>CONNECT</code>, <code>USAGE</code>, <code>SELECT</code>, and explicitly <em>avoiding superuser or master user roles</em>. A read-only tool holding a write-capable credential is a read-only tool by convention.
+      </li>
+      <li>
+        <strong>Treat generated code as untrusted input all the way to deployment.</strong> The DynamoDB flaw turns a table name into code on the deploying host. AWS's interim guidance — <em>manually reviewing the contents of <code>dynamodb_data_model.json</code> for unexpected or unintended parameters</em>, and <em>refraining from processing data model files from unverified sources</em> — is really a statement that the generator's output inherits the trust level of its input.
+      </li>
+      <li>
+        <strong>Put MCP servers in the dependency-scanning process.</strong> These are pypi and npm packages that execute privileged actions. They are not in most teams' SBOM scope because nobody thinks of a developer tool as production software, and the CI runner it runs on says otherwise.
+      </li>
+    </ul>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      Both fixes are version bumps and cost nothing. The change that has a cost is the defence-in-depth one: creating a dedicated, minimally-privileged database role per MCP server rather than reusing an application credential.
+    </p>
+    <p>
+      That cost is discovery time, not money. Working out the minimum grant means finding out which schemas, tables and functions the tool genuinely touches, which nobody has written down. Budget an afternoon per server and do it once — the alternative is discovering the answer during the next bulletin.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      The version pinning question is the practical one. MCP servers are typically launched by a client configuration that names a package and lets the resolver pick a version, so "which version are we running" is answered per developer machine and per CI job rather than centrally.
+    </p>
+    <p>
+      Pin them. An unpinned MCP server means an upgrade you cannot verify happened and a downgrade nobody would notice. And because the DynamoDB flaw executes on the deploying host, the CI runner's version matters more than any laptop's.
+    </p>
+    <p>
+      Second, note that the affected DynamoDB range is bounded at both ends — <strong>2.0.10 through 2.1.5</strong>. Anyone on 2.0.9 or earlier is unaffected by this one, which is worth checking before scheduling emergency work.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Where read-only is enforced</th><th>Survives a validator bug?</th><th>Cost</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>A denylist in the tool</td>
+            <td><strong>No</strong> — this is the bulletin</td>
+            <td>None, which is why it is the default</td>
+          </tr>
+          <tr>
+            <td>An allowlist of permitted statements</td>
+            <td>Better, but still parsing hostile input</td>
+            <td>Breaks legitimate queries you did not anticipate</td>
+          </tr>
+          <tr>
+            <td><strong>A database role with only SELECT</strong></td>
+            <td><strong>Yes</strong> — the write fails at the database</td>
+            <td>Discovery time to establish the minimum grant</td>
+          </tr>
+          <tr>
+            <td>A read replica as the target</td>
+            <td><strong>Yes</strong>, structurally</td>
+            <td>An instance, and slightly stale data</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      Upgrade first, then remove the reason it mattered.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">1 &mdash; upgrade both, everywhere they run</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>pip install --upgrade "awslabs.postgres-mcp-server&gt;=1.1.7"
+pip install --upgrade "awslabs.dynamodb-mcp-server&gt;=2.1.6"
+
+# "Everywhere" includes CI runners and container images, not just laptops.
+# The DynamoDB flaw executes on the host that deploys the generated app.</code></pre>
+    </div>
+    <p>
+      Then give the postgres server a credential that cannot do the thing the validator was supposed to prevent.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">2 &mdash; make read-only true at the database</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>CREATE ROLE mcp_readonly LOGIN PASSWORD '...';
+
+GRANT CONNECT ON DATABASE appdb TO mcp_readonly;
+GRANT USAGE  ON SCHEMA   public TO mcp_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_readonly;
+
+-- And for tables created later:
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT ON TABLES TO mcp_readonly;
+
+-- Not the application user. Not the master user. Not a superuser.</code></pre>
+    </div>
+    <p>
+      Test it by asking the agent to do something destructive and confirming the database refuses. That is a five-minute check and it is the only evidence that the guarantee is where you think it is.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <ul>
+      <li><strong>Enforce a boundary where the platform enforces it, not where your code checks it.</strong> A database role, an IAM policy and a network rule are all things that fail closed without your help.</li>
+      <li><strong>Treat a denylist as a usability feature, not a control.</strong> Rejecting obvious mistakes early is useful; being the only thing between a query and the data is not a job it can do.</li>
+      <li><strong>Give every agent tool its own identity.</strong> Shared credentials make "what can this tool do" unanswerable, and these bulletins are entirely about that question.</li>
+      <li><strong>Pin MCP server versions and scan them.</strong> They are dependencies that execute privileged actions, and an unpinned one cannot be verified as patched.</li>
+      <li><strong>Assume generated code carries the trust of its inputs.</strong> A template engine turns data into code by design; that is the feature and the vulnerability.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt this</h2>
+    <p>
+      Anyone running <code>awslabs postgres-mcp-server</code> below 1.1.7 or <code>awslabs.dynamodb-mcp-server</code> between 2.0.10 and 2.1.5 should upgrade today, and check CI images as well as workstations.
+    </p>
+    <p>
+      The wider audience is anyone whose agents can reach a database, a filesystem or a deployment pipeline through any MCP server, first-party or not. The specific bugs are AWS's; the pattern is not, and the question — where is this boundary actually enforced — applies to every tool in the catalogue.
+    </p>
+    <p>
+      If you run no MCP servers, the EFS CSI Driver bulletin is the one that may still apply to you.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li><strong>Upgrade <code>postgres-mcp-server</code> to 1.1.7 and <code>dynamodb-mcp-server</code> to 2.1.6.</strong> The DynamoDB range is bounded — 2.0.10 through 2.1.5.</li>
+      <li><strong>The postgres server's read-only mode was a list of disallowed SQL inputs</strong>, and the list was incomplete. Every such list is; only the discovery date varies.</li>
+      <li><strong>AWS's own remediation moves the guarantee to the database</strong> — <code>CONNECT</code>, <code>USAGE</code>, <code>SELECT</code>, and no superuser or master user role.</li>
+      <li><strong>An MCP server is a credential-holding proxy.</strong> Whoever can reach it inherits what its credential can do, without authenticating to the backend themselves.</li>
+      <li><strong>Three of the four bulletins share one shape</strong>, including one that is explicitly an incomplete fix for an earlier incomplete list.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/security/security-bulletins/rss/2026-101-aws/" target="_blank" rel="noopener">AWS Security Bulletin — CVE-2026-85787, incomplete list of disallowed inputs in postgres-mcp-server</a></li>
+      <li><a href="https://aws.amazon.com/security/security-bulletins/rss/2026-097-aws/" target="_blank" rel="noopener">AWS Security Bulletin — CVE-2026-85654, code injection in the dynamodb-mcp-server CDK generator</a></li>
+      <li><a href="https://aws.amazon.com/security/security-bulletins/rss/2026-100-aws/" target="_blank" rel="noopener">AWS Security Bulletin — CVE-2026-85786, incomplete fix for CVE-2026-75936 in ion-java</a></li>
+      <li><a href="https://aws.amazon.com/security/security-bulletins/rss/2026-099-aws/" target="_blank" rel="noopener">AWS Security Bulletin — CVE-2026-85781, unverified access point ownership in the Amazon EFS CSI Driver</a></li>
+      <li><a href="https://aws.amazon.com/security/security-bulletins/" target="_blank" rel="noopener">AWS Security Bulletins</a></li>
+    </ul>
+  </div>
+</div>

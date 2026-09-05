@@ -1,0 +1,329 @@
+---
+title: "AWS Architecture Series #43 — The account that watches everything"
+date: '2026-09-05T09:00:00'
+slug: aws-architecture-security-tooling-account
+labels: [AWS, "AWS Architecture Series"]
+problem: "A security team consolidates its tooling into one account: GuardDuty, Security Hub, Config, the organisation trail and the bucket the trail writes to. It is tidy, it is centralised, and it means the administrator of that account can both stop the recording and delete what the recording already produced — which is the one combination the previous four posts were written to prevent."
+builds: "A working model of the security tooling account as the place detection is configured and response is executed, deliberately separated from the account that stores what detection produced, and an honest account of how a read-only account accumulates write access to the entire organisation."
+catch: "The tooling account is where response automation lives, and response means a role it can assume in every member account. Each grant is justified individually and nobody re-reads the set. The account whose job is watching ends up with broader write reach than any production account — and unlike the management account, it is at least a member account, so SCPs bind it."
+verified: '2026-09-05'
+verified_claims:
+  - claim: "The Security Tooling account is dedicated to operating security services, monitoring AWS accounts, and automating security alerting and response"
+    source: https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/security-tooling.html
+  - claim: "The security objectives include providing a dedicated account with controlled access to manage access to the security guardrails, monitoring, and response"
+    source: https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/security-tooling.html
+  - claim: "Detection, investigation, and response are essential parts of the security lifecycle and can be used to support a quality process, a legal or compliance obligation, and for threat identification and response efforts"
+    source: https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/security-tooling.html
+  - claim: "We recommend that you avoid using the AWS Org Management account for deployments unless absolutely necessary. Instead, pass on deployments to member accounts"
+    source: https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/security-tooling.html
+  - claim: "In the AWS SRA, the Security Tooling account is the delegated administrator account for managing CloudTrail, and the corresponding S3 bucket to store the organization trail logs is created in the Log Archive account. This is to separate the management and usage of CloudTrail log privileges"
+    source: https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/security-tooling.html
+  - claim: "You can create and manage organization trails from both management and delegated administrator accounts. However, as a best practice, you should limit access to the management account and use the delegated administrator functionality where it is available"
+    source: https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/security-tooling.html
+  - claim: "In the AWS SRA, the AWS Config delegated administrator account is the Security Tooling account, and the AWS Config delivery channel is configured to deliver resource configuration snapshots in a centralized S3 bucket in the Log Archive account"
+    source: https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/security-tooling.html
+  - claim: "GuardDuty active findings are exported to a central S3 bucket in the Log Archive account, so you can retain the findings beyond 90 days"
+    source: https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/security-tooling.html
+  - claim: "AWS Artifact is hosted within the Security Tooling account to separate the compliance artifact management functionality from the AWS Org Management account, and this separation of duty is important"
+    source: https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/security-tooling.html
+  - claim: "The services delegated to the Security Tooling account include AWS Config, AWS Firewall Manager, Amazon GuardDuty, IAM Access Analyzer, Amazon Macie, AWS Security Hub, Amazon Detective, AWS Audit Manager, Amazon Inspector, AWS CloudTrail, AWS Systems Manager, and AWS Security Incident Response"
+    source: https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/security-tooling.html
+  - claim: "The Security Tooling account further supports a defense-in-depth organization strategy by maintaining another layer of control over appropriate security configuration and operations such as encryption keys and security group settings"
+    source: https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/security-tooling.html
+  - claim: "SCPs don't affect users or roles in the management account. They affect only the member accounts in your organization"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #043 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">The account that watches everything</h1>
+  <p class="post-subtitle">The security tooling account is where detection is configured and response is executed. It is deliberately not where the evidence lives — and it accumulates more write access to your estate than anything you would call a production account.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Security &amp; Identity &middot; Governance</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A security team is asked to consolidate. Detection tooling has grown up across three accounts, findings arrive in two consoles, and nobody can say authoritatively which accounts are covered. The proposal is sensible: one security account, everything in it. GuardDuty and Security Hub delegated there. Config delegated there. The organisation trail created from there, and the bucket it writes to created there too, because that is where the security team can reach it.
+    </p>
+    <p>
+      Everything about that is an improvement on what came before, except the last clause.
+    </p>
+    <p>
+      Putting the trail's configuration and the trail's output in the same account means one administrator can stop the logging and delete what the logging already produced. Not through a defect — through the ordinary permissions that person needs to do their job. The four previous posts in this block argued that recording must start at account creation, must survive tampering, must be independently detectable and must have a break-glass path. All of that is undone by a single account boundary drawn one account too wide.
+    </p>
+
+    <div class="callout amber">
+      <strong>AWS draws the line explicitly, and says why</strong>
+      <p><strong>In the AWS SRA, the Security Tooling account is the delegated administrator account for managing CloudTrail, and the corresponding S3 bucket to store the organization trail logs is created in the Log Archive account. This is to separate the management and usage of CloudTrail log privileges.</strong> Managing the trail and holding its output are two privileges, and the reference architecture puts them in two accounts on purpose.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Three accounts, three jobs, and the boundaries between them are the design.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-043-security-tooling-account.svg" alt="Diagram: the management account holding the organisation and little else, the security tooling account as delegated administrator configuring detection and running response, and the log archive account holding the output where the tooling account cannot delete it; below, the list of delegated services and the drift by which a read-only account accumulates write access to every member account" />
+      <figcaption>Configuring detection and storing its output are different privileges. The reference architecture separates them by account.</figcaption>
+    </figure>
+
+    <h3>What the account is actually for</h3>
+    <p>
+      AWS's definition is broader than "where the findings appear": the Security Tooling account is <em>dedicated to operating security services, monitoring AWS accounts, and <strong>automating security alerting and response</strong></em>. The third clause is the one that shapes everything else in this post, because response is an active verb.
+    </p>
+    <p>
+      The stated objectives are worth reading as design constraints rather than marketing. Provide <em>a dedicated account with controlled access to manage access to the security guardrails, monitoring, and response</em>. Maintain centralised infrastructure to monitor security operations data and maintain traceability, because <em>detection, investigation, and response are essential parts of the security lifecycle</em>. And <em>further support a defense-in-depth organization strategy by maintaining another layer of control over appropriate security configuration and operations such as encryption keys and security group settings</em>.
+    </p>
+
+    <h3>Why not the management account</h3>
+    <p>
+      The temptation is real: the management account already has organisation-wide reach, and delegation is extra setup. AWS's position is unambiguous — <strong>we recommend that you avoid using the AWS Org Management account for deployments unless absolutely necessary. Instead, pass on deployments to member accounts.</strong>
+    </p>
+    <p>
+      The reason connects directly to an earlier post in this block. <em>SCPs don't affect users or roles in the management account. They affect only the member accounts in your organization.</em> Every guardrail you write is invisible there. A security tooling account, by contrast, is an ordinary member account, so the SCPs that stop a trail being disabled or an archive being deleted apply to it in full. Delegation does not weaken the control; it moves privileged work into the only place a control can reach it.
+    </p>
+    <p>
+      Even where both paths work, AWS still prefers the delegated one: <em>you can create and manage organization trails from both management and delegated administrator accounts. However, as a best practice, you should limit access to the management account and use the delegated administrator functionality where it is available.</em>
+    </p>
+
+    <h3>The separation is applied consistently, not just to CloudTrail</h3>
+    <p>
+      The same split appears for every service that produces durable output, which is what makes it a principle rather than a CloudTrail quirk.
+    </p>
+    <ul>
+      <li><strong>Config</strong> — <em>the AWS Config delegated administrator account is the Security Tooling account, and the AWS Config delivery channel is configured to deliver resource configuration snapshots in a centralized S3 bucket in the Log Archive account.</em></li>
+      <li><strong>GuardDuty</strong> — <em>active findings are exported to a central S3 bucket in the Log Archive account, so you can retain the findings beyond 90 days.</em> Note the reason: the findings themselves age out, and the archive is what makes them evidence rather than a dashboard.</li>
+      <li><strong>AWS Artifact</strong> — hosted in the tooling account <em>to separate the compliance artifact management functionality from the AWS Org Management account</em>, which AWS calls out as a separation of duty in its own right.</li>
+    </ul>
+
+    <h3>The list is longer than most teams expect</h3>
+    <p>
+      Delegated to this one account: <strong>AWS Config, AWS Firewall Manager, Amazon GuardDuty, IAM Access Analyzer, Amazon Macie, AWS Security Hub, Amazon Detective, AWS Audit Manager, Amazon Inspector, AWS CloudTrail, AWS Systems Manager, and AWS Security Incident Response</strong> — plus centralised management of root access.
+    </p>
+    <p>
+      Read that list as a permissions inventory rather than a feature list. Firewall Manager pushes rules into member accounts. Systems Manager runs commands on instances. Root access management can act as root in accounts whose root credentials have been removed. This is not a passive account.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Model Holds Up</h2>
+
+    <h3>It makes the security function subject to its own controls</h3>
+    <p>
+      The uncomfortable question about any monitoring system is who monitors it. Putting detection in a member account answers it structurally: the SCPs that bind everyone else bind the security team too, their actions land in the same organisation trail, and the trail's output sits in an account they cannot delete from. None of that depends on the security team's good intentions, which is the point.
+    </p>
+
+    <h3>Delegation is reversible; management-account sprawl is not</h3>
+    <p>
+      A delegated administrator can be deregistered and re-registered. Resources built in the management account tend to stay there, because moving them is a migration and nobody schedules one. Choosing delegation early is choosing the option that stays open.
+    </p>
+
+    <h3>One account is the right number, and it is not obvious</h3>
+    <p>
+      The instinct to split further — one account per service, or per team — costs more than it saves. Cross-account findings correlation is the whole value of Security Hub and Detective, and it is exactly what account boundaries make harder. The separation that pays for itself is the one AWS draws: configuration in one account, output in another. Further subdivision buys isolation you did not need and loses correlation you did.
+    </p>
+
+    <h3>It gives the log archive account a reason to be boring</h3>
+    <p>
+      Because analysis happens in the tooling account, the archive account needs no analysts, no dashboards, no query tooling and almost no human access. That is what makes the Object Lock and delete-denial from the previous post practical rather than obstructive — nobody has a legitimate reason to be in there.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Design Decisions</h2>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>Never let the tooling account own the bucket it fills</strong>
+      </div>
+      <div class="challenge-body">
+        <p>This is the decision the whole architecture turns on, and the convenient answer is the wrong one. The security team needs to read the logs, so putting the bucket where they already have access removes a step. It also removes the separation, because the ability to configure the trail and the ability to delete its output land on the same principal.</p>
+        <span class="fix-label">Concrete rule</span>
+        <p>Trail configuration, Config delivery channel and GuardDuty export all point at buckets in the log archive account. Grant the tooling account <em>read</em> on those buckets and nothing else &mdash; no <code class="inline">s3:DeleteObject</code>, no <code class="inline">s3:PutObject</code>, no lifecycle configuration. If an analyst needs to run queries, run them from the tooling account against the archive, not the other way round.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>Inventory the response roles, because nobody else will</strong>
+      </div>
+      <div class="challenge-body">
+        <p>Detection is read-only and easy to approve. Response is not: isolating an instance, revoking a key, quarantining a bucket and applying a firewall rule all require a role in the target account that the tooling account can assume. Each is requested separately, justified separately, and approved separately &mdash; and the set is never read as a set.</p>
+        <span class="fix-label">The question to ask quarterly</span>
+        <p>Not "is each of these justified" but "what is the union of what this account can do across the organisation". In most estates that union is broader than any production role, and it belongs in the same review as break-glass. Scope each response role to the specific actions its automation performs, and use a permissions boundary so the tooling account cannot grant itself more.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>Export findings, because the console is not a record</strong>
+      </div>
+      <div class="challenge-body">
+        <p>AWS gives the reason directly: <strong>GuardDuty active findings are exported to a central S3 bucket in the Log Archive account, so you can retain the findings beyond 90 days.</strong> A finding you can still see in the console is a finding that has not aged out yet, which is a different thing from evidence.</p>
+        <span class="fix-label">Why this matters more than it looks</span>
+        <p>An investigation usually starts well after the event. The finding that explains an incident discovered in November may have been generated in July, and the console cannot help. Export is the step that turns detection into something an investigation can use, and it is the step most often left for later because nothing breaks without it.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>Delegate everything that supports it, in one pass</strong>
+      </div>
+      <div class="challenge-body">
+        <p>Partial delegation is the worst of both worlds: some services managed from the tooling account, others still run from the management account where no SCP reaches them, and no single place to answer "what is our coverage". The service list is long and known, so treat it as one piece of work rather than a service at a time.</p>
+        <span class="fix-label">Order that avoids rework</span>
+        <p>Register the delegated administrator first, then enable each service with auto-enable for new accounts, then point its output at the archive. Doing it the other way &mdash; enabling per account and delegating later &mdash; leaves per-account configuration that the organisation-level setting does not override, and finding those stragglers is harder than not creating them.</p>
+      </div>
+    </div>
+
+    <h3>Which account does what</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Management</th>
+            <th>Security tooling</th>
+            <th>Log archive</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Bound by SCPs?</strong></td>
+            <td><strong>No</strong></td>
+            <td>Yes</td>
+            <td>Yes</td>
+          </tr>
+          <tr>
+            <td><strong>Configures detection</strong></td>
+            <td>Registers the delegate, then stops</td>
+            <td><strong>Yes</strong></td>
+            <td>No</td>
+          </tr>
+          <tr>
+            <td><strong>Holds the output</strong></td>
+            <td>No</td>
+            <td>No &mdash; read only</td>
+            <td><strong>Yes</strong></td>
+          </tr>
+          <tr>
+            <td><strong>Can delete the output</strong></td>
+            <td>Technically yes, which is why it holds nothing</td>
+            <td><strong>No</strong></td>
+            <td>Nobody, under Object Lock</td>
+          </tr>
+          <tr>
+            <td><strong>Response automation</strong></td>
+            <td>No</td>
+            <td><strong>Yes</strong></td>
+            <td>No</td>
+          </tr>
+          <tr>
+            <td><strong>Human access</strong></td>
+            <td>Break-glass only</td>
+            <td>The security team</td>
+            <td>Almost none</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <strong>The row that decides the design</strong>
+      <p>Read the "can delete the output" row across. The management account can, which is why the previous posts argued for keeping it empty. The tooling account must not, which is why the bucket is elsewhere. And in the archive account nobody can, because compliance-mode Object Lock takes the question out of IAM entirely. Three accounts, three different answers, and the architecture is what makes them different.</p>
+    </div>
+
+    <h3>Reference: what the tooling account may do to the archive</h3>
+    <p>
+      The bucket policy in the log archive account, from the archive's point of view. The services write; the tooling account reads; nobody deletes.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">Log archive bucket &mdash; read for the analysts, write for the services, delete for nobody</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ToolingAccountReadsOnly",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::222233334444:root"
+      },
+      "Action": [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::org-log-archive",
+        "arn:aws:s3:::org-log-archive/*"
+      ]
+    },
+    {
+      "Sid": "NobodyDeletes",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+        "s3:PutLifecycleConfiguration",
+        "s3:PutBucketPolicy"
+      ],
+      "Resource": [
+        "arn:aws:s3:::org-log-archive",
+        "arn:aws:s3:::org-log-archive/*"
+      ]
+    }
+  ]
+}</code></pre>
+    </div>
+    <p>
+      Two notes. The account principal delegates to account <code class="inline">222233334444</code> as a whole, so an administrator there still has to grant it onward &mdash; which is the cross-account behaviour from earlier in this series, and here it is working for you. And the explicit <code class="inline">Deny</code> covers <code class="inline">s3:PutBucketPolicy</code>, because a delete denial that can be edited away by the same principal is a comment rather than a control.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The security tooling account is the least examined account in most organisations, which is an odd place for the one holding the most reach. It gets built during a consolidation, it accumulates response automation one justified request at a time, and because everything it does is defensive nobody applies the scrutiny they would to a production role with the same permissions.
+    </p>
+    <p>
+      The architecture AWS describes is not really about consolidation. It is about drawing one boundary that consolidation naturally erases: the difference between configuring a control and owning what that control produced. Everything else in the reference architecture follows from taking that seriously, including the parts that look like extra work.
+    </p>
+    <p>
+      <strong>The question to ask of your own layout: if the person who administers detection wanted the record to say something different, how many accounts would they have to compromise?</strong> If the answer is one, the tooling and the archive are the same account and the last four posts in this series have been undone by a diagram. If the answer is two, the design is doing what it was built to do.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; that closes the account-structure arc. Next the block turns to the network boundary: VPC endpoints and the data perimeter, and why "it never leaves AWS" is a statement about routing rather than about who can reach your data.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/security-tooling.html" target="_blank" rel="noopener">AWS Prescriptive Guidance — Security Tooling account, AWS Security Reference Architecture</a></li>
+      <li><a href="https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/log-archive.html" target="_blank" rel="noopener">AWS Prescriptive Guidance — Log Archive account</a></li>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html" target="_blank" rel="noopener">AWS Documentation — Service control policies (SCPs)</a></li>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_delegate_policies.html" target="_blank" rel="noopener">AWS Documentation — Delegated administrator for AWS Organizations</a></li>
+      <li><a href="https://docs.aws.amazon.com/guardduty/latest/ug/guardduty_exportfindings.html" target="_blank" rel="noopener">AWS Documentation — Exporting GuardDuty findings to an S3 bucket</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html" target="_blank" rel="noopener">AWS Documentation — Locking objects with S3 Object Lock</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
