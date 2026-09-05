@@ -23,7 +23,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
-<link rel="stylesheet" href="/blog/assets/blog.css?v=3172392d"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=5cf28530"/>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
 <meta name="robots" content="noindex,nofollow"/>
 </head>
@@ -67,7 +67,7 @@
       <div class="post-info">
         <span>Sep 6, 2026</span>
         <span class="post-info-dot"></span>
-        <span>17 min read</span>
+        <span>19 min read</span>
       </div>
     </header>
     <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 3 September 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
@@ -222,7 +222,7 @@
 <div class="post-meta">
 <span>6 September 2026</span>
 <span>Terraform · HCP · MCP</span>
-<span>cost measured at teardown · $0 destroyed</span>
+<span>$0.13 spent · $0 destroyed</span>
 </div>
 </div>
 <div class="toc">
@@ -243,7 +243,7 @@
 <div class="section" id="why">
 <h2>Why — The Problem This Solves</h2>
 <p>On 30 August I opened a bill I did not expect and asked a simple question: <em>what is running, what is it costing, and did I leave anything behind?</em></p>
-<p>Answering it took eleven API calls. Cost Explorer for the daily shape. CloudTrail to find who had done what. The Resource Groups Tagging API for what still existed. CloudWatch for whether any alarm had fired. Terraform Cloud for what the state files believed. Each one needed me to already know which API held the answer.</p>
+<p>Answering it took <strong>eleven separate lookups across five systems</strong> — one for what I was charged, one for who had changed what, one for what still existed, one for whether anything had alerted, one for what my infrastructure code believed. None of them talk to each other. Each one required me to already know that it was the one holding the answer.</p>
 <p><strong>Every one of those numbers had existed for days.</strong> A service had been billing $9.35 a day for a week. A budget alert had fired and been ignored. Anomaly detection had flagged eight cents of Security Hub and missed the sixty-one dollars sitting next to it.</p>
 <div class="callout amber">
 <p><strong>The gap was never missing data.</strong> It was that interrogating the data required knowing exactly which six APIs to call, in what order, with what filters. That is a skill, and skills do not scale to three in the morning.</p>
@@ -251,6 +251,7 @@
 <h3>What makes this answerable in one question</h3>
 <p>An MCP server is a small program that exposes tools an AI client can call. The client — Claude, Cursor, anything that speaks the protocol — reads the tool descriptions, decides which fit the question, calls them, and answers in plain language. You define what exists; the model decides when to use it.</p>
 <p>So the work is not "build an AI". The work is deciding <strong>which four questions matter</strong>, giving each one a tool, and making sure a tool cannot do damage when the model gets it wrong.</p>
+<p>By the end of this post there is a working version of that, and the first real question I put to it found a virtual machine that had been running for six weeks which I had entirely forgotten about. It costs nothing today, because it is inside a free trial.</p>
 </div>
 <div class="section" id="what">
 <h2>What You Need to Know — Skills &amp; Tools</h2>
@@ -258,7 +259,7 @@
 <thead><tr><th>Concept</th><th>What actually matters</th></tr></thead>
 <tbody>
 <tr><td><strong>MCP tools, resources, prompts</strong></td><td>Three things a server can expose. Tools are functions the model may call and are what this week uses. The important part is that a tool's <em>description</em> is read by the model — it is input, not documentation.</td></tr>
-<tr><td><strong>Tool poisoning</strong></td><td>The top risk in current MCP guidance: instructions hidden in a tool description or parameter schema, steering the model. The operator never sees them in the client UI. This is why the permissions matter more than the code.</td></tr>
+<tr><td><strong>Tool poisoning</strong></td><td>Instructions hidden in a tool's description or parameter schema, steering the model. The operator never sees them in the client UI. The specification is blunt about it: tool descriptions <em>“should be considered untrusted, unless obtained from a trusted server”</em>. This is why the permissions matter more than the code.</td></tr>
 <tr><td><strong>Streamable HTTP</strong></td><td>The remote transport. The 2026-07-28 revision made the protocol core stateless, requires an <code>Mcp-Method</code> header on every request so a gateway can route without parsing the body, and lets list results carry a TTL.</td></tr>
 <tr><td><strong>SigV4 vs OAuth</strong></td><td>Two ways to authorise an MCP client. SigV4 reuses an AWS identity you already have and costs nothing to run. OAuth works with any off-the-shelf client. You pick one and lose something either way.</td></tr>
 <tr><td><strong>Metered read APIs</strong></td><td>Most describe/list calls are free. <code>ce:GetCostAndUsage</code> is <strong>$0.01 per request</strong>, and each page counts separately. Knowing which reads cost money is the whole skill here.</td></tr>
@@ -431,8 +432,26 @@ if method.startswith("notifications/"): # return NOTHING AT ALL</code></pre>
 </figure>
 <p><strong>The protocol is correct, including the boring parts.</strong> MCP notifications carry no <code>id</code> and must receive no response — returning one is a protocol error some clients treat as fatal. That path is easy to get wrong because nothing visibly breaks in casual testing.</p>
 <p><strong>It answers the question that started the week.</strong> Not a synthetic query — the actual one:</p>
-<div class="callout amber">
-<p><strong>Read this screenshot for what it is.</strong> The client is a script that signs requests, and its <code>ask</code> command is a keyword router — it matches on the word “running” and picks a tool. <strong>No model chose anything here.</strong> That is deliberate: it proves the transport and the tools work, separately from proving an agent can choose between them. Wiring a real AI client to this endpoint needs a local bridge that signs each request, because an off-the-shelf MCP client cannot produce a SigV4 signature.</p>
+<div class="callout">
+<p><strong>Read this screenshot for what it is.</strong> The client here is a script that signs requests, and its <code>ask</code> command is a keyword router — it matches on the word “running” and picks a tool. <strong>No model chose anything in this one.</strong> That separation is deliberate: it proves the transport and the tools work, independently of whether an agent can choose between them. The next step proves the other half.</p>
+</div>
+<h3>Step 5 — Put a real AI client in front of it</h3>
+<p>Everything above proves the server works. It does not prove the thing the week is actually about, which is asking a question in English and having something decide what to do with it.</p>
+<p>The obstacle is the auth choice. Claude Desktop, Cursor and every other off-the-shelf MCP client speak plain Streamable HTTP and cannot produce an AWS SigV4 signature, so they are refused at the door by the same control that makes the endpoint free to run.</p>
+<p>The fix is a <strong>60-line stdio bridge</strong>. The client launches it as an ordinary local MCP server; it reads JSON-RPC on stdin, signs each message, forwards it over HTTPS, and writes the response back. The client never learns AWS was involved, and the server never sees an unsigned request.</p>
+<figure class="screenshot">
+<img alt="The MCP client config registering the bridge, and the client listing it as an available server" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-17-mcp-platform-ops/docs/blog/screenshots/10-real-client-registered.png"/>
+<figcaption>The whole integration. The client launches the bridge as an ordinary local MCP server and never learns AWS was involved.</figcaption>
+</figure>
+<p>One detail in that bridge matters more than its length: <strong>stdout carries the protocol and nothing else.</strong> Every diagnostic goes to stderr. A single stray <code>print</code> corrupts the stream and the client reports something unhelpful about malformed JSON.</p>
+<p>And then the actual question, with no keywords and no routing table:</p>
+<figure class="screenshot">
+<img alt="The verbatim question, the two tools the model chose to call, and its unedited answer naming a Lightsail instance" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-17-mcp-platform-ops/docs/blog/screenshots/11-ai-answers-the-question.png"/>
+<figcaption>The question verbatim, the two tools the model chose on its own, and the answer unedited apart from the account id. No tool was named in the prompt.</figcaption>
+</figure>
+<div class="callout green">
+<p><strong>It found something I did not know about.</strong> A Lightsail instance, running since 23 July, six weeks, costing <em>nothing</em> — because it is inside a free trial. When that lapses it becomes $7 a month. Nobody asked it to look for that. It read four tool descriptions, decided which two fitted the question, and reported the thing that best matched “running that nobody owns”.</p>
+<p>That is the third time this pattern has caught me: Security Hub, GuardDuty and QuickSight all cost $0 on the day they were created and started billing thirty days later. <strong>A free trial is not a free service, and it is the hardest kind of cost to remember, because there is nothing to notice.</strong></p>
 </div>
 <figure class="screenshot">
 <img alt="Asking what was left running with no owner returns 15 untagged resources including two Week 12 test buckets" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-17-mcp-platform-ops/docs/blog/screenshots/07-what-did-i-leave-running.png"/>
@@ -480,7 +499,7 @@ if method.startswith("notifications/"): # return NOTHING AT ALL</code></pre>
 <tr><td>DynamoDB</td><td>on-demand</td><td>effectively free at this volume</td></tr>
 <tr><td>CloudWatch alarm × 1</td><td>$0.10 / alarm / month</td><td>$0.10 / month</td></tr>
 <tr><td>Lambda Function URL</td><td>no hourly charge</td><td><strong>$0 idle</strong></td></tr>
-<tr><td><strong>Total spent this week</strong></td><td></td><td><strong>measured at teardown, not estimated from rates</strong></td></tr>
+<tr><td><strong>Total spent this week</strong></td><td></td><td><strong>$0.13</strong>, read from Cost Explorer</td></tr>
 <tr><td><strong>Destroyed</strong></td><td></td><td><strong>$0</strong></td></tr>
 </tbody>
 </table>
@@ -518,6 +537,7 @@ if method.startswith("notifications/"): # return NOTHING AT ALL</code></pre>
 <li><strong>Verify a teardown against the provider, not against Terraform.</strong> The two disagree exactly when it matters</li>
 </ul>
 <h3>What I'd do differently in production</h3>
+<p>This is a personal account with one caller, and several decisions above are only correct because of that. If you are building the same thing for a team, these are the five that change — and the first is the one that changes everything else.</p>
 <ul>
 <li><strong>API Gateway with an OAuth provider</strong> instead of SigV4 on a Function URL. The 2026-07-28 revision hardened that path specifically — issuer validation per RFC 9207, issuer-bound client credentials, Client ID Metadata Documents for registration. SigV4 is right for one operator and wrong for a team, because it forces every caller to hold AWS credentials and rules out every off-the-shelf client</li>
 <li><strong>Check what already exists before writing anything.</strong> AWS publish <a href="https://awslabs.github.io/mcp/" rel="noopener" target="_blank">more than sixty MCP servers</a> covering most of their services. Writing your own earns its keep when the question is specific to your estate — mine reads a tagging convention that only means something here — and is wasted effort when it is not</li>
