@@ -596,8 +596,17 @@ def check_page(slug, spec):
         #     So: two links is current, three is the legacy arch template and
         #     is reported as a warning rather than a failure. Anything else
         #     means something wrote into the nav, which is what this is for.
+        #     Updated again by c849eef ("Give the blog the same inline nav as
+        #     everywhere else, and fix 89 stale ones"), which made the nav
+        #     Portfolio + Blog + Intelligence and rebuilt the pages to match.
+        #     Measured on 2026-09-05: 201 built pages carry that nav and zero
+        #     carry Home, so the previous two accepted shapes had both stopped
+        #     existing while this check still required one of them -- every
+        #     arch post in all three cloud windows failed on it. The current
+        #     shape is the pass case; the older two stay accepted so a page
+        #     that predates a rebuild is not reported as damage.
         labels = [re.sub(r'<[^>]+>', '', i).strip() for i in items]
-        if labels == ['Home', 'Blog']:
+        if labels in (['Portfolio', 'Blog', 'Intelligence'], ['Home', 'Blog']):
             pass
         elif labels == ['Home', 'Blog', 'Resume']:
             warn(slug, 'site nav still has the legacy Resume link - built from '
