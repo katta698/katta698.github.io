@@ -1,0 +1,498 @@
+---
+title: 'Week 17 - An MCP Server That Answers What My AWS Account Is Doing'
+date: '2026-09-05T10:25:00'
+labels:
+- AWS
+- Terraform
+- AWS Weekly Lab
+slug: week-17-mcp-platform-ops
+verified: '2026-09-03'
+verified_claims:
+  - claim: "The Cost Explorer API bills $0.01 per request, and each page of a paginated result counts as a separate request"
+    source: https://aws.amazon.com/aws-cost-management/pricing/
+  - claim: "The current Model Context Protocol specification revision is 2026-07-28, with a stateless protocol core, a required Mcp-Method header on every request, and cacheable list results"
+    source: https://modelcontextprotocol.io/specification/2026-07-28
+  - claim: "MCP authorization now expects issuer validation per RFC 9207 and treats Client ID Metadata Documents as the preferred client registration path"
+    source: https://blog.modelcontextprotocol.io/posts/2026-07-28/
+  - claim: "Amazon Bedrock AgentCore Runtime bills $0.0895 per vCPU-hour and $0.00945 per GB-hour in one-second increments, and a session can last up to 14 days"
+    source: https://aws.amazon.com/bedrock/agentcore/pricing/
+  - claim: "AgentCore Gateway bills $0.005 per 1,000 API invocations and $0.02 per 100 tools indexed per month"
+    source: https://aws.amazon.com/bedrock/agentcore/pricing/
+  - claim: "AWS publishes an open-source project for running stdio-based MCP servers in AWS Lambda, offering four authentication paths including Lambda Function URLs with AWS SigV4"
+    source: https://github.com/awslabs/run-model-context-protocol-servers-with-aws-lambda
+  - claim: "A standard CloudWatch metric alarm is $0.10 per alarm per month"
+    source: https://aws.amazon.com/cloudwatch/pricing/
+  - claim: "Gateway type VPC endpoints carry no hourly or data processing charges"
+    source: https://aws.amazon.com/vpc/pricing/
+  - claim: "The deployed stack is 7 managed Terraform resources, which HCP reports as 12 because its resource count includes the 5 data sources in state"
+    derive: "terraform state list on week-17-dev after apply: 12 entries, of which 5 are data.* and 7 are managed resources"
+  - claim: "An unsigned request to the Function URL returns HTTP 403, and the same request signed with SigV4 returns the four tools"
+    derive: "curl against the deployed Function URL on 2026-09-03 returned 403; scripts/mcp_client.py against the same URL returned protocol 2025-06-18 and 4 tools"
+  - claim: "Asking the server what was left running with no owner returned 15 untagged resources, including both Week 12 test buckets"
+    derive: "find_untagged_resources against the live account on 2026-09-03, required_tag=Project"
+  - claim: "A repeated identical cost question is served from the DynamoDB cache and makes no Cost Explorer call"
+    derive: "Two consecutive get_daily_cost calls with identical arguments returned _cached false then _cached true"
+  - claim: "The QuickSight charge that motivated this week was $9.35 per day for seven days, and cost after teardown is $0"
+    derive: "Cost Explorer daily, service Amazon QuickSight, 23-30 Aug 2026: 3.51 + 9.35 x 6 + 1.56 = 61.20; the subscription was cancelled on 30 Aug"
+  - claim: "The cost cache holds an answer for 1 hour before it is refetched"
+    derive: "CACHE_TTL_SECONDS defaults to 3600 in terraform/modules/mcp_server/variables.tf and is passed to the Lambda as an environment variable"
+  - claim: "Week 17 cost $0.13, all of it Cost Explorer API requests"
+    derive: "Cost Explorer, service AWS Cost Explorer, 3-4 Sep 2026: 0.01 + 0.12 = 0.13. The Lambda, DynamoDB table and alarm did not reach the $0.005/day reporting threshold"
+  - claim: "A Lightsail micro bundle instance costs $7 per month in US regions after any free trial"
+    source: https://aws.amazon.com/lightsail/pricing/
+  - claim: "The Lightsail instance had been running since 23 July 2026 and had cost $0.00, because it was inside a free trial"
+    derive: "lightsail get-instance createdAt 2026-07-23; Cost Explorer filtered to Amazon Lightsail for 5 Aug - 5 Sep returned $0.00"
+  - claim: "The stdio bridge is about 60 lines"
+    derive: "week-17-mcp-platform-ops/scripts/mcp_stdio_bridge.py, excluding the module docstring"
+  - claim: "The MCP specification states that descriptions of tool behavior should be considered untrusted unless obtained from a trusted server"
+    source: https://modelcontextprotocol.io/specification/2026-07-28
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Platform Engineering Lab &middot; Week 17 of 52</div>
+  <div class="post-title">I asked my AWS account what it was doing</div>
+  <div class="post-subtitle">Four days earlier, answering that question took eleven API calls and a week of billing I had not noticed. The data was there the whole time &mdash; what was missing was a way to ask. This week builds one: a Model Context Protocol server over live account state, read-only by design, with a cache that exists because one of the APIs charges a cent every time a model gets curious.</div>
+  <div class="post-meta">
+    <span>5 September 2026</span>
+    <span>Terraform &middot; HCP &middot; MCP</span>
+    <span>$0.13 spent &middot; $0 destroyed</span>
+  </div>
+</div>
+
+  <div class="toc">
+    <h3>&#128203; In This Post</h3>
+    <ol>
+      <li><a href="#why">Why &mdash; The Problem This Solves</a></li>
+      <li><a href="#what">What You Need to Know &mdash; Skills &amp; Tools</a></li>
+      <li><a href="#architecture">Architecture &mdash; How It Fits Together</a></li>
+      <li><a href="#how">How We Built It &mdash; Step by Step</a></li>
+      <li><a href="#challenges">Challenges &mdash; What Actually Went Wrong</a></li>
+      <li><a href="#security">Security &mdash; Controls at Every Layer</a></li>
+      <li><a href="#cost">Cost</a></li>
+      <li><a href="#cleanup">Cleanup</a></li>
+      <li><a href="#references">References</a></li>
+      <li><a href="#takeaways">Key Takeaways</a></li>
+    </ol>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why &mdash; The Problem This Solves</h2>
+
+    <p>On 30 August I opened a bill I did not expect and asked a simple question: <em>what is running, what is it costing, and did I leave anything behind?</em></p>
+
+    <p>Answering it took <strong>eleven separate lookups across five systems</strong> &mdash; one for what I was charged, one for who had changed what, one for what still existed, one for whether anything had alerted, one for what my infrastructure code believed. None of them talk to each other. Each one required me to already know that it was the one holding the answer.</p>
+
+    <p><strong>Every one of those numbers had existed for days.</strong> A service had been billing $9.35 a day for a week. A budget alert had fired and been ignored. Anomaly detection had flagged eight cents of Security Hub and missed the sixty-one dollars sitting next to it.</p>
+
+    <div class="callout amber">
+      <p><strong>The gap was never missing data.</strong> It was that interrogating the data required knowing exactly which six APIs to call, in what order, with what filters. That is a skill, and skills do not scale to three in the morning.</p>
+    </div>
+
+    <h3>What makes this answerable in one question</h3>
+
+    <p>An MCP server is a small program that exposes tools an AI client can call. The client &mdash; Claude, Cursor, anything that speaks the protocol &mdash; reads the tool descriptions, decides which fit the question, calls them, and answers in plain language. You define what exists; the model decides when to use it.</p>
+
+    <p>So the work is not "build an AI". The work is deciding <strong>which four questions matter</strong>, giving each one a tool, and making sure a tool cannot do damage when the model gets it wrong.</p>
+
+    <p>By the end of this post there is a working version of that, and the first real question I put to it found a virtual machine that had been running for six weeks which I had entirely forgotten about. It costs nothing today, because it is inside a free trial.</p>
+  </div>
+
+  <div class="section" id="what">
+    <h2>What You Need to Know &mdash; Skills &amp; Tools</h2>
+
+    <table class="tbl">
+      <thead><tr><th>Concept</th><th>What actually matters</th></tr></thead>
+      <tbody>
+        <tr><td><strong>MCP tools, resources, prompts</strong></td><td>Three things a server can expose. Tools are functions the model may call and are what this week uses. The important part is that a tool's <em>description</em> is read by the model &mdash; it is input, not documentation.</td></tr>
+        <tr><td><strong>Tool poisoning</strong></td><td>Instructions hidden in a tool's description or parameter schema, steering the model. The operator never sees them in the client UI. The specification is blunt about it: tool descriptions <em>&ldquo;should be considered untrusted, unless obtained from a trusted server&rdquo;</em>. This is why the permissions matter more than the code.</td></tr>
+        <tr><td><strong>Streamable HTTP</strong></td><td>The remote transport. The 2026-07-28 revision made the protocol core stateless, requires an <code>Mcp-Method</code> header on every request so a gateway can route without parsing the body, and lets list results carry a TTL.</td></tr>
+        <tr><td><strong>SigV4 vs OAuth</strong></td><td>Two ways to authorise an MCP client. SigV4 reuses an AWS identity you already have and costs nothing to run. OAuth works with any off-the-shelf client. You pick one and lose something either way.</td></tr>
+        <tr><td><strong>Metered read APIs</strong></td><td>Most describe/list calls are free. <code>ce:GetCostAndUsage</code> is <strong>$0.01 per request</strong>, and each page counts separately. Knowing which reads cost money is the whole skill here.</td></tr>
+        <tr><td><strong>Least privilege per tool</strong></td><td>Not per server. Each IAM statement maps to exactly one tool, so reading the policy tells you what the server can do without reading the code.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture &mdash; How It Fits Together</h2>
+
+    <p>One Lambda, one endpoint, one cache, and four read paths into the account. Nothing here bills while nobody is asking.</p>
+
+<svg viewBox="0 0 900 470" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="An MCP client signs requests to a Lambda Function URL; the Lambda exposes four read-only tools reading Cost Explorer, the tagging API and CloudWatch, with a DynamoDB cache in front of the metered cost API."
+     style="width:100%;height:auto;font-family:'Segoe UI',Arial,sans-serif">
+  <defs>
+    <symbol id="i-lambda" viewBox="0 0 64 64">
+    <title>Icon-Architecture/48/Arch_AWS-Lambda_48</title>
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g fill="#ED7100">
+            <rect x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M22.6794094,52 L13.5740701,52 L23.8376189,30.41 L28.3997494,39.861 L22.6794094,52 Z M24.7269406,27.667 C24.5606285,27.321 24.2120702,27.103 23.8306478,27.103 L23.8276601,27.103 C23.4452418,27.104 23.0966835,27.325 22.9323632,27.672 L11.0973143,52.569 C10.9499239,52.879 10.9708374,53.243 11.1540795,53.534 C11.3353298,53.824 11.6540117,54 11.9955989,54 L23.309802,54 C23.695208,54 24.0447622,53.777 24.2100784,53.428 L30.4044577,40.284 C30.5329264,40.01 30.5319305,39.692 30.3994783,39.42 L24.7269406,27.667 Z M51.0082382,52 L41.985557,52 L26.9547262,19.578 C26.7914017,19.226 26.4388599,19 26.0524581,19 L20.1279625,19 L20.1349337,12 L31.8146251,12 L46.7747483,44.42 C46.9380728,44.774 47.2906147,45 47.6790082,45 L51.0082382,45 L51.0082382,52 Z M52.0041191,43 L48.3143803,43 L33.354257,10.58 C33.1909326,10.226 32.8383907,10 32.450993,10 L19.1400486,10 C18.5913182,10 18.1451636,10.447 18.1441677,10.999 L18.1362006,19.999 C18.1362006,20.265 18.2407681,20.519 18.4269979,20.707 C18.6142235,20.895 18.8671772,21 19.1310857,21 L25.4170861,21 L40.4479168,53.422 C40.6112413,53.774 40.9627873,54 41.350185,54 L52.0041191,54 C52.5548412,54 53,53.552 53,53 L53,44 C53,43.448 52.5548412,43 52.0041191,43 L52.0041191,43 Z" fill="#FFFFFF"></path>
+    </g>
+</symbol>
+<symbol id="i-ddb" viewBox="0 0 64 64">
+    <title>Icon-Architecture/48/Arch_Amazon-DynamoDB_48</title>
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g fill="#C925D1">
+            <rect x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M46.5858287,25.2492763 L43.0008475,25.2492763 C42.6728493,25.2492763 42.3658509,25.086523 42.1788519,24.8145936 C41.9918528,24.5416533 41.9488531,24.1939071 42.0648525,23.8835638 L44.5578394,17.162156 L35.6448862,17.162156 L31.5539077,26.2601663 L36.0008843,26.2601663 C36.3218827,26.2601663 36.6238811,26.4158434 36.8128801,26.6806966 C36.9998791,26.943528 37.0518788,27.2821762 36.9488794,27.5904976 L33.2888986,38.6910812 L46.5858287,25.2492763 Z M49.7068123,24.9530855 L31.7079069,43.1491063 C31.5159079,43.3442081 31.2589093,43.4452971 31.0009106,43.4452971 C30.8189116,43.4452971 30.6379125,43.3957635 30.4759134,43.2946744 C30.0809155,43.0480173 29.9049164,42.5597574 30.0529156,42.1149658 L34.6128916,28.2819464 L30.0009159,28.2819464 C29.6609177,28.2819464 29.3449193,28.1070624 29.1599203,27.8189588 C28.9769213,27.5288333 28.9499214,27.1659238 29.0909207,26.8525479 L34.0908944,15.7327574 C34.2528935,15.3718697 34.6078917,15.1403759 35.0008896,15.1403759 L46.0008318,15.1403759 C46.32883,15.1403759 46.6358284,15.3031292 46.8228274,15.5750586 C47.0098265,15.8479989 47.0528262,16.1957451 46.9378268,16.5060883 L44.44384,23.2274962 L48.999816,23.2274962 C49.4038139,23.2274962 49.769812,23.4741534 49.9238111,23.8512154 C50.0788103,24.2292882 49.9928108,24.663971 49.7068123,24.9530855 L49.7068123,24.9530855 Z M41.0008581,44.2196388 C38.2908723,46.1059597 33.3138985,47.1016863 28.5329236,47.1016863 C23.7169489,47.1016863 18.6959753,46.0928181 15.9999895,44.1781923 L16.0009895,47.9943023 C16.0009895,49.6582273 20.7689644,51.9782199 28.5329236,51.9782199 C36.0278842,51.9782199 41.0008581,49.2761108 41.0008581,47.4888572 L41.0008581,44.2196388 Z M43.0648472,40.9504204 C43.0648472,41.1374351 43.0328474,41.3173735 43.0008475,41.4963011 L43.0008475,47.4888572 C43.0008475,51.0795387 36.5108817,54 28.5329236,54 C21.6299599,54 14.6619965,52.1106465 14.0599997,48.4997473 L14.001,48.4997473 L14,43.4452971 L14,30.3037265 L14,16.1512659 L14.001,16.1512659 C14.001,12.1552176 21.4879606,10 28.5329236,10 C32.4739029,10 36.262883,10.6398934 38.9298689,11.755916 L38.163873,13.6240408 C35.7318858,12.6050636 32.2209042,12.0217801 28.5329236,12.0217801 C20.7689644,12.0217801 16.0009895,14.4266875 16.0009895,16.1512659 C16.0009895,17.8758443 20.7689644,20.2807517 28.5329236,20.2807517 C28.7279226,20.2807517 28.9319215,20.2817626 29.1289205,20.2736755 L29.2069201,22.2934338 C28.9819212,22.3025318 28.7579224,22.3025318 28.5329236,22.3025318 C23.7159489,22.3025318 18.6959753,21.2936636 15.9999895,19.3790378 L15.9999895,23.7369848 L16.0009895,23.7369848 L16.0009895,23.7541699 C16.0059895,24.2838763 16.4899869,24.8974866 17.3649823,25.4736939 C19.3469719,26.7615678 22.9149531,27.642053 26.9039322,27.8250241 L26.8129326,29.8447824 C22.6869543,29.6547351 19.0629734,28.7762717 16.7269857,27.4287552 C16.4169873,27.7269678 16.0009895,28.4851353 16.0009895,28.8955567 C16.0009895,30.6201351 20.7689644,33.0250425 28.5329236,33.0250425 C29.2709197,33.0250425 29.9979159,32.9997703 30.6949122,32.9502366 L30.8359115,34.9669623 C30.0919154,35.0205394 29.3169195,35.0468226 28.5329236,35.0468226 C23.7159489,35.0468226 18.6959753,34.0379543 15.9999895,32.1233286 L15.9999895,35.7928594 L16.0009895,35.7928594 C16.0059895,36.339751 16.4899869,36.9533612 17.3649823,37.5295685 C19.6329704,39.0044571 23.9139479,39.9233562 28.5329236,39.9233562 L28.8629219,39.9233562 L28.8629219,41.9451362 L28.5329236,41.9451362 C23.7549487,41.9451362 18.6729754,40.9372789 16.0009895,39.4017369 C15.6789912,39.6999495 16.0009895,40.4126269 16.0009895,40.9504204 C16.0009895,42.6749989 20.7689644,45.0799063 28.5329236,45.0799063 C36.2978828,45.0799063 41.0648577,42.6749989 41.0648577,40.9504204 C41.0648577,40.3408537 40.4658609,39.7757662 39.9728635,39.4118458 C39.5638656,39.658503 39.113868,39.8950512 38.6008707,40.1113817 L37.8328747,38.2442678 C38.3638719,38.0208611 38.8228695,37.7812802 39.1968675,37.5326012 C40.2978617,36.798695 41.0008581,35.7544456 41.0008581,35.3581767 L43.0008475,35.3581767 C43.0008475,36.2983045 42.3798508,37.3051509 41.583855,38.1330699 C42.7758487,39.1732757 43.0648472,40.2114598 43.0648472,40.9504204 L43.0648472,40.9504204 Z M17.1419835,48.3885494 C17.9329793,48.796949 18.8579745,49.1608694 19.893969,49.4691908 L20.457966,47.5292928 C19.5419709,47.2573634 18.7319751,46.9399439 18.0519787,46.5881542 L17.1419835,48.3885494 Z M19.893969,37.3385103 L20.457966,35.3996232 C19.5419709,35.1266829 18.7319751,34.8102743 18.0519787,34.4584846 L17.1419835,36.2578689 C17.9329793,36.6672793 18.8579745,37.0301889 19.893969,37.3385103 L19.893969,37.3385103 Z M17.1419835,24.1281992 L18.0519787,22.3278041 C18.7319751,22.6795938 19.5419709,22.9960024 20.457966,23.2689427 L19.893969,25.2088407 C18.8579745,24.9005192 17.9329793,24.5365988 17.1419835,24.1281992 L17.1419835,24.1281992 Z" fill="#FFFFFF"></path>
+    </g>
+</symbol>
+<symbol id="i-cw" viewBox="0 0 64 64">
+    <title>Icon-Architecture/48/Arch_Amazon-CloudWatch_48</title>
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g fill="#E7157B">
+            <rect x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M42.184,39.3811216 C42.184,37.1282698 40.347,35.2954581 38.089,35.2954581 C35.831,35.2954581 33.995,37.1282698 33.995,39.3811216 C33.995,41.6339735 35.831,43.4667852 38.089,43.4667852 C40.347,43.4667852 42.184,41.6339735 42.184,39.3811216 L42.184,39.3811216 Z M44.184,39.3811216 C44.184,42.7344587 41.45,45.4622252 38.089,45.4622252 C34.729,45.4622252 31.995,42.7344587 31.995,39.3811216 C31.995,36.0277846 34.729,33.3000181 38.089,33.3000181 C41.45,33.3000181 44.184,36.0277846 44.184,39.3811216 L44.184,39.3811216 Z M50.743,49.6157337 L45.846,45.2157884 C45.524,45.6398194 45.17,46.0379097 44.785,46.4050706 L49.671,50.8030205 C49.997,51.0953525 50.505,51.0714072 50.802,50.744155 C51.096,50.4179006 51.07,49.9110588 50.743,49.6157337 L50.743,49.6157337 Z M38.089,47.091502 C42.351,47.091502 45.818,43.6324067 45.818,39.3811216 C45.818,35.1298366 42.351,31.6707413 38.089,31.6707413 C33.829,31.6707413 30.362,35.1298366 30.362,39.3811216 C30.362,43.6324067 33.829,47.091502 38.089,47.091502 L38.089,47.091502 Z M52.081,48.1341194 C53.227,49.1667597 53.319,50.9357173 52.288,52.0801021 C51.735,52.6897091 50.971,53 50.205,53 C49.538,53 48.868,52.7655358 48.333,52.2866302 L43.172,47.6412457 C41.691,48.5521641 39.954,49.0869421 38.089,49.0869421 C32.725,49.0869421 28.362,44.7328919 28.362,39.3811216 C28.362,34.0293514 32.725,29.6753012 38.089,29.6753012 C43.454,29.6753012 47.818,34.0293514 47.818,39.3811216 C47.818,40.8447769 47.482,42.2286146 46.897,43.4757646 L52.081,48.1341194 Z M17.697,23.5383254 C17.697,23.9394088 17.72,24.3384968 17.767,24.722619 C17.802,25.0059715 17.713,25.2913194 17.524,25.5048315 C17.375,25.6714508 17.177,25.7831954 16.961,25.8241019 C15.084,26.3079961 12,27.7716514 12,32.1566309 C12,35.4800363 13.836,37.3138458 15.377,38.2676661 C16.049,38.6897017 16.64,38.9052092 17.138,38.9101978 L26.127,38.9101978 L26.127,40.9056378 L17.127,40.9056378 C16.243,40.8966584 15.3,40.577388 14.317,39.9588015 C12.708,38.9640747 10,36.6214281 10,32.1566309 C10,26.8876715 13.526,24.8642953 15.71,24.117003 C15.702,23.924443 15.697,23.7308853 15.697,23.5383254 C15.697,19.1603299 18.673,14.6217015 22.621,12.9784566 C27.232,11.0508615 32.119,12.0066773 35.687,15.5336176 C36.734,16.5672555 37.604,17.8084192 38.285,19.2361566 C39.203,18.5507229 40.304,18.1745825 41.459,18.1745825 C43.874,18.1745825 46.587,19.9684831 47.122,23.8895228 C50.58,24.7216213 54,27.27778 54,32.2174919 C54,35.1078868 52.864,37.4565197 50.713,39.0089721 L49.541,37.3926656 C51.173,36.2143583 52,34.4733368 52,32.2174919 C52,27.2388689 47.811,25.9997007 46.01,25.6983892 C45.743,25.6534918 45.505,25.5018384 45.351,25.2793468 C45.208,25.071821 45.15,24.8184001 45.186,24.5709656 C44.931,21.5319104 43.141,20.1700225 41.459,20.1700225 C40.402,20.1700225 39.409,20.6858438 38.734,21.5857873 C38.514,21.8791169 38.156,22.0297727 37.786,21.9748981 C37.422,21.9210212 37.118,21.6715912 36.993,21.3263801 C36.359,19.5743837 35.446,18.1027466 34.281,16.9513777 C32.851,15.5396039 28.933,12.506535 23.391,14.81925 C20.198,16.1492108 17.697,19.9784603 17.697,23.5383254 L17.697,23.5383254 Z" fill="#FFFFFF"></path>
+    </g>
+</symbol>
+    <marker id="a17" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6c757d"/>
+    </marker>
+    <marker id="a17p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8C4FFF"/>
+    </marker>
+    <style>
+      .n  { fill:#fff; stroke:#dfe4ea; stroke-width:1.2; rx:7 }
+      .lbl{ font-size:13px; font-weight:600; fill:#16191f }
+      .sub{ font-size:11px; fill:#6c757d }
+      .edge{ font-size:10.5px; fill:#6c757d }
+      .zone{ fill:#fbfcfd; stroke:#ccd3dc; stroke-width:1; stroke-dasharray:4 3; rx:9 }
+      .band{ font-size:10px; font-weight:700; fill:#8a94a0; letter-spacing:.08em }
+      .meter{ fill:#fff5fa; stroke:#E7157B; stroke-width:1.6; rx:7 }
+      .free { fill:#f6fbf6; stroke:#7AA116; stroke-width:1.2; rx:7 }
+    </style>
+  </defs>
+
+  <text class="band" x="24" y="26">THE CALLER</text>
+  <rect class="n" x="24" y="36" width="150" height="62"/>
+  <text class="lbl" x="38" y="60">MCP client</text>
+  <text class="sub" x="38" y="78">signs with SigV4</text>
+
+  <line x1="174" y1="67" x2="228" y2="67" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a17)"/>
+  <text class="edge" x="180" y="58">unsigned = 403</text>
+
+  <text class="band" x="228" y="26">THE SERVER</text>
+  <rect class="zone" x="228" y="36" width="266" height="180"/>
+  <rect class="n" x="244" y="52" width="234" height="52"/>
+  <text class="lbl" x="258" y="74">Lambda Function URL</text>
+  <text class="sub" x="258" y="91">AWS_IAM auth &#183; no idle cost</text>
+
+  <rect class="n" x="244" y="118" width="234" height="60"/>
+  <use href="#i-lambda" x="256" y="132" width="26" height="26"/>
+  <text class="lbl" x="292" y="142">week17-mcp</text>
+  <text class="sub" x="292" y="160">four read-only tools</text>
+
+  <text class="edge" x="244" y="200">Role: no write on anything it reports on</text>
+
+  <text class="band" x="546" y="26">WHAT IT READS</text>
+  <rect class="zone" x="546" y="36" width="330" height="180"/>
+
+  <rect class="meter" x="562" y="52" width="298" height="52"/>
+  <text class="lbl" x="576" y="74">Cost Explorer</text>
+  <text class="sub" x="576" y="91">$0.01 per request &#183; the only metered read</text>
+
+  <rect class="free" x="562" y="114" width="298" height="42"/>
+  <text class="lbl" x="576" y="132">Resource Groups Tagging</text>
+  <text class="sub" x="576" y="148">what is running &#183; what has no owner</text>
+
+  <rect class="free" x="562" y="164" width="298" height="42"/>
+  <use href="#i-cw" x="572" y="174" width="22" height="22"/>
+  <text class="lbl" x="602" y="182">CloudWatch</text>
+  <text class="sub" x="602" y="198">alarm state</text>
+
+  <line x1="478" y1="148" x2="558" y2="86" stroke="#8C4FFF" stroke-width="1.8" marker-end="url(#a17p)"/>
+  <line x1="478" y1="150" x2="558" y2="135" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a17)"/>
+  <line x1="478" y1="156" x2="558" y2="184" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a17)"/>
+
+  <text class="band" x="228" y="262">THE CACHE, AND WHY IT EXISTS</text>
+  <rect class="n" x="228" y="274" width="266" height="66"/>
+  <use href="#i-ddb" x="242" y="292" width="26" height="26"/>
+  <text class="lbl" x="278" y="302">DynamoDB &#183; TTL 1 hour</text>
+  <text class="sub" x="278" y="320">a repeated cost question costs $0.00</text>
+
+  <line x1="361" y1="178" x2="361" y2="270" stroke="#8C4FFF" stroke-width="1.8" marker-end="url(#a17p)"/>
+  <text class="edge" x="370" y="228">checked before Cost Explorer</text>
+
+  <rect x="546" y="274" width="330" height="66" rx="7" fill="#fffaf2" stroke="#FF9900" stroke-width="1.6"/>
+  <text class="lbl" x="562" y="298">An LLM decides when to call a tool</text>
+  <text class="sub" x="562" y="316">so a metered API needs a cache, not just a budget</text>
+
+  <line x1="494" y1="307" x2="542" y2="307" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a17)"/>
+
+  <rect x="24" y="380" width="852" height="66" rx="7" fill="#f8f9fa" stroke="#e3e7ec" stroke-width="1"/>
+  <text class="lbl" x="40" y="404">Deployed by HCP Terraform &#8212; VCS-driven workspace, OIDC dynamic credentials</text>
+  <text class="sub" x="40" y="424">7 managed resources. HCP reports 12: its count includes the data sources in state.</text>
+  <text class="sub" x="40" y="440">Nothing here bills while idle &#8212; no NAT gateway, no API Gateway, no always-on compute.</text>
+</svg>
+
+    <h3>The agent reads and recommends &mdash; and the policy is what makes that true</h3>
+
+    <p>It would be easy to claim this server is safe because the code only reads. Code can be changed; a policy is checked by AWS on every call. The role has five statements, and the whole thing fits on one screen:</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-17-mcp-platform-ops/docs/blog/screenshots/03-iam-read-only-policy.png" alt="The complete IAM policy for the MCP server, read back from iam:GetRolePolicy, showing five statements">
+      <figcaption>The server's entire permission set, read back from the API rather than the console. Four read statements, one cache write, one log write.</figcaption>
+    </figure>
+
+    <p>Writing this section is what caught my own overstatement. I had said in three separate files that the role holds <em>no write action of any kind</em>. It holds one: <code>dynamodb:PutItem</code> on its own cache table. The accurate claim is narrower and still worth making &mdash; <strong>there is no write on anything the server reports on</strong>. A model manipulated through a poisoned description can fill a cache. It cannot change the account.</p>
+  </div>
+
+  <div class="section" id="how">
+    <h2>How We Built It &mdash; Step by Step</h2>
+
+    <h3>Step 1 &mdash; Decide what the data source is, because the planned one was gone</h3>
+
+    <p>The roadmap wrote this week down a year ago as <em>an MCP server over the lab's own operational data &mdash; Athena, CloudWatch, Config &mdash; making Weeks 10 to 16 agent-consumable</em>.</p>
+
+    <p>Four days before starting it, I destroyed Weeks 11 through 16. Their thirty-day free trials had expired and they had begun billing. That teardown took the Glue databases, the Config recorder and the Security Hub findings with it. <strong>The server would have had nothing to read.</strong></p>
+
+    <p>Rebuilding data I had just deliberately removed would have been absurd, so the topic stayed and the data source changed: live control-plane state instead of stored history. It cannot evaporate, and it answers the question that actually cost me money.</p>
+
+    <h3>Step 2 &mdash; Choose where it runs, and reject the obvious answer</h3>
+
+    <p>Bedrock AgentCore Runtime is purpose-built for hosting agents and MCP servers, and it is the wrong choice here. It bills <strong>$0.0895 per vCPU-hour and $0.00945 per GB-hour in one-second increments</strong>, for sessions that can live up to <strong>14 days</strong>.</p>
+
+    <div class="callout red">
+      <p>That is the same shape as the charge that motivated this week: a meter with no natural stopping point. For a server answering occasional sub-second questions, a Lambda behind a Function URL costs nothing while idle. <strong>AgentCore Runtime is right for a long-lived stateful agent. This is not that.</strong></p>
+    </div>
+
+    <p>The same logic ruled out API Gateway. It is the correct production answer &mdash; it works with any MCP client &mdash; but it adds an hourly-shaped service and a Cognito user pool to a server that answers a handful of questions a day.</p>
+
+    <h3>Step 3 &mdash; Write four tools, and be honest about which one costs money</h3>
+
+    <p>Three of the four are free to call. One is not:</p>
+
+    <table class="tbl">
+      <thead><tr><th>Tool</th><th>Answers</th><th>Cost per call</th></tr></thead>
+      <tbody>
+        <tr><td><code>get_daily_cost</code></td><td>What am I being charged for, by service, day by day</td><td><strong>$0.01</strong></td></tr>
+        <tr><td><code>list_running_resources</code></td><td>What is actually deployed right now</td><td>free</td></tr>
+        <tr><td><code>find_untagged_resources</code></td><td>What has no owner</td><td>free</td></tr>
+        <tr><td><code>get_alarm_state</code></td><td>Is monitoring actually working</td><td>free</td></tr>
+      </tbody>
+    </table>
+
+    <p>That one cent drives a design decision that would otherwise look like over-engineering. <strong>An LLM decides when to call a tool.</strong> Ask about spend three times in a conversation and a naive server pays three times. So the cost tool is cached in DynamoDB with a TTL, and the cached answer is marked so you can see it happen.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-17-mcp-platform-ops/docs/blog/screenshots/08-cost-cache.png" alt="Two identical cost questions: the first shows _cached false and pays a cent, the second shows _cached true and pays nothing">
+      <figcaption>The same question twice. The second one costs nothing, and says so.</figcaption>
+    </figure>
+
+    <h3>What an MCP server actually is, in code</h3>
+
+    <p>Less than people expect. The whole protocol surface is a JSON-RPC handler with four cases:</p>
+
+    <pre><code>if method == "initialize":              # name, version, protocol version
+if method == "tools/list":              # the tools, and their descriptions
+if method == "tools/call":              # run one, return its result
+if method.startswith("notifications/"): # return NOTHING AT ALL</code></pre>
+
+    <p>That last line is the one to get right. A notification carries no <code>id</code> and <strong>must</strong> receive no response &mdash; replying to one is a protocol error that some clients treat as fatal. Nothing visibly breaks while you are testing by hand, which is exactly why it bites later.</p>
+
+    <p>A tool is four fields. Three of them the model reads:</p>
+
+    <pre><code>{"name": "get_daily_cost",
+ "description": ("Cost per day, broken down by AWS service, for the last N days. "
+                 "Use this to answer what an account is being charged for. "
+                 "Cached for an hour because the underlying API bills per request."),
+ "inputSchema": {"type": "object",
+                 "properties": {"days": {"type": "integer", "minimum": 1, "maximum": 90}}},
+ "fn": lambda a: tool_daily_cost(a.get("days", 7))}</code></pre>
+
+    <p><strong>The description is not documentation.</strong> It is the text a model reads to decide whether this tool answers the question in front of it. Write it as an instruction to a colleague who cannot see your code, and put the cost in it if the tool costs money &mdash; mine says so, and that is the only reason a model has any chance of being frugal with it.</p>
+
+    <p>Everything else is ordinary: the Lambda handler parses the request body, dispatches on <code>method</code>, and returns JSON. There is no framework here and none is needed.</p>
+
+    <h3>Step 4 &mdash; Deploy it</h3>
+
+    <p>HCP Terraform, VCS-driven, same as every week in this series. Seven managed resources.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-17-mcp-platform-ops/docs/blog/screenshots/01-hcp-runs.png" alt="HCP Terraform showing the Week 17 run applied">
+      <figcaption>Applied. Note HCP reports 12 resources against a plan that added 7 &mdash; its count includes the data sources in state.</figcaption>
+    </figure>
+
+    <p>That discrepancy is worth a second look rather than a shrug. Listing the state showed twelve entries: seven managed resources and five data sources. Two of those data sources &mdash; <code>aws_caller_identity</code> and <code>aws_region</code> &mdash; I had declared out of habit and never referenced. They came out.</p>
+
+    <h3>Verifying it actually works</h3>
+
+    <p>Three things had to be true, and each is a different kind of proof.</p>
+
+    <p><strong>The auth boundary holds.</strong> An unsigned request must never reach application code:</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-17-mcp-platform-ops/docs/blog/screenshots/06-auth-boundary.png" alt="An unsigned curl returns HTTP 403; the same request signed with SigV4 connects and lists four tools">
+      <figcaption>403 unsigned, connected when signed. Lambda rejects the first one before any of my code runs.</figcaption>
+    </figure>
+
+    <p><strong>The protocol is correct, including the boring parts.</strong> MCP notifications carry no <code>id</code> and must receive no response &mdash; returning one is a protocol error some clients treat as fatal. That path is easy to get wrong because nothing visibly breaks in casual testing.</p>
+
+    <p><strong>It answers the question that started the week.</strong> Not a synthetic query &mdash; the actual one:</p>
+
+    <div class="callout">
+      <p><strong>Read this screenshot for what it is.</strong> The client here is a script that signs requests, and its <code>ask</code> command is a keyword router &mdash; it matches on the word &ldquo;running&rdquo; and picks a tool. <strong>No model chose anything in this one.</strong> That separation is deliberate: it proves the transport and the tools work, independently of whether an agent can choose between them. The next step proves the other half.</p>
+    </div>
+
+    <h3>Step 5 &mdash; Put a real AI client in front of it</h3>
+
+    <p>Everything above proves the server works. It does not prove the thing the week is actually about, which is asking a question in English and having something decide what to do with it.</p>
+
+    <p>The obstacle is the auth choice. Claude Desktop, Cursor and every other off-the-shelf MCP client speak plain Streamable HTTP and cannot produce an AWS SigV4 signature, so they are refused at the door by the same control that makes the endpoint free to run.</p>
+
+    <p>The fix is a <strong>60-line stdio bridge</strong>. The client launches it as an ordinary local MCP server; it reads JSON-RPC on stdin, signs each message, forwards it over HTTPS, and writes the response back. The client never learns AWS was involved, and the server never sees an unsigned request.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-17-mcp-platform-ops/docs/blog/screenshots/10-real-client-registered.png" alt="The MCP client config registering the bridge, and the client listing it as an available server">
+      <figcaption>The whole integration. The client launches the bridge as an ordinary local MCP server and never learns AWS was involved.</figcaption>
+    </figure>
+
+    <p>One detail in that bridge matters more than its length: <strong>stdout carries the protocol and nothing else.</strong> Every diagnostic goes to stderr. A single stray <code>print</code> corrupts the stream and the client reports something unhelpful about malformed JSON.</p>
+
+    <p>And then the actual question, with no keywords and no routing table:</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-17-mcp-platform-ops/docs/blog/screenshots/11-ai-answers-the-question.png" alt="The verbatim question, the two tools the model chose to call, and its unedited answer naming a Lightsail instance">
+      <figcaption>The question verbatim, the two tools the model chose on its own, and the answer unedited apart from the account id. No tool was named in the prompt.</figcaption>
+    </figure>
+
+    <div class="callout green">
+      <p><strong>It found something I did not know about.</strong> A Lightsail instance, running since 23 July, six weeks, costing <em>nothing</em> &mdash; because it is inside a free trial. When that lapses it becomes $7 a month. Nobody asked it to look for that. It read four tool descriptions, decided which two fitted the question, and reported the thing that best matched &ldquo;running that nobody owns&rdquo;.</p>
+      <p>That is the third time this pattern has caught me: Security Hub, GuardDuty and QuickSight all cost $0 on the day they were created and started billing thirty days later. <strong>A free trial is not a free service, and it is the hardest kind of cost to remember, because there is nothing to notice.</strong></p>
+    </div>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-17-mcp-platform-ops/docs/blog/screenshots/07-what-did-i-leave-running.png" alt="Asking what was left running with no owner returns 15 untagged resources including two Week 12 test buckets">
+      <figcaption>Fifteen resources with no owner tag. Two of them are Week 12 test buckets a script created outside Terraform, so the destroy run never knew they existed.</figcaption>
+    </figure>
+
+    <p>Finding those two buckets is the moment the week justified itself. They had survived a teardown I had personally verified, because I verified it against Terraform's idea of the world rather than the account's.</p>
+  </div>
+
+  <div class="section" id="challenges">
+    <h2>Challenges &mdash; What Actually Went Wrong</h2>
+
+    <h3>1. I published a claim about my own security model that was not true</h3>
+
+    <p>Three files &mdash; the handler docstring, the Terraform comment and the README &mdash; said the role holds <em>no write action of any kind</em>. Then I rendered the policy as a screenshot and read it, and there was <code>dynamodb:PutItem</code> in the fourth statement.</p>
+
+    <p>It is a scoped write to the server's own cache, and it is architecturally fine. The claim was not. What is uncomfortable is <em>why</em> it survived: I wrote it while designing, it was true of the design I had in my head, and I never re-read it against the thing I actually built.</p>
+
+    <div class="callout">
+      <p><strong>The fix that worked was not proofreading.</strong> It was rendering the artefact as evidence. Describing a policy lets you describe the policy you meant; showing it forces the one that exists.</p>
+    </div>
+
+    <h3>2. The console would not show the proof, and chasing it was the wrong instinct</h3>
+
+    <p>The IAM console lists a policy name and hides its body behind an expand control that is an icon, not a link. My first attempt drove the browser to click it by text, which quietly did nothing and produced a screenshot that looked fine and proved nothing.</p>
+
+    <p>Pulling the document from <code>iam:GetRolePolicy</code> and rendering it is better evidence anyway: it is the policy, not a rendering of the policy, and it reproduces.</p>
+
+    <h3>3. Two data sources that did nothing</h3>
+
+    <p><code>aws_caller_identity</code> and <code>aws_region</code> went in early because most modules need them. This one did not &mdash; every ARN it needs is returned by the resources themselves. They cost nothing and would have sat there forever, counted in the resource total, implying a dependency that did not exist.</p>
+
+    <h3>4. The free trial that shaped the whole week</h3>
+
+    <p>This week exists because Weeks 11 and 12 ran five weeks past their publish dates. They were not forgotten through carelessness &mdash; they were <em>invisible</em>. Security Hub, GuardDuty and Config all carry thirty-day free trials. They cost nothing on the day they were built, and started billing on day thirty-one, long after attention had moved on.</p>
+
+    <p><strong>A service that is free today and metered next month is the hardest kind of thing to remember.</strong> That is precisely the sort of question this server now answers in one call.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security &mdash; Controls at Every Layer</h2>
+
+    <ul>
+      <li><strong>No write on anything the server reports on</strong> &mdash; the only write in the role is <code>dynamodb:PutItem</code> against its own cache table. A model steered by a poisoned tool description can fill a cache; it cannot change the account. That turns a destruction risk into a disclosure one</li>
+      <li><strong>IAM scoped per tool, not per server</strong> &mdash; each statement maps to exactly one tool, so the policy reads as a list of capabilities rather than a permission surface</li>
+      <li><strong>The cache write is scoped to one table ARN</strong>, not to DynamoDB generally</li>
+      <li><strong><code>AWS_IAM</code> auth on the Function URL</strong> &mdash; every request must be SigV4-signed by a principal allowed to invoke it, and Lambda rejects the rest before any application code runs</li>
+      <li><strong>Tool descriptions are treated as model input</strong> &mdash; they say what the tool answers and what it costs, and nothing else. Anything written there is read by the model on every call</li>
+      <li><strong>Explicit log retention</strong> &mdash; the log group Lambda would have created implicitly never expires, which accrues storage quietly and forever</li>
+      <li><strong>The tag search is part of teardown</strong> &mdash; because a destroy run only removes what Terraform knows about, and this week found two resources that proves the point</li>
+    </ul>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost</h2>
+
+    <p>Prices as of September 2026 &mdash; verify at the <a href="https://aws.amazon.com/aws-cost-management/pricing/" target="_blank" rel="noopener">Cloud Financial Management pricing page</a>.</p>
+
+    <table class="tbl">
+      <thead><tr><th>Item</th><th>Rate</th><th>This build</th></tr></thead>
+      <tbody>
+        <tr><td>Cost Explorer API</td><td><strong>$0.01 / request</strong>, each page counts</td><td>the only metered read</td></tr>
+        <tr><td>Lambda</td><td>per request, sub-second calls</td><td>effectively free at this volume</td></tr>
+        <tr><td>DynamoDB</td><td>on-demand</td><td>effectively free at this volume</td></tr>
+        <tr><td>CloudWatch alarm &times; 1</td><td>$0.10 / alarm / month</td><td>$0.10 / month</td></tr>
+        <tr><td>Lambda Function URL</td><td>no hourly charge</td><td><strong>$0 idle</strong></td></tr>
+        <tr><td><strong>Total spent this week</strong></td><td></td><td><strong>$0.13</strong>, read from Cost Explorer</td></tr>
+        <tr><td><strong>Destroyed</strong></td><td></td><td><strong>$0</strong></td></tr>
+      </tbody>
+    </table>
+
+    <h3>The cheapest architecture was also the most restrictive</h3>
+
+    <p>Choosing a Function URL over API Gateway removed every idle charge and the entire Cognito surface. It also means an off-the-shelf MCP client that speaks plain HTTP <em>cannot connect</em> &mdash; it gets a 403 before the protocol starts, because it has no idea how to sign an AWS request.</p>
+
+    <p>For a personal account where the only caller is me, that trade is obviously right. For a platform team where the callers are twelve engineers' laptops, it is obviously wrong. The interesting part is that the cost difference and the compatibility difference are the same decision.</p>
+  </div>
+
+  <div class="section" id="cleanup">
+    <h2>Cleanup</h2>
+
+    <p>Queue a destroy from HCP, then verify against AWS rather than against the run status:</p>
+
+    <pre><code>./scripts/cleanup.sh</code></pre>
+
+    <p>It checks Lambda, IAM, DynamoDB, alarms and log groups by name prefix, <strong>and then does a tag search for <code>Week=17</code></strong>. The prefix checks find what was named predictably; the tag search finds what was not.</p>
+
+    <p>That second check exists because of a specific failure. Week 12's teardown reported success and left two S3 buckets behind &mdash; a shell script had created them outside Terraform, so <code>destroy</code> had no idea they existed. <strong>A destroy run tells you Terraform removed what it knew about. It tells you nothing about what it never knew.</strong></p>
+  </div>
+
+  <div class="section" id="references">
+    <h2>References</h2>
+
+    <ul>
+      <li><a href="https://modelcontextprotocol.io/specification/2026-07-28" target="_blank" rel="noopener">Model Context Protocol specification, 2026-07-28</a> &mdash; the current revision</li>
+      <li><a href="https://blog.modelcontextprotocol.io/posts/2026-07-28/" target="_blank" rel="noopener">What changed in the 2026-07-28 spec</a> &mdash; stateless core, routable headers, authorization hardening</li>
+      <li><a href="https://github.com/awslabs/run-model-context-protocol-servers-with-aws-lambda" target="_blank" rel="noopener">awslabs/run-model-context-protocol-servers-with-aws-lambda</a> &mdash; the four auth paths, including SigV4</li>
+      <li><a href="https://awslabs.github.io/mcp/" target="_blank" rel="noopener">AWS's own MCP servers</a> &mdash; worth checking before writing one</li>
+      <li><a href="https://aws.amazon.com/bedrock/agentcore/pricing/" target="_blank" rel="noopener">Bedrock AgentCore pricing</a> &mdash; Runtime and Gateway rates</li>
+      <li><a href="https://aws.amazon.com/aws-cost-management/pricing/" target="_blank" rel="noopener">Cloud Financial Management pricing</a> &mdash; the $0.01 per Cost Explorer request</li>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/week-17-mcp-platform-ops" target="_blank" rel="noopener">This week's code</a></li>
+    </ul>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key Takeaways</h2>
+
+    <ul>
+      <li><strong>The bottleneck was never the data.</strong> Every number I needed on 30 August already existed. What was missing was a way to ask without knowing which API held the answer</li>
+      <li><strong>Know which reads are metered.</strong> Almost every describe/list call is free; Cost Explorer is a cent a request. When a model decides call frequency, one metered API changes the architecture</li>
+      <li><strong>A tool description is model input.</strong> It is not documentation for humans that the model happens to see &mdash; it is the thing the model reads to decide what to do</li>
+      <li><strong>Permissions are the security model, not code.</strong> Code can change between reviews; a policy is enforced on every call</li>
+      <li><strong>Render the artefact instead of describing it.</strong> Showing the policy caught a false claim I had written three times and read past twice</li>
+      <li><strong>Verify a teardown against the provider, not against Terraform.</strong> The two disagree exactly when it matters</li>
+    </ul>
+
+    <h3>What I'd do differently in production</h3>
+
+    <p>This is a personal account with one caller, and several decisions above are only correct because of that. If you are building the same thing for a team, these are the five that change &mdash; and the first is the one that changes everything else.</p>
+
+    <ul>
+      <li><strong>API Gateway with an OAuth provider</strong> instead of SigV4 on a Function URL. The 2026-07-28 revision hardened that path specifically &mdash; issuer validation per RFC 9207, issuer-bound client credentials, Client ID Metadata Documents for registration. SigV4 is right for one operator and wrong for a team, because it forces every caller to hold AWS credentials and rules out every off-the-shelf client</li>
+      <li><strong>Check what already exists before writing anything.</strong> AWS publish <a href="https://awslabs.github.io/mcp/" target="_blank" rel="noopener">more than sixty MCP servers</a> covering most of their services. Writing your own earns its keep when the question is specific to your estate &mdash; mine reads a tagging convention that only means something here &mdash; and is wasted effort when it is not</li>
+      <li><strong>A spend guard on the metered tool.</strong> The cache limits repeats, but nothing stops a client asking for ninety distinct day-ranges. A counter per session, or a hard daily cap, belongs in front of anything billed per request</li>
+      <li><strong>Tool results scoped by the caller's own identity</strong>, not the server's role. Right now every caller sees the whole account because there is one caller. With several, the server should assume a role derived from who is asking &mdash; otherwise the first person to connect inherits everything the server can see</li>
+      <li><strong>Structured output rather than JSON text blobs.</strong> The tools return formatted JSON inside a text block, which works and is what most servers do. Typed results would let a client render them without re-parsing</li>
+      <li><strong>Alarm on the cost tool's call rate</strong>, not just on errors. A server that starts answering cost questions in a loop is not broken in any way an error metric can see</li>
+    </ul>
+  </div>
+
+</div>
