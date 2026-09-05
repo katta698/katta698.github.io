@@ -109,6 +109,47 @@ PWA_HEAD = """<link rel="manifest" href="/manifest.webmanifest"/>
 <meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>"""
 
 
+# The nav on hand-built pages, kept in step with nav_html() above.
+#
+# 89 architecture pages were still serving `Home | Blog | Resume`. The Resume
+# link was taken out of the site nav long ago and /intelligence/ was never added
+# to it, but those pages are `externally_built` -- sync passes them through
+# untouched -- so nothing ever corrected them. The drift only became visible
+# when the blog's own nav was brought in line and theirs was not.
+#
+# Narrow on purpose, like the token stamping it sits beside: it rewrites what is
+# inside <ul class="nav-links"> and drops the hamburger and its menu, which the
+# nav no longer uses. It regenerates nothing else, so the read-only
+# pass-through those pages depend on still holds.
+NAV_LINKS_RE = re.compile(r'(<ul class="nav-links">)(.*?)(</ul>)', re.S)
+HAMBURGER_RE = re.compile(r'\s*<button class="hamburger"[^>]*>.*?</button>',
+                          re.S)
+MOBILE_MENU_RE = re.compile(r'\s*<div class="mobile-menu"[^>]*>.*?</div>\s*'
+                            r'(?=\s*<)', re.S)
+
+CANONICAL_NAV_LINKS = (
+    "\n    <li><a href=\"/\">Portfolio</a></li>"
+    "\n    <li><a href=\"/blog/\" class=\"active\">Blog</a></li>"
+    "\n    <li><a href=\"/intelligence/\">Intelligence</a></li>\n  ")
+
+
+def normalise_hand_built_nav(path):
+    """Bring one hand-built page's nav in line. True if it changed."""
+    try:
+        html = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    before = html
+    html = NAV_LINKS_RE.sub(
+        lambda m: m.group(1) + CANONICAL_NAV_LINKS + m.group(3), html, count=1)
+    html = HAMBURGER_RE.sub("", html, count=1)
+    html = MOBILE_MENU_RE.sub("\n", html, count=1)
+    if html == before:
+        return False
+    path.write_text(html, encoding="utf-8", newline="\n")
+    return True
+
+
 def stamp_static_pages():
     """Re-stamp asset cache-busting tokens on the pages sync does not build.
 
@@ -170,6 +211,24 @@ def stamp_static_pages():
             path.write_text(new, encoding="utf-8")
             stamped += 1
     print(f"  {stamped} static page(s) re-stamped to js v={JS_VERSION}, css v={CSS_VERSION}")
+
+    # Same pages, same reason: they are passed through, so a nav change made in
+    # nav_html() reaches every generated page and none of these. Only the
+    # architecture pages get this -- index.html, resume.html and now.html have
+    # hand-written navs of their own that are deliberately not identical.
+    renav = sum(
+        normalise_hand_built_nav(p)
+        for p in sorted(BLOG_DIR.glob("aws-architecture-*/index.html"))
+        + sorted(BLOG_DIR.glob("azure-architecture-*/index.html"))
+        + sorted(BLOG_DIR.glob("gcp-architecture-*/index.html"))
+        # Two more hand-built pages that carry the same <ul class="nav-links">.
+        # /blog/simulator/ is deliberately absent: it uses its own markup
+        # (.sim-nav-links, bare anchors) and rewriting it needs a second rule,
+        # not a wider glob.
+        + [BLOG_DIR / "digests" / "index.html"]
+        + [REPO_ROOT / "_templates" / "arch-post-template.html"])
+    if renav:
+        print(f"  {renav} hand-built page(s) brought onto the current nav")
 
 
 def write_service_worker():
@@ -1572,25 +1631,22 @@ def nav_html(show_search=True, show_audio=False):
     return f"""<nav class="nav">
   <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
   <div class="nav-spacer"></div>
+  <!-- Same three destinations and the same labels as now.html and the
+       intelligence pages. This said "Home" where they say "Portfolio", and
+       carried no link to /intelligence/ at all -- so the roundup hub was
+       reachable from a follow-on callout inside a post and from nowhere else
+       in the navigation. -->
   <ul class="nav-links">
-    <li><a href="/">Home</a></li>
+    <li><a href="/">Portfolio</a></li>
     <li><a href="/blog/" class="active">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
   </ul>
 {search_btn}
 {audio_btn}
   <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
     <span id="theme-icon-moon">◐</span><span id="theme-label-text">Dark</span>
   </button>
-  <button class="hamburger" id="hamburger-btn" aria-label="Menu">
-    <span></span><span></span><span></span>
-  </button>
-</nav>
-<div class="mobile-menu" id="mobile-menu">
-  <a href="/">Home</a>
-  <button class="theme-toggle" id="nav-theme-btn-mobile" aria-label="Toggle dark mode">
-    <span id="theme-icon-moon-m">◐</span><span id="theme-label-text-m">Dark</span>
-  </button>
-</div>"""
+</nav>"""
 
 
 def footer_html():
