@@ -140,6 +140,20 @@ def build(src_path, prev_slug=None, prev_title=None):
 
     content = {s: section(s) for s in SECTIONS}
 
+    # Posts #1-#7 predate this builder and carry sections it does not know
+    # about -- "tradeoffs", "snippet", "terraform" -- all of which sit between
+    # decisions and closing. Extracting only SECTIONS and rendering the
+    # template would drop them, which on an already-published post means
+    # silently deleting a Tradeoffs and Alternatives table from a live page.
+    # So carry any unrecognised section through verbatim, in source order,
+    # into the slot the template exposes between decisions and closing.
+    known = set(SECTIONS) | {"reference"}
+    extras = [m.group(0) for m in
+              re.finditer(r'  <div class="section" id="([a-z-]+)">.*?\n  </div>',
+                          body, re.S)
+              if m.group(1) not in known]
+    extra_sections = ("\n" + "\n\n".join(extras) + "\n") if extras else ""
+
     refs_block = re.search(r'<div class="section" id="reference">(.*?)\n  </div>', body, re.S)
     if not refs_block:
         raise SystemExit("no reference section in %s" % src_path)
@@ -196,6 +210,7 @@ def build(src_path, prev_slug=None, prev_title=None):
         "{{ARCHITECTURE_CONTENT}}": content["architecture"],
         "{{WHY_CONTENT}}": content["why"],
         "{{DECISIONS_CONTENT}}": content["decisions"],
+        "{{EXTRA_SECTIONS}}": extra_sections,
         "{{CLOSING_CONTENT}}": content["closing"],
         "{{AWS_DOCS_URL}}": ref_links[0][0],
         "{{AWS_DOCS_LINK_TEXT}}": ref_links[0][1],
