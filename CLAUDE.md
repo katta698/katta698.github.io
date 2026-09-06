@@ -108,6 +108,32 @@ applied to the sequence around them.
 Fix the script rather than working around it, so the next window inherits the
 fix instead of re-deriving the workaround.
 
+## Show the post in chat when you publish it — ALL series
+
+Raised 2026-09-06, about every series in every window, which is why it lives
+here rather than in one window's memory.
+
+After a post is committed, print the post itself in the reply — not only the
+SHA, the file list and the summary. Jayanth reads the post in the chat; making
+him open `posts/` or wait for the deploy to see what was written puts the
+review after publication instead of before it.
+
+What to show:
+
+- **The readable post**: title, subtitle, then the body prose. Render it as
+  chat markdown.
+- **Not** the YAML front matter, the `verified_claims` block, the HTML
+  scaffolding, or the diagram SVG. Those are machinery; the checks already
+  report on them.
+- **Tables and callouts belong in it.** They carry a lot of these posts, and a
+  summary that drops them misrepresents the post.
+- The existing report — SHA, where the files are, what the checks said — still
+  follows. This is in addition to it, not instead of it.
+
+For a weekly or daily intelligence post the same rule applies, inventory table
+included: the inventory is the part that is checkable, so it is the part worth
+putting in front of him.
+
 ## Finish the work and stop
 
 **Do not end a response with offers of further work.** No "Want me to…?", no
