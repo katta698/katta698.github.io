@@ -134,6 +134,18 @@ For a weekly or daily intelligence post the same rule applies, inventory table
 included: the inventory is the part that is checkable, so it is the part worth
 putting in front of him.
 
+**List the source links with it**, in two groups, because the distinction is
+the whole point:
+
+- **Fetched and used** — the pages the claims were actually verified against,
+  with a claim count each. `verified_claims` already holds this; read it out of
+  the post rather than from memory.
+- **Listed but not fetched** — anything in the post's reference section that is
+  further reading, marked as carrying no claims.
+
+Asked 2026-09-06, right after the rule above. A reference list that mixes the
+two reads as though every link was checked, and only one group was.
+
 ## Finish the work and stop
 
 **Do not end a response with offers of further work.** No "Want me to…?", no
