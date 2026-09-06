@@ -1,0 +1,282 @@
+---
+title: "GCP Architecture Series #24 — Asset Feeds and Change Notifications"
+date: '2026-09-06T09:00:00'
+slug: gcp-architecture-asset-feeds
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-09-06'
+verified_claims:
+  - claim: "It can take up to 10 minutes for any feed creation, update, or deletion to take effect"
+    source: https://docs.cloud.google.com/asset-inventory/docs/monitor-asset-changes
+  - claim: "The first message published to the Pub/Sub topic is a welcome message"
+    source: https://docs.cloud.google.com/asset-inventory/docs/monitor-asset-changes
+  - claim: "Conditions are written in Common Expression Language (CEL)"
+    source: https://docs.cloud.google.com/asset-inventory/docs/monitor-asset-changes
+  - claim: "if the payload of your asset update exceeds the limit, your asset update is discarded"
+    source: https://docs.cloud.google.com/asset-inventory/docs/quota
+  - claim: "You can create up to 200 feeds on a parent"
+    source: https://docs.cloud.google.com/asset-inventory/docs/monitor-asset-changes
+  - claim: "if you have 10 projects in an organization, each project can have up to 200 feeds, and the organization can also have up to 200 feeds"
+    source: https://docs.cloud.google.com/asset-inventory/docs/monitor-asset-changes
+  - claim: "Create, update, and delete history for assets is kept for up to 35 days"
+    source: https://docs.cloud.google.com/asset-inventory/docs/overview
+  - claim: "Cloud Asset Inventory is a global metadata inventory service that lets you view, search, export, monitor, and analyze your Google Cloud asset metadata"
+    source: https://docs.cloud.google.com/asset-inventory/docs/overview
+  - claim: "Cloud Asset Owner"
+    source: https://docs.cloud.google.com/asset-inventory/docs/access-control
+  - claim: "Cloud Asset Viewer"
+    source: https://docs.cloud.google.com/asset-inventory/docs/access-control
+problem: "Post #23 established that Cloud Asset Inventory answers what exists and what changed, for 35 days backwards. A feed answers the same question forwards — it tells you as the change happens, rather than when somebody thinks to ask. Everything difficult about feeds comes from that being a delivery pipeline rather than a query."
+builds: "What a feed watches and where it delivers, the CEL condition that decides which changes are worth a message, the ten minutes before a new feed is live, the per-parent limit and how it actually counts, and the failure mode where an update is dropped rather than delayed."
+catch: "For a real-time feed, an asset update whose payload exceeds the limit is discarded rather than truncated or retried. The updates most likely to be large are the ones carrying the most configuration — so the silent losses are concentrated in exactly the changes worth watching."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #024 &middot; Foundations</div>
+  <h1 class="post-title">Asset Feeds and Change Notifications</h1>
+  <p class="post-subtitle">Post #23 looked backwards, 35 days at a time. A feed looks forwards &mdash; and turns the inventory from something you query into something that arrives.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Google Cloud &middot; Asset Inventory &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A feed looks like a small piece of configuration and behaves like a distributed system, which is where all four of these come from.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"I created the feed and nothing is arriving"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Wait. It can take up to <strong>10 minutes</strong> for any feed creation, update or deletion to take effect. Ten minutes is long enough to conclude the configuration is wrong, change it, and restart the clock on a second ten minutes.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat feed changes like the organization policy changes in #19 &mdash; set once, then wait out the documented propagation before touching anything. A feed created as an incident response is not a tool available during that incident.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"Most changes come through, but the big ones do not"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          That is the documented behaviour, and it is the most important sentence about feeds. For a real-time feed, if the payload of your asset update exceeds the limit, your asset update is <em>discarded</em>. Not truncated, not retried, not delivered late.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Never let a feed be the only record of a change. Pair it with the scheduled export from #23, so the feed provides latency and the export provides completeness &mdash; because the feed does not provide completeness and does not claim to.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"The first message broke our parser"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          The first message published to the Pub/Sub topic is a welcome message, and it is a plain string rather than the structured payload everything after it uses. A consumer written against the documented message type will meet a message that is not of that type, once, at the beginning.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Handle it explicitly at the top of the consumer. It is a single line, and it is the difference between a subscriber that starts cleanly and one that crash-loops on its first delivery.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"We are near the feed limit, so we will move some to the folder"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          That works, and for a reason worth understanding. You can create up to <strong>200 feeds on a parent</strong> &mdash; and the limit applies only to feeds directly on that parent, not to the feeds of its children. Ten projects each get their own 200, and the organization gets 200 of its own on top.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Read the ceiling as per-node rather than per-estate. It is generous enough that hitting it usually means the design is wrong &mdash; one feed per resource instead of one feed per question.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Cloud Asset Inventory is a global metadata inventory service that lets you view, search, export, monitor and analyse your Google Cloud asset metadata. Post #23 covered the first three verbs. <em>Monitor</em> is this one, and it is the only one that pushes.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-024-asset-feeds.svg" alt="Diagram: how a Cloud Asset Inventory feed delivers change notifications through Pub/Sub, the CEL condition that filters them, the ten-minute propagation delay, the per-parent feed limit, and the payload-too-large case where an update is discarded" />
+      <figcaption>A feed is a delivery pipeline, not a query &mdash; with a propagation delay at the front and a silent drop at the back.</figcaption>
+    </figure>
+
+    <h3>What a feed watches</h3>
+    <p>
+      A feed monitors the same metadata the inventory holds &mdash; resources, IAM policies, access policies and organization policies &mdash; scoped to an organization, folder or project, and delivers to a Pub/Sub topic you own. That scoping matters: unlike asset <em>history</em>, which #23 showed is organization and project only, a feed can be attached to a folder. The level with no history endpoint does have a change stream.
+    </p>
+
+    <h3>Conditions, and why they are the whole design</h3>
+    <p>
+      Conditions are written in Common Expression Language, the same language the custom constraints in #20 use, and they filter which changes produce a message. An expression referencing <code>temporal_asset.asset.ancestors</code> restricts notifications to resources located within a particular folder, for instance.
+    </p>
+    <p>
+      The condition is where a feed becomes useful rather than merely noisy. An unconditioned feed on a busy organization is a firehose that nobody reads and that costs Pub/Sub throughput to ignore. The discipline is one feed per <em>question</em> &mdash; who made a bucket public, when did an organization policy change, which service accounts gained a role &mdash; with the condition encoding the question. That is also why 200 per parent is generous: a design with more than a handful of questions per node is usually enumerating resources instead.
+    </p>
+
+    <div class="callout">
+      <strong>The message tells you what it was before</strong>
+      <p>Notifications arrive as a <code>TemporalAsset</code>, which carries the asset, the time window in which it was observed, and a prior asset state whose values include <code>PRESENT</code>, <code>DOES_NOT_EXIST</code> and <code>DELETED</code>. That prior state is what makes a feed actionable rather than merely informative: a message saying a resource exists is a fact, and a message saying it exists and previously did not is an event you can act on. Deletions are visible for the same reason &mdash; the asset arrives carrying its state, not as an absence you have to infer.</p>
+    </div>
+
+    <h3>Who can create one</h3>
+    <p>
+      Feeds need Cloud Asset Owner. Post #23 noted the gap between that and Cloud Asset Viewer and deferred the explanation to here: Viewer reads metadata, Owner reads metadata <em>and works with feeds</em>. The difference is not the volume of data reachable &mdash; it is that a feed is a standing subscription that sends your estate's changes to a Pub/Sub topic of the creator's choosing, continuously, until someone deletes it.
+    </p>
+    <p>
+      That makes Owner an egress permission wearing an inventory name. Granting it because somebody needs to read asset metadata is over-granting; Viewer is the role for reading.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Designing Around the Drop</h2>
+
+    <h3>Discarded is a different failure from delayed</h3>
+    <p>
+      Most delivery systems degrade by getting slower. A feed degrades by losing the message entirely: an asset update whose payload exceeds the limit is discarded. There is no dead-letter behaviour to inspect and no error to catch, because from the consumer's point of view nothing happened.
+    </p>
+    <p>
+      The bias in what gets lost is what makes this architectural rather than operational. Payload size scales with the amount of configuration attached to a resource, so the updates most likely to exceed a limit are the large, heavily-configured, much-modified ones &mdash; a sprawling IAM policy, a big instance template, a cluster with a long list of node pools. Those are also the changes most worth being notified about. The loss is not random; it is concentrated in the interesting tail.
+    </p>
+
+    <div class="callout amber">
+      <strong>A feed is a latency mechanism, not a completeness mechanism</strong>
+      <p>Post #23 argued for a scheduled export to BigQuery as the durable record. This post is the reason that argument is not optional. A feed gives you seconds-to-minutes notice of a change and drops what it cannot carry; an export gives you a complete snapshot on a schedule and tells you nothing in between. They fail in opposite directions, which is precisely why running both is not redundancy. If a compliance question ever depends on "we were notified of every change", a feed alone cannot support that claim &mdash; and the documentation says so.</p>
+    </div>
+
+    <h3>Pub/Sub is a dependency, not a detail</h3>
+    <p>
+      The feed publishes into your topic, which means its throughput is bounded by Pub/Sub's publisher throughput limit for the region &mdash; and that limit affects the combined asset update size a real-time feed can publish. The topic is yours, so its configuration, retention and subscription health are your responsibility, and a subscription nobody drains is a backlog rather than an alert.
+    </p>
+    <p>
+      This is the ordinary shape of an event pipeline, and it is worth stating because feeds are configured from the Asset Inventory side and then forgotten. The half that breaks in practice is the half you own.
+    </p>
+
+    <h3>What to build</h3>
+    <ol>
+      <li><strong>One feed per question</strong>, with the question written into the CEL condition and repeated in the feed's description. A feed whose purpose is not recoverable from its own configuration will not be deleted when the question stops mattering.</li>
+      <li><strong>A consumer that handles the welcome message</strong> and treats the prior asset state as the signal rather than the payload alone.</li>
+      <li><strong>Both a feed and the scheduled export</strong>, with the export as the source of truth for any claim about completeness.</li>
+      <li><strong>An alert on subscription backlog</strong>, because the feed's own health is invisible from the Asset Inventory side.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Feed as the record of changes</td>
+          <td>Never alone &mdash; pair with the export</td>
+          <td>An update whose payload exceeds the limit is discarded, not delayed.</td>
+        </tr>
+        <tr>
+          <td>After creating or editing a feed</td>
+          <td>Wait out the propagation</td>
+          <td>It can take up to 10 minutes for a creation, update or deletion to take effect.</td>
+        </tr>
+        <tr>
+          <td>Feeds as incident response</td>
+          <td>Create them before the incident</td>
+          <td>Ten minutes to take effect makes a feed useless as a reaction.</td>
+        </tr>
+        <tr>
+          <td>Scoping a feed</td>
+          <td>One feed per question, condition in CEL</td>
+          <td>An unconditioned feed on a busy organization is a firehose nobody reads.</td>
+        </tr>
+        <tr>
+          <td>Watching a folder</td>
+          <td>A feed works where history does not</td>
+          <td>Asset history is organization and project only; feeds are not.</td>
+        </tr>
+        <tr>
+          <td>Worrying about the feed ceiling</td>
+          <td>Usually a design smell</td>
+          <td>200 per parent, counted per node rather than across the estate.</td>
+        </tr>
+        <tr>
+          <td>Writing the consumer</td>
+          <td>Handle the welcome message explicitly</td>
+          <td>The first message is a plain string, unlike everything after it.</td>
+        </tr>
+        <tr>
+          <td>Acting on a notification</td>
+          <td>Read the prior asset state</td>
+          <td>It turns "this exists" into "this was just created", which is the actionable form.</td>
+        </tr>
+        <tr>
+          <td>Granting feed access</td>
+          <td>Cloud Asset Viewer unless feeds are needed</td>
+          <td>Owner is the ability to stream the estate's changes to a chosen topic.</td>
+        </tr>
+        <tr>
+          <td>Operating the pipeline</td>
+          <td>Alert on subscription backlog</td>
+          <td>Feed health is not visible from the Asset Inventory side.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Feeds complete a picture the last two posts have been assembling. Asset Inventory remembers 35 days. An export remembers whatever you decide. A feed remembers nothing at all &mdash; it has no memory by design, only latency, and it trades completeness for speed in a way the documentation is unusually direct about.
+    </p>
+    <p>
+      That directness is worth taking at face value. A great deal of platform tooling is built on the assumption that an event stream is an authoritative log of what happened, and here it explicitly is not: an update too large to carry is dropped, and the drop is silent. Used as a trigger &mdash; notice this, then go and look &mdash; a feed is excellent, and the ten-minute setup delay and the per-parent ceiling barely matter. Used as evidence, it is the wrong instrument, and no amount of subscriber engineering fixes that. The export is the evidence. The feed is the reason you go and read it today rather than next quarter.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#25 leaves the inventory for the thing that creates most of it: Terraform on Google Cloud &mdash; the provider, where state lives, and the decisions about state that are hardest to reverse.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/asset-inventory/docs/monitor-asset-changes" target="_blank" rel="noopener">Monitor asset changes with Pub/Sub</a></li>
+      <li><a href="https://docs.cloud.google.com/asset-inventory/docs/overview" target="_blank" rel="noopener">Cloud Asset Inventory overview</a></li>
+      <li><a href="https://docs.cloud.google.com/asset-inventory/docs/quota" target="_blank" rel="noopener">Quotas and limits</a></li>
+      <li><a href="https://docs.cloud.google.com/asset-inventory/docs/access-control" target="_blank" rel="noopener">Access control with IAM</a></li>
+      <li><a href="https://docs.cloud.google.com/asset-inventory/docs/reference/rest/v1/feeds" target="_blank" rel="noopener">REST resource: feeds</a></li>
+      <li><a href="https://docs.cloud.google.com/asset-inventory/docs/exporting-to-bigquery" target="_blank" rel="noopener">Exporting to BigQuery</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
