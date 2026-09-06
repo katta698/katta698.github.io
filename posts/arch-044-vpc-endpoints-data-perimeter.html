@@ -1,0 +1,344 @@
+---
+title: "AWS Architecture Series #44 — The traffic never left, and that was never the question"
+date: '2026-09-06T09:00:00'
+slug: aws-architecture-vpc-endpoints-data-perimeter
+labels: [AWS, "AWS Architecture Series"]
+problem: "A team removes the NAT gateway and adds VPC endpoints for S3 and DynamoDB. The architecture review records that data no longer traverses the internet, and the exfiltration risk is marked closed. Both halves of that sentence are true and the conclusion does not follow: the endpoint changed which path the traffic takes, not which bucket it can reach."
+builds: "A working model of the network boundary as three separate controls facing three directions — what can be reached from here, what can reach this, and what our identities may touch anywhere — and why creating an endpoint supplies none of them."
+catch: "The default endpoint policy grants full access, and AWS attaches it for you when you do not supply one. A gateway endpoint to S3 with default settings can reach every bucket in every AWS account, privately, without a NAT gateway and without an entry in a flow log destined for the internet."
+verified: '2026-09-06'
+verified_claims:
+  - claim: "An endpoint policy is a resource-based policy that you attach to a VPC endpoint to control which AWS principals can use the endpoint to access an AWS service"
+    source: https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html
+  - claim: "An endpoint policy does not override or replace identity-based policies or resource-based policies"
+    source: https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html
+  - claim: "The default endpoint policy grants full access to the endpoint, allowing Principal star, Action star and Resource star"
+    source: https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html
+  - claim: "If you don't attach an endpoint policy, we attach the default endpoint policy"
+    source: https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html
+  - claim: "Not all AWS services support endpoint policies. If an AWS service doesn't support endpoint policies, we allow full access to any endpoint for the service"
+    source: https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html
+  - claim: "With gateway endpoints, the Principal element must be set to star, and to specify a principal you use the aws:PrincipalArn condition key"
+    source: https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html
+  - claim: "If you specify the principal as an account ID in an endpoint policy, access is granted to the AWS account root user only, not all users and roles for the account"
+    source: https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html
+  - claim: "The size of an endpoint policy cannot exceed 20,480 characters, including white space"
+    source: https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html
+  - claim: "An endpoint policy document is exactly twice the size budget of a service control policy document"
+    derive: "20480 / 10240"
+    expect: "2"
+    source: https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html
+  - claim: "You can't use wildcard characters or numeric condition operators with global context keys that reference system-generated identifiers, for example aws:PrincipalAccount or aws:SourceVpc"
+    source: https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html
+  - claim: "When you use a string condition operator, you must use at least six consecutive characters before or after each wildcard character"
+    source: https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html
+  - claim: "After you update an endpoint policy, it can take a few minutes for the changes to take effect"
+    source: https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html
+  - claim: "The perimeter goal is that access can only be allowed if the identity is trusted, the resource is trusted, and the network is expected"
+    source: https://docs.aws.amazon.com/whitepapers/latest/building-a-data-perimeter-on-aws/building-a-data-perimeter-on-aws.html
+  - claim: "If any of these conditions are false, then the access inside the perimeter is unintended and should be denied"
+    source: https://docs.aws.amazon.com/whitepapers/latest/building-a-data-perimeter-on-aws/building-a-data-perimeter-on-aws.html
+  - claim: "The circle that defines an AWS perimeter is typically represented as an AWS organization managed by AWS Organizations"
+    source: https://docs.aws.amazon.com/whitepapers/latest/building-a-data-perimeter-on-aws/building-a-data-perimeter-on-aws.html
+  - claim: "Each AWS account you own is a logical container for AWS identities, resources, and networks, and the perimeter is composed of controls implemented on your identities, resources, and networks"
+    source: https://docs.aws.amazon.com/whitepapers/latest/building-a-data-perimeter-on-aws/building-a-data-perimeter-on-aws.html
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #044 &middot; Networking &amp; Security</div>
+  <h1 class="post-title">The traffic never left, and that was never the question</h1>
+  <p class="post-subtitle">A VPC endpoint changes which path a request takes. It does not change which destination is at the other end, and the setting that decides that is generous by default.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Networking &middot; Security</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A team is asked to close an exfiltration risk. Their workload runs in private subnets, reaches S3 and DynamoDB through a NAT gateway, and the security review has flagged that outbound path. The fix is well understood: add a gateway endpoint for each service, remove the NAT gateway, save the per-gigabyte charge on the way.
+    </p>
+    <p>
+      They do it. Traffic to S3 no longer traverses the internet gateway. Flow logs show it going nowhere near the public path. The NAT gateway line item disappears. The review is updated to say data no longer leaves AWS, and the finding is closed.
+    </p>
+    <p>
+      Every factual statement in that paragraph is correct. The conclusion does not follow from them.
+    </p>
+    <p>
+      A compromised instance in that subnet can still write to an S3 bucket in an account nobody in the company has heard of. It goes through the endpoint, at endpoint speed, over AWS's own network, and appears in no flow log as internet-destined traffic. The team has not closed the exfiltration path. They have made it private, removed the NAT gateway charges that would have made it visible on a bill, and taken the internet gateway out of the picture that might have caught it.
+    </p>
+
+    <div class="callout amber">
+      <strong>The endpoint answers a routing question</strong>
+      <p>"Does this traffic traverse the internet" and "which destinations can this traffic reach" are different questions with different answers, and a VPC endpoint only ever addresses the first. The second is decided by policy — and by a default that AWS applies on your behalf when you supply nothing.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      An endpoint policy is <em>a resource-based policy that you attach to a VPC endpoint to control which AWS principals can use the endpoint to access an AWS service</em>. That is the control. Here is the default it ships with.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-044-vpc-endpoints-data-perimeter.svg" alt="Diagram: what a VPC endpoint changes (the path, so traffic stops traversing the internet gateway) against what it does not change (the destination, since the default endpoint policy grants full access); the default policy shown in full; and three controls facing three directions — endpoint policy, resource policy with a source VPC condition, and organisation policy with a resource organisation condition" />
+      <figcaption>Three controls, three directions. Creating an endpoint supplies none of them.</figcaption>
+    </figure>
+
+    <h3>The default is the whole story</h3>
+    <p>
+      <strong>The default endpoint policy grants full access to the endpoint</strong>, and it is exactly what you would write if you were trying to make a point:
+    </p>
+    <!-- check_assertions: allow-public-principal — this is AWS's own default
+         endpoint policy, quoted verbatim because the post's argument is that it
+         is too permissive. Flagging it would be correct by the rule and wrong
+         by the intent. -->
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">The policy AWS attaches when you supply none</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>{
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "*",
+            "Resource": "*"
+        }
+    ]
+}</code></pre>
+    </div>
+    <p>
+      And it is applied for you: <em>if you don't attach an endpoint policy, we attach the default endpoint policy.</em> So the console flow that creates an endpoint in four clicks produces a private path to every resource of that service type, in every AWS account, and reports success.
+    </p>
+    <p>
+      There is a second case with the same effect and less visibility. <strong>Not all AWS services support endpoint policies. If an AWS service doesn't support endpoint policies, we allow full access to any endpoint for the service.</strong> For those services the permissive outcome is not a default you failed to change — it is the only available behaviour, and the control has to live somewhere else entirely.
+    </p>
+
+    <h3>Three controls, three directions</h3>
+    <p>
+      The reason this is confusing in practice is that people reach for one control and expect it to answer all three questions. It cannot, because they face different ways.
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h4>What can be reached from here</h4>
+        <p>The endpoint policy. It governs traffic leaving your network through this endpoint, and it is where <code class="inline">aws:ResourceOrgID</code> belongs if you want "this network may only reach our own buckets".</p>
+      </div>
+      <div class="card">
+        <h4>What can reach this</h4>
+        <p>The resource policy — a bucket policy with <code class="inline">aws:SourceVpce</code> or <code class="inline">aws:SourceVpc</code>. It governs traffic arriving, from any network, and the endpoint policy has nothing to say about it.</p>
+      </div>
+    </div>
+    <p>
+      The third is the one that catches what the other two miss: an organisation-level policy asserting that your identities may only reach your resources, on any path, endpoint or not. AWS frames the whole objective in one sentence: <strong>access can only be allowed if the identity is trusted, the resource is trusted, and the network is expected</strong> — and <em>if any of these conditions are false, then the access inside the perimeter is unintended and should be denied</em>.
+    </p>
+    <p>
+      Note that the circle being drawn is not the VPC. <em>The circle that defines an AWS perimeter is typically represented as an AWS organization managed by AWS Organizations</em>, and <em>each AWS account you own is a logical container for AWS identities, resources, and networks</em>. The network is one of three containers, which is why a network control alone closes one third of the problem.
+    </p>
+
+    <h3>It is another gate, not a replacement</h3>
+    <p>
+      One sentence in the documentation prevents a common misreading: <strong>an endpoint policy does not override or replace identity-based policies or resource-based policies.</strong> It joins the evaluation as another narrowing gate, in the sense established earlier in this series — it can take access away and it cannot grant any.
+    </p>
+    <p>
+      That has a practical consequence worth stating plainly. An endpoint policy allowing <code class="inline">s3:*</code> on <code class="inline">*</code> grants nobody anything; the identity policy still has to allow the call. And a restrictive endpoint policy cannot be relied on as the only control, because a principal reaching S3 by another path — a different VPC, a different account, the console — never passes through it.
+    </p>
+
+    <h3>The syntax trap, and it is the reverse of the one in #37</h3>
+    <p>
+      Gateway endpoints have their own principal rules. <strong>With gateway endpoints, the <code class="inline">Principal</code> element must be set to <code class="inline">*</code>, and to specify a principal you use the <code class="inline">aws:PrincipalArn</code> condition key.</strong> So far, ordinary.
+    </p>
+    <p>
+      Then this: <strong>if you specify the principal as an account ID in an endpoint policy, access is granted to the AWS account root user only, not all users and roles for the account.</strong>
+    </p>
+    <p>
+      Post #37 in this series established the opposite behaviour for a role trust policy, where an account ID or account ARN delegates to the entire account and specifically does not restrict anything to the root user. Same syntax, two policy types, opposite meanings. An author who learned the trust-policy rule and applies it here will write a policy they believe is broad and get one that admits a single principal nobody uses.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Model Holds Up</h2>
+
+    <h3>It separates a cost decision from a security decision</h3>
+    <p>
+      Removing a NAT gateway is a good idea for reasons that have nothing to do with exfiltration: it removes a per-gigabyte charge and a component that can fail. Those benefits are real and they arrive the moment the endpoint exists. Treating them as a security outcome is what causes the finding to be closed prematurely, and separating the two lets a team take the cost win immediately while the policy work is still outstanding.
+    </p>
+
+    <h3>Each control has a scope you can state</h3>
+    <p>
+      Because the three face different directions, it is possible to say precisely what each covers and what it misses. An endpoint policy covers one endpoint in one VPC. A bucket policy covers one bucket from every network. An SCP covers every principal in an account on every path. Nobody has to guess which control an incident would have caught.
+    </p>
+
+    <h3>The default being permissive is at least consistent</h3>
+    <p>
+      A default that granted nothing would break every endpoint on creation and would be worked around by attaching a permissive policy — arriving at the same place with an extra step and a false sense of deliberation. The current default is honest about what it does, and the documentation states it in the same page as the mechanism. The gap is that creating an endpoint feels like a security action, so nobody goes looking.
+    </p>
+
+    <h3>The size budget is generous enough to enumerate</h3>
+    <p>
+      <strong>The size of an endpoint policy cannot exceed 20,480 characters, including white space</strong> — twice what a service control policy document gets. That matters because endpoint policies tend towards enumeration: a list of buckets, a list of accounts, a list of prefixes. There is room to be explicit here in a way there is not at the organisation level.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Design Decisions</h2>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>Attach a policy at creation, in the same change that creates the endpoint</strong>
+      </div>
+      <div class="challenge-body">
+        <p>An endpoint created without a policy is not unconfigured, it is configured permissively, and nothing distinguishes the two afterwards. In infrastructure as code that means the policy argument is not optional in your module &mdash; make it required, so a caller has to supply one or state why it is <code class="inline">*</code>.</p>
+        <span class="fix-label">The check worth writing</span>
+        <p>Enumerate every VPC endpoint in the organisation and report which carry the default policy. That set is usually larger than expected, because endpoints get created during incidents and migrations by people solving a connectivity problem rather than an access one.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>Put the organisation condition on both sides</strong>
+      </div>
+      <div class="challenge-body">
+        <p>The two halves answer different questions and teams usually do one. <code class="inline">aws:ResourceOrgID</code> on the endpoint policy says this network may only reach resources we own. <code class="inline">aws:SourceOrgID</code> or <code class="inline">aws:SourceVpce</code> on the bucket policy says this bucket may only be reached from networks we own.</p>
+        <span class="fix-label">Why both</span>
+        <p>The first stops your instance writing to a stranger's bucket. The second stops a stranger's credential reading yours. Neither implies the other, and an exfiltration review that only asks about outbound traffic will find the first and miss the second entirely.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>Know which services have no endpoint policy to write</strong>
+      </div>
+      <div class="challenge-body">
+        <p>Where <strong>an AWS service doesn't support endpoint policies, AWS allows full access to any endpoint for the service</strong>. There is no configuration to get wrong and no finding to raise, which is precisely why this gap survives reviews.</p>
+        <span class="fix-label">Where the control goes instead</span>
+        <p>For those services the perimeter has to be enforced at the identity and resource layers &mdash; an SCP with <code class="inline">aws:ResourceOrgID</code> covers every service and every path, including the ones with no endpoint policy support. Check the supported-service table when you add an endpoint, and record which of your endpoints are in this category rather than rediscovering it later.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>Respect the condition-key restrictions, because they are unusual here</strong>
+      </div>
+      <div class="challenge-body">
+        <p>Endpoint policies have syntax rules that do not apply to IAM policies generally, and each will fail in a way that is hard to read. <strong>You can't use wildcard characters or numeric condition operators with global context keys that reference system-generated identifiers</strong>, such as <code class="inline">aws:PrincipalAccount</code> or <code class="inline">aws:SourceVpc</code>. And <strong>when you use a string condition operator, you must use at least six consecutive characters before or after each wildcard character.</strong></p>
+        <span class="fix-label">And allow for the delay</span>
+        <p><strong>After you update an endpoint policy, it can take a few minutes for the changes to take effect.</strong> That is long enough to conclude a correct policy did not work and revert it. When testing, wait before deciding.</p>
+      </div>
+    </div>
+
+    <h3>Which control catches which failure</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>The failure</th>
+            <th>Endpoint policy</th>
+            <th>Resource policy</th>
+            <th>SCP or RCP</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Our instance writes to a stranger's bucket, via our endpoint</td>
+            <td><strong>Catches it</strong></td>
+            <td>No</td>
+            <td><strong>Catches it</strong></td>
+          </tr>
+          <tr>
+            <td>Our instance writes to a stranger's bucket, via another path</td>
+            <td>No</td>
+            <td>No</td>
+            <td><strong>Catches it</strong></td>
+          </tr>
+          <tr>
+            <td>A stranger's credential reads our bucket</td>
+            <td>No</td>
+            <td><strong>Catches it</strong></td>
+            <td>RCP catches it</td>
+          </tr>
+          <tr>
+            <td>Our own credential reads our bucket from an unexpected network</td>
+            <td>No</td>
+            <td><strong>Catches it</strong></td>
+            <td>No</td>
+          </tr>
+          <tr>
+            <td>Traffic traverses the internet</td>
+            <td>Not a policy question &mdash; this is what the endpoint itself fixes</td>
+            <td>&mdash;</td>
+            <td>&mdash;</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Reference: the endpoint policy that makes the claim true</h3>
+    <p>
+      An S3 gateway endpoint policy restricted to resources inside your organisation. Note the <code class="inline">Principal</code> is <code class="inline">*</code> because a gateway endpoint requires it, and the narrowing is done entirely in the condition.
+    </p>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">Gateway endpoint &mdash; this network reaches our buckets only</span><div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div></div>
+      <pre><code>{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OurOrganisationsResourcesOnly",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceOrgID": "o-exampleorgid"
+        }
+      }
+    }
+  ]
+}</code></pre>
+    </div>
+    <p>
+      Two things this does not do. It grants nothing, because an endpoint policy is a narrowing gate and the identity policy still has to allow the call. And it says nothing about who may reach your buckets — that needs <code class="inline">aws:SourceVpce</code> on the bucket policy, which is a separate change in a separate account, and is the half that gets forgotten.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Network controls are satisfying because they produce a diagram you can point at. The line to the internet gateway disappears, the NAT gateway comes off the bill, and the picture looks materially safer than it did. Policy controls produce no diagram at all, which is part of why they get deferred.
+    </p>
+    <p>
+      What makes this particular gap durable is that the network change is genuinely worthwhile. It is not a mistake being corrected; it is a good change being credited with more than it did. The team that removed the NAT gateway improved their architecture and closed a finding that remained open.
+    </p>
+    <p>
+      <strong>The question to ask of any private-connectivity claim: if a compromised instance in this subnet wanted to send our data to an account we do not own, which control stops it?</strong> If the answer is the endpoint, check the policy on it. If there is no policy, AWS attached one, and it says <code class="inline">Allow</code> on everything.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Networking &amp; Security &mdash; egress in the other direction: what a workload actually needs to reach on the internet, why an allowlist of domains is harder than it looks once TLS is involved, and where the inspection has to sit to be worth its cost.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-access.html" target="_blank" rel="noopener">AWS Documentation — Control access to VPC endpoints using endpoint policies</a></li>
+      <li><a href="https://docs.aws.amazon.com/whitepapers/latest/building-a-data-perimeter-on-aws/building-a-data-perimeter-on-aws.html" target="_blank" rel="noopener">AWS Whitepaper — Building a Data Perimeter on AWS</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-s3.html" target="_blank" rel="noopener">AWS Documentation — Gateway endpoints for Amazon S3</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/privatelink/aws-services-privatelink-support.html" target="_blank" rel="noopener">AWS Documentation — AWS services that integrate with AWS PrivateLink, and endpoint policy support</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html" target="_blank" rel="noopener">AWS Documentation — AWS global condition context keys</a></li>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_rcps.html" target="_blank" rel="noopener">AWS Documentation — Resource control policies (RCPs)</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

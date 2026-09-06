@@ -84,20 +84,61 @@ PRINCIPAL_STAR = re.compile(r'"Principal"\s*:\s*(?:"\*"|\{\s*"AWS"\s*:\s*"\*"\s*
 EFFECT = re.compile(r'"Effect"\s*:\s*"(Allow|Deny)"')
 
 
-def public_allow(block):
-    """True when a wildcard Principal sits under an Allow.
+def statements(block):
+    """Split a policy document into its statement objects, roughly.
 
-    Decided from the Effect that governs the statement, not from whether the
-    word "Deny" appears somewhere nearby. arch-043 has a legitimate
-    "Effect": "Deny" with "Principal": "*" -- denying everyone is how a bucket
-    policy says nobody deletes -- and a proximity test flagged it.
+    Brace-counting rather than json.loads, because these blocks are teaching
+    examples: they carry comments, elisions and placeholder tokens that are not
+    valid JSON. Getting the boundaries approximately right is enough to decide
+    which Effect and which Condition govern a given Principal.
+
+    The first version tracked a single `start`, set only when depth went from
+    zero to one. Every inner object therefore reported the *outer* document's
+    start offset, so a statement's span began at the top of the policy and
+    swept up every earlier Effect. arch-043's "Effect": "Deny" statement was
+    read as an Allow because an Allow appeared earlier in the same document,
+    and a correct post was flagged. A stack gives each brace its own start.
     """
-    for m in PRINCIPAL_STAR.finditer(block):
-        before = EFFECT.findall(block[:m.start()])
-        after = EFFECT.findall(block[m.end():])
-        effect = before[-1] if before else (after[0] if after else None)
-        if effect == "Allow":
-            return True
+    out, stack = [], []
+    for i, ch in enumerate(block):
+        if ch == "{":
+            stack.append(i)
+        elif ch == "}" and stack:
+            out.append(block[stack.pop():i + 1])
+    # Keep the innermost objects that look like statements: one that contains
+    # another Effect-bearing object is a wrapper, not a statement.
+    stmts = [s for s in out if '"Effect"' in s]
+    innermost = [s for s in stmts
+                 if not any(o != s and o in s and '"Effect"' in o for o in stmts)]
+    return innermost or stmts or [block]
+
+
+def public_allow(block):
+    """True when a wildcard Principal sits under an unconditioned Allow.
+
+    Two exclusions, both found by running this against posts that were right.
+
+    arch-043 has a legitimate "Effect": "Deny" with "Principal": "*" -- denying
+    everyone is how a bucket policy says nobody deletes -- so the Effect that
+    governs the statement decides, not whether the word "Deny" appears nearby.
+
+    arch-044 has two wildcard Allows that are also correct. A VPC gateway
+    endpoint policy *must* set Principal to "*": AWS requires it, and the
+    narrowing is done with aws:PrincipalArn or aws:ResourceOrgID in a
+    Condition. So a wildcard Principal carrying a Condition is not a public
+    grant, and flagging it would push authors towards a policy AWS rejects.
+    """
+    for stmt in statements(block):
+        if not PRINCIPAL_STAR.search(stmt):
+            continue
+        effects = EFFECT.findall(stmt)
+        if effects and effects[0] != "Allow":
+            continue
+        if not effects:
+            continue
+        if '"Condition"' in stmt:
+            continue
+        return True
     return False
 
 
@@ -150,8 +191,28 @@ def body_and_front(path):
     return raw, ""
 
 
+# An opt-out for a code block that is deliberately showing a bad policy.
+# arch-044 quotes AWS's default VPC endpoint policy -- Allow, Principal "*",
+# Action "*", Resource "*" -- precisely to argue that it is too permissive.
+# Flagging that is correct by the rule and wrong by the intent, and the honest
+# way to resolve it is a marker in the post that says so, rather than loosening
+# the rule for everybody. Rare by design: two in forty-four posts.
+OPT_OUT = re.compile(r"<!--\s*check_assertions:\s*allow-public-principal")
+
+
 def code_blocks(body):
-    return re.findall(r"<pre><code>([\s\S]*?)</code></pre>", body)
+    """Code blocks, minus any preceded by an opt-out marker."""
+    out = []
+    for m in re.finditer(r"<pre><code>([\s\S]*?)</code></pre>", body):
+        # 900 rather than 400: the marker sits above the code-block div, and
+        # the code-header line between them is itself around 200 characters of
+        # span and dot markup. 400 put the marker just outside the window, so
+        # the opt-out silently did nothing.
+        preceding = body[max(0, m.start() - 900):m.start()]
+        if OPT_OUT.search(preceding):
+            continue
+        out.append(m.group(1))
+    return out
 
 
 def prose(body):
