@@ -3,9 +3,41 @@ title: "AWS Architecture Series #6 — Aurora Global Database: The Multi-Region 
 date: 2026-07-30
 slug: aws-architecture-aurora-global-database
 labels: [AWS, "AWS Architecture Series"]
-problem: "Engineering teams design Aurora Global Database for failover but not for failback. They practise promoting the secondary, hit their RTO target in a DR drill, and declare success. When a real regional failure happens, the recovery works — but the organisation spends the next two weeks manually re-establishing the global cluster because nobody planned what comes after the promotion."
+verified: '2026-09-06'
+verified_claims:
+  - claim: "An Aurora global database has a primary DB cluster in one Region and up to 10 read-only secondary DB clusters in different Regions"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database.html
+  - claim: "After a write operation Aurora replicates data to the secondary Regions using dedicated infrastructure, with latency typically under a second"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database.html
+  - claim: "Aurora uses the cluster storage volume rather than the database engine for replication, which is why lag does not scale with transaction size"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database.html
+  - claim: "For Aurora Global Database, RTO can be in the order of minutes and RPO is typically measured in seconds"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html
+  - claim: "Switchover, previously called managed planned failover, synchronizes the secondary with the primary before making changes, so its RPO is 0 with no data loss"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html
+  - claim: "With managed failover, Aurora automatically adds the old primary Region back to the global database as a secondary Region when it becomes available again, maintaining the original topology"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html
+  - claim: "AWS recommends managed failover for disaster recovery and positions manual failover as the alternative for when managed failover is not an option, such as incompatible engine versions between Regions"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html
+  - claim: "Removing a secondary DB cluster from an Aurora global database immediately stops replication and promotes it to a standalone provisioned cluster with full read/write capabilities, which is why the manual path leaves nothing to rejoin"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html
+  - claim: "During a managed failover Aurora attempts a snapshot of the old storage volume at the point of failure, named rds:unplanned-global-failover followed by the old cluster name and a timestamp, so unreplicated data can be recovered from it"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html
+  - claim: "That snapshot is a system snapshot subject to the backup retention period configured on the old primary cluster, and must be copied to a manual snapshot to outlive it"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html
+  - claim: "Typically the chosen secondary cluster assumes the primary role within a few minutes, after which Aurora automatically rebuilds all additional secondary Region clusters"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html
+  - claim: "Rebuilding the remaining secondary Regions can take from a few minutes to several hours depending on the size of the storage volume and the distance between Regions"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html
+  - claim: "Because a secondary cluster is read-only it can support up to 16 read-only DB instances rather than the usual limit of 15 for a single Aurora cluster"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database.html
+  - claim: "Managed failover does not wait for data to synchronize, so both failover methods can lose write transactions that had not replicated, and failovers are susceptible to split-brain issues"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html
+  - claim: "AWS recommends reducing the DNS cache time-to-live to a low value such as 5 seconds when using the global writer endpoint, to reduce the likelihood of split-brain issues"
+    source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html
+problem: "Engineering teams design Aurora Global Database for failover but not for failback. They rehearse detaching and promoting the secondary, hit their RTO target in a DR drill, and declare success. When a real regional failure comes the recovery works — and then the organisation spends weeks rebuilding the global cluster by hand, because detach-and-promote was the wrong one of the two failover methods and nobody had checked which one their engine versions allowed."
 builds: "An Aurora Global Database architecture that covers the full failover lifecycle: topology design, Route 53 integration, planned switchover, unplanned failover, and the failback runbook that most teams skip."
-catch: "Promoting a secondary cluster during an unplanned failover detaches it permanently from the global cluster. The old primary does not automatically rejoin when the region recovers. Failback requires explicit re-attachment, data reconciliation, and a second failover — steps that must be in the runbook before the incident happens, not after."
+catch: "There are two unplanned-failover paths and they have opposite failback stories. Managed failover keeps the topology: Aurora adds the old primary back as a secondary automatically once its Region recovers. Manual failover — detach the secondary and promote it — is the one that leaves you rebuilding the global cluster by hand, and it is what you are forced onto when the two Regions run incompatible engine versions. Know which path your engine versions leave you on before the incident, not after."
 ---
 <style>
 #jk-post {
@@ -86,7 +118,10 @@ catch: "Promoting a secondary cluster during an unplanned failover detaches it p
       A financial services platform processes transactions in us-east-1. The compliance team requires a documented RTO of under 5 minutes and RPO of under 1 minute for the primary database tier. The platform team sets up Aurora Global Database with a secondary cluster in eu-west-1, runs a DR drill, promotes the secondary in 47 seconds, and files the compliance report. The architecture works.
     </p>
     <p>
-      Six months later, us-east-1 suffers a real 3-hour outage. The team promotes eu-west-1 in under a minute. Transactions resume. The RTO target is met. Then the primary region recovers — and nobody knows what to do next. The old primary is now a standalone cluster with 3 hours of write history that diverged the moment eu-west-1 was promoted. The new primary has 3 hours of production writes on top of that. There is no automatic merge. There is no automatic rejoin. The global cluster is permanently broken until someone rebuilds it manually.
+      Six months later, us-east-1 suffers a real 3-hour outage. Under pressure the team reaches for the procedure they rehearsed: detach eu-west-1 from the global cluster and promote it. Transactions resume, the RTO target is met. Then the primary region recovers — and nobody knows what to do next. Detaching is what made eu-west-1 a standalone cluster, so there is nothing left to rejoin: the old primary comes back as its own cluster with a write history that diverged the moment the detach happened. There is no automatic merge and no automatic rejoin. The global cluster stays broken until someone rebuilds it by hand.
+    </p>
+    <p>
+      The uncomfortable part is that this was avoidable, and not by better runbook discipline. AWS offers two unplanned-failover methods. <strong>Managed failover</strong> — <code class="inline">failover-global-cluster --allow-data-loss</code> — promotes the secondary and then, as soon as the old Region is healthy again, adds it back to the global cluster as a secondary automatically, preserving the topology. <strong>Manual failover</strong>, the detach-and-promote path, is the one that leaves you rebuilding. AWS recommends managed failover for disaster recovery and positions manual failover as the fallback for when it is unavailable — most commonly because the primary and secondary are running engine versions whose patch levels are not compatible.
     </p>
     <p>
       <strong>The DR plan covered failover. It did not cover failback.</strong> This is the gap that makes Aurora Global Database implementations incomplete in most enterprises.
@@ -94,7 +129,7 @@ catch: "Promoting a secondary cluster during an unplanned failover detaches it p
 
     <div class="callout amber">
       <strong>Failover and failback are two separate runbooks</strong>
-      <p>Most teams write the failover runbook and consider the job done. Failback — re-attaching the recovered region as a secondary, reconciling diverged data, and running a second planned switchover — requires its own documented procedure and must be tested before an incident forces you to improvise it.</p>
+      <p>Most teams write the failover runbook and consider the job done. Even on the managed path, failback is a deliberate act: Aurora restores the topology for you, but returning the primary role to the original Region is a switchover you choose to run, at a time you choose. On the manual path it is a full rebuild. Either way it needs its own documented procedure, and the first thing that procedure should establish is which of the two paths your engine versions actually leave you on.</p>
     </div>
   </div>
 
@@ -105,7 +140,7 @@ catch: "Promoting a secondary cluster during an unplanned failover detaches it p
     </p>
 
     <figure class="screenshot">
-      <img src="/blog/assets/diagrams/arch-006-aurora-global-topology.svg" alt="Aurora Global Database multi-region topology diagram"/>
+      <img src="/blog/assets/diagrams/arch-006-aurora-global-topology.svg" alt="Diagram: Aurora Global Database multi-region topology"/>
       <figcaption>Aurora Global Database topology — primary writer in us-east-1, secondary readers in eu-west-1, storage-level replication under 1s lag, Route 53 for endpoint routing</figcaption>
     </figure>
 
@@ -118,8 +153,8 @@ catch: "Promoting a secondary cluster during an unplanned failover detaches it p
     </p>
 
     <figure class="screenshot">
-      <img src="/blog/assets/diagrams/arch-006-aurora-failover-flow.svg" alt="Aurora Global Database planned vs unplanned failover flow diagram"/>
-      <figcaption>Planned switchover (zero data loss) vs unplanned failover (requires detach + promote + manual failback)</figcaption>
+      <img src="/blog/assets/diagrams/arch-006-aurora-failover-flow.svg" alt="Diagram: planned switchover against unplanned failover flow, diagram"/>
+      <figcaption>Planned switchover (RPO 0) versus unplanned failover. Managed failover preserves the topology and re-adds the old primary as a secondary; the manual detach-and-promote path does not.</figcaption>
     </figure>
 
     <h3>Write forwarding</h3>
@@ -145,8 +180,8 @@ catch: "Promoting a secondary cluster during an unplanned failover detaches it p
         <p>When you initiate a planned switchover, Aurora drains in-flight writes from the primary before promoting the secondary. The replication lag reaches zero before the role switch completes. The old primary becomes a reader. No data is lost, no reconciliation is needed, and the global cluster remains intact.</p>
       </div>
       <div class="card">
-        <h4>RTO under 1 minute for managed failover</h4>
-        <p>For planned switchover, Aurora handles the promotion automatically and the entire operation completes in under 1 minute. For unplanned failover, detaching and promoting the secondary is a single API call that typically completes in 1–2 minutes. Compare this to multi-AZ read replica promotion, which can take 5–10 minutes.</p>
+        <h4>RTO in minutes, not hours</h4>
+        <p>AWS puts Aurora Global Database RTO &ldquo;in the order of minutes&rdquo; and RPO &ldquo;typically measured in seconds&rdquo;. For a managed failover the docs say the chosen secondary typically assumes the primary role <em>within a few minutes</em> &mdash; treat sub-minute promotion as a drill result you have measured yourself, not as a number AWS commits to. Note also that after promotion Aurora rebuilds every other secondary, and that rebuild can take from a few minutes to several hours depending on volume size and Region distance.</p>
       </div>
     </div>
   </div>
@@ -172,9 +207,9 @@ catch: "Promoting a secondary cluster during an unplanned failover detaches it p
         <strong>The failback runbook must exist before the incident</strong>
       </div>
       <div class="challenge-body">
-        <p>After an unplanned failover, the promoted secondary is a standalone cluster. When the original primary region recovers, it comes back as a standalone cluster with diverged data from the outage period. You cannot simply re-attach it. You must: snapshot the recovered primary, create a new Aurora cluster from the snapshot in the secondary role, attach it to the global cluster with the current promoted cluster as primary, then run a planned switchover back.</p>
+        <p>Which runbook you need depends on the path. After a <strong>managed</strong> failover Aurora monitors the old primary Region and adds it back as a secondary once it is healthy, rebuilding its storage volume; it also attempts a snapshot of the old volume at the point of failure, named <code class="inline">rds:unplanned-global-failover-&lt;cluster&gt;-&lt;timestamp&gt;</code>, which is where any unreplicated writes are recoverable from. Failback is then a switchover, run when you choose. After a <strong>manual</strong> failover there is no topology to restore: you add Regions to the new primary to rebuild the global database, then switch over.</p>
         <span class="fix-label">correct approach</span>
-        <p>Document and test the failback procedure as a separate runbook. Include data reconciliation steps for any writes that occurred on the old primary during the outage if the region recovered while still in an inconsistent state.</p>
+        <p>Write the runbook for the path your engine versions leave you on, and check that assumption on a schedule rather than once. Note the snapshot is a system snapshot subject to the old cluster's backup retention period — copy it to a manual snapshot if you need it to outlive that window.</p>
       </div>
     </div>
 
@@ -198,13 +233,14 @@ catch: "Promoting a secondary cluster during an unplanned failover detaches it p
       <div class="challenge-body">
         <p>Some teams try to fully automate failover — CloudWatch alarm triggers Lambda which calls the promotion API and updates Route 53. This creates false-positive failover risk: a brief CloudWatch metrics gap triggers promotion unnecessarily, and now you have a broken global cluster to repair from a non-event.</p>
         <span class="fix-label">correct approach</span>
-        <p>Keep the promotion decision human. Automate the Route 53 record update and notification only. An on-call engineer confirms the regional failure is real before initiating promotion. The promotion itself takes under 2 minutes — the decision confirmation is the only meaningful delay.</p>
+        <p>Keep the promotion decision human. Automate the Route 53 record update and notification only. An on-call engineer confirms the regional failure is real before initiating promotion. Promotion itself is a few minutes &mdash; the decision confirmation is usually the longer half.</p>
       </div>
     </div>
   </div>
 
   <div class="section" id="tradeoffs">
     <h2>Tradeoffs</h2>
+    <div class="table-scroll">
     <table>
       <thead>
         <tr>
@@ -241,6 +277,7 @@ catch: "Promoting a secondary cluster during an unplanned failover detaches it p
         </tr>
       </tbody>
     </table>
+    </div>
   </div>
 
   <div class="section" id="terraform">
@@ -343,10 +380,13 @@ resource "aws_route53_record" "db_write" {
 
   <div class="section" id="reference">
     <h2>Official AWS Reference</h2>
-    <p>
-      <a href="https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database.html" target="_blank" rel="noopener">Amazon Aurora User Guide — Aurora Global Database</a>
-      — covers global cluster creation, adding secondary regions, managed planned failover (switchover), unplanned failover, write forwarding configuration, and monitoring replication lag via the <code class="inline">AuroraGlobalDBReplicationLag</code> CloudWatch metric.
-    </p>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database.html" target="_blank" rel="noopener">Using Amazon Aurora Global Database &#8212; topology, advantages and limitations</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html" target="_blank" rel="noopener">Using switchover or failover in Aurora Global Database &#8212; the managed and manual failover paths, and what each means for failback</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-detaching.html" target="_blank" rel="noopener">Removing a cluster from an Amazon Aurora global database</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-write-forwarding.html" target="_blank" rel="noopener">Using write forwarding in an Amazon Aurora global database</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-monitoring.html" target="_blank" rel="noopener">Monitoring an Amazon Aurora global database &#8212; AuroraGlobalDBRPOLag and AuroraGlobalDBReplicationLag</a></li>
+    </ul>
   </div>
 
 </div>
