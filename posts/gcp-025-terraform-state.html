@@ -1,0 +1,334 @@
+---
+title: "GCP Architecture Series #25 — Terraform on Google Cloud: The Provider and Where State Lives"
+date: '2026-09-07T09:00:00'
+slug: gcp-architecture-terraform-state
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-09-07'
+verified_claims:
+  - claim: "Use the Terraform provider for Google Cloud to provision and manage Google Cloud infrastructure"
+    source: https://docs.cloud.google.com/docs/terraform/terraform-overview
+  - claim: "Use this provider to provision and manage Google Cloud beta APIs"
+    source: https://docs.cloud.google.com/docs/terraform/terraform-overview
+  - claim: "In root modules, declare each provider and pin to a minor version"
+    source: https://docs.cloud.google.com/docs/terraform/best-practices/root-modules
+  - claim: "This allows automatic upgrade to new patch releases while still keeping a solid target"
+    source: https://docs.cloud.google.com/docs/terraform/best-practices/root-modules
+  - claim: "Don't include more than 100 resources (and ideally only a few dozen) in a single state"
+    source: https://docs.cloud.google.com/docs/terraform/best-practices/root-modules
+  - claim: "There are many resources and data providers in Terraform that store secret values in plaintext in the state file"
+    source: https://docs.cloud.google.com/docs/terraform/best-practices/security
+  - claim: "Where possible, avoid storing secrets in state"
+    source: https://docs.cloud.google.com/docs/terraform/best-practices/security
+  - claim: "Make sure that only the build system and highly privileged administrators can access the bucket that is used for remote state"
+    source: https://docs.cloud.google.com/docs/terraform/best-practices/security
+  - claim: "To prevent accidentally committing development state to source control, use gitignore for Terraform state files"
+    source: https://docs.cloud.google.com/docs/terraform/best-practices/security
+  - claim: "Though Google Cloud buckets are encrypted at rest, you can use customer-supplied encryption keys to provide an added layer of protection"
+    source: https://docs.cloud.google.com/docs/terraform/best-practices/security
+  - claim: "versioning is enabled to ensure that earlier versions of the state are preserved in the bucket"
+    source: https://docs.cloud.google.com/docs/terraform/resource-management/store-state
+  - claim: "is set to false to ensure that the bucket is not deleted if there are objects in it"
+    source: https://docs.cloud.google.com/docs/terraform/resource-management/store-state
+  - claim: "is set to enforced to make sure the bucket contents aren't accidentally exposed to the public"
+    source: https://docs.cloud.google.com/docs/terraform/resource-management/store-state
+  - claim: "to allow controlling access to the bucket and its contents using IAM permissions instead of access control lists"
+    source: https://docs.cloud.google.com/docs/terraform/resource-management/store-state
+problem: "Terraform's state file is the most consequential object in a Google Cloud estate and the one least likely to have been designed. It decides what can be changed in one apply, it is the blast radius of a mistake, and Google's own documentation says it holds secret values in plaintext — which makes the bucket it sits in a secrets store that does not look like one."
+builds: "The two providers and which requests each sends, the version pin that survives contact, what Google actually recommends on a state bucket and why each setting is there, the hundred-resource ceiling on a single state, and why the state bucket is the most sensitive bucket in the estate."
+catch: "Google names the resources that write secrets into state in plaintext, and they are ordinary ones — service account keys and TLS private keys among them. So the guidance that only the build system and highly privileged administrators should reach the state bucket is not conservatism. It is the access model for a credential store."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #025 &middot; Foundations</div>
+  <h1 class="post-title">Terraform on Google Cloud: The Provider and Where State Lives</h1>
+  <p class="post-subtitle">Two posts on finding out what exists. This one is about the file that decides what exists &mdash; and which, by Google's own account, holds secrets in plaintext.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Google Cloud &middot; Terraform &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      State is created in the first hour of a project by someone following a quickstart, and every one of these arrives later.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"The state bucket is just infrastructure plumbing"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It is a credential store. Google states that there are many resources and data providers in Terraform that store secret values <em>in plaintext</em> in the state file, and the guidance that follows is unambiguous: make sure that only the build system and highly privileged administrators can access the bucket used for remote state.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Grant access to that bucket on the same basis you would grant access to Secret Manager. A read on the state bucket is a read on whatever secrets the configuration has ever produced.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"One state for the platform, it keeps things simple"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It keeps things simple until the first refresh takes twenty minutes and the first mistake is estate-wide. Google puts a number on it: do not include more than <strong>100 resources</strong> in a single state, and ideally only a few dozen.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat the state boundary as the blast radius it is. Split the configuration into a <code>modules</code> directory holding the actual configuration and an <code>environments</code> directory holding a root configuration per environment.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"We pinned the provider to be safe"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Pinned how tightly is the question. Google's recommendation is specific: in root modules, declare each provider and pin to a <em>minor</em> version, which allows automatic upgrade to new patch releases while still keeping a solid target. Pin to a patch and you own every upgrade by hand; leave it open and a provider release changes your plan without a commit.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Pin the minor, let patches float, and review the pins on a schedule rather than when something breaks.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"We used google-beta for one resource"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Then that resource is managed through Google Cloud's beta APIs, which is what the provider exists for &mdash; Google's description is exactly that: use it to provision and manage Google Cloud beta APIs. The consequence worth knowing is that the API surface underneath a beta resource carries beta's stability guarantees, not GA's.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Use <code>google-beta</code> deliberately and per resource, record why, and revisit when the feature reaches GA. A beta dependency that nobody remembers taking is the one that surprises you.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Use the Terraform provider for Google Cloud to provision and manage Google Cloud infrastructure. Two decisions inside that sentence outlive everything else you write: which provider, and where the state goes.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-025-terraform-state.svg" alt="Diagram: the google and google-beta Terraform providers, the recommended Cloud Storage state bucket settings and Google's reason for each, the hundred-resource ceiling on a single state, and why the state bucket is a credential store" />
+      <figcaption>Two providers, four bucket settings with a reason each, and a file that holds secrets in plaintext.</figcaption>
+    </figure>
+
+    <h3>Two providers, one configuration</h3>
+    <p>
+      Google describes them in a line apiece. The <code>google</code> provider is used to provision and manage Google Cloud APIs; the <code>google-beta</code> provider is used to provision and manage Google Cloud <em>beta</em> APIs. They coexist in one configuration, chosen per resource.
+    </p>
+    <p>
+      The architectural point is that this is a dependency decision rather than a syntax one. Reaching for <code>google-beta</code> is how a preview feature enters a production configuration, and it does so quietly &mdash; one extra line on one resource, no separate approval, and nothing that reports it later. Post #24's advice about feeds applies here too: the thing to write down is the reason, in the place a future reader will look.
+    </p>
+
+    <h3>The state bucket, and why each setting is there</h3>
+    <p>
+      Google's recommended bucket is four decisions, and each has a stated purpose worth reading rather than copying:
+    </p>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Setting</th><th>Google's reason</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>versioning</code> enabled</td>
+          <td>To ensure that earlier versions of the state are preserved in the bucket.</td>
+        </tr>
+        <tr>
+          <td><code>force_destroy = false</code></td>
+          <td>To ensure that the bucket is not deleted if there are objects in it.</td>
+        </tr>
+        <tr>
+          <td><code>public_access_prevention = enforced</code></td>
+          <td>To make sure the bucket contents aren't accidentally exposed to the public.</td>
+        </tr>
+        <tr>
+          <td><code>uniform_bucket_level_access = true</code></td>
+          <td>To allow controlling access to the bucket and its contents using IAM permissions instead of access control lists.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      Versioning is the one that earns its cost. A corrupted or truncated state is recoverable only if a previous version exists, and Google notes the storage cost can be mitigated with Object Lifecycle Management rather than by turning versioning off. <code>force_destroy = false</code> is the same instinct as the liens in post #7 &mdash; a deliberate obstacle in front of the destructive path.
+    </p>
+
+    <div class="callout">
+      <strong>Two of these settings are post #22's day-one policies, meeting their first real bucket</strong>
+      <p><code>public_access_prevention</code> and <code>uniform_bucket_level_access</code> both appeared in the day-one organization policy set, and the state bucket is usually the first bucket an estate creates. Two consequences follow. If those policies are enforced at the organization, the recommended state bucket already complies and nothing surprises you. And post #22's warning applies in full here: uniform bucket-level access cannot be disabled after 90 consecutive days on a bucket, so this is a decision with a clock, taken on the most important bucket you own.</p>
+    </div>
+
+    <h3>The hundred-resource ceiling</h3>
+    <p>
+      Do not include more than 100 resources in a single state, and ideally only a few dozen. That is unusually concrete guidance and it is really a statement about three things at once: how long a plan takes, how much a single mistaken apply can destroy, and how many people have to coordinate before anyone can change anything.
+    </p>
+    <p>
+      The structure Google recommends follows from it &mdash; a <code>modules</code> directory holding the actual configuration for a service, and an <code>environments</code> directory holding the root configuration for each environment. One state per environment per component, rather than one state per estate.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>State Is a Secrets Store</h2>
+
+    <h3>Plaintext, by design, in ordinary resources</h3>
+    <p>
+      This is the part most worth internalising, because nothing in the workflow announces it. Google states that many resources and data providers in Terraform store secret values in plaintext in the state file, and advises avoiding storing secrets in state where possible. The named examples are not exotic: service account keys, TLS private keys, and client configuration among them.
+    </p>
+    <p>
+      So the state file is a record of infrastructure that happens to accumulate credentials as a side effect. Nobody chooses to put a private key in a Cloud Storage bucket; it arrives because a resource that generates one writes its result to state, and state goes where the backend points.
+    </p>
+
+    <div class="callout amber">
+      <strong>The access model follows from that, not from caution</strong>
+      <p>Google's instruction is that only the build system and highly privileged administrators should access the bucket used for remote state. Read alongside the plaintext-secrets statement, that stops being a general hardening tip and becomes the specific access model for a credential store. A developer who can read the state bucket to debug a plan can read every secret the configuration has produced. Grant it the way you would grant Secret Manager access &mdash; and note that post #23's asset export makes bucket IAM queryable, which is how you find out who currently has it.</p>
+    </div>
+
+    <h3>Three defences, in order of how much they help</h3>
+    <ol>
+      <li><strong>Keep secrets out.</strong> Where possible, avoid storing them in state at all &mdash; reference Secret Manager through data sources rather than generating credentials as Terraform resources. This is the only defence that removes the problem rather than containing it.</li>
+      <li><strong>Restrict the bucket.</strong> Build system and highly privileged administrators only, enforced through IAM under uniform bucket-level access.</li>
+      <li><strong>Add encryption beyond the default.</strong> Google Cloud buckets are encrypted at rest, and customer-supplied encryption keys provide an added layer of protection. Useful, and note where it sits in this list &mdash; it protects against a threat model that the first two have usually already addressed.</li>
+    </ol>
+
+    <div class="callout">
+      <strong>The local state file is the leak nobody plans</strong>
+      <p>Remote state gets designed; the copy on a laptop does not. Google's advice is direct: to prevent accidentally committing development state to source control, use gitignore for Terraform state files. It is the smallest item in this post and probably the most frequently violated, because it is a one-line omission in a repository created before anybody thought about state at all.</p>
+    </div>
+
+    <h3>What state is, and what it is not</h3>
+    <p>
+      Posts #23 and #24 were about discovering what exists. State is a different claim: it is what Terraform <em>believes</em> exists, recorded at the last apply. The gap between the two is drift, and it is why the asset export matters even in a fully Terraformed estate &mdash; the state file cannot tell you about a resource created in the console, and it will happily plan a change against a resource that somebody has already altered underneath it.
+    </p>
+    <p>
+      Neither file is authoritative about the other. Asset Inventory knows what is there; state knows what was intended. Reconciling them is the actual job, and it needs both.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Who can read the state bucket</td>
+          <td>Build system and highly privileged admins only</td>
+          <td>Google's own instruction, and state holds secret values in plaintext.</td>
+        </tr>
+        <tr>
+          <td>Secrets in configuration</td>
+          <td>Reference Secret Manager, do not generate them</td>
+          <td>Where possible, avoid storing secrets in state &mdash; the only defence that removes the problem.</td>
+        </tr>
+        <tr>
+          <td>Size of a single state</td>
+          <td>Under 100 resources, ideally a few dozen</td>
+          <td>Google's stated ceiling, and the state boundary is the blast radius.</td>
+        </tr>
+        <tr>
+          <td>Repository layout</td>
+          <td><code>modules</code> and <code>environments</code> directories</td>
+          <td>The recommended split, and it produces one state per environment naturally.</td>
+        </tr>
+        <tr>
+          <td>Provider version</td>
+          <td>Pin the minor version</td>
+          <td>Allows automatic patch upgrades while still keeping a solid target.</td>
+        </tr>
+        <tr>
+          <td>Using <code>google-beta</code></td>
+          <td>Per resource, with the reason recorded</td>
+          <td>It manages Google Cloud beta APIs, so the stability guarantee changes.</td>
+        </tr>
+        <tr>
+          <td>Bucket versioning</td>
+          <td>On, with lifecycle rules for cost</td>
+          <td>Earlier versions of the state are preserved; a corrupted state is otherwise unrecoverable.</td>
+        </tr>
+        <tr>
+          <td>Bucket deletion</td>
+          <td><code>force_destroy = false</code></td>
+          <td>Ensures the bucket is not deleted if there are objects in it.</td>
+        </tr>
+        <tr>
+          <td>Bucket exposure</td>
+          <td><code>public_access_prevention = enforced</code></td>
+          <td>Makes sure the contents aren't accidentally exposed to the public.</td>
+        </tr>
+        <tr>
+          <td>Bucket access control</td>
+          <td><code>uniform_bucket_level_access = true</code></td>
+          <td>IAM instead of ACLs &mdash; and irreversible after 90 days, so decide once.</td>
+        </tr>
+        <tr>
+          <td>Local state files</td>
+          <td>gitignore them on day one</td>
+          <td>Prevents accidentally committing development state to source control.</td>
+        </tr>
+        <tr>
+          <td>Extra encryption</td>
+          <td>Customer-supplied keys, after the first two defences</td>
+          <td>Buckets are already encrypted at rest; this is an added layer, not the primary control.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Almost every decision in this post is made in the first hour of a project, by whoever is setting up the repository, usually from a quickstart. Where the bucket lives, how many resources go in one state, which provider gets used, whether anything is gitignored. None of them feel like architecture at the time, and all of them are.
+    </p>
+    <p>
+      The one that deserves a second look is the smallest. The state file is treated everywhere as plumbing &mdash; a build artefact, an implementation detail of a tool. Google's documentation says plainly that it stores secret values in plaintext and that only the build system and the most privileged administrators should be able to read it. Those two sentences describe a credential store, and the bucket holding it is almost always created before anyone in the organisation has written a policy about credential stores. It is worth going back and checking who can read yours.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#26 hands the whole problem to Google: Infrastructure Manager, the managed Terraform service &mdash; what it takes over, what it does not, and which of this post's decisions it makes for you.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/docs/terraform/terraform-overview" target="_blank" rel="noopener">Overview of Terraform on Google Cloud</a></li>
+      <li><a href="https://docs.cloud.google.com/docs/terraform/resource-management/store-state" target="_blank" rel="noopener">Store Terraform state in a Cloud Storage bucket</a></li>
+      <li><a href="https://docs.cloud.google.com/docs/terraform/best-practices/security" target="_blank" rel="noopener">Best practices for security</a></li>
+      <li><a href="https://docs.cloud.google.com/docs/terraform/best-practices/root-modules" target="_blank" rel="noopener">Best practices for root modules</a></li>
+      <li><a href="https://docs.cloud.google.com/docs/terraform/best-practices/general-style-structure" target="_blank" rel="noopener">Best practices for general style and structure</a></li>
+      <li><a href="https://docs.cloud.google.com/docs/terraform/iac-overview" target="_blank" rel="noopener">Infrastructure as Code on Google Cloud</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
