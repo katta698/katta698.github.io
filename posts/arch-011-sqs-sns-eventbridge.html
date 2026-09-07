@@ -3,6 +3,36 @@ title: "AWS Architecture Series #11 — SQS vs SNS vs EventBridge: The Decision 
 date: 2026-08-04
 slug: aws-architecture-sqs-sns-eventbridge
 labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-06'
+verified_claims:
+  - claim: "Each partition in a FIFO queue supports up to 3,000 messages per second with batching, or up to 300 messages per second for send, receive and delete operations"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/high-throughput-fifo.html
+  - claim: "The 3,000 messages per second figure represents 300 API calls each carrying a batch of 10 messages"
+    derive: "300 * 10"
+    expect: "3000"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/quotas-messages.html
+  - claim: "Amazon SQS uses the value of each message's message group ID as input to an internal hash function whose output determines which partition stores the message"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/high-throughput-fifo.html
+  - claim: "AWS recommends using message group IDs that can have a large number of distinct values, because distributing across multiple groups is what allows parallelism"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/high-throughput-fifo.html
+  - claim: "High throughput mode for FIFO raises regional transaction limits to up to 70,000 TPS in US East (N. Virginia), US West (Oregon) and Europe (Ireland), and 2,400 TPS in all other Regions"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/quotas-messages.html
+  - claim: "MessageGroupId is required for FIFO queues, and sending a message to a FIFO queue without one fails"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/quotas-messages.html
+  - claim: "By default an SQS message is retained for 4 days, the minimum is 60 seconds and the maximum is 1,209,600 seconds, which is 14 days"
+    derive: "1209600 / 86400"
+    expect: "14"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/quotas-messages.html
+  - claim: "Standard queues support a very high, nearly unlimited number of API calls per second per action"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/quotas-messages.html
+  - claim: "A single SQS message batch request can include a maximum of 10 messages"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/quotas-messages.html
+  - claim: "The default SQS visibility timeout is 30 seconds, with a maximum of 12 hours"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/quotas-messages.html
+  - claim: "The PutEvents throttle limit is 10,000 requests per second in us-east-1 and eu-west-1, and 400 per second in most other supported Regions"
+    source: https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-quota.html
+  - claim: "The maximum number of targets that can be associated with an EventBridge rule is 5, and that quota is not adjustable"
+    source: https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-quota.html
 problem: "A retail platform routes every internal message through one EventBridge bus. Peak traffic throttles PutEvents, a rule hits the five-target ceiling, and a slow consumer loses events because a router was asked to behave like a queue."
 builds: "A decision rule based on what the consumer needs — SQS where one worker owns the work, SNS where everyone must hear it, EventBridge where routing depends on the event body — and the composition that puts a queue in front of every consumer that can fall behind."
 catch: "EventBridge quotas are regional and vary by 25x: PutEvents allows 10,000/s in us-east-1 and eu-west-1 but 400/s in smaller Regions. Targets per rule is capped at 5 and cannot be raised. SQS FIFO parallelism is bounded by the number of distinct message group IDs."
@@ -128,7 +158,7 @@ catch: "EventBridge quotas are regional and vary by 25x: PutEvents allows 10,000
     </p>
   </div>
 
-  <div class="section" id="why-it-matters">
+  <div class="section" id="why">
     <h2>Why This Architecture Holds Up</h2>
 
     <h3>The question is about the consumer, not the message</h3>
@@ -139,6 +169,7 @@ catch: "EventBridge quotas are regional and vary by 25x: PutEvents allows 10,000
     </p>
 
     <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+    <div class="table-scroll">
     <table>
       <tr>
         <th>If the answer is yes</th>
@@ -161,6 +192,7 @@ catch: "EventBridge quotas are regional and vary by 25x: PutEvents allows 10,000
         <td>Content-based routing, cross-account buses, AWS-native sources, replay</td>
       </tr>
     </table>
+    </div>
     </div>
 
     <p>
@@ -189,6 +221,13 @@ catch: "EventBridge quotas are regional and vary by 25x: PutEvents allows 10,000
       ordering" and the entire queue collapses onto one partition and a 300/s ceiling. AWS's own
       guidance is to choose group IDs with a large number of distinct values.
     </p>
+    <p>
+      High throughput mode for FIFO raises the ceiling, but not the one that bites here. It lifts the
+      <em>regional</em> transaction limit &mdash; up to 70,000 TPS unbatched in us-east-1, us-west-2 and
+      eu-west-1, down to 2,400 in most other Regions &mdash; while the per-partition figures stay at
+      3,000 batched and 300 unbatched. So it buys you nothing if every message carries the same group
+      ID. The fix for a single-group design is more groups, not a mode change.
+    </p>
 
     <div class="callout amber">
       <strong>Ask what actually needs ordering</strong>
@@ -204,10 +243,11 @@ catch: "EventBridge quotas are regional and vary by 25x: PutEvents allows 10,000
     </p>
   </div>
 
-  <div class="section" id="key-decisions">
+  <div class="section" id="decisions">
     <h2>Key Architecture Decisions</h2>
 
     <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+    <div class="table-scroll">
     <table>
       <tr>
         <th>Decision</th>
@@ -245,6 +285,7 @@ catch: "EventBridge quotas are regional and vary by 25x: PutEvents allows 10,000
         <td>EventBridge PutEvents ranges from 10,000/s to 400/s depending on Region. The diagram does not change; the headroom does.</td>
       </tr>
     </table>
+    </div>
     </div>
 
     <h3>What each one is bad at</h3>
@@ -302,6 +343,10 @@ catch: "EventBridge quotas are regional and vary by 25x: PutEvents allows 10,000
   <div class="section" id="reference">
     <h2>Official AWS Reference</h2>
     <ul>
-      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html" target="_blank" rel="noopener">What is Amazon Simple Queue Service?</a> &mdash; includes AWS's own comparison of SQS, SNS and Amazon MQ, the message lifecycle, retention limits, and the FIFO throughput and partitioning rules referenced above.</li>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html" target="_blank" rel="noopener">What is Amazon Simple Queue Service &#8212; AWS's comparison of SQS, SNS and Amazon MQ</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/quotas-messages.html" target="_blank" rel="noopener">Amazon SQS message quotas &#8212; retention, batching and FIFO throughput by Region</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/high-throughput-fifo.html" target="_blank" rel="noopener">High throughput for FIFO queues &#8212; partitions, message group IDs and per-partition limits</a></li>
+      <li><a href="https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-quota.html" target="_blank" rel="noopener">Amazon EventBridge quotas &#8212; PutEvents by Region and targets per rule</a></li>
+      <li><a href="https://docs.aws.amazon.com/sns/latest/dg/welcome.html" target="_blank" rel="noopener">What is Amazon SNS</a></li>
     </ul>
   </div>
