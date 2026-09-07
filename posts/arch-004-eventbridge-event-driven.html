@@ -3,8 +3,36 @@ title: "AWS Architecture Series #4 — EventBridge: The Enterprise Event Bus Ent
 date: 2026-07-28
 slug: aws-architecture-eventbridge-event-driven
 labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-06'
+verified_claims:
+  - claim: "A PutEvents request can batch up to 10 event entries, and the total request size must be less than 1 MB, which is 1,048,576 bytes"
+    source: https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-putevents.html
+  - claim: "The 1 MB limit applies to the request as a whole rather than to individual entries, so a single event can use the full 1 MB when it is the only entry"
+    source: https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-putevents.html
+  - claim: "If an entry is larger than 1 MB, AWS recommends uploading the event to an Amazon S3 bucket and including the object URL in the PutEvents entry"
+    source: https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-putevents.html
+  - claim: "A target retry policy can continue retry attempts for a maximum MaximumEventAgeInSeconds of 86,400 seconds, which is 24 hours"
+    derive: "86400 / 3600"
+    expect: "24"
+    source: https://docs.aws.amazon.com/eventbridge/latest/APIReference/API_RetryPolicy.html
+  - claim: "MaximumRetryAttempts accepts a maximum value of 185, and retry attempts continue until either that count is reached or the MaximumEventAgeInSeconds duration is met"
+    source: https://docs.aws.amazon.com/eventbridge/latest/APIReference/API_RetryPolicy.html
+  - claim: "The PutEvents throttle limit is 10,000 requests per second in us-east-1, and as low as 400 per second in other supported Regions"
+    source: https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-quota.html
+  - claim: "A rule can have a maximum of 5 targets, and that quota is not adjustable"
+    source: https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-quota.html
+  - claim: "An account can have a maximum of 300 rules per event bus in most Regions, and a maximum event pattern size of 2,048 characters"
+    source: https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-quota.html
+  - claim: "EventBridge dead-letter queues must be standard Amazon SQS queues, since a FIFO queue cannot be used as a DLQ in EventBridge"
+    source: https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-rule-dlq.html
+  - claim: "Some errors are sent straight to the dead-letter queue with no retry attempts at all, including missing permissions to a target and a target resource that no longer exists"
+    source: https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-rule-dlq.html
+  - claim: "Each dead-letter queue message carries the rule ARN, target ARN, error code, retry attempts and the exhausted retry condition, which is either MaximumRetryAttempts or MaximumEventAgeInSeconds"
+    source: https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-rule-dlq.html
+  - claim: "If you publish to an event bus that does not exist, EventBridge drops the event and still returns a 200 without counting it in FailedEntryCount"
+    source: https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-putevents.html
 problem: "Engineering teams bolt on EventBridge as a notification layer rather than a decoupling layer — services still call each other synchronously, then fire an event as an afterthought. The tight coupling remains; they have only added a second communication channel to debug."
-builds: "arch-003-eventbridge event-driven architecture: custom event bus, rules, schema registry, archive/replay, DLQ, and cross-account routing — the complete pattern that actually removes coupling instead of masking it."
+builds: "An event-driven architecture that actually decouples: a custom event bus, rules, schema registry, archive/replay, DLQ, and cross-account routing — the complete pattern that actually removes coupling instead of masking it."
 catch: "The order in which you introduce EventBridge matters more than whether you introduce it. Putting PutEvents after your synchronous calls leaves the blast radius intact. Putting it instead of them is the architecture."
 ---
 <div id="jk-post">
@@ -121,7 +149,7 @@ catch: "The order in which you introduce EventBridge matters more than whether y
     </p>
 
     <figure class="screenshot">
-      <img src="/blog/assets/diagrams/arch-004-before-after.svg" alt="Diagram showing the before state (Order Service making four synchronous HTTP calls to Inventory, Notifications, Analytics, and Fulfilment) versus the after state (Order Service publishing one event to EventBridge which routes to four independent targets via rules)" />
+      <img src="/blog/assets/diagrams/arch-004-before-after.svg" alt="Diagram: the before state (Order Service making four synchronous HTTP calls to Inventory, Notifications, Analytics, and Fulfilment) versus the after state (Order Service publishing one event to EventBridge which routes to four independent targets via rules)" />
       <figcaption>Before/after: synchronous fan-out versus EventBridge fan-out. The topology looks similar, but the dependency direction reverses. In the before state, Order Service depends on all four consumers. In the after state, the four consumers depend on EventBridge — Order Service depends on nothing downstream.</figcaption>
     </figure>
 
@@ -130,11 +158,11 @@ catch: "The order in which you introduce EventBridge matters more than whether y
       EventBridge has a default event bus that receives events from AWS services (EC2 state changes, S3 object operations, CloudTrail API calls, and more than 200 other sources). For application events, create a <strong>custom event bus</strong>. Custom buses are isolated from the default bus, support resource-based policies for cross-account access, and have cleaner rule namespacing. One bus per domain boundary — Orders, Auth, Inventory — is a reasonable starting point.
     </p>
     <p>
-      Every event has a fixed envelope: <code class="inline">source</code> (who produced it), <code class="inline">detail-type</code> (what happened), and <code class="inline">detail</code> (the payload, up to 256 KB as JSON). Rules match on <code class="inline">source</code>, <code class="inline">detail-type</code>, and fields inside <code class="inline">detail</code>. The schema of the <code class="inline">detail</code> object is yours to define — EventBridge does not validate it unless you enable schema discovery.
+      Every event has a fixed envelope: <code class="inline">source</code> (who produced it), <code class="inline">detail-type</code> (what happened), and <code class="inline">detail</code> (the payload). A PutEvents request batches up to 10 entries and the whole request must stay under 1 MB. Rules match on <code class="inline">source</code>, <code class="inline">detail-type</code>, and fields inside <code class="inline">detail</code>. The schema of the <code class="inline">detail</code> object is yours to define — EventBridge does not validate it unless you enable schema discovery.
     </p>
 
     <figure class="screenshot">
-      <img src="/blog/assets/diagrams/arch-004-components.svg" alt="Diagram showing the full EventBridge component architecture: producers (Order Service, Auth Service, AWS Services) sending events to a custom event bus, which routes through rules to targets (SQS, Lambda, Kinesis, Step Functions), with Schema Registry above the bus and Event Archive below, and DLQ on each target" />
+      <img src="/blog/assets/diagrams/arch-004-components.svg" alt="Diagram: the full EventBridge component architecture, producers (Order Service, Auth Service, AWS Services) sending events to a custom event bus, which routes through rules to targets (SQS, Lambda, Kinesis, Step Functions), with Schema Registry above the bus and Event Archive below, and DLQ on each target" />
       <figcaption>Full component architecture. The custom event bus is the centre. Schema Registry validates and documents what flows through it. Event Archive persists everything for replay. Rules route to targets — each target has its own DLQ so a consumer failure does not affect other consumers.</figcaption>
     </figure>
 
@@ -213,7 +241,7 @@ catch: "The order in which you introduce EventBridge matters more than whether y
       <div class="challenge-body">
         <p>An event notification tells consumers something happened: <code class="inline">{"source": "orders", "detail-type": "order.placed", "detail": {"orderId": "abc123"}}</code>. A consumer that needs the order contents must call the Orders API to fetch them — now there is a synchronous dependency through the back door. Event-carried state transfer includes the data consumers need: <code class="inline">{"orderId": "abc123", "customerId": "...", "items": [...], "total": 142.50}</code>. Consumers are truly independent.</p>
         <span class="fix-label">Decision signal</span>
-        <p>If more than one consumer would need to call the producer's API after receiving the event, add that data to the event payload. The 256 KB limit is generous for most transactional events. For large payloads (document content, images, large arrays), put the object in S3 and include the S3 key in the event — consumers fetch the object directly rather than through the producer.</p>
+        <p>If more than one consumer would need to call the producer's API after receiving the event, add that data to the event payload. The 1 MB request limit is generous for most transactional events. For large payloads (document content, images, large arrays), put the object in S3 and include the S3 key in the event — consumers fetch the object directly rather than through the producer.</p>
       </div>
     </div>
 
@@ -244,6 +272,7 @@ catch: "The order in which you introduce EventBridge matters more than whether y
 
   <div class="section" id="tradeoffs">
     <h2>Tradeoffs and Alternatives</h2>
+    <div class="table-scroll">
     <table>
       <thead>
         <tr>
@@ -255,8 +284,8 @@ catch: "The order in which you introduce EventBridge matters more than whether y
       <tbody>
         <tr>
           <td><strong>EventBridge custom bus</strong></td>
-          <td>Fan-out to 2–5 consumers; mixed target types (Lambda, SQS, Step Functions); cross-account event routing; low-to-medium throughput (up to ~10,000 events/sec per bus)</td>
-          <td>Throughput exceeds 10,000 events/sec sustained (use Kinesis); strict event ordering required; consumer needs to process a stream of related events with stateful aggregation</td>
+          <td>Fan-out to 2–5 consumers; mixed target types (Lambda, SQS, Step Functions); cross-account event routing; low-to-medium throughput (PutEvents is capped at 10,000 requests per second per account per Region in us-east-1, and lower elsewhere)</td>
+          <td>Sustained throughput exceeds the regional PutEvents quota (use Kinesis); strict event ordering required; consumer needs to process a stream of related events with stateful aggregation</td>
         </tr>
         <tr>
           <td><strong>SNS + SQS fan-out</strong></td>
@@ -275,6 +304,7 @@ catch: "The order in which you introduce EventBridge matters more than whether y
         </tr>
       </tbody>
     </table>
+    </div>
   </div>
 
   <div class="section" id="snippet">
@@ -345,12 +375,13 @@ resource "aws_cloudwatch_event_target" "inventory_sqs" {
 
   <div class="section" id="reference">
     <h2>Official AWS Reference</h2>
-    <p>
-      <a href="https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-what-is.html" target="_blank" rel="noopener">
-        AWS Documentation — Amazon EventBridge User Guide
-      </a>
-      — covers event buses, rules, targets, event patterns, schema registry, archive and replay, and cross-account event routing. The event pattern syntax reference is particularly useful when building precise rule filters.
-    </p>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-what-is.html" target="_blank" rel="noopener">Amazon EventBridge User Guide &#8212; buses, rules, targets, patterns, schema registry, archive and replay</a></li>
+      <li><a href="https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-putevents.html" target="_blank" rel="noopener">Sending events with PutEvents &#8212; including how entry size is calculated against the 1 MB limit</a></li>
+      <li><a href="https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-quota.html" target="_blank" rel="noopener">Amazon EventBridge quotas</a></li>
+      <li><a href="https://docs.aws.amazon.com/eventbridge/latest/APIReference/API_RetryPolicy.html" target="_blank" rel="noopener">RetryPolicy &#8212; MaximumEventAgeInSeconds and MaximumRetryAttempts</a></li>
+      <li><a href="https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-rule-dlq.html" target="_blank" rel="noopener">Using dead-letter queues to process undelivered events</a></li>
+    </ul>
   </div>
 
 </div>
