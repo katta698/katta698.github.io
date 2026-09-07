@@ -1,0 +1,407 @@
+---
+title: "AWS Architecture Series #45 — The allowlist that asks the client where it is going"
+date: '2026-09-07T09:00:00'
+slug: aws-architecture-egress-domain-filtering
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-07'
+verified_claims:
+  - claim: "For HTTPS traffic Network Firewall uses the Server Name Indication extension in the TLS handshake to determine the hostname, and for HTTP traffic it uses the HTTP host header"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/stateful-rule-groups-domain-names.html
+  - claim: "Network Firewall doesn't pause connections to do out-of-band DNS lookups, and uses the SNI or host header rather than the IP addresses when evaluating domain list rule groups"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/stateful-rule-groups-domain-names.html
+  - claim: "AWS advises writing separate IP address rules to mitigate situations where the SNI or host headers have been manipulated, used in conjunction with or in place of domain list rules"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/stateful-rule-groups-domain-names.html
+  - claim: "By default domain list inspection uses a HOME_NET set to the CIDR range of the VPC where Network Firewall is deployed, and only traffic from that range is passed through the domain list filtering"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/stateful-rule-groups-domain-names.html
+  - claim: "To filter traffic from outside the deployment VPC you must manually set the HOME_NET variable for the rule group, and the most common use case is a central firewall VPC with traffic arriving from other VPCs through a transit gateway"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/stateful-rule-groups-domain-names.html
+  - claim: "A firewall policy's EXTERNAL_NET setting is always the negation of the policy's HOME_NET setting, and a rule group that does not explicitly set EXTERNAL_NET inherits it from the policy regardless of the rule group's own HOME_NET"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/suricata-limitations-caveats.html
+  - claim: "For the Allow action, traffic of the specified protocol type that does not match the domain specifications is denied"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/stateful-rule-groups-domain-names.html
+  - claim: "AWS recommends avoiding the combination of Reject or Alert domain list rule groups with Allow domain list rule groups under default action ordering, because the default drop rule added by the Allow rule group takes effect first"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/stateful-rule-groups-domain-names.html
+  - claim: "A domain name that begins with a dot acts as a wildcard, so .example.com matches example.com and all of its subdomains"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/stateful-rule-groups-domain-names.html
+  - claim: "TLS inspection configurations decrypt the firewall's inbound and outbound SSL/TLS traffic, inspect it against the policy's stateful rules, and re-encrypt it before sending it to its destination"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-configurations.html
+  - claim: "To use TLS inspection you must import or provision certificates to AWS Certificate Manager, create a TLS inspection configuration, add it to a firewall policy, and associate that policy with your firewall"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-configurations.html
+  - claim: "Network Firewall drops TLS traffic if the client hello message in the TLS handshake doesn't include a server name, or if the server name presented in the client hello doesn't match the SNI presented in the downstream server certificate"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-considerations.html
+  - claim: "Traffic encrypted using TLS v1.3 Encrypted SNI and Encrypted Client Hello extensions is not supported, and when Network Firewall can't find an SNI in the client hello it closes the connection with an RST packet"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-considerations.html
+  - claim: "TLS inspection of UDP-based transport protocols such as QUIC is not supported, and decryption of TLS protocols that rely upon StartTLS is not supported"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-considerations.html
+  - claim: "Network Firewall drops non-TLS traffic that matches the conditions of the TLS inspection configuration scope, such as plain HTTP on port 80 when port 80 is in scope"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-considerations.html
+  - claim: "When you add a TLS inspection configuration to an existing firewall and there is ongoing TLS traffic matching the scope criteria, the firewall drops that traffic"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-considerations.html
+  - claim: "TLS versions 1.1, 1.2 and 1.3 are supported for TLS inspection, and TLS version 1.0 and prior SSL versions are not"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-considerations.html
+  - claim: "Network Firewall terminates the client's TLS connection before the stateful engine sees the traffic, so decrypted traffic matches no TLS-based keywords except TLS.SNI"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-considerations.html
+  - claim: "WebSockets inspection over HTTP2 is not supported and Network Firewall drops that traffic, while WebSockets over HTTP1.1 is supported"
+    source: https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-considerations.html
+  - claim: "AWS Network Firewall costs $0.395 per hour for each provisioned firewall endpoint and $0.065 for each GB the firewall processes"
+    source: https://aws.amazon.com/network-firewall/pricing/
+  - claim: "Three firewall endpoints, one per Availability Zone, cost $865.05 a month in endpoint charges alone at $0.395 per endpoint-hour, before any data processing"
+    derive: "3 * 0.395 * 730"
+    expect: "865.05"
+    source: https://aws.amazon.com/network-firewall/pricing/
+problem: "A platform team fronts all outbound traffic with AWS Network Firewall in a central inspection VPC and allowlists the domains the workloads are permitted to reach. The rule group is correct, the policy is attached, and the control passes review. It is inspecting nothing, because domain filtering only looks at traffic from HOME_NET and HOME_NET defaults to the inspection VPC's own CIDR."
+builds: "An egress design that is honest about what it enforces: domain rules with HOME_NET set to the spoke ranges that actually send traffic, IP rules alongside them because the domain is an assertion by the client, and TLS inspection scoped deliberately rather than switched on, with the traffic it drops understood in advance."
+catch: "Domain filtering matches the name the client puts in the SNI or Host header. AWS states plainly that it does no out-of-band DNS lookup and does not check the IP, and advises separate IP rules to mitigate a manipulated header. The allowlist is a check on what the client claims about its destination, not on the destination."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #045 &middot; Networking &amp; Security</div>
+  <h1 class="post-title">The allowlist that asks the client where it is going</h1>
+  <p class="post-subtitle">Egress domain filtering matches a name the client supplies, not the destination it reaches &mdash; and in the topology most enterprises deploy, it inspects nothing at all until you change one variable.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Networking &middot; Security</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The previous post in this series ended on a control that faces outward: an endpoint policy limits
+      which resources can be reached <em>from</em> a network. This one is about the other direction, and
+      about a control that is much easier to deploy than it is to deploy correctly.
+    </p>
+    <p>
+      A platform team runs the hub-and-spoke topology: workload VPCs with no internet gateway, a central
+      networking account, and all internet-bound traffic routed across a transit gateway into an
+      inspection VPC where AWS Network Firewall sits in front of the NAT gateways. Security asks for
+      egress control &mdash; not &ldquo;can it reach the internet&rdquo; but &ldquo;<em>what</em> can it
+      reach.&rdquo; The team builds a domain list rule group with an <code class="inline">Allow</code>
+      action and about forty entries: the package registries, the vendor APIs, the telemetry endpoints.
+      Everything else is denied by construction, because for an allow list Network Firewall denies
+      traffic of that protocol that does not match.
+    </p>
+    <p>
+      The rule group is well written. The policy is attached. The change passes review and the control
+      is recorded as implemented. Three things are wrong with it, and only one of them is a
+      configuration error.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>It is inspecting nothing</strong></div>
+      <div class="challenge-body">
+        <p>
+          Domain list inspection is scoped by the <code class="inline">HOME_NET</code> variable, and
+          <strong>the default value of <code class="inline">HOME_NET</code> is the CIDR range of the VPC
+          where Network Firewall is deployed</strong>. Only traffic from that range is passed through
+          domain list filtering. In a central inspection VPC the traffic does not originate there
+          &mdash; it originates in the spokes and arrives over the transit gateway. AWS names this
+          exact topology as the most common case requiring a manual setting.
+        </p>
+        <p>
+          Nothing fails. No rule errors, no alarm, no metric that reads zero in an obvious way. The
+          firewall is passing traffic it was never asked to look at.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Set <code class="inline">HOME_NET</code> on the rule group to every spoke CIDR you intend to inspect, plus the inspection VPC's own range.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The allowlist trusts the client</strong></div>
+      <div class="challenge-body">
+        <p>
+          For HTTPS, Network Firewall reads the Server Name Indication field from the TLS handshake.
+          For HTTP, it reads the Host header. Both are values the client writes. AWS is explicit that
+          the service <em>&ldquo;doesn't pause connections to do out-of-band DNS lookups&rdquo;</em> and
+          that it uses <em>&ldquo;the SNI or host header, not the IP addresses&rdquo;</em> when
+          evaluating domain rules.
+        </p>
+        <p>
+          So a process that opens a socket to an arbitrary address and writes
+          <code class="inline">registry.npmjs.org</code> into the SNI is allowed through, and one that
+          reaches an approved domain while presenting no name at all is evaluated on the name it did
+          not give. The allowlist constrains a declaration, not a destination.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>AWS's own remedy: write separate IP address rules and use them <em>in conjunction with</em> the domain rules. Two assertions are harder to align than one.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The field it depends on is optional and disappearing</strong></div>
+      <div class="challenge-body">
+        <p>
+          SNI is readable because it is sent in the clear. TLS 1.3's Encrypted Client Hello removes
+          that, and Network Firewall does not support it: when it cannot find an SNI in the client
+          hello it closes the connection with an <code class="inline">RST</code>.
+        </p>
+        <p>
+          That is a safe failure, and it is worth being clear-eyed about what it means. The control
+          does not degrade to &ldquo;allow&rdquo;; it degrades to &ldquo;break.&rdquo; Every client
+          that adopts ECH stops working rather than stops being filtered, and the first symptom is a
+          connectivity incident rather than a security one.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Know which of your egress destinations are moving to ECH before they do, and decide deliberately whether those flows are scoped out or blocked.</p>
+      </div>
+    </div>
+
+    <div class="callout amber">
+      <strong>The pattern across all three</strong>
+      <p>Each one is the same shape as the VPC endpoint mistake in #44: a control that is real, correctly configured in its own terms, and answering a narrower question than the review believed it was answering. &ldquo;We allowlist egress by domain&rdquo; is true. &ldquo;Our workloads can only reach approved destinations&rdquo; does not follow from it.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Egress control is three separable decisions: where the inspection sits, what it matches on, and
+      whether you are willing to decrypt. They are usually taken as one, which is why the result is
+      usually a domain allowlist with an unexamined trust model.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-045-egress-domain-filtering.svg" alt="Diagram: what a domain allowlist actually inspects. On the left, the field Network Firewall reads for each protocol: the TLS SNI for HTTPS and the HTTP Host header for HTTP, both written by the client, with no DNS lookup and no IP check. In the middle, the HOME_NET scope, which defaults to the inspection VPC CIDR so traffic arriving from spoke VPCs over a transit gateway is not inspected until HOME_NET is set manually. On the right, the escalation to TLS inspection and the traffic it drops: no server name in the client hello, Encrypted Client Hello, QUIC, StartTLS, WebSockets over HTTP/2, and non-TLS traffic inside the configured scope." />
+      <figcaption>What a domain allowlist inspects, what scopes it, and what the decrypting alternative refuses to carry. The three columns are the three decisions, and the middle one is the one that silently defaults to inspecting nothing in a hub-and-spoke deployment.</figcaption>
+    </figure>
+
+    <h3>What the rule group actually says</h3>
+    <p>
+      A domain list rule group carries a target list, the protocols to inspect, and a generated rules
+      type. The wildcard form matters: a leading dot matches the domain and every subdomain, so
+      <code class="inline">.example.com</code> covers <code class="inline">example.com</code> and
+      <code class="inline">abc.example.com</code> alike, while an explicit name matches only itself.
+    </p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">rule-group.json</span>
+        <div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+      </div>
+<pre>{
+  "RuleVariables": {
+    "IPSets": {
+      "HOME_NET": {
+        "Definition": [
+          "10.0.0.0/16",
+          "10.1.0.0/16",
+          "192.0.2.0/24"
+        ]
+      }
+    }
+  },
+  "RulesSource": {
+    "RulesSourceList": {
+      "Targets": [
+        ".example.com",
+        "www.example.org"
+      ],
+      "TargetTypes": [ "HTTP_HOST", "TLS_SNI" ],
+      "GeneratedRulesType": "ALLOWLIST"
+    }
+  }
+}</pre>
+    </div>
+
+    <p>
+      The <code class="inline">HOME_NET</code> block is the part that is absent from most first drafts,
+      and its absence is invisible. The two <code class="inline">10.x</code> ranges are the spoke VPCs
+      whose traffic arrives over the transit gateway; <code class="inline">192.0.2.0/24</code> is the
+      inspection VPC itself, which must stay in the list because setting the variable replaces the
+      default rather than adding to it.
+    </p>
+    <p>
+      There is a second-order trap in the same mechanism.
+      <code class="inline">EXTERNAL_NET</code> is always the negation of the <em>policy's</em>
+      <code class="inline">HOME_NET</code>, and a rule group that sets its own
+      <code class="inline">HOME_NET</code> without also setting
+      <code class="inline">EXTERNAL_NET</code> inherits the policy's negation regardless. Set one and
+      you can end up with a rule group whose idea of &ldquo;inside&rdquo; and &ldquo;outside&rdquo; do
+      not describe the same boundary.
+    </p>
+
+    <h3>Where the inspection sits</h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-icon">1</div>
+        <div class="flow-content">
+          <h4>Spoke VPC, no internet gateway</h4>
+          <p>Default route points at the transit gateway. The workload cannot reach the internet except through the hub, which is what makes a single inspection point possible at all.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">2</div>
+        <div class="flow-content">
+          <h4>Inspection VPC, firewall endpoint per AZ</h4>
+          <p>One endpoint in each Availability Zone, at $0.395 per endpoint-hour. Three AZs is roughly $865 a month before a byte is processed, and processing adds $0.065 per GB.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">3</div>
+        <div class="flow-content">
+          <h4>Domain rules, scoped by HOME_NET</h4>
+          <p>The stateful engine reads the SNI or Host header of flows sourced from HOME_NET. Everything else passes the firewall without being evaluated against the domain list.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">4</div>
+        <div class="flow-content">
+          <h4>NAT gateway, then the internet</h4>
+          <p>A fixed, auditable set of Elastic IPs. The firewall sits before this, so it sees the workload's source address rather than the translated one.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>A weak check in the right place still narrows the blast radius</h3>
+    <p>
+      Nothing above is an argument against domain filtering. An allowlist that can be defeated by a
+      process deliberately writing a false SNI still stops the overwhelming majority of what egress
+      control is for: a dependency that starts calling an analytics endpoint after an update, a
+      container image that phones home, a misconfigured backup job writing to the wrong bucket over
+      the public endpoint. None of those lie about their destination, because none of them are trying
+      to.
+    </p>
+    <p>
+      The failure mode to avoid is not deploying it. The failure mode to avoid is recording it as a
+      control against a deliberate adversary when it is a control against accident and drift.
+    </p>
+
+    <h3>The allow action is stricter than it looks</h3>
+    <p>
+      For an allow list, traffic of the specified protocol that does not match any entry is denied.
+      That is the behaviour you want, and it has a sharp edge: AWS recommends against combining
+      <code class="inline">Reject</code> or <code class="inline">Alert</code> domain rule groups with
+      <code class="inline">Allow</code> ones under default action ordering, because the default drop
+      that the allow group adds takes effect before the reject and alert rules do. A rule group added
+      to improve visibility can silently stop being reached.
+    </p>
+
+    <div class="callout green">
+      <strong>Pair the domain rules with IP rules, as AWS says to</strong>
+      <p>The documentation does not present IP rules as an optimisation. It presents them as the mitigation for a manipulated SNI or Host header, to be used in conjunction with or in place of the domain rules. If your design has domain rules alone, it is missing the half that AWS names as the answer to the weakness in the other half.</p>
+    </div>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Inspection point</td>
+        <td>Central inspection VPC in the networking account</td>
+        <td>One place to reason about, one set of rules to maintain. The cost is that <code class="inline">HOME_NET</code> must be maintained alongside the spoke inventory.</td>
+      </tr>
+      <tr>
+        <td>HOME_NET</td>
+        <td>Explicit list of spoke CIDRs plus the inspection VPC</td>
+        <td>The default silently limits inspection to the inspection VPC's own range. Setting it replaces the default rather than extending it.</td>
+      </tr>
+      <tr>
+        <td>Match basis</td>
+        <td>Domain rules and IP rules together</td>
+        <td>Domain rules read a client-supplied field. IP rules read the destination the packet is actually going to. Neither alone is the control the review thinks it is.</td>
+      </tr>
+      <tr>
+        <td>Rule group mix</td>
+        <td>Do not mix Alert or Reject groups with Allow groups</td>
+        <td>Under default action ordering the Allow group's implicit drop wins first, so the other groups stop being evaluated.</td>
+      </tr>
+      <tr>
+        <td>Decryption</td>
+        <td>TLS inspection scoped narrowly, not enabled globally</td>
+        <td>It is the only way to see past the handshake, and it drops a specific and non-obvious list of traffic. Scope it to the flows that justify it.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>What TLS inspection buys, and what it refuses to carry</h3>
+    <p>
+      If domain filtering is not enough, the escalation is a TLS inspection configuration: Network
+      Firewall terminates the client's connection, decrypts, inspects against the stateful rules,
+      and re-encrypts before forwarding. It needs certificates in AWS Certificate Manager and it
+      works inbound, outbound, or both.
+    </p>
+    <p>
+      It also drops things, and the list is worth reading before rather than after enabling it:
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h4>Anything without a usable server name</h4>
+        <p>If the client hello carries no server name, or the name does not match the SNI in the downstream server certificate, the traffic is dropped. Encrypted Client Hello falls here, closed with an <code class="inline">RST</code>.</p>
+      </div>
+      <div class="card">
+        <h4>QUIC and StartTLS</h4>
+        <p>UDP-based transports such as QUIC are not supported, and neither is decryption of protocols that rely on StartTLS. A browser silently preferring QUIC is an application-level decision that removes your inspection.</p>
+      </div>
+      <div class="card">
+        <h4>Non-TLS traffic inside the scope</h4>
+        <p>If port 80 is in the inspection scope and plain HTTP arrives on it, Network Firewall cannot identify it as TLS and drops it. The scope defines what must be TLS, not merely what may be.</p>
+      </div>
+      <div class="card">
+        <h4>Existing flows, on the day you enable it</h4>
+        <p>Adding a TLS inspection configuration to a live firewall drops ongoing traffic that matches the scope. New connections are inspected; the ones already open are not drained.</p>
+      </div>
+    </div>
+
+    <div class="callout amber">
+      <strong>Decryption narrows which rules still apply</strong>
+      <p>Because the engine sees plaintext, TLS-based keywords no longer match &mdash; with the single exception of <code class="inline">TLS.SNI</code>, which still matches for in-scope traffic. Rules written against TLS attributes quietly stop firing for exactly the flows you decided were important enough to decrypt, while HTTP-keyword rules start working for the first time.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Egress filtering has an unusual property among security controls: the version that is easy to
+      deploy and the version that is hard to deploy look identical in an architecture diagram. Both
+      show a firewall in an inspection VPC with an arrow to the internet. One of them is reading a
+      field the client chose, from a source range it was never scoped to, and the other is not.
+    </p>
+    <p>
+      The three defects in this post are not really three. They are one question asked three times:
+      <em>what does this control actually observe?</em> Not what does it intend to prevent &mdash;
+      what byte, in what packet, does it read, and who wrote that byte. For a domain allowlist the
+      answer is that the client wrote it, and AWS says so in the documentation rather than burying it.
+    </p>
+    <p>
+      That is the useful discipline to take from this one. When a control is recorded as implemented,
+      write down the field it inspects next to it. If the field turns out to be supplied by the thing
+      being controlled, the control is real but it is a control against mistakes, and the review
+      should say so.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Networking &amp; Security &mdash; DNS as the other egress path: why Route 53 Resolver DNS Firewall sits at a different layer than Network Firewall, what a query log shows that a flow log cannot, and the exfiltration channel that neither an endpoint policy nor a domain allowlist touches.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/network-firewall/latest/developerguide/stateful-rule-groups-domain-names.html" target="_blank" rel="noopener">Stateful domain list rule groups &#8212; SNI and Host header matching, the HOME_NET default, and the transit gateway case</a></li>
+      <li><a href="https://docs.aws.amazon.com/network-firewall/latest/developerguide/suricata-limitations-caveats.html" target="_blank" rel="noopener">Limitations and caveats for stateful rules &#8212; how HOME_NET and EXTERNAL_NET inherit</a></li>
+      <li><a href="https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-configurations.html" target="_blank" rel="noopener">Inspecting SSL/TLS traffic with TLS inspection configurations</a></li>
+      <li><a href="https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-considerations.html" target="_blank" rel="noopener">Considerations when working with TLS inspection configurations &#8212; the full list of what it drops</a></li>
+      <li><a href="https://aws.amazon.com/network-firewall/pricing/" target="_blank" rel="noopener">AWS Network Firewall pricing</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

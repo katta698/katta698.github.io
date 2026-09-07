@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #45 — The allowlist that asks the client where it is going | Jayanth Katta Blog</title>
+<meta name="description" content="A platform team fronts all outbound traffic with AWS Network Firewall in a central inspection VPC and allowlists the domains the workloads are permitted to reach. The rule group is correct, the policy is attached, and the control passes review. It is inspecting nothing, because domain filtering only looks at traffic from HOME_NET and HOME_NET defaults to the inspection VPC's own CIDR."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="The allowlist that asks the client where it is going"/>
+<meta property="og:description" content="A platform team fronts all outbound traffic with AWS Network Firewall in a central inspection VPC and allowlists the domains the workloads are permitted to reach. The rule group is correct, the policy is attached, and the control passes review. It is inspecting nothing, because domain filtering only looks at traffic from HOME_NET and HOME_NET defaults to the inspection VPC's own CIDR."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-egress-domain-filtering/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="The allowlist that asks the client where it is going"/>
+<meta name="twitter:description" content="A platform team fronts all outbound traffic with AWS Network Firewall in a central inspection VPC and allowlists the domains the workloads are permitted to reach. The rule group is correct, the policy is attached, and the control passes review. It is inspecting nothing, because domain filtering only looks at traffic from HOME_NET and HOME_NET defaults to the inspection VPC's own CIDR."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-egress-domain-filtering/"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=ae959bdd"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #45 — The allowlist that asks the client where it is going…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #45 — The allowlist that asks the client where it is going</h1>
+      <p class="post-description">A platform team fronts all outbound traffic with AWS Network Firewall in a central inspection VPC and allowlists the domains the workloads are permitted to reach. The rule group is correct, the policy is attached, and the control passes review. It is inspecting nothing, because domain filtering only looks at traffic from HOME_NET and HOME_NET defaults to the inspection VPC's own CIDR.</p>
+      <div class="post-info">
+        <span>Sep 7, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>11 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 7 September 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-egress-domain-filtering" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The previous post in this series ended on a control that faces outward: an endpoint policy limits
+      which resources can be reached <em>from</em> a network. This one is about the other direction, and
+      about a control that is much easier to deploy than it is to deploy correctly.
+    </p>
+    <p>
+      A platform team runs the hub-and-spoke topology: workload VPCs with no internet gateway, a central
+      networking account, and all internet-bound traffic routed across a transit gateway into an
+      inspection VPC where AWS Network Firewall sits in front of the NAT gateways. Security asks for
+      egress control &mdash; not &ldquo;can it reach the internet&rdquo; but &ldquo;<em>what</em> can it
+      reach.&rdquo; The team builds a domain list rule group with an <code class="inline">Allow</code>
+      action and about forty entries: the package registries, the vendor APIs, the telemetry endpoints.
+      Everything else is denied by construction, because for an allow list Network Firewall denies
+      traffic of that protocol that does not match.
+    </p>
+    <p>
+      The rule group is well written. The policy is attached. The change passes review and the control
+      is recorded as implemented. Three things are wrong with it, and only one of them is a
+      configuration error.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>It is inspecting nothing</strong></div>
+      <div class="challenge-body">
+        <p>
+          Domain list inspection is scoped by the <code class="inline">HOME_NET</code> variable, and
+          <strong>the default value of <code class="inline">HOME_NET</code> is the CIDR range of the VPC
+          where Network Firewall is deployed</strong>. Only traffic from that range is passed through
+          domain list filtering. In a central inspection VPC the traffic does not originate there
+          &mdash; it originates in the spokes and arrives over the transit gateway. AWS names this
+          exact topology as the most common case requiring a manual setting.
+        </p>
+        <p>
+          Nothing fails. No rule errors, no alarm, no metric that reads zero in an obvious way. The
+          firewall is passing traffic it was never asked to look at.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Set <code class="inline">HOME_NET</code> on the rule group to every spoke CIDR you intend to inspect, plus the inspection VPC's own range.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The allowlist trusts the client</strong></div>
+      <div class="challenge-body">
+        <p>
+          For HTTPS, Network Firewall reads the Server Name Indication field from the TLS handshake.
+          For HTTP, it reads the Host header. Both are values the client writes. AWS is explicit that
+          the service <em>&ldquo;doesn't pause connections to do out-of-band DNS lookups&rdquo;</em> and
+          that it uses <em>&ldquo;the SNI or host header, not the IP addresses&rdquo;</em> when
+          evaluating domain rules.
+        </p>
+        <p>
+          So a process that opens a socket to an arbitrary address and writes
+          <code class="inline">registry.npmjs.org</code> into the SNI is allowed through, and one that
+          reaches an approved domain while presenting no name at all is evaluated on the name it did
+          not give. The allowlist constrains a declaration, not a destination.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>AWS's own remedy: write separate IP address rules and use them <em>in conjunction with</em> the domain rules. Two assertions are harder to align than one.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The field it depends on is optional and disappearing</strong></div>
+      <div class="challenge-body">
+        <p>
+          SNI is readable because it is sent in the clear. TLS 1.3's Encrypted Client Hello removes
+          that, and Network Firewall does not support it: when it cannot find an SNI in the client
+          hello it closes the connection with an <code class="inline">RST</code>.
+        </p>
+        <p>
+          That is a safe failure, and it is worth being clear-eyed about what it means. The control
+          does not degrade to &ldquo;allow&rdquo;; it degrades to &ldquo;break.&rdquo; Every client
+          that adopts ECH stops working rather than stops being filtered, and the first symptom is a
+          connectivity incident rather than a security one.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Know which of your egress destinations are moving to ECH before they do, and decide deliberately whether those flows are scoped out or blocked.</p>
+      </div>
+    </div>
+
+    <div class="callout amber">
+      <strong>The pattern across all three</strong>
+      <p>Each one is the same shape as the VPC endpoint mistake in #44: a control that is real, correctly configured in its own terms, and answering a narrower question than the review believed it was answering. &ldquo;We allowlist egress by domain&rdquo; is true. &ldquo;Our workloads can only reach approved destinations&rdquo; does not follow from it.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Egress control is three separable decisions: where the inspection sits, what it matches on, and
+      whether you are willing to decrypt. They are usually taken as one, which is why the result is
+      usually a domain allowlist with an unexamined trust model.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-045-egress-domain-filtering.svg" alt="Diagram: what a domain allowlist actually inspects. On the left, the field Network Firewall reads for each protocol: the TLS SNI for HTTPS and the HTTP Host header for HTTP, both written by the client, with no DNS lookup and no IP check. In the middle, the HOME_NET scope, which defaults to the inspection VPC CIDR so traffic arriving from spoke VPCs over a transit gateway is not inspected until HOME_NET is set manually. On the right, the escalation to TLS inspection and the traffic it drops: no server name in the client hello, Encrypted Client Hello, QUIC, StartTLS, WebSockets over HTTP/2, and non-TLS traffic inside the configured scope." />
+      <figcaption>What a domain allowlist inspects, what scopes it, and what the decrypting alternative refuses to carry. The three columns are the three decisions, and the middle one is the one that silently defaults to inspecting nothing in a hub-and-spoke deployment.</figcaption>
+    </figure>
+
+    <h3>What the rule group actually says</h3>
+    <p>
+      A domain list rule group carries a target list, the protocols to inspect, and a generated rules
+      type. The wildcard form matters: a leading dot matches the domain and every subdomain, so
+      <code class="inline">.example.com</code> covers <code class="inline">example.com</code> and
+      <code class="inline">abc.example.com</code> alike, while an explicit name matches only itself.
+    </p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">rule-group.json</span>
+        <div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+      </div>
+<pre>{
+  "RuleVariables": {
+    "IPSets": {
+      "HOME_NET": {
+        "Definition": [
+          "10.0.0.0/16",
+          "10.1.0.0/16",
+          "192.0.2.0/24"
+        ]
+      }
+    }
+  },
+  "RulesSource": {
+    "RulesSourceList": {
+      "Targets": [
+        ".example.com",
+        "www.example.org"
+      ],
+      "TargetTypes": [ "HTTP_HOST", "TLS_SNI" ],
+      "GeneratedRulesType": "ALLOWLIST"
+    }
+  }
+}</pre>
+    </div>
+
+    <p>
+      The <code class="inline">HOME_NET</code> block is the part that is absent from most first drafts,
+      and its absence is invisible. The two <code class="inline">10.x</code> ranges are the spoke VPCs
+      whose traffic arrives over the transit gateway; <code class="inline">192.0.2.0/24</code> is the
+      inspection VPC itself, which must stay in the list because setting the variable replaces the
+      default rather than adding to it.
+    </p>
+    <p>
+      There is a second-order trap in the same mechanism.
+      <code class="inline">EXTERNAL_NET</code> is always the negation of the <em>policy's</em>
+      <code class="inline">HOME_NET</code>, and a rule group that sets its own
+      <code class="inline">HOME_NET</code> without also setting
+      <code class="inline">EXTERNAL_NET</code> inherits the policy's negation regardless. Set one and
+      you can end up with a rule group whose idea of &ldquo;inside&rdquo; and &ldquo;outside&rdquo; do
+      not describe the same boundary.
+    </p>
+
+    <h3>Where the inspection sits</h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-icon">1</div>
+        <div class="flow-content">
+          <h4>Spoke VPC, no internet gateway</h4>
+          <p>Default route points at the transit gateway. The workload cannot reach the internet except through the hub, which is what makes a single inspection point possible at all.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">2</div>
+        <div class="flow-content">
+          <h4>Inspection VPC, firewall endpoint per AZ</h4>
+          <p>One endpoint in each Availability Zone, at $0.395 per endpoint-hour. Three AZs is roughly $865 a month before a byte is processed, and processing adds $0.065 per GB.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">3</div>
+        <div class="flow-content">
+          <h4>Domain rules, scoped by HOME_NET</h4>
+          <p>The stateful engine reads the SNI or Host header of flows sourced from HOME_NET. Everything else passes the firewall without being evaluated against the domain list.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">4</div>
+        <div class="flow-content">
+          <h4>NAT gateway, then the internet</h4>
+          <p>A fixed, auditable set of Elastic IPs. The firewall sits before this, so it sees the workload's source address rather than the translated one.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>A weak check in the right place still narrows the blast radius</h3>
+    <p>
+      Nothing above is an argument against domain filtering. An allowlist that can be defeated by a
+      process deliberately writing a false SNI still stops the overwhelming majority of what egress
+      control is for: a dependency that starts calling an analytics endpoint after an update, a
+      container image that phones home, a misconfigured backup job writing to the wrong bucket over
+      the public endpoint. None of those lie about their destination, because none of them are trying
+      to.
+    </p>
+    <p>
+      The failure mode to avoid is not deploying it. The failure mode to avoid is recording it as a
+      control against a deliberate adversary when it is a control against accident and drift.
+    </p>
+
+    <h3>The allow action is stricter than it looks</h3>
+    <p>
+      For an allow list, traffic of the specified protocol that does not match any entry is denied.
+      That is the behaviour you want, and it has a sharp edge: AWS recommends against combining
+      <code class="inline">Reject</code> or <code class="inline">Alert</code> domain rule groups with
+      <code class="inline">Allow</code> ones under default action ordering, because the default drop
+      that the allow group adds takes effect before the reject and alert rules do. A rule group added
+      to improve visibility can silently stop being reached.
+    </p>
+
+    <div class="callout green">
+      <strong>Pair the domain rules with IP rules, as AWS says to</strong>
+      <p>The documentation does not present IP rules as an optimisation. It presents them as the mitigation for a manipulated SNI or Host header, to be used in conjunction with or in place of the domain rules. If your design has domain rules alone, it is missing the half that AWS names as the answer to the weakness in the other half.</p>
+    </div>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Inspection point</td>
+        <td>Central inspection VPC in the networking account</td>
+        <td>One place to reason about, one set of rules to maintain. The cost is that <code class="inline">HOME_NET</code> must be maintained alongside the spoke inventory.</td>
+      </tr>
+      <tr>
+        <td>HOME_NET</td>
+        <td>Explicit list of spoke CIDRs plus the inspection VPC</td>
+        <td>The default silently limits inspection to the inspection VPC's own range. Setting it replaces the default rather than extending it.</td>
+      </tr>
+      <tr>
+        <td>Match basis</td>
+        <td>Domain rules and IP rules together</td>
+        <td>Domain rules read a client-supplied field. IP rules read the destination the packet is actually going to. Neither alone is the control the review thinks it is.</td>
+      </tr>
+      <tr>
+        <td>Rule group mix</td>
+        <td>Do not mix Alert or Reject groups with Allow groups</td>
+        <td>Under default action ordering the Allow group's implicit drop wins first, so the other groups stop being evaluated.</td>
+      </tr>
+      <tr>
+        <td>Decryption</td>
+        <td>TLS inspection scoped narrowly, not enabled globally</td>
+        <td>It is the only way to see past the handshake, and it drops a specific and non-obvious list of traffic. Scope it to the flows that justify it.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>What TLS inspection buys, and what it refuses to carry</h3>
+    <p>
+      If domain filtering is not enough, the escalation is a TLS inspection configuration: Network
+      Firewall terminates the client's connection, decrypts, inspects against the stateful rules,
+      and re-encrypts before forwarding. It needs certificates in AWS Certificate Manager and it
+      works inbound, outbound, or both.
+    </p>
+    <p>
+      It also drops things, and the list is worth reading before rather than after enabling it:
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h4>Anything without a usable server name</h4>
+        <p>If the client hello carries no server name, or the name does not match the SNI in the downstream server certificate, the traffic is dropped. Encrypted Client Hello falls here, closed with an <code class="inline">RST</code>.</p>
+      </div>
+      <div class="card">
+        <h4>QUIC and StartTLS</h4>
+        <p>UDP-based transports such as QUIC are not supported, and neither is decryption of protocols that rely on StartTLS. A browser silently preferring QUIC is an application-level decision that removes your inspection.</p>
+      </div>
+      <div class="card">
+        <h4>Non-TLS traffic inside the scope</h4>
+        <p>If port 80 is in the inspection scope and plain HTTP arrives on it, Network Firewall cannot identify it as TLS and drops it. The scope defines what must be TLS, not merely what may be.</p>
+      </div>
+      <div class="card">
+        <h4>Existing flows, on the day you enable it</h4>
+        <p>Adding a TLS inspection configuration to a live firewall drops ongoing traffic that matches the scope. New connections are inspected; the ones already open are not drained.</p>
+      </div>
+    </div>
+
+    <div class="callout amber">
+      <strong>Decryption narrows which rules still apply</strong>
+      <p>Because the engine sees plaintext, TLS-based keywords no longer match &mdash; with the single exception of <code class="inline">TLS.SNI</code>, which still matches for in-scope traffic. Rules written against TLS attributes quietly stop firing for exactly the flows you decided were important enough to decrypt, while HTTP-keyword rules start working for the first time.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Egress filtering has an unusual property among security controls: the version that is easy to
+      deploy and the version that is hard to deploy look identical in an architecture diagram. Both
+      show a firewall in an inspection VPC with an arrow to the internet. One of them is reading a
+      field the client chose, from a source range it was never scoped to, and the other is not.
+    </p>
+    <p>
+      The three defects in this post are not really three. They are one question asked three times:
+      <em>what does this control actually observe?</em> Not what does it intend to prevent &mdash;
+      what byte, in what packet, does it read, and who wrote that byte. For a domain allowlist the
+      answer is that the client wrote it, and AWS says so in the documentation rather than burying it.
+    </p>
+    <p>
+      That is the useful discipline to take from this one. When a control is recorded as implemented,
+      write down the field it inspects next to it. If the field turns out to be supplied by the thing
+      being controlled, the control is real but it is a control against mistakes, and the review
+      should say so.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Networking &amp; Security &mdash; DNS as the other egress path: why Route 53 Resolver DNS Firewall sits at a different layer than Network Firewall, what a query log shows that a flow log cannot, and the exfiltration channel that neither an endpoint policy nor a domain allowlist touches.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/network-firewall/latest/developerguide/stateful-rule-groups-domain-names.html" target="_blank" rel="noopener">Stateful domain list rule groups &#8212; SNI and Host header matching, the HOME_NET default, and the transit gateway case</a></li>
+      <li><a href="https://docs.aws.amazon.com/network-firewall/latest/developerguide/suricata-limitations-caveats.html" target="_blank" rel="noopener">Limitations and caveats for stateful rules &#8212; how HOME_NET and EXTERNAL_NET inherit</a></li>
+      <li><a href="https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-configurations.html" target="_blank" rel="noopener">Inspecting SSL/TLS traffic with TLS inspection configurations</a></li>
+      <li><a href="https://docs.aws.amazon.com/network-firewall/latest/developerguide/tls-inspection-considerations.html" target="_blank" rel="noopener">Considerations when working with TLS inspection configurations &#8212; the full list of what it drops</a></li>
+      <li><a href="https://aws.amazon.com/network-firewall/pricing/" target="_blank" rel="noopener">AWS Network Firewall pricing</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/gcp-architecture-asset-feeds/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">GCP Architecture Series #24 — Asset Feeds and Change Notifications</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-egress-domain-filtering/';
+      this.page.identifier = 'aws-architecture-egress-domain-filtering';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var FORM_ID='xzdqqvqd';
+  var rating=0;
+  var btn=document.getElementById('fb-btn'),overlay=document.getElementById('fb-overlay');
+  var stars=document.querySelectorAll('.fb-star');
+  btn.addEventListener('click',function(){overlay.classList.add('open');});
+  overlay.addEventListener('click',function(e){if(e.target===overlay)overlay.classList.remove('open');});
+  document.getElementById('fb-skip').addEventListener('click',function(){overlay.classList.remove('open');});
+  stars.forEach(function(s){
+    s.addEventListener('click',function(){
+      rating=parseInt(s.getAttribute('data-v'));
+      stars.forEach(function(x){x.classList.toggle('on',parseInt(x.getAttribute('data-v'))<=rating);});
+    });
+  });
+  document.getElementById('fb-send').addEventListener('click',function(){
+    var msg=document.getElementById('fb-text').value;
+    fetch('https://formspree.io/f/'+FORM_ID,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({rating:rating,message:msg,page:window.location.pathname})
+    });
+    document.getElementById('fb-modal').innerHTML='<div class="fb-thanks"><span>&#10003;</span><strong>Thanks for your feedback!</strong><p style="color:#879196;font-size:13px;margin-top:0.35rem;">It means a lot.</p></div>';
+    setTimeout(function(){overlay.classList.remove('open');},2000);
+  });
+})();
+</script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=1005d142"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
