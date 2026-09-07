@@ -3,73 +3,220 @@ title: "AWS Architecture Series #9 — Control Tower + AFT: The Multi-Account Fo
 date: 2026-08-02
 slug: aws-architecture-control-tower-aft
 labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-06'
+verified_claims:
+  - claim: "AFT supports Terraform version 1.6.1 or later"
+    source: https://docs.aws.amazon.com/controltower/latest/userguide/aft-getting-started.html
+  - claim: "A Terraform module deploys AFT, and the entire AFT GitHub repository is considered the module"
+    source: https://docs.aws.amazon.com/controltower/latest/userguide/aft-getting-started.html
+  - claim: "By default AFT uses AWS CodeCommit, but if you are deploying AFT for the first time and have no existing CodeCommit repository you must choose an external VCS provider such as GitHub or Bitbucket"
+    source: https://docs.aws.amazon.com/controltower/latest/userguide/aft-getting-started.html
+  - claim: "AFT requires a dedicated AFT management account, and AWS strongly recommends provisioning it in a separate organizational unit"
+    source: https://docs.aws.amazon.com/controltower/latest/userguide/aft-getting-started.html
+  - claim: "AFT can invoke a maximum of 5 customizations at a time, and Step Functions waits and loops until all matching accounts are complete"
+    source: https://docs.aws.amazon.com/controltower/latest/userguide/aft-account-customization-options.html
+  - claim: "The aft-invoke-customizations Step Function can target accounts individually, by organizational unit, by tag, or all of them at once"
+    source: https://docs.aws.amazon.com/controltower/latest/userguide/aft-account-customization-options.html
+  - claim: "AWS Control Tower implements preventive, detective and proactive controls, and a control applies to an entire organizational unit so every account within that OU is affected"
+    source: https://docs.aws.amazon.com/controltower/latest/controlreference/controls.html
+  - claim: "The root user and any administrators in the management account can perform work that controls would otherwise deny, and AWS states this exception is intentional so the management account cannot enter an unusable state"
+    source: https://docs.aws.amazon.com/controltower/latest/controlreference/controls.html
+  - claim: "All actions taken within the management account continue to be tracked in the logs held in the log archive account"
+    source: https://docs.aws.amazon.com/controltower/latest/controlreference/controls.html
+  - claim: "AWS is transitioning terminology from guardrail to control, and treats the two terms as synonymous"
+    source: https://docs.aws.amazon.com/controltower/latest/controlreference/controls.html
+  - claim: "Provisioning the AFT management account can take up to 30 minutes, and AFT itself can take up to 30 minutes to finish deploying through the Terraform module"
+    source: https://docs.aws.amazon.com/controltower/latest/userguide/aft-getting-started.html
+  - claim: "The AFT module does not manage a backend Terraform state, so you must preserve the state file or set up an S3 and DynamoDB backend yourself"
+    source: https://docs.aws.amazon.com/controltower/latest/userguide/aft-getting-started.html
 problem: "A fintech company has 12 AWS accounts managed by a bespoke Python script. New account requests take two weeks. There is no drift detection, no idempotency, and no automated remediation when guardrails are manually modified."
 builds: "A Control Tower landing zone with Account Factory for Terraform (AFT) providing Git-driven account vending, continuous compliance via detective controls, and baseline customizations that roll out retroactively across all accounts via Step Functions re-invoke."
 catch: "AFT requires Terraform 1.6.1 or later. CodeCommit is unavailable to new AWS customers — use GitHub, GitLab, or Bitbucket. The AFT management account is one of the highest-privilege environments in your landing zone and must be hardened accordingly."
 ---
 
-<h2>Business Challenge</h2>
-<p>
-  A fintech company has 12 AWS accounts managed by a single platform engineer running a bespoke Python script that calls Organizations and Service Catalog APIs. New account requests take two weeks: manual email approval, manual SCP attachment, manual baseline Terraform apply, manual IAM Identity Center assignment. Three engineers are waiting on accounts right now.
-</p>
-<p>
-  Six months from now, that same platform engineer estimates they will have 60 accounts. The script won't scale. There is no drift detection. When someone manually modifies a guardrail or deletes a baseline IAM role in an account, nobody knows until an audit. The platform team's answer is to build a proper account vending machine — an internal tool with its own database, approval workflow, and Terraform pipeline.
-</p>
-<p>
-  That project is scoped at four months. The real answer takes three weeks with Control Tower and AFT.
-</p>
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A fintech company has 12 AWS accounts managed by a single platform engineer running a bespoke Python script that calls Organizations and Service Catalog APIs. New account requests take two weeks: manual email approval, manual SCP attachment, manual baseline Terraform apply, manual IAM Identity Center assignment. Three engineers are waiting on accounts right now.
+    </p>
+    <p>
+      Six months from now, that same platform engineer estimates they will have 60 accounts. The script won't scale. There is no drift detection. When someone manually modifies a guardrail or deletes a baseline IAM role in an account, nobody knows until an audit. The platform team's answer is to build a proper account vending machine — an internal tool with its own database, approval workflow, and Terraform pipeline.
+    </p>
+    <p>
+      That project is scoped at four months. The real answer takes three weeks with Control Tower and AFT.
+    </p>
 
-<h2>Architecture</h2>
-<p>
-  Control Tower with AFT has three distinct layers. Understanding which layer owns which responsibility is what separates a clean implementation from one that fights itself.
-</p>
+    <div class="callout amber">
+      <strong>The build-vs-buy mistake in platform engineering</strong>
+      <p>Account vending is a solved problem. The interesting engineering is above the vending layer: the SCPs that encode your security posture, the baseline customizations that make accounts production-ready on day one, and the developer experience that makes self-service feel fast. Control Tower + AFT handle the vending. Build the layer above it.</p>
+    </div>
+  </div>
 
-<h3>Layer 1: Control Tower landing zone</h3>
-<p>
-  Control Tower sets up the foundational structure: a management account, a Log Archive account, an Audit account, and an OU hierarchy. It deploys mandatory guardrails — preventive controls (Service Control Policies) and detective controls (AWS Config rules). Controls come in three types: preventive (SCPs, block before they happen), detective (Config rules, detect after the fact), and proactive (CloudFormation hooks, block non-compliant infrastructure before it deploys — CloudFormation-managed resources only).
-</p>
-<p>
-  Each control has a guidance level: mandatory (always enabled), strongly recommended (off by default, one-click to enable), or elective (off by default, opt-in per OU).
-</p>
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Control Tower with AFT has three distinct layers. Understanding which layer owns which responsibility is what separates a clean implementation from one that fights itself.
+    </p>
 
-<h3>Layer 2: Account Factory for Terraform (AFT)</h3>
-<p>
-  AFT is a Terraform module — not a separate AWS service — that runs in a dedicated AFT management account inside your landing zone. When you merge an account request into the account-request repository, a CodePipeline runs, calls the Control Tower Account Factory API to provision the account, and then runs your customisations.
-</p>
-<p>AFT works with four Git repositories:</p>
-<ul>
-  <li><strong>account-request</strong> — one Terraform file per account; merging a new file triggers provisioning.</li>
-  <li><strong>global-customizations</strong> — Terraform/bash that runs in every account, every time (break-glass role, GuardDuty enable, default VPC delete, mandatory tags). Must be idempotent.</li>
-  <li><strong>account-customizations</strong> — per-profile Terraform that runs only for accounts referencing that profile (sandbox, production, data-platform).</li>
-  <li><strong>account-provisioning-customizations</strong> — Lambda hooks that run during provisioning itself for pre-provisioning validation and post-provisioning RAM share acceptance.</li>
-</ul>
-<p>
-  CodeCommit is no longer available to new AWS customers (closed July 2024). Use GitHub, GitLab, or Bitbucket — all three are supported via native CodePipeline source integrations. Configure this at deployment time.
-</p>
+    <h3>Layer 1: Control Tower landing zone</h3>
+    <p>
+      Control Tower sets up the foundational structure: a management account, a Log Archive account, an Audit account, and an OU hierarchy. It deploys mandatory guardrails — preventive controls (Service Control Policies that block disabling CloudTrail, for example) and detective controls (AWS Config rules that alert on non-compliant resource configuration). It also wires up IAM Identity Center for centralised authentication across accounts.
+    </p>
+    <p>
+      Control Tower owns the landing zone baseline. You do not manage the Log Archive and Audit accounts directly — Control Tower configures them and alerts you if they drift. Your OU structure lives here, and SCPs attach at the OU level.
+    </p>
+    <p>
+      Controls come in three types, each with a different enforcement mechanism:
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h4>Preventive controls</h4>
+        <p>Implemented as SCPs. Block actions before they happen. Example: deny deletion of CloudTrail trails. Cannot be bypassed by account-level administrators because SCPs are enforced by Organizations before IAM evaluation.</p>
+      </div>
+      <div class="card">
+        <h4>Detective controls</h4>
+        <p>Implemented as AWS Config rules. Detect non-compliant state after it exists and surface it in the Control Tower dashboard. Do not block actions — they report drift. Example: detect if S3 bucket public access block is disabled.</p>
+      </div>
+      <div class="card">
+        <h4>Proactive controls</h4>
+        <p>Implemented as CloudFormation hooks. Evaluate resource configurations before a CloudFormation stack creates or updates them, blocking non-compliant infrastructure before it deploys. Only applies to CloudFormation-managed resources.</p>
+      </div>
+      <div class="card">
+        <h4>Guidance categories</h4>
+        <p>Each control has a guidance level: mandatory (always enabled, cannot be disabled), strongly recommended (off by default, one-click to enable), or elective (off by default, opt-in for specific OUs). Mandatory controls cover the non-negotiable security baseline.</p>
+      </div>
+    </div>
 
-<h2>Why This Architecture Holds Up</h2>
-<p>
-  Control Tower's detective controls surface manual guardrail changes in the dashboard within 24 hours. Mandatory preventive controls make the highest-risk actions (disabling CloudTrail, modifying the log archive) impossible from inside the account regardless of IAM permissions.
-</p>
-<p>
-  When you update global-customizations, re-invoking the <code>aft-invoke-customizations</code> Step Function rolls out the new baseline to all accounts in parallel. AFT runs at most 5 customization pipelines concurrently and queues the rest. SCPs enforce non-negotiable security posture at the Organizations level — they cannot be bypassed by account-level IAM, including root.
-</p>
+    <h3>Layer 2: Account Factory for Terraform (AFT)</h3>
+    <p>
+      AFT is a Terraform module — not a separate AWS service — that runs in a dedicated AFT management account inside your landing zone. It replaces Control Tower's built-in Account Factory (which uses Service Catalog) with a Git-driven, Terraform-native pipeline. When you merge an account request into the account-request repository, a CodePipeline runs, calls the Control Tower Account Factory API to provision the account, and then runs your customisations.
+    </p>
 
-<h2>Key Architecture Decisions</h2>
-<ul>
-  <li><strong>OU design drives SCP blast radius.</strong> Design the OU hierarchy to match your policy segmentation requirements before provisioning a single account. A flat structure gives coarse SCP control; a deeper structure gives fine-grained policy without per-account SCP management.</li>
-  <li><strong>AFT requires Terraform 1.6.1 or later.</strong> Confirm this constraint before committing to AFT if your organisation standardises on an older version.</li>
-  <li><strong>The AFT management account is a high-trust target.</strong> It has cross-account roles into every managed account. No human IAM users, MFA on root, CloudTrail enabled, access logged.</li>
-  <li><strong>Global customizations must be idempotent.</strong> Re-invocations run global-customizations again in every targeted account. Write every step assuming it will run ten times.</li>
-  <li><strong>Start with elective controls disabled.</strong> Enable mandatory controls day one. Add elective controls one at a time with a remediation plan for each.</li>
-</ul>
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-009-aft-pipeline.svg" alt="Diagram: the AFT pipeline, account-request repo triggers CodePipeline in AFT management account, which calls Control Tower Account Factory to provision the account, then runs global-customizations and account-customizations pipelines" />
+      <figcaption>AFT pipeline flow. A merge to the account-request repository triggers provisioning. After the account exists, the global-customizations pipeline runs for every account, followed by the account-specific customizations pipeline. All pipelines are CodePipeline instances in the AFT management account.</figcaption>
+    </figure>
 
-<h2>Closing Thought</h2>
-<p>
-  The fintech company's platform engineer finished the AFT deployment in 11 days. The first account request merged on day twelve and provisioned in 34 minutes. The bespoke vending script project was descoped. The four months of engineering went to the developer portal, the Slack integration, and the cost anomaly alerting that fires into the new account on day one. That is the interesting work. Control Tower and AFT are infrastructure for that work, not the work itself.
-</p>
+    <h3>The four AFT repositories</h3>
+    <p>
+      AFT works with four Git repositories. Each has a distinct scope:
+    </p>
 
-<h2>Official AWS Reference</h2>
-<ul>
-  <li><a href="https://docs.aws.amazon.com/controltower/latest/userguide/what-is-control-tower.html" target="_blank" rel="noopener">AWS Control Tower — User Guide</a> — covers landing zone setup, controls (preventive, detective, proactive), Account Factory, AFT deployment prerequisites, the four customisation repositories, and the re-invoke customisations Step Functions workflow.</li>
-</ul>
+    <div class="challenge-card">
+      <div class="challenge-header"><div class="num">1</div><strong>account-request</strong></div>
+      <div class="challenge-body">
+        <p>One Terraform file per account to be provisioned. Contains account name, email, OU placement, SSO user assignments, and a pointer to which account-customisation profile to apply. Merging a new file triggers account creation. AFT uses Jinja templating to build the account configuration from these inputs.</p>
+        <span class="fix-label">Example use</span>
+        <p>Add a file for a new team requesting a sandbox account. Specify <code>account_customizations_name = "sandbox"</code>. Merge to main. Account exists within 30 minutes.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><div class="num">2</div><strong>global-customizations</strong></div>
+      <div class="challenge-body">
+        <p>Terraform, Python, or bash that runs in every account AFT provisions, every time. This is where baseline configuration lives: the break-glass IAM role, the security tooling Lambda, the default VPC deletion, the CloudWatch log retention policy, the mandatory resource tags.</p>
+        <span class="fix-label">Key point</span>
+        <p>Global customizations run after every account provisioning event — including when you re-invoke for an existing account. Keep them idempotent.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><div class="num">3</div><strong>account-customizations</strong></div>
+      <div class="challenge-body">
+        <p>Per-profile Terraform/scripts that run only for accounts that reference that profile name. One folder per profile (e.g. <code>sandbox/</code>, <code>production/</code>, <code>data-platform/</code>). A sandbox account gets relaxed SCPs and no VPC peering. A production account gets WAF, GuardDuty with S3 protection, and a pre-wired VPC attached to the Transit Gateway.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><div class="num">4</div><strong>account-provisioning-customizations</strong></div>
+      <div class="challenge-body">
+        <p>Lambda-based hooks that run during the provisioning phase itself, before customizations. Used for pre-provisioning validation (does this account name already exist?) and post-provisioning steps that must happen before Terraform runs (e.g. accepting a Resource Access Manager share into the new account).</p>
+      </div>
+    </div>
+
+    <div class="callout amber">
+      <strong>CodeCommit is end-of-life for new customers</strong>
+      <p>AFT's default VCS is AWS CodeCommit, but CodeCommit is no longer available to new AWS customers (closed July 2024). For new AFT deployments, you must configure an external VCS provider — GitHub, GitLab, or Bitbucket. AFT supports all three via native CodePipeline source integrations. Set this at deployment time; migrating after the fact is painful.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+    <p>
+      The fintech company's bespoke vending script had no drift detection and no idempotency. When an engineer manually changed a guardrail in a dev account, it stayed changed. Control Tower's detective controls surface that drift in the dashboard within 24 hours. The mandatory preventive controls make the highest-risk actions (disabling CloudTrail, modifying the log archive) impossible from inside the account, regardless of what IAM permissions exist.
+    </p>
+
+    <div class="grid-2">
+      <div class="card">
+        <h4>Drift detection is built in</h4>
+        <p>Control Tower runs continuous compliance checks via AWS Config rules across all enrolled accounts. Non-compliant resources surface in the landing zone dashboard by account and OU. You do not build this — it comes with the mandatory baseline.</p>
+      </div>
+      <div class="card">
+        <h4>Re-invoke propagates changes retroactively</h4>
+        <p>When you update global-customizations, you re-invoke against all existing accounts using the <code>aft-invoke-customizations</code> Step Function. A new security baseline rolls out to 60 accounts in parallel, without touching each account manually. AFT runs at most 5 customization pipelines concurrently and queues the rest.</p>
+      </div>
+      <div class="card">
+        <h4>SCPs are the enforcement layer, not Terraform</h4>
+        <p>Terraform can be bypassed — someone with console access can click around it. SCPs cannot be bypassed by account-level IAM in a member account, including its root user &mdash; with one exception worth knowing: the management account is not governed by them. AWS states plainly that &ldquo;the root user and any administrators in the management account can perform work that controls would otherwise deny&rdquo;, and calls the exception intentional, so that the management account cannot lock itself out. Run no workloads there. Your non-negotiable security posture (no public S3 buckets in prod, no IAM access keys for human users) lives in SCPs, not in resource Terraform that someone can delete.</p>
+      </div>
+      <div class="card">
+        <h4>Account provisioning time is bounded</h4>
+        <p>An AFT-provisioned account with global and account customizations completes in 30–45 minutes. That is the ceiling, not an average. A self-built vending machine has no such guarantee — a failed step means a partially-provisioned account in an unknown state with no automated remediation path.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <h3>1. OU design drives your SCP blast radius</h3>
+    <p>
+      SCPs attach at the OU level and inherit downward. The most consequential architectural decision in a Control Tower deployment is your OU hierarchy, not your account naming convention. A flat structure (Sandbox OU, Non-Prod OU, Prod OU) gives you coarse SCP control. A deeper structure (Prod/Finance, Prod/Engineering, Prod/Data) gives you fine-grained policy without per-account SCP management. Design the OU hierarchy to match your policy segmentation requirements before provisioning a single account.
+    </p>
+
+    <h3>2. AFT requires Terraform 1.6.1 or later</h3>
+    <p>
+      AFT explicitly requires Terraform version 1.6.1 or later. If your organisation standardises on an older Terraform version, you will need a separate Terraform installation in the AFT management account, or a version manager. This is a real constraint — confirm it before committing to AFT.
+    </p>
+
+    <h3>3. The AFT management account is a high-trust target</h3>
+    <p>
+      The AFT management account runs CodePipeline with cross-account roles that can deploy Terraform into every account it manages. It is one of the highest-privilege environments in your landing zone. Apply the same hardening you apply to your management account: no human IAM users, MFA enforced on the root, CloudTrail enabled, access logged, and a separate on-call process for changes to its configuration. Do not use it for anything else.
+    </p>
+
+    <h3>4. Global customizations must be idempotent</h3>
+    <p>
+      Every time you re-invoke AFT customizations, global-customizations runs again in every targeted account. If your global customization creates a resource without checking for existence (a Terraform resource without a <code>lifecycle { ignore_changes }</code> block, or a bash script with no guard), re-invocations will either fail or create duplicates. Write every global customization step assuming it will run ten times in the same account.
+    </p>
+
+    <h3>5. Start with elective controls disabled</h3>
+    <p>
+      Control Tower ships with hundreds of elective controls. Enabling them all on day one against existing accounts will generate a flood of compliance findings, most of which are expected deviations (legacy resources that predate the landing zone). Enable mandatory controls from day one. Enable strongly recommended controls as you enroll accounts. Add elective controls one at a time with a remediation plan ready for the findings they will generate.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The fintech company's platform engineer finished the AFT deployment in 11 days. Day one through four was landing zone setup and OU design. Day five through eight was AFT deployment and the four repository structure. Day nine through eleven was the global-customizations baseline (break-glass role, GuardDuty enable, default VPC delete, mandatory tags). The first account request merged on day twelve and provisioned in 34 minutes.
+    </p>
+    <p>
+      The bespoke vending script project was descoped. The four months of engineering went to the layer above the vending machine: the developer portal that calls the account-request API, the Slack integration that notifies account owners when provisioning completes, and the cost anomaly alerting that fires into the new account on day one. That is the interesting work. Control Tower and AFT are infrastructure for that work, not the work itself.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Compute — Graviton + Spot mixed instance groups: how to build cost-optimised Auto Scaling groups that use Graviton as the primary instance family with Spot diversification, and what the real-world failure modes look like when Spot capacity tightens.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/controltower/latest/userguide/what-is-control-tower.html" target="_blank" rel="noopener">AWS Control Tower User Guide &#8212; landing zone setup and Account Factory</a></li>
+      <li><a href="https://docs.aws.amazon.com/controltower/latest/controlreference/controls.html" target="_blank" rel="noopener">About controls in AWS Control Tower &#8212; including the management account exception</a></li>
+      <li><a href="https://docs.aws.amazon.com/controltower/latest/userguide/aft-getting-started.html" target="_blank" rel="noopener">Deploy AWS Control Tower Account Factory for Terraform &#8212; prerequisites and the Terraform version constraint</a></li>
+      <li><a href="https://docs.aws.amazon.com/controltower/latest/userguide/aft-account-customization-options.html" target="_blank" rel="noopener">Account customizations &#8212; re-invoke customizations and the concurrency limit</a></li>
+      <li><a href="https://docs.aws.amazon.com/controltower/latest/userguide/aft-alternative-vcs.html" target="_blank" rel="noopener">Alternatives for version control of source code in AFT</a></li>
+    </ul>
+  </div>
