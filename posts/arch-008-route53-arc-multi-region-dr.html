@@ -3,6 +3,34 @@ title: "AWS Architecture Series #8 — Route 53 ARC: Multi-Region DR That Actual
 date: 2026-08-01
 slug: aws-architecture-route53-arc-multi-region-dr
 labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-06'
+verified_claims:
+  - claim: "Each cluster in ARC is a data plane of endpoints in five AWS Regions"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/routing-control.html
+  - claim: "AWS advises connecting to one Regional cluster endpoint and trying another if it is unavailable, and having retry logic that can use all five endpoints as necessary"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/route53-arc-best-practices.regional.html
+  - claim: "AWS recommends keeping a local copy of your five Regional cluster endpoints, because during a failure event you might not be able to reach API operations that are not hosted on the data plane cluster"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/route53-arc-best-practices.regional.html
+  - claim: "AWS recommends updating routing control states with the data plane API rather than the console, using ListRoutingControls and UpdateRoutingControlState"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/route53-arc-best-practices.regional.html
+  - claim: "The readiness check feature in ARC is no longer open to new customers, though existing customers can continue to use it"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/recovery-readiness.html
+  - claim: "AWS states that readiness checks should not be relied on as a primary trigger for failover during a disaster event"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/recovery-readiness.html
+  - claim: "Routing controls are simple on-off switches whose traffic rerouting is accomplished by routing control health checks set up with Route 53 DNS records"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/routing-control.html
+  - claim: "Safety rules can impose a guardrail such as ensuring only one of your application replicas, active or standby, is enabled and in use"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/what-is-route53-recovery.html
+  - claim: "A safety rule that blocks a routing control state update can be deliberately overridden to fail over traffic"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/route53-arc-best-practices.regional.html
+  - claim: "A zonal shift is manual and temporary, and you must specify an extendable expiration of up to three days"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/what-is-route53-recovery.html
+  - claim: "Zonal autoshift authorises AWS to shift traffic away from an impaired AZ on your behalf, started from internal telemetry including metrics from the AWS network, Amazon EC2 and Elastic Load Balancing"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/what-is-route53-recovery.html
+  - claim: "AWS suggests a DNS TTL of 60 or 120 seconds for records involved in failover"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/route53-arc-best-practices.regional.html
+  - claim: "Application Load Balancers default the HTTP client keepalive duration to 3600 seconds, and AWS suggests lowering it, for example to 300 seconds, so clients move away from an impaired Region promptly"
+    source: https://docs.aws.amazon.com/r53recovery/latest/dg/route53-arc-best-practices.regional.html
 problem: "A payments platform runs active-passive across us-east-1 and us-west-2. During a regional impairment, their Route 53 failover took 8 minutes. Finance lost $2.4M. The post-mortem revealed the root cause: health checks that assumed the passive region was ready, and no mechanism to safely flip traffic without risking a split-brain state."
 builds: "A multi-region DR architecture using Route 53 ARC routing controls with safety rules and zonal autoshift for AZ-level isolation, with a clear separation between the control plane (cluster endpoints) and the data plane (your application traffic), so failover is fast, safe, and observable."
 catch: "ARC readiness checks are no longer available to new customers. If you were planning to use them for DR readiness monitoring, you need an alternative strategy — CloudWatch cross-region alarms, AWS Health events, and Synthetics canaries covering the same ground."
@@ -32,7 +60,7 @@ catch: "ARC readiness checks are no longer available to new customers. If you we
       The post-mortem found three failure modes stacked on top of each other. First, Route 53 health checks with a 30-second evaluation period meant the DNS change did not propagate until after clients had already started timing out. Second, the passive region was configured for 30% of production capacity — nobody had updated the Auto Scaling group targets in six months. Third, there was no mechanism to prevent both regions from being set to active simultaneously if an engineer ran the wrong runbook.
     </p>
     <p>
-      Each failure was real, but they had the same root cause: their multi-region architecture was a collection of independent components with no coordination layer. Route 53 ARC (Application Recovery Controller) is that coordination layer.
+      Each failure was real, but they had the same root cause: their multi-region architecture was a collection of independent components with no coordination layer. Route 53 ARC is that coordination layer. AWS has since renamed it Amazon Application Recovery Controller &mdash; still ARC, and the docs now sit under that name, but the routing-control model described here is unchanged.
     </p>
 
     <div class="callout amber">
@@ -52,11 +80,11 @@ catch: "ARC readiness checks are no longer available to new customers. If you we
       A routing control is a simple boolean switch — ON or OFF. Each control is tied to a Route 53 routing control health check, which in turn drives a DNS record (typically a failover or weighted record). You flip the control through the ARC API; Route 53 updates the health check state, and DNS propagates.
     </p>
     <p>
-      The critical design point: routing control state is stored in an ARC <strong>cluster</strong> — a set of five regional endpoints spread across five AWS regions. Even if three of those five regional endpoints are unreachable, you can still read and write routing control state from the remaining two. This means your control plane survives a regional impairment, which is exactly when you need it most.
+      The critical design point: routing control state lives in an ARC <strong>cluster</strong>, which AWS describes as &ldquo;a data plane of endpoints in five AWS Regions&rdquo;. You talk to one endpoint; if it is unavailable you try another. AWS does not publish a quorum figure for how many of the five must be reachable, so do not design against an assumed number &mdash; design against the instruction it does give, which is to keep a local copy of all five endpoint addresses and write retry logic that can work through every one of them. That is the difference between a control plane that survives a regional impairment and one that merely claims to.
     </p>
 
     <figure class="screenshot">
-      <img src="/blog/assets/diagrams/arch-008-arc-routing-controls.svg" alt="Diagram showing ARC cluster with 5 regional endpoints, routing control health checks tied to Route 53 DNS failover records, and traffic flowing from clients through Route 53 to active region application, with passive region standby" />
+      <img src="/blog/assets/diagrams/arch-008-arc-routing-controls.svg" alt="Diagram: an ARC cluster with five regional endpoints, routing control health checks tied to Route 53 DNS failover records, and traffic flowing from clients through Route 53 to active region application, with passive region standby" />
       <figcaption>ARC routing control architecture. The cluster's five-region endpoint spread means control plane availability survives the regional impairment you're trying to recover from. State changes propagate to Route 53 health checks, which drive DNS failover records.</figcaption>
     </figure>
 
@@ -116,7 +144,7 @@ catch: "ARC readiness checks are no longer available to new customers. If you we
     </ul>
   </div>
 
-  <div class="section" id="why-it-matters">
+  <div class="section" id="why">
     <h2>Why This Architecture Holds Up</h2>
     <p>
       The payments platform's 8-minute failover had nothing to do with DNS propagation speed. It had everything to do with the absence of a control plane that was independent of the data plane failure. When us-east-1 was impaired, the tools they needed to execute recovery were themselves partially impaired. ARC's cluster design solves this directly: the five-region endpoint spread means the control plane operates even when the region you're failing away from is unavailable.
@@ -142,7 +170,7 @@ catch: "ARC readiness checks are no longer available to new customers. If you we
     </div>
   </div>
 
-  <div class="section" id="key-decisions">
+  <div class="section" id="decisions">
     <h2>Key Architecture Decisions</h2>
 
     <h3>1. One cluster per environment, not one per application</h3>
@@ -187,9 +215,13 @@ catch: "ARC readiness checks are no longer available to new customers. If you we
   </div>
 
   <div class="section" id="reference">
-    <h2>Reference</h2>
+    <h2>Official AWS Reference</h2>
     <ul>
-      <li><a href="https://docs.aws.amazon.com/r53recovery/latest/dg/what-is-route53-recovery.html" target="_blank" rel="noopener">Amazon Application Recovery Controller (ARC) — Developer Guide</a></li>
+      <li><a href="https://docs.aws.amazon.com/r53recovery/latest/dg/what-is-route53-recovery.html" target="_blank" rel="noopener">What is ARC &#8212; zonal shift, zonal autoshift, routing control, Region switch and readiness check</a></li>
+      <li><a href="https://docs.aws.amazon.com/r53recovery/latest/dg/routing-control.html" target="_blank" rel="noopener">Routing control in ARC &#8212; clusters, control panels and routing control health checks</a></li>
+      <li><a href="https://docs.aws.amazon.com/r53recovery/latest/dg/route53-arc-best-practices.regional.html" target="_blank" rel="noopener">Best practices for routing control &#8212; the five endpoints, retry logic and DNS TTL guidance</a></li>
+      <li><a href="https://docs.aws.amazon.com/r53recovery/latest/dg/recovery-readiness.html" target="_blank" rel="noopener">Readiness check in ARC &#8212; including the note that it is closed to new customers</a></li>
+      <li><a href="https://docs.aws.amazon.com/r53recovery/latest/dg/arc-zonal-autoshift.html" target="_blank" rel="noopener">Zonal autoshift in ARC</a></li>
     </ul>
   </div>
 
