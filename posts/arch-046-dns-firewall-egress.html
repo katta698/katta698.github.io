@@ -1,0 +1,403 @@
+---
+title: "AWS Architecture Series #46 — The query that never touches the firewall"
+date: '2026-09-08T09:00:00'
+slug: aws-architecture-dns-firewall-egress
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-08'
+verified_claims:
+  - claim: "Network Firewall provides filtering for both network and application layer traffic, but does not have visibility into queries made by Route 53 VPC Resolver"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall.html
+  - claim: "A primary use of DNS Firewall protections is to help prevent DNS exfiltration, which can happen when a bad actor compromises an application instance in your VPC and uses DNS lookup to send data out of the VPC to a domain they control"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall.html
+  - claim: "DNS Firewall only filters on the domain name and does not resolve that name to an IP address to be blocked, and it does not filter other application layer protocols such as HTTPS, SSH, TLS or FTP"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-overview.html
+  - claim: "DNS tunneling is used by attackers to exfiltrate data from the client by using the DNS tunnel without making a network connection to the client"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-overview.html
+  - claim: "By default the DNS Firewall failure mode is closed, meaning VPC Resolver blocks any query for which it doesn't receive a reply from DNS Firewall and sends a SERVFAIL DNS response, favouring security over availability"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-vpc-configuration.html
+  - claim: "If you enable fail open, VPC Resolver allows queries through when it doesn't receive a reply from DNS Firewall, favouring availability over security"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-vpc-configuration.html
+  - claim: "DNS Firewall evaluates rule groups in order of the priority set in the association, starting with the lowest numeric setting, and within each rule group evaluates rules in priority order until it finds a match or exhausts them"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-overview.html
+  - claim: "When DNS Firewall finds a match it terminates the query evaluation and responds to VPC Resolver with the result, and if it evaluates all rule groups without finding a match it responds to the query as normal"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-overview.html
+  - claim: "The Allow action stops inspecting the query and permits it through, and Allow is not available for DNS Firewall Advanced"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-rule-actions.html
+  - claim: "In a DNS Firewall Advanced rule you can choose only to block or alert on a query that matches the threat"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-overview.html
+  - claim: "A Block rule replies with a configured response of NODATA, NXDOMAIN, or OVERRIDE, where OVERRIDE supplies a custom record whose type must be CNAME and whose time to live defaults to zero"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-rule-actions.html
+  - claim: "DNS Firewall Advanced protections cover Domain Generation Algorithms, DNS tunneling, and Dictionary DGA, and the threat protection algorithms are managed and updated by AWS"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-overview.html
+  - claim: "The confidence threshold for a DNS Firewall Advanced rule is High, Medium or Low, where High detects only the most well corroborated threats with a low rate of false positives and Low provides the highest detection rate but increases false positives"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-overview.html
+  - claim: "AWS provides Managed Domain Lists for Malware, Botnet Command and Control, an Aggregate Threat List, and an Amazon GuardDuty Threat List, and the Aggregate Threat List includes all the domains in the other AWS Managed Domain Lists"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-managed-domain-lists.html
+  - claim: "AWS Managed Domain Lists cannot be downloaded or browsed, and you can't view or edit the individual domain specifications within them"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-managed-domain-lists.html
+  - claim: "The Managed Domain Lists source their data from both internal AWS sources and Recorded Future, and are continually updated"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-managed-domain-lists.html
+  - claim: "AWS supplies control domains for testing the managed lists which resolve to 1.2.3.4 if they aren't blocked"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-managed-domain-lists.html
+  - claim: "The domain redirection setting inspects all the domains in the DNS redirection chain by default, such as CNAME and DNAME, and its trust behaviour applies only within a single DNS query transaction"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-overview.html
+  - claim: "The query type setting filters a particular DNS query type, and if you don't select one the rule applies to all query types"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-overview.html
+  - claim: "DNS Firewall filters DNS queries originating within the associated VPC and queries that pass through Resolver endpoints from on-premises resources into that same VPC"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-overview.html
+  - claim: "Resolver DNS Firewall is a Regional service, so a rule group created in one Region is available only in that Region and must be created in each Region where you want to use it"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-overview.html
+  - claim: "DNS Firewall can block resolution requests to resources in private hosted zones including VPC endpoint names, and requests for public or private Amazon EC2 instance names"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall.html
+  - claim: "AWS recommends testing a blocking rule by first configuring it with the action set to Alert and counting the queries it alerts on"
+    source: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-rule-actions.html
+problem: "An account has a data perimeter on its endpoints and a domain allowlist on its egress firewall. A compromised instance still moves data out, one label at a time, in the subdomains of a name the attacker's own server is authoritative for. Neither control sees it, because the query never takes the path either of them inspects."
+builds: "DNS treated as a distinct egress path with its own filter: Resolver DNS Firewall rule groups on the VPC, AWS managed threat lists underneath any allow rule rather than above it, Advanced protections for the tunneling and DGA patterns a domain list cannot enumerate, and query logging kept because a flow log cannot record a name."
+catch: "DNS Firewall filters on the name only. AWS states it does not resolve that name to an IP address and does not filter other application layer protocols. It is not a network control that happens to read DNS, and the Allow action does not exist in Advanced rules, so a walled garden cannot be built out of the tunneling protections."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #046 &middot; Networking &amp; Security</div>
+  <h1 class="post-title">The query that never touches the firewall</h1>
+  <p class="post-subtitle">A VPC endpoint policy and an egress domain allowlist inspect two different paths. DNS is a third, and AWS says plainly that the firewall you put in the data path cannot see it.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Networking &middot; Security</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Two posts ago the finding was that a VPC endpoint changes the path a request takes and not the
+      destination at the end of it. Last time it was that an egress domain allowlist matches a name the
+      client itself supplies, scoped by a variable that defaults to inspecting nothing in a hub-and-spoke
+      deployment. This one closes the set, and it is the least comfortable of the three: there is a path
+      that neither control is on.
+    </p>
+    <p>
+      The account is well built by the standards of the previous two posts. Gateway and interface
+      endpoints carry S3 and DynamoDB traffic, endpoint policies are scoped with
+      <code class="inline">aws:ResourceOrgID</code>, and every route to the internet goes through a
+      central inspection VPC where Network Firewall holds a forty-entry domain allowlist with
+      <code class="inline">HOME_NET</code> correctly set to the spoke ranges. An application host is
+      compromised. Data leaves anyway, steadily, for days.
+    </p>
+    <p>
+      It leaves as DNS. The process encodes a chunk of a file into the labels of a name and looks up
+      <code class="inline">&lt;base32-of-the-data&gt;.exfil.example.com</code>. The VPC Resolver does what
+      resolvers do and walks the delegation to whichever nameserver is authoritative for
+      <code class="inline">exfil.example.com</code>, which is the attacker's. The data is in the question.
+      The answer is irrelevant and is usually discarded.
+    </p>
+    <p>
+      AWS describes the technique in one sentence that explains why the other controls are silent:
+      DNS tunneling <em>&ldquo;is used by attackers to exfiltrate data from the client by using the DNS
+      tunnel without making a network connection to the client.&rdquo;</em> There is no TCP session from
+      the instance to the attacker. There is nothing for a domain allowlist to match, because there is
+      no TLS handshake and no HTTP request.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The egress firewall is not on this path</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is not an oversight in the configuration. It is documented behaviour. AWS states that
+          Network Firewall <em>&ldquo;provides filtering for both network and application layer traffic,
+          but does not have visibility into queries made by Route 53 VPC Resolver.&rdquo;</em>
+        </p>
+        <p>
+          The Resolver is AWS infrastructure reached at a link-local address inside the VPC. Queries to
+          it are not routed to the transit gateway, so they never reach the inspection VPC, so no rule
+          in it applies. A firewall cannot filter traffic that does not pass through it, and a diagram
+          showing all egress flowing through an inspection VPC is telling the truth about every path
+          except this one.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Filter DNS where DNS is: a Resolver DNS Firewall rule group associated with the VPC.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>A domain list cannot enumerate this threat</strong></div>
+      <div class="challenge-body">
+        <p>
+          The instinct is to add <code class="inline">exfil.example.com</code> to a block list. That
+          works exactly once and only in hindsight. The base domain is chosen by the attacker, is
+          registered for the purpose, and is unknown to you at the time it matters &mdash; and the
+          traffic that gives it away is not the name but the <em>shape</em>: high query volume to a
+          single zone, long labels, high entropy, answers nobody reads.
+        </p>
+        <p>
+          That is what DNS Firewall Advanced rules are for, and they cover three patterns a list cannot:
+          Domain Generation Algorithms, DNS tunneling, and Dictionary DGA. The algorithms are managed
+          and updated by AWS.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat the domain list and the Advanced protections as answering different questions. One knows names; the other knows behaviour.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>An allow rule above the threat lists switches them off</strong></div>
+      <div class="challenge-body">
+        <p>
+          DNS Firewall evaluates rule groups by association priority from the lowest number up, and rules
+          within a group the same way. <strong>The first match terminates evaluation.</strong> An
+          <code class="inline">Allow</code> rule for a broad internal suffix, given a low priority number
+          because someone was unblocking a legitimate service under pressure, ends inspection for
+          everything it matches &mdash; including the managed malware and botnet lists sitting below it.
+        </p>
+        <p>
+          This is the same shape as the ordering trap in the previous post, where an
+          <code class="inline">Allow</code> domain rule group's implicit drop pre-empted the
+          <code class="inline">Alert</code> group behind it. Both are cases where a rule added to permit
+          something quietly stops something else from ever running.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Keep the managed threat lists at the lowest priority numbers. Narrow allow rules go below them, not above.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      DNS Firewall is a feature of the VPC Resolver rather than a box in the data path, and almost
+      everything that surprises people about it follows from that one fact.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-046-dns-firewall-egress.svg" alt="Diagram: the three egress paths out of a VPC and which control is on each. The data path to S3 through a VPC endpoint is governed by an endpoint policy. The data path to the internet through a transit gateway and inspection VPC is governed by Network Firewall's domain allowlist. The DNS path to the Route 53 VPC Resolver is on neither, because AWS states Network Firewall has no visibility into queries made by the VPC Resolver, and it is filtered instead by Resolver DNS Firewall rule groups associated with the VPC. Below, the DNS Firewall evaluation order: rule groups by association priority from the lowest number up, rules within a group the same way, first match terminating evaluation, and no match resolving as normal, with the VPC fail mode defaulting to closed and returning SERVFAIL." />
+      <figcaption>Three egress paths, three different controls, and one of them is not where the diagram usually puts it. DNS Firewall sits at the Resolver, so rule group order is the whole of its logic: first match wins and evaluation stops.</figcaption>
+    </figure>
+
+    <h3>What it filters, and what it refuses to pretend to be</h3>
+    <p>
+      The scope statement is unusually blunt for AWS documentation, and it is worth reading as a
+      limitation rather than a feature: <em>&ldquo;DNS Firewall only filters on the domain name. It does
+      not resolve that name to an IP address to be blocked. Additionally, DNS Firewall filters DNS
+      traffic, but it doesn't filter other application layer protocols, such as HTTPS, SSH, TLS, FTP,
+      and so on.&rdquo;</em>
+    </p>
+    <p>
+      So blocking a name does not block the address behind it. A process holding a cached answer, or an
+      address hard-coded, or a resolver of its own pointed at a public server on port 53 or 853, is not
+      touched by any of this. DNS Firewall closes the resolution channel; it does not close the network.
+      That is why it belongs <em>alongside</em> the controls from the previous two posts rather than
+      instead of them.
+    </p>
+
+    <h3>Evaluation order is the entire logic</h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-icon">1</div>
+        <div class="flow-content">
+          <h4>Rule groups, by association priority</h4>
+          <p>Lowest numeric priority first. A VPC can carry several; they are tried in order until something matches.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">2</div>
+        <div class="flow-content">
+          <h4>Rules within a group, by rule priority</h4>
+          <p>Same rule, one level down. Each rule holds exactly one domain list or one Advanced protection.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">3</div>
+        <div class="flow-content">
+          <h4>First match terminates</h4>
+          <p>DNS Firewall stops evaluating and answers the Resolver. Everything below the matching rule is not consulted.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">4</div>
+        <div class="flow-content">
+          <h4>No match resolves normally</h4>
+          <p>Exhausting every rule group is an implicit allow. A deny-by-default posture has to be written as an explicit block rule at the bottom.</p>
+        </div>
+      </div>
+    </div>
+
+    <h3>What a block actually returns</h3>
+    <p>
+      A <code class="inline">Block</code> rule does not simply drop the query. It replies, and the reply
+      you choose changes how the client behaves:
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h4>NXDOMAIN</h4>
+        <p>Tells the client the name does not exist. Clean, and indistinguishable from a typo &mdash; which is either useful or misleading depending on whether you want the blocked party to know.</p>
+      </div>
+      <div class="card">
+        <h4>NODATA</h4>
+        <p>Says the query succeeded but there is nothing to return. Some resolvers and libraries treat this very differently from NXDOMAIN on retry.</p>
+      </div>
+      <div class="card">
+        <h4>OVERRIDE</h4>
+        <p>Returns a record you choose. The type must be <code class="inline">CNAME</code>, and the TTL defaults to zero, so nothing is cached unless you raise it. This is how you point blocked traffic at a sinkhole or a walled-garden page.</p>
+      </div>
+      <div class="card">
+        <h4>Alert, before any of them</h4>
+        <p>AWS recommends creating a blocking rule as <code class="inline">Alert</code> first and counting what it would have caught. On a managed threat list that is not caution, it is the only way to size the false-positive cost.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The failure mode is the right way round by default</h3>
+    <p>
+      DNS Firewall defaults to failing <em>closed</em>: if VPC Resolver receives no reply from DNS
+      Firewall it blocks the query and returns <code class="inline">SERVFAIL</code>, which AWS describes
+      as favouring security over availability. Fail open is available and does the opposite.
+    </p>
+    <p>
+      This is worth knowing precisely, because the default is the opposite of the intuition most people
+      carry from other filtering products, and because the consequence is real: an impairment in DNS
+      Firewall becomes a DNS outage for every VPC associated with a rule group, not a silent bypass. If
+      you would rather have the bypass, that is a decision to take deliberately and write down &mdash;
+      not one to discover during an incident.
+    </p>
+
+    <div class="callout amber">
+      <strong>One caution on the documentation</strong>
+      <p>The overview page's high-level steps describe the fail setting the other way round, telling you to change the VPC configuration "if you want Route 53 VPC Resolver to block queries when DNS Firewall fails to send a response back". The dedicated VPC configuration page states the default plainly as closed, with a <code class="inline">SERVFAIL</code> response. Both pages are linked below; the configuration page is the one that matches the API, where the flag is <code class="inline">FirewallFailOpen</code>.</p>
+    </div>
+
+    <h3>The managed lists are a real asset and an opaque one</h3>
+    <p>
+      AWS maintains lists for malware, botnet command and control, an aggregate list that contains all
+      the others, and one sourced from GuardDuty's own detections. The data comes from AWS internal
+      sources and Recorded Future and is updated continually. Using them is free.
+    </p>
+    <p>
+      They also cannot be downloaded or browsed, deliberately, so that attackers cannot design around a
+      published list. That is a sound trade and it has an operational consequence: when a list blocks
+      something you needed, you cannot diff it or audit it. The remedy AWS documents is to find the
+      block in the Resolver query log, then add a narrow allow rule for that one name at a
+      <em>lower</em> priority number than the managed rule &mdash; the one legitimate case for putting
+      an allow rule above a threat list, and it should be one name wide.
+    </p>
+
+    <div class="callout green">
+      <strong>Why the query log is not the flow log</strong>
+      <p>A VPC flow log records addresses, ports and byte counts. It cannot record a name, because by the time a packet exists the name is gone. The Resolver query log is the only place the requested domain appears, and it is also where the rule group, the rule action and the matching managed list are recorded &mdash; which is what makes a false positive diagnosable at all.</p>
+    </div>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Where DNS is filtered</td>
+        <td>Resolver DNS Firewall, not the egress firewall</td>
+        <td>Network Firewall has no visibility into VPC Resolver queries. This is documented behaviour, not a gap in the rules.</td>
+      </tr>
+      <tr>
+        <td>Rule group order</td>
+        <td>Managed threat lists at the lowest priority numbers</td>
+        <td>First match terminates evaluation, so anything above the threat lists can switch them off for the names it matches.</td>
+      </tr>
+      <tr>
+        <td>Tunneling and DGA</td>
+        <td>Advanced protections, alert first, then block</td>
+        <td>These are behavioural patterns a domain list cannot enumerate, because the attacker chooses the domain and you learn it afterwards.</td>
+      </tr>
+      <tr>
+        <td>Confidence threshold</td>
+        <td>Start High, move down with evidence</td>
+        <td>High detects only well corroborated threats with few false positives; Low catches the most and costs the most to triage.</td>
+      </tr>
+      <tr>
+        <td>Fail mode</td>
+        <td>Leave it closed unless you have decided otherwise</td>
+        <td>The default favours security. Fail open turns an impairment into a silent bypass rather than a visible outage.</td>
+      </tr>
+      <tr>
+        <td>Query logging</td>
+        <td>On, and retained</td>
+        <td>It is the only record of the name, and the only way to diagnose a managed-list false positive.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>Two settings that decide more than they appear to</h3>
+    <p>
+      <strong>Domain redirection.</strong> By default a rule inspects every domain in a redirection
+      chain &mdash; the CNAME and DNAME targets, not just the name that was asked for. You can tell it
+      to trust the rest of the chain after the first name, which is faster and weaker. The trust applies
+      only within a single query transaction: if a client separately queries a redirection target
+      directly, that is evaluated as an independent query with no inherited trust.
+    </p>
+    <p>
+      <strong>Query type.</strong> A rule can be scoped to one DNS query type, and if you do not choose
+      one it applies to all of them. This is how you block a domain generally while still permitting
+      <code class="inline">MX</code>. It is also worth remembering when reasoning about tunneling, which
+      does not need <code class="inline">A</code> records and is perfectly happy in
+      <code class="inline">TXT</code> or <code class="inline">NULL</code>.
+    </p>
+
+    <div class="callout amber">
+      <strong>Advanced protections cannot build a walled garden</strong>
+      <p>The <code class="inline">Allow</code> action is available only on rules that carry a domain list. In an Advanced rule you can block or alert and nothing else. So a default-deny posture is always built from domain lists, and the tunneling and DGA protections sit alongside it as detection &mdash; they are not an allowlisting mechanism and cannot be made into one.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Three posts, three controls, one question underneath all of them: <em>which path does this
+      actually sit on?</em> An endpoint policy sits on the path to a service and says nothing about the
+      internet. A domain allowlist sits on the path to the internet and reads a field the client wrote.
+      DNS Firewall sits on the resolution path and never sees a packet.
+    </p>
+    <p>
+      None of them is weak. What is weak is the sentence in the architecture review that says
+      &ldquo;egress is controlled&rdquo;, because that sentence has no path in it. The version worth
+      writing names one: <em>traffic to AWS services is constrained by endpoint and organisation
+      policy; traffic to the internet is constrained by a domain allowlist that matches a client-supplied
+      name; DNS resolution is constrained by rule groups on the Resolver</em>. Three clauses, because
+      there are three paths, and the value of writing it that way is that the missing fourth one becomes
+      visible the moment somebody adds it.
+    </p>
+    <p>
+      For this series that has been the recurring lesson rather than any particular service: a control
+      is only as good as the honesty of the sentence describing what it observes.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Networking &amp; Security &mdash; the last mile of egress: what a VPC flow log can and cannot answer during an investigation, why the fields you want are the ones most often left at default, and how Traffic Mirroring changes the question when a flow log is not enough.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall.html" target="_blank" rel="noopener">Using DNS Firewall to filter outbound DNS traffic &#8212; including how it relates to Network Firewall</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-overview.html" target="_blank" rel="noopener">How Resolver DNS Firewall works &#8212; components, evaluation order, and the Advanced protections</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-vpc-configuration.html" target="_blank" rel="noopener">DNS Firewall VPC configuration &#8212; the fail open and fail closed setting</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-rule-actions.html" target="_blank" rel="noopener">Rule actions in DNS Firewall &#8212; Allow, Alert, Block and the block responses</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-managed-domain-lists.html" target="_blank" rel="noopener">Managed Domain Lists &#8212; what they cover and how to handle a false positive</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/firewall-advanced.html" target="_blank" rel="noopener">DNS Firewall Advanced Rules</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-query-logs.html" target="_blank" rel="noopener">Resolver query logging</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

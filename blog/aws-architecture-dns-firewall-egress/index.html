@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #46 — The query that never touches the firewall | Jayanth Katta Blog</title>
+<meta name="description" content="An account has a data perimeter on its endpoints and a domain allowlist on its egress firewall. A compromised instance still moves data out, one label at a time, in the subdomains of a name the attacker's own server is authoritative for. Neither control sees it, because the query never takes the path either of them inspects."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="The query that never touches the firewall"/>
+<meta property="og:description" content="An account has a data perimeter on its endpoints and a domain allowlist on its egress firewall. A compromised instance still moves data out, one label at a time, in the subdomains of a name the attacker's own server is authoritative for. Neither control sees it, because the query never takes the path either of them inspects."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-dns-firewall-egress/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="The query that never touches the firewall"/>
+<meta name="twitter:description" content="An account has a data perimeter on its endpoints and a domain allowlist on its egress firewall. A compromised instance still moves data out, one label at a time, in the subdomains of a name the attacker's own server is authoritative for. Neither control sees it, because the query never takes the path either of them inspects."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-dns-firewall-egress/"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=052ad60e"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #46 — The query that never touches the firewall…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #46 — The query that never touches the firewall</h1>
+      <p class="post-description">An account has a data perimeter on its endpoints and a domain allowlist on its egress firewall. A compromised instance still moves data out, one label at a time, in the subdomains of a name the attacker's own server is authoritative for. Neither control sees it, because the query never takes the path either of them inspects.</p>
+      <div class="post-info">
+        <span>Sep 8, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>12 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 8 September 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-dns-firewall-egress" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Two posts ago the finding was that a VPC endpoint changes the path a request takes and not the
+      destination at the end of it. Last time it was that an egress domain allowlist matches a name the
+      client itself supplies, scoped by a variable that defaults to inspecting nothing in a hub-and-spoke
+      deployment. This one closes the set, and it is the least comfortable of the three: there is a path
+      that neither control is on.
+    </p>
+    <p>
+      The account is well built by the standards of the previous two posts. Gateway and interface
+      endpoints carry S3 and DynamoDB traffic, endpoint policies are scoped with
+      <code class="inline">aws:ResourceOrgID</code>, and every route to the internet goes through a
+      central inspection VPC where Network Firewall holds a forty-entry domain allowlist with
+      <code class="inline">HOME_NET</code> correctly set to the spoke ranges. An application host is
+      compromised. Data leaves anyway, steadily, for days.
+    </p>
+    <p>
+      It leaves as DNS. The process encodes a chunk of a file into the labels of a name and looks up
+      <code class="inline">&lt;base32-of-the-data&gt;.exfil.example.com</code>. The VPC Resolver does what
+      resolvers do and walks the delegation to whichever nameserver is authoritative for
+      <code class="inline">exfil.example.com</code>, which is the attacker's. The data is in the question.
+      The answer is irrelevant and is usually discarded.
+    </p>
+    <p>
+      AWS describes the technique in one sentence that explains why the other controls are silent:
+      DNS tunneling <em>&ldquo;is used by attackers to exfiltrate data from the client by using the DNS
+      tunnel without making a network connection to the client.&rdquo;</em> There is no TCP session from
+      the instance to the attacker. There is nothing for a domain allowlist to match, because there is
+      no TLS handshake and no HTTP request.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The egress firewall is not on this path</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is not an oversight in the configuration. It is documented behaviour. AWS states that
+          Network Firewall <em>&ldquo;provides filtering for both network and application layer traffic,
+          but does not have visibility into queries made by Route 53 VPC Resolver.&rdquo;</em>
+        </p>
+        <p>
+          The Resolver is AWS infrastructure reached at a link-local address inside the VPC. Queries to
+          it are not routed to the transit gateway, so they never reach the inspection VPC, so no rule
+          in it applies. A firewall cannot filter traffic that does not pass through it, and a diagram
+          showing all egress flowing through an inspection VPC is telling the truth about every path
+          except this one.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Filter DNS where DNS is: a Resolver DNS Firewall rule group associated with the VPC.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>A domain list cannot enumerate this threat</strong></div>
+      <div class="challenge-body">
+        <p>
+          The instinct is to add <code class="inline">exfil.example.com</code> to a block list. That
+          works exactly once and only in hindsight. The base domain is chosen by the attacker, is
+          registered for the purpose, and is unknown to you at the time it matters &mdash; and the
+          traffic that gives it away is not the name but the <em>shape</em>: high query volume to a
+          single zone, long labels, high entropy, answers nobody reads.
+        </p>
+        <p>
+          That is what DNS Firewall Advanced rules are for, and they cover three patterns a list cannot:
+          Domain Generation Algorithms, DNS tunneling, and Dictionary DGA. The algorithms are managed
+          and updated by AWS.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat the domain list and the Advanced protections as answering different questions. One knows names; the other knows behaviour.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>An allow rule above the threat lists switches them off</strong></div>
+      <div class="challenge-body">
+        <p>
+          DNS Firewall evaluates rule groups by association priority from the lowest number up, and rules
+          within a group the same way. <strong>The first match terminates evaluation.</strong> An
+          <code class="inline">Allow</code> rule for a broad internal suffix, given a low priority number
+          because someone was unblocking a legitimate service under pressure, ends inspection for
+          everything it matches &mdash; including the managed malware and botnet lists sitting below it.
+        </p>
+        <p>
+          This is the same shape as the ordering trap in the previous post, where an
+          <code class="inline">Allow</code> domain rule group's implicit drop pre-empted the
+          <code class="inline">Alert</code> group behind it. Both are cases where a rule added to permit
+          something quietly stops something else from ever running.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Keep the managed threat lists at the lowest priority numbers. Narrow allow rules go below them, not above.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      DNS Firewall is a feature of the VPC Resolver rather than a box in the data path, and almost
+      everything that surprises people about it follows from that one fact.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-046-dns-firewall-egress.svg" alt="Diagram: the three egress paths out of a VPC and which control is on each. The data path to S3 through a VPC endpoint is governed by an endpoint policy. The data path to the internet through a transit gateway and inspection VPC is governed by Network Firewall's domain allowlist. The DNS path to the Route 53 VPC Resolver is on neither, because AWS states Network Firewall has no visibility into queries made by the VPC Resolver, and it is filtered instead by Resolver DNS Firewall rule groups associated with the VPC. Below, the DNS Firewall evaluation order: rule groups by association priority from the lowest number up, rules within a group the same way, first match terminating evaluation, and no match resolving as normal, with the VPC fail mode defaulting to closed and returning SERVFAIL." />
+      <figcaption>Three egress paths, three different controls, and one of them is not where the diagram usually puts it. DNS Firewall sits at the Resolver, so rule group order is the whole of its logic: first match wins and evaluation stops.</figcaption>
+    </figure>
+
+    <h3>What it filters, and what it refuses to pretend to be</h3>
+    <p>
+      The scope statement is unusually blunt for AWS documentation, and it is worth reading as a
+      limitation rather than a feature: <em>&ldquo;DNS Firewall only filters on the domain name. It does
+      not resolve that name to an IP address to be blocked. Additionally, DNS Firewall filters DNS
+      traffic, but it doesn't filter other application layer protocols, such as HTTPS, SSH, TLS, FTP,
+      and so on.&rdquo;</em>
+    </p>
+    <p>
+      So blocking a name does not block the address behind it. A process holding a cached answer, or an
+      address hard-coded, or a resolver of its own pointed at a public server on port 53 or 853, is not
+      touched by any of this. DNS Firewall closes the resolution channel; it does not close the network.
+      That is why it belongs <em>alongside</em> the controls from the previous two posts rather than
+      instead of them.
+    </p>
+
+    <h3>Evaluation order is the entire logic</h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-icon">1</div>
+        <div class="flow-content">
+          <h4>Rule groups, by association priority</h4>
+          <p>Lowest numeric priority first. A VPC can carry several; they are tried in order until something matches.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">2</div>
+        <div class="flow-content">
+          <h4>Rules within a group, by rule priority</h4>
+          <p>Same rule, one level down. Each rule holds exactly one domain list or one Advanced protection.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">3</div>
+        <div class="flow-content">
+          <h4>First match terminates</h4>
+          <p>DNS Firewall stops evaluating and answers the Resolver. Everything below the matching rule is not consulted.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon">4</div>
+        <div class="flow-content">
+          <h4>No match resolves normally</h4>
+          <p>Exhausting every rule group is an implicit allow. A deny-by-default posture has to be written as an explicit block rule at the bottom.</p>
+        </div>
+      </div>
+    </div>
+
+    <h3>What a block actually returns</h3>
+    <p>
+      A <code class="inline">Block</code> rule does not simply drop the query. It replies, and the reply
+      you choose changes how the client behaves:
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h4>NXDOMAIN</h4>
+        <p>Tells the client the name does not exist. Clean, and indistinguishable from a typo &mdash; which is either useful or misleading depending on whether you want the blocked party to know.</p>
+      </div>
+      <div class="card">
+        <h4>NODATA</h4>
+        <p>Says the query succeeded but there is nothing to return. Some resolvers and libraries treat this very differently from NXDOMAIN on retry.</p>
+      </div>
+      <div class="card">
+        <h4>OVERRIDE</h4>
+        <p>Returns a record you choose. The type must be <code class="inline">CNAME</code>, and the TTL defaults to zero, so nothing is cached unless you raise it. This is how you point blocked traffic at a sinkhole or a walled-garden page.</p>
+      </div>
+      <div class="card">
+        <h4>Alert, before any of them</h4>
+        <p>AWS recommends creating a blocking rule as <code class="inline">Alert</code> first and counting what it would have caught. On a managed threat list that is not caution, it is the only way to size the false-positive cost.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>The failure mode is the right way round by default</h3>
+    <p>
+      DNS Firewall defaults to failing <em>closed</em>: if VPC Resolver receives no reply from DNS
+      Firewall it blocks the query and returns <code class="inline">SERVFAIL</code>, which AWS describes
+      as favouring security over availability. Fail open is available and does the opposite.
+    </p>
+    <p>
+      This is worth knowing precisely, because the default is the opposite of the intuition most people
+      carry from other filtering products, and because the consequence is real: an impairment in DNS
+      Firewall becomes a DNS outage for every VPC associated with a rule group, not a silent bypass. If
+      you would rather have the bypass, that is a decision to take deliberately and write down &mdash;
+      not one to discover during an incident.
+    </p>
+
+    <div class="callout amber">
+      <strong>One caution on the documentation</strong>
+      <p>The overview page's high-level steps describe the fail setting the other way round, telling you to change the VPC configuration "if you want Route 53 VPC Resolver to block queries when DNS Firewall fails to send a response back". The dedicated VPC configuration page states the default plainly as closed, with a <code class="inline">SERVFAIL</code> response. Both pages are linked below; the configuration page is the one that matches the API, where the flag is <code class="inline">FirewallFailOpen</code>.</p>
+    </div>
+
+    <h3>The managed lists are a real asset and an opaque one</h3>
+    <p>
+      AWS maintains lists for malware, botnet command and control, an aggregate list that contains all
+      the others, and one sourced from GuardDuty's own detections. The data comes from AWS internal
+      sources and Recorded Future and is updated continually. Using them is free.
+    </p>
+    <p>
+      They also cannot be downloaded or browsed, deliberately, so that attackers cannot design around a
+      published list. That is a sound trade and it has an operational consequence: when a list blocks
+      something you needed, you cannot diff it or audit it. The remedy AWS documents is to find the
+      block in the Resolver query log, then add a narrow allow rule for that one name at a
+      <em>lower</em> priority number than the managed rule &mdash; the one legitimate case for putting
+      an allow rule above a threat list, and it should be one name wide.
+    </p>
+
+    <div class="callout green">
+      <strong>Why the query log is not the flow log</strong>
+      <p>A VPC flow log records addresses, ports and byte counts. It cannot record a name, because by the time a packet exists the name is gone. The Resolver query log is the only place the requested domain appears, and it is also where the rule group, the rule action and the matching managed list are recorded &mdash; which is what makes a false positive diagnosable at all.</p>
+    </div>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Where DNS is filtered</td>
+        <td>Resolver DNS Firewall, not the egress firewall</td>
+        <td>Network Firewall has no visibility into VPC Resolver queries. This is documented behaviour, not a gap in the rules.</td>
+      </tr>
+      <tr>
+        <td>Rule group order</td>
+        <td>Managed threat lists at the lowest priority numbers</td>
+        <td>First match terminates evaluation, so anything above the threat lists can switch them off for the names it matches.</td>
+      </tr>
+      <tr>
+        <td>Tunneling and DGA</td>
+        <td>Advanced protections, alert first, then block</td>
+        <td>These are behavioural patterns a domain list cannot enumerate, because the attacker chooses the domain and you learn it afterwards.</td>
+      </tr>
+      <tr>
+        <td>Confidence threshold</td>
+        <td>Start High, move down with evidence</td>
+        <td>High detects only well corroborated threats with few false positives; Low catches the most and costs the most to triage.</td>
+      </tr>
+      <tr>
+        <td>Fail mode</td>
+        <td>Leave it closed unless you have decided otherwise</td>
+        <td>The default favours security. Fail open turns an impairment into a silent bypass rather than a visible outage.</td>
+      </tr>
+      <tr>
+        <td>Query logging</td>
+        <td>On, and retained</td>
+        <td>It is the only record of the name, and the only way to diagnose a managed-list false positive.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>Two settings that decide more than they appear to</h3>
+    <p>
+      <strong>Domain redirection.</strong> By default a rule inspects every domain in a redirection
+      chain &mdash; the CNAME and DNAME targets, not just the name that was asked for. You can tell it
+      to trust the rest of the chain after the first name, which is faster and weaker. The trust applies
+      only within a single query transaction: if a client separately queries a redirection target
+      directly, that is evaluated as an independent query with no inherited trust.
+    </p>
+    <p>
+      <strong>Query type.</strong> A rule can be scoped to one DNS query type, and if you do not choose
+      one it applies to all of them. This is how you block a domain generally while still permitting
+      <code class="inline">MX</code>. It is also worth remembering when reasoning about tunneling, which
+      does not need <code class="inline">A</code> records and is perfectly happy in
+      <code class="inline">TXT</code> or <code class="inline">NULL</code>.
+    </p>
+
+    <div class="callout amber">
+      <strong>Advanced protections cannot build a walled garden</strong>
+      <p>The <code class="inline">Allow</code> action is available only on rules that carry a domain list. In an Advanced rule you can block or alert and nothing else. So a default-deny posture is always built from domain lists, and the tunneling and DGA protections sit alongside it as detection &mdash; they are not an allowlisting mechanism and cannot be made into one.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Three posts, three controls, one question underneath all of them: <em>which path does this
+      actually sit on?</em> An endpoint policy sits on the path to a service and says nothing about the
+      internet. A domain allowlist sits on the path to the internet and reads a field the client wrote.
+      DNS Firewall sits on the resolution path and never sees a packet.
+    </p>
+    <p>
+      None of them is weak. What is weak is the sentence in the architecture review that says
+      &ldquo;egress is controlled&rdquo;, because that sentence has no path in it. The version worth
+      writing names one: <em>traffic to AWS services is constrained by endpoint and organisation
+      policy; traffic to the internet is constrained by a domain allowlist that matches a client-supplied
+      name; DNS resolution is constrained by rule groups on the Resolver</em>. Three clauses, because
+      there are three paths, and the value of writing it that way is that the missing fourth one becomes
+      visible the moment somebody adds it.
+    </p>
+    <p>
+      For this series that has been the recurring lesson rather than any particular service: a control
+      is only as good as the honesty of the sentence describing what it observes.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Networking &amp; Security &mdash; the last mile of egress: what a VPC flow log can and cannot answer during an investigation, why the fields you want are the ones most often left at default, and how Traffic Mirroring changes the question when a flow log is not enough.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall.html" target="_blank" rel="noopener">Using DNS Firewall to filter outbound DNS traffic &#8212; including how it relates to Network Firewall</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-overview.html" target="_blank" rel="noopener">How Resolver DNS Firewall works &#8212; components, evaluation order, and the Advanced protections</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-vpc-configuration.html" target="_blank" rel="noopener">DNS Firewall VPC configuration &#8212; the fail open and fail closed setting</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-rule-actions.html" target="_blank" rel="noopener">Rule actions in DNS Firewall &#8212; Allow, Alert, Block and the block responses</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-dns-firewall-managed-domain-lists.html" target="_blank" rel="noopener">Managed Domain Lists &#8212; what they cover and how to handle a false positive</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/firewall-advanced.html" target="_blank" rel="noopener">DNS Firewall Advanced Rules</a></li>
+      <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-query-logs.html" target="_blank" rel="noopener">Resolver query logging</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/gcp-architecture-terraform-state/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">GCP Architecture Series #25 — Terraform on Google Cloud: The Provider and Where State Lives</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-dns-firewall-egress/';
+      this.page.identifier = 'aws-architecture-dns-firewall-egress';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var FORM_ID='xzdqqvqd';
+  var rating=0;
+  var btn=document.getElementById('fb-btn'),overlay=document.getElementById('fb-overlay');
+  var stars=document.querySelectorAll('.fb-star');
+  btn.addEventListener('click',function(){overlay.classList.add('open');});
+  overlay.addEventListener('click',function(e){if(e.target===overlay)overlay.classList.remove('open');});
+  document.getElementById('fb-skip').addEventListener('click',function(){overlay.classList.remove('open');});
+  stars.forEach(function(s){
+    s.addEventListener('click',function(){
+      rating=parseInt(s.getAttribute('data-v'));
+      stars.forEach(function(x){x.classList.toggle('on',parseInt(x.getAttribute('data-v'))<=rating);});
+    });
+  });
+  document.getElementById('fb-send').addEventListener('click',function(){
+    var msg=document.getElementById('fb-text').value;
+    fetch('https://formspree.io/f/'+FORM_ID,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({rating:rating,message:msg,page:window.location.pathname})
+    });
+    document.getElementById('fb-modal').innerHTML='<div class="fb-thanks"><span>&#10003;</span><strong>Thanks for your feedback!</strong><p style="color:#879196;font-size:13px;margin-top:0.35rem;">It means a lot.</p></div>';
+    setTimeout(function(){overlay.classList.remove('open');},2000);
+  });
+})();
+</script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=1005d142"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
