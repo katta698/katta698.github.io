@@ -29,6 +29,20 @@ BLOG_DIR    = REPO_ROOT / "blog"
 POSTS_DIR   = REPO_ROOT / "posts"
 ASSETS_URL  = "/blog/assets"
 
+# ── Email subscriptions ──────────────────────────────────────────────────
+# Buttondown handles confirmation, unsubscribe and delivery, and its
+# RSS-to-email feature sends automatically when blog/rss.xml changes -- so
+# publishing a post is still one push and nothing else. The list is
+# exportable, so this is a hosted convenience rather than a lock-in.
+#
+# Set to the Buttondown username. Empty disables the widget everywhere rather
+# than shipping a form that posts nowhere, because a signup box that silently
+# does nothing costs more trust than having no box at all.
+BUTTONDOWN_USER = "katta698"
+
+SUB_BLURB = ("One email when a post goes up. Architecture, weekly labs and "
+             "what the three clouds actually shipped.")
+
 # Hash the repository form of a file, not the working-tree form.
 #
 # core.autocrlf is true and there is no .gitattributes, so text files are LF in
@@ -2276,6 +2290,33 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
         for name, tag, cls, n in cloud_counts
     )
     # Only worth showing once there is more than one cloud to compare.
+    # ── Subscribe ─────────────────────────────────────────────
+    # Top of the sidebar, above the cloud counts. It is the only thing on this
+    # page asking the reader for something, so it goes where they are already
+    # looking rather than at the foot of a 20-card list.
+    #
+    # The form POSTs straight to Buttondown and does not need JavaScript: with
+    # JS the fetch keeps the reader on the page, without it the browser
+    # navigates to Buttondown's own confirmation. Both end with the reader
+    # subscribed, which is the point -- a signup that only works when a script
+    # loads is a signup that quietly fails for some people.
+    subscribe_widget = "" if not BUTTONDOWN_USER else f'''
+    <div class="sidebar-card subscribe-card">
+      <div class="sidebar-title">Get new posts by email</div>
+      <p class="sub-blurb">{SUB_BLURB}</p>
+      <form class="sub-form" id="sub-form"
+            action="https://buttondown.com/api/emails/embed-subscribe/{BUTTONDOWN_USER}"
+            method="post" target="_blank">
+        <label class="sr-only" for="bd-email">Email address</label>
+        <input class="sub-input" type="email" name="email" id="bd-email"
+               placeholder="you@example.com" required autocomplete="email"/>
+        <button class="sub-btn" type="submit">Subscribe</button>
+      </form>
+      <div class="sub-msg" id="sub-msg" role="status" aria-live="polite"></div>
+      <div class="svc-foot">No spam, unsubscribe in one click. Prefer a reader?
+        <a href="/blog/rss.xml">RSS</a>.</div>
+    </div>'''
+
     cloud_widget = "" if len(cloud_counts) < 2 else f'''
     <div class="sidebar-card" id="clouds-widget">
       <div class="sidebar-title">Posts by cloud</div>
@@ -2916,6 +2957,7 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     {pagination}
   </div>
   <aside class="sidebar">
+    {subscribe_widget}
     {cloud_widget}
     <div class="sidebar-card" id="services-widget">
       <div class="sidebar-title">Services across all posts</div>

@@ -1019,3 +1019,63 @@
     anchor.parentNode.insertBefore(wrap, anchor);
   }
 })();
+
+/* ── Subscribe form ───────────────────────────────────────────────────────
+   Progressive enhancement, deliberately.
+
+   The form already works with no JavaScript: it POSTs to Buttondown and the
+   browser navigates to their confirmation page. That is the floor, and it is
+   why the markup carries a real action and method rather than being wired up
+   here. This only improves on it -- posting in the background so the reader
+   keeps their place in the list they were reading.
+
+   If anything below throws, the submit handler is simply never attached and
+   the native form takes over. There is no state in which the button does
+   nothing. */
+(function () {
+  var form = document.getElementById('sub-form');
+  if (!form) return;
+  var msg = document.getElementById('sub-msg');
+  var btn = form.querySelector('.sub-btn');
+  var input = form.querySelector('.sub-input');
+
+  function say(text, kind) {
+    if (!msg) return;
+    msg.textContent = text;
+    msg.className = 'sub-msg show ' + kind;
+  }
+
+  form.addEventListener('submit', function (e) {
+    if (!input || !input.value) return;          // let the browser validate
+    e.preventDefault();
+    // target="_blank" is on the form for the no-JS path. Once we are handling
+    // it here, leaving it would open a blank tab on every submit.
+    form.removeAttribute('target');
+    btn.disabled = true;
+    var original = btn.textContent;
+    btn.textContent = 'Subscribing…';
+
+    fetch(form.action, {
+      method: 'POST',
+      mode: 'no-cors',                           // Buttondown's embed endpoint
+                                                 // sends no CORS headers, so
+                                                 // the response is opaque and
+                                                 // cannot be read. Success is
+                                                 // inferred from the request
+                                                 // completing, which is what
+                                                 // the no-JS path effectively
+                                                 // does too.
+      body: new FormData(form)
+    }).then(function () {
+      form.reset();
+      say('Check your inbox to confirm — the email is from Buttondown.', 'ok');
+    }).catch(function () {
+      // The request itself failed: offline, blocked, DNS. Send them down the
+      // path that does not depend on us.
+      say('That did not go through. Try again, or subscribe via RSS.', 'err');
+    }).then(function () {
+      btn.disabled = false;
+      btn.textContent = original;
+    });
+  });
+})();
