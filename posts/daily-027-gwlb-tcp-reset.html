@@ -1,0 +1,239 @@
+---
+title: 'AWS Daily Intelligence #27 - The appliance died and nobody told the client'
+date: '2026-09-08T10:00:00'
+slug: aws-daily-intelligence-gwlb-tcp-reset
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-09-08'
+verified_claims:
+  - claim: "Gateway Load Balancer now supports sending TCP Reset packets when a target becomes unhealthy, is deregistered, or when a flow's idle timeout expires"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/aws-gateway-load-balancer-tcp-reset/
+  - claim: "TCP Reset is not enabled by default, to ensure backward compatibility, and is enabled per target group using the console, CLI or API"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/aws-gateway-load-balancer-tcp-reset/
+  - claim: "The feature is available for all new and existing Gateway Load Balancers in all AWS Regions where GWLB is available, at no additional charge"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/aws-gateway-load-balancer-tcp-reset/
+  - claim: "target_failover.on_unhealthy indicates how the Gateway Load Balancer handles existing flows when a target is unhealthy, its possible values are rebalance and no_rebalance, and the default is no_rebalance"
+    source: https://docs.aws.amazon.com/elasticloadbalancing/latest/gateway/target-groups.html
+  - claim: "target_failover.on_deregistration has the same possible values and the same no_rebalance default, and the two attributes cannot be set independently because the value set for both must be the same"
+    source: https://docs.aws.amazon.com/elasticloadbalancing/latest/gateway/target-groups.html
+  - claim: "deregistration_delay.timeout_seconds is the time Elastic Load Balancing waits before changing a deregistering target from draining to unused, with a range of 0 to 3600 seconds and a default of 300 seconds"
+    source: https://docs.aws.amazon.com/elasticloadbalancing/latest/gateway/target-groups.html
+  - claim: "The 300 second deregistration delay default is five minutes"
+    derive: "300 / 60"
+    expect: "5"
+    source: https://docs.aws.amazon.com/elasticloadbalancing/latest/gateway/target-groups.html
+  - claim: "stickiness.enabled defaults to false, and when the attribute is set to false 5-tuple flow stickiness is used"
+    source: https://docs.aws.amazon.com/elasticloadbalancing/latest/gateway/target-groups.html
+  - claim: "For Gateway Load Balancer target groups the configurable flow stickiness types are source_ip_dest_ip and source_ip_dest_ip_proto"
+    source: https://docs.aws.amazon.com/elasticloadbalancing/latest/gateway/target-groups.html
+  - claim: "Gateway Load Balancer target groups use the GENEVE protocol on port 6081, and the GENEVE header uses a Type-Length-Value format with Option Class 0x0108 that appliances must decapsulate"
+    source: https://docs.aws.amazon.com/elasticloadbalancing/latest/gateway/target-groups.html
+  - claim: "Deregistering a target removes it from the target group without otherwise affecting it, the Gateway Load Balancer stops routing traffic to it as soon as it is deregistered, and the target enters the draining state until in-flight requests have completed"
+    source: https://docs.aws.amazon.com/elasticloadbalancing/latest/gateway/target-groups.html
+  - claim: "Each target group must have at least one registered target in each Availability Zone that is enabled for the Gateway Load Balancer"
+    source: https://docs.aws.amazon.com/elasticloadbalancing/latest/gateway/target-groups.html
+  - claim: "A Gateway Load Balancer target group's target type is instance or ip, cannot be changed after creation, and publicly routable IP addresses cannot be specified"
+    source: https://docs.aws.amazon.com/elasticloadbalancing/latest/gateway/target-groups.html
+problem: "AWS shipped TCP Reset for Gateway Load Balancer. Read as a failover feature it looks minor. Read against the target group defaults it is the missing half of a failure mode most inspection VPCs still have: when an appliance dies, existing flows stay pinned to it, and until now nothing told the client."
+builds: "A reading of what the feature does and does not do, the three target group attributes that decide how an appliance failure actually behaves, and why AWS shipped this switched off."
+catch: "TCP Reset is not failover. target_failover.on_unhealthy still defaults to no_rebalance, so the flow is not moved to a healthy appliance. The reset tells the client the flow is dead so it opens a new one, which is a different mechanism with a different failure surface."
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      Monday was Labor Day and AWS published nothing, so today's item is the strongest unwritten one from last week. On 3 September AWS added TCP Reset support to Gateway Load Balancer: <em>GWLB now supports sending TCP Reset (RST) packets when a target becomes unhealthy, is deregistered, or when a flow's idle timeout expires.</em>
+    </p>
+    <p>
+      The announcement frames this as faster recovery, and it is — AWS says traffic previously continued reaching unhealthy targets for several minutes because of TCP retry behaviour, and that endpoints can now recover in seconds. But the sentence worth sitting with is what the feature is <em>not</em>. It does not move your flow to a healthy appliance. The target group attribute that governs that, <code>target_failover.on_unhealthy</code>, still defaults to <code>no_rebalance</code>.
+    </p>
+    <p>
+      So the mechanism is not failover, it is <strong>notification</strong>. The dead flow stays dead. What changes is that the client is told, immediately, instead of retransmitting into silence until its own stack gives up. The client then opens a new connection, and <em>that</em> one is placed on a healthy target. Recovery happens because the client reconnects, not because AWS rescued the flow.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <div class="table-scroll">
+      <table>
+        <tr>
+          <th>Aspect</th>
+          <th>Before</th>
+          <th>After</th>
+        </tr>
+        <tr>
+          <td>Unhealthy target, existing flow</td>
+          <td>Flow stays pinned to the target. Packets are dropped silently. The client retransmits until its own TCP timeout.</td>
+          <td>Optionally, GWLB sends a TCP RST. The client learns at once and can reconnect.</td>
+        </tr>
+        <tr>
+          <td>Deregistration</td>
+          <td>Target enters <code>draining</code> and waits out <code>deregistration_delay.timeout_seconds</code>, 300 seconds by default.</td>
+          <td>RST can be sent, so flows do not have to be waited out.</td>
+        </tr>
+        <tr>
+          <td>Idle timeout expiry</td>
+          <td>The flow state is discarded. The client discovers this only on its next packet, if at all.</td>
+          <td>RST is sent when the flow's idle timeout expires.</td>
+        </tr>
+        <tr>
+          <td>Default</td>
+          <td colspan="2">Off. AWS states it is <em>not enabled by default to ensure backward compatibility</em>, and is set per target group through the console, CLI or API.</td>
+        </tr>
+        <tr>
+          <td>Scope and price</td>
+          <td colspan="2">All new and existing Gateway Load Balancers, in every Region where GWLB is available, at no additional charge.</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-027-gwlb-tcp-reset.svg" alt="Diagram: an appliance failure in a Gateway Load Balancer inspection VPC, before and after TCP Reset. Before, the appliance fails its health check, the existing flow stays pinned to it because target_failover.on_unhealthy defaults to no_rebalance, packets are dropped silently, and the client retransmits until its own TCP timeout, which AWS describes as several minutes. After, with TCP Reset enabled on the target group, the Gateway Load Balancer sends a reset packet, the client learns immediately, and the client opens a new connection which is placed on a healthy appliance. A note records that the flow itself is still not rebalanced and that recovery happens because the client reconnects." />
+      <figcaption>What TCP Reset changes is who knows the flow is dead, and how quickly. The flow itself is still not moved — <code>no_rebalance</code> is still the default.</figcaption>
+    </figure>
+    <p>
+      Gateway Load Balancer sits in the middle of a bump-in-the-wire inspection path, encapsulating the original packet in GENEVE on port 6081 and handing it to an appliance that decapsulates it, inspects it, and returns it. Because the appliance is stateful, GWLB pins a flow to one target: by default <code>stickiness.enabled</code> is false, which means 5-tuple. Every packet in a conversation reaches the same firewall, which is the entire point.
+    </p>
+    <p>
+      That pinning is also what makes appliance failure awkward. The flow belongs to a specific target, and the two attributes that decide what happens when that target goes away both default to leaving the flow where it is:
+    </p>
+    <ul>
+      <li><code>target_failover.on_unhealthy</code> — <code>rebalance</code> or <code>no_rebalance</code>, default <strong><code>no_rebalance</code></strong>.</li>
+      <li><code>target_failover.on_deregistration</code> — the same values, the same default, and AWS is explicit that the two <em>cannot be set independently</em>: whatever you choose, both must match.</li>
+    </ul>
+    <p>
+      Leaving them at the default is a defensible choice, not an oversight. Rebalancing a live flow onto a different appliance hands it to a firewall that has never seen the beginning of the conversation, so a stateful inspection engine may simply drop it as out-of-state. Moving the flow can be worse than losing it. What was missing was any way to lose it <em>promptly</em>.
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      The value is bounded and easy to state: it converts a multi-minute stall into a fast, explicit failure. AWS's own framing is that traffic previously kept reaching unhealthy targets for several minutes because of TCP retries, and that endpoints can now recover in seconds.
+    </p>
+    <p>
+      For a payments or API tier behind an inspection VPC, the difference between a connection that hangs for minutes and one that is refused immediately is the difference between a stuck request queue and a retry. Client libraries almost always handle a reset well; almost none handle a silent black hole well.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      Nothing here weakens the inspection guarantee, and that is worth being precise about. The reset is sent when a target is unhealthy, deregistered, or the flow has timed out — it does not cause traffic to bypass inspection. A new connection is placed on a healthy appliance and is inspected normally.
+    </p>
+    <p>
+      There is a small information-disclosure consideration in that an RST is a signal a client can observe, so a peer can distinguish "appliance failed" from "network black hole" more easily than before. For an internal inspection path this is not usually a meaningful concern, and the operational gain is large.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      No additional charge for the feature. The relevant cost is the one it makes visible rather than one it adds: a stalled flow occupies a connection slot, a worker thread, and often a retry budget for the whole of its timeout. Shortening that is a capacity saving that will not appear on the AWS bill.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      Enabling this changes what applications see, which is exactly why AWS shipped it off by default. A component that currently treats a stalled connection as "slow, keep waiting" will start receiving a hard refusal. That is the improvement, and it is still a behaviour change, so it belongs in a change window with the retry paths reviewed rather than switched on estate-wide on a Friday.
+    </p>
+    <p>
+      The deregistration case is the one to rehearse first, because it is the planned one. Replacing an appliance today means the target enters <code>draining</code> and existing flows wait out <code>deregistration_delay.timeout_seconds</code> — a 300-second default, which is five minutes of a maintenance window spent watching a timer. With reset enabled that window is bounded by how fast clients reconnect.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <div class="table-scroll">
+      <table>
+        <tr>
+          <th>Option</th>
+          <th>Works well when</th>
+          <th>Breaks down when</th>
+        </tr>
+        <tr>
+          <td>TCP Reset on, <code>no_rebalance</code></td>
+          <td>Clients reconnect cleanly. The common case, and the one AWS has now made viable.</td>
+          <td>A long-lived flow that cannot be re-established cheaply — a large transfer, a database session, a tunnel.</td>
+        </tr>
+        <tr>
+          <td>TCP Reset off, <code>no_rebalance</code></td>
+          <td>Nothing. This is the old behaviour, and its only merit is that it is what you already have.</td>
+          <td>Any appliance failure: the stall lasts until each client's own TCP timeout.</td>
+        </tr>
+        <tr>
+          <td><code>rebalance</code></td>
+          <td>Appliances that are genuinely stateless, or that share state out of band.</td>
+          <td>Stateful inspection. The new appliance never saw the handshake and may drop the flow as out-of-state.</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation</h2>
+    <p>
+      Check what your target groups do today before changing anything. The failover attributes are the ones that decide the shape of a failure, and most groups have never had them set:
+    </p>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">bash</span>
+        <div class="code-dots"><span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span></div>
+      </div>
+<pre>aws elbv2 describe-target-group-attributes \
+  --target-group-arn &lt;arn&gt; \
+  --query "Attributes[?starts_with(Key, 'target_failover') \
+           || Key=='deregistration_delay.timeout_seconds' \
+           || Key=='stickiness.enabled']"</pre>
+    </div>
+    <p>
+      Expect to see <code>no_rebalance</code> twice, <code>300</code>, and <code>false</code> — the defaults. Enable TCP Reset per target group, verify against one appliance by failing its health check deliberately, and measure the client-side recovery rather than trusting the console to tell you it worked.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <ul>
+      <li>Enable it, but per target group and behind a change window, because it changes what clients observe.</li>
+      <li>Leave <code>target_failover</code> at <code>no_rebalance</code> for stateful appliances. Reset plus reconnect is the safer path than moving a live flow to a firewall that never saw its handshake.</li>
+      <li>Remember the two failover attributes must carry the same value; you cannot rebalance on deregistration only.</li>
+      <li>Test the deregistration case first. It is the planned one, and it is where the 300-second default is costing you a real maintenance window.</li>
+      <li>Confirm your clients retry. A reset only helps a client that opens a new connection.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt this</h2>
+    <p>
+      Anyone running a GWLB inspection path with stateful appliances — which is to say most people who run GWLB at all. The change is free, Region-wide, applies to existing load balancers, and addresses a failure mode that is otherwise invisible until an appliance dies during business hours.
+    </p>
+    <p>
+      The exception is a fleet whose flows are long-lived and expensive to re-establish. There, a reset ends the flow sooner but does not make re-establishing it cheaper, and the honest answer is that appliance failure will hurt either way.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Takeaways</h2>
+    <ul>
+      <li>TCP Reset is notification, not failover. The flow is still not rebalanced; the client is simply told, so it can reconnect.</li>
+      <li><code>target_failover.on_unhealthy</code> and <code>.on_deregistration</code> both default to <code>no_rebalance</code>, and must be set to the same value as each other.</li>
+      <li>Off by default for backward compatibility, per target group, no charge, every GWLB Region.</li>
+      <li>The planned case — deregistration with a 300-second default drain — is where the benefit is easiest to measure.</li>
+      <li>Monday produced no announcements. A day with no news is not a gap in coverage; the weekly roundup still carries the date range, and held items compete for the slot on their merits.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/09/aws-gateway-load-balancer-tcp-reset/" target="_blank" rel="noopener">AWS Gateway Load Balancer now supports TCP Reset &#8212; 3 September 2026</a></li>
+      <li><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/gateway/target-groups.html" target="_blank" rel="noopener">Target groups for your Gateway Load Balancers &#8212; the failover, stickiness and deregistration attributes</a></li>
+      <li><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/gateway/health-checks.html" target="_blank" rel="noopener">Health checks for Gateway Load Balancer target groups</a></li>
+      <li><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/gateway/edit-target-group-attributes.html" target="_blank" rel="noopener">Edit target group attributes</a></li>
+    </ul>
+  </div>
+</div>
