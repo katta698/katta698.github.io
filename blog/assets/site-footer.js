@@ -56,8 +56,14 @@
       '<p>&copy; <span data-current-year></span> Jayanth Katta &mdash; ' +
       '<a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>';
     updateYear();
-    buildNavControl();
+    // paintInstrument BEFORE buildNavControl. It publishes window.jkInstrument,
+    // and buildNavControl paints the palette dot, which now needs to know which
+    // glyph the instrument button is showing so it can avoid picking the same
+    // one. In the other order the dot is painted first, jkInstrument is still
+    // undefined, and the collision guard silently never fires -- which is worse
+    // than not having it, because the code reads as though it is protected.
     paintInstrument();
+    buildNavControl();
     scheduleMidnightRefresh();
   }
 
@@ -226,7 +232,26 @@
 
   function markFor(day) {
     var set = MARKS[day] || MARKS.thu;
-    return set[weekIndex() % set.length];
+    var i = weekIndex() % set.length;
+    var m = set[i];
+
+    // Do not hand back the glyph the instrument button is already showing.
+    //
+    // Both lists were built so that no glyph repeats WITHIN them, and that was
+    // taken to be enough. It is not: the two controls sit next to each other in
+    // the nav, and the rotations are independent, so the only thing stopping a
+    // collision was luck. It ran out on Tuesday 8 September 2026 -- the
+    // instrument rotation reached Mridangam and the tue marks reached the same
+    // drum, and the nav showed two identical buttons with no way to tell which
+    // was which.
+    //
+    // Stepping to the next mark in the same day's set keeps the mark on-theme
+    // for that day, which swapping in a fixed substitute would not.
+    var ins = window.jkInstrument && window.jkInstrument.glyph;
+    if (ins && m === ins && set.length > 1) {
+      m = set[(i + 1) % set.length];
+    }
+    return m;
   }
 
   // ---- the instrument on the audio button --------------------------------
