@@ -1,0 +1,266 @@
+---
+title: "Azure Architecture Series #27 — Terraform on Azure: the AzureRM Provider and State"
+date: '2026-09-08T09:00:00'
+slug: azure-architecture-terraform-state
+labels: [Azure, "Azure Architecture Series"]
+verified: '2026-09-08'
+verified_claims:
+  - claim: "Terraform state is used to reconcile deployed resources with Terraform configurations, and state allows Terraform to know what Azure resources to add, update, or delete"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "By default, Terraform state is stored locally, which isn't ideal because local state doesn't work well in a team or collaborative environment, Terraform state can include sensitive information, and storing state locally increases the chance of inadvertent deletion"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "Terraform state is stored in plain text and might contain secrets. If you don't secure the state correctly, unauthorized users can access systems and cause data loss"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "Azure Storage blobs are automatically locked before any operation that writes state, and this pattern prevents concurrent state operations, which can cause corruption"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "Data stored in an Azure blob is encrypted before being persisted, and when needed Terraform retrieves the state from the backend and stores it in local memory, so state is never written to your local disk"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "To configure the backend state you need the storage account name, the container name, the key which is the name of the state store file to create, and the access key"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "Use an environment variable for the access_key value, because by using an environment variable you prevent the key from being written to disk"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "In a production deployment, evaluate the available authentication options supported by the azurerm backend and use the most secure option for your use case"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "In a production deployment, restrict access to the state storage account by using a storage firewall, service endpoint, or private endpoint"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "Azure Storage account conversions can change storage account properties outside of Terraform, and if Terraform detects these changes before you update your configuration, it might plan to delete and recreate the storage account, which can cause application downtime or data loss"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "Before starting a storage account conversion, disable automatic approval for Terraform deployments and review every terraform plan for unexpected resource replacement"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "Set prevent_destroy = true in the storage account resource's lifecycle block to help prevent accidental deletion"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "After the conversion is complete, reconcile your Terraform configuration and state: run terraform apply -refresh-only, update your configuration to match the converted values, remove ignore_changes, then run terraform plan and confirm it reports no unexpected changes"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "Before you use Azure Storage as a backend, you must create a storage account"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "To further protect the Azure Storage account access key, store it in Azure Key Vault"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+  - claim: "Azure storage accounts require a globally unique name"
+    source: https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">Azure Architecture Series &middot; #027 &middot; Foundations</div>
+  <h1 class="post-title">Terraform on Azure: the AzureRM Provider and State</h1>
+  <p class="post-subtitle">ARM and Bicep hold no state, because Resource Manager is the state. Terraform keeps its own record of what exists &mdash; and every difference between the two approaches, in both directions, follows from that single fact.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Azure Governance &middot; Infrastructure as Code &middot; Foundations</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Posts #24 to #26 covered Microsoft's own tooling: where a deployment runs, what a template contains, and what Bicep compiles to. This post covers the tool a large share of Azure estates actually use, and the honest way to introduce it is by naming the structural difference rather than comparing syntax.
+    </p>
+    <p>
+      An ARM or Bicep deployment involves two things: the template you submit, and what Azure currently holds. Resource Manager reconciles them. There is no third artefact, nothing to store, nothing to lock, and nothing to lose.
+    </p>
+    <p>
+      Terraform involves three: the configuration you wrote, the <strong>state</strong> it maintains, and what Azure currently holds. State is not an optimisation that could be removed &mdash; HashiCorp's own documentation is blunt that <em>state is a necessary requirement for Terraform to function</em> &mdash; and it does four jobs at once:
+    </p>
+    <ul>
+      <li><strong>Mapping.</strong> Terraform requires state to create <em>a mapping to map Terraform config to the real world</em> &mdash; which real Azure resource a given block refers to.</li>
+      <li><strong>Dependency metadata.</strong> State maintains <em>metadata such as resource dependencies</em>, which matters most when destroying: the configuration describing the relationship has been deleted, so the record is the only thing that knows the order.</li>
+      <li><strong>An attribute cache.</strong> State functions as <em>a cache of the attribute values for all resources</em>, so a plan does not have to read the whole estate back through the API.</li>
+      <li><strong>Team synchronisation.</strong> For collaborative work, <em>remote state is the recommended solution</em> &mdash; one shared snapshot with locking rather than one per laptop.</li>
+    </ul>
+    <p>
+      Everything distinctive about running Terraform on Azure, good and bad, comes from that third artefact. The plan preview that Bicep has no equivalent of exists because Terraform has a record to diff against. So does drift. So does the state file being the most sensitive object in the pipeline.
+    </p>
+
+    <div class="callout amber">
+      <strong>Drift is a concept the other two tools cannot have</strong>
+      <p>If Resource Manager is the only record, there is nothing for reality to drift from &mdash; a Bicep deployment simply asserts the desired shape again. Terraform's state can disagree with Azure, and reconciling that disagreement is a recurring operational task rather than an occasional accident. That is the cost side of the ledger, and it is worth paying only because the plan preview and the multi-cloud surface are on the other side.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/az-027-terraform-state.svg" alt="Diagram: Terraform on Azure, contrasting ARM and Bicep which hold no state because Resource Manager is the record, with Terraform which keeps its own state file and therefore compares three things — configuration, state and Azure — the four jobs state does, the azurerm backend with blob lease locking and encryption at rest, the authentication ladder from access key to Microsoft Entra ID, and the drift failure where a change made outside Terraform can make it plan a delete and recreate" />
+      <figcaption>Two records versus three. The third one is what buys the plan preview and what creates every problem below it.</figcaption>
+    </figure>
+
+    <h3>Where state should live, and why local is the wrong answer</h3>
+    <p>
+      By default Terraform state is stored locally, and Microsoft lists three reasons that is not acceptable for anything real: local state does not work well in a team or collaborative environment, <strong>Terraform state can include sensitive information</strong>, and storing state locally increases the chance of inadvertent deletion.
+    </p>
+    <p>
+      The Azure answer is the <code>azurerm</code> backend, which puts state in a blob. The configuration needs four things: the storage account name, the container name, the <code>key</code> &mdash; which is the name of the state file to create &mdash; and credentials. Two behaviours come with it for free, and both matter:
+    </p>
+    <ul>
+      <li><strong>Locking.</strong> Azure Storage blobs are automatically locked before any operation that writes state. That is what prevents two concurrent runs corrupting it, and it is visible as a lease on the blob in the portal.</li>
+      <li><strong>Encryption, and nothing on disk.</strong> Data in a blob is encrypted before being persisted, and Terraform retrieves state into local memory rather than writing it out &mdash; so <em>state is never written to your local disk</em>. The laptop stops being a place state can leak from.</li>
+    </ul>
+    <p>
+      There is a bootstrap problem worth planning for rather than discovering: <strong>before you use Azure Storage as a backend, you must create a storage account.</strong> Whatever creates it cannot itself be using it, so the backend storage is either created by CLI, or by a small Terraform configuration whose own state is local and disposable. Either way it is a deliberate first step, not part of the main pipeline.
+    </p>
+
+    <h3>Authentication: the part the Microsoft tutorial explicitly defers on</h3>
+    <p>
+      The Microsoft walkthrough authenticates the backend with a storage <strong>access key</strong>, held in the <code>ARM_ACCESS_KEY</code> environment variable so it is not written to disk, and it says plainly what that is: a tutorial choice. <em>In a production deployment, evaluate the available authentication options supported by the azurerm backend and use the most secure option for your use case.</em>
+    </p>
+    <p>
+      HashiCorp's backend documentation answers that. It marks SAS token, access key and access key lookup as <strong>not recommended for new workloads</strong>, and Microsoft Entra ID as the recommended path, enabled with <code>use_azuread_auth = true</code> &mdash; described as using Microsoft Entra ID authentication to the storage account <em>data plane</em>.
+    </p>
+    <p>
+      That word is the connection to post #19. The state blob is a data plane object, so the role required is <strong>Storage Blob Data Contributor</strong> on the container &mdash; and no control plane role implies it. A pipeline identity holding Contributor on the subscription can see the storage account and cannot read the state file, which is exactly the separation post #18 described and exactly the error that gets misdiagnosed as a backend misconfiguration.
+    </p>
+
+    <div class="callout amber">
+      <strong>The state file is the most sensitive artefact in the pipeline</strong>
+      <p><em>Terraform state is stored in plain text and might contain secrets. If you don't secure the state correctly, unauthorized users can access systems and cause data loss.</em> Post #25 covered the trouble Microsoft goes to keeping secrets out of ARM deployment history &mdash; a <code>securestring</code> output is unreadable even by another template. Terraform's model puts resource attributes in a file so that it can diff them, and that file is plain text. Whatever an ARM template would have hidden, the state records. Which is why the storage account holding it deserves a storage firewall, service endpoint or private endpoint, and access controlled as tightly as anything it describes.</p>
+    </div>
+
+    <h3>Drift, and the failure Microsoft chose to document</h3>
+    <p>
+      The clearest example of the two-records problem is one Microsoft puts on the same page as the backend setup, and it is worth reading closely because it is not a corner case.
+    </p>
+    <p>
+      <strong>Azure Storage account conversions can change storage account properties outside of Terraform.</strong> If Terraform detects those changes before the configuration is updated, <em>it might plan to delete and recreate the storage account</em> &mdash; which, in Microsoft's own words, <em>can cause application downtime or data loss</em>.
+    </p>
+    <p>
+      Sit with the shape of that. Somebody makes a legitimate change through the portal or a support process. Terraform notices, decides the real resource no longer matches, and concludes the correct remedy is to destroy and rebuild it. Nothing malfunctioned; the tool did exactly what its model requires. The danger is entirely in a plan that looks routine being approved without being read.
+    </p>
+    <p>
+      The documented procedure is a good template for handling any out-of-band change:
+    </p>
+    <ol>
+      <li><strong>Disable automatic approval</strong> and review every <code>terraform plan</code> for unexpected resource replacement.</li>
+      <li><strong>Set <code>prevent_destroy = true</code></strong> in the resource's <code>lifecycle</code> block, so an accidental destroy fails rather than proceeds.</li>
+      <li><strong>Temporarily <code>ignore_changes</code></strong> on the property being converted, so Terraform stops trying to reconcile it mid-flight.</li>
+      <li><strong>Reconcile afterwards</strong>: run <code>terraform apply -refresh-only</code>, update the configuration to match the converted values, remove <code>ignore_changes</code>, then run <code>terraform plan</code> and confirm it reports no unexpected changes.</li>
+    </ol>
+    <p>
+      Note the ordering. The guard rails go up <em>before</em> the out-of-band change, and come down only after a clean plan proves the three records agree again.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Is an Architecture Decision and Not a Tooling Preference</h2>
+
+    <h3>State is a shared, lockable, single point of failure</h3>
+    <p>
+      Everything about how state is stored is an availability and blast-radius decision. One state file per environment means one lock: two pipelines cannot apply at once, which is protective and also a queue. Splitting state into more files removes the queue and removes the guarantee that a single plan sees the whole picture.
+    </p>
+    <p>
+      That trade is the real design work in a Terraform estate, and it maps onto the same lifecycle question posts #21 and #23 kept arriving at: things that change together belong together. A state file per lifecycle boundary &mdash; platform networking, shared services, each workload &mdash; gives independent locks and independent blast radius, at the cost of needing explicit plumbing to pass values between them.
+    </p>
+
+    <h3>The plan is the feature, so protect the habit of reading it</h3>
+    <p>
+      The plan preview is the strongest argument for Terraform on Azure, and the storage-account example shows it is also the only thing standing between an out-of-band change and a deleted resource. Automatic approval removes exactly the safeguard that justifies the tool.
+    </p>
+    <p>
+      This is the same argument post #17 made about policy effects and post #23 made about resource moves: put the cost in front of the person who can act on it. A plan nobody reads is a validation step that has been switched off while still appearing in the pipeline.
+    </p>
+
+    <h3>Identity for the backend is a separate decision from identity for the provider</h3>
+    <p>
+      Two authentications happen in a Terraform run and they are easy to conflate. The <em>provider</em> authenticates to Resource Manager to create resources &mdash; a control plane concern, and the place subscription-scoped roles apply. The <em>backend</em> authenticates to the storage account to read and write state &mdash; a data plane concern, needing Storage Blob Data Contributor on the container.
+    </p>
+    <p>
+      Getting one right does not get the other right, and the recommendation for both is the same in spirit: Entra ID over keys, and credentials supplied through environment variables rather than committed to configuration. Microsoft adds the belt-and-braces version for anyone still using an access key &mdash; store it in Key Vault and read it into the environment variable at run time.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <h3>The shape that works</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>What to do</th><th>Why</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Where state lives</td>
+          <td>The <code>azurerm</code> backend, never local, from the first commit</td>
+          <td>Local state fails in a team, can include sensitive information, and is easy to delete by accident.</td>
+        </tr>
+        <tr>
+          <td>Backend authentication</td>
+          <td><code>use_azuread_auth = true</code> with Storage Blob Data Contributor on the container</td>
+          <td>Access keys and SAS tokens are marked not recommended for new workloads, and the state blob is a data plane object no control plane role reaches.</td>
+        </tr>
+        <tr>
+          <td>Protecting the state account</td>
+          <td>Storage firewall, service endpoint or private endpoint, plus access reviewed like the estate it describes</td>
+          <td>State is plain text and might contain secrets, so the account holding it is as sensitive as everything in it.</td>
+        </tr>
+        <tr>
+          <td>Bootstrapping the backend</td>
+          <td>Create the storage account deliberately, by CLI or a disposable local-state configuration</td>
+          <td>The backend must exist before it can be used, so the chicken-and-egg is planned rather than discovered.</td>
+        </tr>
+        <tr>
+          <td>State granularity</td>
+          <td>One state file per lifecycle boundary</td>
+          <td>Each file is a lock and a blast radius. One file for everything serialises every team; one per resource loses the whole-picture plan.</td>
+        </tr>
+        <tr>
+          <td>Automatic approval</td>
+          <td>Off for anything holding data</td>
+          <td>A routine-looking plan can contain a delete-and-recreate after an out-of-band change, which is downtime or data loss.</td>
+        </tr>
+        <tr>
+          <td>Irreplaceable resources</td>
+          <td><code>prevent_destroy = true</code> in the <code>lifecycle</code> block</td>
+          <td>It converts a catastrophic plan into a failed one, which is the right direction for that error.</td>
+        </tr>
+        <tr>
+          <td>After any out-of-band change</td>
+          <td><code>terraform apply -refresh-only</code>, update configuration, then a clean <code>plan</code></td>
+          <td>The documented reconciliation, and the only evidence that the three records agree again.</td>
+        </tr>
+        <tr>
+          <td>Credentials anywhere</td>
+          <td>Environment variables, and Key Vault behind them if a key is unavoidable</td>
+          <td>The documented recommendation, and it keeps secrets off disk and out of the repository.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      It would be easy to read this as an argument against Terraform on Azure, and it is not. The state file buys something Microsoft's own tooling does not offer: a preview that can say <em>this apply will destroy that resource</em> before anything happens. That is a genuine safety property, and it exists precisely because Terraform keeps its own record to diff against.
+    </p>
+    <p>
+      What the record also buys is an obligation. A second source of truth has to be stored somewhere durable, locked against concurrent writes, encrypted, access-controlled as tightly as the estate it describes, and reconciled whenever the world changes underneath it. None of that is optional, and none of it exists in a Bicep pipeline &mdash; not because Bicep is better, but because it never took on the obligation in the first place.
+    </p>
+    <p>
+      So the choice is not really about syntax or ecosystem. It is whether the plan preview and the multi-cloud surface are worth operating a second record of what exists. For most estates running more than one cloud the answer is yes. For an Azure-only estate that has never wanted a plan, the honest answer is that Bicep asks less of you &mdash; and asking less is a real feature when the thing being asked for is custody of a plain-text file containing your secrets.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#28 returns to Microsoft's answer to the same problem: Deployment Stacks and managed resources &mdash; the construct from post #21 seen as a lifecycle tool rather than a protection mechanism, and how its record of what it manages compares to the one Terraform keeps.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Azure Reference</h2>
+    <ul>
+      <li><a href="https://learn.microsoft.com/en-us/azure/developer/terraform/store-state-in-azure-storage" target="_blank" rel="noopener">Store Terraform state in Azure Storage</a></li>
+      <li><a href="https://developer.hashicorp.com/terraform/language/state/purpose" target="_blank" rel="noopener">Purpose of Terraform state</a></li>
+      <li><a href="https://developer.hashicorp.com/terraform/language/backend/azurerm" target="_blank" rel="noopener">Terraform azurerm backend</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/developer/terraform/prevent-terraform-drift-stateful-resources" target="_blank" rel="noopener">Prevent Terraform drift for stateful Azure resources</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/storage/common/storage-network-security" target="_blank" rel="noopener">Configure Azure Storage firewalls and virtual networks</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
