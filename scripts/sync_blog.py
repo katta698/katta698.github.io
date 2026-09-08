@@ -164,6 +164,62 @@ def normalise_hand_built_nav(path):
     return True
 
 
+def inject_subscribe_block(path):
+    """Put the subscribe block into a hand-built architecture page.
+
+    Those pages are `externally_built` -- sync passes them through rather than
+    regenerating them -- so the block that build_post_page adds never reaches
+    them. That is 99 of 218 post pages, and they are the Architecture Series:
+    the longest posts, the ones most likely to be linked, and the ones a reader
+    is most likely to finish. Leaving them out put the signup on roughly half
+    the site and the wrong half.
+
+    Bounded by marker comments and rewritten in place every run, so syncing
+    twice does not stack two forms, and flipping BUTTONDOWN_USER back to "" or
+    editing SUB_BLURB updates 99 pages without touching them by hand. An
+    unmarked insert would have needed a regex over hand-written markup to find
+    its own previous output, which is how duplicates happen.
+
+    Returns True when the file changed.
+    """
+    START, END = "<!-- subscribe:start -->", "<!-- subscribe:end -->"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+
+    # Drop any block from a previous run first, so this is a replace and not an
+    # append. Done before the anchor check so that clearing BUTTONDOWN_USER
+    # removes the block from pages that have it.
+    #
+    # The surrounding whitespace has to go WITH the markers, and \\s is the only
+    # thing that does that correctly here. These files are CRLF, and a first
+    # version stripped "\\n" alone -- which left the \\r behind as a line of
+    # "  \\r" and added another on every run. Nothing broke, but each sync
+    # rewrote all 99 pages and produced a 99-file diff containing one invisible
+    # character, which is exactly the kind of churn that makes a real change
+    # impossible to spot in review.
+    #
+    # Restoring "\\n  " puts back the newline and two-space indent the anchor
+    # line originally had, so removing and re-inserting is byte-identical to
+    # not having touched the file at all.
+    text = re.sub(r"\s*" + re.escape(START) + r".*?" + re.escape(END) + r"\s*",
+                  "\n  ", text, flags=re.S)
+
+    block = subscribe_inline_html()
+    if block:
+        anchor = '<div class="comments-section">'
+        if anchor not in text:
+            return False                  # no comments block: not a post page
+        text = text.replace(
+            anchor, "%s%s\n  %s\n  %s" % (START, block, END, anchor), 1)
+
+    if text != path.read_text(encoding="utf-8"):
+        path.write_text(text, encoding="utf-8")
+        return True
+    return False
+
+
 def stamp_static_pages():
     """Re-stamp asset cache-busting tokens on the pages sync does not build.
 
@@ -190,6 +246,13 @@ def stamp_static_pages():
     targets += sorted(BLOG_DIR.glob("azure-architecture-*/index.html"))
     targets += sorted(BLOG_DIR.glob("gcp-architecture-*/index.html"))
     targets.append(REPO_ROOT / "_templates" / "arch-post-template.html")
+
+    # The subscribe block, into the hand-built posts only. Not index.html,
+    # resume.html or now.html -- they have no comments section and are not
+    # posts. Counted separately from the token stamping below because they are
+    # different changes and a run that alters neither should say so.
+    arch_pages = [t for t in targets if "-architecture-" in str(t)]
+    subscribed = sum(1 for t in arch_pages if inject_subscribe_block(t))
 
     # A URL may already carry literal tokens, and — in the template — a
     # {{PLACEHOLDER}} the build script substitutes at publish time. Match both,
@@ -225,6 +288,8 @@ def stamp_static_pages():
             path.write_text(new, encoding="utf-8")
             stamped += 1
     print(f"  {stamped} static page(s) re-stamped to js v={JS_VERSION}, css v={CSS_VERSION}")
+    if subscribed:
+        print(f"  {subscribed} hand-built page(s) had the subscribe block refreshed")
 
     # Same pages, same reason: they are passed through, so a nav change made in
     # nav_html() reaches every generated page and none of these. Only the
@@ -1718,6 +1783,8 @@ def build_post_page(post, prev_post, next_post):
         if next_post else ""
     )
 
+    subscribe_inline = subscribe_inline_html()
+
     disqus = f"""<div class="comments-section">
   <h3>Comments</h3>
   <div id="disqus_thread"></div>
@@ -1782,6 +1849,7 @@ def build_post_page(post, prev_post, next_post):
     </div>
     <nav class="post-nav">{prev_link}{next_link}</nav>
   </article>
+  {subscribe_inline}
   {disqus}
 </main>
 {FEEDBACK_WIDGET_HTML}
@@ -2122,6 +2190,43 @@ def cloud_class(tags):
         if label in tags:
             return " " + cls
     return ""
+
+
+def subscribe_inline_html():
+    """The subscribe block that goes at the FOOT OF A POST.
+
+    The sidebar card only exists on /blog/ and its pagination pages, and that
+    is not where readers are. A post is what search and social link to, so most
+    people arrive at one, read it, and leave without ever seeing the index --
+    the signup was sitting where the fewest people would pass it.
+
+    Placed after the post nav and BEFORE comments: at that point the reader has
+    finished the thing they came for, which is the moment they know whether
+    they want more. Below Disqus it would sit under a widget that loads late
+    and is often several screens tall.
+
+    Same markup and classes as the sidebar card, so it inherits the same
+    styling and the same no-JavaScript fallback rather than being a second
+    implementation that can drift.
+    """
+    if not BUTTONDOWN_USER:
+        return ""
+    return f'''
+  <aside class="subscribe-card subscribe-inline">
+    <div class="sidebar-title">Get new posts by email</div>
+    <p class="sub-blurb">{SUB_BLURB}</p>
+    <form class="sub-form" id="sub-form"
+          action="https://buttondown.com/api/emails/embed-subscribe/{BUTTONDOWN_USER}"
+          method="post" target="_blank">
+      <label class="sr-only" for="bd-email-post">Email address</label>
+      <input class="sub-input" type="email" name="email" id="bd-email-post"
+             placeholder="you@example.com" required autocomplete="email"/>
+      <button class="sub-btn" type="submit">Subscribe</button>
+    </form>
+    <div class="sub-msg" id="sub-msg" role="status" aria-live="polite"></div>
+    <div class="svc-foot">No spam, unsubscribe in one click. Prefer a reader?
+      <a href="/blog/rss.xml">RSS</a>.</div>
+  </aside>'''
 
 
 def build_index_page(posts, page_posts=None, page=1, total_pages=1):
