@@ -31,6 +31,12 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
+    # Job level, not step level. A step's `if` is evaluated BEFORE that
+    # step's own `env` is applied, so `if: env.X != ''` against an env
+    # defined on the same step reads empty and the step silently never
+    # runs -- which looks identical to the secret not being set.
+    env:
+      BUTTONDOWN_API_KEY: ${{ secrets.BUTTONDOWN_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -172,3 +178,44 @@ jobs:
           The twice-daily cron in katta698/katta698 will pick it up."
         env:
           GH_TOKEN: ${{ secrets.PROFILE_PAT }}
+
+      # Email subscribers. Buttondown's own RSS-to-email costs $9/month; its API
+      # is free on every plan, so this does the same job from a workflow that
+      # already runs on publish.
+      #
+      # LAST, deliberately. Everything above can be re-run harmlessly -- an
+      # index rebuilt twice is the same index. An email sent twice cannot be
+      # recalled, and a reader who gets a duplicate unsubscribes. So it runs
+      # only once the rest has succeeded, and it keeps its own record of what
+      # has gone out rather than inferring it from dates.
+      #
+      # `continue-on-error` because the send is not what this workflow is for.
+      # A Buttondown outage should not turn the run red and mask a real
+      # indexing failure; the state file is only written for posts that
+      # actually sent, so the next run retries the ones that did not.
+      - name: Email subscribers about new posts
+        if: ${{ env.BUTTONDOWN_API_KEY != '' }}
+        continue-on-error: true
+        run: python scripts/notify_subscribers.py
+
+      - name: Commit the send record
+        if: ${{ env.BUTTONDOWN_API_KEY != '' }}
+        continue-on-error: true
+        run: |
+          if git diff --quiet -- scripts/subscriber-sends.json; then
+            echo "No change to the send record."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/subscriber-sends.json
+          git commit -m "Record subscriber emails sent"
+          # Rebase rather than force: four worktrees publish to this branch and
+          # another push can land between the checkout and here.
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            echo "Push attempt $i failed; retrying"
+            sleep $((i * 5))
+          done
+          echo "::warning::Could not commit the send record. The next run may \
+          re-send these posts -- check scripts/subscriber-sends.json."
