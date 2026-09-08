@@ -3061,8 +3061,8 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     </div>
     {pagination}
   </div>
+  {subscribe_widget}
   <aside class="sidebar">
-    {subscribe_widget}
     {cloud_widget}
     <div class="sidebar-card" id="services-widget">
       <div class="sidebar-title">Services across all posts</div>
