@@ -106,7 +106,19 @@ def send(post, key, dry):
     req = urllib.request.Request(
         API, data=json.dumps(payload).encode("utf-8"),
         headers={"Authorization": "Token %s" % key,
-                 "Content-Type": "application/json"})
+                 "Content-Type": "application/json",
+                 # Buttondown refuses to actually send from the API without
+                 # this, returning sending_requires_confirmation. It is their
+                 # guard against a script mass-mailing a list by accident,
+                 # which is precisely what this script is, so the header is a
+                 # deliberate acknowledgement rather than boilerplate.
+                 #
+                 # Their message says it is needed once per key. It is sent on
+                 # every request anyway: "once" is a property of their account
+                 # state, not of this code, and a rotated key would otherwise
+                 # fail the first send after rotation with nothing to explain
+                 # why.
+                 "X-Buttondown-Live-Dangerously": "true"})
     try:
         with urllib.request.urlopen(req, timeout=45) as r:
             ok = r.status in (200, 201)
