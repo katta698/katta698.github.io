@@ -92,6 +92,36 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 7 September 2026 — no announcements; post #27 took a held item
+
+Labor Day in the US. `fetch_week.py` returned **0 announcements in range** across
+every feed. The only item dated 7 September was the AWS Weekly Roundup blog post,
+which covers the preceding week rather than the day itself.
+
+This is the case the rule above was written for: the day produced nothing, so
+post #27 took the strongest available held item rather than padding.
+
+**Which held item, and why not the highest-ranked one.** Amazon Linux 2027 is
+still the strongest unwritten item on this file, and it stays held. The note
+under 3 September says to write it once support dates are published rather than
+while it is a preview with no end-of-life attached — and that condition is not
+met. The preview material gives five years of standard support *once GA*, which
+is a duration and not a date, and AL2023 has no revised end-of-life. So #27 took
+Gateway Load Balancer TCP Reset, the next unwritten item by importance.
+
+**A tooling note worth keeping.** The Weekly Roundup lists Amazon Linux 2027 in
+its 7 September edition, which briefly looked like an announcement the feed had
+missed. It was not: the What's New item is dated **3 September**, and the roundup
+was reporting the prior week. Checking the announcement's own posted date rather
+than the date of the article citing it is what settled it, and is worth doing
+every time a roundup appears to surface something `fetch_week.py` did not.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| *(no announcements — US public holiday)* | — | — | — | — |
+
+---
+
 ## 3 September 2026 — covered by post #25
 
 | Item | Service | Status | Importance | Reference |
@@ -99,7 +129,7 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 | Multi-source replication and delayed replication, 8.4.8+ — a binlog replica that intentionally lags, recovering from a valid destructive statement by stopping before it applies and promoting, without a full restore | Aurora MySQL | **#25** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-aurora-mysql-multisourcerep-delayedrep/) |
 | Amazon Linux 2027 in public preview — a new major release starts the clock on the current one | Amazon Linux | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/announcing-amazon-linux-2027/) |
 | CVE-2026-85012 — OS command injection in the CodeCatalyst blueprints SDK | CodeCatalyst | open | Med-High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-095-aws/) |
-| TCP Reset for faster failure recovery — appliance failover stops waiting for timeouts | Gateway Load Balancer | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-gateway-load-balancer-tcp-reset/) |
+| TCP Reset for faster failure recovery — appliance failover stops waiting for timeouts | Gateway Load Balancer | **#27** | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-gateway-load-balancer-tcp-reset/) |
 | PrivateLink for FIPS endpoints | S3 | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-s3-privatelink-fips-endpoints) |
 | Managed Daemons support non-critical daemons — a sidecar that can fail without taking the task with it | ECS | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/ecs-managed-daemons-non-critical/) |
 | API support for flat-rate pricing plans | CloudFront | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/cloudfront-flat-rate-pricing-plans-api/) |
