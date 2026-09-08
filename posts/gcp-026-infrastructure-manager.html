@@ -1,0 +1,306 @@
+---
+title: "GCP Architecture Series #26 — Infrastructure Manager: Managed Terraform"
+date: '2026-09-08T09:00:00'
+slug: gcp-architecture-infrastructure-manager
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-09-08'
+verified_claims:
+  - claim: "Infrastructure Manager (Infra Manager) is a managed service that simplifies and automates the deployment and management of your Google Cloud infrastructure resources"
+    source: https://docs.cloud.google.com/infrastructure-manager/docs/overview
+  - claim: "Infra Manager executes Terraform using the identity of this service account"
+    source: https://docs.cloud.google.com/infrastructure-manager/docs/configure-service-account
+  - claim: "Service Account User"
+    source: https://docs.cloud.google.com/infrastructure-manager/docs/configure-service-account
+  - claim: "A preview describes the actions to actuate a specific Terraform configuration"
+    source: https://docs.cloud.google.com/infrastructure-manager/docs/preview-deployment
+  - claim: "The deployment must be locked to be able to download the state file"
+    source: https://docs.cloud.google.com/infrastructure-manager/docs/state-file
+  - claim: "After you delete the deployment, Infra Manager is not able to identify or manage the Google Cloud resources that are kept"
+    source: https://docs.cloud.google.com/infrastructure-manager/docs/delete-deployments
+  - claim: "Deployments per project per region 1,000"
+    source: https://docs.cloud.google.com/infrastructure-manager/docs/quotas
+  - claim: "Number of the historical revisions 100"
+    source: https://docs.cloud.google.com/infrastructure-manager/docs/quotas
+  - claim: "Number of Terraform input variables 150"
+    source: https://docs.cloud.google.com/infrastructure-manager/docs/quotas
+  - claim: "Length of identifiers in characters 40"
+    source: https://docs.cloud.google.com/infrastructure-manager/docs/quotas
+  - claim: "Mutating requests per minute per project per region 20"
+    source: https://docs.cloud.google.com/infrastructure-manager/docs/quotas
+  - claim: "Size of the API payload in bytes 950,000"
+    source: https://docs.cloud.google.com/infrastructure-manager/docs/quotas
+problem: "Infrastructure Manager takes the two decisions post #25 spent its length on — where state lives and how the bucket is configured — and makes them for you. What it does not remove is the question underneath them. It relocates it, from who can read a bucket to who can act as a service account, and the second question is easier to get wrong because nothing about it looks like storage."
+builds: "What the service takes over and what it leaves, why a deployment runs as a service account rather than as the person triggering it, the lock you must take before you can even read your own state, the bounded revision history, and the deletion flag that ends management without ending the resources."
+catch: "Deleting a deployment while keeping its resources is available and irreversible in the way that matters. Google states it plainly: after the deployment is deleted, Infra Manager cannot identify or manage the resources that are kept. They keep running, unmanaged, and nothing in the console marks them as orphaned."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #026 &middot; Foundations</div>
+  <h1 class="post-title">Infrastructure Manager: Managed Terraform</h1>
+  <p class="post-subtitle">Post #25 argued the state bucket is the most sensitive thing you own. This service creates it for you &mdash; and moves the risk somewhere that looks nothing like a bucket.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Google Cloud &middot; Infrastructure Manager &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Adopting a managed service usually removes a category of decision. This one removes some and relocates others, and the relocated ones are the surprises.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"It is managed, so we do not think about state"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Until the day you must. The state file is still there and still yours to reckon with, but reaching it is a procedure rather than a path: the deployment must be locked to be able to download the state file, and the download comes through a signed Cloud Storage URL rather than a bucket you browse.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Learn the lock, export and unlock sequence before an incident, not during one. It is three commands and they are not the ones muscle memory reaches for.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"Deployments run with the permissions of whoever triggers them"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          They do not. Infra Manager executes Terraform using the identity of a service account you configure, and that identity is fixed regardless of who pressed the button. A user needs only the Service Account User role on it to deploy.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Size the service account's permissions to the configuration it deploys, and treat the grant of Service Account User on it as equivalent to granting everything that account can do. It is the real access decision here.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"We will delete the deployment but keep the resources"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          You can, and Google is direct about the consequence: after you delete the deployment, Infra Manager is not able to identify or manage the Google Cloud resources that are kept. The infrastructure keeps running and becomes invisible to the thing that made it.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat it as a deliberate hand-off with an owner named on the day, not as a tidy-up. Post #23's asset export is how those resources stay findable afterwards, because the deployment no longer knows them.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"The revision history is our audit trail"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It is bounded. Infra Manager keeps <strong>100</strong> historical revisions per deployment, along with the logs, the configuration used, the resource list and the state file for each. That is generous for debugging and finite for compliance.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          The same conclusion as post #23 reached about the 35-day asset history: if a claim will ever be made about a change from a year ago, the record has to be somewhere you control.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Infrastructure Manager is a managed service that simplifies and automates the deployment and management of your Google Cloud infrastructure resources. Concretely, it runs Terraform for you and keeps the bookkeeping.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-026-infrastructure-manager.svg" alt="Diagram: what Infrastructure Manager takes over from self-managed Terraform, the service account identity model, the lock required to read state, the bounded revision history, and the abandon deletion path" />
+      <figcaption>What the service takes over, what it relocates, and the two doors that only open one way.</figcaption>
+    </figure>
+
+    <h3>What it takes over</h3>
+    <p>
+      It creates a Cloud Storage bucket and stores the deployment metadata in it &mdash; the logs, the configuration used for each revision, the list of resources that revision created, and the state file for each deployment and revision. Configurations can come from a Cloud Storage bucket, a Git repository or a local directory, and you choose which supported Terraform version each deployment uses.
+    </p>
+    <p>
+      Read against post #25, that is most of a morning's work removed. The bucket, its versioning, its access settings and the backend block all stop being decisions. What does not disappear is the state file itself, which still exists, still holds whatever the configuration put in it, and is still the thing you need when something goes wrong.
+    </p>
+
+    <h3>The identity model is the whole design</h3>
+    <p>
+      This is the difference that matters, and it is easy to read past. With Terraform on a laptop or in a pipeline, the apply runs with the credentials of whoever or whatever invoked it. With Infra Manager, it does not: the service executes Terraform using the identity of a configured service account, which needs the Infra Manager Agent role plus permissions for every resource type the configuration touches. A person triggering a deployment needs the Service Account User role on that account.
+    </p>
+
+    <div class="callout amber">
+      <strong>Post #25's risk did not go away &mdash; it changed shape</strong>
+      <p>Post #25 said the state bucket is a credential store and only the build system and highly privileged administrators should read it. Infra Manager creates and holds that bucket, so that specific exposure narrows. But the deployment service account must hold permissions for everything the configuration deploys, and Service Account User on it is enough to run a deployment. So the question moves from <em>who can read a bucket</em> to <em>who can act as this account</em> &mdash; and the second is harder to notice, because an IAM binding on a service account does not look like access to infrastructure. Audit the members of that role the way you would audit readers of the state bucket.</p>
+    </div>
+
+    <h3>Deployments, revisions and previews</h3>
+    <p>
+      A deployment is the unit; a revision is one update to it. A <strong>preview</strong> describes the actions to actuate a specific Terraform configuration &mdash; a plan, produced without provisioning anything, that you read before deciding to create or update.
+    </p>
+    <p>
+      That is the same instinct as post #21's dry-run mode for organization policies, and it is worth using for the same reason: it is the only chance to see what a change does while the change costs nothing. The difference is that a preview here is complete, whereas a dry-run policy only observes the traffic that happens to arrive.
+    </p>
+
+    <h3>The numbers</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Limit</th><th>Value</th><th>Why it matters</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Deployments per project per region</td><td>1,000</td><td>Generous. Reaching it means one deployment per resource rather than per component.</td></tr>
+        <tr><td>Historical revisions</td><td>100</td><td>The audit trail is finite, per deployment.</td></tr>
+        <tr><td>Terraform input variables</td><td>150</td><td>A configuration approaching this is asking to be split.</td></tr>
+        <tr><td>Identifier length</td><td>40 characters</td><td>Shorter than the naming budget post #18 worked through &mdash; plan for it.</td></tr>
+        <tr><td>Mutating requests</td><td>20 per minute per project per region</td><td>The ceiling on automated deploy loops.</td></tr>
+        <tr><td>API payload</td><td>950,000 bytes</td><td>A very large configuration hits a wall that is not Terraform's.</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      The 40-character identifier limit deserves a note, because post #18 spent its length on naming budgets and this is a tighter one than any there. A deployment name carrying environment, component and region can run out, and the limit applies to the name you will be typing into every command afterwards.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>What You Give Up, and What You Get</h2>
+
+    <h3>Reading your own state is now a transaction</h3>
+    <p>
+      With a Cloud Storage backend you read state by reading an object. Here you take a lock, export a signed URL, download, and unlock &mdash; the deployment must be locked to be able to download the state file, and there are separate commands to take the lock, retrieve the lock id, and release it.
+    </p>
+    <p>
+      This is better engineering than the thing it replaces. Terraform state corruption from two simultaneous applies is a real failure and the lock prevents it structurally rather than by convention. The cost is that the emergency path has more steps, and an unreleased lock is a new way to block your own pipeline. Both are worth knowing before the night you need them.
+    </p>
+
+    <div class="callout">
+      <strong>Abandon is the one-way door</strong>
+      <p>Deleting a deployment deletes its metadata and files, and you choose whether the provisioned resources go with it. Keeping them is a legitimate move &mdash; handing a stack over to be managed in the console, or splitting it into a different tool. But Google states the consequence without softening it: after you delete the deployment, Infra Manager is not able to identify or manage the resources that are kept. There is no re-attach, the resources do not announce themselves, and the only record that they were ever deployed together is the one you kept. Name an owner and write down what was abandoned, on the day.</p>
+    </div>
+
+    <h3>When the managed service is the right answer</h3>
+    <ul>
+      <li><strong>You want the state decisions made for you.</strong> Post #25's bucket, versioning and access settings are real work and easy to get subtly wrong. This removes them.</li>
+      <li><strong>You want locking you cannot forget to configure.</strong> It is structural here rather than optional.</li>
+      <li><strong>You want deployments that do not run as a human.</strong> A fixed service account identity is more auditable than "whichever engineer ran it".</li>
+    </ul>
+
+    <h3>When it is not</h3>
+    <ul>
+      <li><strong>Your state is your record.</strong> A hundred revisions is a debugging history, not a compliance archive.</li>
+      <li><strong>You need the full Terraform ecosystem.</strong> A supported-version list is narrower than "whatever we pin to", and post #25's minor-version pin strategy becomes someone else's decision.</li>
+      <li><strong>Your identity model cannot support it.</strong> If you cannot scope a service account tightly to a configuration, you have built a broad grant with a convenient interface.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>The real access control</td>
+          <td>Audit Service Account User on the deploy account</td>
+          <td>Infra Manager executes Terraform as that identity, not as the person triggering it.</td>
+        </tr>
+        <tr>
+          <td>Service account scope</td>
+          <td>One per configuration, permissions sized to it</td>
+          <td>A shared broad account makes every deployment as powerful as the widest one.</td>
+        </tr>
+        <tr>
+          <td>Before any update</td>
+          <td>Run a preview</td>
+          <td>It describes the actions to actuate the configuration, and provisions nothing.</td>
+        </tr>
+        <tr>
+          <td>Emergency state access</td>
+          <td>Rehearse lock, export, unlock</td>
+          <td>The deployment must be locked to download the state file, and an unreleased lock blocks the pipeline.</td>
+        </tr>
+        <tr>
+          <td>Long-term change record</td>
+          <td>Export it yourself</td>
+          <td>Revision history is capped at 100 per deployment.</td>
+        </tr>
+        <tr>
+          <td>Deleting a deployment</td>
+          <td>Decide the resource fate explicitly</td>
+          <td>Keeping them means Infra Manager can no longer identify or manage them.</td>
+        </tr>
+        <tr>
+          <td>Abandoned resources</td>
+          <td>Record them, and rely on Cloud Asset Inventory</td>
+          <td>Nothing marks them as orphaned; the export from #23 is how they stay findable.</td>
+        </tr>
+        <tr>
+          <td>Deployment naming</td>
+          <td>Budget for 40 characters</td>
+          <td>Tighter than any limit in post #18, and you type it into every command.</td>
+        </tr>
+        <tr>
+          <td>Configuration size</td>
+          <td>Split well before 150 input variables</td>
+          <td>The limit is a symptom; #25's hundred-resource guidance is the cause.</td>
+        </tr>
+        <tr>
+          <td>Automated deploy loops</td>
+          <td>Rate-limit to the 20-per-minute mutating ceiling</td>
+          <td>Per project per region, and it is the first wall a busy pipeline meets.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The honest summary of a managed service is usually a trade rather than a saving, and this one trades well. It removes the state bucket decisions, makes locking structural instead of optional, and gives deployments an identity that is not a person. Those are three genuine improvements on the arrangement post #25 described.
+    </p>
+    <p>
+      What it does not do is remove the question. Post #25's version was <em>who can read this bucket</em>, and it was at least legible &mdash; a bucket looks like storage, and storage looks like something to lock down. The version here is <em>who can act as this service account</em>, which is a line in an IAM policy that looks like nothing at all. Managed services tend to move risk from where you are looking to where you are not, and the discipline is to go and look at the new place with the same seriousness you gave the old one.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#27 takes the third approach to the same problem: Config Connector, which puts Google Cloud resources behind the Kubernetes API &mdash; what that buys, and what it costs to have your cluster own your infrastructure.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/infrastructure-manager/docs/overview" target="_blank" rel="noopener">Infrastructure Manager overview</a></li>
+      <li><a href="https://docs.cloud.google.com/infrastructure-manager/docs/configure-service-account" target="_blank" rel="noopener">Configure the service account</a></li>
+      <li><a href="https://docs.cloud.google.com/infrastructure-manager/docs/preview-deployment" target="_blank" rel="noopener">Preview a deployment</a></li>
+      <li><a href="https://docs.cloud.google.com/infrastructure-manager/docs/state-file" target="_blank" rel="noopener">Manage the Terraform state file</a></li>
+      <li><a href="https://docs.cloud.google.com/infrastructure-manager/docs/delete-deployments" target="_blank" rel="noopener">Delete a deployment</a></li>
+      <li><a href="https://docs.cloud.google.com/infrastructure-manager/docs/quotas" target="_blank" rel="noopener">Quotas and limits</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
