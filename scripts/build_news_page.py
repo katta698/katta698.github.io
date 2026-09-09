@@ -33,6 +33,7 @@ if SCRIPTS not in sys.path:
 
 import news_store as store          # noqa: E402
 import news_tag                     # noqa: E402
+from feedback_star import star_html, STAR_CSS  # noqa: E402
 
 OUT_DIR = os.path.join(ROOT, "intelligence", "whats-new")
 JSON_OUT = os.path.join(ROOT, "intelligence", "news.json")
@@ -412,6 +413,70 @@ document.documentElement.setAttribute('data-palette',p);})();
    register, which is a worse bug than the flash. */
 html{-webkit-tap-highlight-color:transparent}
 a:active,button:active{opacity:.72}
+
+/* Feedback star. Copied from the portfolio with every var() given a literal
+   fallback -- the Intelligence pages define almost none of the eight tokens
+   these rules originally relied on, and an undefined property takes the whole
+   declaration with it. */
+.fb-btn{--fb-star:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.9' stroke-linejoin='round' stroke-linecap='round'%3E%3Cpolygon points='12 2.8 14.95 9.05 21.6 9.95 16.75 14.5 17.95 21.2 12 18 6.05 21.2 7.25 14.5 2.4 9.95 9.05 9.05'/%3E%3C/svg%3E");
+  position:fixed;right:14px;top:50%;transform:translateY(-50%);z-index:900;
+  width:40px;height:40px;border-radius:11px;
+  background:var(--surface, var(--card, #1E2422));
+  color:var(--text, var(--tx, #EDEBE6));
+  border:1px solid var(--icon-border, var(--bd, rgba(128,128,128,.32)));
+  box-shadow:0 2px 10px rgba(0,0,0,.28);
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  font-size:0;transition:border-color .2s,color .2s,background .2s}
+.fb-btn::before{content:'';width:19px;height:19px;background:currentColor;
+  -webkit-mask:var(--fb-star) center / contain no-repeat;
+  mask:var(--fb-star) center / contain no-repeat}
+.fb-btn:hover,.fb-btn:focus-visible{
+  border-color:var(--accent-gold, #C4A484);color:var(--accent-gold, #C4A484);
+  box-shadow:0 3px 14px rgba(0,0,0,.34)}
+.fb-overlay{display:none;position:fixed;inset:0;z-index:901;
+  background:rgba(0,0,0,.55);align-items:flex-end;justify-content:flex-start;
+  padding:1.75rem}
+.fb-overlay.open{display:flex}
+.fb-modal{background:var(--bg-dark, #1D2322);
+  border:1px solid rgba(196,164,132,.25);border-radius:16px;padding:1.5rem;
+  width:300px;max-width:100%;color:var(--text-light, #EDEBE6)}
+.fb-title{color:var(--text-light, #EDEBE6);font-size:15px;font-weight:600;
+  margin-bottom:.35rem}
+.fb-sub{color:#A7B0B4;font-size:12px;margin-bottom:1.25rem}
+.fb-stars{display:flex;gap:8px;margin-bottom:.5rem}
+.fb-star{width:42px;height:42px;border-radius:50%;
+  border:1.5px solid rgba(196,164,132,.3);background:transparent;
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  color:#A7B0B4;font-size:18px;line-height:1}
+.fb-star.on{border-color:var(--accent-gold, #C4A484);
+  color:var(--accent-gold, #C4A484);background:rgba(196,164,132,.1)}
+.fb-labels{display:flex;justify-content:space-between;font-size:11px;
+  color:#A7B0B4;margin-bottom:1rem}
+.fb-textarea{width:100%;box-sizing:border-box;
+  background:var(--border-dark, #2A312F);
+  border:1px solid rgba(196,164,132,.2);border-radius:8px;
+  color:var(--text-light, #EDEBE6);font-size:13px;padding:.6rem .7rem;
+  font-family:inherit;margin-bottom:1rem;min-height:70px}
+.fb-textarea::placeholder{color:#A7B0B4}
+.fb-textarea:focus{outline:none;border-color:rgba(196,164,132,.5)}
+.fb-footer{display:flex;justify-content:space-between;align-items:center}
+.fb-skip{background:transparent;border:none;color:#A7B0B4;font-size:13px;
+  cursor:pointer}
+.fb-send{background:var(--accent-gold, #C4A484);color:#1D2322;border:none;
+  border-radius:8px;padding:.45rem 1.1rem;font-size:13px;font-weight:700;
+  cursor:pointer}
+.fb-send:hover{background:#B09173}
+.fb-thanks{text-align:center;padding:1rem 0;
+  color:var(--text-light, #EDEBE6);font-size:14px}
+.fb-thanks span{display:block;color:var(--accent-gold, #C4A484);font-size:28px;
+  margin-bottom:.5rem}
+.fb-thanks p{color:#A7B0B4;font-size:13px;margin-top:.35rem}
+@media (max-width:640px){
+  .fb-btn{width:34px;height:34px;border-radius:10px}
+  .fb-btn::before{width:16px;height:16px}
+  .fb-overlay{padding:.75rem}
+  .fb-modal{width:100%}
+}
 </style>
 </head>
 <body>
@@ -463,7 +528,6 @@ a:active,button:active{opacity:.72}
   <div id="list"></div>
   <button id="more" hidden>Show more</button>
   <p class="note">__NOTE__</p>
-  <div data-feedback></div>
 </main>
 
 <script>
@@ -705,6 +769,7 @@ fetch('/intelligence/news.json').then(function(r){return r.json();}).then(functi
 });
 </script>
 <script src="/blog/assets/site-footer.js?v=__JSV__" data-site-footer></script>
+__STAR__
 </body>
 </html>
 """
@@ -756,6 +821,7 @@ def build():
                 .replace("__COUNT_FMT__", "{:,}".format(len(rows)))
                 .replace("__COUNT__", str(len(rows)))
                 .replace("__NOTE__", note)
+                .replace("__STAR__", star_html("intelligence-whats-new"))
                 .replace("__JSV__", jsv))
     io.open(os.path.join(OUT_DIR, "index.html"), "w",
             encoding="utf-8", newline="\n").write(html)

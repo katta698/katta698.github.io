@@ -541,28 +541,10 @@
   var THUMB_DOWN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2v11m0 0-4.2 8.4a2 2 0 0 1-3.6-1.4L10 15H4.7a2 2 0 0 1-2-2.5l2-8A2 2 0 0 1 6.7 3H17Z"/><rect x="17" y="2" width="5" height="11" rx="1"/></svg>';
 
   // Post pages, and the three Intelligence pages.
-  //
-  // This used to match /blog/<slug>/ alone, so the Intelligence pages loaded
-  // this script and silently failed the test -- the widget every post has was
-  // simply absent there, which read as a decision and was an oversight. Those
-  // pages make more contestable claims than any post: they assert which cloud
-  // is broken and when, from feeds that move.
-  //
-  // Their slugs are fixed here rather than derived from the path, so a new
-  // directory under /intelligence/ cannot start posting votes under a slug
-  // nobody chose.
-  var FIXED = {
-    '/intelligence/': 'intelligence',
-    '/intelligence/whats-new/': 'intelligence-whats-new',
-    '/intelligence/status/': 'intelligence-status'
-  };
-  var path = location.pathname.replace(/\/?$/, '/');
-  var slug = FIXED[path];
-  if (!slug) {
-    var m = location.pathname.match(/^\/blog\/([a-z0-9][a-z0-9-]*)\/?$/);
-    if (!m || m[1] === 'assets') return;
-    slug = m[1];
-  }
+  // Only post pages: /blog/<slug>/. Not /blog/ itself, not /blog/assets/*.
+  var m = location.pathname.match(/^\/blog\/([a-z0-9][a-z0-9-]*)\/?$/);
+  if (!m || m[1] === 'assets') return;
+  var slug = m[1];
 
   // localStorage throws outright in some privacy modes rather than failing
   // soft, and a feedback widget must never be what breaks a page.
@@ -742,12 +724,6 @@
 
   function mount() {
     if (document.querySelector('.qs-feedback')) return true;
-    // An explicit mount point, for pages with no "At a glance" box and no
-    // .post-body -- the Intelligence pages. Without it the widget matched
-    // their path, built itself, and had nowhere to go: present in the
-    // script, absent from the page, and silent about why.
-    var slot = document.querySelector('[data-feedback]');
-    if (slot) { slot.appendChild(build()); return true; }
     var box = document.querySelector('.quick-summary-content');
     if (box) { box.appendChild(build()); return true; }
     return false;
@@ -769,8 +745,7 @@
     window.setTimeout(function () {
       observer.disconnect();
       if (document.querySelector('.qs-feedback')) return;
-      var body = document.querySelector('.post-body') ||
-                 document.querySelector('[data-feedback]');
+      var body = document.querySelector('.post-body');
       if (!body) return;
       var strip = build();
       strip.classList.add('qs-feedback-standalone');
