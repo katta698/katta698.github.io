@@ -55,7 +55,13 @@ HUMAN = {
 # How old the data may be before the page says so out loud. The workflow runs
 # every 15 minutes, so anything past an hour means several runs have failed
 # and the reader should not trust the green ticks.
-STALE_MINUTES = 60
+# Two and a half missed hourly runs. This was 60, calibrated for a
+# 15-minute cron that turned out never to fire at all -- on an hourly
+# schedule 60 minutes is one ordinary interval, so the page would have
+# announced itself stale almost permanently. A staleness warning that is
+# always on is a warning a reader learns to ignore, which costs more than
+# not having one.
+STALE_MINUTES = 150
 
 
 def t(s):
@@ -759,7 +765,7 @@ document.documentElement.setAttribute("data-palette",p);})();
   <p class="sub">Live incidents across AWS, Azure and Google Cloud, read from each
      vendor&rsquo;s own status feed. Nothing here is summarised or inferred &mdash;
      the wording is theirs.</p>
-  <p class="fresh__STALE__">Last checked __AGE__ &middot; refreshed every 15 minutes__WARN__</p>
+  <p class="fresh__STALE__">Last checked __AGE__ &middot; refresh is scheduled hourly and can run late, so this timestamp is the one to trust__WARN__</p>
   __CARDS__
   __BODY__
   <h2>Last 90 days</h2>
@@ -885,7 +891,7 @@ def main():
     page = (PAGE.replace("__CSSV__", cssv)
                 .replace("__STALE__", " stale" if stale else "")
                 .replace("__AGE__", e(since(checked)))
-                .replace("__WARN__", " &middot; older than expected, several refreshes may have failed"
+                .replace("__WARN__", " &middot; older than expected — the scheduled refresh has missed at least two runs"
                          if stale else "")
                 .replace("__CARDS__", cards)
                 .replace("__BODY__", body)
