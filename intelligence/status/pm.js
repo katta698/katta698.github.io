@@ -230,9 +230,16 @@
         (r.m ? '<p>' + esc(r.m) + '</p>' : '') +
         (r.u
           ? '<p class="pm-src"><a href="' + esc(r.u) + '" target="_blank" rel="noopener">Read it on ' + esc(v) + '’s site →</a></p>'
-          : '<p class="pm-src">' + esc(v) + ' publishes no page for a single incident, so there is no link to it. Read from ' +
-            (r.g ? '<a href="' + esc(r.g) + '" target="_blank" rel="noopener">their status dashboard</a>' : 'their status feed') +
-            '; the text above is theirs.</p>') +
+          : '<p class="pm-src">' + esc(v) + ' has no address for a single incident' +
+            (r.g
+              ? ', and its tabs are not in the URL either — so this opens ' +
+                '<a href="' + esc(r.g) + '" target="_blank" rel="noopener">their status dashboard</a>' +
+                ' and you then click <b>' +
+                (r.e ? 'Service history' : 'Open and recent issues') +
+                '</b>' +
+                (r.e ? ' to find it, since it is resolved' : '') + '.'
+              : '.') +
+            ' The text above is theirs, read from that page.</p>') +
         '</section>';
     });
     body.innerHTML = html;

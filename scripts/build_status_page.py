@@ -269,6 +269,12 @@ def timeline(history, live, hist_meta=None):
             mark(c, when(i.get("begin")), when(i.get("end")), i)
     for c, rows in live.items():
         for i in rows:
+            # Stamp the cloud on live incidents. Only history records carry
+            # one, so the day dialog rendered "has no address for a single
+            # incident" with the vendor's name missing from the front of the
+            # sentence -- for the two incidents that are open right now, which
+            # are the ones most likely to be read.
+            i.setdefault("cloud", c)
             mark(c, aws_begin(i.get("begin")) if c == "aws" else t(i.get("begin")), None, i)
 
     out = []
