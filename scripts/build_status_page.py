@@ -570,6 +570,9 @@ def hooks():
 
 
 
+_PM_NOTE = ""
+
+
 def postmortems(cssv="1"):
     """The vendors' own post-incident write-ups, as a wall of years.
 
@@ -659,9 +662,14 @@ def postmortems(cssv="1"):
         '<button class="pm-x" data-pm-close aria-label="Close">×</button>'
         '<div class="pm-body"></div></dialog>')
 
-    return ('<div class="pm">%s</div>%s%s'
+    # The note goes to the foot of the page, with the other notes about how
+    # this page works, rather than sitting between the write-ups and the
+    # sources where a reader is looking at outages.
+    global _PM_NOTE
+    _PM_NOTE = note
+    return ('<div class="pm">%s</div>%s'
             '<script src="/intelligence/status/pm.js?v=%s" defer></script>'
-            % (out, note, dialog, e(cssv)))
+            % (out, dialog, e(cssv)))
 
 
 def cadence():
@@ -815,7 +823,7 @@ document.documentElement.setAttribute("data-palette",p);})();
 </head><body>
 <nav>
   <a class="nav-logo" href="/intelligence/" aria-label="Cloud intelligence home">
-    <img src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true">
+    <img class="brand-mark" src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true">
     <span class="brand-name">Jayanth Katta</span>
   </a>
   <ul class="nav-links">
@@ -872,6 +880,7 @@ document.documentElement.setAttribute("data-palette",p);})();
   __POSTMORTEMS__
   <h2>Sources</h2>
   <div class="tw"><table><tr><th>Status page</th><th>Endpoint we read</th><th>Last response</th><th>Read</th></tr>__SRC__</table></div>
+  __PMNOTE__
   __CADENCE__
   <p class="src">No ETA appears anywhere on this page. None of the three publishes one
      as structured data, and lifting &ldquo;we expect recovery shortly&rdquo; out of an
@@ -971,6 +980,7 @@ def main():
                 .replace("__REGIONS__", region_grid(hist, clouds))
                 .replace("__DISCLOSURE__", disclosure())
                 .replace("__POSTMORTEMS__", postmortems(cssv))
+                .replace("__PMNOTE__", _PM_NOTE)
                 .replace("__CADENCE__", cadence())
                 .replace("__STATS__", stats)
                 .replace("__SRC__", src)
