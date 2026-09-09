@@ -459,4 +459,633 @@
 
     refresh();
   }
+  /* The outage map.
+   *
+   * A bar chart of region names told you which regions appeared most often and
+   * nothing about where they are, which is the one thing a reader has an
+   * intuition for: cloud regions are places, and "us-east-1 again" means
+   * something different once you can see how much of the world is downstream
+   * of Northern Virginia.
+   *
+   * Positions are the regions' own published locations, at city resolution,
+   * which is what the vendors themselves publish. No datacentre is pinpointed.
+   *
+   * The day/night band is computed, not decorated. The subsolar point is
+   * derived from the current UTC time, so the lit half of the map is really
+   * the lit half of the earth right now -- and the regions sitting in
+   * darkness are the ones whose on-call engineers are asleep, which is the
+   * detail that makes an outage map worth looking at rather than pretty.
+   */
+  var mapHost = document.getElementById('outage-map');
+  if (mapHost) {
+    var W = 720, H = 360;               // 2:1, equirectangular
+    var mapIdx = null, mapPending = null, world = null;
+    var mapCloud = '', mapFoot = [], mapRegions = null;
+    // The archive has its own copy; this block is a separate scope.
+    var CLOUD = { aws: 'AWS', azure: 'Azure', gcp: 'Google Cloud' };
+    var mapLive = [], placeOf = {}, footMeta = null;
+
+    // Where a region code sits, from whichever feed knows. The footprint is
+    // authoritative -- it is the vendors' own region list -- and the incident
+    // index fills in codes the footprint has retired.
+    function coordOf(code) {
+      if (!code) return null;
+      return placeOf[code] || placeOf[String(code).toLowerCase()] || null;
+    }
+
+    function proj(lat, lon) {
+      return [(lon + 180) / 360 * W, (90 - lat) / 180 * H];
+    }
+
+    // Solar declination and the subsolar longitude, from UTC. Standard
+    // low-precision formulae -- good to a fraction of a degree, which is far
+    // finer than a dot on a 720px map.
+    function sun(now) {
+      var start = Date.UTC(now.getUTCFullYear(), 0, 0);
+      var day = (now - start) / 86400000;
+      var g = (357.529 + 0.98560028 * day) * Math.PI / 180;
+      var q = 280.459 + 0.98564736 * day;
+      var L = (q + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g)) * Math.PI / 180;
+      var e = 23.439 * Math.PI / 180;
+      var dec = Math.asin(Math.sin(e) * Math.sin(L)) * 180 / Math.PI;
+      var utcHours = now.getUTCHours() + now.getUTCMinutes() / 60;
+      var subLon = -15 * (utcHours - 12);
+      return { dec: dec, lon: subLon };
+    }
+
+    // One key swatch: an 18x18 window onto the same shapes the map draws.
+    function swatch(inner) {
+      return '<svg class="om-sw" viewBox="0 0 18 18" aria-hidden="true">' +
+             inner + '</svg>';
+    }
+
+    // A slice of a ring, for the vendor collar around each light.
+    function arc(cx, cy, r, a0, a1) {
+      var p0 = [cx + r * Math.cos(a0), cy + r * Math.sin(a0)];
+      var p1 = [cx + r * Math.cos(a1), cy + r * Math.sin(a1)];
+      return 'M' + p0[0].toFixed(2) + ',' + p0[1].toFixed(2) +
+             'A' + r.toFixed(2) + ',' + r.toFixed(2) + ' 0 ' +
+             (a1 - a0 > Math.PI ? 1 : 0) + ' 1 ' +
+             p1[0].toFixed(2) + ',' + p1[1].toFixed(2);
+    }
+
+    function graticule() {
+      var g = '';
+      for (var lon = -150; lon <= 150; lon += 30) {
+        var x = proj(0, lon)[0].toFixed(1);
+        g += '<line x1="' + x + '" y1="0" x2="' + x + '" y2="' + H + '"/>';
+      }
+      for (var lat = -60; lat <= 60; lat += 30) {
+        var y = proj(lat, 0)[1].toFixed(1);
+        g += '<line x1="0" y1="' + y + '" x2="' + W + '" y2="' + y + '"/>';
+      }
+      return g;
+    }
+
+    /* Local time at one place, rather than a shape across the whole map.
+     *
+     * This started as a filled terminator, which was an arch cutting the
+     * continents in half, and became a glow on every dot in darkness, which
+     * was quieter but no more use: "33 lights are dark" is not a fact anyone
+     * can do anything with, and it competed with the four encodings that
+     * carry the actual subject.
+     *
+     * What is worth knowing is local and specific -- it is four in the
+     * morning in Sydney, so somebody was woken up for this -- so it is said
+     * on the one light you are pointing at, and nowhere else.
+     */
+    function isDay(lat, lon, s) {
+      var ha = (lon - s.lon) * Math.PI / 180;
+      var d = s.dec * Math.PI / 180, p = lat * Math.PI / 180;
+      // Solar elevation: positive is above the horizon.
+      return Math.sin(p) * Math.sin(d) + Math.cos(p) * Math.cos(d) * Math.cos(ha) > 0;
+    }
+
+    // The hour at a longitude, to the nearest minute. This is solar time, not
+    // the civil clock -- a country's legal timezone can sit an hour or two off
+    // its meridian, and there is no per-region timezone in anything the
+    // vendors publish. It is close enough to answer "is it the middle of the
+    // night there", which is the only question being asked of it, and it is
+    // labelled as approximate rather than dressed up as a clock reading.
+    function localClock(lon) {
+      var mins = (Date.now() / 60000) + lon * 4;
+      var h = ((Math.floor(mins / 60) % 24) + 24) % 24;
+      var m = ((Math.floor(mins) % 60) + 60) % 60;
+      return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
+    }
+
+    /* One light per place.
+     *
+     * The map used to draw only regions that had broken, which answered
+     * "where did it fail" and left out the question underneath it: how much
+     * cloud is there, and how much of it is fine. A dot on Virginia means
+     * little until you can see it is one of a hundred-odd places.
+     *
+     * So every region the three clouds run today is a point of light, and the
+     * ones that have had incidents burn in their vendor's colour on top. It
+     * reads as a night-lights photograph of the earth where the lights happen
+     * to be datacentres -- which is close to literally true, and is why the
+     * day/night fact needs no arch drawn across the continents any more:
+     * lights show at night. A place in darkness glows; a place in daylight is
+     * a plain point, washed out the way a city is at noon.
+     */
+    function draw(regions, footprint, only, live) {
+      // How old the region list is, in the reader's words rather than an
+      // ISO timestamp. A footprint refreshed daily is worth trusting; one
+      // that quietly stopped refreshing is worth knowing about, and the
+      // only way to tell the two apart is to print it.
+      var footAge = '';
+      if (footMeta && footMeta.updated) {
+        var days = Math.floor((Date.now() - Date.parse(footMeta.updated)) / 86400000);
+        footAge = days <= 0 ? 'today'
+                : days === 1 ? 'yesterday'
+                : days + ' days ago';
+      }
+      // Merge everything that shares a location.
+      //
+      // us-east-1 and us-east4 are both Northern Virginia; West Europe and
+      // europe-west4 are both Amsterdam. Different regions, same point on a
+      // map -- drawn separately they produced dots at identical coordinates
+      // that no amount of shrinking could separate. One light per place,
+      // carrying every region there; the click still lists them individually.
+      var byPlace = {};
+      function at(p) {
+        var k = p[0] + ',' + p[1];
+        if (!byPlace[k]) {
+          byPlace[k] = { p: p, n: 0, all: 0, by: {}, regions: [], live: [],
+                         clouds: {}, live_now: [] };
+        }
+        return byPlace[k];
+      }
+      // Tier one: the footprint. Every region the vendors run today.
+      (footprint || []).filter(function (r) {
+        return r.p && (!only || r.cloud === only);
+      }).forEach(function (r) {
+        var g = at(r.p);
+        g.live.push(r);
+        g.clouds[r.cloud] = (g.clouds[r.cloud] || 0) + 1;
+      });
+      // Tier two: the ones that have broken. Under a filter, a place is
+      // sized by that vendor's incidents alone -- otherwise picking "AWS"
+      // would still show a light swollen by Google's record.
+      regions.filter(function (r) {
+        return r.p && (!only || (r.by[only] || (r.by90 || {})[only]));
+      }).forEach(function (r) {
+        var g = at(r.p);
+        // n is the 90-day count, which is what sizes the light; all is the
+        // whole record, which is context in the tooltip and nothing more.
+        g.n += only ? ((r.by90 || {})[only] || 0) : (r.n90 || 0);
+        g.all += only ? (r.by[only] || 0) : r.n;
+        g.regions.push(r.r);
+        Object.keys(r.by).forEach(function (c) {
+          if (!only || c === only) g.by[c] = (g.by[c] || 0) + r.by[c];
+        });
+      });
+      /* Tier three: what is broken right now.
+       *
+       * The lights were a record of what had happened, which made the map a
+       * history and not a status board -- the page it sits on is called Cloud
+       * Status, and an outage in progress was the one thing it could not
+       * show. The live feed names a region_code per open incident, so an
+       * affected place can be found exactly rather than inferred, and it
+       * pulses until the vendor closes it.
+       */
+      (live || []).forEach(function (i) {
+        if (only && i.cloud !== only) return;
+        var pt = coordOf(i.region_code) || coordOf(i.region);
+        if (!pt) return;
+        var g = at(pt);
+        g.live_now.push(i);
+      });
+      var placed = Object.keys(byPlace).map(function (k) { return byPlace[k]; })
+                         .sort(function (a, b) { return b.n - a.n; });
+      // Fold together places closer than a light is wide.
+      //
+      // The shrink-to-fit pass below caps each light at half the distance to
+      // its neighbour, but it also has a floor: below about 1.3px a light
+      // stops being findable. Where two cities sit within a couple of pixels
+      // of each other the floor wins and they overlap regardless. At this
+      // scale they are the same point on the map, so they become one light
+      // carrying both -- which is the same treatment two regions in one city
+      // already get, applied one step out.
+      var merged = [];
+      placed.forEach(function (r) {
+        var xy = proj(r.p[0], r.p[1]);
+        for (var i = 0; i < merged.length; i++) {
+          var m = merged[i], mxy = proj(m.p[0], m.p[1]);
+          if (Math.hypot(xy[0] - mxy[0], xy[1] - mxy[1]) < 3.2) {
+            m.n += r.n;
+            m.all += r.all;
+            m.regions = m.regions.concat(r.regions);
+            m.live = m.live.concat(r.live);
+            m.live_now = m.live_now.concat(r.live_now);
+            Object.keys(r.by).forEach(function (c) { m.by[c] = (m.by[c] || 0) + r.by[c]; });
+            Object.keys(r.clouds).forEach(function (c) {
+              m.clouds[c] = (m.clouds[c] || 0) + r.clouds[c];
+            });
+            return;
+          }
+        }
+        merged.push(r);
+      });
+      placed = merged.sort(function (a, b) { return b.n - a.n; });
+      var unplaced = (footprint || []).filter(function (r) { return !r.p; });
+      var most = Math.max.apply(null, placed.map(function (r) { return r.n; }).concat([1]));
+      var s = sun(new Date());
+
+      // Size each light, then shrink it until it cannot touch its neighbour.
+      //
+      // The European places sit within a few pixels of one another, so at full
+      // size they merged into blobs and a reader could not tell three
+      // incidents from one. The radius is capped at half the distance to the
+      // nearest other light, which keeps every position exactly where the
+      // region is: the light gets smaller, it never moves.
+      var taken = placed.map(function (r) {
+        var xy = proj(r.p[0], r.p[1]);
+        // A place with nothing recorded against it is still a light, just a
+        // quiet one, scaled by how many regions sit there.
+        var want = r.n ? 2.4 + 7.5 * Math.sqrt(r.n / most)
+                       : 1.4 + 0.5 * Math.min(r.live.length, 4);
+        // Something broken right now outranks the history: never shrink it
+        // below a size a reader will notice.
+        if (r.live_now.length) want = Math.max(want, 4.2);
+        return { x: xy[0], y: xy[1], want: want, r: 0 };
+      });
+      taken.forEach(function (a, i) {
+        var room = Infinity;
+        taken.forEach(function (b, j) {
+          if (i === j) return;
+          var d = Math.hypot(a.x - b.x, a.y - b.y);
+          if (d < room) room = d;
+        });
+        // A little air between neighbours, and never smaller than findable.
+        a.r = Math.max(placed[i].live_now.length ? 3.4 : 1.3,
+                       Math.min(a.want, room / 2 - 0.4));
+      });
+
+      // Move a country label clear of the lights rather than dropping it.
+      //
+      // Hiding on collision cost the United States its name -- the Iowa
+      // cluster sits right on the label anchor -- and losing the biggest
+      // country on the map is worse than a couple of pixels of overlap.
+      function hits(x, y) {
+        return taken.some(function (t) {
+          return Math.abs(t.x - x) < (t.r + 14) && Math.abs(t.y - y) < (t.r + 5);
+        });
+      }
+      // Labels already placed, so a name can also avoid its neighbours.
+      var lbls = [];
+      function clash(x, y, w) {
+        return lbls.some(function (l) {
+          return Math.abs(l.x - x) < (l.w + w) / 2 + 1 && Math.abs(l.y - y) < 5;
+        });
+      }
+      function nudge(c, w) {
+        w = w || 0;
+        if (!hits(c[0], c[1]) && !clash(c[0], c[1], w)) return c[1];
+        for (var d = 5; d <= 26; d += 3) {
+          if (c[1] - d > 8 && !hits(c[0], c[1] - d) && !clash(c[0], c[1] - d, w)) {
+            return c[1] - d;
+          }
+          if (c[1] + d < H - 6 && !hits(c[0], c[1] + d) && !clash(c[0], c[1] + d, w)) {
+            return c[1] + d;
+          }
+        }
+        return null;
+      }
+
+      var liveCount = placed.reduce(function (a, r) { return a + r.live_now.length; }, 0);
+      var dots = placed.map(function (r, i) {
+        var xy = proj(r.p[0], r.p[1]);
+        var rad = taken[i].r;
+        var day = isDay(r.p[0], r.p[1], s);
+        /* What colour a light is allowed to be.
+         *
+         * Tinting each place for whichever vendor had the most incidents
+         * there turned the map green: Google's published history reaches
+         * furthest back, so it wins that count almost everywhere, and the
+         * map read as "Google breaks the most" when what it measured was
+         * who discloses the most. That is the same trap the timeline had,
+         * in visual form.
+         *
+         * So with no filter on, a light that has broken is simply lit --
+         * one colour, no vendor named, size carrying the only claim the
+         * data supports. Pick a cloud and the tint becomes honest, because
+         * then every light on the map is that vendor's.
+         */
+        var cloud = only ? only : (r.n ? 'om-flare' : '');
+        var here = r.live.length ? r.live.map(function (x) { return x.code; }) : r.regions;
+        var name = (r.live[0] && r.live[0].name) || here.join(' · ');
+        var label = here.join(' · ') + (r.n
+          ? ' — ' + r.n + ' incident' + (r.n === 1 ? '' : 's') + ' in 90 days'
+          : ' — nothing in 90 days') +
+          (r.all ? ', ' + r.all + ' on record' : '') +
+          (r.live_now.length ? '\n' + r.live_now.length + ' open right now'
+                             : '') +
+          '\nabout ' + localClock(r.p[1]) + ' there, ' +
+          (day ? 'daytime' : 'the middle of the night');
+        /* The vendor collar.
+         *
+         * Three clouds run regions in the same cities -- Northern Virginia
+         * has all three -- so one dot per place answered "where" and lost
+         * "whose". A thin ring around each light, split into an arc per
+         * vendor present, puts that back without a second map or a legend
+         * of shapes: one arc is a single-cloud town, three arcs is Virginia.
+         *
+         * Presence is a fact each vendor publishes, so unlike incident
+         * counts it can be coloured per vendor without implying a ranking.
+         */
+        var vendors = Object.keys(r.clouds).sort();
+        var collar = '';
+        if (vendors.length) {
+          var step = (Math.PI * 2) / vendors.length;
+          var gap = vendors.length > 1 ? 0.16 : 0;
+          collar = '<g class="om-collar">' + vendors.map(function (v, k) {
+            return '<path class="' + esc(v) + '" d="' +
+                   arc(xy[0], xy[1], rad + 2.4,
+                       -Math.PI / 2 + k * step + gap / 2,
+                       -Math.PI / 2 + (k + 1) * step - gap / 2) + '"/>';
+          }).join('') + '</g>';
+        }
+        return '<g class="om-dot ' + (r.n ? esc(cloud) : 'om-quiet') +
+               (r.live_now.length ? ' is-live' : '') +
+               '" data-region="' + esc(here.join('|')) + '" tabindex="0" role="button" ' +
+               'aria-label="' + esc(here.join(', ')) + ', ' +
+               (r.live_now.length ? r.live_now.length + ' open now, ' : '') +
+               (r.n ? r.n + ' incidents in 90 days' : 'nothing in 90 days') + ', ' +
+               vendors.map(function (v) { return CLOUD[v]; }).join(' and ') +
+               ', about ' + localClock(r.p[1]) + ' local, ' +
+               (day ? 'daytime' : 'night') + '">' +
+               (r.live_now.length
+                 ? '<circle class="om-pulse" cx="' + xy[0].toFixed(1) + '" cy="' +
+                   xy[1].toFixed(1) + '" r="' + (rad + 3.5).toFixed(1) + '"/>'
+                 : '') +
+               collar +
+               '<circle class="om-halo" cx="' + xy[0].toFixed(1) + '" cy="' + xy[1].toFixed(1) +
+               '" r="' + (rad + 4).toFixed(1) + '"/>' +
+               '<circle class="om-core" cx="' + xy[0].toFixed(1) + '" cy="' + xy[1].toFixed(1) +
+               '" r="' + rad.toFixed(1) + '"><title>' + esc(name) + '\n' + esc(label) +
+               '</title></circle></g>';
+      }).join('');
+
+      // Under a filter this has to be that vendor's count, not the total:
+      // "160 regions of AWS" was three clouds' worth wearing one name.
+      var sites = (footprint || []).filter(function (r) {
+        return !only || r.cloud === only;
+      }).length;
+      var quiet = placed.filter(function (r) { return !r.n; }).length;
+      mapHost.innerHTML =
+        '<svg class="om-svg" viewBox="0 0 ' + W + ' ' + H + '" role="img" ' +
+        'aria-label="World map of every AWS, Azure and Google Cloud region, ' +
+        'with the ones that have had incidents lit in their vendor colour">' +
+          '<defs>' +
+          '</defs>' +
+          '<rect class="om-sea" x="0" y="0" width="' + W + '" height="' + H + '"/>' +
+          (world ? '<g class="om-land">' + world.countries.map(function (c) {
+              return '<path d="' + c.d + '"/>'; }).join('') + '</g>' : '') +
+          '<g class="om-grat">' + graticule() + '</g>' +
+          (world ? '<g class="om-water">' + world.water.map(function (w) {
+              // Same clamp the country names get: "Bering Sea" sits near the
+              // dateline and was rendering as "ing Sea".
+              var ww = w.n.length * (w.big ? 4.4 : 2.6);
+              var x = Math.min(Math.max(w.c[0], ww / 2 + 2), W - ww / 2 - 2);
+              return '<text x="' + x.toFixed(1) + '" y="' + w.c[1] + '" class="' +
+                     (w.big ? 'om-ocean' : 'om-sea-lbl') + '">' + esc(w.n) + '</text>';
+            }).join('') + '</g>' : '') +
+          (world ? '<g class="om-names">' + world.countries.filter(function (c) {
+              return c.n;
+            }).map(function (c) {
+              // Keep the whole label inside the frame. "NEW ZEALAND" and
+              // "JAPAN" are centred on land near the edge, so half of each
+              // ran off the map.
+              var w = c.n.length * 3.4;
+              var x = Math.min(Math.max(c.c[0], w / 2 + 2), W - w / 2 - 2);
+              var y = nudge([x, c.c[1]], w);
+              if (y === null) return '';      // no room anywhere: yield
+              lbls.push({ x: x, y: y, w: w });
+              return '<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) +
+                     '">' + esc(c.n) + '</text>';
+            }).join('') + '</g>' : '') +
+          dots +
+        '</svg>' +
+        /* A caption, and the rest folded away.
+         *
+         * Everything the map encodes needed saying, and saying all of it
+         * inline produced fifteen lines of prose under a picture whose whole
+         * point was that it did not need explaining. The four facts a reader
+         * needs to decode it fit in two sentences; the reasoning behind them
+         * is worth keeping and is not worth the space, so it opens on demand.
+         */
+        '<p class="note-sm om-legend">' +
+        '<b>' + sites + ' regions</b>' + (only ? ' of ' + CLOUD[only] : '') +
+        ', from the vendors’ own live lists. The ring says which clouds run ' +
+        'one there; the light is incidents in the last 90 days, sized by how ' +
+        'many — ' + quiet + ' places had none. ' +
+        (liveCount
+          ? '<b class="om-k-live">' + liveCount + ' pulsing red</b> ' +
+            (liveCount === 1 ? 'is' : 'are') + ' broken right now — click to ' +
+            'open the vendor’s record. '
+          : 'Nothing is broken right now. ') +
+        'Hover or click one for what it is, and what time it is there.</p>' +
+        /* A key, drawn in the same ink as the map.
+         *
+         * The caption says what the encodings mean in words, which works
+         * once and then has to be re-read every visit. Four swatches drawn
+         * with the same markup as the map itself are checked against the
+         * picture rather than remembered -- and they are generated from the
+         * live figures, so the key cannot drift from what is on screen.
+         */
+        '<ul class="om-key">' +
+          '<li>' + swatch('<circle class="om-core om-flare-c" cx="9" cy="9" r="3.2"/>' +
+            '<path class="aws" d="' + arc(9, 9, 5.6, -1.571, 0.524) + '"/>' +
+            '<path class="azure" d="' + arc(9, 9, 5.6, 0.681, 2.775) + '"/>' +
+            '<path class="gcp" d="' + arc(9, 9, 5.6, 2.932, 5.026) + '"/>') +
+            'one arc per cloud running a region there</li>' +
+          '<li>' + swatch('<circle class="om-core om-flare-c" cx="5" cy="9" r="1.8"/>' +
+            '<circle class="om-core om-flare-c" cx="13" cy="9" r="5"/>') +
+            'bigger means more incidents in 90 days</li>' +
+          '<li>' + swatch('<circle class="om-core om-flare-c" cx="9" cy="9" r="3.4"/>' +
+            '<circle class="om-key-live" cx="9" cy="9" r="6.4"/>') +
+            'broken right now — click it</li>' +
+          '<li>' + swatch('<circle class="om-core om-quiet-c" cx="9" cy="9" r="2.6"/>') +
+            'dim means nothing broke there in 90 days</li>' +
+        '</ul>' +
+        '<details class="om-how"><summary>How this map is built</summary>' +
+        '<p class="note-sm">' +
+        (footAge
+          ? 'The region list was last read from the three vendors <b>' + footAge +
+            '</b>, and refreshes daily; what is broken right now comes from ' +
+            'their live feeds and refreshes hourly. '
+          : '') +
+        ((footMeta && footMeta.stale && footMeta.stale.length)
+          ? '<b>' + footMeta.stale.map(function (c) { return CLOUD[c] || c; })
+              .join(' and ') + '</b> could not be re-read on that run, so those ' +
+            'regions are the previous list rather than today’s — kept ' +
+            'deliberately, because a list that silently shrank would look ' +
+            'exactly like a complete one. '
+          : '') +
+        'Positions are the cities the vendors themselves ' +
+        'name for each region, not datacentres — several regions share one, ' +
+        'so places with more than one region are drawn as a single light ' +
+        'carrying all of them. The 90-day window is the same one the strip ' +
+        'above uses, and it is the only span all three report alike: their ' +
+        'published histories reach back different distances, so sizing a ' +
+        'light on the whole record would show which vendor discloses most ' +
+        'rather than which broke most. For the same reason the lights carry ' +
+        'no vendor colour unless you pick one above; the ring can, because ' +
+        'running a region somewhere is a fact all three publish. The local ' +
+        'hour shown when you hover a light is solar time worked out from its ' +
+        'longitude: nothing the vendors publish carries a timezone, and a ' +
+        'country’s legal clock can sit an hour or two off its meridian, so ' +
+        'it is close enough to tell you somebody was woken up and is not ' +
+        'offered as a clock reading.' +
+        (unplaced.length
+          ? ' ' + unplaced.length + ' region' + (unplaced.length === 1 ? '' : 's') +
+            ' publish no location and cannot be drawn, so they are named here ' +
+            'rather than quietly left out: ' +
+            unplaced.map(function (r) { return esc(r.code); }).join(', ') + '.'
+          : '') +
+        '</p></details>';
+    }
+
+    function loadMap() {
+      if (mapIdx) return Promise.resolve(mapIdx);
+      if (mapPending) return mapPending;
+      mapPending = fetch('/intelligence/timeline-index.json', { cache: 'no-cache' })
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (j) { mapIdx = j; return j; });
+      return mapPending;
+    }
+
+    // The coastline is a separate small fetch so the map can draw without it
+    // if that ever fails -- dots in the right places beat no map at all.
+    Promise.all([
+      loadMap(),
+      fetch('/intelligence/status/world.json', { cache: 'force-cache' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (w) { world = w; })
+        .catch(function () { world = null; }),
+      // The footprint is a separate fetch for the same reason as the
+      // coastline: if the region list fails, the incident lights still draw.
+      fetch('/intelligence/status/regions.json', { cache: 'no-cache' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; }),
+      // And what is broken right now. Same file the rest of the page reads,
+      // so the map cannot disagree with the cards above it.
+      fetch('/intelligence/status.json', { cache: 'no-cache' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; })
+    ]).then(function (res) {
+      var j = res[0];
+      mapFoot = (res[2] && res[2].regions) || [];
+      footMeta = res[2] || null;
+      mapRegions = j.regions || [];
+      mapFoot.forEach(function (r) { if (r.p) placeOf[r.code] = r.p; });
+      mapRegions.forEach(function (r) { if (r.p && !placeOf[r.r]) placeOf[r.r] = r.p; });
+      var st = res[3];
+      if (st && st.clouds) {
+        Object.keys(st.clouds).forEach(function (c) {
+          (st.clouds[c] || []).forEach(function (i) {
+            mapLive.push({
+              cloud: c, title: i.title || '', service: i.service || '',
+              region: i.region || '', region_code: i.region_code || '',
+              url: i.url || '', update: i.update || ''
+            });
+          });
+        });
+      }
+      draw(mapRegions, mapFoot, mapCloud, mapLive);
+      // Redraw periodically so the lit half does not go stale on a tab left
+      // open. Cheap: it is one SVG rebuild against data already in memory.
+      setInterval(function () {
+        draw(mapRegions, mapFoot, mapCloud, mapLive);
+      }, 15 * 60 * 1000);
+    }).catch(function (e) {
+      mapHost.innerHTML = '<p class="pm-loading">Could not load the map (' +
+                          esc(e.message) + ').</p>';
+    });
+
+    var omCls = document.getElementById('om-clouds');
+    if (omCls) {
+      omCls.addEventListener('click', function (ev) {
+        var b = ev.target.closest ? ev.target.closest('.pm-cl') : null;
+        if (!b || !mapRegions) return;
+        mapCloud = b.getAttribute('data-cl') === 'all' ? '' : b.getAttribute('data-cl');
+        [].forEach.call(omCls.querySelectorAll('.pm-cl'), function (x) {
+          x.classList.toggle('is-on', x === b);
+        });
+        draw(mapRegions, mapFoot, mapCloud, mapLive);
+      });
+    }
+
+    // Clicking a region opens what happened there.
+    mapHost.addEventListener('click', function (ev) {
+      var g = ev.target.closest ? ev.target.closest('.om-dot') : null;
+      if (!g || !mapIdx) return;
+      var names = g.getAttribute('data-region').split('|');
+      var rows = (mapIdx.incidents || []).filter(function (r) {
+        var hay = (r.t || '');
+        return names.some(function (n) { return hay.indexOf(n) >= 0; });
+      }).slice(0, 40);
+      var total = (mapIdx.regions || []).filter(function (r) {
+        return names.indexOf(r.r) >= 0;
+      }).reduce(function (a, r) { return a + r.n; }, 0);
+      var meta = { n: total };
+      var name = names.join(' · ');
+      lastFocus = document.activeElement;
+
+      // Which cloud runs what here, which is the thing a single dot cannot
+      // say. Grouped by vendor so "Northern Virginia has all three" reads at
+      // a glance rather than as a list of codes.
+      var here = mapFoot.filter(function (r) { return names.indexOf(r.code) >= 0; });
+      var byCloud = {};
+      here.forEach(function (r) {
+        (byCloud[r.cloud] = byCloud[r.cloud] || []).push(r.code);
+      });
+      var openNow = mapLive.filter(function (i) {
+        return names.indexOf(i.region_code) >= 0 || names.indexOf(i.region) >= 0;
+      });
+
+      var pt = here.length && here[0].p ? here[0].p : null;
+      var when = pt ? localClock(pt[1]) : '';
+      var html = '<p class="pm-meta"><span class="pm-date">' + esc(name) + '</span>' +
+                 (when ? '<span class="pm-date">about ' + esc(when) +
+                         ' there</span>' : '') + '</p>' +
+                 '<h3 id="pm-title">' + (meta.n || rows.length) + ' incident' +
+                 ((meta.n || rows.length) === 1 ? '' : 's') + ' named this region</h3>';
+      if (Object.keys(byCloud).length) {
+        html += '<p class="pm-shape om-who">' + Object.keys(byCloud).sort()
+          .map(function (c) {
+            return '<span class="chip ' + esc(c) + '">' + esc(CLOUD[c]) + '</span> ' +
+                   esc(byCloud[c].join(', '));
+          }).join('<br>') + '</p>';
+      }
+      if (openNow.length) {
+        html += '<div class="om-open"><h4>Open right now</h4>' + openNow.map(function (i) {
+          return '<section class="pm-sec"><p><strong>' + esc(i.title) + '</strong>' +
+            (i.service ? ' — ' + esc(i.service) : '') + '</p>' +
+            (i.update ? '<p class="pm-shape">' + esc(i.update.slice(0, 400)) + '</p>' : '') +
+            (i.url ? '<p class="pm-src"><a href="' + esc(i.url) + '" target="_blank" ' +
+                     'rel="noopener">' + esc(CLOUD[i.cloud]) +
+                     '’s live record →</a></p>' : '') +
+            '</section>';
+        }).join('') + '</div>';
+      }
+      if (!rows.length) {
+        html += '<p class="pm-shape">The region is named in the vendors’ own ' +
+                'incident records, but not in a title this page can match back ' +
+                'to an individual entry.</p>';
+      }
+      rows.forEach(function (r) {
+        html += '<section class="pm-sec"><p><strong>' + esc(r.t) + '</strong></p>' +
+          '<p class="pm-shape">' + esc(r.b || 'date not stated') + '</p>' +
+          (r.u ? '<p class="pm-src"><a href="' + esc(r.u) + '" target="_blank" rel="noopener">Vendor’s record →</a></p>' : '') +
+          '</section>';
+      });
+      body.innerHTML = html;
+      body.scrollTop = 0;
+      if (typeof dlg.showModal === 'function') dlg.showModal();
+      else dlg.setAttribute('open', '');
+    });
+  }
 })();

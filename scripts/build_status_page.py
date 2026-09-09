@@ -21,11 +21,14 @@ So three rules run through it:
    dress an anecdote up as a measurement.
 """
 import datetime
+import datetime as _dt
 import html
 import io
 import json
 import os
 import re
+
+import region_map  # noqa: E402
 
 from feedback_star import star_html  # noqa: E402
 from back_to_top import TOP_HTML, TOP_JS  # noqa: E402
@@ -218,6 +221,53 @@ def incident_payload():
 INDEX_OUT = os.path.join(ROOT, "intelligence", "timeline-index.json")
 
 
+def region_payload(history, live):
+    """Every region a vendor named, with where it is and what happened there.
+
+    Written into the index so the map and the archive read the same file. A
+    region without a published location still appears in the payload with a
+    null position -- the map lists those beneath itself rather than dropping
+    them, because a map that quietly omits what it cannot draw is claiming a
+    completeness it does not have.
+    """
+    # The same 90 days the strip above the map covers.
+    #
+    # Counting all recorded history sized a place by how much its vendors
+    # publish rather than by how much broke: Google's records reach back
+    # furthest, so anywhere Google runs a region grew a bigger light for a
+    # disclosure reason. Over 90 days all three publish from live feeds and
+    # the counts are comparable, which is the only footing on which putting
+    # them on one map is fair. The full history is still carried, and still
+    # readable in the archive, where the year filter says how far each
+    # vendor's record actually goes.
+    cut90 = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=90)
+    seen = {}
+    for i in list(history.values()) + [dict(x, cloud=c)
+                                       for c, v in live.items() for x in v]:
+        cloud = i.get("cloud")
+        if cloud not in ORDER:
+            continue
+        regs = [x for x in (i.get("regions") or []) if x]
+        if not regs:
+            one = i.get("region_code") or i.get("region")
+            regs = [one] if one else []
+        if not regs:
+            regs = region_map.regions_in(cloud, i.get("title") or "")
+        b = (aws_begin if cloud == "aws" else t)(i.get("begin"))
+        for r in regs:
+            rec = seen.setdefault(r, {"r": r, "n": 0, "n90": 0, "by": {},
+                                      "by90": {}, "last": "",
+                                      "p": region_map.place(r)})
+            rec["n"] += 1
+            rec["by"][cloud] = rec["by"].get(cloud, 0) + 1
+            if b and b >= cut90:
+                rec["n90"] += 1
+                rec["by90"][cloud] = rec["by90"].get(cloud, 0) + 1
+            if b and b.date().isoformat() > rec["last"]:
+                rec["last"] = b.date().isoformat()
+    return sorted(seen.values(), key=lambda x: -x["n"])
+
+
 def write_timeline_index(history, live):
     """A trimmed index of every incident held, for the year views.
 
@@ -295,7 +345,8 @@ def write_timeline_index(history, live):
 
     rows.sort(key=lambda r: r["b"] or "", reverse=True)
     years = sorted({r["b"][:4] for r in rows if r["b"]}, reverse=True)
-    payload = {"updated": stamp_now(), "years": years, "incidents": rows}
+    payload = {"updated": stamp_now(), "years": years, "incidents": rows,
+               "regions": region_payload(history, live)}
     tmp = INDEX_OUT + ".tmp"
     with io.open(tmp, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(payload, fh, ensure_ascii=False, separators=(",", ":"))
@@ -559,84 +610,6 @@ def region_label(i):
     return e(code or name)
 
 
-def region_grid(history, live):
-    """Every region named in an incident, weighted by how often.
-
-    Three things this has to get right, all of them about not implying more
-    than the feeds actually say.
-
-    Vocabulary. Google publishes machine region IDs (us-central1); AWS
-    publishes place names ("UAE", "Bahrain"). Side by side those read as the
-    same kind of label and are not, and "UAE" matches nothing a reader has in
-    a Terraform file. fetch_status pulls the real code out of the ARN, so
-    region_code is preferred and the place name is only a fallback.
-
-    "global" is not a region. It is Google's marker for a non-regional
-    service, and rendering it as a chip beside real regions invents a place.
-    It is counted and reported separately.
-
-    And the distribution is not what it looks like. Google names affected
-    regions on every incident, AWS names one, Azure names none at all -- so
-    the grid is overwhelmingly Google for the sole reason that Google
-    discloses most. Read as a map of where things break, it punishes the
-    vendor that tells you the most, which is the same trap as ranking clouds
-    by how fast they acknowledge. Hence the caption: it says what the grid
-    measures, and names Azure's absence rather than leaving a silent gap.
-    """
-    counts, glob, named = {}, {}, {}
-    rows = list(history.values()) + [(dict(x, cloud=c))
-                                     for c, v in live.items() for x in v]
-    for i in rows:
-        c = i.get("cloud") or "gcp"
-        names = i.get("regions") or []
-        if not names:
-            # Prefer the ARN's region code over the published place name.
-            one = i.get("region_code") or i.get("region")
-            names = [one] if one else []
-        if names:
-            named[c] = named.get(c, 0) + 1
-        for r in names:
-            if r == "global":
-                glob[c] = glob.get(c, 0) + 1
-                continue
-            counts[(c, r)] = counts.get((c, r), 0) + 1
-    if not counts and not glob:
-        return ""
-
-    mx = max(counts.values()) if counts else 1
-    cells = "".join('<div class="reg %s" style="--w:%.2f">'
-                    '<span class="reg-n">%s</span><span class="reg-c">%d</span></div>'
-                    % (c, n / mx, e(r), n)
-                    for (c, r), n in sorted(counts.items(), key=lambda kv: -kv[1]))
-
-    key = ('<div class="reg-key">'
-           '<span><i class="aws"></i>AWS</span>'
-           '<span><i class="azure"></i>Azure</span>'
-           '<span><i class="gcp"></i>Google Cloud</span></div>')
-
-    extra = ""
-    if glob:
-        bits = ", ".join("%s (%d)" % (LABEL[c], n) for c, n in sorted(glob.items()))
-        extra = ('<p class="note-sm">Plus %d incident(s) marked <b>global</b> '
-                 '— not a region, but Google’s label for a service that is '
-                 'not regional: %s.</p>'
-                 % (sum(glob.values()), e(bits)))
-
-    said = ", ".join("%s %d" % (LABEL[c], named.get(c, 0)) for c in ORDER)
-    caption = ('<p class="note-sm">This shows <b>where each vendor said an '
-               'incident was</b>, not where incidents happen. Incidents naming '
-               'any location: %s. Google publishes affected regions on every '
-               'incident and Azure’s feed carries none at all, so a cloud '
-               'appearing more often here is disclosing more, not breaking '
-               'more.</p>' % e(said))
-    return ('<div class="regs">%s</div>%s%s%s'
-            % (cells, key, extra, caption))
-
-
-
-# What each vendor publishes, scored against six things a reader needs.
-# 1 = published as a field, 0.5 = present but buried in prose, 0 = absent.
-# Derived by reading each feed, not by reputation: see the parsers above.
 SHORT = {"aws": "AWS", "azure": "Azure", "gcp": "Google"}
 
 DISCLOSURE = [
@@ -1052,11 +1025,14 @@ document.documentElement.setAttribute("data-palette",p);})();
      reported, not that anything was verified healthy.</p>
   __TIMELINE__
 
-  <h2>Where incidents happened</h2>
-  <p class="sub">Every region named in an incident since this started recording.
-     Depth of colour is the count. A region that is not listed has had nothing
-     reported, which is not the same as nothing happening.</p>
-  __REGIONS__
+  <h2>Where the clouds are, and where they break</h2>
+  <div class="pm-cls om-cls" id="om-clouds">
+    <button class="pm-cl is-on" data-cl="all" type="button">All clouds</button>
+    <button class="pm-cl aws" data-cl="aws" type="button">AWS</button>
+    <button class="pm-cl azure" data-cl="azure" type="button">Azure</button>
+    <button class="pm-cl gcp" data-cl="gcp" type="button">Google Cloud</button>
+  </div>
+  <div id="outage-map" class="om"></div>
 
   <div class="note"><strong>Why the timings below are Google&rsquo;s only.</strong>
      Google publishes when an incident <em>began</em> and, separately, when it first
@@ -1216,7 +1192,6 @@ def main():
                 .replace("__CARDS__", cards)
                 .replace("__BODY__", body)
                 .replace("__TIMELINE__", timeline(hist, clouds, hist_meta))
-                .replace("__REGIONS__", region_grid(hist, clouds))
                 .replace("__DISCLOSURE__", disclosure())
                 .replace("__POSTMORTEMS__", postmortems(cssv))
                 .replace("__CADENCE__", cadence())
