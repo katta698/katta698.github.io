@@ -1,0 +1,64 @@
+name: Cloud status — refresh the incident dashboard
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every 15 minutes. An outage dashboard refreshed daily is decoration:
+    # by the time it updates, the reader has already found out another way.
+    #
+    # GitHub's scheduler is best-effort and routinely runs late under load, so
+    # the page never claims to be live -- it prints how old the data is, and
+    # says so loudly past an hour, which is roughly four missed runs.
+    - cron: '*/15 * * * *'
+
+# Only one run at a time, and let a newer one win. These runs are pure
+# refreshes: if three have queued up behind a slow one, the oldest two would
+# commit data that is already stale by the time they land.
+concurrency:
+  group: cloud-status
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Fetch each vendor's status feed
+        run: python scripts/fetch_status.py
+
+      - name: Rebuild the page
+        run: python scripts/build_status_page.py
+
+      - name: Commit if anything changed
+        run: |
+          if git diff --quiet -- intelligence/status.json intelligence/status-history.json intelligence/status/; then
+            echo "No change since the last run."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add intelligence/status.json intelligence/status-history.json intelligence/status/
+
+          # The message carries the headline fact so the commit list doubles as
+          # an incident log -- "2 active" against a row of "all clear" is a
+          # visible timeline without opening anything.
+          N=$(python -c "import json;d=json.load(open('intelligence/status.json'));print(sum(len(v) for v in d['clouds'].values()))")
+          git commit -m "Cloud status: ${N} active incident(s)"
+
+          # Rebase, never force. Publishing pushes to this branch from four
+          # worktrees, and a refresh landing every 15 minutes will eventually
+          # collide with one of them.
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            echo "Push attempt $i failed; retrying"
+            sleep $((i * 5))
+          done
+          echo "::warning::Could not push the status refresh. The next run will retry."
