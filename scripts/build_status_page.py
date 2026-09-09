@@ -189,6 +189,20 @@ PAGE = """<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600&amp;family=DM+Sans:wght@400;600&amp;family=DM+Mono&amp;display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/intelligence/status/status.css?v=__CSSV__">
 </head><body>
+<nav>
+  <a class="nav-logo" href="/intelligence/" aria-label="Cloud intelligence home">
+    <img src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true">
+    <span class="brand-name">Jayanth Katta</span>
+  </a>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><button class="theme-toggle" onclick="toggleTheme()" id="theme-btn" type="button">
+      <span id="theme-icon">&#9681;</span><span id="theme-label">Light</span>
+    </button></li>
+  </ul>
+</nav>
 <div class="wrap">
   <p class="eyebrow"><span class="dot"></span>Cloud status</p>
   <h1>Is anything broken right now?</h1>
@@ -220,11 +234,24 @@ PAGE = """<!DOCTYPE html>
   <div class="tw"><table><tr><th>Cloud</th><th>Endpoint</th><th>Last response</th><th>Read</th></tr>__SRC__</table></div>
   <p class="src">No ETA appears anywhere on this page. None of the three publishes one
      as structured data, and lifting &ldquo;we expect recovery shortly&rdquo; out of an
-     update would manufacture a commitment the vendor never made.<br>
-     &copy; <span id="y"></span> Jayanth Katta &mdash;
-     <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+     update would manufacture a commitment the vendor never made.</p>
 </div>
-<script>document.getElementById("y").textContent=new Date().getFullYear();</script>
+<footer></footer>
+<script>
+function applyTheme(dark){
+  document.body.classList.toggle("light", !dark);
+  var i=document.getElementById("theme-icon"), l=document.getElementById("theme-label");
+  if(i) i.textContent = dark ? "◑" : "◐";
+  if(l) l.textContent = dark ? "Light" : "Dark";
+}
+function toggleTheme(){
+  var goingDark = document.body.classList.contains("light");
+  localStorage.setItem("theme", goingDark ? "dark" : "light");
+  applyTheme(goingDark);
+}
+applyTheme(localStorage.getItem("theme") !== "light");
+</script>
+<script src="/blog/assets/site-footer.js" data-site-footer></script>
 </body></html>
 """
 
@@ -271,8 +298,10 @@ def main():
     for c in ORDER:
         s = sources.get(c, {})
         resp = ("HTTP %s" % s.get("http")) if s.get("ok") else                '<span style="color:#D4A05A">failed</span>'
-        src += ("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
-                % (e(LABEL[c]), e(s.get("url", "")[:56]), resp,
+        u = s.get("url", "")
+        src += ('<tr><td>%s</td><td><a href="%s" target="_blank" rel="noopener">%s</a>'
+                '</td><td>%s</td><td>%s</td></tr>'
+                % (e(LABEL[c]), e(u), e(u[:56]), resp,
                    e(since(t(s.get("fetched"))))))
 
     cssv = "1"
