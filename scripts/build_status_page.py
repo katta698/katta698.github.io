@@ -131,6 +131,8 @@ def track_record(history):
 
 
 
+MONTH_ABBR = ("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec").split()
+
 WHYUNK = {
     "aws": "AWS publishes only incidents that are open now, so anything "
            "resolved before this log began left no trace.",
@@ -204,8 +206,30 @@ def timeline(history, live, hist_meta=None):
 
     out = []
     for c in ORDER:
-        cells = ""
+        # A row that is almost entirely unrecorded is not a timeline, it is an
+        # empty row with texture on it. Azure's read "0 of 90 - 89 unrecorded"
+        # over 89 hatched cells and one green one, which is accurate and tells
+        # a reader nothing. Where the record simply has not started yet, the
+        # leading gap collapses into one labelled band and only the days that
+        # ARE recorded get drawn as days.
+        lead = 0
         for d in days:
+            if d < horizon[c] and not bad[c].get(d):
+                lead += 1
+            else:
+                break
+        collapse = lead >= 14
+        cells = ""
+        if collapse:
+            # Formatted BEFORE the % expression below. Written inline it was
+            # double-escaped and strftime received "%%d %%b" literally, so the
+            # band read "no record before %d %b".
+            hd = horizon[c]
+            pretty = "%d %s" % (hd.day, MONTH_ABBR[hd.month - 1])
+            cells += ('<span class="tl-gap" style="--n:%d" title="No record '
+                      'before %s. %s">no record before %s</span>'
+                      % (lead, e(hd.isoformat()), e(WHYUNK[c]), e(pretty)))
+        for d in (days[lead:] if collapse else days):
             incs = bad[c].get(d)
             if not incs:
                 # Unknown is not clear, and drawing them the same way is the
@@ -244,9 +268,17 @@ def timeline(history, live, hist_meta=None):
         starts = sum(1 for d in days
                      if any(startday.get(id(x)) == d for x in bad[c].get(d, [])))
         unknown = sum(1 for d in days if d < horizon[c] and not bad[c].get(d))
-        label = "%d of 90" % n
-        if unknown:
-            label += " · %d unrecorded" % unknown
+        if collapse:
+            # "0 of 90" leads with a zero that reads as ninety verified-clear
+            # days. Say how much record there actually is instead.
+            rec = 90 - lead
+            label = "%d day%s of record" % (rec, "" if rec == 1 else "s")
+            if n:
+                label = "%d of %d recorded day(s)" % (n, rec)
+        else:
+            label = "%d of 90" % n
+            if unknown:
+                label += " · %d unrecorded" % unknown
         out.append('<div class="tl-row"><div class="tl-n">%s</div>'
                    '<div class="tl-cells">%s</div>'
                    '<div class="tl-s" title="%d incident(s) began in this '
@@ -436,6 +468,93 @@ def disclosure():
 
 
 
+POSTMORTEMS = os.path.join(ROOT, "intelligence", "postmortems.json")
+
+VENDOR_OF = {"aws": "AWS", "azure": "Microsoft", "gcp": "Google"}
+
+
+def postmortems(cssv="1"):
+    """The vendors' own post-incident write-ups, as a wall of years.
+
+    What this is NOT: a set of outage descriptions written here. Every word a
+    reader sees in the dialog is the vendor's, quoted whole and linked back.
+    Writing "what happened" in my own words from memory would produce exactly
+    the kind of confident, unverifiable account this site exists to refuse --
+    and an outage post-mortem is the worst possible place for it, because the
+    details a reader wants (which region, which trigger, what changed
+    afterwards) are precisely the ones that are easy to half-remember.
+
+    Grouped by year rather than by cloud on purpose. By cloud it is three lists
+    of different lengths, which reads as a scoreboard; by year it reads as what
+    it is -- fifteen years of the industry writing down what broke, with the
+    gaps and the density both visible.
+    """
+    if not os.path.exists(POSTMORTEMS):
+        return ""
+    try:
+        data = json.load(io.open(POSTMORTEMS, encoding="utf-8"))
+    except ValueError:
+        return ""
+    rows = data.get("postmortems") or []
+    if not rows:
+        return ""
+
+    by_year = {}
+    for r in rows:
+        y = (r.get("date") or "")[:4] or "Undated"
+        by_year.setdefault(y, []).append(r)
+
+    def yr_key(y):
+        return (0, 0) if y == "Undated" else (1, int(y))
+
+    out = ""
+    for y in sorted(by_year, key=yr_key, reverse=True):
+        items = sorted(by_year[y], key=lambda r: r.get("date") or "", reverse=True)
+        cards = ""
+        for r in items:
+            # The shape of the disclosure is itself information: a vendor that
+            # publishes headed sections has committed to answering the same
+            # questions every time, and one that publishes an essay has not.
+            n = len(r.get("sections") or [])
+            shape = ("%d sections" % n) if n else "narrative"
+            cards += (
+                '<button class="pm-card %s" data-pm="%s:%s" type="button">'
+                '<span class="pm-c-cloud">%s</span>'
+                '<span class="pm-c-title">%s</span>'
+                '<span class="pm-c-shape">%s</span></button>'
+                % (e(r.get("cloud", "")), e(r.get("cloud", "")), e(r.get("id", "")),
+                   e(LABEL.get(r.get("cloud"), r.get("cloud", ""))),
+                   e(r.get("title", ""))[:150], e(shape)))
+        out += ('<div class="pm-year"><div class="pm-y">%s</div>'
+                '<div class="pm-cards">%s</div></div>' % (e(y), cards))
+
+    counts = {}
+    for r in rows:
+        counts[r["cloud"]] = counts.get(r["cloud"], 0) + 1
+    tally = ", ".join("%s %d" % (LABEL[c], counts.get(c, 0)) for c in ORDER)
+
+    # Azure's single entry is not a quiet record, and saying so matters: its
+    # history page shows one review at a time, so this grows only as new ones
+    # appear. Left unexplained, "Microsoft 1" next to "AWS 18" reads as a claim
+    # about reliability instead of a fact about a scraper's starting date.
+    note = ('<p class="note-sm">Every word in these is the vendor’s own, '
+            'quoted whole and linked back — nothing here is summarised or '
+            'rewritten. Holding %s. AWS keeps a permanent index of its '
+            'post-event summaries, which is why its record reaches back to '
+            '2011. Azure publishes one review at a time and retains the rest '
+            'behind its own navigation, so that count grows from the day this '
+            'started rather than reaching backwards.</p>' % e(tally))
+
+    dialog = (
+        '<dialog id="pm-dialog" aria-labelledby="pm-title">'
+        '<button class="pm-x" data-pm-close aria-label="Close">×</button>'
+        '<div class="pm-body"></div></dialog>')
+
+    return ('<div class="pm">%s</div>%s%s'
+            '<script src="/intelligence/status/pm.js?v=%s" defer></script>'
+            % (out, note, dialog, e(cssv)))
+
+
 def cloud_card(cloud, incidents, source):
     if not source.get("ok"):
         state, cls, note = "Could not check", "err", e(source.get("error", "")[:60])
@@ -568,6 +687,15 @@ document.documentElement.setAttribute("data-palette",p);})();
   <p class="sub">The three publish very different amounts, and that difference is
      itself worth knowing when you decide how far to trust a status page.</p>
   __DISCLOSURE__
+</section>
+
+<section class="sec">
+  <h2>When it broke, what did they say afterwards?</h2>
+  <p class="lede">The write-ups the three clouds published after their own
+  outages &mdash; what happened, what caused it, and what they changed. Their
+  words, not mine: open one and you get the published text in full, with a
+  link to the original.</p>
+  __POSTMORTEMS__
   <div class="note"><strong>Why the timings below are Google&rsquo;s only.</strong>
      Google publishes when an incident <em>began</em> and, separately, when it first
      said something publicly, so the gap between the two is a real number. AWS&rsquo;s
@@ -673,6 +801,7 @@ def main():
                 .replace("__TIMELINE__", timeline(hist, clouds, hist_meta))
                 .replace("__REGIONS__", region_grid(hist, clouds))
                 .replace("__DISCLOSURE__", disclosure())
+                .replace("__POSTMORTEMS__", postmortems(cssv))
                 .replace("__STATS__", stats)
                 .replace("__SRC__", src))
 
