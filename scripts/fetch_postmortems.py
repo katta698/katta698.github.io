@@ -329,7 +329,11 @@ def parse_gcp(limit=None):
             "sections": secs,
             "shape": "sections" if secs else "prose",
             "severity": i.get("severity", ""),
+            # Keep the count even when the list is trimmed. Two Google
+            # incidents affect 27 products; showing ten and saying nothing
+            # understates the blast radius by more than half.
             "products": [p.get("title") for p in i.get("affected_products", [])][:10],
+            "product_count": len(i.get("affected_products") or []),
         })
         print("   gcp  %-52s %d section(s)" % (out[-1]["title"][:50], len(secs)))
         if limit and len(out) >= limit:

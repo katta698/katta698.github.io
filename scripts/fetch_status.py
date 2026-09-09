@@ -112,7 +112,11 @@ def parse_gcp(raw):
             "impact": i.get("status_impact", ""),
             "begin": i.get("begin", ""),
             "end": i.get("end") or "",
+            # Keep the count even when the list is trimmed. Two Google
+            # incidents affect 27 products; showing ten and saying nothing
+            # understates the blast radius by more than half.
             "products": [p.get("title") for p in i.get("affected_products", [])][:10],
+            "product_count": len(i.get("affected_products") or []),
             "regions": sorted({l.get("id") for l in locs if l.get("id")})[:12],
             "update": flat((i.get("most_recent_update") or {}).get("text")),
             "updates": len(ups),
