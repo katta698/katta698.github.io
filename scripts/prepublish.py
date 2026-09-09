@@ -147,6 +147,12 @@ CHECKS = [
     # exactly the kind of thing review never catches. Two files had coloured
     # Google and Azure the same blue, 6 apart in RGB, for who knows how long.
     ("check_cloud_colors.py",   True,  False, False, False),
+    # Developer leftovers that reach a reader: conflict markers, template
+    # placeholders, printf specifiers, links to raw data files, internal ids.
+    # Blocking, because every rule in it corresponds to something that actually
+    # shipped to this live site in one day and was found by a person reading
+    # the page rather than by any of the checks above -- all of which passed.
+    ("check_reader_facing.py",   True,  False, False, False),
     ("check_index_complete.py", True,  False, False, False),
     ("fix_series_nav.py",       True,  False, False, False),
     # The announcement store behind /intelligence/whats-new/. Nothing else in

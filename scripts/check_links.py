@@ -86,11 +86,28 @@ def main():
     ap.add_argument("--page", action="append")
     args = ap.parse_args()
 
-    pages = args.page or [
-        "intelligence/status/index.html",
-        "intelligence/whats-new/index.html",
-        "intelligence/index.html",
-    ]
+    # EVERY published page, not a hand-listed three.
+    #
+    # This checked exactly three pages while the site publishes 480. The blog
+    # posts are the ones that matter most here -- they cite vendor
+    # documentation, and a technical post resting on a dead citation is worse
+    # than one that never cited anything, because the badge of a source is
+    # doing work the source no longer does.
+    #
+    # A hand-maintained list of pages to check is a list that goes out of date
+    # the first time a page is added, silently, in the direction of checking
+    # less.
+    if args.page:
+        pages = args.page
+    else:
+        pages = []
+        for base, dirs, files in os.walk(ROOT):
+            dirs[:] = [d for d in dirs
+                       if d not in (".git", "node_modules", ".github", "scripts")]
+            for f in files:
+                if f.endswith(".html"):
+                    pages.append(os.path.relpath(os.path.join(base, f), ROOT))
+        pages.sort()
 
     found, bad = {}, []
     for rel in pages:
