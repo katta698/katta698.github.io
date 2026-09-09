@@ -233,22 +233,16 @@ document.documentElement.setAttribute('data-palette',p);})();
      above a cream page, and moving between sections looked like moving
      between sites. Derived from --bg the same way blog.css derives --nav-bg
      from --surface, so it tracks the daily palette too. */
-  /* Opaque by default. At 94% the remaining 6% let the page scroll THROUGH
-     the sticky bar -- headings and links slid across it and stayed perfectly
-     sharp, because unlike blog.css and status.css this rule never had a
-     backdrop-filter to blur what showed through. Translucency without a blur
-     is not a soft edge, it is just a bug.
-     The frosted look is restored only where the blur actually works, so a
-     browser without backdrop-filter gets a solid bar rather than a
-     see-through one. */
+  /* Opaque, in both themes, deliberately.
+     This bar has been reported see-through twice. It was 94% with no blur at
+     all, then 88% WITH a blur -- and a blur softens what scrolls behind it
+     without hiding it, so in light mode dark body text still read straight
+     through the bar. Frosted glass only works when what is behind it is
+     low-contrast, and a page of black-on-cream text never is.
+     So: no alpha. The bar is the page background, solid. */
   nav{background:rgb(29,35,34);
       background:var(--bg);
       color:var(--text);border-bottom:1px solid var(--border)}
-  @supports ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
-    nav{background:color-mix(in srgb, var(--bg) 88%, transparent);
-        -webkit-backdrop-filter:saturate(180%) blur(10px);
-        backdrop-filter:saturate(180%) blur(10px)}
-  }
   .nav-logo{color:var(--text)}
   .nav-links a{color:var(--text-muted)}
   .nav-links a:hover{color:var(--accent)}

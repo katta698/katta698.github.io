@@ -473,6 +473,105 @@ POSTMORTEMS = os.path.join(ROOT, "intelligence", "postmortems.json")
 VENDOR_OF = {"aws": "AWS", "azure": "Microsoft", "gcp": "Google"}
 
 
+HOOK_ORDER = ("root cause", "preliminary root cause", "what went wrong and why",
+              "what happened", "summary")
+
+# Openers that say nothing about the incident: apologies, survey links, and the
+# standing caveat every Google preliminary report carries. A hook is meant to
+# be the one line worth stopping for, so a card that opens "We sincerely
+# apologize" is a wasted slot.
+HOOK_SKIP = ("sincerely apolog", "we apolog", "survey", "rate this pir",
+             "please note", "subject to change", "if you have experienced",
+             "we wanted to provide")
+
+
+def first_sentence(t):
+    t = re.sub(r"\s+", " ", (t or "").strip())
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z(])", t)
+    for p in parts:
+        p = p.strip()
+        if len(p) < 60 or len(p) > 320:
+            continue
+        if any(k in p.lower() for k in HOOK_SKIP):
+            continue
+        return p
+    return ""
+
+
+def hooks():
+    """One quoted line per write-up, for the "did you know" card.
+
+    The line is the vendor's own first sentence from whichever section they
+    labelled as the cause -- never a sentence assembled here, and never a
+    paraphrase. Picking WHICH sentence is the only editorial act, and it is
+    made mechanical on purpose: the first sentence of the first section that
+    matches HOOK_ORDER, skipping openers that carry no information.
+
+    AWS is largely absent from this rotation and that is the honest outcome:
+    it publishes essays with no labelled cause section, so there is nothing to
+    take a first sentence FROM without me deciding which sentence of a
+    four-thousand-word narrative is the interesting one. That decision is
+    exactly where a quote stops being the vendor's and starts being mine.
+    """
+    if not os.path.exists(POSTMORTEMS):
+        return []
+    try:
+        rows = (json.load(io.open(POSTMORTEMS, encoding="utf-8"))
+                .get("postmortems") or [])
+    except ValueError:
+        return []
+    out = []
+    for r in rows:
+        secs = r.get("sections") or []
+        chosen, head = "", ""
+        for want in HOOK_ORDER:
+            for s in secs:
+                if s.get("heading", "").strip().lower() == want:
+                    line = first_sentence(s.get("text"))
+                    if line:
+                        chosen, head = line, s["heading"]
+                        break
+            if chosen:
+                break
+        if not chosen:
+            continue
+        out.append({
+            "q": chosen, "sec": head, "cloud": r.get("cloud", ""),
+            "date": r.get("date", ""), "title": r.get("title", ""),
+            "id": "%s:%s" % (r.get("cloud", ""), r.get("id", "")),
+            "url": r.get("url", ""),
+        })
+    return out
+
+
+def didyouknow():
+    """A single card, rotating through the hooks, with the full text one tap away."""
+    hs = hooks()
+    if not hs:
+        return ""
+    # Deterministic first pick so the built page is stable and cacheable, but
+    # different day to day -- a card that shows the same line every visit stops
+    # being read after the second one.
+    start = (datetime.date.today().toordinal()) % len(hs)
+    data = json.dumps(hs, ensure_ascii=False).replace("</", "<\\/")
+    h = hs[start]
+    return (
+        '<div class="dyk" id="dyk" data-i="%d">'
+        '<div class="dyk-h">Did you know?</div>'
+        '<blockquote class="dyk-q">%s</blockquote>'
+        '<p class="dyk-m"><span class="chip %s">%s</span>'
+        '<span class="dyk-d">%s</span></p>'
+        '<p class="dyk-t">%s</p>'
+        '<div class="dyk-a">'
+        '<button type="button" class="dyk-more" data-pm="%s">Read what they wrote &rarr;</button>'
+        '<button type="button" class="dyk-next">Another one</button>'
+        '</div></div>'
+        '<script type="application/json" id="dyk-data">%s</script>'
+        % (start, e(h["q"]), e(h["cloud"]), e(LABEL.get(h["cloud"], h["cloud"])),
+           e(h["date"] or "date not stated"), e(h["title"][:150]),
+           e(h["id"]), data))
+
+
 def postmortems(cssv="1"):
     """The vendors' own post-incident write-ups, as a wall of years.
 
@@ -695,6 +794,7 @@ document.documentElement.setAttribute("data-palette",p);})();
   outages &mdash; what happened, what caused it, and what they changed. Their
   words, not mine: open one and you get the published text in full, with a
   link to the original.</p>
+  __DIDYOUKNOW__
   __POSTMORTEMS__
   <div class="note"><strong>Why the timings below are Google&rsquo;s only.</strong>
      Google publishes when an incident <em>began</em> and, separately, when it first
@@ -801,6 +901,7 @@ def main():
                 .replace("__TIMELINE__", timeline(hist, clouds, hist_meta))
                 .replace("__REGIONS__", region_grid(hist, clouds))
                 .replace("__DISCLOSURE__", disclosure())
+                .replace("__DIDYOUKNOW__", didyouknow())
                 .replace("__POSTMORTEMS__", postmortems(cssv))
                 .replace("__STATS__", stats)
                 .replace("__SRC__", src))
