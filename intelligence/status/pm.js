@@ -229,7 +229,12 @@
           (r.e ? ' · ended ' + esc(when(r.e)) : ' · still open') + '</p>' +
         (r.m ? '<p>' + esc(r.m) + '</p>' : '') +
         (r.u
-          ? '<p class="pm-src"><a href="' + esc(r.u) + '" target="_blank" rel="noopener">Read it on ' + esc(v) + '’s site →</a></p>'
+          ? '<p class="pm-src"><a href="' + esc(r.u) + '" target="_blank" rel="noopener">Read it on ' + esc(v) + '’s site →</a>' +
+            // Azure's history page has no address for one review, so the link
+            // lands on the list. Without the tracking id a reader has to scan
+            // thirty entries to find the one they clicked.
+            (r.k ? ' <span class="pm-shape">Set the Date filter to <b>All</b> and find tracking ID <b>' + esc(r.k) + '</b>.</span>' : '') +
+            '</p>'
           // Only reached when a vendor genuinely publishes no address for
           // the incident. AWS does -- ?eventID=<arn> opens its detail panel --
           // so this is now Azure's case, whose feed carries no per-incident

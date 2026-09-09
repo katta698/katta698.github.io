@@ -196,6 +196,7 @@ def incident_payload():
             "e": str(i.get("end") or ""),
             "u": "" if generic else url,
             "m": (i.get("update") or "")[:700],
+            "k": i.get("tracking") or "",
         })
     return json.dumps(out, ensure_ascii=False).replace("</", "<\/")
 

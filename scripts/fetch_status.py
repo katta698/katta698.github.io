@@ -375,9 +375,26 @@ def parse_azure_history(pages=3):
                 "end": end.isoformat(),
                 "update": text[:900],
                 "updates": 1,
-                # Azure DOES publish a per-incident address, unlike its RSS
-                # feed, which carries none.
-                "url": "https://aka.ms/AzPIR/%s" % tid,
+                # NOT aka.ms/AzPIR/<id>. That is the FEEDBACK SURVEY, and it
+                # is what shipped: every Azure incident linked to a Microsoft
+                # Customer Voice form titled "Post Incident Review Survey".
+                # The id appears in it, which is why it looked right.
+                #
+                # I lifted that pattern out of the PIR's own text, where Azure
+                # prints it under "How can we make our incident
+                # communications more useful?" -- a survey link, read as a
+                # permalink. aka.ms/air/<id> is likewise not the review: it is
+                # a YouTube retrospective video.
+                #
+                # I could not find a per-PIR address. The API payload carries
+                # no href for a review, only a data-target for its collapse
+                # element, and the fragment plus ?trackingId= and ?id= all
+                # leave it collapsed. That is a statement about my search, not
+                # about Azure -- twice today I turned the first into the
+                # second and was wrong both times -- so this links to the
+                # history page and names the tracking id to look for.
+                "url": "https://azure.status.microsoft/en-us/status/history/",
+                "tracking": tid,
             })
         if not found:
             break

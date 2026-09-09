@@ -252,7 +252,10 @@ def parse_azure(limit=None):
                 "id": tid,
                 "title": title[:200],
                 "date": date,
-                "url": "https://aka.ms/AzPIR/%s" % tid,
+                # See fetch_status.py: aka.ms/AzPIR/<id> is the feedback
+            # survey, not the review.
+            "url": "https://azure.status.microsoft/en-us/status/history/",
+            "tracking": tid,
                 "body": body[:14000],
                 "sections": secs,
                 "shape": "sections",
