@@ -299,6 +299,8 @@ def region_grid(history, live):
 # What each vendor publishes, scored against six things a reader needs.
 # 1 = published as a field, 0.5 = present but buried in prose, 0 = absent.
 # Derived by reading each feed, not by reputation: see the parsers above.
+SHORT = {"aws": "AWS", "azure": "Azure", "gcp": "Google"}
+
 DISCLOSURE = [
     ("Incident start",      {"aws": 0,   "azure": 0,   "gcp": 1}),
     ("First-update time",   {"aws": 0,   "azure": 0,   "gcp": 1}),
@@ -310,16 +312,57 @@ DISCLOSURE = [
 
 
 def disclosure():
+    """The same six facts, drawn two ways, because one layout cannot do both.
+
+    The wide layout is cloud-major: a row per cloud, six bars across. That only
+    works while the column headers are visible, and on a phone six labels will
+    not fit above 6 bars in a 360px column. They used to be display:none there,
+    which left six unlabelled bars and a score -- a reader could see that Azure
+    scored 1.0 and had no way to learn what it scored 1.0 AT. That is
+    decoration, and worse than omitting the chart, because it looks like
+    information.
+
+    So narrow screens get a criterion-major list instead: one row per fact,
+    named in full, with three labelled chips. Taller, but every mark says what
+    it means. Both are generated; CSS picks one.
+
+    A key is now shown in both. Three fill states that nothing explained was
+    the same failure in miniature.
+    """
+    key = ('<div class="dv-key">'
+           '<span><i class="f full"></i>published as a field</span>'
+           '<span><i class="f part"></i>in prose, not a field</span>'
+           '<span><i class="f none"></i>absent</span></div>')
+
+    def cls(v):
+        return "full" if v == 1 else ("part" if v else "none")
+
+    # Wide: a row per cloud.
     head = "".join("<span>%s</span>" % e(f) for f, _ in DISCLOSURE)
     rows = ""
     for c in ORDER:
         vals = [d[c] for _, d in DISCLOSURE]
-        bars = "".join('<i class="f %s"></i>'
-                       % ("full" if v == 1 else ("part" if v else "none")) for v in vals)
+        bars = "".join('<i class="f %s" title="%s"></i>' % (cls(v), e(f))
+                       for (f, _), v in zip(DISCLOSURE, vals))
         rows += ('<div class="dv-row"><div class="dv-n">%s</div>'
                  '<div class="dv-bars">%s</div><div class="dv-s">%.1f / 6</div></div>'
                  % (e(LABEL[c]), bars, sum(vals)))
-    return '<div class="dv"><div class="dv-head">%s</div>%s</div>' % (head, rows)
+    wide = ('<div class="dv-w"><div class="dv-head">%s</div>%s</div>' % (head, rows))
+
+    # Narrow: a row per criterion, every one named.
+    mrows = ""
+    for field, d in DISCLOSURE:
+        chips = "".join('<span class="dv-c"><i class="f %s"></i>%s</span>'
+                        % (cls(d[c]), e(SHORT[c])) for c in ORDER)
+        mrows += ('<div class="dv-mrow"><div class="dv-mn">%s</div>'
+                  '<div class="dv-cs">%s</div></div>' % (e(field), chips))
+    totals = " · ".join("%s %.1f/6" % (SHORT[c], sum(d[c] for _, d in DISCLOSURE))
+                        for c in ORDER)
+    narrow = ('<div class="dv-m">%s<p class="dv-tot">%s</p></div>'
+              % (mrows, e(totals)))
+
+    return '<div class="dv">%s%s%s</div>' % (wide, narrow, key)
+
 
 
 def cloud_card(cloud, incidents, source):
