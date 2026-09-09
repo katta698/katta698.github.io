@@ -95,8 +95,45 @@ def collect(classes):
                     "st": status,
                     "k": r.get("class", ""),
                 })
+    rows = merge_cross_posted(rows)
     rows.sort(key=lambda r: (r["d"], r["t"]), reverse=True)
     return rows
+
+
+def merge_cross_posted(rows):
+    """Collapse one announcement that a vendor filed under several products.
+
+    Google and Microsoft publish the same note in every product release-note
+    section it touches. "Privileged Access Manager is generally available"
+    arrived twice on 7 September 2026, once under Access Approval and once
+    under Access Transparency, and the page showed two rows whose visible text
+    was character-for-character identical -- the only difference being the
+    small service label underneath, which is exactly where a reader is not
+    looking when deciding whether they have already read a line.
+
+    249 of 6,900 rows are redundant this way (3.6%), and it clusters: one GCP
+    day carried the same sentence thirteen times and an Azure day twelve. A
+    reader scrolling that sees a broken page, not a busy release day.
+
+    The services are unioned rather than one row being dropped, so filtering by
+    either product still finds the announcement. Merging on the rendered text
+    and not on the stored headline is deliberate: the stored form carries a
+    "Product: " prefix that the page has already moved into the label, so the
+    duplicates are only identical after that transformation.
+    """
+    by_key = {}
+    order = []
+    for r in rows:
+        key = (r["c"], r["d"], r["t"], r["u"])
+        if key in by_key:
+            seen = by_key[key]["s"]
+            for svc in r["s"]:
+                if svc not in seen:
+                    seen.append(svc)
+        else:
+            by_key[key] = r
+            order.append(key)
+    return [by_key[k] for k in order]
 
 
 PAGE = """<!DOCTYPE html>
@@ -509,7 +546,14 @@ function render(){
       meta.push('<span class="kind">' + esc(r.k === 'blog' ? 'blog post'
                                             : 'security bulletin') + '</span>');
     if(r.st) meta.push('<span class="status">' + esc(r.st) + '</span>');
-    if(r.s.length) meta.push(esc(r.s.join(' &middot; ').replace(/&amp;middot;/g,'\\u00b7')));
+    // Join with the character, not the entity. This used to join with
+    // ' &middot; ' and then .replace(/&amp;middot;/g, ...) -- but the replace
+    // ran BEFORE esc(), searching for the escaped form inside an unescaped
+    // string. It matched nothing, esc() then turned the & into &amp;, and
+    // "&middot;" shipped as visible text between the service names. Invisible
+    // until announcements began being merged across products, because a
+    // single-service row has no separator to get wrong.
+    if(r.s.length) meta.push(esc(r.s.join(' \\u00b7 ')));
     html += '<div class="item">'
       + '<span class="chip ' + r.c + '">' + esc(SHORT[r.c] || r.c) + '</span>'
       + '<div class="body">'

@@ -259,8 +259,29 @@ def check_page_matches_store(data):
         problems.append("intelligence/news.json is not valid JSON: %s" % exc)
         return
     items = payload.get("items") or []
-    expected = sum(1 for rows in data.values() for r in rows
-                   if r.get("class") in ("announcement", "release"))
+
+    # Ask the builder what it would produce, rather than counting records and
+    # assuming one record is one row.
+    #
+    # It is not: the page merges an announcement a vendor filed under several
+    # products into a single row, which is 205 fewer rows than records at the
+    # time of writing. Counting records made this check fail on a correct page
+    # and demand a rebuild that would change nothing -- and a gate that is
+    # wrong about a healthy tree is one people learn to re-run and ignore.
+    #
+    # Importing the builder also keeps the two definitions of "what belongs on
+    # the page" from drifting apart, which is the failure this check exists to
+    # catch in the first place.
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import build_news_page
+        expected = len(build_news_page.collect(build_news_page.KEEP_CLASSES))
+    except Exception as exc:                                   # noqa: BLE001
+        warnings.append("could not ask build_news_page for the expected row "
+                        "count (%s); falling back to a raw record count, which "
+                        "does not account for merged rows" % exc)
+        expected = sum(1 for rows in data.values() for r in rows
+                       if r.get("class") in ("announcement", "release"))
     if len(items) != expected:
         (problems if abs(len(items) - expected) > 0 else warnings).append(
             "intelligence/news.json holds %d item(s) but the store now has %d "
