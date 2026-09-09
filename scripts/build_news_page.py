@@ -89,18 +89,33 @@ def sources_table():
                 if (r.get("date") or "") > a["last"]:
                     a["last"] = r.get("date") or ""
 
+    # The host is CONTEXT, not a link, and the domains are linked once.
+    #
+    # Linking every row produced 65 links for 9 distinct hosts -- 56 of them
+    # duplicates, and none of them anywhere a reader wanted to go: every
+    # announcement on this page already links to its own vendor page, which is
+    # the specific address that matters. A table of repeated domain links is
+    # 56 invitations to leave for somewhere less useful than the row above.
     rows = ""
+    hosts_seen = {}
     for (cloud, src), a in sorted(agg.items(), key=lambda kv: (kv[0][0], -kv[1]["n"])):
         host = max(a["hosts"], key=a["hosts"].get) if a["hosts"] else ""
-        link = ('<a href="https://%s/" target="_blank" rel="noopener">%s</a>'
-                % (host, host)) if host else "&mdash;"
-        rows += ('<tr><td>%s</td><td>%s</td><td>%s</td>'
+        if host:
+            hosts_seen[host] = hosts_seen.get(host, 0) + 1
+        rows += ('<tr><td>%s</td><td>%s</td><td class="host">%s</td>'
                  '<td class="num">%d</td><td>%s</td></tr>'
-                 % (CLOUD_NAME.get(cloud, cloud), src, link, a["n"],
-                    a["last"] or "&mdash;"))
-    return ('<table class="src-tbl"><thead><tr><th>Cloud</th><th>Source</th>'
-            '<th>Published at</th><th class="num">Held</th><th>Latest</th>'
-            '</tr></thead><tbody>%s</tbody></table>' % rows)
+                 % (CLOUD_NAME.get(cloud, cloud), src, host or "&mdash;",
+                    a["n"], a["last"] or "&mdash;"))
+
+    domains = " &middot; ".join(
+        '<a href="https://%s/" target="_blank" rel="noopener">%s</a>' % (h, h)
+        for h in sorted(hosts_seen, key=lambda x: -hosts_seen[x]))
+    return ('<p class="note">All of it comes from %d domain%s: %s.</p>'
+            '<div class="tw"><table class="src-tbl"><thead><tr><th>Cloud</th>'
+            '<th>Source</th><th>Published at</th><th class="num">Held</th>'
+            '<th>Latest</th></tr></thead><tbody>%s</tbody></table></div>'
+            % (len(hosts_seen), "" if len(hosts_seen) == 1 else "s",
+               domains, rows))
 
 
 def collect(classes):
@@ -627,7 +642,7 @@ a:active,button:active{opacity:.72}
   <p class="note">__NOTE__</p>
   <h2 class="src-h">Where this comes from</h2>
   <p class="note">Every row on this page is read from one of these, and links back to the vendor’s own page for it. Counts are what is held here, not what the vendor has published.</p>
-  <div class="tw">__SOURCES__</div>
+  __SOURCES__
 </main>
 
 <script>
