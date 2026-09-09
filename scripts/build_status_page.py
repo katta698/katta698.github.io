@@ -372,8 +372,13 @@ def timeline(history, live, hist_meta=None):
            '<span><i class="d bad"></i>incident began</span>'
            '<span><i class="d bad cont"></i>still open</span>'
            '<span><i class="d ok"></i>nothing reported</span>'
-           '<span><i class="d unk"></i>not recorded</span></div>')
-    note = ('<p class="note-sm">A grey cell is a gap in the record, not a good '
+           '<span><i class="d unk"></i>not recorded</span>'
+           '<span class="tl-tz">days are UTC</span></div>')
+    note = ('<p class="note-sm">Days here are counted in <b>UTC</b>, while the '
+            'vendors’ own dashboards show your local time — so an '
+            'incident late in your evening can sit on the next day here than '
+            'on theirs. Open a cell and it prints both. '
+            'A grey cell is a gap in the record, not a good '
             'day. AWS and Azure publish only incidents that are open at the '
             'moment you ask, so anything that started and finished before this '
             'log began on %s is invisible to it and always will be — an '

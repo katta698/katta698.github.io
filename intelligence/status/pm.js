@@ -155,12 +155,41 @@
 
   var VENDOR = { aws: 'AWS', azure: 'Microsoft', gcp: 'Google' };
 
-  function when(v) {
-    if (!v) return '';
+  // Both zones, always.
+  //
+  // The strip buckets days in UTC, and the vendors' own dashboards render in
+  // the reader's local time. An AWS event at 02:02 UTC on 21 August is 19:02
+  // on the 20th in Pacific and 21:02 on the 20th in Chicago -- so this page
+  // said the 21st while AWS's own page said the 20th, for the same instant.
+  // A reader checking one against the other finds a date that does not match
+  // and has no way to tell it is a timezone rather than an error, which is
+  // the worst possible failure on a page whose argument is "go and verify
+  // this".
+  //
+  // Neither zone alone fixes it: UTC is what the strip is built in and cannot
+  // change per reader, and local time is what they will compare against. So
+  // both are shown, labelled, whenever they fall on different days.
+  function parseTs(v) {
+    if (!v) return null;
     var n = parseInt(v, 10);
-    var d = (String(v).length >= 10 && String(n) === String(v))
+    var d = (String(v).length >= 9 && String(n) === String(v))
           ? new Date(n * 1000) : new Date(v);
-    return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function when(v) {
+    var d = parseTs(v);
+    if (!d) return '';
+    var utc = d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+    var pad = function (x) { return (x < 10 ? '0' : '') + x; };
+    var local = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+                ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    // Only worth saying when the calendar day differs -- otherwise it is
+    // noise on every line.
+    if (local.slice(0, 10) !== utc.slice(0, 10)) {
+      return utc + ' (' + local + ' your time)';
+    }
+    return utc;
   }
 
   function openDay(day, idxs) {
