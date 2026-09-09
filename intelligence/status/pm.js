@@ -260,21 +260,75 @@
     openDay(cell.getAttribute('data-day'), idxs);
   });
 
-  /* Year filter for the write-up archive. Hides, never removes: the cards are
-   * all in the HTML so browser search still finds them, and with JavaScript
-   * off every year stays open rather than the section collapsing to nothing. */
+  /* Filters for the write-up archive: year and cloud, combined.
+   *
+   * Hides, never removes. The cards are all in the HTML so browser search
+   * still finds them, and with JavaScript off every card stays visible rather
+   * than the section collapsing to nothing.
+   *
+   * A year group with no matching card is hidden too -- otherwise filtering to
+   * one cloud leaves a column of empty year headings.
+   */
   var yrs = document.querySelector('.pm-yrs');
+  var cls = document.querySelector('.pm-cls');
   if (yrs) {
+    var curYear = (yrs.querySelector('.pm-yr.is-on') || {}).getAttribute
+                ? yrs.querySelector('.pm-yr.is-on').getAttribute('data-yr') : null;
+    var curCloud = 'all';
+
+    function apply() {
+      var total = 0;
+      [].forEach.call(document.querySelectorAll('.pm-year'), function (g) {
+        var yearOk = g.getAttribute('data-yr') === curYear;
+        var shown = 0;
+        [].forEach.call(g.querySelectorAll('.pm-card'), function (c) {
+          var ok = yearOk &&
+                   (curCloud === 'all' || c.classList.contains(curCloud));
+          c.classList.toggle('is-hidden', !ok);
+          if (ok) shown++;
+        });
+        g.classList.toggle('is-hidden', shown === 0);
+        total += shown;
+      });
+
+      // Say so when a combination has nothing in it. An empty section reads as
+      // a broken filter, and the absence is itself worth stating: no AWS
+      // write-up in 2026 means AWS has published none, not that one is hidden.
+      var none = document.querySelector('.pm-none');
+      if (none) {
+        var cloudName = curCloud === 'all' ? '' :
+          (cls.querySelector('.pm-cl.is-on') || {}).textContent || '';
+        cloudName = cloudName.replace(/\s*\d+\s*$/, '').trim();
+        none.hidden = total !== 0;
+        none.textContent = total === 0
+          ? (cloudName ? cloudName + ' published no write-up dated ' + curYear + '.'
+                       : 'Nothing dated ' + curYear + '.')
+          : '';
+      }
+    }
+
     yrs.addEventListener('click', function (ev) {
       var b = ev.target.closest ? ev.target.closest('.pm-yr') : null;
       if (!b) return;
-      var want = b.getAttribute('data-yr');
+      curYear = b.getAttribute('data-yr');
       [].forEach.call(yrs.querySelectorAll('.pm-yr'), function (x) {
         x.classList.toggle('is-on', x === b);
       });
-      [].forEach.call(document.querySelectorAll('.pm-year'), function (g) {
-        g.classList.toggle('is-hidden', g.getAttribute('data-yr') !== want);
-      });
+      apply();
     });
+
+    if (cls) {
+      cls.addEventListener('click', function (ev) {
+        var b = ev.target.closest ? ev.target.closest('.pm-cl') : null;
+        if (!b) return;
+        curCloud = b.getAttribute('data-cl');
+        [].forEach.call(cls.querySelectorAll('.pm-cl'), function (x) {
+          x.classList.toggle('is-on', x === b);
+        });
+        apply();
+      });
+    }
+
+    apply();
   }
 })();

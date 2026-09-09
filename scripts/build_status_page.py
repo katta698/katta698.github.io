@@ -716,6 +716,21 @@ def postmortems(cssv="1"):
         % (" is-on" if y == newest else "", e(y), e(y), len(by_year[y]))
         for y in years)
 
+    # A cloud filter alongside the year one. They combine: a card shows when
+    # it matches both. Counts are of the whole archive, not of the current
+    # selection -- a count that changes as you filter tells you about your own
+    # filter rather than about the archive.
+    by_cloud = {}
+    for r in rows:
+        by_cloud[r.get("cloud", "")] = by_cloud.get(r.get("cloud", ""), 0) + 1
+    cchips = ('<button class="pm-cl is-on" data-cl="all" type="button">All '
+              '<span class="pm-yn">%d</span></button>' % len(rows))
+    cchips += "".join(
+        '<button class="pm-cl %s" data-cl="%s" type="button">%s '
+        '<span class="pm-yn">%d</span></button>'
+        % (c, c, e(LABEL[c]), by_cloud.get(c, 0))
+        for c in ORDER if by_cloud.get(c))
+
     out = ""
     for y in years:
         items = sorted(by_year[y], key=lambda r: r.get("date") or "", reverse=True)
@@ -799,9 +814,11 @@ def postmortems(cssv="1"):
     # page whose whole argument is "these are their words, not mine" is the
     # one sentence that cannot be filed at the bottom.
     return ('<div class="pm-yrs">%s</div>'
-            '<div class="pm">%s</div>%s%s'
+            '<div class="pm-yrs pm-cls">%s</div>'
+            '<div class="pm">%s</div>'
+            '<p class="pm-none note-sm" hidden></p>%s%s'
             '<script src="/intelligence/status/pm.js?v=%s" defer></script>'
-            % (chips, out, note, dialog, e(cssv)))
+            % (chips, cchips, out, note, dialog, e(cssv)))
 
 
 def cadence():
