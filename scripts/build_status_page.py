@@ -25,6 +25,7 @@ import html
 import io
 import json
 import os
+import re
 import statistics
 import sys
 
@@ -129,6 +130,125 @@ def track_record(history):
     }
 
 
+
+def timeline(history, live):
+    """Ninety days, one cell per day, per cloud.
+
+    The thing a list of cards cannot show. Two AWS regions have been degraded
+    since March; as two rows of text that is something a reader scrolls past,
+    and as an unbroken red line across the whole strip it is the first thing
+    they see.
+
+    A cell is marked only where a vendor published an incident open on that
+    day. An unmarked cell means nothing was reported -- NOT that anything was
+    verified healthy. That distinction is the entire reason this page does not
+    copy Google's green-tick product matrix: those ticks mean Google checked,
+    and ours would mean we did not know.
+    """
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    days = [today - datetime.timedelta(days=i) for i in range(89, -1, -1)]
+    dayset = set(days)
+    bad = {c: set() for c in ORDER}
+
+    def mark(cloud, begin, end):
+        if not begin:
+            return
+        d, last = begin.date(), (end or datetime.datetime.now(datetime.timezone.utc)).date()
+        # Clip to the window before walking. The Middle East incidents have
+        # been open 190+ days, and counting every one of them produced
+        # "193 of 90 days" -- true about the incident, nonsense about the strip.
+        d = max(d, days[0])
+        while d <= min(last, today):
+            bad[cloud].add(d)
+            d += datetime.timedelta(days=1)
+
+    for i in history.values():
+        c = i.get("cloud")
+        if c in bad:
+            mark(c, t(i.get("begin")), t(i.get("end")))
+    for c, rows in live.items():
+        for i in rows:
+            mark(c, aws_begin(i.get("begin")) if c == "aws" else t(i.get("begin")), None)
+
+    out = []
+    for c in ORDER:
+        cells = "".join('<i class="%s" title="%s"></i>'
+                        % ("d bad" if d in bad[c] else "d ok", d.isoformat())
+                        for d in days)
+        n = len(bad[c] & dayset)
+        out.append('<div class="tl-row"><div class="tl-n">%s</div>'
+                   '<div class="tl-cells">%s</div>'
+                   '<div class="tl-s">%d of 90</div></div>' % (e(LABEL[c]), cells, n))
+    return '<div class="tl">%s</div>' % "".join(out)
+
+
+def blast(inc, cloud):
+    """How far an incident reaches, from what the vendor published.
+
+    A single zone degrading and three regions degrading read identically in a
+    list of cards, and they are not remotely the same problem. Google names
+    zones as region-plus-letter, so the suffix distinguishes the two.
+    """
+    if cloud == "gcp":
+        regs = inc.get("regions") or []
+        zones = [r for r in regs if re.search(r"-[a-f]$", r)]
+        if len(regs) > 1:
+            return ("multi-region", "%d regions" % len(regs), 3)
+        if zones:
+            return ("zonal", zones[0], 1)
+        if regs:
+            return ("regional", regs[0], 2)
+        return ("not stated", "the vendor did not say", 0)
+    reg = inc.get("region") or ""
+    return ("regional", reg, 2) if reg else ("not stated", "the vendor did not say", 0)
+
+
+def region_grid(history, live):
+    """Every region named in an incident, weighted by how often."""
+    counts = {}
+    rows = list(history.values()) + [(dict(x, cloud=c))
+                                     for c, v in live.items() for x in v]
+    for i in rows:
+        c = i.get("cloud") or "gcp"
+        names = i.get("regions") or ([i["region"]] if i.get("region") else [])
+        for r in names:
+            counts[(c, r)] = counts.get((c, r), 0) + 1
+    if not counts:
+        return ""
+    mx = max(counts.values())
+    cells = "".join('<div class="reg %s" style="--w:%.2f">'
+                    '<span class="reg-n">%s</span><span class="reg-c">%d</span></div>'
+                    % (c, n / mx, e(r), n)
+                    for (c, r), n in sorted(counts.items(), key=lambda kv: -kv[1]))
+    return '<div class="regs">%s</div>' % cells
+
+
+# What each vendor publishes, scored against six things a reader needs.
+# 1 = published as a field, 0.5 = present but buried in prose, 0 = absent.
+# Derived by reading each feed, not by reputation: see the parsers above.
+DISCLOSURE = [
+    ("Incident start",      {"aws": 0,   "azure": 0,   "gcp": 1}),
+    ("First-update time",   {"aws": 0,   "azure": 0,   "gcp": 1}),
+    ("Timestamped updates", {"aws": 1,   "azure": 0,   "gcp": 1}),
+    ("Affected services",   {"aws": 0.5, "azure": 0.5, "gcp": 1}),
+    ("Affected regions",    {"aws": 1,   "azure": 0.5, "gcp": 1}),
+    ("Severity",            {"aws": 0,   "azure": 0,   "gcp": 1}),
+]
+
+
+def disclosure():
+    head = "".join("<span>%s</span>" % e(f) for f, _ in DISCLOSURE)
+    rows = ""
+    for c in ORDER:
+        vals = [d[c] for _, d in DISCLOSURE]
+        bars = "".join('<i class="f %s"></i>'
+                       % ("full" if v == 1 else ("part" if v else "none")) for v in vals)
+        rows += ('<div class="dv-row"><div class="dv-n">%s</div>'
+                 '<div class="dv-bars">%s</div><div class="dv-s">%.1f / 6</div></div>'
+                 % (e(LABEL[c]), bars, sum(vals)))
+    return '<div class="dv"><div class="dv-head">%s</div>%s</div>' % (head, rows)
+
+
 def cloud_card(cloud, incidents, source):
     if not source.get("ok"):
         state, cls, note = "Could not check", "err", e(source.get("error", "")[:60])
@@ -172,6 +292,13 @@ def incident_card(cloud, i):
             hrs = (datetime.datetime.now(datetime.timezone.utc) - b).total_seconds() / 3600
             rows += [("Started", b.strftime("%d %b %Y %H:%M") + " UTC"),
                      ("Open for", dur(hrs))]
+
+    kind, where, level = blast(i, cloud)
+    if level:
+        rows.append(("Reach", '<span class="br-bars">%s</span>'
+                     '<span class="br-w">%s &middot; %s</span>'
+                     % ("".join('<i class="%s"></i>' % ("b on" if n < level else "b")
+                                for n in range(3)), e(kind), e(where))))
 
     chips = '<span class="chip %s">%s</span>' % (cloud, e(LABEL[cloud]))
     if i.get("severity"):
@@ -233,16 +360,22 @@ document.documentElement.setAttribute("data-palette",p);})();
   <p class="fresh__STALE__">Last checked __AGE__ &middot; refreshed every 15 minutes__WARN__</p>
   __CARDS__
   __BODY__
+  <h2>Last 90 days</h2>
+  <p class="sub">One cell per day. A cell is marked only where a vendor published an
+     incident that was open on that day &mdash; an unmarked cell means nothing was
+     reported, not that anything was verified healthy.</p>
+  __TIMELINE__
+
+  <h2>Where incidents happened</h2>
+  <p class="sub">Every region named in an incident since this started recording.
+     Depth of colour is the count. A region that is not listed has had nothing
+     reported, which is not the same as nothing happening.</p>
+  __REGIONS__
+
   <h2>What the vendors do and don&rsquo;t tell you</h2>
   <p class="sub">The three publish very different amounts, and that difference is
      itself worth knowing when you decide how far to trust a status page.</p>
-  <div class="tw"><table><tr><th>Cloud</th><th>Incident start</th><th>Update history</th>
-  <th>Affected services</th><th>Regions</th></tr>
-  <tr><td>AWS</td><td>Not published separately</td><td>Yes</td>
-      <td>Coarse (&ldquo;Multiple services&rdquo;)</td><td>Yes</td></tr>
-  <tr><td>Azure</td><td>No</td><td>Feed item only</td><td>In prose</td><td>In prose</td></tr>
-  <tr><td>Google Cloud</td><td>Yes</td><td>Yes, timestamped</td>
-      <td>Yes, itemised</td><td>Yes, itemised</td></tr></table></div>
+  __DISCLOSURE__
   <div class="note"><strong>Why the timings below are Google&rsquo;s only.</strong>
      Google publishes when an incident <em>began</em> and, separately, when it first
      said something publicly, so the gap between the two is a real number. AWS&rsquo;s
@@ -302,18 +435,24 @@ def main():
         'vendors as of the last check.</div>')
 
     tr = track_record(hist)
+    # Timings as a single sentence, not three display cards.
+    #
+    # They were the headline: three big figures for median acknowledgement,
+    # worst case and median resolution. That is the wrong emphasis for a page
+    # whose job is "is anything broken right now" -- how long a past incident
+    # took is trivia next to what is happening, and it invites the reader to
+    # treat it as a prediction, which six data points cannot support.
+    #
+    # It stays because the disclosure argument needs it: the numbers exist for
+    # Google and cannot exist for the other two. One line, in the note.
     stats = ""
     if tr["ack_median"] is not None:
-        stats = ('<div class="stat">'
-                 '<div class="st"><div class="n">Median time to first word</div>'
-                 '<div class="v">%d min</div><div class="w">across %d Google incident%s</div></div>'
-                 '<div class="st"><div class="n">Slowest acknowledgement</div>'
-                 '<div class="v">%s</div><div class="w">the worst in that set</div></div>'
-                 '<div class="st"><div class="n">Median time to resolve</div>'
-                 '<div class="v">%s</div><div class="w">start to resolution</div></div>'
-                 '</div>' % (round(tr["ack_median"]), len(tr["acks"]),
-                             "" if len(tr["acks"]) == 1 else "s",
-                             dur(max(tr["acks"]) / 60), dur(tr["dur_median"])))
+        stats = ('<p class="note-sm">For what it is worth, across %d recorded '
+                 'Google incidents the median gap between an incident starting '
+                 'and the first public word was %d minutes, and the widest was '
+                 '%s. Too few to predict anything &mdash; shown because the '
+                 'numbers exist for Google and cannot for the other two.</p>'
+                 % (len(tr["acks"]), round(tr["ack_median"]), dur(max(tr["acks"]) / 60)))
 
     src = ""
     for c in ORDER:
@@ -338,6 +477,9 @@ def main():
                          if stale else "")
                 .replace("__CARDS__", cards)
                 .replace("__BODY__", body)
+                .replace("__TIMELINE__", timeline(hist, clouds))
+                .replace("__REGIONS__", region_grid(hist, clouds))
+                .replace("__DISCLOSURE__", disclosure())
                 .replace("__STATS__", stats)
                 .replace("__SRC__", src))
 
