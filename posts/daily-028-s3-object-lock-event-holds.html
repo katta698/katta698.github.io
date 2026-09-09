@@ -1,0 +1,237 @@
+---
+title: 'AWS Daily Intelligence #28 - A retention clock that starts when something happens'
+date: '2026-09-09T10:00:00'
+slug: aws-daily-intelligence-s3-object-lock-event-holds
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-09-09'
+verified_claims:
+  - claim: "Amazon S3 Object Lock now supports variable retention, applying WORM protection to objects whose required retention period starts with a future event, available in all AWS Regions including China Regions at no additional charge"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-s3-object-lock-variable-retention/
+  - claim: "Object Lock provides two retention types: with fixed retention you specify the retain-until-date, and with variable retention you specify an event hold and an event hold duration and Amazon S3 sets the retain-until-date when you release the hold"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "While the event hold is on, Amazon S3 computes the retain-until-date as the current time plus the duration, and the date moves forward as time passes"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "If you decrease the event hold duration, Amazon S3 does not set the retain-until-date to an earlier date than its current value"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "When you release the event hold, Amazon S3 fixes the retain-until-date at the release time plus the duration, and the date stops changing"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "You can also specify a retain-until-date with variable retention, which Amazon S3 treats as a minimum, so the effective date is the later of that minimum and the release time plus the duration"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "A legal hold provides the same protection as a retention period but has no expiration date, remaining in place until explicitly removed, and legal holds are independent from retention periods"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "A bucket's default retention can also turn on an event hold, so that every object version placed in the bucket starts with variable retention instead of a fixed retain-until-date"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "AWS names two uses for variable retention: a configurable recovery window against ransomware or accidental deletion, and a retention period that must begin on a future business event such as contract completion, account closure, or claim resolution"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "In compliance mode a protected object version can't be overwritten or deleted by any user including the root user, and the only way to delete it before its retention date expires is to delete the associated AWS account"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "To override or remove governance-mode retention settings you must have the s3:BypassGovernanceRetention permission and must explicitly include the x-amz-bypass-governance-retention:true request header"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "Object Lock works only in buckets that have S3 Versioning enabled, and retention periods and legal holds do not prevent new versions of the object from being created or delete markers from being added on top of it"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "You can restrict the minimum and maximum allowable retention periods with the s3:object-lock-remaining-retention-days condition key in the bucket policy"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "Event holds can be applied to individual objects, set as bucket defaults, or deployed at scale using S3 Batch Operations, with IAM and bucket policy condition keys controlling authorization and enforcing minimum and maximum durations"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-s3-object-lock-variable-retention/
+  - claim: "CloudTrail logs hold operations and S3 Inventory reports hold status across buckets"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-s3-object-lock-variable-retention/
+  - claim: "S3 Object Lock has been assessed by Cohasset Associates for use in environments subject to SEC 17a-4, CFTC and FINRA regulations"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+  - claim: "While an event hold is on you can change the event hold duration, and Amazon S3 does not set the retain-until-date to an earlier date than its current value"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html
+problem: "Records policies are routinely written as 'retain for seven years after the account closes'. Object Lock could not express that. A retention period starts its clock at write time, and a legal hold has no clock at all — so teams either over-retained from the day the object landed, or held indefinitely and hoped somebody remembered to convert it."
+builds: "A reading of variable retention: what an event hold is, how it differs from the legal hold it superficially resembles, and the one behaviour that surprises people — while the hold is on, the retain-until-date is a moving projection rather than a commitment."
+catch: "An event hold is not a legal hold with a timer bolted on. Releasing a legal hold ends protection immediately; releasing an event hold starts it. That inversion is the whole feature, and it is also the thing most likely to be got backwards in a runbook."
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      On 8 September AWS added variable retention to S3 Object Lock, letting you apply WORM protection to objects <em>whose required retention period starts with a future event</em>. It is available in every Region including China, at no additional charge.
+    </p>
+    <p>
+      The gap it fills is a familiar one to anyone who has tried to implement a records policy literally. Real policies are written as "seven years after the contract ends", "five years after the claim is resolved", "six years after the account closes". Object Lock had no way to say that. A retention period starts counting at write time, and a legal hold does not count at all — it simply holds until removed, and the moment it is removed the protection is gone.
+    </p>
+    <p>
+      So teams picked one of two bad options: compute the longest plausible retention and apply it from the day the object landed, over-retaining by years; or place a legal hold and rely on a human, later, to remember to replace it with a bounded retention at exactly the right moment. Variable retention makes the second option atomic. You place an event hold with a duration, and when you release it, S3 sets the retain-until-date to the release time plus that duration.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>
+      Object Lock still offers retention periods and legal holds. What is new is that a retention period now comes in two types rather than one, and the second type defers the date it is counting to.
+    </p>
+    <div class="table-scroll">
+      <table>
+        <tr>
+          <th>Mechanism</th>
+          <th>Clock starts</th>
+          <th>On removal or release</th>
+        </tr>
+        <tr>
+          <td>Fixed retention</td>
+          <td>At write time. You supply the retain-until-date, or a bucket default duration is added to the creation timestamp.</td>
+          <td>Not applicable — it expires on its own.</td>
+        </tr>
+        <tr>
+          <td>Legal hold</td>
+          <td>Never. It has no expiration date and remains in effect until removed.</td>
+          <td><strong>Protection ends immediately.</strong></td>
+        </tr>
+        <tr>
+          <td>Variable retention (new)</td>
+          <td>On release of the event hold.</td>
+          <td><strong>Protection begins.</strong> The retain-until-date is fixed at release time plus the duration.</td>
+        </tr>
+      </table>
+    </div>
+    <p>
+      That inversion in the third column is the feature. It also makes the two holds easy to confuse in a runbook, because the operator action is the same word — release — and the consequence is opposite.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-028-s3-object-lock-event-holds.svg" alt="Diagram: three S3 Object Lock retention mechanisms on a timeline. Fixed retention starts its clock at write time and expires on a date known in advance. A legal hold protects from write time indefinitely, and protection ends the instant the hold is removed. Variable retention places an event hold at write time, protects while the hold is on, and when the hold is released Amazon S3 fixes the retain-until-date at the release time plus the configured duration, so protection begins rather than ends. A note records that while the hold is on the retain-until-date is a moving projection computed as the current time plus the duration, that decreasing the duration never moves the date earlier, and that a separately specified retain-until-date acts as a minimum floor." />
+      <figcaption>Releasing a legal hold ends protection. Releasing an event hold starts it. Same verb, opposite outcome.</figcaption>
+    </figure>
+    <p>
+      The behaviour worth internalising is what the retain-until-date means before the hold is released. It is not a commitment; it is a projection. While the event hold is on, S3 computes the date as the current time plus the duration, so it <em>moves forward as time passes</em>. AWS's own example: with a one-year duration, reading the date on 2027-01-01 gives 2028-01-01, and reading it again on 2027-02-01 gives 2028-02-01.
+    </p>
+    <p>
+      Two guardrails sit on top of that. First, the date is a ratchet — if you decrease the duration, S3 does not move the retain-until-date to an earlier value than it already holds. Second, you may specify a retain-until-date alongside the event hold, and S3 treats it as a <em>minimum</em>: the effective date is the later of that floor and the release time plus the duration. So "at least until 2029, and in any case a year after closure" is expressible in one object.
+    </p>
+    <p>
+      Event holds work at every scale Object Lock does. They can be set on individual objects, turned on as a bucket default so every new version starts with variable retention rather than a fixed date, or applied across an existing estate with S3 Batch Operations.
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      The saving is storage that was never required. An organisation applying "seven years" from write time to records whose clock should have started at contract completion is holding every object for seven years plus the contract's entire life. On a multi-decade relationship that is not a rounding error, and it is paid for every month.
+    </p>
+    <p>
+      The second value is audit simplicity. A policy stated as "seven years after closure" and implemented as "seven years from creation" requires someone to explain the difference to an auditor and argue it is conservative. Implemented as an event hold with a seven-year duration, the control now matches the sentence in the policy.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      AWS lists a use case that is not about records management at all: <em>a configurable recovery window against ransomware or accidental deletion</em>. That is worth reading twice. A bucket default that places an event hold on every incoming version gives you objects that cannot be deleted while the hold is on, and a bounded, pre-agreed survival period once it is released.
+    </p>
+    <p>
+      Two constraints keep this honest. Object Lock works only in versioning-enabled buckets, and holds protect the specific version — they do not stop new versions being written or delete markers being added on top. And in compliance mode, protection is genuinely absolute: no user can delete a protected version, including the account root, and AWS states the only way to delete before expiry is to delete the AWS account.
+    </p>
+    <p>
+      That absoluteness cuts both ways with a mechanism whose duration is set now and whose clock starts later. Authorisation matters more here than with a fixed date, which is why the announcement points at IAM and bucket policy condition keys for enforcing minimum and maximum durations, and why the existing <code>s3:object-lock-remaining-retention-days</code> key is the right place to bound what an operator can set.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      The feature itself is free in every Region, including China. The cost is entirely in what you retain, and for most estates adopting variable retention this is a reduction rather than an increase — that is the point of it.
+    </p>
+    <p>
+      One direction to watch: a bucket default that turns on an event hold means every object version arrives protected and <em>stays</em> protected until someone releases the hold. An unreleased hold is unbounded storage. This is the same operational hazard as a legal hold left in place, and it wants the same answer — a report that lists holds by age.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      Release is the only moment that matters, and it is irreversible in the direction that counts. Once released, the retain-until-date is fixed, and in compliance mode nothing shortens it. A hold released by mistake does not lose the object — it starts the clock early, which may still be a compliance failure if the event has not actually occurred.
+    </p>
+    <p>
+      So the event that triggers release should be the thing that calls the API, not a person reading a ticket. Contract completion, account closure and claim resolution all exist as states in some upstream system; the release belongs on that state transition. CloudTrail logs every hold operation, and S3 Inventory reports hold status across buckets, which together give you the before-and-after evidence an auditor will want.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <div class="table-scroll">
+      <table>
+        <tr>
+          <th>Approach</th>
+          <th>Works well when</th>
+          <th>Breaks down when</th>
+        </tr>
+        <tr>
+          <td>Fixed retention from write</td>
+          <td>The policy genuinely counts from creation — most logs, most backups.</td>
+          <td>The policy counts from an event. You over-retain by the whole life of the relationship.</td>
+        </tr>
+        <tr>
+          <td>Legal hold</td>
+          <td>The duration is genuinely unknown, such as an open audit or live litigation.</td>
+          <td>A period must follow the hold. Removing it ends protection at once, and the conversion is manual.</td>
+        </tr>
+        <tr>
+          <td>Variable retention</td>
+          <td>The duration is known and the start date is not — the common shape of a records policy.</td>
+          <td>Nothing in your systems reliably signals the event. An unreleased hold retains forever.</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      Start by finding what you are currently over-retaining. Any bucket whose default retention was derived by adding a policy period to a worst-case relationship length is a candidate, and S3 Inventory will tell you the object counts behind that decision.
+    </p>
+    <p>
+      Then pilot in governance mode rather than compliance mode. AWS explicitly suggests governance mode to test retention settings before creating a compliance-mode period, and that advice is worth more here than usual: a mistake in a duration only becomes visible at release, which may be years after configuration. Governance mode leaves you a documented escape via the bypass permission and header; compliance mode leaves you deleting the AWS account.
+    </p>
+    <p>
+      Wire the release to the upstream state change, not to a runbook step, and bound what operators can choose with the retention-days condition key before you hand the capability out.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <ul>
+      <li>Write the policy sentence first, then pick the mechanism that matches its grammar. "After X" means variable retention; "from creation" means fixed.</li>
+      <li>Use the minimum retain-until-date alongside the duration when the policy has both a floor and a relative period.</li>
+      <li>Report on holds by age. An event hold nobody releases is indistinguishable from indefinite retention on the invoice.</li>
+      <li>Trigger release from the system that owns the event, so the compliance record and the business record cannot diverge.</li>
+      <li>Pilot in governance mode. The error surfaces at release, which is much later than configuration.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt this</h2>
+    <p>
+      Anyone whose retention policy contains the word "after". In practice that is financial services, insurance, healthcare and anyone under SEC 17a-4, CFTC or FINRA — Object Lock carries a Cohasset Associates assessment for exactly those environments, and variable retention extends it to the clause those policies most often use.
+    </p>
+    <p>
+      It is also worth a look from anyone running Object Lock purely as a ransomware control, because the bucket-default event hold is a cleaner expression of "protected now, and for a defined window after we say so" than a fixed period chosen by guesswork.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Variable retention defers the retain-until-date: you set an event hold plus a duration, and S3 fixes the date at release time plus that duration.</li>
+      <li>Releasing a legal hold ends protection. Releasing an event hold begins it. Do not let a runbook conflate them.</li>
+      <li>While the hold is on, the retain-until-date is a moving projection, not a promise — and it ratchets, so shortening the duration never pulls it earlier.</li>
+      <li>A separately specified retain-until-date acts as a minimum floor, so "at least until this date, and a year after the event" is one configuration.</li>
+      <li>Free, every Region including China, and applicable to individual objects, bucket defaults, or an existing estate through S3 Batch Operations.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-s3-object-lock-variable-retention/" target="_blank" rel="noopener">Amazon S3 Object Lock now supports variable retention with event holds &#8212; 8 September 2026</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-overview.html" target="_blank" rel="noopener">Locking objects with Object Lock &#8212; retention types, the retain-until-date behaviour, and legal holds</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock-managing.html" target="_blank" rel="noopener">Managing Object Lock &#8212; setting limits on retention periods with a bucket policy</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/Versioning.html" target="_blank" rel="noopener">Retaining multiple versions of objects with S3 Versioning</a></li>
+    </ul>
+  </div>
+</div>

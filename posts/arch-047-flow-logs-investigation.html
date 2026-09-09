@@ -1,0 +1,357 @@
+---
+title: "AWS Architecture Series #47 — The log that records that it happened, not what"
+date: '2026-09-09T09:00:00'
+slug: aws-architecture-flow-logs-investigation
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-09'
+verified_claims:
+  - claim: "With the default format the flow log records include the version 2 fields, and you cannot customize or change the default format"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "With a custom format you specify which fields are included and in which order, and you can specify any number of the available fields but must specify at least one"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "pkt-srcaddr is the packet-level original source IP address, used with srcaddr to distinguish between the IP address of an intermediate layer through which traffic flows and the original source IP address of the traffic"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "AWS gives two examples for pkt-srcaddr and pkt-dstaddr: traffic flowing through a network interface for a NAT gateway, and an Amazon EKS pod whose IP address differs from the network interface of the instance node it runs on"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "pkt-srcaddr and pkt-dstaddr were introduced in version 3, so they are absent from the default format"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "Metadata fields that do not come directly from the packet header are best effort approximations, and their values might be missing or inaccurate"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "A log-status of SKIPDATA means some flow log records were skipped during the aggregation interval, which might be because of an internal capacity constraint or an internal error"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "By default the maximum aggregation interval is 10 minutes, you can optionally specify 1 minute, and for a network interface attached to a Nitro-based instance the aggregation interval is always 1 minute or less regardless of the specified maximum"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "The flow log service typically delivers logs to CloudWatch Logs in about 5 minutes and to Amazon S3 in about 10 minutes, on a best effort basis, and logs might be delayed beyond the typical delivery time"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "Ten minutes of maximum aggregation plus about ten minutes of typical delivery to Amazon S3 is about twenty minutes before a flow is readable there"
+    derive: "10 + 10"
+    expect: "20"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "The start field may be up to 60 seconds before the packet was received on the network interface or up to 60 seconds after it was transmitted, and the end field may be up to 60 seconds after the packet was transmitted or received"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "The interface-id field returns a '-' symbol for flows associated with a regional NAT gateway, as does subnet-id"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "The instance-id field returns a '-' symbol for a requester-managed network interface, for example the network interface for a NAT gateway"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "traffic-path is a version 5 field recording the path egress traffic takes, with values including 2 for an internet gateway or a gateway VPC endpoint, 3 for a virtual private gateway, 7 for a gateway VPC endpoint and 8 for an internet gateway"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "reject-reason is a version 8 field whose possible values are BPA for VPC Block Public Access and EC for a flow rejected by a VPC endpoint due to encryption controls, returning '-' for any other reject reason"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "encryption-status is a version 10 field whose values are 0 not encrypted, 1 nitro-encrypted, 2 application-encrypted and 3 both, and for interface and gateway endpoints AWS does not look at packet data but relies on the port used to assume encryption status"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "The ECS fields are version 7 and require permission to call ecs:ListClusters, with some also requiring ecs:ListTasks, ecs:ListServices or ecs:ListTaskDefinitions"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "The instance-tag, interface-tag and asg-tag fields are version 11 and require permission to call ec2:DescribeTags and iam:CreateServiceLinkedRole"
+    source: https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html
+  - claim: "Traffic Mirroring copies network traffic from an elastic network interface of type interface and sends it to out-of-band security and monitoring appliances for content inspection, threat monitoring and troubleshooting"
+    source: https://docs.aws.amazon.com/vpc/latest/mirroring/what-is-traffic-mirroring.html
+  - claim: "Traffic Mirroring supports filters and packet truncation so that you can extract only the traffic of interest"
+    source: https://docs.aws.amazon.com/vpc/latest/mirroring/what-is-traffic-mirroring.html
+  - claim: "Traffic Mirroring captures packets at the elastic network interface, which cannot be disabled or tampered with from a user space"
+    source: https://docs.aws.amazon.com/vpc/latest/mirroring/what-is-traffic-mirroring.html
+  - claim: "You are charged on an hourly basis for each active traffic mirror session and continue to be charged until you delete the session, including when you have detached the network interface from the mirror source, stopped or terminated the mirror source, or changed the mirror source to an unsupported instance type"
+    source: https://docs.aws.amazon.com/vpc/latest/mirroring/what-is-traffic-mirroring.html
+  - claim: "Traffic mirror targets can be individual instances or a fleet of instances behind either a Network Load Balancer or a Gateway Load Balancer with a UDP listener"
+    source: https://docs.aws.amazon.com/vpc/latest/mirroring/what-is-traffic-mirroring.html
+  - claim: "Only Nitro v2 bare-metal instances are supported as a Traffic Mirroring source, and bare metal instances of any other Nitro version are not"
+    source: https://docs.aws.amazon.com/vpc/latest/mirroring/what-is-traffic-mirroring.html
+problem: "An investigation asks which host reached an external address at 03:14. The account has flow logs on every VPC, enabled at the default format, and the answer is not in them: behind a NAT gateway every record shows the NAT gateway as the source. The field that would have answered it arrived in version 3 and had to be chosen before the traffic happened."
+builds: "A flow log configured for the questions an investigation actually asks: a custom format carrying the packet-level addresses, the flow direction and egress path, and the reject and encryption reasons — plus an honest account of the accuracy AWS claims for it, and where Traffic Mirroring takes over."
+catch: "The default format is the version 2 fields and AWS states you cannot customize or change it. Every field that makes an investigation tractable arrived later and is opt-in, and no field can be added retroactively — a log written yesterday carries the decision you made the day before."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #047 &middot; Networking &amp; Security</div>
+  <h1 class="post-title">The log that records that it happened, not what</h1>
+  <p class="post-subtitle">A VPC flow log answers whether two addresses exchanged packets. The default format cannot answer which host sent them, and that decision is made before the incident, not during it.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Networking &middot; Security</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The last three posts were about controls that inspect a path. This one is about the record those
+      controls leave behind, and it has the same shape as all of them: the artefact is real, it is
+      correctly configured, and it answers a narrower question than the person reading it believes.
+    </p>
+    <p>
+      An incident review asks something simple. At 03:14 a connection was made to an address now known
+      to be bad. Which host made it? The account is well instrumented by the usual standard: flow logs
+      enabled on every VPC, delivered to a central S3 bucket in the log archive account, retained for a
+      year. The query runs. Every matching record shows the same source address, and it is the NAT
+      gateway.
+    </p>
+    <p>
+      That is not a bug, and it is not a gap in the deployment. It is what the default format records.
+      The field that distinguishes the original sender from the intermediate hop is
+      <code class="inline">pkt-srcaddr</code>, it arrived in version 3, and the default format is the
+      version 2 fields — which AWS states you <em>cannot customize or change</em>. The only way to have
+      had that field at 03:14 was to have chosen it before 03:14.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Behind a NAT gateway, every host is the same host</strong></div>
+      <div class="challenge-body">
+        <p>
+          AWS documents this directly as the purpose of the field: use
+          <code class="inline">pkt-srcaddr</code> with <code class="inline">srcaddr</code>
+          <em>&ldquo;to distinguish between the IP address of an intermediate layer through which
+          traffic flows, and the original source IP address of the traffic&rdquo;</em>, and the first
+          example it gives is a NAT gateway.
+        </p>
+        <p>
+          The second example is worse for anyone running containers: an EKS pod's IP address differs
+          from the network interface of the node it runs on. Without the packet-level fields, a cluster
+          of two hundred pods produces flow records that all name a handful of nodes.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Custom format, with <code class="inline">pkt-srcaddr</code> and <code class="inline">pkt-dstaddr</code>. There is no retrofit.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>It is telemetry, and AWS says so</strong></div>
+      <div class="challenge-body">
+        <p>
+          There is a sentence in the field reference that deserves more attention than it gets:
+          <em>&ldquo;Metadata fields that do not come directly from the packet header are best effort
+          approximations, and their values might be missing or inaccurate.&rdquo;</em>
+        </p>
+        <p>
+          Alongside it, <code class="inline">log-status</code> has a value called
+          <code class="inline">SKIPDATA</code>, meaning records were skipped during the aggregation
+          interval <em>&ldquo;because of an internal capacity constraint, or an internal error&rdquo;</em>.
+          And the timestamps carry up to sixty seconds of slack in either direction, by design.
+        </p>
+        <p>
+          None of that makes flow logs useless. It makes them evidence of the kind that supports a
+          hypothesis rather than the kind that settles one, and an investigation that treats absence of
+          a record as proof of absence of a flow has misread what it is holding.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Corroborate. Treat a flow log as one source among CloudTrail, Resolver query logs and the appliance's own logs.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The answer arrives after the incident is over</strong></div>
+      <div class="challenge-body">
+        <p>
+          The maximum aggregation interval defaults to 10 minutes. Delivery to S3 then takes about 10
+          minutes more, on a best-effort basis, and may be later. So roughly twenty minutes can pass
+          before a flow is readable — which is fine for an investigation and useless as a trigger.
+        </p>
+        <p>
+          The mitigation is partly free: on a Nitro-based instance the aggregation interval is always
+          one minute or less <em>regardless of the maximum you specified</em>, so much of a modern
+          fleet is already better than the setting suggests. Setting the maximum to 1 minute makes that
+          explicit everywhere else, at the cost of a higher record volume.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Do not build alerting on flow log latency. Build it on the control planes that decide, and use flow logs to reconstruct.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The available fields have grown to version 11. The default has not moved from version 2. Almost
+      everything worth having is in the gap.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-047-flow-logs-investigation.svg" alt="Diagram: what the default VPC flow log format records against what the later field versions add. On the left, the version 2 default: version, account, interface, source and destination address and port, protocol, packets, bytes, start, end, action and log status — enough to say that two addresses exchanged packets. On the right, the opt-in fields that answer investigation questions: pkt-srcaddr and pkt-dstaddr in version 3 which separate the original sender from an intermediate NAT gateway or EKS node, flow-direction and traffic-path in version 5, ECS task and container fields in version 7, reject-reason in version 8, encryption-status in version 10, and instance and interface tags plus next-hop fields in version 11. Across the bottom, the accuracy caveats: metadata fields not taken from the packet header are best-effort approximations, SKIPDATA means records were dropped for internal capacity reasons, timestamps carry up to sixty seconds of slack, and no version of a flow log contains payload — which is where Traffic Mirroring begins." />
+      <figcaption>The default format is the version that answers the least, and it is the one that cannot be changed. Every field that turns "these addresses talked" into "this host did this" is opt-in and cannot be added after the fact.</figcaption>
+    </figure>
+
+    <h3>The fields that change what a query can ask</h3>
+    <div class="grid-2">
+      <div class="card">
+        <h4><code class="inline">pkt-srcaddr</code>, <code class="inline">pkt-dstaddr</code> &middot; v3</h4>
+        <p>The original addresses rather than the intermediate hop. Without these, NAT gateways and EKS nodes absorb the identity of everything behind them.</p>
+      </div>
+      <div class="card">
+        <h4><code class="inline">flow-direction</code>, <code class="inline">traffic-path</code> &middot; v5</h4>
+        <p>Ingress or egress, and which of eight egress paths the traffic took — including 8 for an internet gateway and 7 for a gateway VPC endpoint. This is the field that answers the question the last three posts kept asking.</p>
+      </div>
+      <div class="card">
+        <h4><code class="inline">reject-reason</code> &middot; v8</h4>
+        <p><code class="inline">BPA</code> for VPC Block Public Access, <code class="inline">EC</code> for a rejection by VPC encryption controls, <code class="inline">-</code> for everything else. It turns some REJECTs from a mystery into an attribution.</p>
+      </div>
+      <div class="card">
+        <h4><code class="inline">encryption-status</code> &middot; v10</h4>
+        <p>Read the footnote before trusting it: for interface and gateway endpoints AWS <em>&ldquo;does not look at packet data to determine encryption status&rdquo;</em> and instead infers it from the port.</p>
+      </div>
+    </div>
+
+    <h3>The paths the addresses do not reveal</h3>
+    <p>
+      <code class="inline">traffic-path</code> deserves singling out because it closes a loop this series
+      has been running for four posts. A destination address tells you where a packet went. It does not
+      tell you <em>how</em> it left, and in a hub-and-spoke account the difference between value 8, an
+      internet gateway, and value 7, a gateway VPC endpoint, is the difference between traffic that
+      passed the egress firewall and traffic that never went near it.
+    </p>
+    <p>
+      Two fields in version 11 extend the same idea: <code class="inline">interface-type</code>, which
+      names the local interface as <code class="inline">nat_gateway</code>,
+      <code class="inline">transit_gateway</code>, <code class="inline">vpc_endpoint</code> and so on,
+      and the <code class="inline">next-hop-*</code> family, which names the interface, subnet, AZ and
+      VPC on the other side. Together they let a query reconstruct a path rather than infer one.
+    </p>
+
+    <h3>What no version contains</h3>
+    <p>
+      There is no payload in a flow log at any version, and there never will be — the record is a
+      per-flow aggregate, not a capture. When the question moves from <em>who talked to whom</em> to
+      <em>what was said</em>, the answer is Traffic Mirroring, which copies traffic from an elastic
+      network interface to an out-of-band appliance for content inspection, threat monitoring and
+      troubleshooting.
+    </p>
+    <p>
+      It has one property worth knowing for an investigation with an adversary in it: the copy is taken
+      at the network interface, <em>&ldquo;which cannot be disabled or tampered with from a user
+      space&rdquo;</em>. An agent on a compromised host can be silenced. This cannot.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The custom format costs almost nothing to choose well</h3>
+    <p>
+      A custom format lets you specify any number of the available fields, in any order, with a minimum
+      of one. There is no per-field charge; the cost is volume, and volume is driven far more by the
+      aggregation interval and how much traffic you log than by field count. The asymmetry is stark: a
+      few extra fields cost a little storage, and their absence costs an entire investigation.
+    </p>
+
+    <div class="callout amber">
+      <strong>The decision is dated, and the date is before the incident</strong>
+      <p>This is the property that makes flow log configuration different from most settings. Changing the format changes what is written from now on; it does nothing for the year of logs you already have. Every other control in this series can be tightened after you discover it was too loose. This one cannot be tightened backwards at all.</p>
+    </div>
+
+    <h3>Permissions are part of the format</h3>
+    <p>
+      Some of the most useful fields are not purely a format choice. The ECS fields need permission to
+      call <code class="inline">ecs:ListClusters</code>, and depending on the field also
+      <code class="inline">ecs:ListTasks</code>, <code class="inline">ecs:ListServices</code> or
+      <code class="inline">ecs:ListTaskDefinitions</code>. The tag fields need
+      <code class="inline">ec2:DescribeTags</code> and
+      <code class="inline">iam:CreateServiceLinkedRole</code>.
+    </p>
+    <p>
+      That matters operationally because a format specifying fields the flow log role cannot populate
+      does not fail loudly — it writes a <code class="inline">-</code>. A column of dashes six months
+      into retention is indistinguishable at a glance from traffic that had no ECS task behind it.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Format</td>
+        <td>Custom, never default</td>
+        <td>The default is the version 2 fields and cannot be changed. Every field that identifies a host behind an intermediate hop arrived later.</td>
+      </tr>
+      <tr>
+        <td>Minimum useful additions</td>
+        <td><code class="inline">pkt-srcaddr</code>, <code class="inline">pkt-dstaddr</code>, <code class="inline">flow-direction</code>, <code class="inline">traffic-path</code></td>
+        <td>Who really sent it, which way it was going, and which egress path it took. These four turn a flow log into an investigative record.</td>
+      </tr>
+      <tr>
+        <td>Aggregation interval</td>
+        <td>1 minute where the volume is affordable</td>
+        <td>Nitro instances are already at 1 minute or less regardless. Setting it makes the rest of the fleet consistent rather than assumed.</td>
+      </tr>
+      <tr>
+        <td>Role permissions</td>
+        <td>Granted for every field in the format</td>
+        <td>A field the role cannot populate is written as a dash, silently, and looks like a legitimate absence for as long as you keep it.</td>
+      </tr>
+      <tr>
+        <td>Payload</td>
+        <td>Traffic Mirroring, scoped and time-boxed</td>
+        <td>Flow logs never contain payload. Mirroring does, and is billed per session-hour until the session is deleted.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The Traffic Mirroring bill does not stop when the instance does</h3>
+    <p>
+      This is the operational trap in the feature, and AWS lists it plainly. Charging is hourly per
+      <em>active session</em>, and it continues in all of the following: you detached the network
+      interface from the mirror source, you stopped or terminated the mirror source, or you changed the
+      source to an unsupported instance type. The session is the billable object, not the traffic.
+    </p>
+    <p>
+      So a mirroring session opened for a two-day investigation on an instance that was terminated the
+      following week keeps billing until somebody deletes the session. Put the deletion in the
+      investigation's closing checklist, not in a reminder.
+    </p>
+
+    <div class="callout green">
+      <strong>Filters and truncation before volume</strong>
+      <p>Traffic Mirroring supports filters and packet truncation so you can extract only the traffic of interest. Mirroring everything to a fleet behind a Network Load Balancer or a Gateway Load Balancer with a UDP listener is possible and almost never the right first move — the headers usually answer the question, and truncating to them is dramatically cheaper than carrying payloads you will not read.</p>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      There is a pattern across these four posts that is worth naming now that the set is complete. An
+      endpoint policy, an egress allowlist, a DNS firewall and a flow log are all real controls, all
+      correctly configured in the accounts where they disappoint, and all quietly narrower than the
+      sentence used to describe them. The endpoint changed the path, not the destination. The allowlist
+      read a name the client wrote. The firewall was not on the DNS path. The log recorded the hop, not
+      the host.
+    </p>
+    <p>
+      What separates the flow log from the other three is timing. The other controls can be tightened
+      the day you understand them, and the improvement applies immediately. A flow log format applies
+      only forward. The year of records you already hold was fixed by a decision somebody made when
+      they enabled it — very often by accepting a default, which is not a decision at all.
+    </p>
+    <p>
+      So the practical instruction is narrower than usual and easier to act on: go and look at what
+      format your flow logs are actually using. If the answer is the default, the fix costs an
+      afternoon, and every day you wait is another day of records that cannot answer the question you
+      will eventually ask them.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Cost &amp; Governance &mdash; what all this logging costs once it is turned on properly: the difference between what you pay to ingest and what you pay to keep, why the log archive is usually the third-largest line on a security budget, and the retention decisions that are cheaper to take at the start than to unwind.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html" target="_blank" rel="noopener">Flow log records &#8212; the default format, the custom format, and the full field table with versions</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs.html" target="_blank" rel="noopener">Logging IP traffic using VPC Flow Logs</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-records-examples.html" target="_blank" rel="noopener">Flow log record examples &#8212; including the NAT gateway and TCP flag sequences</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/mirroring/what-is-traffic-mirroring.html" target="_blank" rel="noopener">What is Traffic Mirroring &#8212; sources, filters, targets and the session-hour charge</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-slr.html" target="_blank" rel="noopener">Using service-linked roles for VPC Flow Logs</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
