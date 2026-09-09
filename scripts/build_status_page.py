@@ -1171,6 +1171,11 @@ def main():
     # ran on five, on the one section whose entire job is saying where things
     # came from. Iterating `sources` rather than ORDER means a source added to
     # the fetcher appears here without anyone remembering to add it.
+    HUMAN_HISTORY = {
+        "aws_history": "https://health.aws.amazon.com/health/status",
+        "azure_history": "https://azure.status.microsoft/en-us/status/history/",
+        "gcp_history": "https://status.cloud.google.com/summary",
+    }
     EXTRA = {
         "aws_history": ("AWS", "service history"),
         "azure_history": ("Azure", "status history"),
@@ -1188,7 +1193,16 @@ def main():
         if key in EXTRA:
             label, kind = EXTRA[key]
             name = "%s <span class=\"src-kind\">%s</span>" % (e(label), e(kind))
-            human = u
+            # Link the PAGE, not the endpoint.
+            #
+            # These pointed at the raw feeds, and none of them is a thing a
+            # browser can show: the AWS one is gzip and downloads as a file,
+            # the Azure one is an HTML fragment that renders as a broken
+            # half-page, and the Google one is a wall of JSON. The endpoint
+            # still appears in the column beside it, as text, because naming
+            # what was read is the point of the table -- but the link has to
+            # go somewhere a person can read.
+            human = HUMAN_HISTORY.get(key, u)
         else:
             name = e(LABEL[key])
             human = HUMAN.get(key, u)

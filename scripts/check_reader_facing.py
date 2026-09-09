@@ -94,6 +94,19 @@ RULES = [
      re.compile(r'<a\b[^>]*href="(?!https?://)[^"]*\.(?:json|ya?ml|csv|log|py|ps1)"',
                 re.I), "raw"),
 
+
+    # Shipped 2026-09-09: the Sources table linked the raw feeds it reads --
+    # AWS's gzip history (downloads as a file), Azure's status-history API
+    # (an HTML fragment that renders as half a page) and Google's
+    # products.json (a wall of text). Naming an endpoint is right; sending a
+    # reader to it is not.
+    #
+    # github.com is excluded because it renders JSON and YAML as a page with
+    # history and blame, which is a fine place to send someone. Any other
+    # host serving a data file is not.
+    ("link to a vendor's raw data endpoint",
+     re.compile(r'<a\b[^>]*href="https?://(?!(?:[a-z0-9-]+\.)*github\.com/)'
+                r'[^"]*\.(?:json|ya?ml|csv)(?:[?#][^"]*)?"', re.I), "raw"),
     ("internal identifier in visible text",
      re.compile(r"\b(?:session_01[A-Za-z0-9]{10,}|env_01[A-Za-z0-9]{10,})\b"), "prose"),
 
