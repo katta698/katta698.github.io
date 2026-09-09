@@ -1,0 +1,295 @@
+---
+title: "GCP Architecture Series #27 — Config Connector: Kubernetes as the Control Plane"
+date: '2026-09-09T09:00:00'
+slug: gcp-architecture-config-connector
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-09-09'
+verified_claims:
+  - claim: "Config Connector is an open source Kubernetes add-on that lets you manage Google Cloud resources through Kubernetes"
+    source: https://docs.cloud.google.com/config-connector/docs/overview
+  - claim: "the associated Google Cloud resource is deleted by default"
+    source: https://docs.cloud.google.com/config-connector/docs/how-to/managing-deleting-resources
+  - claim: "If you prefer to keep the dataset, set the resource's deletion-policy"
+    source: https://docs.cloud.google.com/config-connector/docs/how-to/managing-deleting-resources
+  - claim: "Resources are not recreated when modifying immutable fields"
+    source: https://docs.cloud.google.com/config-connector/docs/concepts/reconciliation
+  - claim: "Mutable but unreadable fields are updated only when the custom resource is modified"
+    source: https://docs.cloud.google.com/config-connector/docs/concepts/reconciliation
+  - claim: "cnrm.cloud.google.com/reconcile-interval-in-seconds"
+    source: https://docs.cloud.google.com/config-connector/docs/concepts/reconciliation
+  - claim: "You can install Config Connector in namespaced mode (recommended for most use cases) or cluster mode"
+    source: https://docs.cloud.google.com/config-connector/docs/concepts/installation-types
+problem: "Terraform describes infrastructure and applies the description when you ask. Config Connector makes the description live in a cluster and keeps it true continuously — which is a genuinely different model, not a different syntax. The consequences that matter are the ones nobody reads about first: what a delete does, and what happens to a change somebody made in the console."
+builds: "How a Google Cloud resource becomes a Kubernetes object, why deleting the object deletes the resource and the one annotation that stops it, what continuous reconciliation does to console changes, the immutable-field wall, and the per-namespace identity that decides who can create what."
+catch: "Deleting the Kubernetes object deletes the Google Cloud resource, by default. That puts a production database inside the blast radius of kubectl delete namespace — an operation whose entire cultural history is that it destroys only cluster state."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #027 &middot; Foundations</div>
+  <h1 class="post-title">Config Connector: Kubernetes as the Control Plane</h1>
+  <p class="post-subtitle">The third answer to the same question. Post #25 ran Terraform yourself, #26 had Google run it &mdash; this one puts your infrastructure behind the Kubernetes API and keeps it there.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Google Cloud &middot; Config Connector &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Every one of these follows from a single design choice: the Kubernetes object is not a description of the resource, it is the resource's controller.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"We cleaned up the namespace and lost the database"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          That is the documented default. When you delete a Config Connector resource from the cluster, the associated Google Cloud resource is deleted by default. Not orphaned, not left behind &mdash; deleted. Which means <code>kubectl delete namespace</code>, an operation whose entire cultural history is that it destroys cluster state, now reaches production infrastructure.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Set <code>cnrm.cloud.google.com/deletion-policy: abandon</code> on anything stateful before it ever reaches a cluster, and treat namespace deletion as a change with a blast radius rather than a cleanup.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"Someone changed it in the console and it changed back"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Working as designed. Config Connector reconciles continuously, so a console edit is drift and drift gets corrected. This is the behaviour Terraform users expect only at <code>apply</code> time, arriving on its own schedule instead.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Decide deliberately whether you want that. Where you do not, <code>cnrm.cloud.google.com/reconcile-interval-in-seconds</code> set to zero halts drift correction while still applying changes you make to the spec.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"I changed the field and got UpdateFailed"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Some fields cannot be changed on a live resource, and Config Connector will not work around it: resources are not recreated when modifying immutable fields. Terraform would plan a destroy-and-recreate; this stops and tells you.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Abandon the resource, change the field, and re-acquire it. That is the documented route, and it is why the abandon annotation is an everyday tool here rather than an emergency one.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"The cluster can create anything in the project"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It can, if you installed it that way. In cluster mode one identity serves everything; namespaced mode lets you divide permissions based on the respective concerns of different IAM service accounts, with a service account bound per namespace.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Choose namespaced mode unless you have a reason not to. It is the difference between one credential for the whole estate and one per team.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Config Connector is an open source Kubernetes add-on that lets you manage Google Cloud resources through Kubernetes. A Cloud SQL instance becomes a custom resource; a controller in the cluster makes the API calls; the object's status reports what happened.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-027-config-connector.svg" alt="Diagram: how Config Connector turns Google Cloud resources into Kubernetes objects, why deleting the object deletes the resource, the abandon annotation, continuous drift correction, and the per-namespace identity model" />
+      <figcaption>The object is not a description of the resource. It is the thing that owns it.</figcaption>
+    </figure>
+
+    <h3>The difference from the previous two posts</h3>
+    <p>
+      Terraform, self-managed or via Infrastructure Manager, is a batch process: it reads a description, compares it to a state file, and converges once, when invoked. Config Connector is a control loop. The desired state lives in the cluster's own database, and a controller reconciles it against the Google Cloud APIs asynchronously, on its own schedule, forever.
+    </p>
+    <p>
+      Almost everything surprising follows from that. There is no plan step to read before it acts. There is no state file, because etcd is the state. And there is no moment when reconciliation is finished, because it never is.
+    </p>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th></th><th>Terraform (#25, #26)</th><th>Config Connector</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>When it converges</td><td>When you run apply.</td><td>Continuously.</td></tr>
+        <tr><td>State</td><td>A file in a bucket.</td><td>The cluster.</td></tr>
+        <tr><td>Console change</td><td>Reported as drift at next plan.</td><td>Corrected without asking.</td></tr>
+        <tr><td>Delete</td><td>Explicit, from a plan you read.</td><td>Whatever deletes the object.</td></tr>
+        <tr><td>Identity</td><td>Your credentials, or a deploy service account.</td><td>A service account per namespace.</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>Delete is the one to internalise</h3>
+    <p>
+      The associated Google Cloud resource is deleted by default. The annotation that changes it is one line:
+    </p>
+    <pre><code>metadata:
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon</code></pre>
+    <p>
+      Compare the equivalent in post #26. Infrastructure Manager also lets you delete the deployment and keep the resources, but there the default is a considered choice at delete time and the abandoned resources become invisible to the tool. Here the default runs the other way: the resource goes unless you said otherwise, in advance, in a file.
+    </p>
+
+    <div class="callout amber">
+      <strong>The blast radius now includes things Kubernetes never used to touch</strong>
+      <p>Every safeguard a team has around <code>kubectl delete</code> was built when the worst outcome was a restarted pod. Namespace deletion is routine in most clusters &mdash; it is how you clean up a failed install, retire an environment, or reset a test. With Config Connector in namespaced mode, the namespace holds the objects that own your databases, buckets and networks. The habit and the consequence were formed in different worlds, and the annotation is the only thing between them.</p>
+    </div>
+
+    <h3>Identity: the same question, a third time</h3>
+    <p>
+      Post #25 asked who can read the state bucket. Post #26 asked who can act as the deployment service account. Here the question is who can create objects in a namespace &mdash; because in namespaced mode each namespace is bound to its own IAM service account, and a dedicated controller pod impersonates it.
+    </p>
+    <p>
+      That is a genuinely good model. It maps cloud permissions onto Kubernetes RBAC, which teams already operate, and it makes the boundary a namespace rather than a credential file. The catch is the translation: a developer with <code>create</code> on a namespace has, transitively, whatever that namespace's service account can do in Google Cloud. RBAC that was scoped to "can deploy workloads" now also means "can provision infrastructure", and nothing in the RBAC binding says so.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Continuous Reconciliation, and What It Cannot Do</h2>
+
+    <h3>Drift correction is the feature and the hazard</h3>
+    <p>
+      A console change being reverted is exactly what you want for a security control and exactly what you do not want during an incident. At 3am somebody widens a firewall rule to restore service; the controller closes it again on its own schedule, and the person who made the change has no reason to suspect the cluster.
+    </p>
+    <p>
+      The lever is per-resource: <code>cnrm.cloud.google.com/reconcile-interval-in-seconds</code>, and setting it to zero halts drift correction while still applying changes made to the spec. Worth knowing before the incident rather than discovering it during one.
+    </p>
+
+    <div class="callout">
+      <strong>Two things reconciliation cannot see</strong>
+      <p><strong>Immutable fields.</strong> Resources are not recreated when modifying immutable fields — the controller raises <code>UpdateFailed</code> and stops, where Terraform would plan a replacement. Safer, and it means abandon-and-reacquire is a routine procedure rather than a last resort. <strong>Unreadable fields.</strong> Mutable but unreadable fields are updated only when the custom resource is modified, because the controller cannot read them back to compare. So for that subset, drift is invisible and uncorrected — the guarantee is narrower than "the cluster is the truth" suggests.</p>
+    </div>
+
+    <h3>Where this model earns its complexity</h3>
+    <ul>
+      <li><strong>You already run GKE and mean it.</strong> The cluster becomes a dependency of your infrastructure, not just a consumer of it. If the cluster is not treated as production, neither is your infrastructure.</li>
+      <li><strong>You want application and infrastructure in one manifest.</strong> A team shipping a service plus its bucket and database in one <code>kubectl apply</code> is the case this was built for.</li>
+      <li><strong>You want drift closed, not reported.</strong> Nothing in the Terraform posts does this. If unauthorised console changes are the problem you actually have, this is the tool that solves it.</li>
+    </ul>
+
+    <h3>Where it does not</h3>
+    <ul>
+      <li><strong>The estate is larger than the cluster's remit.</strong> Organization policies, folders, billing &mdash; the things posts #19 to #22 covered &mdash; sit oddly inside a workload cluster.</li>
+      <li><strong>You need a plan to review.</strong> There is no preview step here of the kind post #26 described. Approval has to happen in Git, before the object reaches the cluster, which makes the pull request the only gate.</li>
+      <li><strong>Your Kubernetes RBAC is not tight.</strong> The model inherits your cluster's access control. If that is loose, this makes it loose over your infrastructure too.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Stateful resources</td>
+          <td><code>deletion-policy: abandon</code>, from the start</td>
+          <td>The associated Google Cloud resource is deleted by default.</td>
+        </tr>
+        <tr>
+          <td>Namespace deletion</td>
+          <td>Treat as a production change</td>
+          <td>The namespace holds the objects that own the infrastructure.</td>
+        </tr>
+        <tr>
+          <td>Installation mode</td>
+          <td>Namespaced, unless you have a reason</td>
+          <td>It divides permissions across different IAM service accounts.</td>
+        </tr>
+        <tr>
+          <td>Cluster RBAC</td>
+          <td>Re-audit it as infrastructure access</td>
+          <td>Create in a namespace transitively means provision in Google Cloud.</td>
+        </tr>
+        <tr>
+          <td>Incident changes</td>
+          <td>Know the reconcile-interval annotation first</td>
+          <td>Setting it to zero halts drift correction while spec updates still apply.</td>
+        </tr>
+        <tr>
+          <td>Immutable field changes</td>
+          <td>Abandon, edit, re-acquire</td>
+          <td>Resources are not recreated when modifying immutable fields.</td>
+        </tr>
+        <tr>
+          <td>Trusting drift correction</td>
+          <td>Not for unreadable fields</td>
+          <td>Those update only when the custom resource is modified.</td>
+        </tr>
+        <tr>
+          <td>Change approval</td>
+          <td>In the pull request</td>
+          <td>There is no plan step between apply and action.</td>
+        </tr>
+        <tr>
+          <td>Organization-level resources</td>
+          <td>Keep them in Terraform</td>
+          <td>A workload cluster is the wrong owner for the estate's scaffolding.</td>
+        </tr>
+        <tr>
+          <td>Cluster criticality</td>
+          <td>Rate it as production infrastructure</td>
+          <td>Your infrastructure's control loop now lives in it.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Three posts, three tools, and the same question underneath each: what has the authority to change your infrastructure, and who has the authority to use it. A state bucket, a deployment service account, a Kubernetes namespace. The mechanism changes completely and the question does not move at all.
+    </p>
+    <p>
+      What is distinctive here is how far the authority travels from anything that looks like it. In post #25 the danger lived in a bucket, which at least looks like storage worth protecting. In #26 it lived in an IAM binding, which looks like nothing. Here it lives in a habit &mdash; the ordinary, unremarkable act of deleting a namespace, learned in an environment where the worst case was a rescheduled pod. Config Connector is a good model, and the drift correction is something neither Terraform post can offer. But it asks a team to unlearn something, and unlearning is the slowest kind of change there is.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#28 goes underneath all three: gcloud, the REST API, and what the console quietly does for you &mdash; the calls a click actually makes, and why a console-built resource is so hard to reproduce.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/config-connector/docs/overview" target="_blank" rel="noopener">Config Connector overview</a></li>
+      <li><a href="https://docs.cloud.google.com/config-connector/docs/how-to/managing-deleting-resources" target="_blank" rel="noopener">Managing and deleting resources</a></li>
+      <li><a href="https://docs.cloud.google.com/config-connector/docs/concepts/reconciliation" target="_blank" rel="noopener">Reconciliation strategy</a></li>
+      <li><a href="https://docs.cloud.google.com/config-connector/docs/concepts/installation-types" target="_blank" rel="noopener">Choosing an installation type</a></li>
+      <li><a href="https://docs.cloud.google.com/config-connector/docs/how-to/configure-iam-permissions" target="_blank" rel="noopener">Access control with IAM</a></li>
+      <li><a href="https://docs.cloud.google.com/config-connector/docs/best-practices" target="_blank" rel="noopener">Best practices for Config Connector</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
