@@ -395,6 +395,16 @@ document.documentElement.setAttribute('data-palette',p);})();
         font-size:.82rem;border-radius:20px;border:1px solid var(--border);
         background:transparent;color:var(--text-muted);cursor:pointer}
   #more:hover{color:var(--text);border-color:var(--text-muted)}
+
+/* Android Chrome paints a translucent blue rectangle over anything tappable
+   while a finger is down. Nothing on this site ever set
+   -webkit-tap-highlight-color, so that default applied to every card, nav
+   link and timeline cell -- a blue flash in a palette that has no blue in it.
+   Suppressed here, and replaced rather than simply removed: taking the
+   highlight away with nothing in its place makes a tap feel like it did not
+   register, which is a worse bug than the flash. */
+html{-webkit-tap-highlight-color:transparent}
+a:active,button:active{opacity:.72}
 </style>
 </head>
 <body>
