@@ -225,6 +225,20 @@ document.documentElement.setAttribute('data-palette',p);})();
     .nav-links a{font-size:12px}
   }
 
+  /* The nav follows the theme. It was fixed dark in both, while home, blog
+     and now all theme theirs -- so switching to light mode left a black slab
+     above a cream page, and moving between sections looked like moving
+     between sites. Derived from --bg the same way blog.css derives --nav-bg
+     from --surface, so it tracks the daily palette too. */
+  nav{background:rgba(29,35,34,.94);
+      background:color-mix(in srgb, var(--bg) 94%, transparent);
+      color:var(--text);border-bottom:1px solid var(--border)}
+  .nav-logo{color:var(--text)}
+  .nav-links a{color:var(--text-muted)}
+  .nav-links a:hover{color:var(--accent)}
+  body.light nav{color:#1C2120}
+  body.light .nav-logo{color:#1C2120}
+  body.light .nav-links a{color:rgba(28,33,32,.78)}
   header.hero{background:var(--ink);color:#EDEBE6;padding:3rem 2rem 2.4rem}
   .inner{max-width:1000px;margin:0 auto}
   .eyebrow{font-family:var(--mono);font-size:.68rem;letter-spacing:.22em;text-transform:uppercase;
