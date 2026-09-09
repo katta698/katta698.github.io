@@ -60,6 +60,12 @@ OUT = os.path.join(ROOT, "intelligence", "postmortems.json")
 
 AWS_INDEX = "https://aws.amazon.com/premiumsupport/technology/pes/"
 AZURE_HISTORY = "https://azure.status.microsoft/en-us/status/history/"
+# The API behind that page's filters. The page itself renders only the
+# most recent review; setting its date filter to "All" calls this, ten
+# reviews to a page, back to 2024.
+AZURE_API = ("https://azure.status.microsoft/en-us/statushistoryapi/"
+             "?serviceSlug=all&regionSlug=all&startDate=all&page=%d"
+             "&shdrefreshflag=true")
 GCP_INCIDENTS = "https://status.cloud.google.com/incidents.json"
 
 UA = "jayanthkatta.com postmortem fetcher (+https://jayanthkatta.com)"
@@ -198,49 +204,62 @@ def parse_azure(limit=None):
     links the two. Reading them from inside the panel yielded the id attribute
     as a title.
     """
-    page = get(AZURE_HISTORY)
     out = []
-    # Capture the whole anchor, not one text run: the date and the title sit in
-    # separate elements inside it, so a single [^<] capture stopped at the
-    # first tag and yielded a bare date with no title.
-    heads = {tid: text(inner) for tid, inner in re.findall(
-        r'aria-controls="incident-history-collapse-([A-Z0-9-]+)"[^>]*>(.*?)</a>',
-        page, re.S)}
-    for tid, panel in re.findall(
-            r'id="incident-history-collapse-([A-Z0-9-]+)"(.*?)(?=id="incident-history-collapse-|\Z)',
-            page, re.S):
-        body = text(panel)
-        head = htmllib.unescape(heads.get(tid, "")).strip()
-        m = re.match(r"(\d{2})/(\d{2})/(20\d\d)\s*(.*)", head)
-        date = "%s-%s-%s" % (m.group(3), m.group(1), m.group(2)) if m else ""
-        title = (m.group(4) if m else head).strip(" -–") or             "Post Incident Review %s" % tid
-
-        secs = []
-        for i, h in enumerate(AZ_HEADINGS):
-            a = body.find(h)
-            if a < 0:
-                continue
-            nxt = [body.find(x, a + len(h)) for x in AZ_HEADINGS[i + 1:]]
-            nxt = [x for x in nxt if x > 0]
-            end = min(nxt) if nxt else min(len(body), a + 6000)
-            chunk = body[a + len(h):end].strip()
-            if len(chunk) > 40:
-                secs.append({"heading": h.rstrip("?"), "text": chunk[:6000]})
-        if not secs:
-            continue
-        out.append({
-            "cloud": "azure",
-            "id": tid,
-            "title": title[:200],
-            "date": date,
-            "url": "https://aka.ms/AzPIR/%s" % tid,
-            "body": body[:14000],
-            "sections": secs,
-            "shape": "sections",
-        })
-        print("   az   %-52s %d section(s)" % (title[:50], len(secs)))
-        if limit and len(out) >= limit:
+    pages = []
+    # Read the API, not the page. Scraping /status/history/ returned exactly
+    # ONE review -- so the write-ups section showed a single Azure entry while
+    # the timeline beside it, which already used this API, carried thirty. The
+    # same vendor, the same day, two different answers on one screen.
+    for n in range(1, 4):
+        try:
+            pages.append(get(AZURE_API % n))
+        except Exception:                                       # noqa: BLE001
             break
+    if not pages:
+        pages = [get(AZURE_HISTORY)]
+
+    for page in pages:
+        # Capture the whole anchor, not one text run: the date and the title sit in
+        # separate elements inside it, so a single [^<] capture stopped at the
+        # first tag and yielded a bare date with no title.
+        heads = {tid: text(inner) for tid, inner in re.findall(
+            r'aria-controls="incident-history-collapse-([A-Z0-9-]+)"[^>]*>(.*?)</a>',
+            page, re.S)}
+        for tid, panel in re.findall(
+                r'id="incident-history-collapse-([A-Z0-9-]+)"(.*?)(?=id="incident-history-collapse-|\Z)',
+                page, re.S):
+            body = text(panel)
+            head = htmllib.unescape(heads.get(tid, "")).strip()
+            m = re.match(r"(\d{2})/(\d{2})/(20\d\d)\s*(.*)", head)
+            date = "%s-%s-%s" % (m.group(3), m.group(1), m.group(2)) if m else ""
+            title = (m.group(4) if m else head).strip(" -–") or             "Post Incident Review %s" % tid
+
+            secs = []
+            for i, h in enumerate(AZ_HEADINGS):
+                a = body.find(h)
+                if a < 0:
+                    continue
+                nxt = [body.find(x, a + len(h)) for x in AZ_HEADINGS[i + 1:]]
+                nxt = [x for x in nxt if x > 0]
+                end = min(nxt) if nxt else min(len(body), a + 6000)
+                chunk = body[a + len(h):end].strip()
+                if len(chunk) > 40:
+                    secs.append({"heading": h.rstrip("?"), "text": chunk[:6000]})
+            if not secs:
+                continue
+            out.append({
+                "cloud": "azure",
+                "id": tid,
+                "title": title[:200],
+                "date": date,
+                "url": "https://aka.ms/AzPIR/%s" % tid,
+                "body": body[:14000],
+                "sections": secs,
+                "shape": "sections",
+            })
+            print("   az   %-52s %d section(s)" % (title[:50], len(secs)))
+            if limit and len(out) >= limit:
+                break
     return out
 
 
