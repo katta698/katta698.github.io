@@ -690,10 +690,21 @@ def cadence():
         bits += (" %d run%s had a source that did not answer; those keep the "
                  "previous data rather than showing a blank."
                  % (failed, "" if failed == 1 else "s"))
-    return ('<p class="note-sm">Counted, not claimed: %s The log is committed '
-            'with every refresh at '
-            '<a href="/intelligence/status-runs.json">status-runs.json</a>, '
-            'and every run is a commit in the repository.</p>' % bits)
+    # Link the COMMIT HISTORY, not the raw log.
+    #
+    # This pointed at /intelligence/status-runs.json, which is the evidence but
+    # not in a form that evidences anything to a reader: clicking it produces a
+    # wall of JSON, and "here is my machine-readable file" is developer
+    # furniture on a page written for people. The commit list shows the same
+    # runs as dated entries, each with what changed, on a host the reader
+    # already trusts more than this page.
+    last = t(runs[-1].get("at"))
+    when = (" Most recent: %s UTC." % last.strftime("%d %b, %H:%M")) if last else ""
+    return ('<p class="note-sm">Counted, not claimed: %s%s '
+            'Every refresh is a commit, so the record is '
+            '<a href="https://github.com/katta698/katta698.github.io/'
+            'commits/main/intelligence/status.json" target="_blank" '
+            'rel="noopener">public and dated</a>.</p>' % (bits, when))
 
 
 def cloud_card(cloud, incidents, source):
