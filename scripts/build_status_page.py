@@ -380,6 +380,11 @@ def region_grid(history, live):
                     % (c, n / mx, e(r), n)
                     for (c, r), n in sorted(counts.items(), key=lambda kv: -kv[1]))
 
+    key = ('<div class="reg-key">'
+           '<span><i class="aws"></i>AWS</span>'
+           '<span><i class="azure"></i>Azure</span>'
+           '<span><i class="gcp"></i>Google Cloud</span></div>')
+
     extra = ""
     if glob:
         bits = ", ".join("%s (%d)" % (LABEL[c], n) for c, n in sorted(glob.items()))
@@ -395,7 +400,8 @@ def region_grid(history, live):
                'incident and Azure’s feed carries none at all, so a cloud '
                'appearing more often here is disclosing more, not breaking '
                'more.</p>' % e(said))
-    return '<div class="regs">%s</div>%s%s' % (cells, extra, caption)
+    return ('<div class="regs">%s</div>%s%s%s'
+            % (cells, key, extra, caption))
 
 
 
