@@ -134,11 +134,27 @@ def parse_aws(raw):
     live = []
     for i in items:
         log = sorted(i.get("event_log") or [], key=lambda x: x.get("timestamp", 0))
+        # The real region code, taken from the ARN.
+        #
+        # region_name is a place name -- "UAE", "Bahrain" -- while Google
+        # publishes machine IDs like us-central1. Rendered side by side in the
+        # region grid the two look like the same kind of label and are not, and
+        # "UAE" cannot be matched against anything a reader has in a Terraform
+        # file. The code is sitting in the ARN:
+        #
+        #   arn:aws:health:me-central-1::event/MULTIPLE_SERVICES/...
+        #
+        # The place name is kept separately, because it is the friendlier thing
+        # to show on the incident card itself.
+        arn = i.get("arn", "") or ""
+        parts = arn.split(":")
+        code = parts[3] if len(parts) > 3 and parts[3] else ""
         live.append({
-            "id": i.get("arn", ""),
+            "id": arn,
             "title": flat(i.get("summary"), 240),
             "service": i.get("service_name", ""),
             "region": i.get("region_name", ""),
+            "region_code": code,
             "begin": str(i.get("date", "")),
             "update": flat(log[-1].get("message") if log else ""),
             "updates": len(log),

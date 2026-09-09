@@ -148,9 +148,12 @@ def timeline(history, live):
     today = datetime.datetime.now(datetime.timezone.utc).date()
     days = [today - datetime.timedelta(days=i) for i in range(89, -1, -1)]
     dayset = set(days)
-    bad = {c: set() for c in ORDER}
+    # Each marked day remembers WHICH incident marked it. A red cell that will
+    # not say why is decoration: a reader who spots one immediately wants to
+    # know what happened, and a bare date does not answer that.
+    bad = {c: {} for c in ORDER}
 
-    def mark(cloud, begin, end):
+    def mark(cloud, begin, end, inc):
         if not begin:
             return
         d, last = begin.date(), (end or datetime.datetime.now(datetime.timezone.utc)).date()
@@ -159,23 +162,36 @@ def timeline(history, live):
         # "193 of 90 days" -- true about the incident, nonsense about the strip.
         d = max(d, days[0])
         while d <= min(last, today):
-            bad[cloud].add(d)
+            bad[cloud].setdefault(d, []).append(inc)
             d += datetime.timedelta(days=1)
 
     for i in history.values():
         c = i.get("cloud")
         if c in bad:
-            mark(c, t(i.get("begin")), t(i.get("end")))
+            mark(c, t(i.get("begin")), t(i.get("end")), i)
     for c, rows in live.items():
         for i in rows:
-            mark(c, aws_begin(i.get("begin")) if c == "aws" else t(i.get("begin")), None)
+            mark(c, aws_begin(i.get("begin")) if c == "aws" else t(i.get("begin")), None, i)
 
     out = []
     for c in ORDER:
-        cells = "".join('<i class="%s" title="%s"></i>'
-                        % ("d bad" if d in bad[c] else "d ok", d.isoformat())
-                        for d in days)
-        n = len(bad[c] & dayset)
+        cells = ""
+        for d in days:
+            incs = bad[c].get(d)
+            if not incs:
+                cells += ('<i class="d ok" title="%s — nothing reported"></i>'
+                          % d.isoformat())
+                continue
+            titles = " | ".join(dict.fromkeys(
+                (x.get("title") or "").strip()[:90] for x in incs if x.get("title")))
+            more = "" if len(incs) == 1 else "  (%d open)" % len(incs)
+            # An anchor, not a div: the cell links to the vendor's own page for
+            # that incident, so "what was this?" is one tap rather than a hunt
+            # through the card list below.
+            cells += ('<a class="d bad" href="%s" target="_blank" rel="noopener" '
+                      'title="%s%s&#10;%s"></a>'
+                      % (e(incs[0].get("url", "#")), d.isoformat(), more, e(titles)))
+        n = len(set(bad[c]) & dayset)
         out.append('<div class="tl-row"><div class="tl-n">%s</div>'
                    '<div class="tl-cells">%s</div>'
                    '<div class="tl-s">%d of 90</div></div>' % (e(LABEL[c]), cells, n))
@@ -203,24 +219,81 @@ def blast(inc, cloud):
     return ("regional", reg, 2) if reg else ("not stated", "the vendor did not say", 0)
 
 
+def region_label(i):
+    """"UAE (me-central-1)" -- the place name and the code that goes with it."""
+    name, code = i.get("region", ""), i.get("region_code", "")
+    if name and code and code.lower() != name.lower():
+        return "%s <span class=\"rc\">%s</span>" % (e(name), e(code))
+    return e(code or name)
+
+
 def region_grid(history, live):
-    """Every region named in an incident, weighted by how often."""
-    counts = {}
+    """Every region named in an incident, weighted by how often.
+
+    Three things this has to get right, all of them about not implying more
+    than the feeds actually say.
+
+    Vocabulary. Google publishes machine region IDs (us-central1); AWS
+    publishes place names ("UAE", "Bahrain"). Side by side those read as the
+    same kind of label and are not, and "UAE" matches nothing a reader has in
+    a Terraform file. fetch_status pulls the real code out of the ARN, so
+    region_code is preferred and the place name is only a fallback.
+
+    "global" is not a region. It is Google's marker for a non-regional
+    service, and rendering it as a chip beside real regions invents a place.
+    It is counted and reported separately.
+
+    And the distribution is not what it looks like. Google names affected
+    regions on every incident, AWS names one, Azure names none at all -- so
+    the grid is overwhelmingly Google for the sole reason that Google
+    discloses most. Read as a map of where things break, it punishes the
+    vendor that tells you the most, which is the same trap as ranking clouds
+    by how fast they acknowledge. Hence the caption: it says what the grid
+    measures, and names Azure's absence rather than leaving a silent gap.
+    """
+    counts, glob, named = {}, {}, {}
     rows = list(history.values()) + [(dict(x, cloud=c))
                                      for c, v in live.items() for x in v]
     for i in rows:
         c = i.get("cloud") or "gcp"
-        names = i.get("regions") or ([i["region"]] if i.get("region") else [])
+        names = i.get("regions") or []
+        if not names:
+            # Prefer the ARN's region code over the published place name.
+            one = i.get("region_code") or i.get("region")
+            names = [one] if one else []
+        if names:
+            named[c] = named.get(c, 0) + 1
         for r in names:
+            if r == "global":
+                glob[c] = glob.get(c, 0) + 1
+                continue
             counts[(c, r)] = counts.get((c, r), 0) + 1
-    if not counts:
+    if not counts and not glob:
         return ""
-    mx = max(counts.values())
+
+    mx = max(counts.values()) if counts else 1
     cells = "".join('<div class="reg %s" style="--w:%.2f">'
                     '<span class="reg-n">%s</span><span class="reg-c">%d</span></div>'
                     % (c, n / mx, e(r), n)
                     for (c, r), n in sorted(counts.items(), key=lambda kv: -kv[1]))
-    return '<div class="regs">%s</div>' % cells
+
+    extra = ""
+    if glob:
+        bits = ", ".join("%s (%d)" % (LABEL[c], n) for c, n in sorted(glob.items()))
+        extra = ('<p class="note-sm">Plus %d incident(s) marked <b>global</b> '
+                 '— not a region, but Google’s label for a service that is '
+                 'not regional: %s.</p>'
+                 % (sum(glob.values()), e(bits)))
+
+    said = ", ".join("%s %d" % (LABEL[c], named.get(c, 0)) for c in ORDER)
+    caption = ('<p class="note-sm">This shows <b>where each vendor said an '
+               'incident was</b>, not where incidents happen. Incidents naming '
+               'any location: %s. Google publishes affected regions on every '
+               'incident and Azure’s feed carries none at all, so a cloud '
+               'appearing more often here is disclosing more, not breaking '
+               'more.</p>' % e(said))
+    return '<div class="regs">%s</div>%s%s' % (cells, extra, caption)
+
 
 
 # What each vendor publishes, scored against six things a reader needs.
@@ -271,7 +344,12 @@ def incident_card(cloud, i):
     if cloud == "aws":
         b = aws_begin(i.get("begin"))
         rows += [("Service", e(i.get("service", ""))),
-                 ("Region", e(i.get("region", "")))]
+                 # Both names: AWS publishes the place ("UAE") but a reader
+                 # matches infrastructure on the code, and the region grid is
+                 # keyed on the code. Showing one without the other leaves the
+                 # card and the grid looking like they describe different
+                 # places.
+                 ("Region", region_label(i))]
         if b:
             hrs = (datetime.datetime.now(datetime.timezone.utc) - b).total_seconds() / 3600
             rows += [("Announced", b.strftime("%d %b %Y %H:%M") + " UTC"),
