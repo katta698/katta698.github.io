@@ -215,6 +215,65 @@ def incident_payload():
     return json.dumps(out, ensure_ascii=False).replace("</", "<\/")
 
 
+INDEX_OUT = os.path.join(ROOT, "intelligence", "timeline-index.json")
+
+
+def write_timeline_index(history, live):
+    """A trimmed index of every incident held, for the year views.
+
+    The strip on the page covers 90 days. The store holds 904 incidents back
+    to 2021, so "what broke in 2026" was answerable from the data and not from
+    the page -- the most basic question of the three it tries to answer.
+
+    This is a separate file rather than more markup because the trimmed index
+    is about 180 KB against a 108 KB page: embedding it would double the cost
+    of a visit for a view most readers never open. Fetched on demand, the way
+    the write-up dialogs already fetch theirs.
+
+    Trimmed hard on purpose -- date, cloud, title, link. The full text stays in
+    status-history.json for anyone who wants it; a year strip needs only
+    enough to draw a cell and name what is under it.
+    """
+    rows = []
+    seen = set()
+    for i in list(history.values()) + [dict(x, cloud=c)
+                                       for c, v in live.items() for x in v]:
+        cloud = i.get("cloud")
+        if cloud not in ORDER:
+            continue
+        b = (aws_begin if cloud == "aws" else t)(i.get("begin"))
+        if not b:
+            continue
+        end = (aws_begin if cloud == "aws" else t)(i.get("end"))
+        key = (cloud, i.get("id") or i.get("title", "")[:60])
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "c": cloud,
+            "b": b.date().isoformat(),
+            # An open incident has no end. Null rather than today's date, so a
+            # strip drawn tomorrow does not quietly claim it ended yesterday.
+            "e": end.date().isoformat() if end else None,
+            "t": (i.get("title") or "")[:110],
+            "u": i.get("url") or "",
+        })
+    rows.sort(key=lambda r: r["b"], reverse=True)
+    years = sorted({r["b"][:4] for r in rows}, reverse=True)
+    payload = {"updated": stamp_now(), "years": years, "incidents": rows}
+    tmp = INDEX_OUT + ".tmp"
+    with io.open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(payload, fh, ensure_ascii=False, separators=(",", ":"))
+        fh.write("\n")
+    os.replace(tmp, INDEX_OUT)
+    return years, len(rows)
+
+
+def stamp_now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(
+        timespec="seconds").replace("+00:00", "Z")
+
+
 def timeline(history, live, hist_meta=None):
     """Ninety days, one cell per day, per cloud.
 
@@ -405,6 +464,17 @@ def timeline(history, live, hist_meta=None):
                    'window">%s</div></div>'
                    % (e(LABEL[c]), cells, starts, e(label)))
 
+    idx_years, idx_n = write_timeline_index(history, live)
+    # Window chips. 90 days stays the default because the question at the top
+    # of this page is "right now"; the years are for the one underneath it.
+    win = ('<div class="tl-win"><button class="tl-w is-on" data-win="90" '
+           'type="button">Last 90 days</button>')
+    win += "".join('<button class="tl-w" data-win="%s" type="button">%s</button>'
+                   % (e(y), e(y)) for y in idx_years)
+    win += ('<span class="tl-wn">%d incidents held, %s to %s</span></div>'
+            % (idx_n, e(idx_years[-1]) if idx_years else "-",
+               e(idx_years[0]) if idx_years else "-"))
+
     key = ('<div class="tl-key">'
            '<span><i class="d bad"></i>incident began</span>'
            '<span><i class="d bad cont"></i>still open</span>'
@@ -421,9 +491,9 @@ def timeline(history, live, hist_meta=None):
             'means the vendor’s own history does not reach that far back, '
             'not that nothing happened. Each record reaches to: %s.</p>'
             % (e(reach)))
-    return ('<div class="tl">%s</div>%s%s'
+    return ('%s<div class="tl">%s</div>%s%s'
             '<script type="application/json" id="tl-data">%s</script>'
-            % ("".join(out), key, note, incident_payload()))
+            % (win, "".join(out), key, note, incident_payload()))
 
 
 def blast(inc, cloud):

@@ -369,4 +369,145 @@
 
     apply();
   }
+
+  /* Year views for the timeline.
+   *
+   * The strip covers 90 days, which answers "is anything broken now" and not
+   * "what broke this year" -- a question the store could already answer from
+   * 904 incidents back to 2021 while the page could not.
+   *
+   * The index is a separate fetch because it is ~200 KB against a ~110 KB
+   * page: embedding it would double every visit for a view most readers never
+   * open. Fetched once, on the first year clicked, and reused after.
+   *
+   * Cells behave exactly like the 90-day ones -- click opens the day -- so
+   * there is one interaction to learn, not two.
+   */
+  var winBar = document.querySelector('.tl-win');
+  if (winBar) {
+    var idx = null, idxPending = null;
+    var tl = document.querySelector('.tl');
+    var saved90 = null;
+
+    function loadIndex() {
+      if (idx) return Promise.resolve(idx);
+      if (idxPending) return idxPending;
+      idxPending = fetch('/intelligence/timeline-index.json', { cache: 'no-cache' })
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (j) { idx = j; return j; });
+      return idxPending;
+    }
+
+    var CLOUDS = [['aws', 'AWS'], ['azure', 'Azure'], ['gcp', 'Google Cloud']];
+
+    function days(year) {
+      var out = [], d = new Date(Date.UTC(+year, 0, 1));
+      var end = new Date(Date.UTC(+year, 11, 31));
+      var today = new Date();
+      if (end > today) end = today;
+      while (d <= end) {
+        out.push(d.toISOString().slice(0, 10));
+        d = new Date(d.getTime() + 86400000);
+      }
+      return out;
+    }
+
+    function renderYear(year) {
+      var list = days(year);
+      var byDay = {};
+      idx.incidents.forEach(function (r) {
+        if (!r.b) return;
+        var start = r.b, stop = r.e || list[list.length - 1];
+        if (stop < list[0] || start > list[list.length - 1]) return;
+        // Walk the span, clipped to this year.
+        var d = start < list[0] ? list[0] : start;
+        var guard = 0;
+        while (d <= stop && d <= list[list.length - 1] && guard++ < 400) {
+          (byDay[d] = byDay[d] || []).push(r);
+          var n = new Date(d + 'T00:00:00Z');
+          d = new Date(n.getTime() + 86400000).toISOString().slice(0, 10);
+        }
+      });
+
+      var html = '';
+      CLOUDS.forEach(function (pair) {
+        var cl = pair[0], label = pair[1], cells = '', began = 0, marked = 0;
+        list.forEach(function (day) {
+          var here = (byDay[day] || []).filter(function (r) { return r.c === cl; });
+          if (!here.length) {
+            cells += '<i class="d ok" title="' + day + ' — nothing reported"></i>';
+            return;
+          }
+          marked++;
+          var starts = here.filter(function (r) { return r.b === day; });
+          if (starts.length) began++;
+          var titles = here.map(function (r) { return r.t; }).join(' | ');
+          cells += '<button class="d ' + (starts.length ? 'bad' : 'bad cont') +
+                   '" data-day="' + day + '" data-y="' + year + '" data-c="' + cl +
+                   '" type="button" title="' + esc(day) + '&#10;' + esc(titles.slice(0, 180)) + '"></button>';
+        });
+        html += '<div class="tl-row"><div class="tl-n">' + label + '</div>' +
+                '<div class="tl-cells">' + cells + '</div>' +
+                '<div class="tl-s" title="' + began + ' began in ' + year + '">' +
+                marked + ' of ' + list.length + '</div></div>';
+      });
+      tl.innerHTML = html;
+      tl.classList.add('is-year');
+    }
+
+    function showDay(day, cloud) {
+      var here = idx.incidents.filter(function (r) {
+        return r.c === cloud && r.b <= day && (r.e || '9999') >= day;
+      });
+      var began = here.filter(function (r) { return r.b === day; }).length;
+      var head = began ? began + (began === 1 ? ' incident began' : ' incidents began') +
+                         ' on this day' : 'Nothing began on this day';
+      if (here.length - began) head += ' · ' + (here.length - began) + ' already running';
+      var v = { aws: 'AWS', azure: 'Microsoft', gcp: 'Google' }[cloud] || cloud;
+      var html = '<p class="pm-meta"><span class="pm-date">' + esc(day) + '</span></p>' +
+                 '<h3 id="pm-title">' + esc(head) + '</h3>';
+      here.sort(function (a, b) { return (b.b === day) - (a.b === day); });
+      here.forEach(function (r) {
+        html += '<section class="pm-sec">' +
+          '<h4><span class="chip ' + esc(r.c) + '">' + esc(v) + '</span></h4>' +
+          '<p><strong>' + esc(r.t) + '</strong></p>' +
+          '<p class="pm-shape">' + (r.b === day ? 'Began ' : 'Already running — began ') +
+          esc(r.b) + (r.e ? ' · ended ' + esc(r.e) : ' · still open') + '</p>' +
+          (r.u ? '<p class="pm-src"><a href="' + esc(r.u) + '" target="_blank" rel="noopener">Read it on ' + esc(v) + '’s site →</a></p>' : '') +
+          '</section>';
+      });
+      body.innerHTML = html;
+      body.scrollTop = 0;
+      if (typeof dlg.showModal === 'function') dlg.showModal();
+      else dlg.setAttribute('open', '');
+    }
+
+    winBar.addEventListener('click', function (ev) {
+      var b = ev.target.closest ? ev.target.closest('.tl-w') : null;
+      if (!b) return;
+      var want = b.getAttribute('data-win');
+      [].forEach.call(winBar.querySelectorAll('.tl-w'), function (x) {
+        x.classList.toggle('is-on', x === b);
+      });
+      if (want === '90') {
+        if (saved90 !== null) tl.innerHTML = saved90;
+        tl.classList.remove('is-year');
+        return;
+      }
+      if (saved90 === null) saved90 = tl.innerHTML;   // keep the server-rendered 90 days
+      tl.innerHTML = '<p class="pm-loading">Loading ' + esc(want) + '…</p>';
+      loadIndex().then(function () { renderYear(want); })
+                 .catch(function (e) {
+                   tl.innerHTML = '<p class="pm-loading">Could not load the year view (' +
+                                  esc(e.message) + ').</p>';
+                 });
+    });
+
+    document.addEventListener('click', function (ev) {
+      var c = ev.target.closest ? ev.target.closest('.d[data-y]') : null;
+      if (!c) return;
+      ev.preventDefault();
+      showDay(c.getAttribute('data-day'), c.getAttribute('data-c'));
+    });
+  }
 })();
