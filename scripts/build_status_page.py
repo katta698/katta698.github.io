@@ -731,6 +731,40 @@ def postmortems(cssv="1"):
         % (c, c, e(LABEL[c]), by_cloud.get(c, 0))
         for c in ORDER if by_cloud.get(c))
 
+    # WHAT EACH ARCHIVE REACHES.
+    #
+    # The year chips imply that a missing year is a quiet year, and all three
+    # gaps mean something different. AWS writes a post-event summary only for
+    # major events, so most years have none and eleven of its eighteen carry
+    # no year at all. Azure retains reviews for about five years, so its
+    # archive simply starts. Google's incidents feed is a rolling window, so
+    # nothing before this spring exists to fetch -- Google had outages in
+    # 2022, this page just cannot see them.
+    #
+    # Left unsaid, an empty 2022 for AWS and Google reads as a claim that
+    # nothing broke. That is the same disclosure-shape distortion the region
+    # grid and the timeline already carry a caption for, and it was missing
+    # from the one section built entirely out of what vendors choose to write.
+    reach = []
+    for c in ORDER:
+        ds = sorted(r.get("date") for r in rows
+                    if r.get("cloud") == c and r.get("date"))
+        undated = sum(1 for r in rows
+                      if r.get("cloud") == c and not r.get("date"))
+        if not ds and not undated:
+            continue
+        bit = "%s %s" % (LABEL[c],
+                         ("%s to %s" % (ds[0], ds[-1])) if ds else "no dated entries")
+        if undated:
+            bit += " plus %d with no year stated" % undated
+        reach.append(bit)
+    reach_note = ('<p class="note-sm">A year with no card means nothing was '
+                  '<i>published</i> for it, not that nothing broke. Each '
+                  'archive reaches: %s. AWS writes a summary only for major '
+                  'events; Azure retains reviews about five years; Google’s '
+                  'feed carries only recent incidents, so its record starts '
+                  'this year.</p>' % e("; ".join(reach)))
+
     out = ""
     for y in years:
         items = sorted(by_year[y], key=lambda r: r.get("date") or "", reverse=True)
@@ -815,10 +849,10 @@ def postmortems(cssv="1"):
     # one sentence that cannot be filed at the bottom.
     return ('<div class="pm-yrs">%s</div>'
             '<div class="pm-yrs pm-cls">%s</div>'
-            '<div class="pm">%s</div>'
+            '%s<div class="pm">%s</div>'
             '<p class="pm-none note-sm" hidden></p>%s%s'
             '<script src="/intelligence/status/pm.js?v=%s" defer></script>'
-            % (chips, cchips, out, note, dialog, e(cssv)))
+            % (chips, cchips, reach_note, out, note, dialog, e(cssv)))
 
 
 def cadence():
