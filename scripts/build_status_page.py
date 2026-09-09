@@ -35,6 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 STATUS = os.path.join(ROOT, "intelligence", "status.json")
 HISTORY = os.path.join(ROOT, "intelligence", "status-history.json")
+RUNS = os.path.join(ROOT, "intelligence", "status-runs.json")
 OUT_DIR = os.path.join(ROOT, "intelligence", "status")
 
 e = html.escape
@@ -652,6 +653,49 @@ def postmortems(cssv="1"):
             % (out, note, dialog, e(cssv)))
 
 
+def cadence():
+    """The refresh rate this page ACHIEVED, measured, not the one intended.
+
+    The page spent a day claiming "refreshed every 15 minutes" while the
+    scheduled job had never run at all -- the cron was silently dropped and
+    nothing said so. A freshness claim a reader cannot check is just a nicer
+    way of saying trust me.
+
+    So this counts actual runs from the log every refresh writes. If the
+    scheduler dies again the number drops on its own, in public, without
+    anyone having to notice.
+    """
+    if not os.path.exists(RUNS):
+        return ""
+    try:
+        runs = (json.load(io.open(RUNS, encoding="utf-8")) or {}).get("runs") or []
+    except ValueError:
+        return ""
+    if not runs:
+        return ""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    day = [r for r in runs if (t(r.get("at")) or now) > now - datetime.timedelta(hours=24)]
+    week = [r for r in runs if (t(r.get("at")) or now) > now - datetime.timedelta(days=7)]
+    failed = sum(1 for r in day if r.get("failed"))
+
+    # Below about 18 in 24 hours the hourly schedule is missing runs, which is
+    # exactly the failure that went unnoticed before. Say so rather than
+    # printing a number and leaving the reader to judge it.
+    verdict = ("on schedule" if len(day) >= 18 else
+               "fewer than the hourly schedule intends")
+    bits = ("<b>%d</b> refresh%s in the last 24 hours (%s), "
+            "<b>%d</b> in the last 7 days."
+            % (len(day), "" if len(day) == 1 else "es", e(verdict), len(week)))
+    if failed:
+        bits += (" %d run%s had a source that did not answer; those keep the "
+                 "previous data rather than showing a blank."
+                 % (failed, "" if failed == 1 else "s"))
+    return ('<p class="note-sm">Counted, not claimed: %s The log is committed '
+            'with every refresh at '
+            '<a href="/intelligence/status-runs.json">status-runs.json</a>, '
+            'and every run is a commit in the repository.</p>' % bits)
+
+
 def cloud_card(cloud, incidents, source):
     if not source.get("ok"):
         state, cls, note = "Could not check", "err", e(source.get("error", "")[:60])
@@ -800,6 +844,7 @@ document.documentElement.setAttribute("data-palette",p);})();
      that gap structurally zero; Azure&rsquo;s feed carries no start time at all.
      Ranking all three would put AWS first for disclosing less, so only the cloud
      that supplies the inputs is measured.</div>
+  __CADENCE__
   __STATS__
   <h2>Sources</h2>
   <div class="tw"><table><tr><th>Status page</th><th>Endpoint we read</th><th>Last response</th><th>Read</th></tr>__SRC__</table></div>
@@ -899,6 +944,7 @@ def main():
                 .replace("__REGIONS__", region_grid(hist, clouds))
                 .replace("__DISCLOSURE__", disclosure())
                 .replace("__POSTMORTEMS__", postmortems(cssv))
+                .replace("__CADENCE__", cadence())
                 .replace("__STATS__", stats)
                 .replace("__SRC__", src))
 

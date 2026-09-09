@@ -125,3 +125,51 @@ jobs:
 
           echo "::error::Could not push after 3 attempts."
           exit 1
+
+  # Watchdog for the status dashboard, deliberately NOT in status.yml.
+  #
+  # A watchdog that shares its subject's scheduler dies with it. The */15 cron
+  # on status.yml was silently dropped by GitHub and never fired once, and
+  # nothing noticed for a day -- because the only thing that would have
+  # noticed was scheduled by the same mechanism that had stopped. This job
+  # rides the daily cron that has fired every day without missing.
+  #
+  # It does two jobs. First it refreshes the dashboard itself, so however
+  # badly the hourly schedule behaves the data is never worse than a day old.
+  # Then it checks whether the hourly schedule is actually alive and fails the
+  # run if it is not, which turns a silent absence into mail.
+  status-watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Backstop refresh, so the data is never older than a day
+        run: |
+          python scripts/fetch_status.py
+          python scripts/fetch_postmortems.py || true
+          python scripts/build_status_page.py
+
+      - name: Commit if the backstop changed anything
+        run: |
+          if git diff --quiet -- intelligence/; then
+            echo "Nothing changed; the hourly refresh is keeping up."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add intelligence/
+          git commit -m "Cloud status: daily backstop refresh"
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            sleep $((i * 5))
+          done
+          echo "::warning::Backstop could not push."
+
+      # Last, so the refresh above has already happened: this asks whether the
+      # HOURLY job is running, not whether data exists.
+      - name: Is the hourly refresh actually running?
+        run: python scripts/check_status_fresh.py

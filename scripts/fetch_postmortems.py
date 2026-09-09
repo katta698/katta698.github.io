@@ -93,8 +93,17 @@ def text(s):
     return s.strip()
 
 
-def parse_aws(limit=None):
-    """The index gives titles and links; each summary is its own page."""
+def parse_aws(limit=None, have=None):
+    """The index gives titles and links; each summary is its own page.
+
+    `have` is the set of URLs already in the store. AWS post-event summaries
+    are immutable once published -- they describe an event that finished years
+    ago -- so refetching all eighteen on every run would be eighteen HTTP
+    requests an hour to re-read text that cannot have changed. Only the index
+    is read every time; a detail page is fetched once, the first time it
+    appears there.
+    """
+    have = have or set()
     idx = get(AWS_INDEX)
     seen, out = set(), []
     for href, title in re.findall(
@@ -104,6 +113,8 @@ def parse_aws(limit=None):
         if url in seen or not title:
             continue
         seen.add(url)
+        if url in have:
+            continue                      # immutable and already stored
         out.append({"url": url, "title": title})
     if limit:
         out = out[:limit]
@@ -315,12 +326,15 @@ def main():
                   for r in (prev.get("postmortems") or [])}
 
     items, sources = [], {}
+    known_urls = {r.get("url") for r in prev_items.values() if r.get("url")}
+
     for cloud, fn, label, src in (
             ("aws", parse_aws, "AWS post-event summaries", AWS_INDEX),
             ("azure", parse_azure, "Azure Post Incident Reviews", AZURE_HISTORY),
             ("gcp", parse_gcp, "Google Cloud incident reports", GCP_INCIDENTS)):
         try:
-            got = fn(args.limit)
+            got = (fn(args.limit, known_urls) if cloud == "aws"
+                   else fn(args.limit))
             items += got
             sources[cloud] = {"name": label, "url": src, "ok": True,
                               "count": len(got), "fetched": stamp()}
@@ -348,6 +362,15 @@ def main():
     items = list(merged.values())
     if kept > 0:
         print("  kept %d write-up(s) from earlier runs" % kept)
+
+    # Report what is HELD, not what was just downloaded. With the incremental
+    # AWS fetch a steady state means zero new pages, and a count of "0" next to
+    # a source that holds eighteen write-ups reads as a broken feed.
+    for cloud in sources:
+        sources[cloud]["count"] = sum(1 for r in items if r.get("cloud") == cloud)
+        sources[cloud]["new"] = sum(1 for r in items
+                                    if r.get("cloud") == cloud
+                                    and (cloud + ":" + r.get("id", "")) not in prev_items)
 
     items.sort(key=lambda r: (r.get("date") or ""), reverse=True)
     payload = {"updated": stamp(), "sources": sources, "postmortems": items}

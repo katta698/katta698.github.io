@@ -56,6 +56,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 OUT = os.path.join(ROOT, "intelligence", "status.json")
 HISTORY = os.path.join(ROOT, "intelligence", "status-history.json")
+RUNS = os.path.join(ROOT, "intelligence", "status-runs.json")
 
 SOURCES = {
     "aws":   ("AWS Health Dashboard", "https://status.aws.amazon.com/data.json"),
@@ -258,6 +259,45 @@ def merge_history(past_by_cloud):
     return added, len(items)
 
 
+def record_run(sources):
+    """Append this run to a public log, so the page can prove its own cadence.
+
+    The page used to claim "refreshed every 15 minutes" while the schedule had
+    never fired once -- a promise with nothing behind it, which nobody could
+    check without reading the Actions tab of a repo they do not own. A claim
+    about freshness that a reader cannot verify is just a nicer-sounding
+    version of "trust me", and this whole page exists to avoid that.
+
+    So every run writes down when it happened and whether each source
+    answered. The page then reports the cadence it ACTUALLY achieved over the
+    last 24 hours instead of the one that was hoped for. If the scheduler dies
+    again the number falls on its own, visibly, with no one needing to notice.
+
+    Capped at 400 entries -- about two weeks of hourly runs -- because this is
+    committed on every refresh and an unbounded log would grow forever.
+    """
+    log = {"runs": []}
+    if os.path.exists(RUNS):
+        try:
+            log = json.load(io.open(RUNS, encoding="utf-8")) or {"runs": []}
+        except ValueError:
+            log = {"runs": []}
+    runs = log.get("runs") or []
+    runs.append({
+        "at": stamp(),
+        "ok": [c for c in sorted(sources) if sources[c].get("ok")],
+        "failed": [c for c in sorted(sources) if not sources[c].get("ok")],
+    })
+    log["runs"] = runs[-400:]
+    tmp = RUNS + ".tmp"
+    with io.open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(log, fh, ensure_ascii=False, indent=1)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, RUNS)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stdout", action="store_true")
@@ -293,6 +333,8 @@ def main():
             }
 
     added, total = (0, 0) if args.dry_run else merge_history(past)
+    if not args.dry_run:
+        record_run(sources)
 
     payload = {
         "checked": stamp(),
