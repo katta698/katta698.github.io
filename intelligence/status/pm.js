@@ -519,6 +519,17 @@
              inner + '</svg>';
     }
 
+    // A filled slice, for the vendor split inside each dot.
+    function wedge(cx, cy, r, a0, a1) {
+      var p0 = [cx + r * Math.cos(a0), cy + r * Math.sin(a0)];
+      var p1 = [cx + r * Math.cos(a1), cy + r * Math.sin(a1)];
+      return 'M' + cx.toFixed(2) + ',' + cy.toFixed(2) +
+             'L' + p0[0].toFixed(2) + ',' + p0[1].toFixed(2) +
+             'A' + r.toFixed(2) + ',' + r.toFixed(2) + ' 0 ' +
+             (a1 - a0 > Math.PI ? 1 : 0) + ' 1 ' +
+             p1[0].toFixed(2) + ',' + p1[1].toFixed(2) + 'Z';
+    }
+
     // A slice of a ring, for the vendor collar around each light.
     function arc(cx, cy, r, a0, a1) {
       var p0 = [cx + r * Math.cos(a0), cy + r * Math.sin(a0)];
@@ -594,12 +605,15 @@
       // ISO timestamp. A footprint refreshed daily is worth trusting; one
       // that quietly stopped refreshing is worth knowing about, and the
       // only way to tell the two apart is to print it.
-      var footAge = '';
+      var footAge = '', footStale = false;
       if (footMeta && footMeta.updated) {
         var days = Math.floor((Date.now() - Date.parse(footMeta.updated)) / 86400000);
         footAge = days <= 0 ? 'today'
                 : days === 1 ? 'yesterday'
                 : days + ' days ago';
+        // Past three days the daily refresh has missed more than once, and a
+        // reader should not have to open the explainer to find that out.
+        footStale = days > 3;
       }
       // Merge everything that shares a location.
       //
@@ -704,8 +718,10 @@
         var xy = proj(r.p[0], r.p[1]);
         // A place with nothing recorded against it is still a light, just a
         // quiet one, scaled by how many regions sit there.
-        var want = r.n ? 2.4 + 7.5 * Math.sqrt(r.n / most)
-                       : 1.4 + 0.5 * Math.min(r.live.length, 4);
+        // A pie needs to be wide enough for its widest split to read, so
+        // the floor is higher than it was for a plain dot.
+        var want = r.n ? 2.8 + 7.2 * Math.sqrt(r.n / most)
+                       : 2.2 + 0.45 * Math.min(r.live.length, 4);
         // Something broken right now outranks the history: never shrink it
         // below a size a reader will notice.
         if (r.live_now.length) want = Math.max(want, 4.2);
@@ -719,7 +735,7 @@
           if (d < room) room = d;
         });
         // A little air between neighbours, and never smaller than findable.
-        a.r = Math.max(placed[i].live_now.length ? 3.4 : 1.3,
+        a.r = Math.max(placed[i].live_now.length ? 3.6 : 1.9,
                        Math.min(a.want, room / 2 - 0.4));
       });
 
@@ -775,6 +791,10 @@
          */
         var cloud = only ? only : (r.n ? 'om-flare' : '');
         var here = r.live.length ? r.live.map(function (x) { return x.code; }) : r.regions;
+        // cloud:code, because two clouds use some of the same codes.
+        var keys = r.live.length
+          ? r.live.map(function (x) { return x.cloud + ':' + x.code; })
+          : r.regions;
         var name = (r.live[0] && r.live[0].name) || here.join(' · ');
         var label = here.join(' · ') + (r.n
           ? ' — ' + r.n + ' incident' + (r.n === 1 ? '' : 's') + ' in 90 days'
@@ -784,32 +804,43 @@
                              : '') +
           '\nabout ' + localClock(r.p[1]) + ' there, ' +
           (day ? 'daytime' : 'the middle of the night');
-        /* The vendor collar.
+        /* The dot IS the vendor split.
          *
-         * Three clouds run regions in the same cities -- Northern Virginia
-         * has all three -- so one dot per place answered "where" and lost
-         * "whose". A thin ring around each light, split into an arc per
-         * vendor present, puts that back without a second map or a legend
-         * of shapes: one arc is a single-cloud town, three arcs is Virginia.
+         * This began as a grey core with a thin coloured ring around it,
+         * which meant a place with nothing recorded against it was a grey
+         * dot -- the cloud colours only showed up as a hairline, and on most
+         * of the map the mark carried no vendor identity at all.
          *
-         * Presence is a fact each vendor publishes, so unlike incident
-         * counts it can be coloured per vendor without implying a ranking.
+         * So the dot is now a pie of the clouds that run a region there:
+         * one wedge is a single-cloud town, three wedges is Northern
+         * Virginia. Cloud colour is on every dot on the map, always, and it
+         * is still saying something true -- presence is a fact each vendor
+         * publishes, so unlike incident counts it can be coloured per vendor
+         * without implying a ranking.
+         *
+         * That frees the incident count to be carried by size, plus a bright
+         * ring on the places that actually broke.
          */
         var vendors = Object.keys(r.clouds).sort();
-        var collar = '';
+        var pie = '';
         if (vendors.length) {
           var step = (Math.PI * 2) / vendors.length;
-          var gap = vendors.length > 1 ? 0.16 : 0;
-          collar = '<g class="om-collar">' + vendors.map(function (v, k) {
+          var gap = vendors.length > 1 ? 0.05 : 0;
+          pie = '<g class="om-pie">' + vendors.map(function (v, k) {
             return '<path class="' + esc(v) + '" d="' +
-                   arc(xy[0], xy[1], rad + 2.7,
-                       -Math.PI / 2 + k * step + gap / 2,
-                       -Math.PI / 2 + (k + 1) * step - gap / 2) + '"/>';
+                   wedge(xy[0], xy[1], rad,
+                         -Math.PI / 2 + k * step + gap / 2,
+                         -Math.PI / 2 + (k + 1) * step - gap / 2) + '"/>';
           }).join('') + '</g>';
+        } else {
+          // A place known only from an incident, with no live region behind
+          // it. Rare, and it still gets a mark rather than vanishing.
+          pie = '<circle class="om-orphan" cx="' + xy[0].toFixed(1) + '" cy="' +
+                xy[1].toFixed(1) + '" r="' + rad.toFixed(1) + '"/>';
         }
         return '<g class="om-dot ' + (r.n ? esc(cloud) : 'om-quiet') +
                (r.live_now.length ? ' is-live' : '') +
-               '" data-region="' + esc(here.join('|')) + '" tabindex="0" role="button" ' +
+               '" data-region="' + esc(keys.join('|')) + '" tabindex="0" role="button" ' +
                'aria-label="' + esc(here.join(', ')) + ', ' +
                (r.live_now.length ? r.live_now.length + ' open now, ' : '') +
                (r.n ? r.n + ' incidents in 90 days' : 'nothing in 90 days') + ', ' +
@@ -818,14 +849,19 @@
                (day ? 'daytime' : 'night') + '">' +
                (r.live_now.length
                  ? '<circle class="om-pulse" cx="' + xy[0].toFixed(1) + '" cy="' +
-                   xy[1].toFixed(1) + '" r="' + (rad + 3.5).toFixed(1) + '"/>'
+                   xy[1].toFixed(1) + '" r="' + (rad + 4.2).toFixed(1) + '"/>'
                  : '') +
-               collar +
+               pie +
+               // The bright ring is "something broke here in 90 days". Size
+               // already says how much; this says whether at all, which is
+               // the difference a reader scans for first.
+               (r.n
+                 ? '<circle class="om-hit" cx="' + xy[0].toFixed(1) + '" cy="' +
+                   xy[1].toFixed(1) + '" r="' + (rad + 2.2).toFixed(1) + '"/>'
+                 : '') +
                '<circle class="om-halo" cx="' + xy[0].toFixed(1) + '" cy="' + xy[1].toFixed(1) +
-               '" r="' + (rad + 4).toFixed(1) + '"/>' +
-               '<circle class="om-core" cx="' + xy[0].toFixed(1) + '" cy="' + xy[1].toFixed(1) +
-               '" r="' + rad.toFixed(1) + '"><title>' + esc(name) + '\n' + esc(label) +
-               '</title></circle></g>';
+               '" r="' + (rad + 4).toFixed(1) + '"><title>' + esc(name) + '\n' +
+               esc(label) + '</title></circle></g>';
       }).join('');
 
       // Under a filter this has to be that vendor's count, not the total:
@@ -878,15 +914,22 @@
          */
         '<p class="note-sm om-legend">' +
         '<b>' + sites + ' regions</b>' + (only ? ' of ' + CLOUD[only] : '') +
-        ', from the vendors’ own live lists. The ring says which clouds run ' +
-        'one there; the light is incidents in the last 90 days, sized by how ' +
-        'many — ' + quiet + ' places had none. ' +
+        ', from the vendors’ own live lists. Each dot is split into a wedge ' +
+        'per cloud running a region there, so three wedges means all three are ' +
+        'in that city. Size is incidents in the last 90 days and a ring means ' +
+        'it broke in that window — ' + quiet + ' places had none. ' +
         (liveCount
           ? '<b class="om-k-live">' + liveCount + ' pulsing red</b> ' +
             (liveCount === 1 ? 'is' : 'are') + ' broken right now — click to ' +
             'open the vendor’s record. '
           : 'Nothing is broken right now. ') +
-        'Hover or click one for what it is, and what time it is there.</p>' +
+        'Hover or click one for what it is, and what time it is there. ' +
+        (footStale
+          ? '<b class="om-k-live">The region list has not refreshed in ' +
+            footAge.replace(' ago', '') + ', so it may be missing a new ' +
+            'region.</b>'
+          : '') +
+        '</p>' +
         /* A key, drawn in the same ink as the map.
          *
          * The caption says what the encodings mean in words, which works
@@ -896,19 +939,23 @@
          * live figures, so the key cannot drift from what is on screen.
          */
         '<ul class="om-key">' +
-          '<li>' + swatch('<circle class="om-core om-flare-c" cx="9" cy="9" r="3.2"/>' +
-            '<path class="aws" d="' + arc(9, 9, 5.6, -1.571, 0.524) + '"/>' +
-            '<path class="azure" d="' + arc(9, 9, 5.6, 0.681, 2.775) + '"/>' +
-            '<path class="gcp" d="' + arc(9, 9, 5.6, 2.932, 5.026) + '"/>') +
-            'one arc per cloud running a region there</li>' +
-          '<li>' + swatch('<circle class="om-core om-flare-c" cx="5" cy="9" r="1.8"/>' +
-            '<circle class="om-core om-flare-c" cx="13" cy="9" r="5"/>') +
+          '<li>' + swatch('<g class="om-pie">' +
+            '<path class="aws" d="' + wedge(9, 9, 6, -1.571, 0.524) + '"/>' +
+            '<path class="azure" d="' + wedge(9, 9, 6, 0.524, 2.618) + '"/>' +
+            '<path class="gcp" d="' + wedge(9, 9, 6, 2.618, 4.712) + '"/></g>') +
+            'a wedge per cloud running a region there</li>' +
+          '<li>' + swatch('<g class="om-pie">' +
+            '<path class="azure" d="' + wedge(5, 9, 2.4, 0, 6.28) + '"/>' +
+            '<path class="azure" d="' + wedge(13, 9, 5.4, 0, 6.28) + '"/></g>') +
             'bigger means more incidents in 90 days</li>' +
-          '<li>' + swatch('<circle class="om-core om-flare-c" cx="9" cy="9" r="3.4"/>' +
+          '<li>' + swatch('<g class="om-pie"><path class="gcp" d="' +
+            wedge(9, 9, 3.6, 0, 6.28) + '"/></g>' +
+            '<circle class="om-hit" cx="9" cy="9" r="5.8"/>') +
+            'ringed means it broke in that window</li>' +
+          '<li>' + swatch('<g class="om-pie"><path class="aws" d="' +
+            wedge(9, 9, 3.4, 0, 6.28) + '"/></g>' +
             '<circle class="om-key-live" cx="9" cy="9" r="6.4"/>') +
             'broken right now — click it</li>' +
-          '<li>' + swatch('<circle class="om-core om-quiet-c" cx="9" cy="9" r="2.6"/>') +
-            'dim means nothing broke there in 90 days</li>' +
         '</ul>' +
         '<details class="om-how"><summary>How this map is built</summary>' +
         '<p class="note-sm">' +
@@ -1022,7 +1069,13 @@
     mapHost.addEventListener('click', function (ev) {
       var g = ev.target.closest ? ev.target.closest('.om-dot') : null;
       if (!g || !mapIdx) return;
-      var names = g.getAttribute('data-region').split('|');
+      var keys = g.getAttribute('data-region').split('|');
+      // The bare code, for matching against incident titles and the index,
+      // which are per-cloud already and never carry the prefix.
+      var names = keys.map(function (k) {
+        var i = k.indexOf(':');
+        return i < 0 ? k : k.slice(i + 1);
+      });
       var rows = (mapIdx.incidents || []).filter(function (r) {
         var hay = (r.t || '');
         return names.some(function (n) { return hay.indexOf(n) >= 0; });
@@ -1037,28 +1090,87 @@
       // Which cloud runs what here, which is the thing a single dot cannot
       // say. Grouped by vendor so "Northern Virginia has all three" reads at
       // a glance rather than as a list of codes.
-      var here = mapFoot.filter(function (r) { return names.indexOf(r.code) >= 0; });
+      var here = mapFoot.filter(function (r) {
+        return keys.indexOf(r.cloud + ':' + r.code) >= 0;
+      });
       var byCloud = {};
       here.forEach(function (r) {
-        (byCloud[r.cloud] = byCloud[r.cloud] || []).push(r.code);
+        (byCloud[r.cloud] = byCloud[r.cloud] || []).push(r);
       });
       var openNow = mapLive.filter(function (i) {
-        return names.indexOf(i.region_code) >= 0 || names.indexOf(i.region) >= 0;
+        return keys.indexOf(i.cloud + ':' + i.region_code) >= 0 ||
+               keys.indexOf(i.cloud + ':' + i.region) >= 0;
       });
 
       var pt = here.length && here[0].p ? here[0].p : null;
       var when = pt ? localClock(pt[1]) : '';
-      var html = '<p class="pm-meta"><span class="pm-date">' + esc(name) + '</span>' +
+      /* What is actually here.
+       *
+       * A dot used to open with a count of incidents and a list of region
+       * codes, which answers a question nobody asked first. What a reader
+       * wants on clicking a place is what is there: which city, which
+       * country, whose regions, and how many zones -- "Mumbai: AWS, Azure
+       * and Google, six regions between them".
+       *
+       * Every field here is the vendor's own words. Where one of them does
+       * not publish something, this says so rather than filling the gap:
+       * AWS states its zone counts only on a JavaScript-rendered page, and
+       * Azure publishes whether a region has zones and never how many, so
+       * neither gets a number invented for it.
+       */
+      // Every city in the cluster, not just the first.
+      //
+      // Places within a couple of pixels of each other are drawn as one dot,
+      // and Mumbai and Pune are one of those pairs. Titling the dot "Mumbai"
+      // while listing a Pune region underneath reads as a mistake even
+      // though both lines are true, so the heading names both.
+      var cities = [], countries = [], seenAt = {};
+      here.forEach(function (r) {
+        var at = r.p ? r.p.join(',') : r.code;
+        if (r.city && !seenAt[at]) {
+          seenAt[at] = 1;
+          cities.push(r.city);
+        }
+        if (r.country && countries.indexOf(r.country) < 0) countries.push(r.country);
+      });
+      var city = cities.join(' · ');
+      var where = [city, countries.join(' · ')].filter(Boolean).join(', ') || name;
+
+      var html = '<p class="pm-meta"><span class="pm-date">' + esc(where) + '</span>' +
                  (when ? '<span class="pm-date">about ' + esc(when) +
                          ' there</span>' : '') + '</p>' +
-                 '<h3 id="pm-title">' + (meta.n || rows.length) + ' incident' +
-                 ((meta.n || rows.length) === 1 ? '' : 's') + ' named this region</h3>';
+                 '<h3 id="pm-title">' + esc(city || name) + '</h3>';
+
       if (Object.keys(byCloud).length) {
-        html += '<p class="pm-shape om-who">' + Object.keys(byCloud).sort()
+        var zoneNote = false;
+        html += '<table class="om-reg"><tbody>' + Object.keys(byCloud).sort()
           .map(function (c) {
-            return '<span class="chip ' + esc(c) + '">' + esc(CLOUD[c]) + '</span> ' +
-                   esc(byCloud[c].join(', '));
-          }).join('<br>') + '</p>';
+            return byCloud[c].map(function (r) {
+              var z;
+              if (r.zones && r.zones.length) {
+                z = r.zones.length + ' zone' + (r.zones.length === 1 ? '' : 's');
+              } else if (r.az === true) {
+                z = 'has zones';               // Azure says whether, not how many
+                zoneNote = true;
+              } else if (r.az === false) {
+                z = 'no zones';
+                zoneNote = true;
+              } else {
+                z = '—';                      // AWS publishes nothing readable
+                zoneNote = true;
+              }
+              return '<tr><td><span class="chip ' + esc(c) + '">' +
+                     esc(CLOUD[c]) + '</span></td><td><code>' + esc(r.code) +
+                     '</code></td><td>' + esc(r.city || '') + '</td>' +
+                     '<td class="om-z">' + esc(z) + '</td></tr>';
+            }).join('');
+          }).join('') + '</tbody></table>' +
+          (zoneNote
+            ? '<p class="note-sm">Google names its zones, so those are counted. ' +
+              'Azure publishes whether a region has availability zones and not ' +
+              'how many. AWS publishes its counts only on a page this cannot ' +
+              'read, so it is left blank rather than guessed at.</p>'
+            : '');
       }
       if (openNow.length) {
         html += '<div class="om-open"><h4>Open right now</h4>' + openNow.map(function (i) {

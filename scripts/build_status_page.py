@@ -206,7 +206,7 @@ def incident_payload():
         out.append({
             "g": url if generic else "",
             "c": cloud,
-            "t": (i.get("title") or "")[:240],
+            "t": detag(i.get("title"))[:240],
             "s": (i.get("service") or "")[:120],
             "r": i.get("region_code") or i.get("region") or "",
             "b": str(i.get("begin") or ""),
@@ -268,6 +268,11 @@ def region_payload(history, live):
     return sorted(seen.values(), key=lambda x: -x["n"])
 
 
+def detag(text):
+    """Entity-decoded text, for records fetched before ingest decoded them."""
+    return html.unescape(text or "")
+
+
 def write_timeline_index(history, live):
     """A trimmed index of every incident held, for the year views.
 
@@ -306,7 +311,7 @@ def write_timeline_index(history, live):
             # An open incident has no end. Null rather than today's date, so a
             # strip drawn tomorrow does not quietly claim it ended yesterday.
             "e": end.date().isoformat() if end else None,
-            "t": (i.get("title") or "")[:110],
+            "t": detag(i.get("title"))[:110],
             "u": i.get("url") or "",
         })
     # Flag the ones with a published write-up, and add write-ups that have no
@@ -339,7 +344,7 @@ def write_timeline_index(history, live):
     for (cloud, wid), w in have.items():
         rows.append({
             "c": cloud, "i": wid, "b": w.get("date") or "",
-            "e": w.get("date") or None, "t": (w.get("title") or "")[:110],
+            "e": w.get("date") or None, "t": detag(w.get("title"))[:110],
             "u": w.get("url") or "", "w": 1,
         })
 

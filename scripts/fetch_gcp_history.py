@@ -34,6 +34,7 @@ invented hour is not.
 import argparse
 import concurrent.futures
 import datetime
+import html
 import io
 import json
 import os
@@ -62,7 +63,9 @@ def get(url, timeout=45):
 
 
 def flat(s, limit=400):
-    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", s or "")).strip()[:limit]
+    """Tags out, entities decoded, whitespace collapsed."""
+    return re.sub(r"\s+", " ",
+                  html.unescape(re.sub(r"<[^>]+>", " ", s or ""))).strip()[:limit]
 
 
 # "Feb 22, 2022" and "22 Feb 2022" both appear across products.

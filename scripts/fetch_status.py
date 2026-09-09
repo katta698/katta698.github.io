@@ -41,6 +41,7 @@ vendor never made. Elapsed time and their own words are shown instead.
 import argparse
 import datetime
 import gzip
+import html
 import io
 import json
 import os
@@ -88,6 +89,7 @@ def get(url, timeout=45):
 
 
 def flat(s, limit=500):
+    s = html.unescape(s or "")
     """Collapse whitespace and strip Markdown headings.
 
     Google writes its updates in Markdown, so an update opens with

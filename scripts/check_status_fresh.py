@@ -31,6 +31,11 @@ Two different questions, because either can fail alone.
   2. Is the SCHEDULE alive? The run log is the evidence. Data can look recent
      because a human pushed something an hour ago while the scheduled job has
      been dead for a week, which is exactly the state this repo was in.
+  3. Is the map's region list recent, and did every cloud answer? The
+     footprint step runs with continue-on-error, so that a bad afternoon at
+     Azure cannot block the status refresh -- which means a step that fails
+     EVERY day would otherwise never go red. Tolerating one failure and
+     alarming on a run of them is the whole point of checking here instead.
 """
 import argparse
 import datetime
@@ -44,6 +49,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATUS = os.path.join(ROOT, "intelligence", "status.json")
 RUNS = os.path.join(ROOT, "intelligence", "status-runs.json")
+REGIONS = os.path.join(ROOT, "intelligence", "status", "regions.json")
 
 
 def load(p):
@@ -72,6 +78,9 @@ def main():
     # not to grade GitHub on punctuality, and a watchdog that cries about
     # ordinary lateness is one that gets muted.
     ap.add_argument("--min-runs-24h", type=int, default=6)
+    # The region list refreshes daily and changes every few weeks, so three
+    # days is comfortably late without being noise.
+    ap.add_argument("--max-region-age-days", type=float, default=3.0)
     args = ap.parse_args()
 
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -126,6 +135,35 @@ def main():
         failing = [c for c in (runs[-1].get("failed") or [])]
         if failing:
             print("  last run failed sources: %s" % ", ".join(failing))
+
+    regions = load(REGIONS)
+    if not regions:
+        problems.append("intelligence/status/regions.json is missing or "
+                        "unreadable, so the map has no footprint to draw.")
+    else:
+        wrote = parse(regions.get("updated"))
+        count = len(regions.get("regions") or [])
+        if not wrote:
+            problems.append("regions.json has no readable 'updated' timestamp.")
+        else:
+            days = (now - wrote).total_seconds() / 86400.0
+            print("  region list     %.1f d old, %d regions (limit %.1f d)"
+                  % (days, count, args.max_region_age_days))
+            if days > args.max_region_age_days:
+                problems.append(
+                    "The cloud region list is %.1f days old. fetch_regions.py "
+                    "runs daily with continue-on-error, so it has been failing "
+                    "quietly rather than loudly." % days)
+        # A cloud whose list could not be re-read keeps its previous entries,
+        # which is the right call for one run and a lie by the third.
+        stale = regions.get("stale") or []
+        if stale:
+            print("  kept stale      %s" % ", ".join(stale))
+            problems.append(
+                "The last footprint refresh could not re-read %s, so those "
+                "regions are the previous list. The page says so, but a cloud "
+                "that fails repeatedly needs its source checked."
+                % " and ".join(stale))
 
     if problems:
         print("\n  STATUS DASHBOARD IS NOT REFRESHING\n")

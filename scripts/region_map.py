@@ -95,6 +95,26 @@ CITY = {
     "malmo": (55.60, 13.00), "vienna": (48.21, 16.37),
     "copenhagen": (55.68, 12.57), "canberra": (-35.28, 149.13),
     "dammam": (26.43, 50.10),
+    # The names the vendors themselves print, which are not always cities.
+    #
+    # Azure describes a region by its physical location, and that is sometimes
+    # a city, sometimes a state and occasionally a county: "Texas", "Wyoming",
+    # "New South Wales". Google names cities. AWS names whatever fits its
+    # region label. All of them are entries here rather than reasons to fall
+    # back to guessing from a region code, because a stated place beats an
+    # inferred one even when the statement is a state.
+    "abu-dhabi": (24.45, 54.38), "brussels": (50.85, 4.35),
+    "cardiff": (51.48, -3.18), "chennai": (13.08, 80.27),
+    "pune": (18.52, 73.86), "hyderabad": (17.39, 78.49),
+    "columbus": (39.96, -83.00), "dubai": (25.20, 55.27),
+    "gavle": (60.67, 17.14), "hamina": (60.57, 27.20),
+    "illinois": (41.88, -87.63), "las-vegas": (36.17, -115.14),
+    "los-angeles": (34.05, -118.24), "salt-lake-city": (40.76, -111.89),
+    "new-south-wales": (-33.87, 151.21), "victoria": (-37.81, 144.96),
+    "quebec": (46.81, -71.21), "ningxia": (38.49, 106.23),
+    "south-carolina": (33.20, -80.05), "virginia": (38.95, -77.45),
+    "california": (37.35, -121.95), "texas": (29.42, -98.49),
+    "washington": (47.23, -119.85), "wyoming": (41.14, -104.82),
 }
 
 # region id -> city key. Only regions the vendors actually name a city for.
@@ -105,7 +125,7 @@ REGION_CITY = {
     "eu-west-1": "dublin", "eu-west-2": "london", "eu-west-3": "paris",
     "eu-central-1": "frankfurt", "eu-north-1": "stockholm",
     "eu-south-1": "milan", "eu-south-2": "madrid",
-    "ap-south-1": "mumbai", "ap-south-2": "delhi",
+    "ap-south-1": "mumbai", "ap-south-2": "hyderabad",
     "ap-southeast-1": "singapore", "ap-southeast-2": "sydney",
     "ap-southeast-3": "jakarta", "ap-southeast-4": "melbourne",
     "ap-northeast-1": "tokyo", "ap-northeast-2": "seoul",
@@ -200,3 +220,56 @@ def place(region):
     """(lat, lon) for a region, or None when its location is not published."""
     city = REGION_CITY.get(region)
     return CITY.get(city) if city else None
+
+# Which country each city is in.
+#
+# Static geography, unlike anything else here: cities do not move between
+# countries, so this cannot go stale the way a zone count or a region list
+# can. It exists because AWS names the city for each region and never the
+# country -- "Asia Pacific (Mumbai)" -- and a reader asking which cities a
+# cloud is in usually means which countries.
+CITY_COUNTRY = {
+    "n-virginia": "United States", "ohio": "United States",
+    "oregon": "United States", "n-california": "United States",
+    "iowa": "United States", "s-carolina": "United States",
+    "dallas": "United States", "phoenix": "United States",
+    "san-antonio": "United States",
+    "montreal": "Canada", "toronto": "Canada", "calgary": "Canada",
+    "queretaro": "Mexico",
+    "sao-paulo": "Brazil", "rio": "Brazil", "santiago": "Chile",
+    "dublin": "Ireland", "london": "United Kingdom",
+    "frankfurt": "Germany", "berlin": "Germany",
+    "paris": "France", "marseille": "France",
+    "amsterdam": "Netherlands", "belgium": "Belgium",
+    "stockholm": "Sweden", "malmo": "Sweden",
+    "milan": "Italy", "turin": "Italy",
+    "zurich": "Switzerland", "geneva": "Switzerland",
+    "madrid": "Spain", "warsaw": "Poland",
+    "oslo": "Norway", "stavanger": "Norway",
+    "finland": "Finland", "vienna": "Austria", "copenhagen": "Denmark",
+    "mumbai": "India", "delhi": "India", "nagpur": "India",
+    "jamnagar": "India",
+    "singapore": "Singapore", "tokyo": "Japan", "osaka": "Japan",
+    "seoul": "South Korea", "busan": "South Korea",
+    "hong-kong": "Hong Kong", "taipei": "Taiwan", "taiwan": "Taiwan",
+    "jakarta": "Indonesia", "kuala-lumpur": "Malaysia",
+    "bangkok": "Thailand", "beijing": "China", "shanghai": "China",
+    "yinchuan": "China",
+    "sydney": "Australia", "melbourne": "Australia", "canberra": "Australia",
+    "auckland": "New Zealand",
+    "bahrain": "Bahrain", "uae": "United Arab Emirates",
+    "tel-aviv": "Israel", "doha": "Qatar", "dammam": "Saudi Arabia",
+    "cape-town": "South Africa", "johannesburg": "South Africa",
+}
+
+
+def country_of(region, city_name=""):
+    """The country a region sits in, via the city the vendor named."""
+    key = REGION_CITY.get(region)
+    if key and key in CITY_COUNTRY:
+        return CITY_COUNTRY[key]
+    probe = re.sub(r"[^a-z ]", " ", (city_name or "").lower())
+    for k, v in CITY_COUNTRY.items():
+        if k.replace("-", " ") in probe:
+            return v
+    return ""

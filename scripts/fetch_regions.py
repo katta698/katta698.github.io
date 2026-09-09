@@ -47,6 +47,7 @@ import os
 import re
 import ssl
 import sys
+import unicodedata
 import urllib.request
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -67,6 +68,11 @@ GCP_GEO = ("https://raw.githubusercontent.com/GoogleCloudPlatform/"
            "region-picker/main/data/regions.json")
 AZURE_PAGE = "https://azure.status.microsoft/en-us/status/history/"
 
+# Where each vendor states the physical detail a reader actually wants: which
+# city, which country, and how many zones. None of it is in the machine feeds.
+AZURE_DOCS = "https://learn.microsoft.com/en-us/azure/reliability/regions-list"
+GCP_ZONES = "https://cloud.google.com/compute/docs/regions-zones"
+
 UA = "jayanthkatta.com region fetcher (+https://jayanthkatta.com)"
 CTX = ssl.create_default_context()
 
@@ -78,9 +84,17 @@ def get(url, timeout=60):
 
 
 def city_coord(text):
-    """Match a vendor's own place name to a coordinate."""
+    """Match a vendor's own place name to a coordinate.
+
+    Accents are folded first: Google writes "Sao Paulo" and AWS writes
+    "Sao Paulo" with the tilde, Azure writes "Montreal" with the acute and
+    "Queretaro State" with one too. Those are the same three places, and
+    comparing them byte for byte quietly loses the dot.
+    """
     if not text:
         return None
+    text = "".join(c for c in unicodedata.normalize("NFKD", text)
+                   if not unicodedata.combining(c))
     t = re.sub(r"[^a-z ]", " ", text.lower())
     t = re.sub(r"\s+", " ", t).strip()
     # Longest key first, so "n virginia" beats a stray "virginia".
@@ -89,6 +103,84 @@ def city_coord(text):
         if probe in t:
             return xy
     return None
+
+
+def azure_detail():
+    """Azure's own region table: physical city, country, and zone support.
+
+    Azure documents more about its regions than the other two put together --
+    the city each one is in, the geography it belongs to, and whether it has
+    availability zones. It is an HTML table rather than a feed, so this is a
+    parse of a documentation page and is treated as one: if the table moves,
+    the detail disappears and the regions still draw.
+    """
+    out = {}
+    try:
+        html = get(AZURE_DOCS)
+    except Exception:                                           # noqa: BLE001
+        return out
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
+        cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.S)
+        if len(cells) < 6:
+            continue
+        def flat(x):
+            return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", x)).strip()
+        name = flat(cells[0])
+        code = flat(cells[5])
+        if not code or code == "Programmatic name":
+            continue
+        out[name] = {
+            # The zone column is a checkmark image; its alt text is the value.
+            "az": bool(re.search(r'alt="Yes"', cells[1], re.I)),
+            "city": flat(cells[3]),
+            "country": flat(cells[4]),
+            "arm": code,
+        }
+    return out
+
+
+def gcp_zones():
+    """Google's zone list, which is the one real zone count of the three."""
+    out = {}
+    try:
+        html = get(GCP_ZONES)
+    except Exception:                                           # noqa: BLE001
+        return out
+    for z in set(re.findall(
+            r"\b((?:us|eu|europe|asia|australia|northamerica|southamerica|me|"
+            r"africa)-[a-z]+\d+)-([a-z])\b", html)):
+        out.setdefault(z[0], set()).add(z[0] + "-" + z[1])
+    return {k: sorted(v) for k, v in out.items()}
+
+
+# The three do not spell countries the same way. Google writes "USA", Azure
+# writes "United States"; shown side by side in one heading they looked like
+# two countries.
+SAME_COUNTRY = {
+    "USA": "United States", "US": "United States",
+    "UK": "United Kingdom", "UAE": "United Arab Emirates",
+    "Korea": "South Korea",
+}
+
+
+def one_country(name):
+    return SAME_COUNTRY.get((name or "").strip(), (name or "").strip())
+
+
+def split_place(text):
+    """"Johannesburg, South Africa" -> ("Johannesburg", "South Africa")."""
+    if not text:
+        return "", ""
+    parts = [x.strip() for x in text.split(",")]
+    if len(parts) >= 2:
+        return parts[0], parts[-1]
+    return parts[0], ""
+
+
+def in_parens(text):
+    """"Asia Pacific (Mumbai)" -> "Mumbai". AWS names its city, not its country."""
+    m = re.search(r"\(([^)]+)\)", text or "")
+    return m.group(1).strip() if m else ""
 
 
 def fetch_aws():
@@ -102,9 +194,21 @@ def fetch_aws():
         pass
     out = []
     for c in codes:
-        xy = region_map.place(c) or city_coord(names.get(c, ""))
-        out.append({"cloud": "aws", "code": c, "name": names.get(c, c),
-                    "p": list(xy) if xy else None})
+        label = names.get(c, "")
+        city = in_parens(label) or label
+        xy = city_coord(city) or region_map.place(c)
+        out.append({
+            "cloud": "aws", "code": c, "name": label or c,
+            "city": city,
+            # AWS states the city in the region's own name and the country
+            # nowhere machine-readable, so the country comes from the city.
+            "country": one_country(region_map.country_of(c, city)),
+            # AWS publishes its zone counts only on a JavaScript-rendered
+            # marketing page. Guessing three because that is usual would be
+            # inventing a number, so this stays empty and the page says why.
+            "zones": [], "az": None,
+            "p": list(xy) if xy else None,
+        })
     return out
 
 
@@ -114,21 +218,25 @@ def fetch_gcp():
     geo = {}
     try:
         for code, meta in json.loads(get(GCP_GEO)).items():
-            if meta.get("latitude") is not None:
-                # Google's dataset stores magnitudes; the region's own name
-                # carries the hemisphere ("Johannesburg, South Africa" is
-                # south, "Sao Paulo, Brazil" is south).
-                geo[code] = (meta["latitude"], meta["longitude"], meta.get("name", ""))
+            geo[code] = meta.get("name", "")
     except Exception:                                           # noqa: BLE001
         pass
+    zones = gcp_zones()
     out = []
     for c in codes:
-        xy = region_map.place(c)
-        name = geo.get(c, ("", "", ""))[2] if c in geo else c
-        if not xy and c in geo:
-            xy = city_coord(geo[c][2])
-        out.append({"cloud": "gcp", "code": c, "name": name or c,
-                    "p": list(xy) if xy else None})
+        label = geo.get(c, "")
+        city, country = split_place(label)
+        xy = (city_coord(city) if city else None) or region_map.place(c)
+        out.append({
+            "cloud": "gcp", "code": c, "name": label or c,
+            "city": city,
+            "country": one_country(country or region_map.country_of(c, city)),
+            # Google lists its zones by name, so this is a count of named
+            # things rather than an assertion about capacity.
+            "zones": zones.get(c, []),
+            "az": bool(zones.get(c)),
+            "p": list(xy) if xy else None,
+        })
     return out
 
 
@@ -149,6 +257,7 @@ def fetch_azure():
         raise RuntimeError("Azure's region dropdown is no longer in the page")
     opts = re.findall(r'<option[^>]*value="([^"]*)"[^>]*>(.*?)</option>',
                       sel.group(0), re.S)
+    detail = azure_detail()
     out = []
     for value, label in opts:
         label = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", label)).strip()
@@ -157,9 +266,17 @@ def fetch_azure():
         # excluded rather than reported as regions that cannot be drawn.
         if value in ("all", "global") or "non-regional" in value:
             continue
-        xy = region_map.place(label) or city_coord(label)
-        out.append({"cloud": "azure", "code": value, "name": label,
-                    "p": list(xy) if xy else None})
+        d = detail.get(label) or {}
+        xy = city_coord(d.get("city") or "") or region_map.place(label)
+        out.append({
+            "cloud": "azure", "code": value, "name": label,
+            "city": d.get("city", ""),
+            "country": one_country(d.get("country", "")),
+            # Azure publishes whether a region has zones, not how many, so
+            # this is a flag and never a count.
+            "zones": [], "az": d.get("az"),
+            "p": list(xy) if xy else None,
+        })
     return out
 
 
@@ -208,6 +325,11 @@ def main():
         placed = sum(1 for r in got if r["p"])
         print("  %-6s %3d regions, %3d placed, %3d without a known location"
               % (name, len(got), placed, len(got) - placed))
+        missing = sorted({r.get("city") for r in got
+                          if not r["p"] and r.get("city")})
+        if missing:
+            print("         cities named but not in the coordinate table: %s"
+                  % ", ".join(missing))
         regions += got
 
     if not regions:
