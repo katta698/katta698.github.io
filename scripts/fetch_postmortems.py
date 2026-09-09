@@ -172,8 +172,22 @@ def aws_date(title, body):
     date presented as fact is worse than a missing one, because a reader has
     no way to doubt it -- an absent date at least shows itself.
     """
-    for src in (title, body[:2500]):
-        m = re.search(r"\b(%s)\s+(\d{1,2})(?:\s*(?:and|-|–)\s*\d{1,2})?,?\s+(20\d\d)\b"
+    # Ordinals, and a comma after the month.
+    #
+    # AWS writes "December 10th, 2021" and "November, 25th 2020". The
+    # pattern required "Month DD, YYYY" exactly, so the "th" ended the match
+    # and eleven of eighteen summaries fell into "Undated" -- making the
+    # archive look as though AWS published nothing between 2018 and 2025. It
+    # published in 2017, 2020, 2021, 2023 and 2024; this could not read them.
+    # The WHOLE body, not the first 2,500 characters. AWS states the date
+    # early in most summaries and well down the page in others -- the Tokyo
+    # Direct Connect event says "September 2, 2021" past that cut-off.
+    # Verified safe before widening: it adds two dates and changes none of
+    # the twelve already read, so it is not picking up a date from prose
+    # about some earlier incident.
+    for src in (title, body):
+        m = re.search(r"\b(%s),?\s+(\d{1,2})(?:st|nd|rd|th)?"
+                      r"(?:\s*(?:and|-|–|to)\s*\d{1,2}(?:st|nd|rd|th)?)?,?\s+(20\d\d)\b"
                       % "|".join(MONTHS), src)
         if m:
             return "%s-%02d-%02d" % (m.group(3), MONTHS.index(m.group(1)) + 1,
