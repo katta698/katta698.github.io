@@ -295,6 +295,95 @@ def parse_aws(raw):
     return live, []
 
 
+AZURE_HISTORY = ("https://azure.status.microsoft/en-us/statushistoryapi/"
+                 "?serviceSlug=all&regionSlug=all&startDate=all&page=%d"
+                 "&shdrefreshflag=true")
+
+# "Between 14:44 and 19:41 UTC on 23 July 2026" -- Azure opens nearly every
+# PIR with its impact window in exactly this shape.
+AZ_WINDOW = re.compile(
+    r"Between\s+(\d{1,2}):(\d{2})\s+and\s+(\d{1,2}):(\d{2})\s+UTC\s+on\s+"
+    r"(\d{1,2})\s+([A-Z][a-z]+)\s+(20\d\d)")
+
+MONTHS_FULL = ("January February March April May June July August September "
+               "October November December").split()
+
+
+def parse_azure_history(pages=3):
+    """Azure's resolved incidents, from the API behind its history page.
+
+    Azure's RSS feed carries items only while something is wrong, so the
+    timeline had ZERO Azure incidents and drew ninety hatched cells reading
+    "no record before 9 Sep" -- while the write-ups section on the same page
+    showed an Azure post-incident review dated 23 July. The page contradicted
+    itself, and a reader spotted it.
+
+    The API was found the way the AWS one was: opening the history page,
+    setting its date filter to "All", and watching what it fetched. It is
+    paged, ten reviews to a page, and reaches back to 2024.
+
+    Times come from the PIR text where Azure states them -- it opens nearly
+    every review with "Between 14:44 and 19:41 UTC on 23 July 2026" -- and
+    fall back to the heading date alone when it does not. That fallback marks
+    the day rather than inventing an hour: a reader can tell "this day" from
+    "this window", and cannot tell a real window from a guessed one.
+    """
+    out = []
+    for page in range(1, pages + 1):
+        try:
+            raw, _ = get(AZURE_HISTORY % page)
+        except Exception:                                       # noqa: BLE001
+            break
+        body = raw.decode("utf-8", "replace")
+
+        heads = {tid: flat(re.sub(r"<[^>]+>", " ", inner), 240)
+                 for tid, inner in re.findall(
+                     r'aria-controls="incident-history-collapse-([A-Z0-9_-]+)"'
+                     r'[^>]*>(.*?)</a>', body, re.S)}
+        found = False
+        for tid, panel in re.findall(
+                r'id="incident-history-collapse-([A-Z0-9_-]+)"(.*?)'
+                r'(?=id="incident-history-collapse-|\Z)', body, re.S):
+            found = True
+            text = flat(re.sub(r"<[^>]+>", " ", panel), 6000)
+            head = heads.get(tid, "")
+            m = re.match(r"(\d{2})/(\d{2})/(20\d\d)\s*(.*)", head)
+            if not m:
+                continue
+            day = datetime.datetime(int(m.group(3)), int(m.group(1)),
+                                    int(m.group(2)), tzinfo=datetime.timezone.utc)
+            title = m.group(4).strip(" -–") or ("Post Incident Review %s" % tid)
+
+            begin, end = day, day
+            w = AZ_WINDOW.search(text)
+            if w and w.group(6) in MONTHS_FULL:
+                base = datetime.datetime(
+                    int(w.group(7)), MONTHS_FULL.index(w.group(6)) + 1,
+                    int(w.group(5)), tzinfo=datetime.timezone.utc)
+                begin = base.replace(hour=int(w.group(1)), minute=int(w.group(2)))
+                end = base.replace(hour=int(w.group(3)), minute=int(w.group(4)))
+                if end < begin:                 # crossed midnight
+                    end += datetime.timedelta(days=1)
+
+            out.append({
+                "cloud": "azure",
+                "id": tid,
+                "title": title[:240],
+                "service": "",
+                "region": "",
+                "begin": begin.isoformat(),
+                "end": end.isoformat(),
+                "update": text[:900],
+                "updates": 1,
+                # Azure DOES publish a per-incident address, unlike its RSS
+                # feed, which carries none.
+                "url": "https://aka.ms/AzPIR/%s" % tid,
+            })
+        if not found:
+            break
+    return out
+
+
 def parse_azure(raw):
     """Azure's feed carries items only while something is wrong.
 
@@ -478,6 +567,21 @@ def main():
             "error": str(exc)[:200], "attempted": stamp(),
         }
         print("  aws-hist FETCH FAILED: %s" % str(exc)[:60])
+
+    # Azure resolved incidents, from the API behind its history page.
+    try:
+        hist_az = parse_azure_history()
+        past["azure"] = (past.get("azure") or []) + hist_az
+        sources["azure_history"] = {
+            "name": "Azure status history", "url": AZURE_HISTORY % 1, "ok": True,
+            "count": len(hist_az), "fetched": stamp(),
+        }
+    except Exception as exc:                                    # noqa: BLE001
+        sources["azure_history"] = {
+            "name": "Azure status history", "url": AZURE_HISTORY % 1,
+            "ok": False, "error": str(exc)[:200], "attempted": stamp(),
+        }
+        print("  az-hist FETCH FAILED: %s" % str(exc)[:60])
 
     added, total = (0, 0) if args.dry_run else merge_history(past)
     if not args.dry_run:

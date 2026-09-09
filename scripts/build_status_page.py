@@ -145,10 +145,8 @@ def track_record(history):
 MONTH_ABBR = ("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec").split()
 
 WHYUNK = {
-    "aws": "AWS publishes only incidents that are open now, so anything "
-           "resolved before this log began left no trace.",
-    "azure": "Azure's feed carries items only while something is wrong, so "
-             "anything resolved before this log began left no trace.",
+    "aws": "Outside the window AWS's service history reaches.",
+    "azure": "Outside the window Azure's status history reaches.",
     "gcp": "Outside the window Google's feed still carries.",
 }
 
@@ -237,11 +235,31 @@ def timeline(history, live, hist_meta=None):
     # backfilled to the oldest incident the feed still carries.
     since_d = (t(hist_meta.get("since")) or datetime.datetime.now(
         datetime.timezone.utc)).date()
-    gcp_d = (t(hist_meta.get("gcp_horizon")) or since_d if
-             hist_meta.get("gcp_horizon") else since_d)
-    if hasattr(gcp_d, "date"):
-        gcp_d = gcp_d.date()
-    horizon = {"aws": since_d, "azure": since_d, "gcp": min(gcp_d, since_d)}
+
+    # How far back each cloud's record reaches, measured from what is actually
+    # held rather than assumed per vendor.
+    #
+    # This used to hardcode "AWS and Azure start when this log started",
+    # because their live feeds carry only open incidents. That was true of the
+    # feeds and false of the vendors: AWS publishes resolved events through the
+    # history endpoint behind its dashboard, and Azure through the API behind
+    # its history page. Both were found later, and the hardcoded assumption
+    # would have gone on drawing hatched "not recorded" cells over days that
+    # were, by then, perfectly well recorded.
+    #
+    # So the horizon is now derived: the oldest incident held for a cloud, or
+    # the day this log began if that is earlier. Add a new source and the
+    # strip extends on its own.
+    oldest = {}
+    for i in list(history.values()) + [dict(x, cloud=c)
+                                       for c, v in live.items() for x in v]:
+        c = i.get("cloud")
+        if c not in bad:
+            continue
+        b = (aws_begin if c == "aws" else t)(i.get("begin"))
+        if b and (c not in oldest or b.date() < oldest[c]):
+            oldest[c] = b.date()
+    horizon = {c: min(oldest.get(c, since_d), since_d) for c in ORDER}
 
     def mark(cloud, begin, end, inc):
         if not begin:
@@ -332,27 +350,25 @@ def timeline(history, live, hist_meta=None):
             # faintly so the starts stand out as the things that happened.
             started = any(startday.get(id(x)) == d for x in incs)
             kind = "bad" if started else "bad cont"
-            lead = "" if started else "ongoing — "
-            # A BUTTON that opens the day, not a link to a generic page.
+            # NOT `lead`: that name already holds the count of leading
+            # unrecorded days in this row, and assigning a string to it
+            # here made `90 - lead` a TypeError. It only surfaced when
+            # Azure gained its first marked cell -- the collapse path is
+            # the only place the count is read, and Azure was the only
+            # row that collapses.
+            pre = "" if started else "ongoing — "
+            # A BUTTON that opens the day, not a link straight out.
             #
-            # Every AWS incident carried the same href --
-            # health.aws.amazon.com/health/status -- so all twelve AWS bars
-            # went to the same place. That is not a parser bug: AWS's
-            # dashboard is a single-page app whose URL does not change when
-            # you open an event, so there is no per-incident address to link
-            # to. Checked by driving it in a browser: clicking a row in
-            # Service history leaves the URL untouched.
-            #
-            # Sending a reader there to hunt through a list is worse than
-            # showing them what is already held here -- the title, service,
-            # region, dates and the vendor's own last update. Google's
-            # incidents DO have their own pages, and the dialog links out to
-            # them; AWS's dialog says plainly that AWS publishes no such link.
+            # A cell can cover several incidents at once, and a link can only
+            # go to one of them -- so it opens a panel listing each, with the
+            # vendor's own text and a link per incident. All three publish a
+            # per-incident address: Google in its feed, Azure as aka.ms/AzPIR,
+            # and AWS via ?eventID=<arn> on its dashboard.
             ids = ",".join(str(inc_key(x)) for x in incs)
             cells += ('<button class="d %s" data-day="%s" data-inc="%s" '
                       'type="button" title="%s%s&#10;%s%s"></button>'
                       % (kind, d.isoformat(), e(ids), d.isoformat(), more,
-                         lead, e(titles)))
+                         pre, e(titles)))
         n = len(set(bad[c]) & dayset)
         starts = sum(1 for d in days
                      if any(startday.get(id(x)) == d for x in bad[c].get(d, [])))
@@ -380,18 +396,16 @@ def timeline(history, live, hist_meta=None):
            '<span><i class="d ok"></i>nothing reported</span>'
            '<span><i class="d unk"></i>not recorded</span>'
            '<span class="tl-tz">days are UTC</span></div>')
+    reach = ", ".join("%s to %s" % (LABEL[c], horizon[c].isoformat())
+                       for c in ORDER)
     note = ('<p class="note-sm">Days here are counted in <b>UTC</b>, while the '
             'vendors’ own dashboards show your local time — so an '
             'incident late in your evening can sit on the next day here than '
             'on theirs. Open a cell and it prints both. '
-            'A grey cell is a gap in the record, not a good '
-            'day. AWS and Azure publish only incidents that are open at the '
-            'moment you ask, so anything that started and finished before this '
-            'log began on %s is invisible to it and always will be — an '
-            'unmarked AWS or Azure day is not evidence of a quiet one. Google '
-            'publishes resolved incidents too, so its record reaches back to '
-            '%s.</p>'
-            % (e(since_d.isoformat()), e(gcp_d.isoformat())))
+            'A grey cell is a gap in the record, not a good day — it '
+            'means the vendor’s own history does not reach that far back, '
+            'not that nothing happened. Each record reaches to: %s.</p>'
+            % (e(reach)))
     return ('<div class="tl">%s</div>%s%s'
             '<script type="application/json" id="tl-data">%s</script>'
             % ("".join(out), key, note, incident_payload()))
