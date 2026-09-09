@@ -62,7 +62,13 @@ import region_map  # noqa: E402
 OUT = os.path.join(ROOT, "intelligence", "status", "regions.json")
 
 AWS_LIST = "https://ip-ranges.amazonaws.com/ip-ranges.json"
-AWS_NAMES = "https://raw.githubusercontent.com/jsonmaur/aws-regions/master/regions.json"
+# AWS names its own regions in its General Reference, one table of Name and
+# Code. This replaced a community-maintained JSON that was missing every
+# region added since it was last updated -- sixteen of forty-two had no
+# name at all, which on the map meant sixteen dots that could not say
+# where they were. A vendor page that lags is a vendor problem; a third
+# party that lags is a problem I chose.
+AWS_NAMES = "https://docs.aws.amazon.com/general/latest/gr/rande.html"
 GCP_LIST = "https://www.gstatic.com/ipranges/cloud.json"
 GCP_GEO = ("https://raw.githubusercontent.com/GoogleCloudPlatform/"
            "region-picker/main/data/regions.json")
@@ -188,8 +194,14 @@ def fetch_aws():
                     if p.get("region") and p["region"] != "GLOBAL"})
     names = {}
     try:
-        for r in json.loads(get(AWS_NAMES)):
-            names[r["code"]] = r.get("full_name") or r.get("name") or ""
+        html = get(AWS_NAMES)
+        for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
+            cells = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", c)).strip()
+                     for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.S)]
+            # Name first, Code second.
+            if len(cells) >= 2 and re.match(
+                    r"^[a-z]{2,4}(?:-[a-z]+)+-\d$", cells[1]):
+                names[cells[1]] = cells[0]
     except Exception:                                           # noqa: BLE001
         pass
     out = []
@@ -241,42 +253,72 @@ def fetch_gcp():
 
 
 def fetch_azure():
-    """Azure's own region filter, off its status page.
+    """Azure's regions, from its status filter AND its reliability docs.
 
-    This used to drive a headless browser, on the assumption the dropdown was
-    rendered client-side. It is not -- the <select> is in the HTML as served,
-    and the browser was reading the same bytes urllib gets. That mattered more
-    than it sounds: nothing in CI installs a browser, so the browser version
-    would have failed on every scheduled run and quietly kept serving whatever
-    list happened to be committed, while reporting itself refreshed.
+    The status page's <select> is in the HTML as served, so this needs no
+    browser -- which matters, because nothing in CI installs one and the
+    browser version would have failed on every scheduled run while reporting
+    itself refreshed.
+
+    It is also not a stable list. Fetched repeatedly within a minute the same
+    URL returned 74 options and then 76: Azure serves variants, and which one
+    you get is luck. India South Central (Hyderabad) was in this file because
+    one fetch happened to include it, and absent from the next fetch entirely.
+    A map that gains and loses a region depending on which copy of a page it
+    caught is not a map anyone should trust.
+
+    So the list is the union of two things Azure publishes:
+
+        the status filter    every region it will report incidents for,
+                             including the Jio, China and Government regions
+                             the docs do not cover
+        the reliability docs  a stable table carrying the physical city, the
+                             geography and whether the region has availability
+                             zones
+
+    Neither alone is complete and neither is a guess. Where they disagree
+    about existence, the region is included -- a region named by either arm of
+    Microsoft is a region -- and where only one carries detail, that detail is
+    used.
     """
+    detail = azure_detail()
+
+    out, seen = [], set()
+
+    def add(code, label, d):
+        key = (label or code).lower()
+        if key in seen:
+            return
+        seen.add(key)
+        xy = city_coord((d or {}).get("city") or "") or region_map.place(label)
+        out.append({
+            "cloud": "azure", "code": code, "name": label,
+            "city": (d or {}).get("city", ""),
+            # Azure publishes whether a region has zones, not how many, so
+            # this is a flag and never a count.
+            "country": one_country((d or {}).get("country", "")),
+            "zones": [], "az": (d or {}).get("az"),
+            "p": list(xy) if xy else None,
+        })
+
     html = get(AZURE_PAGE)
     sel = re.search(r'<select[^>]*id="wa-dropdown-history-region".*?</select>',
                     html, re.S)
     if not sel:
         raise RuntimeError("Azure's region dropdown is no longer in the page")
-    opts = re.findall(r'<option[^>]*value="([^"]*)"[^>]*>(.*?)</option>',
-                      sel.group(0), re.S)
-    detail = azure_detail()
-    out = []
-    for value, label in opts:
+    for value, label in re.findall(
+            r'<option[^>]*value="([^"]*)"[^>]*>(.*?)</option>', sel.group(0), re.S):
         label = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", label)).strip()
         # "Non-regional" is Azure's bucket for services with no region at all.
-        # Those are not places and do not belong on a map, so they are
-        # excluded rather than reported as regions that cannot be drawn.
+        # Those are not places and do not belong on a map.
         if value in ("all", "global") or "non-regional" in value:
             continue
-        d = detail.get(label) or {}
-        xy = city_coord(d.get("city") or "") or region_map.place(label)
-        out.append({
-            "cloud": "azure", "code": value, "name": label,
-            "city": d.get("city", ""),
-            "country": one_country(d.get("country", "")),
-            # Azure publishes whether a region has zones, not how many, so
-            # this is a flag and never a count.
-            "zones": [], "az": d.get("az"),
-            "p": list(xy) if xy else None,
-        })
+        add(value, label, detail.get(label))
+
+    # Anything the docs know about that the filter did not serve this time.
+    for label, d in sorted(detail.items()):
+        add(d.get("arm") or label, label, d)
+
     return out
 
 

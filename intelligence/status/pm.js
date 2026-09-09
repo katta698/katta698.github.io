@@ -771,6 +771,11 @@
       }
 
       var liveCount = placed.reduce(function (a, r) { return a + r.live_now.length; }, 0);
+      placed.forEach(function (r) {
+        r.keys = r.live.length
+          ? r.live.map(function (x) { return x.cloud + ':' + x.code; })
+          : r.regions;
+      });
       var dots = placed.map(function (r, i) {
         var xy = proj(r.p[0], r.p[1]);
         var rad = taken[i].r;
@@ -795,6 +800,7 @@
         var keys = r.live.length
           ? r.live.map(function (x) { return x.cloud + ':' + x.code; })
           : r.regions;
+        r.keys = keys;                 // the alert strip reuses these
         var name = (r.live[0] && r.live[0].name) || here.join(' · ');
         var label = here.join(' · ') + (r.n
           ? ' — ' + r.n + ' incident' + (r.n === 1 ? '' : 's') + ' in 90 days'
@@ -849,7 +855,9 @@
                (day ? 'daytime' : 'night') + '">' +
                (r.live_now.length
                  ? '<circle class="om-pulse" cx="' + xy[0].toFixed(1) + '" cy="' +
-                   xy[1].toFixed(1) + '" r="' + (rad + 4.2).toFixed(1) + '"/>'
+                   xy[1].toFixed(1) + '" r="' + (rad + 5).toFixed(1) + '"/>' +
+                   '<circle class="om-pulse om-pulse-b" cx="' + xy[0].toFixed(1) +
+                   '" cy="' + xy[1].toFixed(1) + '" r="' + (rad + 5).toFixed(1) + '"/>'
                  : '') +
                pie +
                // The bright ring is "something broke here in 90 days". Size
@@ -870,7 +878,34 @@
         return !only || r.cloud === only;
       }).length;
       var quiet = placed.filter(function (r) { return !r.n; }).length;
-      mapHost.innerHTML =
+      /* A strip above the map, when something is open.
+       *
+       * The pulse says where, but only once you are already looking at the
+       * map -- and the question "is anything broken right now" should be
+       * answerable before the reader has found anything. So the open ones
+       * are named in a row above the picture, each one a button that opens
+       * the same dialog the dot does. Nothing renders here when nothing is
+       * broken; an alarm that is always present is furniture.
+       */
+      var openPlaces = placed.filter(function (r) { return r.live_now.length; });
+      var banner = '';
+      if (openPlaces.length) {
+        banner = '<div class="om-alert" role="status"><b>' +
+          openPlaces.reduce(function (a, r) { return a + r.live_now.length; }, 0) +
+          ' open right now</b>' +
+          openPlaces.map(function (r) {
+            var label = (r.live[0] && r.live[0].city) ||
+                        (r.live[0] && r.live[0].name) || r.regions[0] || 'a region';
+            var who = Object.keys(r.by).sort()[0] ||
+                      (r.live_now[0] && r.live_now[0].cloud) || '';
+            return '<button type="button" class="om-jump" data-region="' +
+                   esc(r.keys.join('|')) + '">' +
+                   (who ? '<i class="' + esc(who) + '"></i>' : '') +
+                   esc(label) + '</button>';
+          }).join('') + '</div>';
+      }
+
+      mapHost.innerHTML = banner +
         '<svg class="om-svg" viewBox="0 0 ' + W + ' ' + H + '" role="img" ' +
         'aria-label="World map of every AWS, Azure and Google Cloud region, ' +
         'with the ones that have had incidents lit in their vendor colour">' +
@@ -971,6 +1006,26 @@
             'deliberately, because a list that silently shrank would look ' +
             'exactly like a complete one. '
           : '') +
+        /* How complete this is, in numbers.
+         *
+         * "Trust it" is not something a page can assert; it is something a
+         * reader decides after being told where the gaps are. So the
+         * coverage is counted here and printed, and it moves on its own as
+         * the vendors publish more.
+         */
+        (function () {
+          var f = footprint || [];
+          if (!f.length) return '';
+          var withCity = f.filter(function (r) { return r.city; }).length;
+          var withZone = f.filter(function (r) {
+            return (r.zones && r.zones.length) || r.az === true || r.az === false;
+          }).length;
+          return 'Of ' + f.length + ' regions, <b>' + withCity + '</b> carry a ' +
+                 'city their vendor states and <b>' + withZone + '</b> carry ' +
+                 'zone information. The rest are named but not described by ' +
+                 'the vendor — mostly the Jio, China and Government regions, ' +
+                 'which are documented separately from the public ones. ';
+        })() +
         'Positions are the cities the vendors themselves ' +
         'name for each region, not datacentres — several regions share one, ' +
         'so places with more than one region are drawn as a single light ' +
@@ -1065,9 +1120,11 @@
       });
     }
 
-    // Clicking a region opens what happened there.
+    // Clicking a region opens what happened there -- from the map, or from
+    // the alert strip above it, which carries the same keys.
     mapHost.addEventListener('click', function (ev) {
-      var g = ev.target.closest ? ev.target.closest('.om-dot') : null;
+      var jump = ev.target.closest ? ev.target.closest('.om-jump') : null;
+      var g = jump || (ev.target.closest ? ev.target.closest('.om-dot') : null);
       if (!g || !mapIdx) return;
       var keys = g.getAttribute('data-region').split('|');
       // The bare code, for matching against incident titles and the index,
