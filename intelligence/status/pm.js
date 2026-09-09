@@ -259,4 +259,22 @@
       .split(',').filter(Boolean).map(Number);
     openDay(cell.getAttribute('data-day'), idxs);
   });
+
+  /* Year filter for the write-up archive. Hides, never removes: the cards are
+   * all in the HTML so browser search still finds them, and with JavaScript
+   * off every year stays open rather than the section collapsing to nothing. */
+  var yrs = document.querySelector('.pm-yrs');
+  if (yrs) {
+    yrs.addEventListener('click', function (ev) {
+      var b = ev.target.closest ? ev.target.closest('.pm-yr') : null;
+      if (!b) return;
+      var want = b.getAttribute('data-yr');
+      [].forEach.call(yrs.querySelectorAll('.pm-yr'), function (x) {
+        x.classList.toggle('is-on', x === b);
+      });
+      [].forEach.call(document.querySelectorAll('.pm-year'), function (g) {
+        g.classList.toggle('is-hidden', g.getAttribute('data-yr') !== want);
+      });
+    });
+  }
 })();

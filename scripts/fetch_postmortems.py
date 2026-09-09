@@ -210,11 +210,16 @@ def parse_azure(limit=None):
     # ONE review -- so the write-ups section showed a single Azure entry while
     # the timeline beside it, which already used this API, carried thirty. The
     # same vendor, the same day, two different answers on one screen.
-    for n in range(1, 4):
+    # Page until empty. This read three pages because that was the number I
+    # happened to write; Azure publishes 82 reviews across nine.
+    for n in range(1, 26):
         try:
-            pages.append(get(AZURE_API % n))
+            body = get(AZURE_API % n)
         except Exception:                                       # noqa: BLE001
             break
+        if "incident-history-collapse-" not in body:
+            break
+        pages.append(body)
     if not pages:
         pages = [get(AZURE_HISTORY)]
 

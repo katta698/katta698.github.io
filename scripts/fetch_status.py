@@ -309,7 +309,7 @@ MONTHS_FULL = ("January February March April May June July August September "
                "October November December").split()
 
 
-def parse_azure_history(pages=3):
+def parse_azure_history(pages=25):
     """Azure's resolved incidents, from the API behind its history page.
 
     Azure's RSS feed carries items only while something is wrong, so the
@@ -321,6 +321,14 @@ def parse_azure_history(pages=3):
     The API was found the way the AWS one was: opening the history page,
     setting its date filter to "All", and watching what it fetched. It is
     paged, ten reviews to a page, and reaches back to 2024.
+
+    Paged until the API returns nothing, not to a fixed number. It was
+    capped at three pages -- thirty reviews -- which was a number I picked
+    and never checked. There are 82, across nine pages, reaching back to
+    2021: the page was showing 6 reviews for 2024 where Azure publishes 15,
+    and that reads as editorial selection when it is nothing but a truncation.
+    The ceiling of 25 exists only so a change at Microsoft's end cannot spin
+    this forever.
 
     Times come from the PIR text where Azure states them -- it opens nearly
     every review with "Between 14:44 and 19:41 UTC on 23 July 2026" -- and

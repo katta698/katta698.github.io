@@ -31,6 +31,7 @@ able to block one by default.
 import argparse
 import concurrent.futures
 import io
+import json
 import os
 import re
 import ssl
@@ -125,6 +126,36 @@ def main():
         pages.sort()
 
     found, bad = {}, []
+
+    # URLs that never appear in the HTML.
+    #
+    # The status page injects incident and write-up links from JSON at click
+    # time, so 45 vendor addresses were invisible to a checker that only reads
+    # anchors -- including the Azure ones that turned out to point at a
+    # feedback survey rather than the incident. Those are exactly the links
+    # this site's claims rest on, and they were the only ones not being
+    # checked.
+    for rel in ("intelligence/postmortems.json", "intelligence/status.json",
+                "intelligence/status-history.json"):
+        p = os.path.join(ROOT, rel)
+        if not os.path.exists(p):
+            continue
+        try:
+            blob = json.load(io.open(p, encoding="utf-8"))
+        except ValueError:
+            continue
+        rows = (blob.get("postmortems") or [])
+        rows += list((blob.get("incidents") or {}).values())
+        for v in (blob.get("clouds") or {}).values():
+            rows += v
+        for r in rows:
+            u = (r or {}).get("url") or ""
+            if u.startswith(("http://", "https://")):
+                found.setdefault(u, set()).add(rel)
+                why = structural(u)
+                if why:
+                    bad.append((u, rel, why))
+
     for rel in pages:
         p = os.path.join(ROOT, rel)
         if not os.path.exists(p):

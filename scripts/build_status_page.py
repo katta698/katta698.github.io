@@ -697,8 +697,27 @@ def postmortems(cssv="1"):
     def yr_key(y):
         return (0, 0) if y == "Undated" else (1, int(y))
 
+    # A YEAR AT A TIME, not all forty-five at once.
+    #
+    # The wall was 18.7 KB of a 90.8 KB page and ran for several screens --
+    # an archive that a reader scrolls past to reach the sources table. It is
+    # reference material: worth keeping complete, not worth spending a fifth
+    # of the page on by default.
+    #
+    # So the years become chips with counts, and only the selected year's
+    # cards render. Every write-up is still in the HTML, so it is still
+    # findable with the browser's own search and still there with JavaScript
+    # off -- the filtering hides, it does not omit.
+    years = sorted(by_year, key=yr_key, reverse=True)
+    newest = years[0] if years else ""
+    chips = "".join(
+        '<button class="pm-yr%s" data-yr="%s" type="button">%s '
+        '<span class="pm-yn">%d</span></button>'
+        % (" is-on" if y == newest else "", e(y), e(y), len(by_year[y]))
+        for y in years)
+
     out = ""
-    for y in sorted(by_year, key=yr_key, reverse=True):
+    for y in years:
         items = sorted(by_year[y], key=lambda r: r.get("date") or "", reverse=True)
         cards = ""
         hook_by_id = {h["id"]: h for h in hooks()}
@@ -727,8 +746,9 @@ def postmortems(cssv="1"):
                 % (e(r.get("cloud", "")), e(key),
                    e(LABEL.get(r.get("cloud"), r.get("cloud", ""))),
                    e(r.get("title", ""))[:150], quote, e(shape)))
-        out += ('<div class="pm-year"><div class="pm-y">%s</div>'
-                '<div class="pm-cards">%s</div></div>' % (e(y), cards))
+        out += ('<div class="pm-year%s" data-yr="%s"><div class="pm-y">%s</div>'
+                '<div class="pm-cards">%s</div></div>'
+                % ("" if y == newest else " is-hidden", e(y), e(y), cards))
 
     counts = {}
     for r in rows:
@@ -739,13 +759,29 @@ def postmortems(cssv="1"):
     # history page shows one review at a time, so this grows only as new ones
     # appear. Left unexplained, "Microsoft 1" next to "AWS 18" reads as a claim
     # about reliability instead of a fact about a scraper's starting date.
+    # Say what is NOT here. The archive holds fewer reviews than the timeline
+    # holds incidents, because a card that opens onto nothing is worse than no
+    # card -- but "fewer" without a reason reads as editorial selection, which
+    # is the one thing this page must never be doing quietly.
+    try:
+        _hist = json.load(io.open(HISTORY, encoding="utf-8")).get("incidents", {})
+        _held = sum(1 for v in _hist.values() if v.get("cloud"))
+    except Exception:                                           # noqa: BLE001
+        _held = 0
+    gap = max(0, _held - len(rows))
+    omitted = ('Another %d incident%s in the timeline above %s no write-up '
+               'with the sections the vendor names, so %s not carded here '
+               '— nothing is left out for being minor. '
+               % (gap, "" if gap == 1 else "s",
+                  "has" if gap == 1 else "have",
+                  "it is" if gap == 1 else "they are")) if gap else ""
+
     note = ('<p class="note-sm">Every word in these is the vendor’s own, '
             'quoted whole and linked back — nothing here is summarised or '
             'rewritten. Holding %s. AWS keeps a permanent index of its '
             'post-event summaries, which is why its record reaches back to '
             '2011. Azure publishes one review at a time and retains the rest '
-            'behind its own navigation, so that count grows from the day this '
-            'started rather than reaching backwards.</p>' % e(tally))
+            'behind its own navigation. %s</p>' % (e(tally), omitted))
 
     dialog = (
         '<dialog id="pm-dialog" aria-labelledby="pm-title">'
@@ -762,9 +798,10 @@ def postmortems(cssv="1"):
     # there is nothing on screen telling you whose words those are, which on a
     # page whose whole argument is "these are their words, not mine" is the
     # one sentence that cannot be filed at the bottom.
-    return ('<div class="pm">%s</div>%s%s'
+    return ('<div class="pm-yrs">%s</div>'
+            '<div class="pm">%s</div>%s%s'
             '<script src="/intelligence/status/pm.js?v=%s" defer></script>'
-            % (out, note, dialog, e(cssv)))
+            % (chips, out, note, dialog, e(cssv)))
 
 
 def cadence():
