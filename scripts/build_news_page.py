@@ -233,9 +233,22 @@ document.documentElement.setAttribute('data-palette',p);})();
      above a cream page, and moving between sections looked like moving
      between sites. Derived from --bg the same way blog.css derives --nav-bg
      from --surface, so it tracks the daily palette too. */
-  nav{background:rgba(29,35,34,.94);
-      background:color-mix(in srgb, var(--bg) 94%, transparent);
+  /* Opaque by default. At 94% the remaining 6% let the page scroll THROUGH
+     the sticky bar -- headings and links slid across it and stayed perfectly
+     sharp, because unlike blog.css and status.css this rule never had a
+     backdrop-filter to blur what showed through. Translucency without a blur
+     is not a soft edge, it is just a bug.
+     The frosted look is restored only where the blur actually works, so a
+     browser without backdrop-filter gets a solid bar rather than a
+     see-through one. */
+  nav{background:rgb(29,35,34);
+      background:var(--bg);
       color:var(--text);border-bottom:1px solid var(--border)}
+  @supports ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+    nav{background:color-mix(in srgb, var(--bg) 88%, transparent);
+        -webkit-backdrop-filter:saturate(180%) blur(10px);
+        backdrop-filter:saturate(180%) blur(10px)}
+  }
   .nav-logo{color:var(--text)}
   .nav-links a{color:var(--text-muted)}
   .nav-links a:hover{color:var(--accent)}
