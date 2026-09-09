@@ -70,10 +70,24 @@ STALE_MINUTES = 150
 
 
 def t(s):
+    """Parse a timestamp, always in UTC.
+
+    A bare date -- "2024-03-15", which is what Google's product history gives
+    -- parses to a NAIVE datetime, and subtracting one of those from an
+    aware one raises. That surfaced the moment 794 date-only incidents
+    arrived: the build died, and because the failure came before the summary
+    line, a tail of the output still looked like a successful run.
+
+    Everything else here is UTC, so a naive value is assumed to be UTC rather
+    than rejected. The alternative -- dropping date-only incidents -- would
+    discard the entire Google archive to avoid an assumption that is true of
+    every source feeding this page.
+    """
     try:
-        return datetime.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        d = datetime.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
     except Exception:                                          # noqa: BLE001
         return None
+    return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
 
 
 def since(dt):
@@ -1160,6 +1174,7 @@ def main():
     EXTRA = {
         "aws_history": ("AWS", "service history"),
         "azure_history": ("Azure", "status history"),
+        "gcp_history": ("Google Cloud", "product history"),
     }
     src = ""
     for key in list(ORDER) + [k for k in sources if k not in ORDER]:

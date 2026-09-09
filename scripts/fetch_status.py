@@ -58,6 +58,7 @@ ROOT = os.path.dirname(HERE)
 OUT = os.path.join(ROOT, "intelligence", "status.json")
 HISTORY = os.path.join(ROOT, "intelligence", "status-history.json")
 RUNS = os.path.join(ROOT, "intelligence", "status-runs.json")
+GCP_HIST = os.path.join(ROOT, "intelligence", "gcp-history.json")
 
 SOURCES = {
     "aws":   ("AWS Health Dashboard", "https://status.aws.amazon.com/data.json"),
@@ -485,7 +486,18 @@ def merge_history(past_by_cloud):
                 # rewrite. Keeping the first copy forever meant every stored
                 # incident was stuck with whatever the parser did on the day
                 # it was captured.
-                items[key].update(dict(r, cloud=cloud))
+                # Refresh, but never overwrite something with nothing.
+                #
+                # Merging blindly let the Google product-history rows -- which
+                # carry a date and a title and nothing else -- flatten the
+                # richer records from incidents.json for the same incident:
+                # end times, per-day spans and update text all replaced by
+                # empty strings. The timeline fell from 20 marked days to 4,
+                # which looked like Google having a quieter quarter and was
+                # this function throwing data away.
+                fresh = {k: v for k, v in dict(r, cloud=cloud).items()
+                         if v not in ("", None, [], {})}
+                items[key].update(fresh)
     hist["incidents"] = items
     hist["updated"] = stamp()
     # The oldest incident Google's feed still carries. Days before it are
@@ -585,7 +597,10 @@ def main():
     try:
         hraw, _ = get(AWS_HISTORY)
         hist_aws = parse_aws_history(hraw)
-        past["aws"] = (past.get("aws") or []) + hist_aws
+        # History FIRST: the live feed is more precise, and whatever is
+        # merged last wins. An archive row carries a date; the feed
+        # carries a timestamp.
+        past["aws"] = hist_aws + (past.get("aws") or [])
         sources["aws_history"] = {
             "name": "AWS service history", "url": AWS_HISTORY, "ok": True,
             "count": len(hist_aws), "fetched": stamp(),
@@ -600,7 +615,7 @@ def main():
     # Azure resolved incidents, from the API behind its history page.
     try:
         hist_az = parse_azure_history()
-        past["azure"] = (past.get("azure") or []) + hist_az
+        past["azure"] = hist_az + (past.get("azure") or [])
         sources["azure_history"] = {
             "name": "Azure status history", "url": AZURE_HISTORY % 1, "ok": True,
             "count": len(hist_az), "fetched": stamp(),
@@ -611,6 +626,29 @@ def main():
             "ok": False, "error": str(exc)[:200], "attempted": stamp(),
         }
         print("  az-hist FETCH FAILED: %s" % str(exc)[:60])
+
+    # Google's older incidents, read from the file rather than refetched.
+    #
+    # fetch_gcp_history.py reads 212 product pages, which is a fine thing to do
+    # once a day and a silly thing to do every hour for an archive that changes
+    # weekly. So it runs on its own schedule and writes gcp-history.json, and
+    # this merges whatever is there. A missing file is not an error -- it means
+    # the archive has not been built yet, and the page already says how far
+    # each cloud's record reaches.
+    if os.path.exists(GCP_HIST):
+        try:
+            gh = json.load(io.open(GCP_HIST, encoding="utf-8"))
+            rows = gh.get("incidents") or []
+            past["gcp"] = rows + (past.get("gcp") or [])
+            sources["gcp_history"] = {
+                "name": "Google Cloud product history", "url": gh.get("source", ""),
+                "ok": True, "count": len(rows), "fetched": gh.get("updated", ""),
+            }
+        except ValueError as exc:
+            sources["gcp_history"] = {
+                "name": "Google Cloud product history", "url": "", "ok": False,
+                "error": str(exc)[:200], "attempted": stamp(),
+            }
 
     added, total = (0, 0) if args.dry_run else merge_history(past)
     if not args.dry_run:
