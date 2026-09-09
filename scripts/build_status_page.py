@@ -28,6 +28,7 @@ import os
 import re
 
 from feedback_star import star_html  # noqa: E402
+from back_to_top import TOP_HTML, TOP_JS  # noqa: E402
 
 import statistics
 import sys
@@ -891,6 +892,7 @@ applyTheme(localStorage.getItem("theme") !== "light");
 </script>
 <script src="/blog/assets/site-footer.js" data-site-footer></script>
 __STAR__
+__TOP__
 </body></html>
 """
 
@@ -970,7 +972,8 @@ def main():
                 .replace("__CADENCE__", cadence())
                 .replace("__STATS__", stats)
                 .replace("__SRC__", src)
-                .replace("__STAR__", star_html("intelligence-status")))
+                .replace("__STAR__", star_html("intelligence-status"))
+                .replace("__TOP__", TOP_HTML + TOP_JS))
 
     os.makedirs(OUT_DIR, exist_ok=True)
     io.open(os.path.join(OUT_DIR, "index.html"), "w",

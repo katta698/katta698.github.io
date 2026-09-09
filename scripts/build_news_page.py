@@ -34,6 +34,7 @@ if SCRIPTS not in sys.path:
 import news_store as store          # noqa: E402
 import news_tag                     # noqa: E402
 from feedback_star import star_html, STAR_CSS  # noqa: E402
+from back_to_top import TOP_HTML, TOP_CSS, TOP_JS  # noqa: E402
 
 OUT_DIR = os.path.join(ROOT, "intelligence", "whats-new")
 JSON_OUT = os.path.join(ROOT, "intelligence", "news.json")
@@ -477,6 +478,26 @@ a:active,button:active{opacity:.72}
   .fb-overlay{padding:.75rem}
   .fb-modal{width:100%}
 }
+
+/* Back to top. Copied from blog.css because the status page does not load it,
+   with a literal fallback on every var() -- --orange, --ink and --shadow-md
+   are undefined here, and an undefined token takes the whole declaration with
+   it rather than falling back. */
+.back-top{position:fixed;bottom:1.5rem;left:1.5rem;right:auto;
+  width:40px;height:40px;border-radius:50%;
+  background:var(--orange, var(--acc, #C4A484));
+  color:var(--ink, #1D2322);
+  border:none;cursor:pointer;display:flex;align-items:center;
+  justify-content:center;opacity:0;transform:translateY(8px);
+  transition:opacity .2s, transform .2s;
+  box-shadow:var(--shadow-md, 0 4px 16px rgba(0,0,0,.28));
+  font-size:1rem;line-height:1;z-index:200;
+  pointer-events:none}
+.back-top.show{opacity:1;transform:translateY(0);pointer-events:auto}
+.back-top:hover,.back-top:focus-visible{filter:brightness(1.06)}
+@media (prefers-reduced-motion:reduce){
+  .back-top{transition:none}
+}
 </style>
 </head>
 <body>
@@ -770,6 +791,7 @@ fetch('/intelligence/news.json').then(function(r){return r.json();}).then(functi
 </script>
 <script src="/blog/assets/site-footer.js?v=__JSV__" data-site-footer></script>
 __STAR__
+__TOP__
 </body>
 </html>
 """
@@ -822,6 +844,7 @@ def build():
                 .replace("__COUNT__", str(len(rows)))
                 .replace("__NOTE__", note)
                 .replace("__STAR__", star_html("intelligence-whats-new"))
+                .replace("__TOP__", TOP_HTML + TOP_JS)
                 .replace("__JSV__", jsv))
     io.open(os.path.join(OUT_DIR, "index.html"), "w",
             encoding="utf-8", newline="\n").write(html)
