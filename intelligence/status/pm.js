@@ -260,90 +260,95 @@
     openDay(cell.getAttribute('data-day'), idxs);
   });
 
-  /* Filters for the write-up archive: year and cloud, combined.
+  /* The archive: every incident held, filtered by year and cloud.
    *
-   * Counts on the chips are RECOMPUTED against the other filter, so each one
-   * says how many cards clicking it would actually show. They used to be
-   * fixed totals, which meant "AWS 18" sat beside a selected 2026 in which
-   * AWS published nothing -- a chip advertising eighteen results and
-   * delivering an empty section. A count that does not describe its own click
-   * is decoration.
-   *
-   * Hides, never removes: every card stays in the HTML, so browser search
-   * still finds them and the section still works with JavaScript off.
+   * Rendered here rather than baked into the page: 922 cards is roughly
+   * 200 KB of markup against a 108 KB page. The index is the same file the
+   * timeline is built from, which is the whole point -- the two used to read
+   * different stores and disagreed about 2022 by 210 incidents.
    */
   var yrs = document.querySelector('.pm-yrs');
   var cls = document.querySelector('.pm-cls');
-  if (yrs) {
-    var onYear = yrs.querySelector('.pm-yr.is-on');
-    var curYear = onYear ? onYear.getAttribute('data-yr') : 'all';
+  var list = document.getElementById('pm-list');
+  if (yrs && list) {
+    var all = null, pending = null, writeups = null;
+    var onY = yrs.querySelector('.pm-yr.is-on');
+    var curYear = onY ? onY.getAttribute('data-yr') : 'all';
     var curCloud = 'all';
 
-    var cards = [].slice.call(document.querySelectorAll('.pm-card'));
-    var groups = [].slice.call(document.querySelectorAll('.pm-year'));
+    var VEND = { aws: 'AWS', azure: 'Microsoft', gcp: 'Google' };
+    var NAME = { aws: 'AWS', azure: 'Azure', gcp: 'Google Cloud' };
 
-    function cloudOf(c) {
-      return c.classList.contains('aws') ? 'aws'
-           : c.classList.contains('azure') ? 'azure'
-           : c.classList.contains('gcp') ? 'gcp' : '';
+    function index() {
+      if (all) return Promise.resolve(all);
+      if (pending) return pending;
+      pending = fetch('/intelligence/timeline-index.json', { cache: 'no-cache' })
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (j) { all = j.incidents || []; return all; });
+      return pending;
     }
-    function yearOf(c) {
-      var g = c.closest('.pm-year');
-      return g ? g.getAttribute('data-yr') : '';
+
+    function yearOf(r) { return (r.b || '').slice(0, 4) || 'Undated'; }
+
+    function matches(r) {
+      return (curYear === 'all' || yearOf(r) === curYear) &&
+             (curCloud === 'all' || r.c === curCloud);
     }
 
-    function apply() {
-      var total = 0;
-      groups.forEach(function (g) {
-        var shown = 0;
-        [].forEach.call(g.querySelectorAll('.pm-card'), function (c) {
-          var ok = (curYear === 'all' || yearOf(c) === curYear) &&
-                   (curCloud === 'all' || cloudOf(c) === curCloud);
-          c.classList.toggle('is-hidden', !ok);
-          if (ok) shown++;
-        });
-        g.classList.toggle('is-hidden', shown === 0);
-        total += shown;
-      });
-
-      // Year chips count within the chosen cloud; cloud chips count within
-      // the chosen year. Each number is what that click would give you.
+    function counts() {
+      if (!all) return;
       [].forEach.call(yrs.querySelectorAll('.pm-yr'), function (b) {
         var y = b.getAttribute('data-yr');
-        var n = cards.filter(function (c) {
-          return (y === 'all' || yearOf(c) === y) &&
-                 (curCloud === 'all' || cloudOf(c) === curCloud);
+        var n = all.filter(function (r) {
+          return (y === 'all' || yearOf(r) === y) &&
+                 (curCloud === 'all' || r.c === curCloud);
         }).length;
-        var span = b.querySelector('.pm-yn');
-        if (span) span.textContent = n;
+        var sp = b.querySelector('.pm-yn'); if (sp) sp.textContent = n;
         b.classList.toggle('is-empty', n === 0);
       });
-      if (cls) {
-        [].forEach.call(cls.querySelectorAll('.pm-cl'), function (b) {
-          var cl = b.getAttribute('data-cl');
-          var n = cards.filter(function (c) {
-            return (curYear === 'all' || yearOf(c) === curYear) &&
-                   (cl === 'all' || cloudOf(c) === cl);
-          }).length;
-          var span = b.querySelector('.pm-yn');
-          if (span) span.textContent = n;
-          b.classList.toggle('is-empty', n === 0);
-        });
-      }
+      if (!cls) return;
+      [].forEach.call(cls.querySelectorAll('.pm-cl'), function (b) {
+        var c = b.getAttribute('data-cl');
+        var n = all.filter(function (r) {
+          return (curYear === 'all' || yearOf(r) === curYear) &&
+                 (c === 'all' || r.c === c);
+        }).length;
+        var sp = b.querySelector('.pm-yn'); if (sp) sp.textContent = n;
+        b.classList.toggle('is-empty', n === 0);
+      });
+    }
 
+    // A single year can hold 350 incidents. Rendering all of them is the wall
+    // this section was rebuilt to avoid, so it pages.
+    var PAGE = 60, shownCount = PAGE;
+
+    function render() {
+      var rows = all.filter(matches);
       var none = document.querySelector('.pm-none');
       if (none) {
-        var cn = curCloud === 'all' ? '' :
-          ((cls.querySelector('.pm-cl.is-on') || {}).textContent || '')
-            .replace(/\s*\d+\s*$/, '').trim();
-        var yn = curYear === 'all' ? 'any year' : curYear;
-        none.hidden = total !== 0;
-        none.textContent = total === 0
-          ? (cn ? cn + ' published no write-up dated ' + yn + '.'
-                : 'Nothing dated ' + yn + '.')
-          : '';
+        none.hidden = rows.length !== 0;
+        none.textContent = rows.length ? '' :
+          ((curCloud === 'all' ? 'Nothing' : NAME[curCloud] + ' has nothing') +
+           ' recorded for ' + (curYear === 'all' ? 'any year' : curYear) + '.');
       }
+      var html = rows.slice(0, shownCount).map(function (r) {
+        return '<button class="pm-card ' + esc(r.c) + '" data-inc-id="' +
+          esc(r.c + '|' + (r.i || '')) + '" type="button">' +
+          '<span class="pm-c-cloud">' + esc(NAME[r.c] || r.c) + '</span>' +
+          '<span class="pm-c-title">' + esc(r.t) + '</span>' +
+          '<span class="pm-c-shape">' + esc(r.b || 'undated') +
+          (r.w ? ' · write-up' : '') + '</span></button>';
+      }).join('');
+      if (rows.length > shownCount) {
+        html += '<button class="pm-more" type="button">Show ' +
+                Math.min(PAGE, rows.length - shownCount) + ' more of ' +
+                (rows.length - shownCount) + '</button>';
+      }
+      list.innerHTML = html;
+      counts();
     }
+
+    function refresh() { shownCount = PAGE; index().then(render); }
 
     yrs.addEventListener('click', function (ev) {
       var b = ev.target.closest ? ev.target.closest('.pm-yr') : null;
@@ -352,7 +357,7 @@
       [].forEach.call(yrs.querySelectorAll('.pm-yr'), function (x) {
         x.classList.toggle('is-on', x === b);
       });
-      apply();
+      refresh();
     });
 
     if (cls) {
@@ -363,151 +368,83 @@
         [].forEach.call(cls.querySelectorAll('.pm-cl'), function (x) {
           x.classList.toggle('is-on', x === b);
         });
-        apply();
+        refresh();
       });
     }
 
-    apply();
-  }
-
-  /* Year views for the timeline.
-   *
-   * The strip covers 90 days, which answers "is anything broken now" and not
-   * "what broke this year" -- a question the store could already answer from
-   * 904 incidents back to 2021 while the page could not.
-   *
-   * The index is a separate fetch because it is ~200 KB against a ~110 KB
-   * page: embedding it would double every visit for a view most readers never
-   * open. Fetched once, on the first year clicked, and reused after.
-   *
-   * Cells behave exactly like the 90-day ones -- click opens the day -- so
-   * there is one interaction to learn, not two.
-   */
-  var winBar = document.querySelector('.tl-win');
-  if (winBar) {
-    var idx = null, idxPending = null;
-    var tl = document.querySelector('.tl');
-    var saved90 = null;
-
-    function loadIndex() {
-      if (idx) return Promise.resolve(idx);
-      if (idxPending) return idxPending;
-      idxPending = fetch('/intelligence/timeline-index.json', { cache: 'no-cache' })
-        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-        .then(function (j) { idx = j; return j; });
-      return idxPending;
-    }
-
-    var CLOUDS = [['aws', 'AWS'], ['azure', 'Azure'], ['gcp', 'Google Cloud']];
-
-    function days(year) {
-      var out = [], d = new Date(Date.UTC(+year, 0, 1));
-      var end = new Date(Date.UTC(+year, 11, 31));
-      var today = new Date();
-      if (end > today) end = today;
-      while (d <= end) {
-        out.push(d.toISOString().slice(0, 10));
-        d = new Date(d.getTime() + 86400000);
+    list.addEventListener('click', function (ev) {
+      if (ev.target.classList && ev.target.classList.contains('pm-more')) {
+        shownCount += PAGE;
+        render();
       }
-      return out;
-    }
+    });
 
-    function renderYear(year) {
-      var list = days(year);
-      var byDay = {};
-      idx.incidents.forEach(function (r) {
-        if (!r.b) return;
-        var start = r.b, stop = r.e || list[list.length - 1];
-        if (stop < list[0] || start > list[list.length - 1]) return;
-        // Walk the span, clipped to this year.
-        var d = start < list[0] ? list[0] : start;
-        var guard = 0;
-        while (d <= stop && d <= list[list.length - 1] && guard++ < 400) {
-          (byDay[d] = byDay[d] || []).push(r);
-          var n = new Date(d + 'T00:00:00Z');
-          d = new Date(n.getTime() + 86400000).toISOString().slice(0, 10);
-        }
-      });
+    /* Opening a card shows the vendor's full text when there is one, and the
+     * record itself when there is not. Which of the two it is gets said out
+     * loud: "they wrote four thousand words about this" and "they logged a
+     * line" are different facts, and a reader choosing what to open deserves
+     * to know which they are getting. */
+    document.addEventListener('click', function (ev) {
+      var card = ev.target.closest ? ev.target.closest('[data-inc-id]') : null;
+      if (!card) return;
+      ev.preventDefault();
+      var parts = card.getAttribute('data-inc-id').split('|');
+      var cloud = parts[0], id = parts.slice(1).join('|');
+      var rec = (all || []).filter(function (r) {
+        return r.c === cloud && (r.i || '') === id;
+      })[0];
+      if (!rec) return;
 
-      var html = '';
-      CLOUDS.forEach(function (pair) {
-        var cl = pair[0], label = pair[1], cells = '', began = 0, marked = 0;
-        list.forEach(function (day) {
-          var here = (byDay[day] || []).filter(function (r) { return r.c === cl; });
-          if (!here.length) {
-            cells += '<i class="d ok" title="' + day + ' — nothing reported"></i>';
-            return;
-          }
-          marked++;
-          var starts = here.filter(function (r) { return r.b === day; });
-          if (starts.length) began++;
-          var titles = here.map(function (r) { return r.t; }).join(' | ');
-          cells += '<button class="d ' + (starts.length ? 'bad' : 'bad cont') +
-                   '" data-day="' + day + '" data-y="' + year + '" data-c="' + cl +
-                   '" type="button" title="' + esc(day) + '&#10;' + esc(titles.slice(0, 180)) + '"></button>';
-        });
-        html += '<div class="tl-row"><div class="tl-n">' + label + '</div>' +
-                '<div class="tl-cells">' + cells + '</div>' +
-                '<div class="tl-s" title="' + began + ' began in ' + year + '">' +
-                marked + ' of ' + list.length + '</div></div>';
-      });
-      tl.innerHTML = html;
-      tl.classList.add('is-year');
-    }
-
-    function showDay(day, cloud) {
-      var here = idx.incidents.filter(function (r) {
-        return r.c === cloud && r.b <= day && (r.e || '9999') >= day;
-      });
-      var began = here.filter(function (r) { return r.b === day; }).length;
-      var head = began ? began + (began === 1 ? ' incident began' : ' incidents began') +
-                         ' on this day' : 'Nothing began on this day';
-      if (here.length - began) head += ' · ' + (here.length - began) + ' already running';
-      var v = { aws: 'AWS', azure: 'Microsoft', gcp: 'Google' }[cloud] || cloud;
-      var html = '<p class="pm-meta"><span class="pm-date">' + esc(day) + '</span></p>' +
-                 '<h3 id="pm-title">' + esc(head) + '</h3>';
-      here.sort(function (a, b) { return (b.b === day) - (a.b === day); });
-      here.forEach(function (r) {
-        html += '<section class="pm-sec">' +
-          '<h4><span class="chip ' + esc(r.c) + '">' + esc(v) + '</span></h4>' +
-          '<p><strong>' + esc(r.t) + '</strong></p>' +
-          '<p class="pm-shape">' + (r.b === day ? 'Began ' : 'Already running — began ') +
-          esc(r.b) + (r.e ? ' · ended ' + esc(r.e) : ' · still open') + '</p>' +
-          (r.u ? '<p class="pm-src"><a href="' + esc(r.u) + '" target="_blank" rel="noopener">Read it on ' + esc(v) + '’s site →</a></p>' : '') +
-          '</section>';
-      });
-      body.innerHTML = html;
-      body.scrollTop = 0;
+      lastFocus = document.activeElement;
+      body.innerHTML = '<p class="pm-loading">Loading…</p>';
       if (typeof dlg.showModal === 'function') dlg.showModal();
       else dlg.setAttribute('open', '');
-    }
 
-    winBar.addEventListener('click', function (ev) {
-      var b = ev.target.closest ? ev.target.closest('.tl-w') : null;
-      if (!b) return;
-      var want = b.getAttribute('data-win');
-      [].forEach.call(winBar.querySelectorAll('.tl-w'), function (x) {
-        x.classList.toggle('is-on', x === b);
-      });
-      if (want === '90') {
-        if (saved90 !== null) tl.innerHTML = saved90;
-        tl.classList.remove('is-year');
+      var v = VEND[cloud] || cloud;
+
+      function shell(inner) {
+        body.innerHTML =
+          '<p class="pm-meta"><span class="chip ' + esc(cloud) + '">' +
+          esc(NAME[cloud]) + '</span><span class="pm-date">' +
+          esc(rec.b || 'date not stated') + '</span></p>' +
+          '<h3 id="pm-title">' + esc(rec.t) + '</h3>' + inner +
+          (rec.u ? '<p class="pm-src"><a href="' + esc(rec.u) +
+                   '" target="_blank" rel="noopener">Read it on ' + esc(v) +
+                   '’s site →</a></p>' : '');
+        body.scrollTop = 0;
+      }
+
+      if (!rec.w) {
+        shell('<p class="pm-shape">' + esc(v) +
+              ' published no write-up for this one. What is recorded: it ran ' +
+              esc(rec.b || 'on an unstated date') +
+              (rec.e && rec.e !== rec.b ? ' to ' + esc(rec.e) : '') + '.</p>');
         return;
       }
-      if (saved90 === null) saved90 = tl.innerHTML;   // keep the server-rendered 90 days
-      tl.innerHTML = '<p class="pm-loading">Loading ' + esc(want) + '…</p>';
-      loadIndex().then(function () { renderYear(want); })
-                 .catch(function (e) {
-                   tl.innerHTML = '<p class="pm-loading">Could not load the year view (' +
-                                  esc(e.message) + ').</p>';
-                 });
+
+      (writeups ? Promise.resolve(writeups)
+                : fetch('/intelligence/postmortems.json', { cache: 'no-cache' })
+                    .then(function (r) { return r.json(); })
+                    .then(function (j) { writeups = j.postmortems || []; return writeups; })
+      ).then(function (ws) {
+        var w = ws.filter(function (x) {
+          return x.cloud === cloud && x.id === id;
+        })[0];
+        if (!w) { shell(''); return; }
+        var main = (w.sections && w.sections.length)
+          ? w.sections.map(function (sec) {
+              return '<section class="pm-sec"><h4>' + esc(sec.heading) + '</h4>' +
+                     paras(sec.text) + '</section>';
+            }).join('')
+          : '<p class="pm-shape">Published as a narrative summary, with no ' +
+            'headings of its own.</p>' + paras(w.body);
+        shell(main);
+      }).catch(function (e) {
+        shell('<p class="pm-shape">Could not load the write-up (' +
+              esc(e.message) + ').</p>');
+      });
     });
 
-    document.addEventListener('click', function (ev) {
-      var c = ev.target.closest ? ev.target.closest('.d[data-y]') : null;
-      if (!c) return;
-      ev.preventDefault();
-      showDay(c.getAttribute('data-day'), c.getAttribute('data-c'));
-    });
+    refresh();
   }
 })();

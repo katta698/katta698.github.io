@@ -251,6 +251,7 @@ def write_timeline_index(history, live):
         seen.add(key)
         rows.append({
             "c": cloud,
+            "i": i.get("id") or "",
             "b": b.date().isoformat(),
             # An open incident has no end. Null rather than today's date, so a
             # strip drawn tomorrow does not quietly claim it ended yesterday.
@@ -258,8 +259,42 @@ def write_timeline_index(history, live):
             "t": (i.get("title") or "")[:110],
             "u": i.get("url") or "",
         })
-    rows.sort(key=lambda r: r["b"], reverse=True)
-    years = sorted({r["b"][:4] for r in rows}, reverse=True)
+    # Flag the ones with a published write-up, and add write-ups that have no
+    # incident record at all.
+    #
+    # These were two separate stores feeding two separate views: the timeline
+    # from status-history.json and the archive from postmortems.json. So the
+    # timeline showed 210 Google incidents in 2022 and the archive showed
+    # none, on the same page, for the same year. Same question, two answers.
+    #
+    # AWS's older post-event summaries are the reason for the second half:
+    # they describe outages from 2011 onwards that its incident feed, which
+    # starts in 2025, has no record of. Dropping them to keep one clean key
+    # would lose the oldest material on the page.
+    pm_path = os.path.join(ROOT, "intelligence", "postmortems.json")
+    have = {}
+    if os.path.exists(pm_path):
+        try:
+            for w in (json.load(io.open(pm_path, encoding="utf-8"))
+                      .get("postmortems") or []):
+                have[(w.get("cloud"), w.get("id"))] = w
+        except ValueError:
+            have = {}
+
+    for r in rows:
+        if (r["c"], r["i"]) in have:
+            r["w"] = 1
+            have.pop((r["c"], r["i"]), None)
+
+    for (cloud, wid), w in have.items():
+        rows.append({
+            "c": cloud, "i": wid, "b": w.get("date") or "",
+            "e": w.get("date") or None, "t": (w.get("title") or "")[:110],
+            "u": w.get("url") or "", "w": 1,
+        })
+
+    rows.sort(key=lambda r: r["b"] or "", reverse=True)
+    years = sorted({r["b"][:4] for r in rows if r["b"]}, reverse=True)
     payload = {"updated": stamp_now(), "years": years, "incidents": rows}
     tmp = INDEX_OUT + ".tmp"
     with io.open(tmp, "w", encoding="utf-8", newline="\n") as fh:
@@ -464,16 +499,15 @@ def timeline(history, live, hist_meta=None):
                    'window">%s</div></div>'
                    % (e(LABEL[c]), cells, starts, e(label)))
 
-    idx_years, idx_n = write_timeline_index(history, live)
-    # Window chips. 90 days stays the default because the question at the top
-    # of this page is "right now"; the years are for the one underneath it.
-    win = ('<div class="tl-win"><button class="tl-w is-on" data-win="90" '
-           'type="button">Last 90 days</button>')
-    win += "".join('<button class="tl-w" data-win="%s" type="button">%s</button>'
-                   % (e(y), e(y)) for y in idx_years)
-    win += ('<span class="tl-wn">%d incidents held, %s to %s</span></div>'
-            % (idx_n, e(idx_years[-1]) if idx_years else "-",
-               e(idx_years[0]) if idx_years else "-"))
+    # The index still gets written -- the archive below uses it -- but the
+    # strip stays at 90 days.
+    #
+    # Year chips here were the wrong answer to the right question. This
+    # section asks whether anything is broken now; nobody arrives at it
+    # wanting a 2022 calendar, and offering one made the page look like it
+    # could not decide what it was for. The history belongs in the archive,
+    # which is built for browsing.
+    write_timeline_index(history, live)
 
     key = ('<div class="tl-key">'
            '<span><i class="d bad"></i>incident began</span>'
@@ -491,9 +525,9 @@ def timeline(history, live, hist_meta=None):
             'means the vendor’s own history does not reach that far back, '
             'not that nothing happened. Each record reaches to: %s.</p>'
             % (e(reach)))
-    return ('%s<div class="tl">%s</div>%s%s'
+    return ('<div class="tl">%s</div>%s%s'
             '<script type="application/json" id="tl-data">%s</script>'
-            % (win, "".join(out), key, note, incident_payload()))
+            % ("".join(out), key, note, incident_payload()))
 
 
 def blast(inc, cloud):
@@ -747,212 +781,6 @@ def hooks():
 
 
 
-def postmortems(cssv="1"):
-    """The vendors' own post-incident write-ups, as a wall of years.
-
-    What this is NOT: a set of outage descriptions written here. Every word a
-    reader sees in the dialog is the vendor's, quoted whole and linked back.
-    Writing "what happened" in my own words from memory would produce exactly
-    the kind of confident, unverifiable account this site exists to refuse --
-    and an outage post-mortem is the worst possible place for it, because the
-    details a reader wants (which region, which trigger, what changed
-    afterwards) are precisely the ones that are easy to half-remember.
-
-    Grouped by year rather than by cloud on purpose. By cloud it is three lists
-    of different lengths, which reads as a scoreboard; by year it reads as what
-    it is -- fifteen years of the industry writing down what broke, with the
-    gaps and the density both visible.
-    """
-    if not os.path.exists(POSTMORTEMS):
-        return ""
-    try:
-        data = json.load(io.open(POSTMORTEMS, encoding="utf-8"))
-    except ValueError:
-        return ""
-    rows = data.get("postmortems") or []
-    if not rows:
-        return ""
-
-    by_year = {}
-    for r in rows:
-        y = (r.get("date") or "")[:4] or "Undated"
-        by_year.setdefault(y, []).append(r)
-
-    def yr_key(y):
-        return (0, 0) if y == "Undated" else (1, int(y))
-
-    # A YEAR AT A TIME, not all forty-five at once.
-    #
-    # The wall was 18.7 KB of a 90.8 KB page and ran for several screens --
-    # an archive that a reader scrolls past to reach the sources table. It is
-    # reference material: worth keeping complete, not worth spending a fifth
-    # of the page on by default.
-    #
-    # So the years become chips with counts, and only the selected year's
-    # cards render. Every write-up is still in the HTML, so it is still
-    # findable with the browser's own search and still there with JavaScript
-    # off -- the filtering hides, it does not omit.
-    years = sorted(by_year, key=yr_key, reverse=True)
-    newest = years[0] if years else ""
-    chips = ('<button class="pm-yr" data-yr="all" type="button">All years '
-             '<span class="pm-yn">%d</span></button>' % len(rows))
-    chips += "".join(
-        '<button class="pm-yr%s" data-yr="%s" type="button">%s '
-        '<span class="pm-yn">%d</span></button>'
-        % (" is-on" if y == newest else "", e(y), e(y), len(by_year[y]))
-        for y in years)
-
-    # A cloud filter alongside the year one. They combine: a card shows when
-    # it matches both.
-    #
-    # These counts are starting values only -- the browser recomputes them
-    # against the other filter. Static totals were worse than useless: "AWS 18"
-    # sat next to a selected 2026 in which AWS has none, so the chip invited a
-    # click that emptied the section. A count that does not describe what
-    # clicking it will do is decoration.
-    by_cloud = {}
-    for r in rows:
-        by_cloud[r.get("cloud", "")] = by_cloud.get(r.get("cloud", ""), 0) + 1
-    cchips = ('<button class="pm-cl is-on" data-cl="all" type="button">All '
-              '<span class="pm-yn">%d</span></button>' % len(rows))
-    cchips += "".join(
-        '<button class="pm-cl %s" data-cl="%s" type="button">%s '
-        '<span class="pm-yn">%d</span></button>'
-        % (c, c, e(LABEL[c]), by_cloud.get(c, 0))
-        for c in ORDER if by_cloud.get(c))
-
-    # WHAT EACH ARCHIVE REACHES.
-    #
-    # The year chips imply that a missing year is a quiet year, and all three
-    # gaps mean something different. AWS writes a post-event summary only for
-    # major events, so most years have none and eleven of its eighteen carry
-    # no year at all. Azure retains reviews for about five years, so its
-    # archive simply starts. Google's incidents feed is a rolling window, so
-    # nothing before this spring exists to fetch -- Google had outages in
-    # 2022, this page just cannot see them.
-    #
-    # Left unsaid, an empty 2022 for AWS and Google reads as a claim that
-    # nothing broke. That is the same disclosure-shape distortion the region
-    # grid and the timeline already carry a caption for, and it was missing
-    # from the one section built entirely out of what vendors choose to write.
-    reach = []
-    for c in ORDER:
-        ds = sorted(r.get("date") for r in rows
-                    if r.get("cloud") == c and r.get("date"))
-        undated = sum(1 for r in rows
-                      if r.get("cloud") == c and not r.get("date"))
-        if not ds and not undated:
-            continue
-        bit = "%s %s" % (LABEL[c],
-                         ("%s to %s" % (ds[0], ds[-1])) if ds else "no dated entries")
-        if undated:
-            bit += " plus %d with no year stated" % undated
-        reach.append(bit)
-    # Just the reach. The rest of this note said "a year with no card means
-    # nothing was published for it" -- which the chips now say better, since
-    # selecting AWS shows "2026 0" outright. It was there to compensate for
-    # counts that did not communicate, and it stopped earning its space the
-    # moment they did.
-    #
-    # The reach stays, because no count can carry it: a year Google never had
-    # a chip for looks identical to a year it published nothing in, and
-    # without this Google reads as the vendor disclosing least when it is the
-    # one whose feed this page cannot see past.
-    reach_note = ('<p class="note-sm">Archives reach back different '
-                  'distances: %s. AWS writes a summary only for major events, '
-                  'Azure retains reviews about five years, and Google’s feed '
-                  'carries only recent incidents.</p>' % e("; ".join(reach)))
-
-    out = ""
-    for y in years:
-        items = sorted(by_year[y], key=lambda r: r.get("date") or "", reverse=True)
-        cards = ""
-        hook_by_id = {h["id"]: h for h in hooks()}
-        for r in items:
-            # The shape of the disclosure is itself information: a vendor that
-            # publishes headed sections has committed to answering the same
-            # questions every time, and one that publishes an essay has not.
-            n = len(r.get("sections") or [])
-            shape = ("%d sections" % n) if n else "narrative"
-            # The quoted line lives on the card itself rather than in a
-            # separate "did you know" panel above. That panel showed 6 of these
-            # 24 and every one of them was already here -- a strict subset,
-            # duplicated. It could not replace the wall either, because the 18
-            # AWS write-ups have no labelled cause section to quote from and
-            # would have vanished. One component, every write-up, and the
-            # interesting sentence where the thing it describes already is.
-            key = "%s:%s" % (r.get("cloud", ""), r.get("id", ""))
-            hk = hook_by_id.get(key)
-            quote = ('<span class="pm-c-q">%s</span>' % e(hk["q"])) if hk else ""
-            cards += (
-                '<button class="pm-card %s" data-pm="%s" type="button">'
-                '<span class="pm-c-cloud">%s</span>'
-                '<span class="pm-c-title">%s</span>'
-                '%s'
-                '<span class="pm-c-shape">%s</span></button>'
-                % (e(r.get("cloud", "")), e(key),
-                   e(LABEL.get(r.get("cloud"), r.get("cloud", ""))),
-                   e(r.get("title", ""))[:150], quote, e(shape)))
-        out += ('<div class="pm-year%s" data-yr="%s"><div class="pm-y">%s</div>'
-                '<div class="pm-cards">%s</div></div>'
-                % ("" if y == newest else " is-hidden", e(y), e(y), cards))
-
-    counts = {}
-    for r in rows:
-        counts[r["cloud"]] = counts.get(r["cloud"], 0) + 1
-    tally = ", ".join("%s %d" % (LABEL[c], counts.get(c, 0)) for c in ORDER)
-
-    # Azure's single entry is not a quiet record, and saying so matters: its
-    # history page shows one review at a time, so this grows only as new ones
-    # appear. Left unexplained, "Microsoft 1" next to "AWS 18" reads as a claim
-    # about reliability instead of a fact about a scraper's starting date.
-    # Say what is NOT here. The archive holds fewer reviews than the timeline
-    # holds incidents, because a card that opens onto nothing is worse than no
-    # card -- but "fewer" without a reason reads as editorial selection, which
-    # is the one thing this page must never be doing quietly.
-    try:
-        _hist = json.load(io.open(HISTORY, encoding="utf-8")).get("incidents", {})
-        _held = sum(1 for v in _hist.values() if v.get("cloud"))
-    except Exception:                                           # noqa: BLE001
-        _held = 0
-    gap = max(0, _held - len(rows))
-    omitted = ('Another %d incident%s in the timeline above %s no write-up '
-               'with the sections the vendor names, so %s not carded here '
-               '— nothing is left out for being minor. '
-               % (gap, "" if gap == 1 else "s",
-                  "has" if gap == 1 else "have",
-                  "it is" if gap == 1 else "they are")) if gap else ""
-
-    note = ('<p class="note-sm">Every word in these is the vendor’s own, '
-            'quoted whole and linked back — nothing here is summarised or '
-            'rewritten. Holding %s. AWS keeps a permanent index of its '
-            'post-event summaries, which is why its record reaches back to '
-            '2011. Azure publishes one review at a time and retains the rest '
-            'behind its own navigation. %s</p>' % (e(tally), omitted))
-
-    dialog = (
-        '<dialog id="pm-dialog" aria-labelledby="pm-title">'
-        '<button class="pm-x" data-pm-close aria-label="Close">×</button>'
-        '<div class="pm-body"></div></dialog>')
-
-    # This note stays WITH the write-ups, and that is a different call from
-    # the two that moved to the foot.
-    #
-    # Those are mechanics -- how often the page refreshes, why no ETA appears.
-    # A reader can finish the page without them. This one is provenance: it
-    # says the words in the cards above are the vendors' own, quoted whole,
-    # and it says where the counts come from. Read the cards without it and
-    # there is nothing on screen telling you whose words those are, which on a
-    # page whose whole argument is "these are their words, not mine" is the
-    # one sentence that cannot be filed at the bottom.
-    return ('<div class="pm-yrs">%s</div>'
-            '<div class="pm-yrs pm-cls">%s</div>'
-            '%s<div class="pm">%s</div>'
-            '<p class="pm-none note-sm" hidden></p>%s%s'
-            '<script src="/intelligence/status/pm.js?v=%s" defer></script>'
-            % (chips, cchips, reach_note, out, note, dialog, e(cssv)))
-
-
 def cadence():
     """The refresh rate this page ACHIEVED, measured, not the one intended.
 
@@ -1005,6 +833,85 @@ def cadence():
             '<a href="https://github.com/katta698/katta698.github.io/'
             'commits/main/intelligence/status.json" target="_blank" '
             'rel="noopener">public and dated</a>.</p>' % (bits, when))
+
+
+def postmortems(cssv="1"):
+    """The archive: every past incident held, browsable by year and cloud.
+
+    This used to render only the 73 vendor write-ups, from a different store
+    than the timeline above it -- so the strip reported 210 Google incidents in
+    2022 while the archive below reported none. One page, one year, two
+    answers, because one view was built from postmortems.json and the other
+    from status-history.json.
+
+    Both now read the same index, so the counts cannot disagree. An entry with
+    a published write-up opens the vendor's full text; one without opens what
+    is actually known -- title, dates, and a link to the vendor's record. The
+    difference is marked rather than hidden, because "AWS wrote 4,000 words
+    about this" and "AWS logged a line" are different facts and a reader
+    deciding what to open deserves to know which is which.
+
+    Cards are rendered in the browser from the index rather than baked in:
+    922 of them is roughly 200 KB of markup, against a page that is currently
+    108 KB in total.
+    """
+    idx_path = os.path.join(ROOT, "intelligence", "timeline-index.json")
+    if not os.path.exists(idx_path):
+        return ""
+    try:
+        idx = json.load(io.open(idx_path, encoding="utf-8"))
+    except ValueError:
+        return ""
+    rows = idx.get("incidents") or []
+    if not rows:
+        return ""
+
+    by_year, by_cloud = {}, {}
+    for r in rows:
+        y = (r.get("b") or "")[:4] or "Undated"
+        by_year[y] = by_year.get(y, 0) + 1
+        by_cloud[r.get("c")] = by_cloud.get(r.get("c"), 0) + 1
+
+    def yr_key(y):
+        return (0, 0) if y == "Undated" else (1, int(y))
+
+    years = sorted(by_year, key=yr_key, reverse=True)
+    newest = years[0] if years else ""
+
+    chips = ('<button class="pm-yr" data-yr="all" type="button">All years '
+             '<span class="pm-yn">%d</span></button>' % len(rows))
+    chips += "".join(
+        '<button class="pm-yr%s" data-yr="%s" type="button">%s '
+        '<span class="pm-yn">%d</span></button>'
+        % (" is-on" if y == newest else "", e(y), e(y), by_year[y])
+        for y in years)
+
+    cchips = ('<button class="pm-cl is-on" data-cl="all" type="button">All '
+              '<span class="pm-yn">%d</span></button>' % len(rows))
+    cchips += "".join(
+        '<button class="pm-cl %s" data-cl="%s" type="button">%s '
+        '<span class="pm-yn">%d</span></button>'
+        % (c, c, e(LABEL[c]), by_cloud.get(c, 0))
+        for c in ORDER if by_cloud.get(c))
+
+    wrote = sum(1 for r in rows if r.get("w"))
+    note = ('<p class="note-sm">%d incident%s held across the three clouds, '
+            'the same set the timeline above is drawn from. %d carry a '
+            'write-up the vendor published; the rest are the record itself '
+            '— what it was, when, and a link to their page for it. '
+            'Nothing is left out for being minor.</p>'
+            % (len(rows), "" if len(rows) == 1 else "s", wrote))
+
+    dialog = ('<dialog id="pm-dialog" aria-labelledby="pm-title">'
+              '<button class="pm-x" data-pm-close aria-label="Close">×</button>'
+              '<div class="pm-body"></div></dialog>')
+
+    return ('<div class="pm-yrs">%s</div>'
+            '<div class="pm-yrs pm-cls">%s</div>'
+            '<div class="pm" id="pm-list"></div>'
+            '<p class="pm-none note-sm" hidden></p>%s%s'
+            '<script src="/intelligence/status/pm.js?v=%s" defer></script>'
+            % (chips, cchips, note, dialog, e(cssv)))
 
 
 def cloud_card(cloud, incidents, source):
