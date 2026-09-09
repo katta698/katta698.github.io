@@ -182,6 +182,32 @@ JS = r"""() => {
 }"""
 
 
+# Open every disclosure widget before measuring.
+#
+# This checker previously measured only what was painted on load, so anything
+# behind a click was invisible to it -- and a panel that sets its own
+# background is exactly where this class of bug lives, because the cascade only
+# resolves once it is shown.
+#
+# The palette menu proved it twice. It shipped at 1.03:1 in light mode, was
+# fixed, and the fix then chained onto a token that another page defines as a
+# fixed dark -- so it shipped again at roughly 1:1 in dark mode. Both were
+# found by a person opening the menu and seeing nothing. The check passed
+# cleanly through both, reporting every other element as readable, which is the
+# failure mode that makes a green tick worth less than no tick at all.
+#
+# Clicking [aria-expanded="false"] is the whole trick: it is the accessibility
+# contract for "this control reveals something", so it finds these panels
+# without needing to know any of their class names.
+OPEN = r"""() => {
+  let n = 0;
+  for (const el of document.querySelectorAll('[aria-expanded="false"]')) {
+    try { el.click(); n++; } catch (e) {}
+  }
+  return n;
+}"""
+
+
 def serve(port):
     os.chdir(ROOT)
 
@@ -224,6 +250,9 @@ def main():
                 try:
                     pg.goto(base + path, wait_until="networkidle", timeout=30000)
                     pg.wait_for_timeout(1200)
+                    opened = pg.evaluate(OPEN)
+                    if opened:
+                        pg.wait_for_timeout(400)
                     items = pg.evaluate(JS)
                 except Exception as exc:                        # noqa: BLE001
                     print("  %-28s %-5s could not render: %s"
