@@ -33,7 +33,6 @@ if SCRIPTS not in sys.path:
 
 import news_store as store          # noqa: E402
 import news_tag                     # noqa: E402
-from feedback_block import feedback_html, FEEDBACK_CSS  # noqa: E402
 
 OUT_DIR = os.path.join(ROOT, "intelligence", "whats-new")
 JSON_OUT = os.path.join(ROOT, "intelligence", "news.json")
@@ -413,44 +412,6 @@ document.documentElement.setAttribute('data-palette',p);})();
    register, which is a worse bug than the flash. */
 html{-webkit-tap-highlight-color:transparent}
 a:active,button:active{opacity:.72}
-
-/* The correction block. Deliberately quiet: it sits at the end, states what
-   can be wrong, and offers two routes that cannot break -- no form, no
-   endpoint, nothing to go silently down.
-
-   SELF-CONTAINED ON PURPOSE. The first version filled the button with
-   var(--acc), which the status page defines and the other two do not. An
-   undefined custom property invalidates the whole declaration, so the fill
-   silently vanished and dark text sat on a dark card at 1.23:1 -- on two of
-   the three pages this block exists to serve. That is the fifth time an
-   undefined token has done this here (--accent-gold, --nav-bg, --accent,
-   --ink, --acc), and the first time inside a module written to stop exactly
-   this kind of divergence.
-
-   So nothing below depends on a token that any given page might not define.
-   The button borrows the page's own text colour with `inherit`, which is
-   readable against that page's own background by definition, and every var()
-   carries a literal fallback. */
-.fb{margin:2.2rem 0 0;padding:1.1rem 1.2rem;border-radius:12px;
-  background:var(--card, var(--surface, transparent));
-  border:1px solid var(--bd, var(--border, rgba(128,128,128,.28)))}
-.fb-h{margin:0 0 .4rem;font-size:.92rem;font-weight:600}
-.fb-t{margin:0 0 .9rem;font-size:.82rem;line-height:1.55;
-  /* inherit, not --mut. What's New defines --mut at 4.40:1 against its own
-     card in light mode -- fine for a timestamp, under AA for a paragraph. A
-     shared block cannot assume another page's muted colour clears the bar for
-     the use IT puts that colour to, so this takes the page's body colour,
-     which is readable there by definition, and stays secondary by size. */
-  color:inherit}
-.fb-a{margin:0;display:flex;gap:.9rem;align-items:center;flex-wrap:wrap}
-.fb-b{display:inline-block;padding:.45rem .85rem;border-radius:8px;
-  background:transparent;color:inherit;font-size:.8rem;font-weight:600;
-  text-decoration:none;border:1px solid currentColor}
-.fb-b:hover,.fb-b:focus-visible{
-  background:color-mix(in srgb, currentColor 10%, transparent)}
-.fb-l{font-size:.78rem;color:inherit;text-decoration:underline;
-  text-underline-offset:2px;opacity:.85}
-.fb-l:hover,.fb-l:focus-visible{opacity:1}
 </style>
 </head>
 <body>
@@ -502,7 +463,7 @@ a:active,button:active{opacity:.72}
   <div id="list"></div>
   <button id="more" hidden>Show more</button>
   <p class="note">__NOTE__</p>
-  __FEEDBACK__
+  <div data-feedback></div>
 </main>
 
 <script>
@@ -795,9 +756,6 @@ def build():
                 .replace("__COUNT_FMT__", "{:,}".format(len(rows)))
                 .replace("__COUNT__", str(len(rows)))
                 .replace("__NOTE__", note)
-                .replace("__FEEDBACK__",
-                         feedback_html("What's new",
-                                       "https://jayanthkatta.com/intelligence/whats-new/"))
                 .replace("__JSV__", jsv))
     io.open(os.path.join(OUT_DIR, "index.html"), "w",
             encoding="utf-8", newline="\n").write(html)

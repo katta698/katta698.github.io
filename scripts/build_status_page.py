@@ -27,7 +27,6 @@ import json
 import os
 import re
 
-from feedback_block import feedback_html, FEEDBACK_CSS  # noqa: E402
 import statistics
 import sys
 
@@ -844,7 +843,13 @@ document.documentElement.setAttribute("data-palette",p);})();
      reported, which is not the same as nothing happening.</p>
   __REGIONS__
 
-  __FEEDBACK__
+  <div class="note"><strong>Why the timings below are Google&rsquo;s only.</strong>
+     Google publishes when an incident <em>began</em> and, separately, when it first
+     said something publicly, so the gap between the two is a real number. AWS&rsquo;s
+     status data carries no start time distinct from its first announcement, making
+     that gap structurally zero; Azure&rsquo;s feed carries no start time at all.
+     Ranking all three would put AWS first for disclosing less, so only the cloud
+     that supplies the inputs is measured.</div>
 
   <h2>What the vendors do and don&rsquo;t tell you</h2>
   <p class="sub">The three publish very different amounts, and that difference is
@@ -859,17 +864,11 @@ document.documentElement.setAttribute("data-palette",p);})();
   words, not mine: open one and you get the published text in full, with a
   link to the original.</p>
   __POSTMORTEMS__
-  <div class="note"><strong>Why the timings below are Google&rsquo;s only.</strong>
-     Google publishes when an incident <em>began</em> and, separately, when it first
-     said something publicly, so the gap between the two is a real number. AWS&rsquo;s
-     status data carries no start time distinct from its first announcement, making
-     that gap structurally zero; Azure&rsquo;s feed carries no start time at all.
-     Ranking all three would put AWS first for disclosing less, so only the cloud
-     that supplies the inputs is measured.</div>
   __CADENCE__
   __STATS__
   <h2>Sources</h2>
   <div class="tw"><table><tr><th>Status page</th><th>Endpoint we read</th><th>Last response</th><th>Read</th></tr>__SRC__</table></div>
+  <div data-feedback></div>
   <p class="src">No ETA appears anywhere on this page. None of the three publishes one
      as structured data, and lifting &ldquo;we expect recovery shortly&rdquo; out of an
      update would manufacture a commitment the vendor never made.</p>
@@ -968,10 +967,7 @@ def main():
                 .replace("__POSTMORTEMS__", postmortems(cssv))
                 .replace("__CADENCE__", cadence())
                 .replace("__STATS__", stats)
-                .replace("__SRC__", src)
-                .replace("__FEEDBACK__",
-                         feedback_html("Cloud status",
-                                       "https://jayanthkatta.com/intelligence/status/")))
+                .replace("__SRC__", src))
 
     os.makedirs(OUT_DIR, exist_ok=True)
     io.open(os.path.join(OUT_DIR, "index.html"), "w",
