@@ -2422,6 +2422,43 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
         <a href="/blog/rss.xml">RSS</a>.</div>
     </div>'''
 
+    # ── Live cloud status ─────────────────────────────────────
+    # Read at build time from intelligence/status.json, which the status
+    # workflow refreshes every 15 minutes. The blog index is rebuilt far less
+    # often than that, so this strip is a POINTER, not a live readout -- it
+    # says whether anything was wrong at build time and sends the reader to
+    # the page that is actually current. Presenting a build-time snapshot as
+    # live is the same lie the status page itself refuses to tell.
+    status_widget = ""
+    try:
+        _sp = REPO_ROOT / "intelligence" / "status.json"
+        if _sp.exists():
+            _sd = json.loads(_sp.read_text(encoding="utf-8"))
+            _rows = []
+            for _c, _lbl in (("aws", "AWS"), ("azure", "Azure"), ("gcp", "GCP")):
+                _src = (_sd.get("sources") or {}).get(_c, {})
+                _n = len((_sd.get("clouds") or {}).get(_c, []))
+                if not _src.get("ok"):
+                    _cls, _txt = "err", "unknown"
+                elif _n:
+                    _cls, _txt = "bad", "%d incident%s" % (_n, "" if _n == 1 else "s")
+                else:
+                    _cls, _txt = "ok", "operational"
+                _rows.append(
+                    '<div class="cs-row"><span class="cs-dot %s"></span>'
+                    '<span class="cs-n">%s</span><span class="cs-v">%s</span></div>'
+                    % (_cls, _lbl, _txt))
+            status_widget = (
+                '<div class="sidebar-card cloud-status-card">'
+                '<div class="sidebar-title">Cloud status</div>'
+                '%s'
+                '<div class="svc-foot">Snapshot from the last site build. '
+                '<a href="/intelligence/status/">Live status &rarr;</a></div>'
+                '</div>' % "".join(_rows))
+    except Exception:
+        # A malformed or missing status file must not stop the blog building.
+        status_widget = ""
+
     cloud_widget = "" if len(cloud_counts) < 2 else f'''
     <div class="sidebar-card" id="clouds-widget">
       <div class="sidebar-title">Posts by cloud</div>
@@ -3063,6 +3100,7 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
   </div>
   {subscribe_widget}
   <aside class="sidebar">
+    {status_widget}
     {cloud_widget}
     <div class="sidebar-card" id="services-widget">
       <div class="sidebar-title">Services across all posts</div>

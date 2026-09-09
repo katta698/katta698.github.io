@@ -391,7 +391,9 @@ document.documentElement.setAttribute('data-palette',p);})();
       <span class="n" id="news-count" data-n="__COUNT__">__COUNT_FMT__</span>
       <span class="of">announcements from AWS, Azure and Google Cloud</span>
     </div>
-    <p class="lede rise rise-3">__LEDE__</p>
+    <p class="lede rise rise-3">__LEDE__ <a href="/intelligence/status/"
+     style="color:var(--accent);font-weight:600;white-space:nowrap">Anything broken
+     right now? &rarr;</a></p>
   </div>
 </header>
 
