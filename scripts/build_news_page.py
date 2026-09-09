@@ -59,6 +59,50 @@ MORE_CLASSES = ("blog", "security")
 CLOUD_NAME = {"aws": "AWS", "azure": "Azure", "gcp": "Google Cloud"}
 
 
+def sources_table():
+    """Where every row on this page came from, derived from the rows themselves.
+
+    The status page has always named its three endpoints; this page reads 65
+    feeds and named none of them. It asks a reader to trust a few thousand
+    announcements with no way to see what was watched -- and "we read the
+    vendors' feeds" is the kind of claim that sounds like sourcing without
+    being it.
+
+    Nothing here is a hand-kept list, because a hand-kept list of 65 feeds
+    goes stale the first time one is added and does so silently, in the
+    direction of overstating coverage. Each source's host is the one its own
+    stored items actually link to, its count is how many are held, and its
+    date is the most recent thing seen from it. A feed that stops publishing
+    shows as a stale date rather than vanishing.
+    """
+    agg = {}
+    for cloud in store.CLOUDS:
+        for ym in store.all_months(cloud):
+            for r in store.load_month(cloud, ym).values():
+                key = (cloud, r.get("source") or "unnamed")
+                a = agg.setdefault(key, {"n": 0, "hosts": {}, "last": ""})
+                a["n"] += 1
+                u = r.get("url") or ""
+                if u.startswith("http"):
+                    host = u.split("/")[2]
+                    a["hosts"][host] = a["hosts"].get(host, 0) + 1
+                if (r.get("date") or "") > a["last"]:
+                    a["last"] = r.get("date") or ""
+
+    rows = ""
+    for (cloud, src), a in sorted(agg.items(), key=lambda kv: (kv[0][0], -kv[1]["n"])):
+        host = max(a["hosts"], key=a["hosts"].get) if a["hosts"] else ""
+        link = ('<a href="https://%s/" target="_blank" rel="noopener">%s</a>'
+                % (host, host)) if host else "&mdash;"
+        rows += ('<tr><td>%s</td><td>%s</td><td>%s</td>'
+                 '<td class="num">%d</td><td>%s</td></tr>'
+                 % (CLOUD_NAME.get(cloud, cloud), src, link, a["n"],
+                    a["last"] or "&mdash;"))
+    return ('<table class="src-tbl"><thead><tr><th>Cloud</th><th>Source</th>'
+            '<th>Published at</th><th class="num">Held</th><th>Latest</th>'
+            '</tr></thead><tbody>%s</tbody></table>' % rows)
+
+
 def collect(classes):
     rows = []
     for cloud in store.CLOUDS:
@@ -516,6 +560,20 @@ a:active,button:active{opacity:.72}
 @media (max-width: 820px){
   nav, .nav{padding:0 1rem}
 }
+
+/* Sources table. Scrolls sideways on a phone rather than crushing five
+   columns into 360px -- the endpoint column is the one worth reading and it
+   is the first thing squeezing would take. */
+.src-h{margin-top:2.4rem}
+.src-tbl{width:100%;border-collapse:collapse;font-size:.8rem;min-width:33rem}
+.src-tbl th,.src-tbl td{text-align:left;padding:.45rem .6rem;
+  border-bottom:1px solid var(--border);vertical-align:top}
+.src-tbl th{font-family:var(--mono);font-size:.66rem;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--text-muted);font-weight:500}
+.src-tbl td:nth-child(3){font-family:var(--mono);font-size:.74rem}
+.src-tbl .num{text-align:right;font-family:var(--mono)}
+.src-tbl a{color:inherit;text-decoration:underline;text-underline-offset:2px}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
 </style>
 </head>
 <body>
@@ -567,6 +625,9 @@ a:active,button:active{opacity:.72}
   <div id="list"></div>
   <button id="more" hidden>Show more</button>
   <p class="note">__NOTE__</p>
+  <h2 class="src-h">Where this comes from</h2>
+  <p class="note">Every row on this page is read from one of these, and links back to the vendor’s own page for it. Counts are what is held here, not what the vendor has published.</p>
+  <div class="tw">__SOURCES__</div>
 </main>
 
 <script>
@@ -861,6 +922,7 @@ def build():
                 .replace("__COUNT_FMT__", "{:,}".format(len(rows)))
                 .replace("__COUNT__", str(len(rows)))
                 .replace("__NOTE__", note)
+                .replace("__SOURCES__", sources_table())
                 .replace("__STAR__", star_html("intelligence-whats-new"))
                 .replace("__TOP__", TOP_HTML + TOP_JS)
                 .replace("__JSV__", jsv))
