@@ -228,6 +228,11 @@ def merge_history(past_by_cloud):
         except ValueError:
             hist = {}
     items = hist.get("incidents") or {}
+    # When this store began. Before it, a resolved incident on a feed that
+    # publishes only OPEN ones left no trace anywhere, so those days are
+    # genuinely unknown rather than clear. The timeline needs to draw that
+    # difference, and it cannot without knowing where the record starts.
+    hist.setdefault("since", stamp())
     added = 0
     for cloud, rows in past_by_cloud.items():
         for r in rows:
@@ -237,6 +242,12 @@ def merge_history(past_by_cloud):
                 added += 1
     hist["incidents"] = items
     hist["updated"] = stamp()
+    # The oldest incident Google's feed still carries. Days before it are
+    # outside what any run could have seen, however long this has been running.
+    begins = sorted(v.get("begin", "") for v in items.values()
+                    if v.get("cloud") == "gcp" and v.get("begin"))
+    if begins:
+        hist["gcp_horizon"] = begins[0]
     tmp = HISTORY + ".tmp"
     with io.open(tmp, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(hist, fh, ensure_ascii=False, indent=1, sort_keys=True)

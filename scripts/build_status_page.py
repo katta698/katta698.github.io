@@ -131,7 +131,16 @@ def track_record(history):
 
 
 
-def timeline(history, live):
+WHYUNK = {
+    "aws": "AWS publishes only incidents that are open now, so anything "
+           "resolved before this log began left no trace.",
+    "azure": "Azure's feed carries items only while something is wrong, so "
+             "anything resolved before this log began left no trace.",
+    "gcp": "Outside the window Google's feed still carries.",
+}
+
+
+def timeline(history, live, hist_meta=None):
     """Ninety days, one cell per day, per cloud.
 
     The thing a list of cards cannot show. Two AWS regions have been degraded
@@ -145,6 +154,7 @@ def timeline(history, live):
     copy Google's green-tick product matrix: those ticks mean Google checked,
     and ours would mean we did not know.
     """
+    hist_meta = hist_meta or {}
     today = datetime.datetime.now(datetime.timezone.utc).date()
     days = [today - datetime.timedelta(days=i) for i in range(89, -1, -1)]
     dayset = set(days)
@@ -152,10 +162,29 @@ def timeline(history, live):
     # not say why is decoration: a reader who spots one immediately wants to
     # know what happened, and a bare date does not answer that.
     bad = {c: {} for c in ORDER}
+    # The day each incident began, so a start can be told from a continuation.
+    # Keyed by id() because these dicts are not hashable and are never copied
+    # between here and the render loop below.
+    startday = {}
+
+    # How far back each cloud's record actually reaches.
+    #
+    # AWS and Azure expose only what is open right now, so nothing that closed
+    # before this store's first run exists anywhere -- their horizon is the day
+    # the store began. Google publishes resolved incidents, so its first run
+    # backfilled to the oldest incident the feed still carries.
+    since_d = (t(hist_meta.get("since")) or datetime.datetime.now(
+        datetime.timezone.utc)).date()
+    gcp_d = (t(hist_meta.get("gcp_horizon")) or since_d if
+             hist_meta.get("gcp_horizon") else since_d)
+    if hasattr(gcp_d, "date"):
+        gcp_d = gcp_d.date()
+    horizon = {"aws": since_d, "azure": since_d, "gcp": min(gcp_d, since_d)}
 
     def mark(cloud, begin, end, inc):
         if not begin:
             return
+        startday[id(inc)] = begin.date()
         d, last = begin.date(), (end or datetime.datetime.now(datetime.timezone.utc)).date()
         # Clip to the window before walking. The Middle East incidents have
         # been open 190+ days, and counting every one of them produced
@@ -179,8 +208,19 @@ def timeline(history, live):
         for d in days:
             incs = bad[c].get(d)
             if not incs:
-                cells += ('<i class="d ok" title="%s — nothing reported"></i>'
-                          % d.isoformat())
+                # Unknown is not clear, and drawing them the same way is the
+                # false reassurance this whole page exists to avoid. AWS and
+                # Azure publish only incidents that are OPEN RIGHT NOW, so a
+                # problem that started and finished before this store began
+                # left no trace in any feed and never can. Those days are
+                # blanks in the record, not clean bills of health.
+                if d < horizon[c]:
+                    cells += ('<i class="d unk" title="%s — not recorded. %s"></i>'
+                              % (d.isoformat(), e(WHYUNK[c])))
+                else:
+                    cells += ('<i class="d ok" title="%s — nothing reported '
+                              '(not the same as verified healthy)"></i>'
+                              % d.isoformat())
                 continue
             titles = " | ".join(dict.fromkeys(
                 (x.get("title") or "").strip()[:90] for x in incs if x.get("title")))
@@ -188,14 +228,45 @@ def timeline(history, live):
             # An anchor, not a div: the cell links to the vendor's own page for
             # that incident, so "what was this?" is one tap rather than a hunt
             # through the card list below.
-            cells += ('<a class="d bad" href="%s" target="_blank" rel="noopener" '
-                      'title="%s%s&#10;%s"></a>'
-                      % (e(incs[0].get("url", "#")), d.isoformat(), more, e(titles)))
+            # A day an incident BEGAN is a different fact from a day one
+            # merely continued. AWS has two incidents open since 1 March, so
+            # every cell in its strip was solid red -- ninety days that look
+            # like ninety events and are two. Continuation days are drawn
+            # faintly so the starts stand out as the things that happened.
+            started = any(startday.get(id(x)) == d for x in incs)
+            kind = "bad" if started else "bad cont"
+            lead = "" if started else "ongoing — "
+            cells += ('<a class="d %s" href="%s" target="_blank" rel="noopener" '
+                      'title="%s%s&#10;%s%s"></a>'
+                      % (kind, e(incs[0].get("url", "#")), d.isoformat(), more,
+                         lead, e(titles)))
         n = len(set(bad[c]) & dayset)
+        starts = sum(1 for d in days
+                     if any(startday.get(id(x)) == d for x in bad[c].get(d, [])))
+        unknown = sum(1 for d in days if d < horizon[c] and not bad[c].get(d))
+        label = "%d of 90" % n
+        if unknown:
+            label += " · %d unrecorded" % unknown
         out.append('<div class="tl-row"><div class="tl-n">%s</div>'
                    '<div class="tl-cells">%s</div>'
-                   '<div class="tl-s">%d of 90</div></div>' % (e(LABEL[c]), cells, n))
-    return '<div class="tl">%s</div>' % "".join(out)
+                   '<div class="tl-s" title="%d incident(s) began in this '
+                   'window">%s</div></div>'
+                   % (e(LABEL[c]), cells, starts, e(label)))
+
+    key = ('<div class="tl-key">'
+           '<span><i class="d bad"></i>incident began</span>'
+           '<span><i class="d bad cont"></i>still open</span>'
+           '<span><i class="d ok"></i>nothing reported</span>'
+           '<span><i class="d unk"></i>not recorded</span></div>')
+    note = ('<p class="note-sm">A grey cell is a gap in the record, not a good '
+            'day. AWS and Azure publish only incidents that are open at the '
+            'moment you ask, so anything that started and finished before this '
+            'log began on %s is invisible to it and always will be — an '
+            'unmarked AWS or Azure day is not evidence of a quiet one. Google '
+            'publishes resolved incidents too, so its record reaches back to '
+            '%s.</p>'
+            % (e(since_d.isoformat()), e(gcp_d.isoformat())))
+    return '<div class="tl">%s</div>%s%s' % ("".join(out), key, note)
 
 
 def blast(inc, cloud):
@@ -536,9 +607,10 @@ def main():
         print("  no %s -- run scripts/fetch_status.py first" % STATUS)
         return 1
     data = json.load(io.open(STATUS, encoding="utf-8"))
-    hist = {}
+    hist, hist_meta = {}, {}
     if os.path.exists(HISTORY):
-        hist = (json.load(io.open(HISTORY, encoding="utf-8")) or {}).get("incidents", {})
+        hist_meta = json.load(io.open(HISTORY, encoding="utf-8")) or {}
+        hist = hist_meta.get("incidents", {})
 
     clouds = data.get("clouds", {})
     sources = data.get("sources", {})
@@ -598,7 +670,7 @@ def main():
                          if stale else "")
                 .replace("__CARDS__", cards)
                 .replace("__BODY__", body)
-                .replace("__TIMELINE__", timeline(hist, clouds))
+                .replace("__TIMELINE__", timeline(hist, clouds, hist_meta))
                 .replace("__REGIONS__", region_grid(hist, clouds))
                 .replace("__DISCLOSURE__", disclosure())
                 .replace("__STATS__", stats)
