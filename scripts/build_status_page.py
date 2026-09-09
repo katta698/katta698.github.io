@@ -153,6 +153,49 @@ WHYUNK = {
 }
 
 
+_INC_KEYS = {}
+_INC_DATA = []
+
+
+def inc_key(inc):
+    """A stable index for one incident, so a cell can name it in the DOM.
+
+    Keyed on id() because the same dict object is what mark() stored, and the
+    vendors' own ids are ARNs and URLs -- long enough that repeating one on
+    every cell of a 90-day strip would add more bytes than the whole payload.
+    """
+    k = id(inc)
+    if k not in _INC_KEYS:
+        _INC_KEYS[k] = len(_INC_DATA)
+        _INC_DATA.append(inc)
+    return _INC_KEYS[k]
+
+
+def incident_payload():
+    """Everything a day dialog shows, for the incidents actually referenced."""
+    out = []
+    for i in _INC_DATA:
+        cloud = i.get("cloud", "")
+        url = i.get("url", "")
+        # Only offer a link that goes somewhere specific. AWS's dashboard has
+        # no per-incident URL, so its incidents all share one address; sending
+        # a reader to a generic page dressed as "the incident" is worse than
+        # telling them it does not exist.
+        generic = url in ("https://health.aws.amazon.com/health/status",
+                          "https://azure.status.microsoft/en-us/status")
+        out.append({
+            "c": cloud,
+            "t": (i.get("title") or "")[:240],
+            "s": (i.get("service") or "")[:120],
+            "r": i.get("region_code") or i.get("region") or "",
+            "b": str(i.get("begin") or ""),
+            "e": str(i.get("end") or ""),
+            "u": "" if generic else url,
+            "m": (i.get("update") or "")[:700],
+        })
+    return json.dumps(out, ensure_ascii=False).replace("</", "<\/")
+
+
 def timeline(history, live, hist_meta=None):
     """Ninety days, one cell per day, per cloud.
 
@@ -278,9 +321,25 @@ def timeline(history, live, hist_meta=None):
             started = any(startday.get(id(x)) == d for x in incs)
             kind = "bad" if started else "bad cont"
             lead = "" if started else "ongoing — "
-            cells += ('<a class="d %s" href="%s" target="_blank" rel="noopener" '
-                      'title="%s%s&#10;%s%s"></a>'
-                      % (kind, e(incs[0].get("url", "#")), d.isoformat(), more,
+            # A BUTTON that opens the day, not a link to a generic page.
+            #
+            # Every AWS incident carried the same href --
+            # health.aws.amazon.com/health/status -- so all twelve AWS bars
+            # went to the same place. That is not a parser bug: AWS's
+            # dashboard is a single-page app whose URL does not change when
+            # you open an event, so there is no per-incident address to link
+            # to. Checked by driving it in a browser: clicking a row in
+            # Service history leaves the URL untouched.
+            #
+            # Sending a reader there to hunt through a list is worse than
+            # showing them what is already held here -- the title, service,
+            # region, dates and the vendor's own last update. Google's
+            # incidents DO have their own pages, and the dialog links out to
+            # them; AWS's dialog says plainly that AWS publishes no such link.
+            ids = ",".join(str(inc_key(x)) for x in incs)
+            cells += ('<button class="d %s" data-day="%s" data-inc="%s" '
+                      'type="button" title="%s%s&#10;%s%s"></button>'
+                      % (kind, d.isoformat(), e(ids), d.isoformat(), more,
                          lead, e(titles)))
         n = len(set(bad[c]) & dayset)
         starts = sum(1 for d in days
@@ -316,7 +375,9 @@ def timeline(history, live, hist_meta=None):
             'publishes resolved incidents too, so its record reaches back to '
             '%s.</p>'
             % (e(since_d.isoformat()), e(gcp_d.isoformat())))
-    return '<div class="tl">%s</div>%s%s' % ("".join(out), key, note)
+    return ('<div class="tl">%s</div>%s%s'
+            '<script type="application/json" id="tl-data">%s</script>'
+            % ("".join(out), key, note, incident_payload()))
 
 
 def blast(inc, cloud):

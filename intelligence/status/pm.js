@@ -133,4 +133,70 @@
     if (ev.key === 'Escape' && dlg.open) close();
   });
 
+  /* Timeline day dialog.
+   *
+   * Every AWS bar used to link to health.aws.amazon.com/health/status --
+   * the same address for all twelve, because AWS's dashboard is a single-page
+   * app whose URL does not change when an event is opened. There is no
+   * per-incident address to link to, so linking there sent a reader to a list
+   * to hunt through.
+   *
+   * The page already holds what they wanted: the title, service, region,
+   * dates and the vendor's own last update. So a cell opens that instead.
+   * Where a real per-incident page exists -- Google publishes one -- the
+   * dialog links to it. Where it does not, it says so rather than offering a
+   * link that goes somewhere general.
+   */
+  var tlData = document.getElementById('tl-data');
+  var incidents = [];
+  if (tlData) {
+    try { incidents = JSON.parse(tlData.textContent) || []; } catch (e) { incidents = []; }
+  }
+
+  var VENDOR = { aws: 'AWS', azure: 'Microsoft', gcp: 'Google' };
+
+  function when(v) {
+    if (!v) return '';
+    var n = parseInt(v, 10);
+    var d = (String(v).length >= 10 && String(n) === String(v))
+          ? new Date(n * 1000) : new Date(v);
+    return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+  }
+
+  function openDay(day, idxs) {
+    lastFocus = document.activeElement;
+    var rows = idxs.map(function (i) { return incidents[i]; }).filter(Boolean);
+    var html = '<p class="pm-meta"><span class="pm-date">' + esc(day) + '</span></p>' +
+               '<h3 id="pm-title">' + rows.length +
+               (rows.length === 1 ? ' incident open' : ' incidents open') +
+               ' on this day</h3>';
+    rows.forEach(function (r) {
+      var v = VENDOR[r.c] || r.c;
+      html += '<section class="pm-sec">' +
+        '<h4><span class="chip ' + esc(r.c) + '">' + esc(v) + '</span></h4>' +
+        '<p><strong>' + esc(r.t) + '</strong></p>' +
+        (r.s ? '<p class="pm-shape">Service: ' + esc(r.s) + '</p>' : '') +
+        (r.r ? '<p class="pm-shape">Region: ' + esc(r.r) + '</p>' : '') +
+        '<p class="pm-shape">Began ' + esc(when(r.b) || 'not stated') +
+        (r.e ? ' · ended ' + esc(when(r.e)) : ' · still open') + '</p>' +
+        (r.m ? '<p>' + esc(r.m) + '</p>' : '') +
+        (r.u
+          ? '<p class="pm-src"><a href="' + esc(r.u) + '" target="_blank" rel="noopener">Read it on ' + esc(v) + '’s site →</a></p>'
+          : '<p class="pm-src">' + esc(v) + ' publishes no per-incident page for this, so there is nothing to link to. The text above is theirs.</p>') +
+        '</section>';
+    });
+    body.innerHTML = html;
+    body.scrollTop = 0;
+    if (typeof dlg.showModal === 'function') dlg.showModal();
+    else dlg.setAttribute('open', '');
+  }
+
+  document.addEventListener('click', function (ev) {
+    var cell = ev.target.closest ? ev.target.closest('[data-inc]') : null;
+    if (!cell) return;
+    ev.preventDefault();
+    var idxs = (cell.getAttribute('data-inc') || '')
+      .split(',').filter(Boolean).map(Number);
+    openDay(cell.getAttribute('data-day'), idxs);
+  });
 })();

@@ -193,11 +193,36 @@ def parse_aws_history(raw):
                 "region_code": region,
                 "begin": str(begin or ""),
                 "end": str(end or ""),
-                "update": flat(log[-1].get("message") if log else ""),
+                "update": prefer_english(flat(log[-1].get("message") if log else "", 4000))[:900],
                 "updates": len(log),
                 "url": "https://health.aws.amazon.com/health/status",
             })
     return out
+
+
+CJK = re.compile(r"[　-鿿＀-￯]")
+
+
+def prefer_english(text):
+    """AWS posts Japan-region updates in Japanese AND English, in that order.
+
+    The full string is both languages back to back, so a reader of the English
+    site got a wall of Japanese with the English truncated mid-sentence
+    underneath it. Neither half is wrong -- the page just showed the wrong one
+    first and then cut the other off.
+
+    The split is on the language itself rather than on a separator, because
+    there is no reliable separator: the two halves are divided by a newline
+    that whitespace-collapsing has already eaten by the time this runs. Any
+    segment more than a fifth CJK is dropped; if that leaves nothing, the
+    original is returned rather than an empty string, because a vendor writing
+    only in Japanese is still the vendor speaking.
+    """
+    if not text or not CJK.search(text):
+        return text
+    parts = [p.strip() for p in re.split(r"(?<=[.。])\s+|\s*\|\s*", text) if p.strip()]
+    keep = [p for p in parts if len(CJK.findall(p)) / max(len(p), 1) < 0.2]
+    return " ".join(keep) if keep else text
 
 
 def parse_aws(raw):
@@ -235,7 +260,7 @@ def parse_aws(raw):
             "region": i.get("region_name", ""),
             "region_code": code,
             "begin": str(i.get("date", "")),
-            "update": flat(log[-1].get("message") if log else ""),
+            "update": prefer_english(flat(log[-1].get("message") if log else "", 4000))[:900],
             "updates": len(log),
             # No first_update: AWS's "date" IS its first announcement, so the
             # gap is structurally zero and reporting it would flatter AWS for
@@ -309,6 +334,15 @@ def merge_history(past_by_cloud):
             if key not in items:
                 items[key] = dict(r, cloud=cloud)
                 added += 1
+            else:
+                # Refresh rather than freeze. The first version seen is not
+                # the best one: an incident's text is edited after the fact,
+                # and a parser fix -- picking English out of a bilingual AWS
+                # update, say -- can only reach records it is allowed to
+                # rewrite. Keeping the first copy forever meant every stored
+                # incident was stuck with whatever the parser did on the day
+                # it was captured.
+                items[key].update(dict(r, cloud=cloud))
     hist["incidents"] = items
     hist["updated"] = stamp()
     # The oldest incident Google's feed still carries. Days before it are
