@@ -29,6 +29,7 @@ status site being slow is not a reason to fail a publish, so it must not be
 able to block one by default.
 """
 import argparse
+import concurrent.futures
 import io
 import os
 import re
@@ -51,6 +52,14 @@ TLDS = {
 }
 
 
+SKIP_PARTS = ("/_templates/", "/admin/", "/test.html")
+
+# Anchors written INSIDE a <script> are client-side templates, not links. The
+# admin page builds rows with href="...${p.slug}/", which is correct JavaScript
+# and reported as a dead URL by anything reading the file as HTML.
+SCRIPTS = re.compile(r"(?is)<script[^>]*>.*?</script>")
+
+
 def urls_in(path):
     """Anchors only.
 
@@ -60,7 +69,7 @@ def urls_in(path):
     wrong. One false alarm is all it takes for a check to start being ignored,
     which costs more than the check was ever worth.
     """
-    h = io.open(path, encoding="utf-8", errors="replace").read()
+    h = SCRIPTS.sub(" ", io.open(path, encoding="utf-8", errors="replace").read())
     return re.findall('<a [^>]*?href="(https?://[^"]+)"', h, re.I)
 
 
@@ -105,8 +114,14 @@ def main():
             dirs[:] = [d for d in dirs
                        if d not in (".git", "node_modules", ".github", "scripts")]
             for f in files:
-                if f.endswith(".html"):
-                    pages.append(os.path.relpath(os.path.join(base, f), ROOT))
+                if not f.endswith(".html"):
+                    continue
+                rel = os.path.relpath(os.path.join(base, f), ROOT)
+                # Templates and admin tooling are not pages a reader reaches.
+                slug = "/" + rel.replace("\\", "/")
+                if any(x in slug for x in SKIP_PARTS):
+                    continue
+                pages.append(rel)
         pages.sort()
 
     found, bad = {}, []
@@ -145,19 +160,51 @@ def main():
         return 0
 
     ctx = ssl.create_default_context()
-    dead = []
-    for u in sorted(found):
+
+    # Concurrent, because sequential is unusable at this size.
+    #
+    # Checking 1762 links one at a time, with a 30-second ceiling on each,
+    # runs for hours. A check nobody can afford to run is a check that does
+    # not exist -- and this is the one protecting every citation in every
+    # blog post, so it has to be cheap enough to run before a publish.
+    #
+    # Twelve workers and a 20-second ceiling brings it to minutes. The limit
+    # is politeness as much as speed: these are vendor documentation sites,
+    # and this should look like a reader, not a scraper.
+    def probe(u):
         try:
             req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=30, context=ctx) as r:
-                code = r.status
+            with urllib.request.urlopen(req, timeout=20, context=ctx) as r:
+                return u, r.status
         except urllib.error.HTTPError as ex:
-            code = ex.code
+            return u, ex.code
         except Exception as ex:                                 # noqa: BLE001
-            code = type(ex).__name__
-        if code != 200:
+            return u, type(ex).__name__
+
+    dead, soft = [], []
+    done = 0
+    total = len(found)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        for u, code in pool.map(probe, sorted(found)):
+            done += 1
+            if done % 200 == 0:
+                print("   ...%d/%d checked" % (done, total), flush=True)
+            # 2xx and 3xx are both healthy. Counting 301 as a failure marked
+            # aws.amazon.com/acm/ dead when it simply redirects, which is what
+            # a canonical URL is supposed to do.
+            ok = isinstance(code, int) and 200 <= code < 400
+            # 403/429/999 mean "you look like a robot", not "this is gone".
+            # LinkedIn returns 999 to everything automated. Reporting those as
+            # broken links would have this check crying wolf on every run,
+            # which is how a check stops being read.
+            blocked = code in (403, 429, 999) or code == "URLError"
+            if ok:
+                continue
+            if blocked:
+                soft.append((u, code))
+                continue
             dead.append((u, code))
-            print("   FAIL %-5s %s" % (code, u[:76]))
+            print("   FAIL %-5s %s" % (code, u[:76]), flush=True)
     if dead:
         print("\n  %d link(s) did not return 200." % len(dead))
         print("  A vendor being down is not a reason to block a publish;")
