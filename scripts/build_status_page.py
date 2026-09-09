@@ -895,12 +895,22 @@ def postmortems(cssv="1"):
         for c in ORDER if by_cloud.get(c))
 
     wrote = sum(1 for r in rows if r.get("w"))
-    note = ('<p class="note-sm">%d incident%s held across the three clouds, '
-            'the same set the timeline above is drawn from. %d carry a '
-            'write-up the vendor published; the rest are the record itself '
-            '— what it was, when, and a link to their page for it. '
-            'Nothing is left out for being minor.</p>'
-            % (len(rows), "" if len(rows) == 1 else "s", wrote))
+    span = {}
+    for r in rows:
+        if not r.get("b"):
+            continue
+        c = r.get("c")
+        lo, hi = span.get(c, (r["b"], r["b"]))
+        span[c] = (min(lo, r["b"]), max(hi, r["b"]))
+    reach_txt = "; ".join("%s back to %s" % (LABEL[c], span[c][0][:4])
+                          for c in ORDER if c in span)
+    note = ('<p class="note-sm">%d outage%s recorded across the three clouds, '
+            'the same set the timeline above is drawn from. %d of them have a '
+            'full incident report from the vendor; the rest carry what the '
+            'vendor recorded — what it was, when, and a link to their page '
+            'for it. Nothing is left out for being minor. How far back each '
+            'goes is their choice, not a filter here: %s.</p>'
+            % (len(rows), "" if len(rows) == 1 else "s", wrote, e(reach_txt)))
 
     dialog = ('<dialog id="pm-dialog" aria-labelledby="pm-title">'
               '<button class="pm-x" data-pm-close aria-label="Close">×</button>'
@@ -1060,11 +1070,11 @@ document.documentElement.setAttribute("data-palette",p);})();
 </section>
 
 <section class="sec">
-  <h2>When it broke, what did they say afterwards?</h2>
-  <p class="lede">The write-ups the three clouds published after their own
-  outages &mdash; what happened, what caused it, and what they changed. Their
-  words, not mine: open one and you get the published text in full, with a
-  link to the original.</p>
+  <h2>Past outages</h2>
+  <p class="lede">Every outage the three clouds have recorded, by year and by
+  cloud. Open one for what the vendor said about it and a link to their own
+  page for it. Where they published a full incident report, you get the whole
+  thing.</p>
   __POSTMORTEMS__
   <h2>Sources</h2>
   <div class="tw"><table><tr><th>Status page</th><th>Endpoint we read</th><th>Last response</th><th>Read</th></tr>__SRC__</table></div>

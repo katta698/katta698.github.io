@@ -327,9 +327,20 @@
       var none = document.querySelector('.pm-none');
       if (none) {
         none.hidden = rows.length !== 0;
+        var earliest = {};
+        (all || []).forEach(function (r) {
+          if (!r.b) return;
+          if (!earliest[r.c] || r.b < earliest[r.c]) earliest[r.c] = r.b;
+        });
+        var who = curCloud === 'all' ? '' : NAME[curCloud];
+        var from = curCloud !== 'all' && earliest[curCloud]
+                 ? earliest[curCloud].slice(0, 4) : null;
         none.textContent = rows.length ? '' :
-          ((curCloud === 'all' ? 'Nothing' : NAME[curCloud] + ' has nothing') +
-           ' recorded for ' + (curYear === 'all' ? 'any year' : curYear) + '.');
+          (who ? who + ' has nothing recorded for ' + curYear +
+                 (from ? '. Its published history starts in ' + from +
+                         ' — anything earlier is not something it publishes.' : '.')
+               : 'Nothing recorded for ' +
+                 (curYear === 'all' ? 'any year' : curYear) + '.');
       }
       var html = rows.slice(0, shownCount).map(function (r) {
         return '<button class="pm-card ' + esc(r.c) + '" data-inc-id="' +
@@ -337,7 +348,7 @@
           '<span class="pm-c-cloud">' + esc(NAME[r.c] || r.c) + '</span>' +
           '<span class="pm-c-title">' + esc(r.t) + '</span>' +
           '<span class="pm-c-shape">' + esc(r.b || 'undated') +
-          (r.w ? ' · write-up' : '') + '</span></button>';
+          (r.w ? ' · full report' : '') + '</span></button>';
       }).join('');
       if (rows.length > shownCount) {
         html += '<button class="pm-more" type="button">Show ' +
@@ -416,9 +427,10 @@
 
       if (!rec.w) {
         shell('<p class="pm-shape">' + esc(v) +
-              ' published no write-up for this one. What is recorded: it ran ' +
-              esc(rec.b || 'on an unstated date') +
-              (rec.e && rec.e !== rec.b ? ' to ' + esc(rec.e) : '') + '.</p>');
+              ' recorded this outage but did not publish a full report on it. ' +
+              'What they logged: it ran ' + esc(rec.b || 'on an unstated date') +
+              (rec.e && rec.e !== rec.b ? ' to ' + esc(rec.e) : '') +
+              '. Their page for it is linked below.</p>');
         return;
       }
 
