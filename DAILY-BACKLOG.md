@@ -92,6 +92,28 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 8 September 2026 — covered by post #28
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Variable retention with event holds — a retention clock that starts when the hold is released, so "seven years after closure" becomes expressible for the first time | S3 Object Lock | **#28** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-s3-object-lock-variable-retention/) |
+| Mutual TLS for backend integrations — bring your own client certificate for the backend leg, not just the client leg | API Gateway | open | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-api-gateway-mutual-tls-backend/) |
+| CVE-2026-84942 — stored XSS via Vega expression function bypass in OpenSearch Dashboards | OpenSearch | open | Med-High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-102-aws/) |
+| Recovery options and MFA for third-party logins | AWS Builder ID | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-builder-id-recovery-mfa-third-party/) |
+| Custom plugins for InfluxDB 3 | Timestream | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/timestream-influxdb-custom-plugins/) |
+| Direct ingestion to long-term memory | Bedrock AgentCore | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/agentcore-memory-direct-ingest) |
+| Four new features for Dynamic Image Transformation | CloudFront | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/dynamic-image-transfromation-adds-new-features/) |
+| Nx Plugin for AWS — scaffolding for full-stack applications | Developer tooling | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/nx-plugin-for-aws/) |
+| Resource fallback order for WDL workflows | HealthOmics | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-healthomics-resourcefallback-wdl/) |
+| GPT-6 Astra GA on Bedrock; SageMaker Feature Store UpdateRecord; Transform in GovCloud US-West; RDS for MariaDB community minor versions; RDS SQL Server CU and GDR updates | Bedrock, SageMaker, Transform, RDS | skipped | Low | — |
+
+**Worth revisiting:** API Gateway backend mTLS is the strongest unwritten item
+from this day. It closes the other half of a mutual-TLS story — API Gateway has
+supported client-side mTLS for some time, and the backend leg was the gap. It
+competes well on any quiet day.
+
+---
+
 ## 7 September 2026 — no announcements; post #27 took a held item
 
 Labor Day in the US. `fetch_week.py` returned **0 announcements in range** across
