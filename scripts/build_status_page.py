@@ -1149,14 +1149,37 @@ def main():
                  'numbers exist for Google and cannot for the other two.</p>'
                  % (len(tr["acks"]), round(tr["ack_median"]), dur(max(tr["acks"]) / 60)))
 
+    # EVERY source, not just the three live feeds.
+    #
+    # The table listed the three status endpoints while the fetcher was also
+    # reading AWS's history events and Azure's status-history API -- which by
+    # then supplied most of the timeline. So the page named three sources and
+    # ran on five, on the one section whose entire job is saying where things
+    # came from. Iterating `sources` rather than ORDER means a source added to
+    # the fetcher appears here without anyone remembering to add it.
+    EXTRA = {
+        "aws_history": ("AWS", "service history"),
+        "azure_history": ("Azure", "status history"),
+    }
     src = ""
-    for c in ORDER:
-        s = sources.get(c, {})
+    for key in list(ORDER) + [k for k in sources if k not in ORDER]:
+        s = sources.get(key, {})
+        if not s:
+            continue
         resp = ("HTTP %s" % s.get("http")) if s.get("ok") else                '<span style="color:#D4A05A">failed</span>'
+        if s.get("ok") and s.get("http") is None:
+            resp = "read %d" % s.get("count", 0)
         u = s.get("url", "")
+        if key in EXTRA:
+            label, kind = EXTRA[key]
+            name = "%s <span class=\"src-kind\">%s</span>" % (e(label), e(kind))
+            human = u
+        else:
+            name = e(LABEL[key])
+            human = HUMAN.get(key, u)
         src += ('<tr><td><a href="%s" target="_blank" rel="noopener">%s</a></td>'
                 '<td>%s</td><td>%s</td><td>%s</td></tr>'
-                % (e(HUMAN.get(c, u)), e(LABEL[c]), e(u[:56]), resp,
+                % (e(human), name, e(u[:56]), resp,
                    e(since(t(s.get("fetched"))))))
 
     cssv = "1"
