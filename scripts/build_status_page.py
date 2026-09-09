@@ -40,6 +40,17 @@ e = html.escape
 LABEL = {"aws": "AWS", "azure": "Azure", "gcp": "Google Cloud"}
 ORDER = ["aws", "azure", "gcp"]
 
+# The human-readable status page for each cloud, which is NOT the endpoint the
+# data is read from. Making the endpoint itself a link sent readers to raw JSON
+# and raw XML -- correct provenance, useless destination. The endpoint stays on
+# the page as text because it IS the claim; the link goes somewhere a person
+# can read.
+HUMAN = {
+    "aws":   "https://health.aws.amazon.com/health/status",
+    "azure": "https://azure.status.microsoft/en-us/status",
+    "gcp":   "https://status.cloud.google.com/",
+}
+
 # How old the data may be before the page says so out loud. The workflow runs
 # every 15 minutes, so anything past an hour means several runs have failed
 # and the reader should not trust the green ticks.
@@ -188,6 +199,16 @@ PAGE = """<!DOCTYPE html>
 <link rel="canonical" href="https://jayanthkatta.com/intelligence/status/"/>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600&amp;family=DM+Sans:wght@400;600&amp;family=DM+Mono&amp;display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/intelligence/status/status.css?v=__CSSV__">
+<script>
+/* Byte-identical to the setter in index.html, now.html and the other
+   intelligence pages. It runs before first paint deliberately: setting the
+   palette after the stylesheet has applied produces a visible flash of the
+   default ground colour on every load. */
+(function(){var D=["sun","mon","tue","wed","thu","fri","sat"],p;
+try{p=new URLSearchParams(location.search).get("palette")||localStorage.getItem("paletteDay");}catch(e){p=null;}
+if(D.indexOf(p)===-1)p=D[new Date().getDay()];
+document.documentElement.setAttribute("data-palette",p);})();
+</script>
 </head><body>
 <nav>
   <a class="nav-logo" href="/intelligence/" aria-label="Cloud intelligence home">
@@ -231,7 +252,7 @@ PAGE = """<!DOCTYPE html>
      that supplies the inputs is measured.</div>
   __STATS__
   <h2>Sources</h2>
-  <div class="tw"><table><tr><th>Cloud</th><th>Endpoint</th><th>Last response</th><th>Read</th></tr>__SRC__</table></div>
+  <div class="tw"><table><tr><th>Status page</th><th>Endpoint we read</th><th>Last response</th><th>Read</th></tr>__SRC__</table></div>
   <p class="src">No ETA appears anywhere on this page. None of the three publishes one
      as structured data, and lifting &ldquo;we expect recovery shortly&rdquo; out of an
      update would manufacture a commitment the vendor never made.</p>
@@ -299,9 +320,9 @@ def main():
         s = sources.get(c, {})
         resp = ("HTTP %s" % s.get("http")) if s.get("ok") else                '<span style="color:#D4A05A">failed</span>'
         u = s.get("url", "")
-        src += ('<tr><td>%s</td><td><a href="%s" target="_blank" rel="noopener">%s</a>'
-                '</td><td>%s</td><td>%s</td></tr>'
-                % (e(LABEL[c]), e(u), e(u[:56]), resp,
+        src += ('<tr><td><a href="%s" target="_blank" rel="noopener">%s</a></td>'
+                '<td>%s</td><td>%s</td><td>%s</td></tr>'
+                % (e(HUMAN.get(c, u)), e(LABEL[c]), e(u[:56]), resp,
                    e(since(t(s.get("fetched"))))))
 
     cssv = "1"
