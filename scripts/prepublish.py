@@ -141,6 +141,12 @@ CHECKS = [
     # The live fetch stays opt-in (--live): a vendor's site being slow must not
     # be able to block a publish.
     ("check_links.py",          True,  False, False, False),
+    # One cloud palette across every file that colour-codes AWS, Azure and
+    # Google. Blocking, and offline: a near-miss hex looks correct on its own
+    # page and only shows up when a reader moves between pages, which is
+    # exactly the kind of thing review never catches. Two files had coloured
+    # Google and Azure the same blue, 6 apart in RGB, for who knows how long.
+    ("check_cloud_colors.py",   True,  False, False, False),
     ("check_index_complete.py", True,  False, False, False),
     ("fix_series_nav.py",       True,  False, False, False),
     # The announcement store behind /intelligence/whats-new/. Nothing else in

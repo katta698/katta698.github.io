@@ -178,9 +178,9 @@ document.documentElement.setAttribute('data-palette',p);})();
   html[data-palette="fri"]{--bg:#1B1E1B;--card:#212622}
   html[data-palette="sat"]{--bg:#1D1D21;--card:#242429}
   html[data-palette="sun"]{--bg:#1D1E1B;--card:#232521}
-  body.light .chip.aws{color:#715436}
-  body.light .chip.azure{color:#3E5469}
-  body.light .chip.gcp{color:#505935}
+  body.light .chip.aws{color:#705539}
+  body.light .chip.azure{color:#3C5570}
+  body.light .chip.gcp{color:#515C32}
   body.light{--text:#2C2A29;--text-muted:#6B6A66;--border:#CFCFCE;--bg:#F7F4EF;--card:#E9E6E0}
   html[data-palette="mon"] body.light{--bg:#EFF7FB;--card:#E0E9ED}
   html[data-palette="tue"] body.light{--bg:#F7F4EF;--card:#E9E6E0}
@@ -377,9 +377,9 @@ document.documentElement.setAttribute('data-palette',p);})();
      Set HERE rather than in a later block: an added `.chip.azure{color}` rule
      has the same specificity as this one, so source order decides, and a rule
      placed above this lost silently. */
-  .chip.aws{background:rgba(196,164,132,.18);color:#C8AA8D}
-  .chip.azure{background:rgba(91,123,154,.2);color:#92A8BE}
-  .chip.gcp{background:rgba(138,154,91,.2);color:#A5B37E}
+  .chip.aws{background:rgba(196,164,132,.18);color:#D6B896}
+  .chip.azure{background:rgba(91,123,154,.2);color:#9DB6CE}
+  .chip.gcp{background:rgba(138,154,91,.2);color:#BCC98E}
   .body{min-width:0}
   .title{font-size:.92rem;line-height:1.45;text-decoration:none;color:var(--text)}
   .title:hover{color:var(--accent);text-decoration:underline}
