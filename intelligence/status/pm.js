@@ -802,7 +802,7 @@
           var gap = vendors.length > 1 ? 0.16 : 0;
           collar = '<g class="om-collar">' + vendors.map(function (v, k) {
             return '<path class="' + esc(v) + '" d="' +
-                   arc(xy[0], xy[1], rad + 2.4,
+                   arc(xy[0], xy[1], rad + 2.7,
                        -Math.PI / 2 + k * step + gap / 2,
                        -Math.PI / 2 + (k + 1) * step - gap / 2) + '"/>';
           }).join('') + '</g>';
