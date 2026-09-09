@@ -909,8 +909,12 @@ def postmortems(cssv="1"):
             'full incident report from the vendor; the rest carry what the '
             'vendor recorded — what it was, when, and a link to their page '
             'for it. Nothing is left out for being minor. How far back each '
-            'goes is their choice, not a filter here: %s.</p>'
-            % (len(rows), "" if len(rows) == 1 else "s", wrote, e(reach_txt)))
+            'goes is their choice, not a filter here: %s. A missing year means '
+            'nothing was published for it — and %d AWS summaries state a '
+            'month and day with no year anywhere in the text, so they sit under '
+            'Undated rather than being guessed into one.</p>'
+            % (len(rows), "" if len(rows) == 1 else "s", wrote, e(reach_txt),
+                 sum(1 for r in rows if not r.get("b"))))
 
     dialog = ('<dialog id="pm-dialog" aria-labelledby="pm-title">'
               '<button class="pm-x" data-pm-close aria-label="Close">×</button>'
