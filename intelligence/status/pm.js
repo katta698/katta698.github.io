@@ -262,28 +262,43 @@
 
   /* Filters for the write-up archive: year and cloud, combined.
    *
-   * Hides, never removes. The cards are all in the HTML so browser search
-   * still finds them, and with JavaScript off every card stays visible rather
-   * than the section collapsing to nothing.
+   * Counts on the chips are RECOMPUTED against the other filter, so each one
+   * says how many cards clicking it would actually show. They used to be
+   * fixed totals, which meant "AWS 18" sat beside a selected 2026 in which
+   * AWS published nothing -- a chip advertising eighteen results and
+   * delivering an empty section. A count that does not describe its own click
+   * is decoration.
    *
-   * A year group with no matching card is hidden too -- otherwise filtering to
-   * one cloud leaves a column of empty year headings.
+   * Hides, never removes: every card stays in the HTML, so browser search
+   * still finds them and the section still works with JavaScript off.
    */
   var yrs = document.querySelector('.pm-yrs');
   var cls = document.querySelector('.pm-cls');
   if (yrs) {
-    var curYear = (yrs.querySelector('.pm-yr.is-on') || {}).getAttribute
-                ? yrs.querySelector('.pm-yr.is-on').getAttribute('data-yr') : null;
+    var onYear = yrs.querySelector('.pm-yr.is-on');
+    var curYear = onYear ? onYear.getAttribute('data-yr') : 'all';
     var curCloud = 'all';
+
+    var cards = [].slice.call(document.querySelectorAll('.pm-card'));
+    var groups = [].slice.call(document.querySelectorAll('.pm-year'));
+
+    function cloudOf(c) {
+      return c.classList.contains('aws') ? 'aws'
+           : c.classList.contains('azure') ? 'azure'
+           : c.classList.contains('gcp') ? 'gcp' : '';
+    }
+    function yearOf(c) {
+      var g = c.closest('.pm-year');
+      return g ? g.getAttribute('data-yr') : '';
+    }
 
     function apply() {
       var total = 0;
-      [].forEach.call(document.querySelectorAll('.pm-year'), function (g) {
-        var yearOk = g.getAttribute('data-yr') === curYear;
+      groups.forEach(function (g) {
         var shown = 0;
         [].forEach.call(g.querySelectorAll('.pm-card'), function (c) {
-          var ok = yearOk &&
-                   (curCloud === 'all' || c.classList.contains(curCloud));
+          var ok = (curYear === 'all' || yearOf(c) === curYear) &&
+                   (curCloud === 'all' || cloudOf(c) === curCloud);
           c.classList.toggle('is-hidden', !ok);
           if (ok) shown++;
         });
@@ -291,18 +306,41 @@
         total += shown;
       });
 
-      // Say so when a combination has nothing in it. An empty section reads as
-      // a broken filter, and the absence is itself worth stating: no AWS
-      // write-up in 2026 means AWS has published none, not that one is hidden.
+      // Year chips count within the chosen cloud; cloud chips count within
+      // the chosen year. Each number is what that click would give you.
+      [].forEach.call(yrs.querySelectorAll('.pm-yr'), function (b) {
+        var y = b.getAttribute('data-yr');
+        var n = cards.filter(function (c) {
+          return (y === 'all' || yearOf(c) === y) &&
+                 (curCloud === 'all' || cloudOf(c) === curCloud);
+        }).length;
+        var span = b.querySelector('.pm-yn');
+        if (span) span.textContent = n;
+        b.classList.toggle('is-empty', n === 0);
+      });
+      if (cls) {
+        [].forEach.call(cls.querySelectorAll('.pm-cl'), function (b) {
+          var cl = b.getAttribute('data-cl');
+          var n = cards.filter(function (c) {
+            return (curYear === 'all' || yearOf(c) === curYear) &&
+                   (cl === 'all' || cloudOf(c) === cl);
+          }).length;
+          var span = b.querySelector('.pm-yn');
+          if (span) span.textContent = n;
+          b.classList.toggle('is-empty', n === 0);
+        });
+      }
+
       var none = document.querySelector('.pm-none');
       if (none) {
-        var cloudName = curCloud === 'all' ? '' :
-          (cls.querySelector('.pm-cl.is-on') || {}).textContent || '';
-        cloudName = cloudName.replace(/\s*\d+\s*$/, '').trim();
+        var cn = curCloud === 'all' ? '' :
+          ((cls.querySelector('.pm-cl.is-on') || {}).textContent || '')
+            .replace(/\s*\d+\s*$/, '').trim();
+        var yn = curYear === 'all' ? 'any year' : curYear;
         none.hidden = total !== 0;
         none.textContent = total === 0
-          ? (cloudName ? cloudName + ' published no write-up dated ' + curYear + '.'
-                       : 'Nothing dated ' + curYear + '.')
+          ? (cn ? cn + ' published no write-up dated ' + yn + '.'
+                : 'Nothing dated ' + yn + '.')
           : '';
       }
     }

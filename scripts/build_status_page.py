@@ -710,16 +710,22 @@ def postmortems(cssv="1"):
     # off -- the filtering hides, it does not omit.
     years = sorted(by_year, key=yr_key, reverse=True)
     newest = years[0] if years else ""
-    chips = "".join(
+    chips = ('<button class="pm-yr" data-yr="all" type="button">All years '
+             '<span class="pm-yn">%d</span></button>' % len(rows))
+    chips += "".join(
         '<button class="pm-yr%s" data-yr="%s" type="button">%s '
         '<span class="pm-yn">%d</span></button>'
         % (" is-on" if y == newest else "", e(y), e(y), len(by_year[y]))
         for y in years)
 
     # A cloud filter alongside the year one. They combine: a card shows when
-    # it matches both. Counts are of the whole archive, not of the current
-    # selection -- a count that changes as you filter tells you about your own
-    # filter rather than about the archive.
+    # it matches both.
+    #
+    # These counts are starting values only -- the browser recomputes them
+    # against the other filter. Static totals were worse than useless: "AWS 18"
+    # sat next to a selected 2026 in which AWS has none, so the chip invited a
+    # click that emptied the section. A count that does not describe what
+    # clicking it will do is decoration.
     by_cloud = {}
     for r in rows:
         by_cloud[r.get("cloud", "")] = by_cloud.get(r.get("cloud", ""), 0) + 1
