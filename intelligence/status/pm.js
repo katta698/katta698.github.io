@@ -230,16 +230,14 @@
         (r.m ? '<p>' + esc(r.m) + '</p>' : '') +
         (r.u
           ? '<p class="pm-src"><a href="' + esc(r.u) + '" target="_blank" rel="noopener">Read it on ' + esc(v) + '’s site →</a></p>'
-          : '<p class="pm-src">' + esc(v) + ' has no address for a single incident' +
-            (r.g
-              ? ', and its tabs are not in the URL either — so this opens ' +
-                '<a href="' + esc(r.g) + '" target="_blank" rel="noopener">their status dashboard</a>' +
-                ' and you then click <b>' +
-                (r.e ? 'Service history' : 'Open and recent issues') +
-                '</b>' +
-                (r.e ? ' to find it, since it is resolved' : '') + '.'
-              : '.') +
-            ' The text above is theirs, read from that page.</p>') +
+          // Only reached when a vendor genuinely publishes no address for
+          // the incident. AWS does -- ?eventID=<arn> opens its detail panel --
+          // so this is now Azure's case, whose feed carries no per-incident
+          // link at all.
+          : '<p class="pm-src">' + esc(v) +
+            ' publishes no address for this incident, so there is nothing to link to' +
+            (r.g ? '. Read from <a href="' + esc(r.g) + '" target="_blank" rel="noopener">their status page</a>' : '') +
+            '; the text above is theirs.</p>') +
         '</section>';
     });
     body.innerHTML = html;

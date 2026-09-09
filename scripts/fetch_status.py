@@ -195,7 +195,7 @@ def parse_aws_history(raw):
                 "end": str(end or ""),
                 "update": prefer_english(flat(log[-1].get("message") if log else "", 4000))[:900],
                 "updates": len(log),
-                "url": "https://health.aws.amazon.com/health/status",
+                "url": aws_event_url(e.get("arn", "")),
             })
     return out
 
@@ -223,6 +223,31 @@ def prefer_english(text):
     parts = [p.strip() for p in re.split(r"(?<=[.。])\s+|\s*\|\s*", text) if p.strip()]
     keep = [p for p in parts if len(CJK.findall(p)) / max(len(p), 1) < 0.2]
     return " ".join(keep) if keep else text
+
+
+AWS_EVENT = "https://health.aws.amazon.com/health/status?eventID=%s"
+
+
+def aws_event_url(arn):
+    """A per-incident AWS link, keyed on the event ARN.
+
+    I said twice that this did not exist. It does, and the reader of this site
+    found it: the public dashboard accepts ?eventID=<arn> and opens that event's
+    detail panel. Verified against two ARNs -- one returns "July 24, 2026,
+    4:40 AM (PDT), Oregon (us-west-2)" and the other "July 17, 2026, 1:33 AM
+    (PDT), Global" -- so the parameter genuinely selects the event rather than
+    being ignored.
+
+    What I had tested was clicking rows and guessing at tab fragments
+    (#service-history, ?tab=history), which all leave the dashboard on its
+    default tab. Concluding from that that AWS publishes no deep link was
+    reasoning from the absence of the thing I happened to try.
+
+    The ARN is left unencoded because that is the form AWS's own links take
+    and the form that was verified working; percent-encoding the colons and
+    slashes was not tested and this is not the place to guess again.
+    """
+    return AWS_EVENT % arn if arn else "https://health.aws.amazon.com/health/status"
 
 
 def parse_aws(raw):
@@ -265,7 +290,7 @@ def parse_aws(raw):
             # No first_update: AWS's "date" IS its first announcement, so the
             # gap is structurally zero and reporting it would flatter AWS for
             # disclosing less. See the transparency note on the page.
-            "url": "https://health.aws.amazon.com/health/status",
+            "url": aws_event_url(arn),
         })
     return live, []
 
