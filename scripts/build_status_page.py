@@ -26,6 +26,8 @@ import io
 import json
 import os
 import re
+
+from feedback_block import feedback_html, FEEDBACK_CSS  # noqa: E402
 import statistics
 import sys
 
@@ -859,6 +861,7 @@ document.documentElement.setAttribute("data-palette",p);})();
   __STATS__
   <h2>Sources</h2>
   <div class="tw"><table><tr><th>Status page</th><th>Endpoint we read</th><th>Last response</th><th>Read</th></tr>__SRC__</table></div>
+  __FEEDBACK__
   <p class="src">No ETA appears anywhere on this page. None of the three publishes one
      as structured data, and lifting &ldquo;we expect recovery shortly&rdquo; out of an
      update would manufacture a commitment the vendor never made.</p>
@@ -957,7 +960,10 @@ def main():
                 .replace("__POSTMORTEMS__", postmortems(cssv))
                 .replace("__CADENCE__", cadence())
                 .replace("__STATS__", stats)
-                .replace("__SRC__", src))
+                .replace("__SRC__", src)
+                .replace("__FEEDBACK__",
+                         feedback_html("Cloud status",
+                                       "https://jayanthkatta.com/intelligence/status/")))
 
     os.makedirs(OUT_DIR, exist_ok=True)
     io.open(os.path.join(OUT_DIR, "index.html"), "w",
