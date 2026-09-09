@@ -153,6 +153,7 @@ PAGE = """<!DOCTYPE html>
 <meta name="twitter:card" content="summary_large_image"/>
 <link rel="canonical" href="https://jayanthkatta.com/intelligence/whats-new/"/>
 <link rel="icon" href="/favicon-transparent.png" type="image/png">
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
 <link rel="manifest" href="/manifest.webmanifest"/>
 <meta name="theme-color" content="#1D2322"/>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -196,7 +197,7 @@ document.documentElement.setAttribute('data-palette',p);})();
   body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
        -webkit-font-smoothing:antialiased;transition:background .25s,color .25s}
   a{color:inherit}
-  nav{display:flex;align-items:center;justify-content:space-between;padding:1rem 2rem;
+  nav{display:flex;align-items:center;justify-content:space-between;padding:0 2rem;height:64px;box-sizing:border-box;
       position:sticky;top:0;z-index:100;background:var(--ink);color:#EDEBE6}
   .nav-logo{display:flex;align-items:center;gap:.6rem;text-decoration:none;color:#EDEBE6}
   .brand-name{font-family:var(--serif);font-weight:600;font-size:1rem}

@@ -798,6 +798,8 @@ PAGE = """<!DOCTYPE html>
 <title>Cloud status &mdash; AWS, Azure and Google Cloud | Jayanth Katta</title>
 <meta name="description" content="Live incident status for AWS, Azure and Google Cloud, read from each vendor own status feed, with the time each source was last checked."/>
 <link rel="canonical" href="https://jayanthkatta.com/intelligence/status/"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png">
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600&amp;family=DM+Sans:wght@400;600&amp;family=DM+Mono&amp;display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/intelligence/status/status.css?v=__CSSV__">
 <script>
@@ -868,9 +870,9 @@ document.documentElement.setAttribute("data-palette",p);})();
   words, not mine: open one and you get the published text in full, with a
   link to the original.</p>
   __POSTMORTEMS__
-  __CADENCE__
   <h2>Sources</h2>
   <div class="tw"><table><tr><th>Status page</th><th>Endpoint we read</th><th>Last response</th><th>Read</th></tr>__SRC__</table></div>
+  __CADENCE__
   <p class="src">No ETA appears anywhere on this page. None of the three publishes one
      as structured data, and lifting &ldquo;we expect recovery shortly&rdquo; out of an
      update would manufacture a commitment the vendor never made.</p>
