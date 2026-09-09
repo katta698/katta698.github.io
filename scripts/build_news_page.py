@@ -89,33 +89,38 @@ def sources_table():
                 if (r.get("date") or "") > a["last"]:
                     a["last"] = r.get("date") or ""
 
-    # The host is CONTEXT, not a link, and the domains are linked once.
+    # ONE ROW PER DOMAIN, not one per feed.
     #
-    # Linking every row produced 65 links for 9 distinct hosts -- 56 of them
-    # duplicates, and none of them anywhere a reader wanted to go: every
-    # announcement on this page already links to its own vendor page, which is
-    # the specific address that matters. A table of repeated domain links is
-    # 56 invitations to leave for somewhere less useful than the row above.
-    rows = ""
-    hosts_seen = {}
-    for (cloud, src), a in sorted(agg.items(), key=lambda kv: (kv[0][0], -kv[1]["n"])):
-        host = max(a["hosts"], key=a["hosts"].get) if a["hosts"] else ""
-        if host:
-            hosts_seen[host] = hosts_seen.get(host, 0) + 1
-        rows += ('<tr><td>%s</td><td>%s</td><td class="host">%s</td>'
-                 '<td class="num">%d</td><td>%s</td></tr>'
-                 % (CLOUD_NAME.get(cloud, cloud), src, host or "&mdash;",
-                    a["n"], a["last"] or "&mdash;"))
+    # Sixty-five rows is not a sources table, it is the feed list printed out.
+    # A reader asking "where does this come from" wants the places, and there
+    # are nine of them; the sixty-five names underneath were breadth for its
+    # own sake. The count of feeds is kept as a number, because "65 feeds
+    # across 9 domains" is the fact worth having and it fits in a sentence.
+    dom = {}
+    for (cloud, src), a in agg.items():
+        host = max(a["hosts"], key=a["hosts"].get) if a["hosts"] else "unknown"
+        d = dom.setdefault(host, {"clouds": set(), "feeds": 0, "n": 0, "last": ""})
+        d["clouds"].add(CLOUD_NAME.get(cloud, cloud))
+        d["feeds"] += 1
+        d["n"] += a["n"]
+        if a["last"] > d["last"]:
+            d["last"] = a["last"]
 
-    domains = " &middot; ".join(
-        '<a href="https://%s/" target="_blank" rel="noopener">%s</a>' % (h, h)
-        for h in sorted(hosts_seen, key=lambda x: -hosts_seen[x]))
-    return ('<p class="note">All of it comes from %d domain%s: %s.</p>'
+    rows = ""
+    for host, d in sorted(dom.items(), key=lambda kv: -kv[1]["n"]):
+        rows += ('<tr><td>%s</td>'
+                 '<td class="host"><a href="https://%s/" target="_blank" '
+                 'rel="noopener">%s</a></td>'
+                 '<td class="num">%d</td><td class="num">%d</td><td>%s</td></tr>'
+                 % (", ".join(sorted(d["clouds"])), host, host,
+                    d["feeds"], d["n"], d["last"] or "&mdash;"))
+
+    return ('<p class="note">%d feed%s across %d domain%s.</p>'
             '<div class="tw"><table class="src-tbl"><thead><tr><th>Cloud</th>'
-            '<th>Source</th><th>Published at</th><th class="num">Held</th>'
+            '<th>Domain</th><th class="num">Feeds</th><th class="num">Held</th>'
             '<th>Latest</th></tr></thead><tbody>%s</tbody></table></div>'
-            % (len(hosts_seen), "" if len(hosts_seen) == 1 else "s",
-               domains, rows))
+            % (len(agg), "" if len(agg) == 1 else "s",
+               len(dom), "" if len(dom) == 1 else "s", rows))
 
 
 def collect(classes):
