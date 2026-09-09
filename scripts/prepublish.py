@@ -132,6 +132,15 @@ CHECKS = [
     # it already earns its place by catching new ones -- four shipped
     # unreadable on 2026-09-08 before it existed.
     ("check_contrast.py",       False, False, False, False),
+    # Whether links actually go anywhere. Blocking, because the structural mode
+    # runs offline and a malformed host is always a bug in this repo -- never
+    # the network. Every Google incident link on the status page pointed at
+    # "status.cloud.google.comincidents/..." for want of one slash, and nothing
+    # here checked that a hyperlink resolved, so the whole category was
+    # untested while contrast and structure were watched closely.
+    # The live fetch stays opt-in (--live): a vendor's site being slow must not
+    # be able to block a publish.
+    ("check_links.py",          True,  False, False, False),
     ("check_index_complete.py", True,  False, False, False),
     ("fix_series_nav.py",       True,  False, False, False),
     # The announcement store behind /intelligence/whats-new/. Nothing else in

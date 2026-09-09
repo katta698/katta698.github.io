@@ -47,6 +47,7 @@ import re
 import ssl
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -61,6 +62,8 @@ SOURCES = {
     "azure": ("Azure Status",         "https://azure.status.microsoft/en-us/status/feed/"),
     "gcp":   ("Google Cloud Status",  "https://status.cloud.google.com/incidents.json"),
 }
+
+GCP_BASE = "https://status.cloud.google.com/"
 
 UA = "jayanthkatta.com status fetcher (+https://jayanthkatta.com)"
 CTX = ssl.create_default_context()
@@ -115,7 +118,14 @@ def parse_gcp(raw):
             # start distinct from its first public update, so it is the only
             # one where "how long before they said anything" is a real number.
             "first_update": ups[0].get("created", "") if ups else "",
-            "url": "https://status.cloud.google.com" + (i.get("uri") or ""),
+            # urljoin, not "+". Google's uri has NO leading slash
+            # ("incidents/J5ia..."), so concatenation produced
+            # "status.cloud.google.comincidents/J5ia..." -- a host that does
+            # not resolve, on every Google incident link the page drew. It
+            # looks right at a glance in both the code and the JSON, which is
+            # why it survived: the string only breaks at the one character
+            # where two correct halves meet.
+            "url": urllib.parse.urljoin(GCP_BASE, i.get("uri") or ""),
         }
         (past if rec["end"] else live).append(rec)
     return live, past
