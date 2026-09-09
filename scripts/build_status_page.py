@@ -183,7 +183,13 @@ def incident_payload():
         # telling them it does not exist.
         generic = url in ("https://health.aws.amazon.com/health/status",
                           "https://azure.status.microsoft/en-us/status")
+        # Where the incident has no page of its own, still name the page it
+        # was READ from. "No link" reads as "unsourced" on a page whose whole
+        # claim is that every line is traceable -- the vendor's status page is
+        # not the incident, but it is where this came from, and a reader who
+        # wants to check has to be told where to look.
         out.append({
+            "g": url if generic else "",
             "c": cloud,
             "t": (i.get("title") or "")[:240],
             "s": (i.get("service") or "")[:120],

@@ -166,10 +166,27 @@
   function openDay(day, idxs) {
     lastFocus = document.activeElement;
     var rows = idxs.map(function (i) { return incidents[i]; }).filter(Boolean);
+
+    // A day shows every incident OPEN on it, which includes ones that started
+    // months earlier -- the two Middle East events have been open since March,
+    // so they appear on all ninety days. Listed plainly that reads as a bug:
+    // "3 incidents open on this day" above two entries dated 1 March.
+    //
+    // So the ones that STARTED that day come first and are labelled as such,
+    // and the rest are marked as already running, with the date they began.
+    // Same set, ordered and captioned so the old dates explain themselves.
+    function began(r) { return String(r.b || '').slice(0, 10) === day || when(r.b).slice(0, 10) === day; }
+    rows.sort(function (a, b) { return (began(b) ? 1 : 0) - (began(a) ? 1 : 0); });
+    var nNew = rows.filter(began).length;
+    var nOld = rows.length - nNew;
+
+    var head = nNew
+      ? (nNew + (nNew === 1 ? ' incident began' : ' incidents began') + ' on this day')
+      : 'Nothing began on this day';
+    if (nOld) head += ' · ' + nOld + ' already running';
+
     var html = '<p class="pm-meta"><span class="pm-date">' + esc(day) + '</span></p>' +
-               '<h3 id="pm-title">' + rows.length +
-               (rows.length === 1 ? ' incident open' : ' incidents open') +
-               ' on this day</h3>';
+               '<h3 id="pm-title">' + esc(head) + '</h3>';
     rows.forEach(function (r) {
       var v = VENDOR[r.c] || r.c;
       html += '<section class="pm-sec">' +
@@ -177,12 +194,16 @@
         '<p><strong>' + esc(r.t) + '</strong></p>' +
         (r.s ? '<p class="pm-shape">Service: ' + esc(r.s) + '</p>' : '') +
         (r.r ? '<p class="pm-shape">Region: ' + esc(r.r) + '</p>' : '') +
-        '<p class="pm-shape">Began ' + esc(when(r.b) || 'not stated') +
-        (r.e ? ' · ended ' + esc(when(r.e)) : ' · still open') + '</p>' +
+        '<p class="pm-shape">' +
+          (began(r) ? 'Began ' : 'Already running — began ') +
+          esc(when(r.b) || 'not stated') +
+          (r.e ? ' · ended ' + esc(when(r.e)) : ' · still open') + '</p>' +
         (r.m ? '<p>' + esc(r.m) + '</p>' : '') +
         (r.u
           ? '<p class="pm-src"><a href="' + esc(r.u) + '" target="_blank" rel="noopener">Read it on ' + esc(v) + '’s site →</a></p>'
-          : '<p class="pm-src">' + esc(v) + ' publishes no per-incident page for this, so there is nothing to link to. The text above is theirs.</p>') +
+          : '<p class="pm-src">' + esc(v) + ' publishes no page for a single incident, so there is no link to it. Read from ' +
+            (r.g ? '<a href="' + esc(r.g) + '" target="_blank" rel="noopener">their status dashboard</a>' : 'their status feed') +
+            '; the text above is theirs.</p>') +
         '</section>';
     });
     body.innerHTML = html;
