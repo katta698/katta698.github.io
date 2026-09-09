@@ -208,7 +208,14 @@ def timeline(history, live, hist_meta=None):
     for i in history.values():
         c = i.get("cloud")
         if c in bad:
-            mark(c, t(i.get("begin")), t(i.get("end")), i)
+            # AWS timestamps are epoch seconds in the history feed too, not
+            # just in the live one. Parsing them with the ISO reader returned
+            # None, mark() bailed out, and all 31 resolved AWS incidents were
+            # silently absent from the strip -- present in the store, counted
+            # in the region grid, and invisible on the one chart meant to show
+            # when things broke.
+            when = aws_begin if c == "aws" else t
+            mark(c, when(i.get("begin")), when(i.get("end")), i)
     for c, rows in live.items():
         for i in rows:
             mark(c, aws_begin(i.get("begin")) if c == "aws" else t(i.get("begin")), None, i)
@@ -837,6 +844,8 @@ document.documentElement.setAttribute("data-palette",p);})();
      reported, which is not the same as nothing happening.</p>
   __REGIONS__
 
+  __FEEDBACK__
+
   <h2>What the vendors do and don&rsquo;t tell you</h2>
   <p class="sub">The three publish very different amounts, and that difference is
      itself worth knowing when you decide how far to trust a status page.</p>
@@ -861,7 +870,6 @@ document.documentElement.setAttribute("data-palette",p);})();
   __STATS__
   <h2>Sources</h2>
   <div class="tw"><table><tr><th>Status page</th><th>Endpoint we read</th><th>Last response</th><th>Read</th></tr>__SRC__</table></div>
-  __FEEDBACK__
   <p class="src">No ETA appears anywhere on this page. None of the three publishes one
      as structured data, and lifting &ldquo;we expect recovery shortly&rdquo; out of an
      update would manufacture a commitment the vendor never made.</p>

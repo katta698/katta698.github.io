@@ -40,6 +40,7 @@ vendor never made. Elapsed time and their own words are shown instead.
 """
 import argparse
 import datetime
+import gzip
 import io
 import json
 import os
@@ -130,6 +131,73 @@ def parse_gcp(raw):
         }
         (past if rec["end"] else live).append(rec)
     return live, past
+
+
+AWS_HISTORY = ("https://history-events-us-east-1-prod.s3.amazonaws.com/"
+               "historyevents.json")
+
+
+def parse_aws_history(raw):
+    """AWS's RESOLVED incidents, which data.json does not carry.
+
+    This closes the biggest hole in the page. data.json lists only what is
+    open right now, so every AWS incident that started and finished left no
+    trace anywhere -- the store held zero resolved AWS incidents, the timeline
+    could only ever show the two Middle East events still open since March,
+    and a reader asking "was there an AWS outage in July?" got silence that
+    looked like a no.
+
+    The feed was found by loading health.aws.amazon.com/health/status in a
+    real browser and watching what the "Service history" tab fetches. It is
+    not linked or documented anywhere I could find, which is why three
+    separate searches of AWS's published surfaces missed it, and why I told
+    the owner of this site that AWS published no such thing. It does.
+
+    Two things about the format.
+
+    It is gzip, served from S3 without content negotiation, so urllib hands
+    back bytes starting \\x1f\\x8b and json.loads fails with a message about
+    line 1 column 1 that reads like the endpoint moved.
+
+    And it is a dict keyed by "service-region" -- "ec2-eu-west-2",
+    "multipleservices-us-west-2" -- each holding a list of events, rather than
+    the flat array data.json uses. The key is the only place the region
+    appears, so it is split rather than dropped: without it every historical
+    incident would render with no location while the live ones show one.
+    """
+    if raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    data = json.loads(raw.decode("utf-8", "replace"))
+    out = []
+    for key, events in (data or {}).items():
+        # "multipleservices-us-west-2" -> service "multipleservices",
+        # region "us-west-2". Services and regions both contain hyphens, so
+        # the split is anchored on the region shape rather than on position.
+        m = re.search(r"-((?:[a-z]{2}|us|eu|ap|sa|ca|me|af|il)-[a-z]+-\d+)$", key)
+        region = m.group(1) if m else ""
+        service = key[: m.start()] if m else key
+        for e in events or []:
+            log = sorted(e.get("event_log") or [],
+                         key=lambda x: x.get("timestamp", 0))
+            begin = e.get("date")
+            # The last log entry is the resolution, so its timestamp is the
+            # end. Falling back to the start would render every resolved
+            # incident as lasting zero minutes.
+            end = log[-1].get("timestamp") if log else None
+            out.append({
+                "cloud": "aws",
+                "id": e.get("arn", "") or ("%s:%s" % (key, begin)),
+                "title": flat(e.get("summary"), 240),
+                "service": ", ".join(e.get("impacted_services") or [])[:120] or service,
+                "region": region,
+                "region_code": region,
+                "begin": str(begin or ""),
+                "end": str(end or ""),
+                "update": flat(log[-1].get("message") if log else ""),
+                "updates": len(log),
+                "url": "https://health.aws.amazon.com/health/status",
+            })
+    return out
 
 
 def parse_aws(raw):
@@ -331,6 +399,26 @@ def main():
                 "fetched": (prev.get("sources", {}).get(cloud, {}) or {}).get("fetched", ""),
                 "error": str(exc)[:200], "attempted": stamp(),
             }
+
+    # AWS resolved incidents, from the history feed behind the Health
+    # Dashboard's "Service history" tab. Kept out of SOURCES because it is not
+    # a live status feed -- a failure here means the archive did not grow, not
+    # that AWS's current state is unknown, and the two must not be reported
+    # the same way.
+    try:
+        hraw, _ = get(AWS_HISTORY)
+        hist_aws = parse_aws_history(hraw)
+        past["aws"] = (past.get("aws") or []) + hist_aws
+        sources["aws_history"] = {
+            "name": "AWS service history", "url": AWS_HISTORY, "ok": True,
+            "count": len(hist_aws), "fetched": stamp(),
+        }
+    except Exception as exc:                                    # noqa: BLE001
+        sources["aws_history"] = {
+            "name": "AWS service history", "url": AWS_HISTORY, "ok": False,
+            "error": str(exc)[:200], "attempted": stamp(),
+        }
+        print("  aws-hist FETCH FAILED: %s" % str(exc)[:60])
 
     added, total = (0, 0) if args.dry_run else merge_history(past)
     if not args.dry_run:
