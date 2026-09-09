@@ -550,32 +550,6 @@ def hooks():
     return out
 
 
-def didyouknow():
-    """A single card, rotating through the hooks, with the full text one tap away."""
-    hs = hooks()
-    if not hs:
-        return ""
-    # Deterministic first pick so the built page is stable and cacheable, but
-    # different day to day -- a card that shows the same line every visit stops
-    # being read after the second one.
-    start = (datetime.date.today().toordinal()) % len(hs)
-    data = json.dumps(hs, ensure_ascii=False).replace("</", "<\\/")
-    h = hs[start]
-    return (
-        '<div class="dyk" id="dyk" data-i="%d">'
-        '<div class="dyk-h">Did you know?</div>'
-        '<blockquote class="dyk-q">%s</blockquote>'
-        '<p class="dyk-m"><span class="chip %s">%s</span>'
-        '<span class="dyk-d">%s</span></p>'
-        '<p class="dyk-t">%s</p>'
-        '<div class="dyk-a">'
-        '<button type="button" class="dyk-more" data-pm="%s">Read what they wrote &rarr;</button>'
-        '<button type="button" class="dyk-next">Another one</button>'
-        '</div></div>'
-        '<script type="application/json" id="dyk-data">%s</script>'
-        % (start, e(h["q"]), e(h["cloud"]), e(LABEL.get(h["cloud"], h["cloud"])),
-           e(h["date"] or "date not stated"), e(h["title"][:150]),
-           e(h["id"]), data))
 
 
 def postmortems(cssv="1"):
@@ -616,20 +590,32 @@ def postmortems(cssv="1"):
     for y in sorted(by_year, key=yr_key, reverse=True):
         items = sorted(by_year[y], key=lambda r: r.get("date") or "", reverse=True)
         cards = ""
+        hook_by_id = {h["id"]: h for h in hooks()}
         for r in items:
             # The shape of the disclosure is itself information: a vendor that
             # publishes headed sections has committed to answering the same
             # questions every time, and one that publishes an essay has not.
             n = len(r.get("sections") or [])
             shape = ("%d sections" % n) if n else "narrative"
+            # The quoted line lives on the card itself rather than in a
+            # separate "did you know" panel above. That panel showed 6 of these
+            # 24 and every one of them was already here -- a strict subset,
+            # duplicated. It could not replace the wall either, because the 18
+            # AWS write-ups have no labelled cause section to quote from and
+            # would have vanished. One component, every write-up, and the
+            # interesting sentence where the thing it describes already is.
+            key = "%s:%s" % (r.get("cloud", ""), r.get("id", ""))
+            hk = hook_by_id.get(key)
+            quote = ('<span class="pm-c-q">%s</span>' % e(hk["q"])) if hk else ""
             cards += (
-                '<button class="pm-card %s" data-pm="%s:%s" type="button">'
+                '<button class="pm-card %s" data-pm="%s" type="button">'
                 '<span class="pm-c-cloud">%s</span>'
                 '<span class="pm-c-title">%s</span>'
+                '%s'
                 '<span class="pm-c-shape">%s</span></button>'
-                % (e(r.get("cloud", "")), e(r.get("cloud", "")), e(r.get("id", "")),
+                % (e(r.get("cloud", "")), e(key),
                    e(LABEL.get(r.get("cloud"), r.get("cloud", ""))),
-                   e(r.get("title", ""))[:150], e(shape)))
+                   e(r.get("title", ""))[:150], quote, e(shape)))
         out += ('<div class="pm-year"><div class="pm-y">%s</div>'
                 '<div class="pm-cards">%s</div></div>' % (e(y), cards))
 
@@ -800,7 +786,6 @@ document.documentElement.setAttribute("data-palette",p);})();
   outages &mdash; what happened, what caused it, and what they changed. Their
   words, not mine: open one and you get the published text in full, with a
   link to the original.</p>
-  __DIDYOUKNOW__
   __POSTMORTEMS__
   <div class="note"><strong>Why the timings below are Google&rsquo;s only.</strong>
      Google publishes when an incident <em>began</em> and, separately, when it first
@@ -907,7 +892,6 @@ def main():
                 .replace("__TIMELINE__", timeline(hist, clouds, hist_meta))
                 .replace("__REGIONS__", region_grid(hist, clouds))
                 .replace("__DISCLOSURE__", disclosure())
-                .replace("__DIDYOUKNOW__", didyouknow())
                 .replace("__POSTMORTEMS__", postmortems(cssv))
                 .replace("__STATS__", stats)
                 .replace("__SRC__", src))

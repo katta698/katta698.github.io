@@ -133,36 +133,4 @@
     if (ev.key === 'Escape' && dlg.open) close();
   });
 
-  /* "Did you know?" -- rotate through the quoted lines.
-   *
-   * The card renders server-side with one line already in it, so it reads
-   * fine with no JavaScript at all; this only adds the rotation. Each line is
-   * the vendor's own first sentence from the section THEY labelled as the
-   * cause, so cycling never changes whose words these are. */
-  var dyk = document.getElementById('dyk');
-  var dykData = document.getElementById('dyk-data');
-  if (dyk && dykData) {
-    var hooks = [];
-    try { hooks = JSON.parse(dykData.textContent) || []; } catch (e) { hooks = []; }
-
-    function paint(i) {
-      var h = hooks[i];
-      if (!h) return;
-      dyk.setAttribute('data-i', i);
-      dyk.querySelector('.dyk-q').textContent = h.q;
-      var chip = dyk.querySelector('.chip');
-      chip.className = 'chip ' + h.cloud;
-      chip.textContent = h.cloud === 'gcp' ? 'Google Cloud'
-                       : h.cloud === 'aws' ? 'AWS' : 'Azure';
-      dyk.querySelector('.dyk-d').textContent = h.date || 'date not stated';
-      dyk.querySelector('.dyk-t').textContent = h.title;
-      dyk.querySelector('.dyk-more').setAttribute('data-pm', h.id);
-    }
-
-    dyk.addEventListener('click', function (ev) {
-      if (!ev.target.classList.contains('dyk-next')) return;
-      var i = (parseInt(dyk.getAttribute('data-i'), 10) || 0) + 1;
-      paint(i % hooks.length);
-    });
-  }
 })();
