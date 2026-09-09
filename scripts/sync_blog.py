@@ -3098,9 +3098,10 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     </div>
     {pagination}
   </div>
+  <div class="rail">
+  {status_widget}
   {subscribe_widget}
   <aside class="sidebar">
-    {status_widget}
     {cloud_widget}
     <div class="sidebar-card" id="services-widget">
       <div class="sidebar-title">Services across all posts</div>
@@ -3580,6 +3581,7 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
 
     <style>@keyframes sb-pulse{{0%,100%{{opacity:1}}50%{{opacity:.3}}}}</style>
   </aside>
+  </div>
 </div>
 {FEEDBACK_WIDGET_HTML}
 {ASK_WIDGET_HTML}
