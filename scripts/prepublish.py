@@ -125,6 +125,13 @@ CHECKS = [
     # 2026-08-28. Nothing caught it because every other check reads posts and
     # this lived in blog.css.
     ("check_dark_theme.py",     True,  False, True,  True),
+    # Text that cannot be read against what is behind it. Advisory, not
+    # blocking: it currently reports 40 pre-existing findings on the older
+    # pages, and a gate that fails every run from day one is a gate people
+    # learn to skip. It blocks nothing while that backlog is worked down, and
+    # it already earns its place by catching new ones -- four shipped
+    # unreadable on 2026-09-08 before it existed.
+    ("check_contrast.py",       False, False, False, False),
     ("check_index_complete.py", True,  False, False, False),
     ("fix_series_nav.py",       True,  False, False, False),
     # The announcement store behind /intelligence/whats-new/. Nothing else in
