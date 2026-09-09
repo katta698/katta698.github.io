@@ -764,12 +764,20 @@ def postmortems(cssv="1"):
         if undated:
             bit += " plus %d with no year stated" % undated
         reach.append(bit)
-    reach_note = ('<p class="note-sm">A year with no card means nothing was '
-                  '<i>published</i> for it, not that nothing broke. Each '
-                  'archive reaches: %s. AWS writes a summary only for major '
-                  'events; Azure retains reviews about five years; Google’s '
-                  'feed carries only recent incidents, so its record starts '
-                  'this year.</p>' % e("; ".join(reach)))
+    # Just the reach. The rest of this note said "a year with no card means
+    # nothing was published for it" -- which the chips now say better, since
+    # selecting AWS shows "2026 0" outright. It was there to compensate for
+    # counts that did not communicate, and it stopped earning its space the
+    # moment they did.
+    #
+    # The reach stays, because no count can carry it: a year Google never had
+    # a chip for looks identical to a year it published nothing in, and
+    # without this Google reads as the vendor disclosing least when it is the
+    # one whose feed this page cannot see past.
+    reach_note = ('<p class="note-sm">Archives reach back different '
+                  'distances: %s. AWS writes a summary only for major events, '
+                  'Azure retains reviews about five years, and Google’s feed '
+                  'carries only recent incidents.</p>' % e("; ".join(reach)))
 
     out = ""
     for y in years:
