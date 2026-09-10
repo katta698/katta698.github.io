@@ -1017,13 +1017,17 @@ document.documentElement.setAttribute("data-palette",p);})();
     </button></li>
   </ul>
 </nav>
+<header class="hero">
+  <div class="inner">
+    <p class="eyebrow"><span class="dot"></span>Cloud status</p>
+    <h1>Is anything broken right now?</h1>
+    <p class="sub">Live incidents across AWS, Azure and Google Cloud, read from each
+       vendor&rsquo;s own status feed. Nothing here is summarised or inferred &mdash;
+       the wording is theirs.</p>
+    <p class="fresh__STALE__">Last checked __AGE__ &middot; refresh is scheduled hourly and can run late, so this timestamp is the one to trust__WARN__</p>
+  </div>
+</header>
 <div class="wrap">
-  <p class="eyebrow"><span class="dot"></span>Cloud status</p>
-  <h1>Is anything broken right now?</h1>
-  <p class="sub">Live incidents across AWS, Azure and Google Cloud, read from each
-     vendor&rsquo;s own status feed. Nothing here is summarised or inferred &mdash;
-     the wording is theirs.</p>
-  <p class="fresh__STALE__">Last checked __AGE__ &middot; refresh is scheduled hourly and can run late, so this timestamp is the one to trust__WARN__</p>
   __CARDS__
   __BODY__
   <h2>Last 90 days</h2>
