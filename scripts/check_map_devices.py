@@ -142,6 +142,48 @@ def main():
                     pg.screenshot(path="map-%s-%s.png" % (engine, name),
                                   full_page=False)
                 pg.close()
+
+            # And the same page for a reader who has asked for less motion.
+            #
+            # This is not a hypothetical: the report that the alarm was static
+            # on an iPad turned out to be Reduce Motion, which also froze the
+            # lamp on the front page. Under that setting the ring must not
+            # move -- movement across the screen is the thing the setting
+            # exists to stop -- but it must still be distinguishable from a
+            # region that broke last week, so it breathes instead. Both
+            # halves of that are checked.
+            pg = browser.new_page(viewport={"width": 834, "height": 1112},
+                                  reduced_motion="reduce")
+            pg.goto(URL, wait_until="networkidle", timeout=60000)
+            try:
+                pg.wait_for_selector(".om-pulse", timeout=25000)
+            except Exception:                                   # noqa: BLE001
+                problems.append("%s/reduced-motion: no alarm ring at all" % engine)
+                pg.close()
+                browser.close()
+                continue
+            pg.wait_for_timeout(600)
+            ws, ops = [], []
+            for _ in range(12):
+                pair = pg.evaluate(
+                    "() => {const p=document.querySelector('.om-pulse');"
+                    "return [p.getBoundingClientRect().width,"
+                    "parseFloat(getComputedStyle(p).opacity)];}")
+                ws.append(pair[0])
+                ops.append(pair[1])
+                pg.wait_for_timeout(190)
+            moved = max(ws) / max(min(ws), 0.1)
+            breath = max(ops) - min(ops)
+            print("  %-18s ring holds still (%.2fx) and breathes (%.2f opacity "
+                  "swing)" % ("%s/reduced" % engine, moved, breath))
+            if moved > 1.15:
+                problems.append("%s/reduced-motion: the ring still moves %.2fx"
+                                % (engine, moved))
+            if breath < 0.15:
+                problems.append(
+                    "%s/reduced-motion: the alarm is indistinguishable from a "
+                    "past incident (opacity swing %.2f)" % (engine, breath))
+            pg.close()
             browser.close()
     srv.shutdown()
 

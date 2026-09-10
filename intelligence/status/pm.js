@@ -560,7 +560,9 @@
       function ring(delay) {
         return '<circle class="om-pulse" cx="' + x + '" cy="' + y +
                '" r="' + r0 + '">' +
-               (stillOnly ? '' :
+               (stillOnly
+                 ? '<animate attributeName="opacity" values=".35;.95;.35" ' +
+                   'dur="3.5s" repeatCount="indefinite"/>' :
                  '<animate attributeName="r" from="' + r0 + '" to="' + r1 +
                  '" dur="2.2s" begin="' + delay + '" repeatCount="indefinite"/>' +
                  '<animate attributeName="opacity" values="0;.95;0" ' +
@@ -570,7 +572,15 @@
                  'dur="2.2s" begin="' + delay + '" repeatCount="indefinite"/>') +
                '</circle>';
       }
-      // With motion off, one solid ring that stays put and stays visible.
+      // With motion off, one ring that stays put and breathes.
+      //
+      // The same call the diya on the front page already makes: Reduce Motion
+      // asks for movement to stop, not for the thing to go out. An expanding
+      // ring is movement across the screen and is exactly what the setting is
+      // for; a slow opacity fade changes nothing's position and triggers
+      // nothing, and without it "broken right now" and "broke last week" are
+      // the same still red ring. Three and a half seconds, so it reads as
+      // alive rather than as a blink.
       return stillOnly ? ring('0s') : ring('0s') + ring('1.1s');
     }
 
