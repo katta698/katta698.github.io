@@ -169,8 +169,19 @@ SAME_COUNTRY = {
 }
 
 
+# Azure's "Geography" column is its own grouping, not a country: North Europe
+# comes back as "Europe" and East Asia as "Asia Pacific". Storing those as the
+# country made the map claim a region was in a continent, and made the
+# placement check unable to verify any of them.
+NOT_A_COUNTRY = {"europe", "asia pacific", "americas", "middle east", "africa",
+                 "global", "azure government", "china"}
+
+
 def one_country(name):
-    return SAME_COUNTRY.get((name or "").strip(), (name or "").strip())
+    name = (name or "").strip()
+    if name.lower() in NOT_A_COUNTRY:
+        return ""
+    return SAME_COUNTRY.get(name, name)
 
 
 def split_place(text):
@@ -296,7 +307,8 @@ def fetch_azure():
             "city": (d or {}).get("city", ""),
             # Azure publishes whether a region has zones, not how many, so
             # this is a flag and never a count.
-            "country": one_country((d or {}).get("country", "")),
+            "country": (one_country((d or {}).get("country", "")) or
+                        region_map.country_of(label, (d or {}).get("city", ""))),
             "zones": [], "az": (d or {}).get("az"),
             "p": list(xy) if xy else None,
         })

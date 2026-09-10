@@ -833,6 +833,15 @@
           var step = (Math.PI * 2) / vendors.length;
           var gap = vendors.length > 1 ? 0.05 : 0;
           pie = '<g class="om-pie">' + vendors.map(function (v, k) {
+            // A single vendor is a whole circle, and a whole circle is NOT a
+            // wedge from 0 to 2pi: the arc's start and end land on the same
+            // point, so SVG draws the line to it and nothing else. Most
+            // regions have one cloud, so most dots on the map rendered as a
+            // vertical hairline pointing up from their own centre.
+            if (vendors.length === 1) {
+              return '<circle class="' + esc(v) + '" cx="' + xy[0].toFixed(2) +
+                     '" cy="' + xy[1].toFixed(2) + '" r="' + rad.toFixed(2) + '"/>';
+            }
             return '<path class="' + esc(v) + '" d="' +
                    wedge(xy[0], xy[1], rad,
                          -Math.PI / 2 + k * step + gap / 2,
@@ -980,15 +989,13 @@
             '<path class="gcp" d="' + wedge(9, 9, 6, 2.618, 4.712) + '"/></g>') +
             'a wedge per cloud running a region there</li>' +
           '<li>' + swatch('<g class="om-pie">' +
-            '<path class="azure" d="' + wedge(5, 9, 2.4, 0, 6.28) + '"/>' +
-            '<path class="azure" d="' + wedge(13, 9, 5.4, 0, 6.28) + '"/></g>') +
+            '<circle class="azure" cx="5" cy="9" r="2.4"/>' +
+            '<circle class="azure" cx="13" cy="9" r="5.4"/></g>') +
             'bigger means more incidents in 90 days</li>' +
-          '<li>' + swatch('<g class="om-pie"><path class="gcp" d="' +
-            wedge(9, 9, 3.6, 0, 6.28) + '"/></g>' +
+          '<li>' + swatch('<g class="om-pie"><circle class="gcp" cx="9" cy="9" r="3.6"/></g>' +
             '<circle class="om-hit" cx="9" cy="9" r="5.8"/>') +
             'ringed means it broke in that window</li>' +
-          '<li>' + swatch('<g class="om-pie"><path class="aws" d="' +
-            wedge(9, 9, 3.4, 0, 6.28) + '"/></g>' +
+          '<li>' + swatch('<g class="om-pie"><circle class="aws" cx="9" cy="9" r="3.4"/></g>' +
             '<circle class="om-key-live" cx="9" cy="9" r="6.4"/>') +
             'broken right now — click it</li>' +
         '</ul>' +
