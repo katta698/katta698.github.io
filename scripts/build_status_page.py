@@ -1039,6 +1039,11 @@ document.documentElement.setAttribute("data-palette",p);})();
   </div>
   <div id="outage-map" class="om"></div>
 
+  <h2>What the vendors do and don&rsquo;t tell you</h2>
+  <p class="sub">The three publish very different amounts, and that difference is
+     itself worth knowing when you decide how far to trust a status page.</p>
+  __DISCLOSURE__
+
   <div class="note"><strong>Why the timings below are Google&rsquo;s only.</strong>
      Google publishes when an incident <em>began</em> and, separately, when it first
      said something publicly, so the gap between the two is a real number. AWS&rsquo;s
@@ -1047,11 +1052,6 @@ document.documentElement.setAttribute("data-palette",p);})();
      Ranking all three would put AWS first for disclosing less, so only the cloud
      that supplies the inputs is measured.</div>
   __STATS__
-
-  <h2>What the vendors do and don&rsquo;t tell you</h2>
-  <p class="sub">The three publish very different amounts, and that difference is
-     itself worth knowing when you decide how far to trust a status page.</p>
-  __DISCLOSURE__
 </section>
 
 <section class="sec">

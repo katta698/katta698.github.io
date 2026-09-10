@@ -994,10 +994,12 @@
             'bigger means more incidents in 90 days</li>' +
           '<li>' + swatch('<g class="om-pie"><circle class="gcp" cx="9" cy="9" r="3.6"/></g>' +
             '<circle class="om-hit" cx="9" cy="9" r="5.8"/>') +
-            'ringed means it broke in that window</li>' +
-          '<li>' + swatch('<g class="om-pie"><circle class="aws" cx="9" cy="9" r="3.4"/></g>' +
-            '<circle class="om-key-live" cx="9" cy="9" r="6.4"/>') +
-            'broken right now — click it</li>' +
+            'dashed ring: it broke in that window</li>' +
+          '<li>' + swatch('<g class="om-pie"><circle class="aws is-live-c" ' +
+            'cx="9" cy="9" r="3.4"/></g>' +
+            '<circle class="om-key-live" cx="9" cy="9" r="5.6"/>' +
+            '<circle class="om-key-live" cx="9" cy="9" r="8.2" opacity=".35"/>') +
+            'broken <b>right now</b> — click it</li>' +
         '</ul>' +
         '<details class="om-how"><summary>How this map is built</summary>' +
         '<p class="note-sm">' +
