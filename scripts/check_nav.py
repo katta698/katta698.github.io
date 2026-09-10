@@ -279,6 +279,25 @@ def contrast(fg, bg):
     return (l1 + 0.05) / (l2 + 0.05)
 
 
+def _serve(handler, port):
+    """A local server on `port`, or the next free one after it.
+
+    Every one of these checks hardcodes a port, and a run that is interrupted
+    leaves the socket held -- so the next run dies with WinError 10048 and
+    reports nothing at all. That is worse than a failure: a check that cannot
+    start looks exactly like a check that was not run, and it cost several
+    rounds today at exactly the moment the answer mattered.
+    """
+    import socketserver as _ss
+    _ss.TCPServer.allow_reuse_address = True
+    for p in range(port, port + 40):
+        try:
+            return _ss.TCPServer(("127.0.0.1", p), handler), p
+        except OSError:
+            continue
+    raise SystemExit("no free port in %d-%d" % (port, port + 40))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", default="webkit",
@@ -291,7 +310,7 @@ def main():
         def log_message(self, *a):
             pass
 
-    srv = socketserver.TCPServer(("127.0.0.1", PORT), Quiet)
+    srv, PORT_USED = _serve(Quiet, PORT)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
     from playwright.sync_api import sync_playwright
@@ -306,7 +325,7 @@ def main():
             notes = []
             for w in WIDTHS:
                 pg = browser.new_page(viewport={"width": w, "height": 820})
-                pg.goto("http://127.0.0.1:%d%s" % (PORT, path),
+                pg.goto("http://127.0.0.1:%d%s" % (PORT_USED, path),
                         wait_until="networkidle", timeout=60000)
                 pg.wait_for_timeout(900)
                 r = pg.evaluate(PROBE)
@@ -449,7 +468,7 @@ def main():
         # reader reaches by clicking "Blog".
         walk = browser.new_context(viewport={"width": 1440, "height": 900})
         wp = walk.new_page()
-        wp.goto("http://127.0.0.1:%d/" % PORT, wait_until="networkidle",
+        wp.goto("http://127.0.0.1:%d/" % PORT_USED, wait_until="networkidle",
                 timeout=60000)
         wp.wait_for_timeout(1200)
         wp.evaluate("() => { const t = document.querySelector('.theme-toggle');"
@@ -457,7 +476,7 @@ def main():
         wp.wait_for_timeout(900)
         walked = {}
         for name, path in PAGES:
-            wp.goto("http://127.0.0.1:%d%s" % (PORT, path),
+            wp.goto("http://127.0.0.1:%d%s" % (PORT_USED, path),
                     wait_until="networkidle", timeout=60000)
             wp.wait_for_timeout(2200)
             got = wp.evaluate(PROBE)

@@ -1376,3 +1376,79 @@
   // DOMContentLoaded and long a moment later.
   window.addEventListener('load', function () { window.setTimeout(start, 300); });
 })();
+
+
+/* ---------------------------------------------------------------------------
+   Light up "Live status" while one of the clouds is actually broken.
+
+   /intelligence/status.json is 3.7KB and already refreshes itself, so every
+   page can afford to ask. It is the same file the status page is built from,
+   which matters: the light and the page it points at cannot disagree.
+
+   Three rules, all of them about not lying:
+
+     nothing is shown when nothing is open. A permanent light is decoration,
+     and a reader stops seeing it.
+
+     nothing is shown if the file cannot be fetched. A false all-clear is worse
+     than no light at all -- and this site's whole claim is that its numbers can
+     be checked, so it does not get to guess.
+
+     the count goes in the link's accessible name, not only in a coloured dot.
+     "2 open incidents" is the information; the dot is how a sighted reader
+     notices it.
+   --------------------------------------------------------------------------- */
+(function () {
+  'use strict';
+
+  var STATUS = '/intelligence/status.json';
+  var HREF = '/intelligence/status/';
+
+  function count(data) {
+    var clouds = data && data.clouds;
+    if (!clouds) return 0;
+    var n = 0;
+    Object.keys(clouds).forEach(function (c) {
+      if (Array.isArray(clouds[c])) n += clouds[c].length;
+    });
+    return n;
+  }
+
+  function mark(n) {
+    if (!n) return;
+    var say = n === 1 ? '1 open incident' : n + ' open incidents';
+    var seen = [];
+    [].forEach.call(document.querySelectorAll('a[href="' + HREF + '"]'), function (a) {
+      // Not the page you are already on: a light telling you to go where you
+      // are is noise.
+      if (a.getAttribute('aria-current') === 'page') return;
+      if (a.querySelector('.live-dot')) return;
+      var dot = document.createElement('span');
+      dot.className = 'live-dot';
+      dot.setAttribute('aria-hidden', 'true');
+      a.appendChild(dot);
+      // The label carries the fact; the dot carries the attention.
+      a.setAttribute('aria-label', (a.textContent || 'Live status').trim() +
+                     ' — ' + say);
+      a.setAttribute('title', say);
+      seen.push(a);
+    });
+    return seen.length;
+  }
+
+  function start() {
+    fetch(STATUS, { cache: 'no-cache' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) { if (d) mark(count(d)); })
+      .catch(function () { /* silence, deliberately -- see the note above */ });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+  // The cairn builds its list after this may have run, so mark it again once
+  // the panel exists -- a phone reader meets these links only in there.
+  window.addEventListener('load', function () { window.setTimeout(start, 400); });
+})();

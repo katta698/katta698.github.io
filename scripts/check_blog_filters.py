@@ -37,6 +37,25 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = 8961
 
 
+def _serve(handler, port):
+    """A local server on `port`, or the next free one after it.
+
+    Every one of these checks hardcodes a port, and a run that is interrupted
+    leaves the socket held -- so the next run dies with WinError 10048 and
+    reports nothing at all. That is worse than a failure: a check that cannot
+    start looks exactly like a check that was not run, and it cost several
+    rounds today at exactly the moment the answer mattered.
+    """
+    import socketserver as _ss
+    _ss.TCPServer.allow_reuse_address = True
+    for p in range(port, port + 40):
+        try:
+            return _ss.TCPServer(("127.0.0.1", p), handler), p
+        except OSError:
+            continue
+    raise SystemExit("no free port in %d-%d" % (port, port + 40))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default=None)
@@ -54,9 +73,9 @@ def main():
         class Quiet(http.server.SimpleHTTPRequestHandler):
             def log_message(self, *a):
                 pass
-        srv = socketserver.TCPServer(("127.0.0.1", PORT), Quiet)
+        srv, PORT_USED = _serve(Quiet, PORT)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
-        base = "http://127.0.0.1:%d/blog/" % PORT
+        base = "http://127.0.0.1:%d/blog/" % PORT_USED
     base = base.rstrip("/") + "/"
 
     from playwright.sync_api import sync_playwright
