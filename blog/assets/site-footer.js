@@ -866,6 +866,25 @@
              '</a></li>';
     }).join('') + '</ul>';
 
+    // Collapse exactly the site's own links, wherever the page keeps them.
+    //
+    // The first version hid `.nav-links > li` and that was wrong on the
+    // portfolio: its list holds About, Writing, Skills, Contact and Tools --
+    // in-page section anchors, not site navigation -- while the five
+    // destinations sit in the action row beside them. So between 821 and 1080
+    // the portfolio lost its section anchors, which the cairn does not carry
+    // and nothing else offered.
+    //
+    // Matching on the href instead means each page collapses its own five and
+    // leaves everything else alone, with no page-specific rule anywhere.
+    var hrefs = PAGES.map(function (p) { return p.href; });
+    [].forEach.call(nav.querySelectorAll('a[href]'), function (a) {
+      var h = a.getAttribute('href');
+      if (hrefs.indexOf(h) < 0) return;
+      var li = a.closest('li');
+      (li || a).classList.add('ck-collapsed');
+    });
+
     nav.appendChild(label);
     nav.appendChild(btn);
     nav.appendChild(sheet);
@@ -939,7 +958,7 @@
     // A resize past the breakpoint should not leave a panel open over a bar
     // that has gone back to showing all five links.
     window.addEventListener('resize', function () {
-      if (window.innerWidth > 720) close();
+      if (window.innerWidth > 1080) close();
     }, { passive: true });
   }
 
