@@ -3128,6 +3128,10 @@ document.documentElement.setAttribute('data-palette',p);}})();</script>
     var track = document.getElementById('wn-ticker-track');
     track.innerHTML = one + one;          // see the note above: exactly twice
     box.hidden = false;
+    // Start the crawl HERE, not at page parse. See the note in blog.css: the
+    // animation was running while the section was still hidden, so the reader
+    // met it mid-word.
+    box.classList.add('is-ready');
     // A tap focuses the link, and because each headline opens in a NEW TAB the
     // focus is still sitting there when the reader comes back -- so
     // :focus-within kept the crawl paused and it looked like their tap had

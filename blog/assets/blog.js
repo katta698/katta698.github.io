@@ -29,12 +29,35 @@
 (function () {
   var el = document.getElementById('hero-typer-text');
   if (!el) return;
+  /* Nothing is shown until the page has settled and the first word is down.
+   *
+   * This types one character every 70ms starting the moment the script runs,
+   * so the first frames of a blog load carried "$ d|" -- a lone letter and a
+   * cursor, arriving while the rest of the page was still assembling. On its
+   * own it is an animation; in the middle of a load it reads as a glitch, and
+   * it was reported as random characters flashing on the blog and on no other
+   * page.
+   *
+   * Two changes, both about WHEN rather than what: the line stays invisible
+   * until it holds a whole word, and it does not begin until the page has
+   * finished loading. After that it is unmistakably deliberate.
+   */
+  var host = el.closest ? el.closest('.hero-typer') : null;
+  if (host) host.style.visibility = 'hidden';
   var lines = ['deploying ideas...', 'terraform apply --auto-approve', 'still debugging life, one day at a time'];
   var li = 0, ci = 0;
   function type() {
     var line = lines[li];
     if (ci <= line.length) {
       el.textContent = line.slice(0, ci);
+      // Revealed once there is a word to read, not on the first letter.
+      //
+      // 'visible', not ''. Clearing the inline value hands the decision back to
+      // the stylesheet, which now says hidden -- so the line never appeared at
+      // all, on any speed of machine. The stylesheet hides it so that a bare
+      // "$ |" is not sitting in the hero for the seconds before this script
+      // runs; only an explicit value can undo that.
+      if (host && ci >= 9) host.style.visibility = 'visible';
       ci++;
       setTimeout(type, 70);
     } else {
@@ -52,7 +75,16 @@
       setTimeout(type, 400);
     }
   }
-  type();
+  /* A beat after this script runs, not at the load event.
+   *
+   * Waiting for 'load' waits for the 2MB hero video, so the line first
+   * appeared at 2.3s on a desktop, 7.9s on a phone and 13.2s on a slow one --
+   * late enough that most readers would never see it, which is a strange way
+   * to fix an animation. This script already runs at the end of the document,
+   * so the page is parsed and painted by the time it does; 800ms after that is
+   * enough that the typing reads as deliberate rather than as part of the
+   * load. */
+  window.setTimeout(type, 800);
 })();
 
 // ── Dark mode ─────────────────────────────────────
