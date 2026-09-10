@@ -1711,6 +1711,17 @@ def html_head(title, description, canonical, extra="", og_type="website",
      place afterwards -- which is what "shaky on refresh" is. In the head it
      is render-blocking, which is the point: the bar is painted once, right.
      ensureStyles() finds this and skips, so nothing is loaded twice. -->
+<!-- Marks that JavaScript is running, before anything is painted, so the
+     stylesheet can hide the five site links on a phone from the FIRST
+     frame rather than after the cairn is built. Without this the blog --
+     the largest document on the site, so the slowest to reach its
+     scripts -- rendered all five overflowing the bar and overlapping the
+     icons for four seconds, which reads as garbled characters.
+     A class rather than a plain CSS rule so that a reader with no
+     JavaScript keeps the links: the cairn that replaces them is built in
+     JS, and hiding them unconditionally would leave that reader with no
+     navigation at all. -->
+<script>document.documentElement.className+=' ck-js';</script>
 <link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v={JS_VERSION}">
 <!-- ...and its script, linked here rather than injected by blog.js at the
      end of the document. The Intelligence pages have always linked it
