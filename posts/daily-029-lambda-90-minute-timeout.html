@@ -1,0 +1,250 @@
+---
+title: 'AWS Daily Intelligence #29 - The 15-minute limit is gone, in one mode, on one compute type'
+date: '2026-09-10T10:00:00'
+slug: aws-daily-intelligence-lambda-90-minute-timeout
+labels: [AWS, "AWS Daily Intelligence"]
+draft: true
+verified: '2026-09-10'
+verified_claims:
+  - claim: "AWS Lambda now supports a 90-minute function timeout for asynchronous and event source mapping invocations on Lambda Managed Instances, a 6x increase from the previous 15-minute limit"
+    derive: "90 / 15"
+    expect: "6"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/aws-lambda-90-minute-function/
+  - claim: "Synchronous invocations retain the existing 15-minute maximum timeout"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/aws-lambda-90-minute-function/
+  - claim: "The feature is available in all AWS Regions where Lambda Managed Instances is available"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/aws-lambda-90-minute-function/
+  - claim: "Lambda Managed Instances lets you process multiple concurrent requests per instance, access specialized compute configurations, and drive cost efficiency through EC2 pricing advantages, without managing infrastructure"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/aws-lambda-90-minute-function/
+  - claim: "Each Managed Instances execution environment can handle multiple invocations simultaneously, which differs from traditional Lambda where each environment processes one request at a time"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/lambda-managed-instances-core-concepts.html
+  - claim: "The multi-concurrent execution model requires attention to thread safety, state management, and context isolation depending on your runtime"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/lambda-managed-instances-core-concepts.html
+  - claim: "A capacity provider defines the compute infrastructure where functions execute, including VPC configuration, instance requirements, and scaling policies"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/lambda-managed-instances-core-concepts.html
+  - claim: "Capacity providers serve as the security boundary for your functions, meaning all functions assigned to the same capacity provider must be mutually trusted"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/lambda-managed-instances-core-concepts.html
+  - claim: "Managed Instances scale asynchronously based on CPU resource utilization rather than on-demand when invocations arrive, which eliminates cold starts but requires planning for traffic growth"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/lambda-managed-instances-core-concepts.html
+  - claim: "If your traffic more than doubles within 5 minutes, you may experience throttles as Lambda scales up capacity to meet demand"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/lambda-managed-instances-core-concepts.html
+  - claim: "Users need the lambda:PassCapacityProvider permission to assign functions to capacity providers, acting as a security gate over which functions can run on specific infrastructure"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/lambda-managed-instances-core-concepts.html
+  - claim: "Lambda Managed Instances is charged at $0.20 per million requests"
+    source: https://aws.amazon.com/lambda/pricing/
+  - claim: "Standard EC2 instance pricing applies for the instances provisioned in your capacity provider, and costs can be reduced using Compute Savings Plans, Reserved Instances or other EC2 pricing options"
+    source: https://aws.amazon.com/lambda/pricing/
+  - claim: "Lambda Managed Instances carries a 15% premium on the EC2 on-demand instance price for the instances provisioned and managed by Lambda"
+    source: https://aws.amazon.com/lambda/pricing/
+  - claim: "Lambda Managed Instances functions do not pay separately for the execution duration of each request, unlike Lambda default compute type functions"
+    source: https://aws.amazon.com/lambda/pricing/
+  - claim: "AWS names the driving use cases as data-intensive work such as AI inference, media transcoding, scientific modeling and financial calculations that do not fit Lambda's 15-minute duration constraint"
+    source: https://aws.amazon.com/blogs/compute/announcing-90-minute-function-timeout-on-aws-lambda-managed-instances/
+  - claim: "For jobs where re-execution is costly, AWS suggests combining the extended timeout with durable functions for checkpointing"
+    source: https://aws.amazon.com/blogs/compute/announcing-90-minute-function-timeout-on-aws-lambda-managed-instances/
+problem: "The headline is that Lambda's 15-minute limit is now 90 minutes. It is three qualifications away from that: asynchronous and event source mapping invocations only, on Lambda Managed Instances only, and Managed Instances is a different compute type with a different billing model, a different scaling model and a shared security boundary."
+builds: "A reading of what actually changed, why the limit could move on this compute type and not the default one, and the four things about Managed Instances that decide whether a 90-minute function is a good idea or an expensive one."
+catch: "Duration stopped being the billing unit. On Managed Instances you pay for EC2 instances plus a 15% management fee and are not charged separately for execution duration — which is exactly why a 90-minute invocation became affordable, and exactly why an idle capacity provider is not."
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      On 9 September AWS raised the Lambda function timeout to 90 minutes, a 6x increase on the 15-minute limit that has been one of the best-known constraints in the service. The qualifications matter more than the number.
+    </p>
+    <p>
+      It applies to <em>asynchronous and event source mapping invocations on Lambda Managed Instances</em>. Synchronous invocations keep the 15-minute maximum. And Lambda Managed Instances is not a setting on your existing functions — it is a different compute type, with EC2 instances underneath, a different scaling model, and a billing model in which execution duration is no longer a line item.
+    </p>
+    <p>
+      That last point is the interesting one, because it explains the first. On the default compute type you are billed per GB-second of duration, so a 90-minute invocation is a 90-minute bill for one request. On Managed Instances you are billed for the instances, one environment serves many invocations at once, and duration is not charged per request at all. The limit could move because the meter changed.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>
+      One number moved, on a specific path. Everything else about the default Lambda compute type is unaffected.
+    </p>
+    <div class="table-scroll">
+      <table>
+        <tr>
+          <th>Path</th>
+          <th>Before</th>
+          <th>Now</th>
+        </tr>
+        <tr>
+          <td>Synchronous invocation, any compute type</td>
+          <td>15 minutes</td>
+          <td>15 minutes &mdash; unchanged</td>
+        </tr>
+        <tr>
+          <td>Asynchronous and ESM, default compute type</td>
+          <td>15 minutes</td>
+          <td>15 minutes &mdash; unchanged</td>
+        </tr>
+        <tr>
+          <td>Asynchronous and ESM, Managed Instances</td>
+          <td>15 minutes</td>
+          <td><strong>90 minutes</strong></td>
+        </tr>
+        <tr>
+          <td>Scope and price</td>
+          <td colspan="2">All Regions where Lambda Managed Instances is available. Managed Instances is billed at $0.20 per million requests plus standard EC2 instance pricing plus a 15% premium on the EC2 on-demand price.</td>
+        </tr>
+      </table>
+    </div>
+    <p>
+      The invocation modes that got the increase are the ones already designed for it. Asynchronous and ESM invocations have a queue in front of them and a retry story behind them; nobody is holding a connection open waiting. A 90-minute synchronous call would need a client prepared to wait 90 minutes, which is not a thing worth building.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-029-lambda-90-minute-timeout.svg" alt="Diagram comparing the default Lambda compute type with Lambda Managed Instances. On the default compute type, one execution environment runs one invocation at a time, scaling happens on demand when invocations arrive so cold starts occur, billing is per gigabyte-second of duration, and the timeout is 15 minutes on every invocation path. On Managed Instances, one execution environment handles multiple invocations simultaneously, scaling is asynchronous based on CPU utilisation so there are no cold starts but traffic that more than doubles within five minutes may be throttled, billing is EC2 instance pricing plus a fifteen percent management fee plus twenty cents per million requests with no separate duration charge, and the timeout is 90 minutes for asynchronous and event source mapping invocations while synchronous invocations stay at 15. A note records that a capacity provider is the security boundary, so all functions assigned to the same one must be mutually trusted." />
+      <figcaption>The timeout moved because the meter did. Duration stops being what you are billed for, so a long invocation stops being priced like one.</figcaption>
+    </figure>
+    <p>
+      Four properties of Managed Instances decide whether a long-running function belongs there, and none of them is the timeout.
+    </p>
+    <p>
+      <strong>One environment, many invocations.</strong> Each execution environment handles multiple invocations simultaneously, where traditional Lambda processes one request per environment. This is what makes instance-based billing economical, and it is a real change for your code: AWS states the model <em>requires attention to thread safety, state management, and context isolation depending on your runtime</em>. A handler that has been quietly relying on having its environment to itself is now sharing it.
+    </p>
+    <p>
+      <strong>The capacity provider is a security boundary.</strong> A capacity provider defines the VPC configuration, instance requirements and scaling policies &mdash; and AWS is explicit that it is also the trust boundary: <em>all functions assigned to the same capacity provider must be mutually trusted</em>. That is a sentence with organisational consequences. Functions from different teams, or different data classifications, are not automatically safe to co-locate. The <code>lambda:PassCapacityProvider</code> permission exists as the gate over who can place what where.
+    </p>
+    <p>
+      <strong>Scaling is not on-demand.</strong> Managed Instances scale asynchronously on CPU utilisation rather than when invocations arrive. The upside is that cold starts are eliminated. The cost is that a spike outruns the scaler: AWS warns that if traffic <em>more than doubles within 5 minutes</em>, you may be throttled while capacity catches up.
+    </p>
+    <p>
+      <strong>You are paying for capacity, not work.</strong> EC2 instance pricing, a 15% management fee on the on-demand price, $0.20 per million requests, and no separate duration charge. Compute Savings Plans and Reserved Instances apply, which is unusual for anything with Lambda in the name.
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      The value is a category of job that had to leave Lambda and can now stay. AWS names them: data-intensive work such as AI inference, media transcoding, scientific modeling and financial calculations that did not fit inside 15 minutes. Every one of those previously became a Step Functions state machine with artificial chunking, an ECS task, or a Batch job &mdash; each a different operational surface for what is conceptually one function.
+    </p>
+    <p>
+      The second value is quieter: for steady-state workloads, the EC2 pricing model with Savings Plans applied can beat per-GB-second billing outright. Duration-priced compute is excellent for spiky, short work and poor for sustained load, which is the shape most long-running jobs have.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      The mutual-trust requirement on capacity providers is the item to take to a design review. On the default compute type, isolation between functions is a property you inherit for free and never think about. Here, co-location is a choice you make when you assign a function to a capacity provider, and the boundary is the provider rather than the function.
+    </p>
+    <p>
+      Treat <code>lambda:PassCapacityProvider</code> the way you would treat <code>iam:PassRole</code> &mdash; as the permission that decides what runs next to what. A capacity provider per trust domain is the conservative default, and the cost of getting it wrong is not a bill, it is a boundary.
+    </p>
+    <p>
+      Multi-concurrency deserves the same attention for a different reason. Code written for one invocation per environment may hold request state in module scope safely today and unsafely on Managed Instances. That is a correctness problem before it is a security one, but it becomes a security one the moment the state is a credential or a customer identifier.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      The billing inversion cuts both ways. Removing the per-request duration charge is what makes a 90-minute invocation viable; it also means an underused capacity provider bills for instances that are doing nothing. Default Lambda charges nothing when idle. Managed Instances charges EC2 rates plus 15%.
+    </p>
+    <p>
+      So the economics favour sustained utilisation and punish burstiness &mdash; the opposite of the default compute type. A workload that runs 90-minute jobs continuously is a good fit. One that runs three of them a week is paying for a week of instances to do four and a half hours of work, and would have been cheaper chunked on the default type.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      A 90-minute timeout is a 90-minute blast radius. AWS's own guidance in the launch post is worth following: for jobs where re-execution is costly, combine the extended timeout with durable functions for checkpointing. A function that fails at minute 88 and restarts from zero has converted a long timeout into a long outage.
+    </p>
+    <p>
+      The scaling warning is the other thing to rehearse before production. "More than doubles within 5 minutes" is not an exotic traffic pattern &mdash; it describes a batch window opening, a queue draining after an incident, or a scheduled job fanning out. If that is your shape, test it, because the failure is a throttle rather than a slow start.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <div class="table-scroll">
+      <table>
+        <tr>
+          <th>Option</th>
+          <th>Works well when</th>
+          <th>Breaks down when</th>
+        </tr>
+        <tr>
+          <td>Managed Instances, 90-minute timeout</td>
+          <td>Long, data-intensive, asynchronous jobs at sustained volume, where cold starts hurt and EC2 discounts apply.</td>
+          <td>Traffic is spiky or occasional. You pay for instances between jobs, and a doubling inside five minutes throttles.</td>
+        </tr>
+        <tr>
+          <td>Default compute type, chunked under 15 minutes</td>
+          <td>Bursty work, true scale-to-zero, and strict per-function isolation.</td>
+          <td>The chunking is artificial. You are engineering around a limit rather than solving the problem.</td>
+        </tr>
+        <tr>
+          <td>Step Functions, ECS or Batch</td>
+          <td>The work is genuinely a pipeline, needs orchestration, or exceeds 90 minutes.</td>
+          <td>It is one function with a long body, and you have taken on an orchestration layer to express that.</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      Start from the invocation path rather than the timeout. If the work is triggered synchronously, nothing here applies and the 15-minute limit still governs. If it is asynchronous or driven by an event source mapping, it is a candidate.
+    </p>
+    <p>
+      Then audit the handler for shared-environment safety before moving it. Module-level caches, global clients holding per-request context, temporary files written to fixed paths &mdash; all are safe under one-invocation-per-environment and all are suspect under multi-concurrency.
+    </p>
+    <p>
+      Create a capacity provider per trust domain rather than one for the account, gate assignment with <code>lambda:PassCapacityProvider</code>, and load-test a doubling of traffic inside five minutes before you rely on it.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <ul>
+      <li>Checkpoint long jobs. A 90-minute function without durable state turns a late failure into a full re-run.</li>
+      <li>One capacity provider per trust domain. Co-location is a decision now, and AWS requires mutual trust within a provider.</li>
+      <li>Review handlers for thread safety before migrating. The environment is shared in a way it never was.</li>
+      <li>Apply Compute Savings Plans or Reserved Instances. The instances are ordinary EC2 and the discounts are real.</li>
+      <li>Model the idle cost. Scale-to-zero is the thing you are giving up, and for occasional jobs it was the whole value.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt this</h2>
+    <p>
+      Teams who have already built a chunking workaround for a job that is conceptually one unit of work, and teams running sustained inference or media processing where cold starts and duration billing were both hurting. For those, this collapses an orchestration layer back into a function.
+    </p>
+    <p>
+      Everyone else should note it and leave it alone. If your functions finish in seconds, scale to zero between bursts, and cost you very little, Managed Instances asks you to pay for capacity and manage a trust boundary in exchange for a limit you were not hitting.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>90 minutes applies to asynchronous and ESM invocations on Lambda Managed Instances only. Synchronous stays at 15 minutes everywhere.</li>
+      <li>The limit moved because the meter did: Managed Instances bills EC2 instances plus 15%, and does not charge separately for execution duration.</li>
+      <li>One environment now serves many invocations, which requires thread safety, state management and context isolation the default type never demanded.</li>
+      <li>A capacity provider is a security boundary — all functions on one must be mutually trusted, gated by <code>lambda:PassCapacityProvider</code>.</li>
+      <li>Scaling is CPU-based and asynchronous: no cold starts, but traffic more than doubling within 5 minutes may be throttled.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/09/aws-lambda-90-minute-function/" target="_blank" rel="noopener">AWS Lambda now supports 90-minute function timeout on Lambda Managed Instances &#8212; 9 September 2026</a></li>
+      <li><a href="https://aws.amazon.com/blogs/compute/announcing-90-minute-function-timeout-on-aws-lambda-managed-instances/" target="_blank" rel="noopener">Announcing 90-minute function timeout on AWS Lambda Managed Instances</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/lambda-managed-instances-core-concepts.html" target="_blank" rel="noopener">Lambda Managed Instances core concepts &#8212; capacity providers, scaling and multi-concurrency</a></li>
+      <li><a href="https://aws.amazon.com/lambda/pricing/" target="_blank" rel="noopener">AWS Lambda pricing &#8212; the Managed Instances components</a></li>
+    </ul>
+  </div>
+</div>

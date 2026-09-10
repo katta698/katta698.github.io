@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #48 — What it costs to have kept everything | Jayanth Katta Blog</title>
+<meta name="description" content="The previous post argued for a custom flow log format and a one-minute aggregation interval. Both decisions increase volume, and volume is what logging is billed on. This is the bill for that advice, and the part of it that surprises people is not the size but the shape: what you pay to ingest and what you pay to keep are different prices with different consequences."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="What it costs to have kept everything"/>
+<meta property="og:description" content="The previous post argued for a custom flow log format and a one-minute aggregation interval. Both decisions increase volume, and volume is what logging is billed on. This is the bill for that advice, and the part of it that surprises people is not the size but the shape: what you pay to ingest and what you pay to keep are different prices with different consequences."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-logging-cost/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="What it costs to have kept everything"/>
+<meta name="twitter:description" content="The previous post argued for a custom flow log format and a one-minute aggregation interval. Both decisions increase volume, and volume is what logging is billed on. This is the bill for that advice, and the part of it that surprises people is not the size but the shape: what you pay to ingest and what you pay to keep are different prices with different consequences."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-logging-cost/"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=8a8b787f"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #48 — What it costs to have kept everything…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #48 — What it costs to have kept everything</h1>
+      <p class="post-description">The previous post argued for a custom flow log format and a one-minute aggregation interval. Both decisions increase volume, and volume is what logging is billed on. This is the bill for that advice, and the part of it that surprises people is not the size but the shape: what you pay to ingest and what you pay to keep are different prices with different consequences.</p>
+      <div class="post-info">
+        <span>Sep 10, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>11 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 10 September 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-logging-cost" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The last post ended with an instruction: stop using the default flow log format, add the
+      packet-level addresses and the egress path, and consider a one-minute aggregation interval. Every
+      one of those choices increases volume, and AWS says so plainly about the last of them &mdash; a
+      one-minute maximum aggregation interval <em>&ldquo;produces a higher volume of flow log records&rdquo;</em>
+      than ten.
+    </p>
+    <p>
+      That advice is only responsible if it comes with the bill attached. So this post is the bill.
+    </p>
+    <p>
+      A security team reviews its logging spend after a year of doing this properly. Flow logs with a
+      custom format on every VPC, CloudTrail organisation trail, Resolver query logs, application logs
+      from a few hundred functions and services. The number is larger than expected and the instinct is
+      immediate and wrong: cut retention. Twelve months becomes three, somebody signs it off as a
+      quick win, and the saving is a fraction of what was forecast.
+    </p>
+    <p>
+      It was always going to be. Retention is the cheap half.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Ingestion is paid once and dominates early</strong></div>
+      <div class="challenge-body">
+        <p>
+          CloudWatch Logs charges <strong>$0.50 per GB to ingest</strong> into the Standard class and
+          <strong>$0.03 per GB per month to store</strong>. A gigabyte ingested and kept for a year
+          therefore costs $0.86, and more than half of that was spent on the day it arrived.
+        </p>
+        <p>
+          Cutting retention from twelve months to three saves nine months of storage on that
+          gigabyte &mdash; twenty-seven cents against a total of eighty-six. The ingestion is already
+          spent and no retention policy recovers it. That is why the quick win disappoints: it is
+          applied to the smaller number.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Model the two separately before choosing a lever. If the archive is young, the lever is what you ingest, not how long you keep it.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>S3 does not avoid the delivery charge</strong></div>
+      <div class="challenge-body">
+        <p>
+          &ldquo;We send flow logs to S3 because CloudWatch Logs is expensive&rdquo; is the most common
+          sentence in this area and it is half wrong. Flow logs, WAF logs and the rest are
+          <em>vended logs</em>, and the vended-logs delivery rate applies across destinations
+          &mdash; CloudWatch Logs, Amazon S3 and Amazon Data Firehose alike &mdash; with additional
+          charges applying at the destination on top.
+        </p>
+        <p>
+          So the delivery is billed either way. What S3 changes is everything after delivery: storage
+          at a lower rate, lifecycle transitions, and query through Athena rather than Logs Insights.
+          Those are real savings. They are simply not the saving the sentence claims.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Choose the destination on what you will do with the data, not on an avoided charge that is not avoided.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The tiers reward consolidation by a factor of ten</strong></div>
+      <div class="challenge-body">
+        <p>
+          Vended-logs delivery is tiered: $0.50 per GB up to 10 TB, $0.25 from 10 to 30 TB, $0.10 from
+          30 to 50 TB, and $0.05 above 50 TB. The top tier is a tenth of the first, and the tiers
+          <strong>reset at the start of every month</strong>.
+        </p>
+        <p>
+          An estate that delivers logs per-account, into per-account destinations, keeps every account
+          in the most expensive tier forever. The same total volume consolidated into one delivery path
+          climbs the tiers and pays a fraction for the marginal terabyte. This is the cost argument for
+          a central log archive, and it is usually stronger than the governance argument that gets made
+          for it.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Consolidate delivery, then measure the effective blended rate rather than the headline one.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      There are three prices in a log archive and they behave differently. Confusing them is what makes
+      logging budgets hard to reason about.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-048-logging-cost.svg" alt="Diagram: the three prices in a log archive and how they behave over time. First, delivery and ingestion, paid once per gigabyte: CloudWatch Logs Standard ingestion at fifty cents per gigabyte, Infrequent Access at twenty-five cents, and vended logs delivery tiered from fifty cents per gigabyte below ten terabytes down to five cents above fifty terabytes, with tiers resetting monthly and the same rate applying whether the destination is CloudWatch Logs, S3 or Firehose. Second, retention, paid every month at three cents per gigabyte per month in CloudWatch Logs. Third, query, paid per use at one cent per gigabyte scanned by Logs Insights. A panel shows the crossover: one gigabyte kept for one year costs eighty-six cents of which fifty is ingestion, so cutting retention attacks the smaller half, while cutting what you ingest attacks the larger half but only going forward." />
+      <figcaption>Ingestion is a one-time charge that dominates a young archive. Retention is a small recurring charge that dominates an old one. A saving applied to the wrong one is the usual disappointment.</figcaption>
+    </figure>
+
+    <h3>The three prices</h3>
+    <div class="grid-2">
+      <div class="card">
+        <h4>Delivery and ingestion &middot; once per GB</h4>
+        <p>$0.50/GB into the CloudWatch Logs Standard class, $0.25/GB into Infrequent Access. Vended logs are billed on their own tiered scale, from $0.50/GB to $0.05/GB, whichever destination they go to.</p>
+      </div>
+      <div class="card">
+        <h4>Retention &middot; every month</h4>
+        <p>$0.03/GB/month in CloudWatch Logs. Small per unit, and the only one that compounds. It is what an archive costs in year five, when the ingestion of year one is long since paid.</p>
+      </div>
+      <div class="card">
+        <h4>Query &middot; per use</h4>
+        <p>$0.01/GB scanned by Logs Insights. Usually negligible, occasionally not: an unbounded query across a year of flow logs scans the whole year.</p>
+      </div>
+      <div class="card">
+        <h4>CloudTrail, separately</h4>
+        <p>Management events are free for the first copy. <strong>Additional copies are $2.00 per 100,000 events</strong>, and data events are $0.10 per 100,000. The second trail is where CloudTrail bills usually come from.</p>
+      </div>
+    </div>
+
+    <h3>The crossover, and why it matters more than the rate</h3>
+    <p>
+      One gigabyte, Standard class, kept twelve months: fifty cents of ingestion and thirty-six cents of
+      storage. Ingestion is the majority. Keep the same gigabyte five years and storage passes it. Every
+      archive therefore has a point where the dominant cost changes hands, and where it sits depends
+      entirely on your retention policy rather than on anything AWS charges.
+    </p>
+    <p>
+      The practical consequence is that the two levers are not interchangeable and they act on different
+      time horizons. Reducing what you ingest lowers both numbers, but only for data that has not
+      arrived yet. Reducing retention lowers only the smaller number, and does so for data you have
+      already paid to ingest &mdash; which is the closest thing to a sunk cost in this whole model.
+    </p>
+
+    <div class="callout amber">
+      <strong>CloudTrail's free tier is per copy, not per account</strong>
+      <p>Management events are logged by default at no charge for the first copy. A second delivery of the same events &mdash; an organisation trail alongside a pre-existing account trail, or a trail added for a specific tool &mdash; is billed at $2.00 per 100,000 events. That is a rate high enough to notice and structured in a way that makes duplication easy to create by accident.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>The cheap ingestion class is a one-way door</h3>
+    <p>
+      Infrequent Access halves ingestion, from $0.50 to $0.25 per GB, which on a large estate is the
+      single largest available saving. It comes with the constraints from #12, and they are worth
+      restating because a cost review is exactly when somebody proposes this without them: the class
+      supports no subscription filters, no metric filters and no Live Tail, and <strong>a log group's
+      class cannot be changed after it is created</strong>.
+    </p>
+    <p>
+      Two further details decide whether the trade is good. The saving is on ingestion only &mdash;
+      AWS states the classes differ in ingestion cost alone, with identical storage and Logs Insights
+      charges &mdash; so on an old archive the discount applies to the part that has already stopped
+      mattering. And because the class is immutable, the decision is made per log group at creation,
+      forever, on a guess about how that log group will be used.
+    </p>
+
+    <div class="callout green">
+      <strong>The good version of this trade</strong>
+      <p>Infrequent Access fits log groups that are written constantly and read rarely, by a human, after an event &mdash; which is a fair description of most flow log and audit data. It fits badly anywhere a metric filter drives an alarm, because that capability is simply absent. Sorting log groups by that question is a better first pass than sorting them by size.</p>
+    </div>
+
+    <h3>The tiers make the archive account a cost decision</h3>
+    <p>
+      Series #41 argued for a dedicated log archive account on governance grounds: one place, one
+      retention policy, one set of permissions. The vended-logs tiering adds an independent argument
+      that happens to point the same way. Delivery billed at $0.50 for the first ten terabytes and
+      $0.05 above fifty means the blended rate falls sharply with consolidation, and the tiers reset
+      monthly, so this is a recurring benefit rather than a one-off.
+    </p>
+    <p>
+      It is unusual for the governance answer and the cost answer to agree this cleanly. When they do,
+      the argument is worth making on both grounds, because the audience for each is different and the
+      one that lands is not always the one you expect.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>First lever on a young archive</td>
+        <td>What you ingest</td>
+        <td>Ingestion is the majority of a gigabyte's first-year cost. It is also the only lever that lowers both numbers at once.</td>
+      </tr>
+      <tr>
+        <td>First lever on an old archive</td>
+        <td>Retention, and storage class at the destination</td>
+        <td>Once ingestion is years behind you, the recurring charge is what remains. Cutting it earlier would have saved less than it does now.</td>
+      </tr>
+      <tr>
+        <td>Destination</td>
+        <td>Chosen on use, not on avoiding delivery charges</td>
+        <td>The vended-logs rate is the same to CloudWatch Logs, S3 and Firehose. Only the post-delivery costs differ.</td>
+      </tr>
+      <tr>
+        <td>Delivery topology</td>
+        <td>Consolidated into the log archive account</td>
+        <td>The tiers fall from $0.50 to $0.05 per GB and reset monthly. Fragmented delivery pays the top rate in every account, permanently.</td>
+      </tr>
+      <tr>
+        <td>Infrequent Access</td>
+        <td>Per log group, at creation, only where nothing reads it in real time</td>
+        <td>Halves ingestion, and removes subscription filters, metric filters and Live Tail. The class cannot be changed afterwards.</td>
+      </tr>
+      <tr>
+        <td>CloudTrail</td>
+        <td>One copy of management events</td>
+        <td>The first copy is free; further copies are $2.00 per 100,000 events. Duplicate trails are the usual source of an unexplained CloudTrail line.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>CloudTrail Lake prices retention into the ingestion</h3>
+    <p>
+      Lake is worth understanding separately because it inverts the model this post has described.
+      One-year extendable retention is $0.75 per GB to ingest <em>with the first year included</em>, and
+      $0.023 per GB per month after that. The seven-year option is $2.50 per GB for the first 5 TB a
+      month, falling to $1 and then $0.50 at higher volumes, with all seven years included.
+    </p>
+    <p>
+      So Lake moves the retention decision to the front, where it is a purchase rather than a running
+      cost. That is a genuine simplification for anyone whose retention period is fixed by regulation
+      and will not change &mdash; and a poor fit for anyone still discovering how long they need to keep
+      things, because the seven years are bought whether or not they are used.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Logging spend has an unusual property: almost every control that improves it makes the bill worse,
+      and almost every saving makes an investigation harder. The custom flow log format from #47 costs
+      more than the default. The one-minute aggregation interval costs more than ten. The organisation
+      trail costs more than the account trail it replaces. None of that is a reason not to do them, but
+      it does mean the security argument and the cost argument are usually pulling against each other.
+    </p>
+    <p>
+      What makes the conversation tractable is knowing which number a proposal actually moves. Cutting
+      retention on a young archive, switching a destination to avoid a charge that follows you there,
+      or moving a log group to Infrequent Access when a metric filter depends on it &mdash; all three
+      are common, all three sound like savings, and all three are answers to a question nobody checked.
+    </p>
+    <p>
+      The check is small. For any proposed saving: is it acting on the once-paid number or the recurring
+      one, how old is the data it applies to, and what does it stop you doing? Three questions, and they
+      are enough to tell a real reduction from a reorganisation of the same money.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Cost &amp; Governance &mdash; the other side of the same problem: why cost allocation tags almost never cover the whole bill, what remains unallocatable no matter how disciplined the tagging, and how to report a shared-cost figure that a finance team will accept.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/cloudwatch/pricing/" target="_blank" rel="noopener">Amazon CloudWatch pricing &#8212; log ingestion by class, storage, Logs Insights, and the vended logs tiers</a></li>
+      <li><a href="https://aws.amazon.com/cloudtrail/pricing/" target="_blank" rel="noopener">AWS CloudTrail pricing &#8212; management event copies, data events, and CloudTrail Lake</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch_Logs_Log_Classes.html" target="_blank" rel="noopener">CloudWatch Logs log classes &#8212; what Infrequent Access gives up, and that the class is fixed at creation</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html" target="_blank" rel="noopener">Flow log records &#8212; the aggregation interval and its effect on record volume</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Working-with-log-groups-and-streams.html" target="_blank" rel="noopener">Working with log groups and log streams &#8212; retention settings</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-daily-intelligence-s3-object-lock-event-holds/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Daily Intelligence #28 - A retention clock that starts when something happens</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-logging-cost/';
+      this.page.identifier = 'aws-architecture-logging-cost';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var FORM_ID='xzdqqvqd';
+  var rating=0;
+  var btn=document.getElementById('fb-btn'),overlay=document.getElementById('fb-overlay');
+  var stars=document.querySelectorAll('.fb-star');
+  btn.addEventListener('click',function(){overlay.classList.add('open');});
+  overlay.addEventListener('click',function(e){if(e.target===overlay)overlay.classList.remove('open');});
+  document.getElementById('fb-skip').addEventListener('click',function(){overlay.classList.remove('open');});
+  stars.forEach(function(s){
+    s.addEventListener('click',function(){
+      rating=parseInt(s.getAttribute('data-v'));
+      stars.forEach(function(x){x.classList.toggle('on',parseInt(x.getAttribute('data-v'))<=rating);});
+    });
+  });
+  document.getElementById('fb-send').addEventListener('click',function(){
+    var msg=document.getElementById('fb-text').value;
+    fetch('https://formspree.io/f/'+FORM_ID,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({rating:rating,message:msg,page:window.location.pathname})
+    });
+    document.getElementById('fb-modal').innerHTML='<div class="fb-thanks"><span>&#10003;</span><strong>Thanks for your feedback!</strong><p style="color:#879196;font-size:13px;margin-top:0.35rem;">It means a lot.</p></div>';
+    setTimeout(function(){overlay.classList.remove('open');},2000);
+  });
+})();
+</script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=2b646999"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
