@@ -939,7 +939,15 @@
       var holdsControls = list.querySelector(
         '.nav-ctl, .pal-nav, .theme-toggle, .audio-toggle');
       var holdsLinks = list.querySelector('li:not(.ck-collapsed)');
-      if (!holdsControls && !holdsLinks) list.style.display = 'none';
+      // A class, not an inline style.
+      //
+      // Inline display:none applies at every width, and the rule that
+      // collapses the links only applies below 1080. So above it the list was
+      // hidden while the mark that replaces it was also hidden -- an iPad in
+      // landscape had no navigation at all, not the links and not the menu.
+      // Hiding it through the same media query means it can only ever
+      // disappear where something takes its place.
+      if (!holdsControls && !holdsLinks) list.classList.add('ck-empty');
     }
 
     /* The label's colour is taken from the bar, not from a theme class.

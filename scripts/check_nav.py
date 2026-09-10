@@ -70,8 +70,17 @@ PROBE = """() => {
   const inBar = [...nav.querySelectorAll('a[href]')]
     .filter(a => a.getBoundingClientRect().width > 0)
     .map(a => a.getAttribute('href'));
-  const inSheet = sheet ? [...sheet.querySelectorAll('a[href]')]
-    .map(a => a.getAttribute('href')) : [];
+  // The panel only counts when the mark that opens it is actually on screen.
+  //
+  // This counted the panel's links unconditionally, and the panel exists in
+  // the DOM at every width -- so a bar with no links AND no mark still scored
+  // five reachable destinations. That is exactly the state an iPad in
+  // landscape was in, and this check passed it at 1440 without noticing.
+  const ck = document.querySelector('.ck-btn');
+  const markUsable = !!ck && getComputedStyle(ck).display !== 'none'
+                     && ck.getBoundingClientRect().width > 0;
+  const inSheet = (sheet && markUsable)
+    ? [...sheet.querySelectorAll('a[href]')].map(a => a.getAttribute('href')) : [];
 
   // And the current page said out loud, one way or the other.
   const here = document.querySelector('.ck-here');
