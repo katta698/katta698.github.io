@@ -96,8 +96,15 @@ function isImage(pathname) {
 }
 
 // Network-first. Falls back to cache, then to the offline page.
-function networkFirst(request) {
-  return fetch(request)
+//
+// `fresh` asks the browser to revalidate with the server rather than trusting
+// its own copy. Without it "network-first" only means "the HTTP cache first":
+// GitHub Pages serves these with a max-age, so a live-data page came back in
+// 5ms having transferred nothing -- exactly the staleness the exclusion exists
+// to prevent, just from a different cache. It is no-cache rather than reload,
+// so an unchanged page still costs a 304 and not the whole document.
+function networkFirst(request, fresh) {
+  return fetch(request, fresh ? { cache: 'no-cache' } : undefined)
     .then(function (response) {
       if (response && response.ok) {
         const copy = response.clone();
@@ -180,7 +187,7 @@ self.addEventListener('fetch', function (event) {
      * the rest of it argues against. Those two keep waiting for the network.
      */
     if (LIVE_DATA.some(function (p) { return url.pathname.indexOf(p) === 0; })) {
-      event.respondWith(networkFirst(request));
+      event.respondWith(networkFirst(request, true));
     } else {
       event.respondWith(staleWhileRevalidate(request));
     }
