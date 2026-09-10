@@ -346,10 +346,36 @@
     var k = todayKey();
     if (!k) return;                                   // page does not rotate
     var anchor = document.querySelector('nav .theme-toggle');
-    if (!anchor || document.querySelector('.pal-nav')) return;
+    if (!anchor) return;
 
-    var wrap = document.createElement('div');
+    /* ADOPT the control if the page already carries it.
+     *
+     * This used to build the palette three seconds into every load and the
+     * stylesheet held 44px for it in the meantime, which made the bar jump
+     * twice. The button is in the markup now -- and the moment it was, this
+     * function hit `if (document.querySelector('.pal-nav')) return` and gave
+     * up, so the button existed and did nothing: no menu, no day colours, no
+     * dot. Reported immediately as the day theme having vanished on a phone.
+     *
+     * "Already there" has to mean "wire it", not "walk away". Building it is
+     * now only the fallback for a page that has not been given one.
+     */
+    var wrap = document.querySelector('nav .pal-nav, .nav .pal-nav');
+    if (wrap) {
+      if (wrap.getAttribute('data-wired')) return;
+      wrap.setAttribute('data-wired', '1');
+      if (!wrap.querySelector('.pal-menu')) {
+        var menuEl = document.createElement('div');
+        menuEl.className = 'pal-menu';
+        menuEl.hidden = true;
+        wrap.appendChild(menuEl);
+      }
+      return wireNavControl(wrap);
+    }
+
+    wrap = document.createElement('div');
     wrap.className = 'pal-nav';
+    wrap.setAttribute('data-wired', '1');
     wrap.innerHTML =
       '<button type="button" class="pal-nav-btn" aria-expanded="false" ' +
               'aria-haspopup="true"><span class="pal-nav-dot"></span></button>' +
@@ -376,8 +402,17 @@
       host.insertBefore(wrap, anchor);
     }
 
+    return wireNavControl(wrap);
+  }
+
+  /* Everything that makes the control WORK, for a button this script built and
+     for one the page shipped. It was inline in buildNavControl before, which
+     is how "the button is already here" came to mean "there is nothing left to
+     do". */
+  function wireNavControl(wrap) {
     var btn  = wrap.querySelector('.pal-nav-btn');
     var menu = wrap.querySelector('.pal-menu');
+    if (!btn || !menu) return;
     paintNavDot();
 
     btn.addEventListener('click', function (e) {

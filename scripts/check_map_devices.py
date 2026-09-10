@@ -31,7 +31,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = 8931
-URL = "http://127.0.0.1:%d/intelligence/status/" % PORT_USED
+URL_TEMPLATE = "http://127.0.0.1:%d/intelligence/status/"
 
 DEVICES = [
     ("phone",   390, 844),
@@ -97,6 +97,7 @@ def main():
             pass
 
     srv, PORT_USED = _serve(Quiet, PORT)
+    URL = URL_TEMPLATE % PORT_USED
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
     from playwright.sync_api import sync_playwright
