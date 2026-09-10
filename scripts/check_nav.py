@@ -122,6 +122,14 @@ PROBE = """() => {
   // The bar's own colour and the marked link's, for the contrast check.
   const navBg = getComputedStyle(nav).backgroundColor;
   const curColour = cur.length ? getComputedStyle(cur[0]).color : null;
+  // The links you are NOT on. Three values had grown here -- pure white on two
+  // pages, the warm off-white on two, a third grey on the fifth -- and the
+  // current-page check could not see it, because it only ever looked at the one
+  // link that was marked.
+  const idleEl = [...nav.querySelectorAll('.nav-links a')]
+    .filter(a => !a.hasAttribute('aria-current') &&
+                 a.getBoundingClientRect().width > 0)[0];
+  const idleColour = idleEl ? getComputedStyle(idleEl).color : null;
   let rule = null;
   if (cur.length) {
     const a = getComputedStyle(cur[0], '::after');
@@ -167,7 +175,7 @@ PROBE = """() => {
   const order = seen.map(x => x[0]);
 
   return {
-    order, marked, rule, row, navBg, curColour,
+    order, marked, rule, row, navBg, curColour, idleColour,
     edge: Math.round(edge), vw: window.innerWidth, sideways,
     wordFace,
     markScale, markSrc: mark ? mark.getAttribute('src') : null,
@@ -330,6 +338,9 @@ def main():
                 if w == 1440:
                     if r.get("curColour"):
                         marks.setdefault("as loaded", {})[name] = r["curColour"]
+                    if r.get("idleColour"):
+                        marks.setdefault("as loaded, unselected links",
+                                         {})[name] = r["idleColour"]
                     pg.evaluate("() => { const t = "
                                 "document.querySelector('.theme-toggle'); "
                                 "if (t) t.click(); }")
@@ -337,6 +348,9 @@ def main():
                     r2 = pg.evaluate(PROBE)
                     if r2.get("curColour"):
                         marks.setdefault("switched", {})[name] = r2["curColour"]
+                    if r2.get("idleColour"):
+                        marks.setdefault("switched, unselected links",
+                                         {})[name] = r2["idleColour"]
                         c = contrast(r2["curColour"], r2.get("navBg"))
                         if c is not None and c < 4.5:
                             problems.append(

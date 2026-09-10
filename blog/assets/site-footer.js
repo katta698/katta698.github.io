@@ -1016,6 +1016,22 @@
        * darker brown is used there, and the stylesheet reads it from here. */
       nav.style.setProperty('--nav-here', pale ? '#7A5C3C' : '#C4A484');
 
+      /* And the links you are NOT on, which had drifted into three values.
+       *
+       * Measured across the five in dark mode: the portfolio and the blog used
+       * rgba(255,255,255,.72) -- pure white -- while the Intelligence pages
+       * used rgb(156,154,148) and the status page rgb(154,160,157). Two read
+       * cold and three read warm, which is exactly how a reader described it:
+       * "portfolio and blog has one color and other 3 tabs has one color".
+       *
+       * The warm grey wins because it is the site's own ink, and because it is
+       * what three of the five were already doing. Set from the same
+       * measurement as everything else here, for the same reason: no CSS rule
+       * can serve two opposite conventions for saying "light".
+       */
+      nav.style.setProperty('--nav-idle',
+        pale ? 'rgba(28,33,32,.78)' : 'rgb(156,154,148)');
+
       /* The wordmark takes its ink from the same measurement.
        *
        * On a dark bar the Intelligence pages used #EDEBE6 -- the warm
