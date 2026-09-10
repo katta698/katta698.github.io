@@ -1089,11 +1089,26 @@ function toggleTheme(){
 }
 applyTheme(localStorage.getItem("theme") !== "light");
 </script>
-<script src="/blog/assets/site-footer.js" data-site-footer></script>
+<script src="/blog/assets/site-footer.js?v=__JSV__" data-site-footer></script>
 __STAR__
 __TOP__
 </body></html>
 """
+
+
+
+def _shared_js_version():
+    """The same token sync_blog stamps on the blog and What's New.
+
+    Imported rather than recomputed: three builders each hashing their own idea
+    of "the shared assets" is how one page ends up pinned to a stale copy while
+    the others move on, which is exactly what happened here.
+    """
+    try:
+        import sync_blog
+        return sync_blog.JS_VERSION
+    except Exception:                                           # noqa: BLE001
+        return "0"
 
 
 def main():
@@ -1209,7 +1224,13 @@ def main():
                 .replace("__STATS__", stats)
                 .replace("__SRC__", src)
                 .replace("__STAR__", star_html("intelligence-status"))
-                .replace("__TOP__", TOP_HTML + SRC_HTML + TOP_JS))
+                .replace("__TOP__", TOP_HTML + SRC_HTML + TOP_JS)
+                # Cache-bust the shared script the same way every
+                # other page does. This page linked it with no
+                # version at all, so a returning reader kept
+                # running whatever copy their browser had -- which
+                # is the whole nav, the menu and the palette.
+                .replace("__JSV__", _shared_js_version()))
 
     os.makedirs(OUT_DIR, exist_ok=True)
     io.open(os.path.join(OUT_DIR, "index.html"), "w",
