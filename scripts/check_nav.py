@@ -130,6 +130,8 @@ PROBE = """() => {
     .filter(a => !a.hasAttribute('aria-current') &&
                  a.getBoundingClientRect().width > 0)[0];
   const idleColour = idleEl ? getComputedStyle(idleEl).color : null;
+  // Tag it so the check can hover exactly this link from outside.
+  if (idleEl) idleEl.setAttribute('data-nav-probe', '');
   let rule = null;
   if (cur.length) {
     const a = getComputedStyle(cur[0], '::after');
@@ -186,6 +188,36 @@ PROBE = """() => {
     saysWhere: !!((here && here.textContent.trim()) || active)
   };
 }"""
+
+
+def hover_look(pg):
+    """Colour and background of a link under the pointer.
+
+    Hover is invisible to anything that reads the settled page, and it had
+    quietly grown three behaviours: the portfolio drew a grey rectangle behind
+    the word, the Intelligence pages did nothing at all, and the blog changed
+    to the dark-mode tan. The rectangle survived a first fix because the rule
+    drawing it only applies in light mode, so dark mode looked correct.
+    """
+    el = pg.query_selector("[data-nav-probe]")
+    if not el:
+        return None
+    el.hover()
+    pg.wait_for_timeout(350)
+    look = pg.evaluate(
+        "() => { const a = document.querySelector('[data-nav-probe]');"
+        " if (!a) return null; const c = getComputedStyle(a);"
+        " return c.color + ' on ' + c.backgroundColor; }")
+    # Take the pointer off it again.
+    #
+    # It was left sitting on the link, so the NEXT reading of an unselected
+    # link's colour was a reading of a hovered one -- the check reported the
+    # hover colour on all five pages and called it agreement. Two measurements
+    # agreeing because both are wrong in the same way is the failure this whole
+    # file exists to avoid.
+    pg.mouse.move(4, 400)
+    pg.wait_for_timeout(250)
+    return look
 
 
 def _rgb(text):
@@ -341,6 +373,9 @@ def main():
                     if r.get("idleColour"):
                         marks.setdefault("as loaded, unselected links",
                                          {})[name] = r["idleColour"]
+                    hov = hover_look(pg)
+                    if hov:
+                        marks.setdefault("hovered", {})[name] = hov
                     pg.evaluate("() => { const t = "
                                 "document.querySelector('.theme-toggle'); "
                                 "if (t) t.click(); }")
@@ -351,6 +386,9 @@ def main():
                     if r2.get("idleColour"):
                         marks.setdefault("switched, unselected links",
                                          {})[name] = r2["idleColour"]
+                    hov2 = hover_look(pg)
+                    if hov2:
+                        marks.setdefault("switched, hovered", {})[name] = hov2
                         c = contrast(r2["curColour"], r2.get("navBg"))
                         if c is not None and c < 4.5:
                             problems.append(
@@ -454,10 +492,10 @@ def main():
             for page, colour in seen.items():
                 by.setdefault(colour, []).append(page)
             for colour, pages in sorted(by.items(), key=lambda kv: -len(kv[1])):
-                problems.append("%s, the current page is marked %s on %s"
+                problems.append("%s: %s on %s"
                                 % (when, colour, ", ".join(sorted(pages))))
         elif seen:
-            print("  %s: the current page is %s on all %d pages"
+            print("  %s: %s on all %d pages"
                   % (when, list(seen.values())[0], len(seen)))
 
     if problems:
