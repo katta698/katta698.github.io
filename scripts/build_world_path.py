@@ -19,6 +19,7 @@ taken from anywhere, so the only thing borrowed is the geometry.
 """
 import io
 import json
+import math
 import os
 import ssl
 import sys
@@ -106,7 +107,43 @@ def ring_points(arcs, idxs):
 
 
 def project(lon, lat):
-    return ((lon + 180) / 360 * W, (90 - lat) / 180 * H)
+    """Mollweide: the globe as an ellipse.
+
+    Equirectangular is a rectangle -- every parallel the same length as the
+    equator -- which is easy to draw and looks nothing like the earth. This is
+    the classic elliptical projection: the outline is a true 2:1 ellipse, the
+    meridians are half-ellipses curving to the poles, and the parallels are
+    straight lines that shorten toward them.
+
+    It is equal-area, which is the reason to prefer it over the merely
+    decorative alternatives: two regions drawn the same size on this map
+    represent the same area of the earth. Shapes stretch near the poles, which
+    is the price, and it is the right price for a map whose subject sits
+    between 60 north and 45 south.
+
+    theta solves 2*theta + sin(2*theta) = pi * sin(lat), which has no closed
+    form. Newton converges in three or four steps at this precision; six is
+    free at build time and covers the poles, where the derivative vanishes.
+    """
+    phi = math.radians(lat)
+    lam = math.radians(lon)
+
+    if abs(abs(phi) - math.pi / 2) < 1e-9:
+        theta = math.copysign(math.pi / 2, phi)
+    else:
+        theta = phi
+        for _ in range(6):
+            d = 2 * theta + math.sin(2 * theta) - math.pi * math.sin(phi)
+            dd = 2 + 2 * math.cos(2 * theta)
+            if abs(dd) < 1e-12:
+                break
+            theta -= d / dd
+
+    # Unit Mollweide spans x in [-2*sqrt2, 2*sqrt2], y in [-sqrt2, sqrt2].
+    x = (2 * math.sqrt(2) / math.pi) * lam * math.cos(theta)
+    y = math.sqrt(2) * math.sin(theta)
+    return (W / 2 + x * (W / 2) / (2 * math.sqrt(2)),
+            H / 2 - y * (H / 2) / math.sqrt(2))
 
 
 def ring_area(pts):
