@@ -1006,6 +1006,15 @@ try{p=new URLSearchParams(location.search).get("palette")||localStorage.getItem(
 if(D.indexOf(p)===-1)p=D[new Date().getDay()];
 document.documentElement.setAttribute("data-palette",p);})();
 </script>
+<!-- The shared bar's stylesheet, linked rather than injected.
+     site-footer.js appended this <link> at runtime, so on every load the
+     navigation was laid out twice: once by the page's own rules and again,
+     visibly, when the shared file arrived. Filmed at 200ms into a hard
+     refresh the icons were still in the pre-shared order and jumped into
+     place afterwards -- which is what "shaky on refresh" is. In the head it
+     is render-blocking, which is the point: the bar is painted once, right.
+     ensureStyles() finds this and skips, so nothing is loaded twice. -->
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=__JSV__">
 </head><body>
 <nav>
   <a class="nav-logo" href="/intelligence/" aria-label="Cloud intelligence home">

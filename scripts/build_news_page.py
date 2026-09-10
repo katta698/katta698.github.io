@@ -669,6 +669,15 @@ a:active,button:active{opacity:.72}
 .src-tbl a{color:inherit;text-decoration:underline;text-underline-offset:2px}
 .tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
 </style>
+<!-- The shared bar's stylesheet, linked rather than injected.
+     site-footer.js appended this <link> at runtime, so on every load the
+     navigation was laid out twice: once by the page's own rules and again,
+     visibly, when the shared file arrived. Filmed at 200ms into a hard
+     refresh the icons were still in the pre-shared order and jumped into
+     place afterwards -- which is what "shaky on refresh" is. In the head it
+     is render-blocking, which is the point: the bar is painted once, right.
+     ensureStyles() finds this and skips, so nothing is loaded twice. -->
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=__JSV__">
 </head>
 <body>
 <nav>

@@ -272,6 +272,11 @@ def stamp_static_pages():
     # have seen the dusk switch at all. Exactly the failure site-footer.js had.
     js_pattern = _pattern(r'(/blog/assets/(?:blog|site-footer|occasion-banner|hero-media)\.js)')
     css_pattern = _pattern(r'(/blog/assets/blog\.css)')
+    # site-footer.css is now LINKED in each head rather than injected, so it
+    # needs stamping like any other asset. Keyed to JS_VERSION, not
+    # CSS_VERSION: sync_blog folds site-footer.css into the JS hash, which is
+    # what site-footer.js has always carried onto it at runtime.
+    sf_pattern = _pattern(r'(/blog/assets/site-footer\.css)')
 
     def _stamp(version):
         def sub(m):
@@ -286,6 +291,7 @@ def stamp_static_pages():
         text = path.read_text(encoding="utf-8")
         new = js_pattern.sub(_stamp(JS_VERSION), text)
         new = css_pattern.sub(_stamp(CSS_VERSION), new)
+        new = sf_pattern.sub(_stamp(JS_VERSION), new)
         if new != text:
             path.write_text(new, encoding="utf-8")
             stamped += 1
@@ -1697,6 +1703,15 @@ def html_head(title, description, canonical, extra="", og_type="website",
 {PWA_HEAD}
 <link rel="stylesheet" href="{ASSETS_URL}/blog.css?v={CSS_VERSION}"/>
 {extra}
+<!-- The shared bar's stylesheet, linked rather than injected.
+     site-footer.js appended this <link> at runtime, so on every load the
+     navigation was laid out twice: once by the page's own rules and again,
+     visibly, when the shared file arrived. Filmed at 200ms into a hard
+     refresh the icons were still in the pre-shared order and jumped into
+     place afterwards -- which is what "shaky on refresh" is. In the head it
+     is render-blocking, which is the point: the bar is painted once, right.
+     ensureStyles() finds this and skips, so nothing is loaded twice. -->
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v={JS_VERSION}">
 </head>"""
 
 
@@ -1818,6 +1833,25 @@ def build_post_page(post, prev_post, next_post):
     return f"""{html_head(title + " | Jayanth Katta Blog", post["excerpt"], post_url, extra,
                           og_type="article", og_title=title)}
 <body>
+<!-- The remembered theme, applied before anything is painted.
+     The blog decided its theme in blog.js, which loads at the END of the
+     document, so every hard refresh painted the light page first and then
+     turned dark. Reported as "blog shows light theme". This page's convention
+     is the opposite of the portfolio's -- it adds .dark and treats the absence
+     of a setting as dark -- so the test has to be the same one applyTheme()
+     makes, or the flash is replaced by the wrong theme entirely. -->
+<script>try{{if(localStorage.getItem('theme')!=='light')document.body.classList.add('dark');}}catch(e){{}}</script>
+<!-- The weekly palette, for the same reason and from the same source as the
+     line above it. index.html has carried this in its <head> since the palette
+     existed, with a comment saying it is inline and early "because blog.js
+     would flash" -- and the blog, the page blog.js actually runs on, never got
+     it. Measured through a reload: the ground colour arrived 3.6 SECONDS after
+     first paint, so the page settled into its real colour long after the
+     reader was already reading. Same seven keys, same precedence. -->
+<script>(function(){{var D=['sun','mon','tue','wed','thu','fri','sat'],p;
+try{{p=new URLSearchParams(location.search).get('palette')||localStorage.getItem('paletteDay');}}catch(e){{p=null;}}
+if(D.indexOf(p)===-1)p=D[new Date().getDay()];
+document.documentElement.setAttribute('data-palette',p);}})();</script>
 {nav_html(show_search=False)}
 <div class="post-search-bar" id="post-search-bar">
   <div class="search-bar-inner">
@@ -2997,6 +3031,25 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
         f"{BLOG_URL}/"
     )}
 <body>
+<!-- The remembered theme, applied before anything is painted.
+     The blog decided its theme in blog.js, which loads at the END of the
+     document, so every hard refresh painted the light page first and then
+     turned dark. Reported as "blog shows light theme". This page's convention
+     is the opposite of the portfolio's -- it adds .dark and treats the absence
+     of a setting as dark -- so the test has to be the same one applyTheme()
+     makes, or the flash is replaced by the wrong theme entirely. -->
+<script>try{{if(localStorage.getItem('theme')!=='light')document.body.classList.add('dark');}}catch(e){{}}</script>
+<!-- The weekly palette, for the same reason and from the same source as the
+     line above it. index.html has carried this in its <head> since the palette
+     existed, with a comment saying it is inline and early "because blog.js
+     would flash" -- and the blog, the page blog.js actually runs on, never got
+     it. Measured through a reload: the ground colour arrived 3.6 SECONDS after
+     first paint, so the page settled into its real colour long after the
+     reader was already reading. Same seven keys, same precedence. -->
+<script>(function(){{var D=['sun','mon','tue','wed','thu','fri','sat'],p;
+try{{p=new URLSearchParams(location.search).get('palette')||localStorage.getItem('paletteDay');}}catch(e){{p=null;}}
+if(D.indexOf(p)===-1)p=D[new Date().getDay()];
+document.documentElement.setAttribute('data-palette',p);}})();</script>
 {nav_html(show_audio=True)}
 <section class="hero">
   <video id="hero-video" class="hero-video" autoplay muted loop playsinline></video>
@@ -3648,6 +3701,25 @@ def build_drafts_page(draft_posts):
     extra = '<meta name="robots" content="noindex,nofollow"/>'
     return f"""{html_head("Drafts | Jayanth Katta Blog", "Pending draft posts, not publicly listed.", f"{BLOG_URL}/drafts/", extra)}
 <body>
+<!-- The remembered theme, applied before anything is painted.
+     The blog decided its theme in blog.js, which loads at the END of the
+     document, so every hard refresh painted the light page first and then
+     turned dark. Reported as "blog shows light theme". This page's convention
+     is the opposite of the portfolio's -- it adds .dark and treats the absence
+     of a setting as dark -- so the test has to be the same one applyTheme()
+     makes, or the flash is replaced by the wrong theme entirely. -->
+<script>try{{if(localStorage.getItem('theme')!=='light')document.body.classList.add('dark');}}catch(e){{}}</script>
+<!-- The weekly palette, for the same reason and from the same source as the
+     line above it. index.html has carried this in its <head> since the palette
+     existed, with a comment saying it is inline and early "because blog.js
+     would flash" -- and the blog, the page blog.js actually runs on, never got
+     it. Measured through a reload: the ground colour arrived 3.6 SECONDS after
+     first paint, so the page settled into its real colour long after the
+     reader was already reading. Same seven keys, same precedence. -->
+<script>(function(){{var D=['sun','mon','tue','wed','thu','fri','sat'],p;
+try{{p=new URLSearchParams(location.search).get('palette')||localStorage.getItem('paletteDay');}}catch(e){{p=null;}}
+if(D.indexOf(p)===-1)p=D[new Date().getDay()];
+document.documentElement.setAttribute('data-palette',p);}})();</script>
 {nav_html(show_search=False)}
 <main class="post-page-layout">
   <article>

@@ -228,6 +228,7 @@ def main():
     problems = []
     faces = {}
     rows = {}
+    marks = {}
     with sync_playwright() as pw:
         browser = getattr(pw, args.engine).launch()
         for name, path in PAGES:
@@ -327,12 +328,15 @@ def main():
                 # A reader who switches the theme is the only one who ever saw
                 # this, and no check had ever switched it.
                 if w == 1440:
+                    if r.get("curColour"):
+                        marks.setdefault("as loaded", {})[name] = r["curColour"]
                     pg.evaluate("() => { const t = "
                                 "document.querySelector('.theme-toggle'); "
                                 "if (t) t.click(); }")
-                    pg.wait_for_timeout(1500)
+                    pg.wait_for_timeout(1800)
                     r2 = pg.evaluate(PROBE)
                     if r2.get("curColour"):
+                        marks.setdefault("switched", {})[name] = r2["curColour"]
                         c = contrast(r2["curColour"], r2.get("navBg"))
                         if c is not None and c < 4.5:
                             problems.append(
@@ -343,6 +347,46 @@ def main():
                 pg.close()
             print("  %-10s widths ok, bar width by viewport: %s"
                   % (name, " ".join(notes)))
+        # And the way a reader actually meets the site: choose a theme once,
+        # then walk the pages.
+        #
+        # Every assertion above opens each page in its own browser, so each one
+        # loads in the theme it ships with and the choice never persists. The
+        # bug that prompted this check could not appear that way: the blog
+        # applies a remembered theme in its own script AFTER this one runs, and
+        # the bar transitions to the new colour, so every reading -- including
+        # the load event -- saw a bar still mid-fade. It kept the dark-mode tan
+        # while the other four used the light-mode brown, on the one page a
+        # reader reaches by clicking "Blog".
+        walk = browser.new_context(viewport={"width": 1440, "height": 900})
+        wp = walk.new_page()
+        wp.goto("http://127.0.0.1:%d/" % PORT, wait_until="networkidle",
+                timeout=60000)
+        wp.wait_for_timeout(1200)
+        wp.evaluate("() => { const t = document.querySelector('.theme-toggle');"
+                    " if (t) t.click(); }")
+        wp.wait_for_timeout(900)
+        walked = {}
+        for name, path in PAGES:
+            wp.goto("http://127.0.0.1:%d%s" % (PORT, path),
+                    wait_until="networkidle", timeout=60000)
+            wp.wait_for_timeout(2200)
+            got = wp.evaluate(PROBE)
+            if got.get("curColour"):
+                walked[name] = got["curColour"]
+        walk.close()
+        if len(set(walked.values())) > 1:
+            by = {}
+            for page, colour in walked.items():
+                by.setdefault(colour, []).append(page)
+            for colour, pages in sorted(by.items(), key=lambda kv: -len(kv[1])):
+                problems.append(
+                    "after choosing a theme and walking the site, the current "
+                    "page is marked %s on %s" % (colour, ", ".join(sorted(pages))))
+        elif walked:
+            print("  after choosing a theme and walking the site: %s on all %d"
+                  % (list(walked.values())[0], len(walked)))
+
         browser.close()
     srv.shutdown()
 
@@ -382,6 +426,25 @@ def main():
         if worst <= 6:
             print("  the five links are laid out the same way on every page "
                   "(worst disagreement %dpx)" % worst)
+
+    # The SAME colour on every page, not merely a readable one.
+    #
+    # Contrast alone passed a bar where the blog marked the current page
+    # in the dark-mode tan while the other four used the light-mode brown:
+    # 4.5:1 is a floor, and two different colours can both clear it. What a
+    # reader sees is one page not matching the other four, which is the
+    # complaint that has come back more times than any other.
+    for when, seen in sorted(marks.items()):
+        if len(set(seen.values())) > 1:
+            by = {}
+            for page, colour in seen.items():
+                by.setdefault(colour, []).append(page)
+            for colour, pages in sorted(by.items(), key=lambda kv: -len(kv[1])):
+                problems.append("%s, the current page is marked %s on %s"
+                                % (when, colour, ", ".join(sorted(pages))))
+        elif seen:
+            print("  %s: the current page is %s on all %d pages"
+                  % (when, list(seen.values())[0], len(seen)))
 
     if problems:
         print("\n  %d NAVIGATION PROBLEM(S)\n" % len(problems))

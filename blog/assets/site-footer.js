@@ -1036,6 +1036,21 @@
     nav.appendChild(label);
     nav.appendChild(btn);
     nav.appendChild(sheet);
+    /* The bar animates to its colour on load too, not only on a toggle.
+     *
+     * The toggle path was fixed by measuring several times; the LOAD path had
+     * the same flaw and did not get the same treatment. On the blog the theme
+     * is applied by its own script after this one runs, and the bar transitions
+     * to the new colour -- so every reading here, up to and including the load
+     * event, saw a bar that was still dark. Nothing scheduled another, so the
+     * page kept the dark-mode tan: the current page came up #C4A484 on cream
+     * while the other four were #7A5C3C, which is the one page looking
+     * different from the rest for the fourth time in this file's history.
+     *
+     * transitionend catches it wherever the transition ends, and the timeouts
+     * cover a page that has no transition to end.
+     */
+    nav.addEventListener('transitionend', tone);
     tone();
     // ...and again once everything else has had its turn.
     //
@@ -1045,7 +1060,7 @@
     // background and came out at 2.2:1. Blog POST pages passed, which is the
     // tell -- same stylesheet, different script order.
     requestAnimationFrame(tone);
-    window.setTimeout(tone, 250);
+    [250, 600, 1200].forEach(function (ms) { window.setTimeout(tone, ms); });
     window.addEventListener('load', tone);
     // Both controls repaint the bar under it.
     document.addEventListener('click', function (e) {
