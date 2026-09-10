@@ -28,7 +28,7 @@
  */
 
 const VERSION = '8a8b787f';
-const JS_VERSION = '5c3523bc';
+const JS_VERSION = '21b3aa8d';
 const CACHE = 'jk-site-' + VERSION;
 const OFFLINE_URL = '/offline.html';
 
@@ -43,6 +43,11 @@ const PRECACHE = [
   '/blog/assets/site-footer.js?v=' + JS_VERSION,
   '/blog/assets/site-footer.css?v=' + JS_VERSION,
   '/blog/assets/icons/icon-192.png',
+  // The 30px brand mark in the bar. A separate file from the favicon: the
+  // bar used to point at favicon-transparent.png, which is 512x512 and
+  // 398KB, so every page downloaded and decoded a half-megabyte image to
+  // draw a 30-pixel circle.
+  '/brand-mark-96.png',
   '/favicon-transparent.png'
 ];
 
