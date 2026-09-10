@@ -30,6 +30,45 @@ same wherever it appears.
 TOP_HTML = ('<button class="back-top" id="back-top" '
             'aria-label="Back to top">&#8593;</button>')
 
+# And a way down to the sources.
+#
+# Both these pages end with the list of feeds every row is read from, and both
+# are long: What's New runs about eight phone screens with 30 days across three
+# clouds, which puts "Where this comes from" at roughly 90% depth. A reader
+# checking whether to believe the page had to scroll past everything they were
+# deciding about in order to find out.
+#
+# It sits with the back-to-top rather than anywhere new, because that is
+# already the corner a reader uses to move around a long page, and it appears
+# on the same trigger: both are for someone who has scrolled and wants out.
+SRC_HTML = ('<a class="to-src" id="to-src" href="#sources">'
+            'Sources</a>')
+
+SRC_CSS = """
+/* The jump to the sources, stacked above the back-to-top. Outlined rather
+   than filled so it reads as secondary to it -- one is where you were, the
+   other is where the evidence is. Every var() carries a literal for the same
+   reason the button above does: an undefined token takes the whole
+   declaration with it. */
+.to-src{position:fixed;bottom:4.2rem;left:1.5rem;right:auto;
+  display:inline-flex;align-items:center;height:32px;padding:0 .7rem;
+  border-radius:999px;text-decoration:none;
+  font-family:var(--mono, ui-monospace, monospace);
+  font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--orange, var(--acc, #C4A484));
+  background:var(--card, #171A19);
+  border:1px solid var(--orange, var(--acc, #C4A484));
+  opacity:0;transform:translateY(8px);
+  transition:opacity .2s, transform .2s;
+  box-shadow:var(--shadow-md, 0 4px 16px rgba(0,0,0,.28));
+  z-index:200;pointer-events:none}
+.to-src.show{opacity:1;transform:translateY(0);pointer-events:auto}
+.to-src:hover,.to-src:focus-visible{filter:brightness(1.12)}
+@media (prefers-reduced-motion:reduce){
+  .to-src{transition:none}
+}
+"""
+
 TOP_CSS = """
 /* Back to top. Copied from blog.css because the status page does not load it,
    with a literal fallback on every var() -- --orange, --ink and --shadow-md
@@ -66,6 +105,18 @@ TOP_JS = """
     var y=window.scrollY||document.documentElement.scrollTop||0;
     btn.classList.toggle('show', y>400);
   }
+  var src=document.getElementById('to-src');
+  var _check=check;
+  check=function(){
+    _check();
+    if(!src) return;
+    // Hidden once the sources are on screen: an arrow pointing at what you
+    // are already reading is clutter.
+    var y=window.scrollY||document.documentElement.scrollTop||0;
+    var tgt=document.getElementById('sources');
+    var near=tgt && tgt.getBoundingClientRect().top < window.innerHeight;
+    src.classList.toggle('show', y>400 && !near);
+  };
   window.addEventListener('scroll',check,{passive:true});
   check();
   btn.addEventListener('click',function(){

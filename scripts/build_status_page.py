@@ -31,7 +31,7 @@ import re
 import region_map  # noqa: E402
 
 from feedback_star import star_html  # noqa: E402
-from back_to_top import TOP_HTML, TOP_JS  # noqa: E402
+from back_to_top import TOP_HTML, TOP_JS, SRC_HTML  # noqa: E402
 
 import statistics
 import sys
@@ -1063,7 +1063,7 @@ document.documentElement.setAttribute("data-palette",p);})();
   page for it. Where they published a full incident report, you get the whole
   thing.</p>
   __POSTMORTEMS__
-  <h2>Sources</h2>
+  <h2 id="sources">Sources</h2>
   <div class="tw"><table><tr><th>Status page</th><th>Endpoint we read</th><th>Last response</th><th>Read</th></tr>__SRC__</table></div>
   __CADENCE__
   <p class="src">No ETA appears anywhere on this page. None of the three publishes one
@@ -1205,7 +1205,7 @@ def main():
                 .replace("__STATS__", stats)
                 .replace("__SRC__", src)
                 .replace("__STAR__", star_html("intelligence-status"))
-                .replace("__TOP__", TOP_HTML + TOP_JS))
+                .replace("__TOP__", TOP_HTML + SRC_HTML + TOP_JS))
 
     os.makedirs(OUT_DIR, exist_ok=True)
     io.open(os.path.join(OUT_DIR, "index.html"), "w",
