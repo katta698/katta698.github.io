@@ -107,43 +107,43 @@ def ring_points(arcs, idxs):
 
 
 def project(lon, lat):
-    """Mollweide: the globe as an ellipse.
+    """Robinson: the shape most world maps are drawn in.
 
-    Equirectangular is a rectangle -- every parallel the same length as the
-    equator -- which is easy to draw and looks nothing like the earth. This is
-    the classic elliptical projection: the outline is a true 2:1 ellipse, the
-    meridians are half-ellipses curving to the poles, and the parallels are
-    straight lines that shorten toward them.
+    Mollweide is a true ellipse and mathematically tidy, and its meridians
+    curve so hard that land near the left and right edges visibly leans --
+    Alaska, New Zealand and the eastern edge of Russia all slant. Correct, and
+    it reads as a mistake, which on a page about trustworthiness is a cost.
 
-    It is equal-area, which is the reason to prefer it over the merely
-    decorative alternatives: two regions drawn the same size on this map
-    represent the same area of the earth. Shapes stretch near the poles, which
-    is the price, and it is the right price for a map whose subject sits
-    between 60 north and 45 south.
+    Robinson curves too, but far more gently, and its poles are lines rather
+    than points -- so the high latitudes have room and nothing shears. It is
+    neither equal-area nor conformal: it was fitted by eye to look right,
+    which is exactly the job here. Nothing on this map is measured off the
+    projection; sizes come from incident counts, not from area.
 
-    theta solves 2*theta + sin(2*theta) = pi * sin(lat), which has no closed
-    form. Newton converges in three or four steps at this precision; six is
-    free at build time and covers the poles, where the derivative vanishes.
+    The definition is a table at every fifth parallel -- X is the length of
+    that parallel against the equator, Y its distance from it -- interpolated
+    between. That is not an approximation of Robinson; it is what Robinson is.
     """
-    phi = math.radians(lat)
-    lam = math.radians(lon)
+    # Latitude 0, 5, 10 ... 90.
+    X = [1.0000, 0.9986, 0.9954, 0.9900, 0.9822, 0.9730, 0.9600, 0.9427,
+         0.9216, 0.8962, 0.8679, 0.8350, 0.7986, 0.7597, 0.7186, 0.6732,
+         0.6213, 0.5722, 0.5322]
+    Y = [0.0000, 0.0620, 0.1240, 0.1860, 0.2480, 0.3100, 0.3720, 0.4340,
+         0.4958, 0.5571, 0.6176, 0.6769, 0.7346, 0.7903, 0.8435, 0.8936,
+         0.9394, 0.9761, 1.0000]
 
-    if abs(abs(phi) - math.pi / 2) < 1e-9:
-        theta = math.copysign(math.pi / 2, phi)
-    else:
-        theta = phi
-        for _ in range(6):
-            d = 2 * theta + math.sin(2 * theta) - math.pi * math.sin(phi)
-            dd = 2 + 2 * math.cos(2 * theta)
-            if abs(dd) < 1e-12:
-                break
-            theta -= d / dd
+    a = min(abs(lat), 90.0) / 5.0
+    i = min(int(a), 17)
+    t = a - i
+    xf = X[i] + (X[i + 1] - X[i]) * t
+    yf = Y[i] + (Y[i + 1] - Y[i]) * t
+    if lat < 0:
+        yf = -yf
 
-    # Unit Mollweide spans x in [-2*sqrt2, 2*sqrt2], y in [-sqrt2, sqrt2].
-    x = (2 * math.sqrt(2) / math.pi) * lam * math.cos(theta)
-    y = math.sqrt(2) * math.sin(theta)
-    return (W / 2 + x * (W / 2) / (2 * math.sqrt(2)),
-            H / 2 - y * (H / 2) / math.sqrt(2))
+    # Scaled so the equator spans the full width and the poles the full height.
+    x = W / 2 + (lon / 180.0) * xf * (W / 2)
+    y = H / 2 - yf * (H / 2)
+    return (x, y)
 
 
 def ring_area(pts):
@@ -200,7 +200,7 @@ def main():
         "licence": "Natural Earth, public domain",
         # Read back by the page, which refuses to draw coastlines whose
         # projection is not the one it places dots with.
-        "projection": "mollweide %dx%d" % (W, H),
+        "projection": "robinson %dx%d" % (W, H),
         "countries": countries,
         "water": water,
     }

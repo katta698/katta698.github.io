@@ -526,40 +526,42 @@
       return placeOf[code] || placeOf[String(code).toLowerCase()] || null;
     }
 
-    /* Mollweide. The same projection build_world_path.py draws the
-     * coastlines with, and it has to be, or the dots land somewhere the
-     * countries are not.
+    /* Robinson. The same projection build_world_path.py draws the
+     * coastlines with, and it has to be, or the dots land where the countries
+     * are not.
      *
-     * Equirectangular was a rectangle: every parallel as long as the equator,
-     * which is easy to compute and looks nothing like the earth. This is the
-     * elliptical one -- a true 2:1 ellipse, meridians curving to the poles,
-     * parallels shortening toward them. It is also equal-area, so two regions
-     * drawn the same size cover the same amount of earth, which matters on a
-     * map whose whole point is comparing places.
+     * Mollweide was a true ellipse, and its meridians curve hard enough that
+     * land near the left and right edges visibly leans -- Alaska, New Zealand,
+     * the eastern edge of Russia. Geometrically correct, and it reads as a
+     * mistake, which on a page arguing for its own trustworthiness is a real
+     * cost.
      *
-     * theta solves 2*theta + sin(2*theta) = pi*sin(lat) and has no closed
-     * form. Newton settles in three or four passes; six covers the poles,
-     * where the derivative goes to zero, and costs nothing at this scale.
+     * Robinson curves gently and its poles are lines rather than points, so
+     * the high latitudes have room and nothing shears. It is neither
+     * equal-area nor conformal: it was fitted by eye to look right, which is
+     * exactly the job here. Nothing on this map is measured off the
+     * projection -- dot size comes from incident counts, not from area.
+     *
+     * The definition is a table at every fifth parallel, interpolated
+     * between: X is that parallel's length against the equator, Y its
+     * distance from it. That is not an approximation of Robinson, it is what
+     * Robinson is.
      */
+    var ROB_X = [1.0000, 0.9986, 0.9954, 0.9900, 0.9822, 0.9730, 0.9600,
+                 0.9427, 0.9216, 0.8962, 0.8679, 0.8350, 0.7986, 0.7597,
+                 0.7186, 0.6732, 0.6213, 0.5722, 0.5322];
+    var ROB_Y = [0.0000, 0.0620, 0.1240, 0.1860, 0.2480, 0.3100, 0.3720,
+                 0.4340, 0.4958, 0.5571, 0.6176, 0.6769, 0.7346, 0.7903,
+                 0.8435, 0.8936, 0.9394, 0.9761, 1.0000];
+
     function proj(lat, lon) {
-      var phi = lat * Math.PI / 180;
-      var lam = lon * Math.PI / 180;
-      var theta;
-      if (Math.abs(Math.abs(phi) - Math.PI / 2) < 1e-9) {
-        theta = (phi < 0 ? -1 : 1) * Math.PI / 2;
-      } else {
-        theta = phi;
-        for (var i = 0; i < 6; i++) {
-          var d = 2 * theta + Math.sin(2 * theta) - Math.PI * Math.sin(phi);
-          var dd = 2 + 2 * Math.cos(2 * theta);
-          if (Math.abs(dd) < 1e-12) break;
-          theta -= d / dd;
-        }
-      }
-      var x = (2 * Math.SQRT2 / Math.PI) * lam * Math.cos(theta);
-      var y = Math.SQRT2 * Math.sin(theta);
-      return [W / 2 + x * (W / 2) / (2 * Math.SQRT2),
-              H / 2 - y * (H / 2) / Math.SQRT2];
+      var a = Math.min(Math.abs(lat), 90) / 5;
+      var i = Math.min(Math.floor(a), 17);
+      var t = a - i;
+      var xf = ROB_X[i] + (ROB_X[i + 1] - ROB_X[i]) * t;
+      var yf = ROB_Y[i] + (ROB_Y[i + 1] - ROB_Y[i]) * t;
+      if (lat < 0) yf = -yf;
+      return [W / 2 + (lon / 180) * xf * (W / 2), H / 2 - yf * (H / 2)];
     }
 
     // Solar declination and the subsolar longitude, from UTC. Standard
@@ -1032,9 +1034,16 @@
         'with the ones that have had incidents lit in their vendor colour">' +
           '<defs>' +
           '</defs>' +
-          // The ocean is the map's own shape now, not the box around it.
-          '<ellipse class="om-sea" cx="' + (W / 2) + '" cy="' + (H / 2) +
-          '" rx="' + (W / 2 - 0.5) + '" ry="' + (H / 2 - 0.5) + '"/>' +
+          /* The ocean traces the map's own outline. Robinson's edge is the
+           * 180th meridian, which is a curve -- not an ellipse and not a box. */
+          '<path class="om-sea" d="' + (function () {
+            var pts = [], la;
+            for (la = 90; la >= -90; la -= 3) pts.push(proj(la, 180));
+            for (la = -90; la <= 90; la += 3) pts.push(proj(la, -180));
+            return 'M' + pts.map(function (q) {
+              return q[0].toFixed(1) + ',' + q[1].toFixed(1);
+            }).join('L') + 'Z';
+          })() + '"/>' +
           (world ? '<g class="om-land">' + world.countries.map(function (c) {
               return '<path d="' + c.d + '"/>'; }).join('') + '</g>' : '') +
           '<g class="om-grat">' + graticule() + '</g>' +
@@ -1204,7 +1213,7 @@
        * look authoritative and are worse than nothing.
        */
       (function () {
-        var WANT = 'mollweide';
+        var WANT = 'robinson';
         function usable(w) {
           return w && typeof w.projection === 'string' &&
                  w.projection.indexOf(WANT) === 0;
