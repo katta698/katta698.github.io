@@ -688,6 +688,10 @@ a:active,button:active{opacity:.72}
      JS, and hiding them unconditionally would leave that reader with no
      navigation at all. -->
 <script>document.documentElement.className+=' ck-js';</script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
 <link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=__JSV__">
 </head>
 <body>
