@@ -120,6 +120,27 @@ PROBE = """() => {
   const cur = [...nav.querySelectorAll('a[aria-current="page"]')]
     .filter(a => !a.closest('.ck-sheet') && a.getBoundingClientRect().width > 0);
   // The bar's own colour and the marked link's, for the contrast check.
+  // The header's own geometry, to the pixel.
+  //
+  // Reported as "the wordmark expands on some pages and shrinks on others,
+  // and the instrument is bigger on the portfolio than on the blog". The
+  // wordmark's WIDTH was identical on all five all along -- x88 w97 at 16px --
+  // so every check that looked at family, weight, spacing and colour passed.
+  // What differed was everything around it: four line-heights, three control
+  // heights, two glyph sizes. This measures the boxes.
+  const box = s => {
+    const e = nav.querySelector(s);
+    if (!e) return null;
+    const r = e.getBoundingClientRect(), c = getComputedStyle(e);
+    return [s, Math.round(r.x), Math.round(r.width), Math.round(r.height),
+            c.fontSize, c.lineHeight].join(' ');
+  };
+  // Only the parts every page carries. The instrument is on two of the five
+  // by design, so it is compared separately.
+  const header = ['.brand-mark', '.brand-name', '.pal-nav-btn', '.theme-toggle']
+    .map(box).filter(Boolean).join(' | ');
+  const instrument = box('.audio-toggle');
+
   const navBg = getComputedStyle(nav).backgroundColor;
   const curColour = cur.length ? getComputedStyle(cur[0]).color : null;
   // The links you are NOT on. Three values had grown here -- pure white on two
@@ -177,7 +198,7 @@ PROBE = """() => {
   const order = seen.map(x => x[0]);
 
   return {
-    order, marked, rule, row, navBg, curColour, idleColour,
+    order, marked, rule, row, navBg, curColour, idleColour, header, instrument,
     edge: Math.round(edge), vw: window.innerWidth, sideways,
     wordFace,
     markScale, markSrc: mark ? mark.getAttribute('src') : null,
@@ -373,6 +394,12 @@ def main():
                     if r.get("idleColour"):
                         marks.setdefault("as loaded, unselected links",
                                          {})[name] = r["idleColour"]
+                    if r.get("header"):
+                        marks.setdefault("the header's geometry",
+                                         {})[name] = r["header"]
+                    if r.get("instrument"):
+                        marks.setdefault("the instrument button",
+                                         {})[name] = r["instrument"]
                     hov = hover_look(pg)
                     if hov:
                         marks.setdefault("hovered", {})[name] = hov
