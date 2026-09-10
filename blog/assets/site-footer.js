@@ -942,9 +942,54 @@
       if (!holdsControls && !holdsLinks) list.style.display = 'none';
     }
 
+    /* The label's colour is taken from the bar, not from a theme class.
+     *
+     * The pages disagree about how they say "light": four of them add
+     * body.light, the blog adds body.dark and treats its absence as light. A
+     * CSS rule can serve one convention or the other, and the two attempts at
+     * this each fixed one page while breaking the other -- 2.2:1 on the blog
+     * in light mode with a body.light rule, 2.7:1 on the blog in dark mode
+     * with a blog-specific override written for the version before last.
+     *
+     * Measuring the bar sidesteps the argument. It is also the only version
+     * that stays right when the palette changes the ground colour underneath,
+     * which no theme class describes at all.
+     */
+    function tone() {
+      var bg = getComputedStyle(nav).backgroundColor || '';
+      var n = bg.match(/[\d.]+/g);
+      if (!n || n.length < 3) return;
+      var v = bg.indexOf('srgb') >= 0
+        ? [+n[0], +n[1], +n[2]]
+        : [n[0] / 255, n[1] / 255, n[2] / 255];
+      var f = function (x) {
+        return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+      };
+      var L = 0.2126 * f(v[0]) + 0.7152 * f(v[1]) + 0.0722 * f(v[2]);
+      label.style.color = L > 0.4 ? '#7A5C3C' : '#C4A484';
+    }
+
     nav.appendChild(label);
     nav.appendChild(btn);
     nav.appendChild(sheet);
+    tone();
+    // ...and again once everything else has had its turn.
+    //
+    // Each page applies its theme in its own script, and on the blog index
+    // that runs after this one: measuring at this instant read the bar before
+    // it had been repainted, so the label was coloured for the wrong
+    // background and came out at 2.2:1. Blog POST pages passed, which is the
+    // tell -- same stylesheet, different script order.
+    requestAnimationFrame(tone);
+    window.setTimeout(tone, 250);
+    window.addEventListener('load', tone);
+    // Both controls repaint the bar under it.
+    document.addEventListener('click', function (e) {
+      if (!e.target.closest) return;
+      if (e.target.closest('.theme-toggle, .pal-nav, .nav-mobile-theme')) {
+        window.setTimeout(tone, 60);
+      }
+    }, true);
 
     function close() {
       if (sheet.hidden) return;
