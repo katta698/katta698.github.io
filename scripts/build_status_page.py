@@ -1084,6 +1084,22 @@ document.documentElement.setAttribute("data-palette",p);})();
     <button class="pm-cl azure" data-cl="azure" type="button">Azure</button>
     <button class="pm-cl gcp" data-cl="gcp" type="button">Google Cloud</button>
   </div>
+  <!-- Find one place among 159.
+       The cloud pills answer "show me only Azure"; this answers "where is
+       Mumbai", which is the question somebody actually arrives with when they
+       run something in a particular region. It matches the region code and
+       the place name, because a reader knows one or the other and rarely
+       both. Non-matches are dimmed rather than removed: a map that empties as
+       you type stops being a map, and keeping the others faintly visible
+       shows WHERE the match sits in the world, which is the only reason to
+       use a map instead of a list. -->
+  <div class="om-find">
+    <label class="om-find-label" for="om-q">Find a region</label>
+    <input id="om-q" class="om-find-in" type="search" autocomplete="off"
+           placeholder="Mumbai, eu-west-1, Germany&hellip;"
+           aria-describedby="om-found">
+    <span id="om-found" class="om-find-n" role="status" aria-live="polite"></span>
+  </div>
   <div id="outage-map" class="om"></div>
 
   <h2>What the vendors do and don&rsquo;t tell you</h2>

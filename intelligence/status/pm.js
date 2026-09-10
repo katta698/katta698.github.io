@@ -992,7 +992,12 @@
         }
         return '<g class="om-dot ' + (r.n ? esc(cloud) : 'om-quiet') +
                (r.live_now.length ? ' is-live' : '') +
-               '" data-region="' + esc(keys.join('|')) + '" tabindex="0" role="button" ' +
+               '" data-region="' + esc(keys.join('|')) +
+               // The place in words as well as in codes. Without this a search
+               // for "Mumbai" found nothing while "ap-south-1" found the dot --
+               // and a reader looking for a city knows the city.
+               '" data-place="' + esc(name + ' ' + label) +
+               '" tabindex="0" role="button" ' +
                'aria-label="' + esc(here.join(', ')) + ', ' +
                (r.live_now.length ? r.live_now.length + ' open now, ' : '') +
                (r.n ? r.n + ' incidents in 90 days' : 'nothing in 90 days') + ', ' +
@@ -1308,7 +1313,59 @@
           x.classList.toggle('is-on', x === b);
         });
         draw(mapRegions, mapFoot, mapCloud, mapLive);
+        if (window.__omApplyFind) window.__omApplyFind();
       });
+    }
+
+    /* Find one place among 159.
+     *
+     * Matching is against what the dot already carries: data-region holds the
+     * vendors' region codes, and aria-label holds the city and country -- so
+     * "eu-west-1", "Ireland" and "Dublin" all find the same dot without a
+     * second index to keep in step with the first.
+     *
+     * Dimming, not hiding. Removing the other dots empties the map as you
+     * type, and an empty map cannot show you where the match IS, which is the
+     * only reason to use one rather than a list.
+     */
+    var omQ = document.getElementById('om-q');
+    var omFound = document.getElementById('om-found');
+    if (omQ) {
+      var applyFind = function () {
+        var q = (omQ.value || '').trim().toLowerCase();
+        var dots = mapHost.querySelectorAll('.om-dot');
+        if (!q) {
+          [].forEach.call(dots, function (d) { d.classList.remove('om-dim', 'om-match'); });
+          mapHost.classList.remove('om-finding');
+          if (omFound) omFound.textContent = '';
+          return;
+        }
+        mapHost.classList.add('om-finding');
+        var hits = 0;
+        [].forEach.call(dots, function (d) {
+          var hay = ((d.getAttribute('data-region') || '') + ' ' +
+                     (d.getAttribute('data-place') || '') + ' ' +
+                     (d.getAttribute('aria-label') || '')).toLowerCase();
+          var on = hay.indexOf(q) >= 0;
+          d.classList.toggle('om-match', on);
+          d.classList.toggle('om-dim', !on);
+          if (on) hits++;
+        });
+        if (omFound) {
+          omFound.textContent = hits === 0
+            ? 'nothing matches ' + omQ.value.trim()
+            : hits + (hits === 1 ? ' place' : ' places');
+        }
+      };
+      omQ.addEventListener('input', applyFind);
+      omQ.addEventListener('search', applyFind);
+      // Redrawing replaces every dot, so the filter has to be put back --
+      // otherwise switching cloud silently clears a search that is still
+      // typed into the box.
+      omQ.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { omQ.value = ''; applyFind(); }
+      });
+      window.__omApplyFind = applyFind;
     }
 
     // Clicking a region opens what happened there -- from the map, or from

@@ -40,11 +40,6 @@ SKIP_DIRS = {".git", "node_modules", "_archive", "_templates", "scripts",
              # Reachable is not the same as worth indexing.
              "admin", "schedule"}
 SKIP_PATHS = {"offline.html", "404.html", "blog/simulator/index.html",
-              # A stale duplicate of the portfolio, still live, still titled
-              # "Jayanth Katta — AWS Platform Engineer". Indexing it would put
-              # a second, older version of the home page into search results
-              # competing with the real one.
-              "test.html",
               "palette-preview.html"}
 
 # How often each kind of page actually changes, as a hint rather than a claim.
@@ -129,7 +124,6 @@ def main():
         "Disallow: /blog/page/",
         "Disallow: /admin/",
         "Disallow: /schedule/",
-        "Disallow: /test.html",
         "Disallow: /palette-preview.html",
         "",
         "Sitemap: %s/sitemap.xml" % SITE,
