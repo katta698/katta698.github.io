@@ -307,6 +307,15 @@ document.documentElement.setAttribute('data-palette',p);})();
     nav{flex-wrap:wrap;height:auto;row-gap:.15rem;padding-top:.5rem;
       padding-bottom:.5rem}
     .nav-links{flex-wrap:wrap;row-gap:.15rem;min-width:0}
+    /* Links on their own line(s), controls on theirs.
+       An ::after with a full flex basis is a deliberate line break: everything
+       ordered before it takes the first line, everything after it starts a new
+       one. Without it the break landed wherever the width happened to put it,
+       which orphaned a control above the links at 414px and a link below them
+       at 320px. */
+    .nav-links > li{order:1}
+    .nav-links::after{content:"";flex:0 0 100%;height:0;order:2}
+    .nav-links > li.nav-ctl{order:3}
     .nav-links a{white-space:nowrap}
   }
   @media(max-width:360px){
@@ -654,7 +663,7 @@ a:active,button:active{opacity:.72}
     <li><a href="/intelligence/">Intelligence</a></li>
     <li><a href="/intelligence/whats-new/" class="active">What&rsquo;s new</a></li>
     <li><a href="/intelligence/status/">Live status</a></li>
-    <li>
+    <li class="nav-ctl">
       <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn" type="button">
         <span id="theme-icon">&#9681;</span><span id="theme-label">Light</span>
       </button>

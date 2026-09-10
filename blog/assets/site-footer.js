@@ -366,6 +366,10 @@
     var host = anchor.parentNode;
     if (host.tagName === 'LI' && host.parentNode) {
       var slot = document.createElement('li');
+      // Same marker the authored control items carry, so the wrapped nav puts
+      // its line break in front of this too rather than treating an injected
+      // control as one more link.
+      slot.className = 'nav-ctl';
       slot.appendChild(wrap);
       host.parentNode.insertBefore(slot, host);
     } else {

@@ -1012,7 +1012,7 @@ document.documentElement.setAttribute("data-palette",p);})();
     <li><a href="/intelligence/">Intelligence</a></li>
     <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
     <li><a href="/intelligence/status/" class="active">Live status</a></li>
-    <li><button class="theme-toggle" onclick="toggleTheme()" id="theme-btn" type="button">
+    <li class="nav-ctl"><button class="theme-toggle" onclick="toggleTheme()" id="theme-btn" type="button">
       <span id="theme-icon">&#9681;</span><span id="theme-label">Light</span>
     </button></li>
   </ul>
