@@ -27,6 +27,7 @@ widths, and fails the build when one of them stops being true.
 import argparse
 import http.server
 import os
+import re
 import socketserver
 import sys
 import threading
@@ -108,6 +109,9 @@ PROBE = """() => {
   // asking whether the rule exists.
   const cur = [...nav.querySelectorAll('a[aria-current="page"]')]
     .filter(a => !a.closest('.ck-sheet') && a.getBoundingClientRect().width > 0);
+  // The bar's own colour and the marked link's, for the contrast check.
+  const navBg = getComputedStyle(nav).backgroundColor;
+  const curColour = cur.length ? getComputedStyle(cur[0]).color : null;
   let rule = null;
   if (cur.length) {
     const a = getComputedStyle(cur[0], '::after');
@@ -153,7 +157,7 @@ PROBE = """() => {
   const order = seen.map(x => x[0]);
 
   return {
-    order, marked, rule, row,
+    order, marked, rule, row, navBg, curColour,
     edge: Math.round(edge), vw: window.innerWidth, sideways,
     wordFace,
     markVisible: !!(mr && mr.width > 0 && mr.height > 0),
@@ -162,6 +166,34 @@ PROBE = """() => {
     saysWhere: !!((here && here.textContent.trim()) || active)
   };
 }"""
+
+
+def _rgb(text):
+    """The three channels of any colour string CSS hands back, 0-1."""
+    if not text:
+        return None
+    nums = re.findall(r"[\d.]+", text)
+    if len(nums) < 3:
+        return None
+    v = [float(n) for n in nums[:3]]
+    # color(srgb 0.98 0.94 0.94) is already 0-1; rgb(250, 242, 242) is 0-255.
+    if "srgb" not in text:
+        v = [c / 255.0 for c in v]
+    return v
+
+
+def contrast(fg, bg):
+    a, b = _rgb(fg), _rgb(bg)
+    if not a or not b:
+        return None
+
+    def lum(v):
+        f = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+             for c in v]
+        return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2]
+
+    l1, l2 = sorted((lum(a), lum(b)), reverse=True)
+    return (l1 + 0.05) / (l2 + 0.05)
 
 
 def main():
@@ -250,12 +282,46 @@ def main():
                             problems.append(
                                 "%s: the page name is not beside the mark (%s)"
                                 % (tag, " ".join(order)))
-                # The link row, compared across pages at one width.
+                # The marked link has to be READABLE on the bar it sits on,
+                # in both themes.
+                #
+                # The colour is chosen in JS by measuring the bar, because the
+                # five pages signal "light" with three different conventions.
+                # That measurement was taken 60ms after the toggle, and the
+                # blog ANIMATES its background -- so it read a bar still mostly
+                # dark, picked the dark-mode tan, and never looked again. Live,
+                # in light mode, the current page and the "you are here" label
+                # were both about 2:1 on cream. Nothing in the DOM was wrong;
+                # the reading was taken too early.
+                if w == 1440 and r.get("curColour"):
+                    c = contrast(r["curColour"], r.get("navBg"))
+                    if c is not None and c < 4.5:
+                        problems.append(
+                            "%s: the current page's link is %.1f:1 on the bar "
+                            "(%s on %s)" % (tag, c, r["curColour"],
+                                            r.get("navBg")))
+                # The link row, compared against one width.
                 if w == 1440 and r.get("row"):
                     rows[name] = [(h, int(x)) for h, x in
                                   (part.split("@") for part in r["row"].split())]
                 if r.get("wordFace"):
                     faces.setdefault(r["wordFace"], []).append(name)
+                # ...and again in the OTHER theme, which is where it failed.
+                # A reader who switches the theme is the only one who ever saw
+                # this, and no check had ever switched it.
+                if w == 1440:
+                    pg.evaluate("() => { const t = "
+                                "document.querySelector('.theme-toggle'); "
+                                "if (t) t.click(); }")
+                    pg.wait_for_timeout(1500)
+                    r2 = pg.evaluate(PROBE)
+                    if r2.get("curColour"):
+                        c = contrast(r2["curColour"], r2.get("navBg"))
+                        if c is not None and c < 4.5:
+                            problems.append(
+                                "%s: after switching the theme the current "
+                                "page's link is %.1f:1 on the bar (%s on %s)"
+                                % (tag, c, r2["curColour"], r2.get("navBg")))
                 notes.append("%d:%d" % (w, r["edge"]))
                 pg.close()
             print("  %-10s widths ok, bar width by viewport: %s"

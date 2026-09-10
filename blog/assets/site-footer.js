@@ -1038,9 +1038,25 @@
     // Both controls repaint the bar under it.
     document.addEventListener('click', function (e) {
       if (!e.target.closest) return;
-      if (e.target.closest('.theme-toggle, .pal-nav, .nav-mobile-theme')) {
-        window.setTimeout(tone, 60);
-      }
+      if (!e.target.closest('.theme-toggle, .pal-nav, .nav-mobile-theme')) return;
+      /* Measured more than once, because the bar ANIMATES to its new colour.
+       *
+       * getComputedStyle during a CSS transition returns the interpolated
+       * value at that instant, and the blog transitions its background. A
+       * single reading at 60ms saw a bar that was still almost entirely dark,
+       * concluded the page was dark, and never looked again -- so on the blog
+       * in light mode the current page's link and the "you are here" label
+       * both stayed tan on cream, about 2:1. The Intelligence pages passed,
+       * which is the tell: same code, different transition duration.
+       *
+       * transitionend is not enough on its own -- a page with no transition
+       * never fires it -- so this reads immediately and again after the
+       * longest transition the site uses has finished.
+       */
+      [60, 250, 450, 800].forEach(function (ms) {
+        window.setTimeout(tone, ms);
+      });
+      nav.addEventListener('transitionend', tone, { once: true });
     }, true);
 
     function close() {
