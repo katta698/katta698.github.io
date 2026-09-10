@@ -92,6 +92,36 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 9 September 2026 — covered by post #29
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Diagnosis adds six categories beyond network connectivity — IAM, agent version, status checks, OS configuration, DHMC and hybrid activation — for instances Systems Manager cannot manage | Systems Manager | **#29** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/systems-manager-diagnoses-ec2-unmanaged/) |
+| 90-minute function timeout on Lambda Managed Instances — async and ESM only, a 6x increase, and only on the compute type where duration is not the billing unit | Lambda | **drafted, held** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-lambda-90-minute-function/) |
+| Graviton5-powered EC2 instances on Lambda Managed Instances | Lambda | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-lambda-graviton5-ec2/) |
+| Volume Clones now copy across accounts | EBS | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/ebs-volume-clones-cross-account-copy/) |
+| APIs and console for debugging document-level access control | Bedrock Managed Knowledge Base | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-bedrock-knowledge-base-debugging-document-access-control/) |
+| Confluence Data Center as a native data source connector | Bedrock Managed Knowledge Base | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-bedrock-managed-knowledge-base-confluence-data-center-native-data-source-connector/) |
+| Record-level confidence scores for ML matching | Entity Resolution | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/entity-resolution-record-confidence/) |
+| Private CA EKS add-on and Connector for AD in GovCloud (US); .NET modernization GA via CLI; Connect task and email capacity limits; Connect Customer Profiles segment events | Private CA, Transform, Connect | skipped | Low | — |
+
+**Post #29 was taken on a reader steer** rather than by ranking. The Lambda
+90-minute timeout was written first and is held as a draft at
+`posts/daily-029-lambda-90-minute-timeout.html` with `draft: true`, complete
+with claims and diagram — it is the strongest held item for the next quiet day
+and needs only a renumber.
+
+**A feed caveat worth keeping.** `fetch_week.py` reported 34 security bulletins
+in range for 9 September, with the feed holding exactly 34 — every item in the
+feed carried that date. Four of them were already covered by post #26 as
+published on 4 September, so the bulletin feed restamps rather than dates its
+items. Treat a bulletin count from this feed as "everything currently in the
+feed", not "published that day", and check the bulletin's own page before
+calling anything new. Same class of error as the roundup-date caveat under
+7 September.
+
+---
+
 ## 8 September 2026 — covered by post #28
 
 | Item | Service | Status | Importance | Reference |
