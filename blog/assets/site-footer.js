@@ -763,3 +763,189 @@
     start();
   }
 })();
+
+
+/* ---------------------------------------------------------------------------
+ * The cairn menu.
+ *
+ * Five destinations do not fit a phone beside a brand mark and three controls.
+ * The bar has been wrapping onto two and three lines to cope, and where it
+ * broke depended on the width -- which is a shape that looks deliberate on the
+ * machine it was built on and broken on somebody's actual phone.
+ *
+ * So below 720px the links collapse behind one mark: a cairn, stacked stones
+ * held by nothing but balance, each one an imperfect shape. A stone is added
+ * as it opens.
+ *
+ * Two things this deliberately does NOT do:
+ *
+ *   It does not hide where you are. The collapsed bar prints the current page
+ *   next to the mark, so the answer to "which page is this" is on screen
+ *   without opening anything -- which is more than the wrapped row of five
+ *   managed, where the current item was marked but easy to miss among four
+ *   others.
+ *
+ *   It does not read the links out of the page it is on. The list is defined
+ *   here, once, so the panel is identical everywhere by construction rather
+ *   than by six templates agreeing. The portfolio keeps its section anchors in
+ *   its own bar; this is the site's own navigation and it is the same object
+ *   on all of them.
+ *
+ * It lives in site-footer.js because that is the one script every page already
+ * loads, and it injects its own stylesheet -- so there is exactly one copy of
+ * this behaviour rather than one per template.
+ * ------------------------------------------------------------------------ */
+(function () {
+  'use strict';
+
+  var PAGES = [
+    { href: '/',                          label: 'Portfolio' },
+    { href: '/blog/',                     label: 'Blog' },
+    { href: '/intelligence/',             label: 'Intelligence' },
+    { href: '/intelligence/whats-new/',   label: '’s new', pre: 'What' },
+    { href: '/intelligence/status/',      label: 'Live status' }
+  ];
+
+  function text(p) { return (p.pre || '') + p.label; }
+
+  // Which of the five we are on. Longest matching path wins, so
+  // /intelligence/status/ is not mistaken for /intelligence/.
+  function current() {
+    var path = location.pathname.replace(/index\.html$/, '');
+    if (path.charAt(path.length - 1) !== '/') path += '/';
+    var best = null;
+    PAGES.forEach(function (p) {
+      if (path.indexOf(p.href) === 0 && (!best || p.href.length > best.href.length)) {
+        best = p;
+      }
+    });
+    return best;
+  }
+
+  // Three stones resting, four once it is open -- the extra one balanced on
+  // top, which is the whole animation.
+  function cairn() {
+    return '<svg class="ck-cairn" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<ellipse class="ck-s1" cx="12" cy="19" rx="7" ry="2.6"/>' +
+      '<ellipse class="ck-s2" cx="11"   cy="14.4" rx="5" ry="2.3"/>' +
+      '<ellipse class="ck-s3" cx="13"   cy="10.4" rx="3.4" ry="1.9"/>' +
+      '<ellipse class="ck-s4" cx="11.6" cy="6.8"  rx="2.3" ry="1.5"/>' +
+      '</svg>';
+  }
+
+  function start() {
+    var nav = document.querySelector('nav');
+    if (!nav || nav.querySelector('.ck-btn')) return;
+    var here = current();
+
+    // Where am I, printed in the bar.
+    var label = document.createElement('span');
+    label.className = 'ck-here';
+    label.textContent = here ? text(here) : '';
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ck-btn';
+    btn.id = 'ck-btn';
+    btn.setAttribute('aria-expanded', 'false');
+    btn.setAttribute('aria-controls', 'ck-sheet');
+    btn.setAttribute('aria-label', 'Open the menu');
+    btn.innerHTML = cairn();
+
+    var sheet = document.createElement('div');
+    sheet.className = 'ck-sheet';
+    sheet.id = 'ck-sheet';
+    sheet.hidden = true;
+    sheet.innerHTML = '<ul>' + PAGES.map(function (p) {
+      var on = here && p.href === here.href;
+      return '<li><a href="' + p.href + '"' +
+             (on ? ' class="is-here" aria-current="page"' : '') + '>' +
+             '<span class="ck-dot" aria-hidden="true"></span>' +
+             '<span class="ck-label">' + text(p) + '</span>' +
+             (on ? '<span class="ck-you">you are here</span>' : '') +
+             '</a></li>';
+    }).join('') + '</ul>';
+
+    nav.appendChild(label);
+    nav.appendChild(btn);
+    nav.appendChild(sheet);
+
+    function close() {
+      if (sheet.hidden) return;
+      sheet.hidden = true;
+      btn.setAttribute('aria-expanded', 'false');
+      btn.setAttribute('aria-label', 'Open the menu');
+      document.documentElement.classList.remove('ck-open');
+    }
+    function open() {
+      sheet.hidden = false;
+      btn.setAttribute('aria-expanded', 'true');
+      btn.setAttribute('aria-label', 'Close the menu');
+      document.documentElement.classList.add('ck-open');
+      var first = sheet.querySelector('a');
+      if (first) first.focus();
+    }
+
+    // The opening tap must not also be the closing one.
+    //
+    // stopPropagation is not enough here: the portfolio and the blog both run
+    // their own document-level click handlers for their menus, and one of
+    // them fires in the capture phase, which happens before this button ever
+    // sees the event. The panel opened and shut in the same tap on exactly
+    // those two pages and worked fine on the other four, which is the shape
+    // of a page-specific listener rather than anything wrong with the panel.
+    //
+    // So: ignore anything inside the button (the tap usually lands on the
+    // SVG, not the button itself), and ignore any outside-click in the same
+    // tick as the open.
+    // Delegated, not bound to the button.
+    //
+    // Bound directly, this worked on four pages and silently did nothing on
+    // the blog and the portfolio: the button was in the DOM, the tap reached
+    // it -- capture-phase logging on the button itself saw the click -- and
+    // the handler never ran. That is the signature of a node replaced after
+    // the listener was attached, which strips its listeners while leaving an
+    // identical-looking element behind. Both those pages rebuild parts of
+    // their nav after load.
+    //
+    // A listener on the document cannot be detached by anything re-rendering
+    // the bar, so it does not matter who rebuilds what or in which order.
+    // ...and in the CAPTURE phase.
+    //
+    // Delegation alone was still not enough on the blog index and the
+    // portfolio. A document listener in the bubble phase is the LAST thing to
+    // see a click, so any stopPropagation on an element in between silences
+    // it -- and both those pages carry nav handlers that do exactly that.
+    // Capture on the document is the FIRST thing to see a click, before any
+    // of them, and nothing can take it away.
+    var openedAt = 0;
+    document.addEventListener('click', function (e) {
+      var hit = e.target.closest ? e.target.closest('.ck-btn') : null;
+      if (hit) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (sheet.hidden) { openedAt = Date.now(); open(); } else { close(); }
+        return;
+      }
+      if (sheet.hidden) return;
+      // The opening tap must not also be the closing one.
+      if (Date.now() - openedAt < 350) return;
+      if (sheet.contains(e.target)) return;
+      close();
+    }, true);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !sheet.hidden) { close(); btn.focus(); }
+    });
+    // A resize past the breakpoint should not leave a panel open over a bar
+    // that has gone back to showing all five links.
+    window.addEventListener('resize', function () {
+      if (window.innerWidth > 720) close();
+    }, { passive: true });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})();
