@@ -657,6 +657,238 @@ def leftovers():
              % len(READER_PAGES))
 
 
+# ---------------------------------------------------------------------------
+# 10. The incident records themselves: dates that make sense, no duplicates,
+#     nothing missing, and the year buckets adding up to the total.
+#
+# A wrong date is the most legible error a page like this can carry. It takes
+# no expertise to spot and it undermines everything near it -- if the date is
+# wrong, why would a reader trust the count beside it.
+# ---------------------------------------------------------------------------
+def incidents():
+    tl = (load("intelligence/timeline-index.json") or {}).get("incidents") or []
+    if not tl:
+        note("incidents", FAIL, "the timeline holds no incidents at all")
+        return
+    today = dt.date.today().isoformat()
+
+    future = [i for i in tl if (i.get("b") or "") > today]
+    if future:
+        note("incidents", FAIL, "%d incident(s) dated in the future — %s"
+             % (len(future), (future[0].get("t") or "")[:44]))
+    else:
+        note("incidents", OK, "no incident is dated in the future")
+
+    backwards = [i for i in tl if i.get("e") and i.get("b") and i["e"] < i["b"]]
+    if backwards:
+        note("incidents", FAIL, "%d incident(s) end before they begin — %s"
+             % (len(backwards), (backwards[0].get("t") or "")[:44]))
+    else:
+        note("incidents", OK, "no incident ends before it begins")
+
+    undated = [i for i in tl if not i.get("b")]
+    if undated:
+        note("incidents", WARN,
+             "%d incident(s) carry no date and show under 'Undated' — %s"
+             % (len(undated), (undated[0].get("t") or "")[:44]))
+    else:
+        note("incidents", OK, "every incident carries a date")
+
+    missing = [i for i in tl if not (i.get("t") or "").strip() or not i.get("u")]
+    if missing:
+        note("incidents", FAIL,
+             "%d incident(s) have no title or no link to the vendor" % len(missing))
+    else:
+        note("incidents", OK, "every incident has a title and a vendor link")
+
+    # Duplicates by the VENDOR'S id, never by title.
+    #
+    # Google logged two separate Looker Studio incidents on the same day with
+    # near-identical titles. A title-and-date check called sixteen of those
+    # duplicates and every one was wrong. The vendor's id is the only thing
+    # that actually identifies an incident.
+    seen, dupes = set(), []
+    for i in tl:
+        key = (i.get("c"), i.get("i"))
+        if not key[1]:
+            continue
+        if key in seen:
+            dupes.append(key)
+        seen.add(key)
+    if dupes:
+        note("incidents", FAIL,
+             "%d incident(s) appear twice under one vendor id — %s"
+             % (len(dupes), dupes[0]))
+    else:
+        note("incidents", OK, "no incident is listed twice")
+
+    years = {}
+    for i in tl:
+        y = (i.get("b") or "")[:4] or "Undated"
+        years[y] = years.get(y, 0) + 1
+    if sum(years.values()) != len(tl):
+        note("incidents", FAIL,
+             "the year buckets sum to %s; the timeline holds %s"
+             % (commas(sum(years.values())), commas(len(tl))))
+    else:
+        note("incidents", OK,
+             "the year buckets sum to the total — %s across %d years"
+             % (commas(len(tl)), len(years)))
+
+
+# ---------------------------------------------------------------------------
+# 11. Is every page actually being served, and can the site be found.
+#
+# A half-finished deploy leaves one page 404ing while everything else looks
+# perfect. Nobody notices until a reader follows a link -- or until a colleague
+# does.
+# ---------------------------------------------------------------------------
+LIVE_PAGES = ["/", "/blog/", "/intelligence/", "/intelligence/whats-new/",
+              "/intelligence/status/", "/now.html", "/resume.html",
+              "/sitemap.xml", "/robots.txt", "/blog/rss.xml"]
+
+
+def availability(enabled):
+    if not enabled:
+        note("availability", WARN, "skipped, --no-network was passed")
+        return
+    import urllib.request
+    site = "https://jayanthkatta.com"
+    bad = 0
+    for path in LIVE_PAGES:
+        try:
+            req = urllib.request.Request(
+                site + path, headers={"User-Agent": "jayanthkatta.com health check"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                code, size = r.status, len(r.read())
+            if code == 200 and size > 200:
+                continue
+            note("availability", FAIL,
+                 "%s answered %s and %s bytes" % (path, code, commas(size)))
+            bad += 1
+        except Exception as exc:                                # noqa: BLE001
+            note("availability", FAIL,
+                 "%s is not being served: %s" % (path, str(exc)[:44]))
+            bad += 1
+    if not bad:
+        note("availability", OK,
+             "all %d pages are served, including the sitemap, robots.txt and "
+             "the feed" % len(LIVE_PAGES))
+
+
+# ---------------------------------------------------------------------------
+# 12. Nothing that should be private, and nothing loaded insecurely.
+#
+# The repository is public, so a key committed by accident is readable by
+# anyone from the moment it lands, and rotating it is the only remedy. The
+# allow-list exists because AWS publishes its own example key in its
+# documentation and the placeholders are meant to be replaced by whoever
+# copies the snippet -- flagging those every morning would train the reader of
+# this report to ignore the section.
+# ---------------------------------------------------------------------------
+SECRET_PATTERNS = [
+    ("AKIA[0-9A-Z]{16}", "an AWS access key id"),
+    ("gh[pousr]_[A-Za-z0-9]{30,}", "a GitHub token"),
+    ("sk-[A-Za-z0-9]{32,}", "an API key"),
+]
+SECRET_ALLOW = ("AKIAIOSFODNN7EXAMPLE", "YOUR-", "EXAMPLE", "xxxx", "<your")
+
+
+def secrets():
+    found = 0
+    for base, dirs, files in os.walk(ROOT):
+        dirs[:] = [d for d in dirs
+                   if d not in (".git", "node_modules", "_archive")
+                   and not d.startswith(".")]
+        for name in files:
+            if not name.endswith((".html", ".js", ".py", ".json", ".yml",
+                                  ".yaml", ".md", ".txt", ".sh")):
+                continue
+            path = os.path.join(base, name)
+            try:
+                body = io.open(path, encoding="utf-8", errors="ignore").read()
+            except Exception:                                   # noqa: BLE001
+                continue
+            for pattern, what in SECRET_PATTERNS:
+                m = re.search(pattern, body)
+                if not m:
+                    continue
+                hit = m.group(0)
+                if any(a.lower() in hit.lower() for a in SECRET_ALLOW):
+                    continue
+                rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+                note("secrets", FAIL,
+                     "%s contains %s: %s" % (rel, what, hit[:22] + "..."))
+                found += 1
+                break
+    if not found:
+        note("secrets", OK, "no credentials in the published repository")
+
+    # Anything fetched over http:// on an https page is blocked by the browser
+    # and shows up as a broken image or a script that silently did not run.
+    mixed = 0
+    for page in READER_PAGES:
+        for m in re.finditer(r'(?:src|href)="(http://[^"]+)"', text(page)):
+            url = m.group(1)
+            if "localhost" in url or "127.0.0.1" in url:
+                continue
+            note("secrets", WARN,
+                 "%s loads %s over plain http" % (page, url[:56]))
+            mixed += 1
+            break
+    if not mixed:
+        note("secrets", OK, "nothing is loaded over plain http")
+
+
+# ---------------------------------------------------------------------------
+# 13. What a search result and a shared link will show.
+#
+# These are the only part of the site most people see before deciding whether
+# to open it, and they are invisible while you are looking at the page itself.
+# ---------------------------------------------------------------------------
+def metadata():
+    before = len(findings)
+    seen_titles, seen_desc = {}, {}
+    for page in READER_PAGES:
+        body = text(page)
+        if not body:
+            continue
+        t = re.search(r"<title[^>]*>(.*?)</title>", body, re.S)
+        d = re.search(r'<meta[^>]+name="description"[^>]+content="([^"]*)"', body)
+        c = re.search(r'<link[^>]+rel="canonical"[^>]+href="([^"]*)"', body)
+        og = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]*)"', body)
+        title = re.sub(r"\s+", " ", t.group(1)).strip() if t else ""
+
+        if not title:
+            note("metadata", FAIL, "%s has no <title>" % page)
+        elif title in seen_titles:
+            note("metadata", WARN,
+                 "%s and %s share the title '%s' — a search result cannot tell "
+                 "them apart" % (page, seen_titles[title], title[:40]))
+        else:
+            seen_titles[title] = page
+
+        desc = d.group(1).strip() if d else ""
+        if not desc:
+            note("metadata", WARN, "%s has no meta description" % page)
+        elif desc in seen_desc:
+            note("metadata", WARN,
+                 "%s repeats the description of %s" % (page, seen_desc[desc]))
+        else:
+            seen_desc[desc] = page
+
+        if not c:
+            note("metadata", WARN, "%s has no canonical link" % page)
+        if not og:
+            note("metadata", WARN,
+                 "%s has no og:image — a shared link shows no preview" % page)
+
+    if len(findings) == before:
+        note("metadata", OK,
+             "every page has a unique title and description, a canonical link "
+             "and a preview image")
+
+
 TITLES = {
     "claims":    "What the pages claim, against the data behind them",
     "freshness": "Freshness, judged against each source's own schedule",
@@ -667,9 +899,14 @@ TITLES = {
     "prose":     "Typos and grammar in the copy",
     "rendering": "Does it still render correctly",
     "leftovers": "Anything on a reader's screen that should not be",
+    "incidents":    "The incident records themselves",
+    "availability": "Is every page actually being served",
+    "secrets":      "Nothing private, nothing insecure",
+    "metadata":     "What a search result and a shared link will show",
 }
-ORDER = ["claims", "regions", "freshness", "agreement", "jobs", "vendors",
-         "prose", "rendering", "leftovers"]
+ORDER = ["claims", "incidents", "regions", "freshness", "agreement", "jobs",
+         "availability", "vendors", "metadata", "secrets", "prose",
+         "rendering", "leftovers"]
 MARK = {OK: "ok  ", WARN: "note", FAIL: "FAIL"}
 
 
@@ -687,8 +924,12 @@ def main():
     freshness()
     agreement()
     jobs()
+    incidents()
     vendors(not args.no_network)
     vendor_regions(not args.no_network)
+    availability(not args.no_network)
+    secrets()
+    metadata()
     prose()
     rendering(not args.no_browser)
     leftovers()

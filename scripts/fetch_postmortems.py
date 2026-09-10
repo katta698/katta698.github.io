@@ -99,6 +99,42 @@ def text(s):
     return s.strip()
 
 
+def aws_index_dates(idx):
+    """Every summary's date as AWS states it on the index, keyed by URL.
+
+    Four of the eighteen summaries never give a year in their own text -- the
+    SimpleDB one says "the June 13 SimpleDB disruption" and stops -- so
+    aws_date() correctly refuses to date them and they reached the timeline
+    under "Undated".
+
+    The index states the date beside each link. That is still AWS saying it,
+    which is the standard this file already holds itself to: a date that was
+    fetched, not one that was inferred.
+
+    Keyed by URL and never by title. Matching on titles pairs "the AWS Service
+    Event in the Sydney Region" with December 7, 2021 -- the Northern Virginia
+    event -- and dates the 2015 DynamoDB summary to the 2025 one. Both of those
+    happened while writing this, and either would have put a confidently wrong
+    date in front of a reader.
+
+    The list is embedded with escaped quotes, hence the unescape.
+    """
+    text_html = idx.replace('\\"', '"')
+    months = ("January|February|March|April|May|June|July|August|September|"
+              "October|November|December")
+    pat = ('href="([^"]*/message/[^"]+)"[^>]*>(.*?)</a>\s*'
+           '((?:' + months + ')\s+\d{1,2},?\s+\d{4})')
+    out = {}
+    for href, title, when in re.findall(pat, text_html, re.S):
+        url = urllib.parse.urljoin(AWS_INDEX, href).rstrip("/")
+        m = re.match(r"(%s)\s+(\d{1,2}),?\s+(\d{4})" % months, when)
+        if not m:
+            continue
+        out[url] = "%s-%02d-%02d" % (m.group(3), MONTHS.index(m.group(1)) + 1,
+                                     int(m.group(2)))
+    return out
+
+
 def parse_aws(limit=None, have=None):
     """The index gives titles and links; each summary is its own page.
 
@@ -111,6 +147,7 @@ def parse_aws(limit=None, have=None):
     """
     have = have or set()
     idx = get(AWS_INDEX)
+    index_dates = aws_index_dates(idx)
     seen, out = set(), []
     for href, title in re.findall(
             r'<a[^>]+href="([^"]*/message/[^"]+)"[^>]*>([^<]{8,200})</a>', idx):
@@ -146,7 +183,13 @@ def parse_aws(limit=None, have=None):
             "cloud": "aws",
             "id": rec["url"].rstrip("/").rsplit("/", 1)[-1],
             "title": rec["title"],
-            "date": aws_date(rec["title"], body),
+            # The body first, because it is the summary's own words. The
+            # index second, because it is still AWS stating the date -- just
+            # in the list rather than in the prose. Four summaries say "the
+            # June 13 SimpleDB disruption" with no year anywhere in the text,
+            # and were shown to readers under "Undated" until this.
+            "date": (aws_date(rec["title"], body)
+                     or index_dates.get(rec["url"].rstrip("/"), "")),
             "url": rec["url"],
             "body": body[:14000],
             "sections": [],           # AWS publishes no headings. See module docstring.
@@ -416,6 +459,29 @@ def main():
         sources[cloud]["new"] = sum(1 for r in items
                                     if r.get("cloud") == cloud
                                     and (cloud + ":" + r.get("id", "")) not in prev_items)
+
+    # Backfill a date onto anything still undated.
+    #
+    # AWS summaries are immutable, so parse_aws never refetches one it already
+    # holds -- which means a stored entry that arrived undated would stay
+    # undated forever, however well the parser was fixed afterwards. Four of
+    # them were sitting under "Undated" on the timeline for exactly that
+    # reason. This reads the index, which every run fetches anyway, and fills
+    # in what AWS states there.
+    undated = [r for r in items if not r.get("date") and r.get("cloud") == "aws"]
+    if undated:
+        try:
+            byurl = aws_index_dates(get(AWS_INDEX))
+            filled = 0
+            for r in undated:
+                d = byurl.get((r.get("url") or "").rstrip("/"))
+                if d:
+                    r["date"] = d
+                    filled += 1
+            if filled:
+                print("  dated %d write-up(s) from AWS's own index" % filled)
+        except Exception as exc:                                # noqa: BLE001
+            print("  could not read the index for dates (%s)" % str(exc)[:50])
 
     items.sort(key=lambda r: (r.get("date") or ""), reverse=True)
     payload = {"updated": stamp(), "sources": sources, "postmortems": items}
