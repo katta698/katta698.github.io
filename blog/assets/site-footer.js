@@ -1381,6 +1381,10 @@
 /* ---------------------------------------------------------------------------
    Light up "Live status" while one of the clouds is actually broken.
 
+   It adds a CLASS. The first version appended a dot element, which widened the
+   link and pushed every other link in the bar sideways a second after load --
+   the exact fault this file has spent a day removing everywhere else.
+
    /intelligence/status.json is 3.7KB and already refreshes itself, so every
    page can afford to ask. It is the same file the status page is built from,
    which matters: the light and the page it points at cannot disagree.
@@ -1422,12 +1426,12 @@
       // Not the page you are already on: a light telling you to go where you
       // are is noise.
       if (a.getAttribute('aria-current') === 'page') return;
-      if (a.querySelector('.live-dot')) return;
-      var dot = document.createElement('span');
-      dot.className = 'live-dot';
-      dot.setAttribute('aria-hidden', 'true');
-      a.appendChild(dot);
-      // The label carries the fact; the dot carries the attention.
+      if (a.classList.contains('is-live')) return;
+      // A class, and nothing else. Adding an ELEMENT is what made the link
+      // wider and slid the whole bar sideways; a class changes colour and
+      // glow, neither of which has a width.
+      a.classList.add('is-live');
+      // The label carries the fact; the glow carries the attention.
       a.setAttribute('aria-label', (a.textContent || 'Live status').trim() +
                      ' — ' + say);
       a.setAttribute('title', say);
