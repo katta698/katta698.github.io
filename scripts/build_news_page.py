@@ -720,6 +720,15 @@ a:active,button:active{opacity:.72}
     <li><a href="/intelligence/status/">Live status</a></li>
     <li class="nav-ctl"><button class="audio-toggle" id="audio-toggle" type="button"
         title="Toggle beach sounds" aria-label="Toggle beach sounds">&#127907;</button></li>
+    <!-- The palette control, in the markup rather than injected.
+         site-footer.js created it about three seconds into every load, and the
+         stylesheet reserved 44px for it in the meantime -- so the bar jumped
+         TWICE: 44px left when the reservation applied, then 39px back right
+         when the real button arrived. Measured in a real Chrome window on the
+         reporter's own machine, which is the only place it was ever visible:
+         headless browsers hid it, and I spent hours fixing smaller things.
+         Here from the first frame, nothing moves. site-footer.js finds it. -->
+    <li class="nav-ctl"><div class="pal-nav"><button type="button" class="pal-nav-btn" aria-expanded="false" aria-haspopup="true" aria-label="Today's colour"><span class="pal-nav-dot"></span></button><div class="pal-menu" hidden></div></div></li>
     <li class="nav-ctl">
       <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn" type="button">
         <span id="theme-icon">&#9681;</span><span id="theme-label">Light</span>

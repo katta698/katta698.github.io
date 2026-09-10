@@ -1766,6 +1766,10 @@ def nav_html(show_search=True, show_audio=False):
   </ul>
 {search_btn}
 {audio_btn}
+  <!-- The palette control, present rather than injected -- see the note in
+       index.html. Injecting it three seconds in made the bar jump twice on
+       every load. -->
+  <div class="pal-nav"><button type="button" class="pal-nav-btn" aria-expanded="false" aria-haspopup="true" aria-label="Today's colour"><span class="pal-nav-dot"></span></button><div class="pal-menu" hidden></div></div>
   <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
     <span id="theme-icon-moon">◐</span><span id="theme-label-text">Dark</span>
   </button>
