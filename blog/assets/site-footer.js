@@ -838,6 +838,27 @@
     if (!nav || nav.querySelector('.ck-btn')) return;
     var here = current();
 
+    /* Say which page this is in the bar itself, not only inside the panel.
+     *
+     * The three pages that marked it did it by hand in their own markup: the
+     * Intelligence pages carry class="active" on the right anchor, the blog
+     * carries it too, and the portfolio carried nothing at all -- its four
+     * site links sit in the action row and there is no link to "/" to mark.
+     * Three sources of truth for one fact, and the one page that a reader
+     * arrives on first was the one that never said where they were.
+     *
+     * It is derived here instead, from the same current() the panel uses, so
+     * the bar and the panel cannot disagree and no page has to be told.
+     */
+    if (here) {
+      [].forEach.call(nav.querySelectorAll('a[href]'), function (a) {
+        if (a.closest('.nav-logo') || a.closest('.ck-sheet')) return;
+        if (a.getAttribute('href') !== here.href) return;
+        a.classList.add('is-current');
+        a.setAttribute('aria-current', 'page');
+      });
+    }
+
     // Where am I, printed in the bar.
     var label = document.createElement('span');
     label.className = 'ck-here';
@@ -976,6 +997,12 @@
       var L = 0.2126 * f(v[0]) + 0.7152 * f(v[1]) + 0.0722 * f(v[2]);
       var pale = L > 0.4;
       label.style.color = pale ? '#7A5C3C' : '#C4A484';
+
+      /* The current page's link takes the same two values as the label beside
+       * it. On a pale bar the tan the Intelligence pages use comes to 2.0:1
+       * against the cream -- readable as a colour, not as text -- so the same
+       * darker brown is used there, and the stylesheet reads it from here. */
+      nav.style.setProperty('--nav-here', pale ? '#7A5C3C' : '#C4A484');
 
       /* The wordmark takes its ink from the same measurement.
        *
@@ -1170,4 +1197,68 @@
   } else {
     start();
   }
+})();
+
+/* ---------------------------------------------------------------------------
+   Back to top, on every page that is long enough to need one.
+
+   It existed on blog POSTS and on the two Intelligence pages, and nowhere
+   else: the portfolio is the longest page on the site -- terminal, about,
+   writing, skills, contact, tools -- and the blog index runs twenty posts, and
+   on both of them the only way back to the navigation was to scroll the whole
+   way. The button was never missing by decision; it was in blog.css, so the
+   pages that do not load blog.css never had it.
+
+   Injected rather than added to each page's markup for the reason the cairn
+   is: five files that each have to remember is how the bars drifted apart in
+   the first place. A page that already carries its own #back-top keeps it --
+   this only fills the gaps.
+   --------------------------------------------------------------------------- */
+(function () {
+  'use strict';
+
+  function start() {
+    if (!document.body) return;
+    var btn = document.getElementById('back-top');
+    if (!btn) {
+      // Nothing to scroll back from. Measured rather than assumed: the
+      // Intelligence hub is barely over a screen, and a control that can never
+      // appear is still a control the print stylesheet and the tab order have
+      // to deal with.
+      if (document.documentElement.scrollHeight < window.innerHeight * 1.8) return;
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'back-top';
+      btn.id = 'back-top';
+      btn.setAttribute('aria-label', 'Back to top');
+      btn.textContent = '↑';
+      document.body.appendChild(btn);
+    }
+    // blog.js wires the one it finds on post pages. Wiring twice would toggle
+    // the same class to the same value, which is harmless, but the flag keeps
+    // the listener count honest.
+    if (btn.getAttribute('data-wired')) return;
+    btn.setAttribute('data-wired', '1');
+
+    function check() {
+      var y = window.scrollY || document.documentElement.scrollTop || 0;
+      btn.classList.toggle('show', y > 400);
+    }
+    window.addEventListener('scroll', check, { passive: true });
+    btn.addEventListener('click', function () {
+      var still = window.matchMedia &&
+                  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      window.scrollTo({ top: 0, behavior: still ? 'auto' : 'smooth' });
+    });
+    check();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+  // The portfolio builds several sections after load, so the page is short at
+  // DOMContentLoaded and long a moment later.
+  window.addEventListener('load', function () { window.setTimeout(start, 300); });
 })();

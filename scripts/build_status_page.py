@@ -988,7 +988,13 @@ PAGE = """<!DOCTYPE html>
 <link rel="canonical" href="https://jayanthkatta.com/intelligence/status/"/>
 <link rel="icon" href="/favicon-transparent.png" type="image/png">
 <link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
-<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600&amp;family=DM+Sans:wght@400;600&amp;family=DM+Mono&amp;display=swap" rel="stylesheet">
+<!-- The same request the other Intelligence pages make. This asked for DM
+     Sans at 400 and 600 only, and the navigation links are set at 500 --
+     so the browser synthesised the weight it had not been given and every
+     word in the bar came out 2px narrower than the same word on the same
+     bar on every other page. Nothing looked wrong on this page alone; the
+     five links simply never lined up with the other four. -->
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&amp;family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&amp;family=DM+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/intelligence/status/status.css?v=__CSSV__">
 <script>
 /* Byte-identical to the setter in index.html, now.html and the other

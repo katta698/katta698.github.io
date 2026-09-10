@@ -98,6 +98,47 @@ PROBE = """() => {
   const here = document.querySelector('.ck-here');
   const active = document.querySelector('.nav-links a.active, .ck-sheet a.is-here');
 
+  // The mark in the BAR, and whether it actually drew.
+  //
+  // The blog carried a correct .nav-links a.active::after rule that had been
+  // dead for weeks: a later change made the links inline-flex, which turns a
+  // display:block ::after into a zero-width flex item beside the word instead
+  // of a rule under it. The CSS was present, the class was on the right
+  // anchor, and nothing was visible -- so this measures the pixels rather than
+  // asking whether the rule exists.
+  const cur = [...nav.querySelectorAll('a[aria-current="page"]')]
+    .filter(a => !a.closest('.ck-sheet') && a.getBoundingClientRect().width > 0);
+  let rule = null;
+  if (cur.length) {
+    const a = getComputedStyle(cur[0], '::after');
+    rule = { w: parseFloat(a.width) || 0, h: parseFloat(a.height) || 0,
+             content: a.content };
+  }
+  const marked = cur.length;
+
+  // Where the five site links actually SIT, measured from the right edge.
+  //
+  // Same order and same gap is not the same bar: the portfolio bought its link
+  // spacing with padding while the others used the list's gap, so with one gap
+  // rule applied the same five words still sat 5px further apart there. Three
+  // pages looking right individually is how every one of these drifts started,
+  // so the comparison is between pages, not against a number.
+  //
+  // Measured from the first link rather than from the window edge: the
+  // Intelligence pages carry no beach-audio button, so their row genuinely
+  // ends 25px further right and always will until that control exists on all
+  // five. This asks whether the five words are laid out the same way, which is
+  // the thing one stylesheet can promise.
+  const SITE = ['/', '/blog/', '/intelligence/',
+                '/intelligence/whats-new/', '/intelligence/status/'];
+  const row = [...nav.querySelectorAll('.nav-links a[href]')]
+    .filter(a => SITE.indexOf(a.getAttribute('href')) >= 0)
+    .filter(a => a.getBoundingClientRect().width > 0)
+    .map((a, i, all) => a.getAttribute('href') + '@' +
+         Math.round(a.getBoundingClientRect().left -
+                    all[0].getBoundingClientRect().left))
+    .join(' ');
+
   // The bar's own order, left to right, so five pages cannot drift into five
   // different arrangements again.
   const seen = [];
@@ -112,7 +153,7 @@ PROBE = """() => {
   const order = seen.map(x => x[0]);
 
   return {
-    order,
+    order, marked, rule, row,
     edge: Math.round(edge), vw: window.innerWidth, sideways,
     wordFace,
     markVisible: !!(mr && mr.width > 0 && mr.height > 0),
@@ -142,6 +183,7 @@ def main():
 
     problems = []
     faces = {}
+    rows = {}
     with sync_playwright() as pw:
         browser = getattr(pw, args.engine).launch()
         for name, path in PAGES:
@@ -174,6 +216,21 @@ def main():
                                     % (tag, ", ".join(missing)))
                 if not r["saysWhere"]:
                     problems.append("%s: nothing says which page this is" % tag)
+                # Above the breakpoint the links are in the bar, so exactly one
+                # of them has to be marked and the mark has to be visible.
+                if w > 1080:
+                    if r.get("marked") != 1:
+                        problems.append(
+                            "%s: %d link(s) in the bar marked as the current "
+                            "page, expected 1" % (tag, r.get("marked") or 0))
+                    else:
+                        rule = r.get("rule") or {}
+                        if rule.get("h", 0) < 1 or rule.get("w", 0) < 20:
+                            problems.append(
+                                "%s: the current page's underline measures "
+                                "%.0fx%.0f -- the rule is there and nothing "
+                                "draws" % (tag, rule.get("w", 0),
+                                           rule.get("h", 0)))
                 # Same arrangement on every page: the mark first, the cairn
                 # last, the page's name immediately before it. Five pages grew
                 # five different bars once -- controls hard left on three,
@@ -193,6 +250,10 @@ def main():
                             problems.append(
                                 "%s: the page name is not beside the mark (%s)"
                                 % (tag, " ".join(order)))
+                # The link row, compared across pages at one width.
+                if w == 1440 and r.get("row"):
+                    rows[name] = [(h, int(x)) for h, x in
+                                  (part.split("@") for part in r["row"].split())]
                 if r.get("wordFace"):
                     faces.setdefault(r["wordFace"], []).append(name)
                 notes.append("%d:%d" % (w, r["edge"]))
@@ -212,6 +273,32 @@ def main():
                             % (face, ", ".join(sorted(set(where)))))
     elif faces:
         print("  wordmark: %s on every page" % list(faces)[0])
+
+    # Compared against the middle of the five, with 6px of slack.
+    #
+    # Not exact equality: the current page's link is set at 600 where the rest
+    # are 500, so whichever word is bold is a couple of pixels wider and
+    # everything after it shifts -- on a different word on every page. That is
+    # the marking working, not the bar drifting. Six pixels is under half a
+    # character and well below the 25px that a missing control moves things,
+    # or the 99px that a wrapped label did.
+    if rows:
+        cols = {}
+        for name, offs in rows.items():
+            for href, x in offs:
+                cols.setdefault(href, []).append((name, x))
+        worst = 0
+        for href, seen in cols.items():
+            mid = sorted(x for _, x in seen)[len(seen) // 2]
+            for name, x in seen:
+                if abs(x - mid) > 6:
+                    problems.append(
+                        "at 1440 %s sits %+dpx from where the other pages put "
+                        "it, on %s" % (href, x - mid, name))
+                worst = max(worst, abs(x - mid))
+        if worst <= 6:
+            print("  the five links are laid out the same way on every page "
+                  "(worst disagreement %dpx)" % worst)
 
     if problems:
         print("\n  %d NAVIGATION PROBLEM(S)\n" % len(problems))
