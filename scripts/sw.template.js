@@ -43,6 +43,11 @@ const PRECACHE = [
   '/blog/assets/site-footer.js?v=' + JS_VERSION,
   '/blog/assets/site-footer.css?v=' + JS_VERSION,
   '/blog/assets/icons/icon-192.png',
+  // The 30px brand mark in the bar. A separate file from the favicon: the
+  // bar used to point at favicon-transparent.png, which is 512x512 and
+  // 398KB, so every page downloaded and decoded a half-megabyte image to
+  // draw a 30-pixel circle.
+  '/brand-mark-96.png',
   '/favicon-transparent.png'
 ];
 

@@ -65,6 +65,16 @@ PROBE = """() => {
 
   const mark = document.querySelector('.brand-mark');
   const mr = mark ? mark.getBoundingClientRect() : null;
+  // How much bigger the FILE is than the box it is drawn in.
+  //
+  // The bar pointed at favicon-transparent.png, which is 512x512 and 398KB,
+  // to draw a 30-pixel circle -- on all five pages and 219 blog posts. Nothing
+  // looked wrong, because a browser downscaling an image looks exactly like an
+  // image that was the right size. It was found by measuring why moving
+  // between two pages felt slow, not by looking at them.
+  // 4x allows for a 3x-density screen and a little headroom.
+  const markScale = (mark && mr && mr.width)
+    ? +(mark.naturalWidth / mr.width).toFixed(1) : null;
 
   // The wordmark's typography, so five pages cannot set the same two words
   // three different ways again.
@@ -160,6 +170,8 @@ PROBE = """() => {
     order, marked, rule, row, navBg, curColour,
     edge: Math.round(edge), vw: window.innerWidth, sideways,
     wordFace,
+    markScale, markSrc: mark ? mark.getAttribute('src') : null,
+    markW: mr ? Math.round(mr.width) : 0,
     markVisible: !!(mr && mr.width > 0 && mr.height > 0),
     markRadius: mark ? getComputedStyle(mark).borderRadius : null,
     reach: [...new Set(inBar.concat(inSheet))],
@@ -239,6 +251,11 @@ def main():
                     problems.append("%s: the page scrolls sideways" % tag)
                 if not r["markVisible"]:
                     problems.append("%s: the brand mark is not visible" % tag)
+                elif r.get("markScale") and r["markScale"] > 4:
+                    problems.append(
+                        "%s: the brand mark is a %.0fx-oversized image (%s "
+                        "drawn at %dpx)" % (tag, r["markScale"], r["markSrc"],
+                                            r.get("markW") or 0))
                 elif r["markRadius"] != "50%":
                     problems.append("%s: the brand mark is not round (%s)"
                                     % (tag, r["markRadius"]))

@@ -1710,7 +1710,7 @@ def nav_html(show_search=True, show_audio=False):
     search_btn = ""
     audio_btn = """  <button class="audio-toggle" id="audio-toggle" onclick="toggleBlogAudio()" title="Toggle beach sounds">🎻</button>""" if show_audio else ""
     return f"""<nav class="nav">
-  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
   <div class="nav-spacer"></div>
   <!-- Same three destinations and the same labels as now.html and the
        intelligence pages. This said "Home" where they say "Portfolio", and

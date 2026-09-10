@@ -678,7 +678,7 @@ a:active,button:active{opacity:.72}
        so clicking the mark threw the reader out of the section they
        were reading. -->
   <a class="nav-logo" href="/intelligence/" aria-label="Cloud intelligence home">
-    <img class="brand-mark" src="/favicon-transparent.png" alt="" width="30" height="30" aria-hidden="true">
+    <img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true">
     <span class="brand-name">Jayanth Katta</span>
   </a>
   <ul class="nav-links">
