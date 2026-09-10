@@ -585,36 +585,30 @@ def check_page(slug, spec):
             err(slug, 'site nav contains %d link(s) that are not site links: %s '
                       '— something wrote page content into the header'
                 % (len(stray), ', '.join(s[:40] for s in stray)))
-        #     The COUNT is a moving target, and hardcoding it caused a false
-        #     failure on every push for a day. d428926 dropped Resume from the
-        #     site nav ("Make the home nav look like the blog nav, and drop
-        #     Resume from both"), so sync-built pages now render Home + Blog,
-        #     while the 85 pages built from the arch template still carry the
-        #     three-link version. Both are legitimate site chrome today; only
-        #     one of them is the intended end state.
+        #     The nav's LABELS were a moving target and this check kept
+        #     failing on them. Hardcoding the count broke it once; d428926
+        #     dropped Resume and broke it again; c849eef made the nav
+        #     Portfolio + Blog + Intelligence and broke it a third time, on
+        #     2026-09-05, across all three cloud windows at once. On
+        #     2026-09-10 the nav gained "What's new" and "Live status" and it
+        #     broke a fourth time. Each fix widened an allowlist that the site
+        #     was always going to outgrow.
         #
-        #     So: two links is current, three is the legacy arch template and
-        #     is reported as a warning rather than a failure. Anything else
-        #     means something wrote into the nav, which is what this is for.
-        #     Updated again by c849eef ("Give the blog the same inline nav as
-        #     everywhere else, and fix 89 stale ones"), which made the nav
-        #     Portfolio + Blog + Intelligence and rebuilt the pages to match.
-        #     Measured on 2026-09-05: 201 built pages carry that nav and zero
-        #     carry Home, so the previous two accepted shapes had both stopped
-        #     existing while this check still required one of them -- every
-        #     arch post in all three cloud windows failed on it. The current
-        #     shape is the pass case; the older two stay accepted so a page
-        #     that predates a rebuild is not reported as damage.
+        #     So the allowlist is gone. What this check is actually for is
+        #     arch-020's failure: the post's reference list written into the
+        #     header. The stray test above already catches that case exactly,
+        #     because injected references are external links and site nav is
+        #     not. The guard below catches the same leak if it ever arrives as
+        #     an internal link: a nav label is one or two words, and a
+        #     documentation title is not. Neither test cares how many items
+        #     the site's navigation has, which is the property that kept
+        #     breaking.
         labels = [re.sub(r'<[^>]+>', '', i).strip() for i in items]
-        if labels in (['Portfolio', 'Blog', 'Intelligence'], ['Home', 'Blog']):
-            pass
-        elif labels == ['Home', 'Blog', 'Resume']:
-            warn(slug, 'site nav still has the legacy Resume link - built from '
-                       'the arch template, which d428926 did not update. '
-                       '85 pages are in this state')
-        else:
-            err(slug, 'site nav is %d link(s): %s - expected Home, Blog'
-                % (len(labels), ', '.join(labels)))
+        long_labels = [l for l in labels if len(l) > 30]
+        if long_labels:
+            err(slug, 'site nav has %d item(s) too long to be nav labels: %s '
+                      '— page content was probably written into the header'
+                % (len(long_labels), ', '.join(l[:40] for l in long_labels)))
 
     # 5. Wide tables need their own scroll container or the last column is
     #    unreachable on mobile. Which wrapper is valid depends on the series:

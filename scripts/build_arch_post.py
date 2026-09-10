@@ -302,7 +302,15 @@ def build(src_path, prev_slug=None, prev_title=None):
     print("  %s | %s | css v=%s" % (date_display, read_time, css_version))
     print("  references: %d | nav items: %d | placeholders left: %s"
           % (len(ref_links), nav_items, left or "none"))
-    if left or nav_items != 3:
+    # nav_items was == 3 until the site nav grew to five links on 2026-09-10,
+    # at which point every arch build in every cloud window raised here after
+    # already writing the page. The exact count is the site's business and has
+    # changed four times; what a build can usefully assert is that the chrome
+    # is present at all. validate_arch_post.py owns the real check, and it no
+    # longer matches on labels either -- it looks for external links and
+    # over-long labels, which is what a page-content leak into the header
+    # actually looks like.
+    if left or nav_items < 2:
         raise SystemExit("build produced a page that would fail validation")
     return out_path
 
