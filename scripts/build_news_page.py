@@ -596,7 +596,7 @@ a:active,button:active{opacity:.72}
    other is where the evidence is. Every var() carries a literal for the same
    reason the button above does: an undefined token takes the whole
    declaration with it. */
-.to-src{position:fixed;bottom:4.2rem;left:1.5rem;right:auto;
+.to-src{position:fixed;bottom:1.5rem;left:50%;right:auto;
   display:inline-flex;align-items:center;height:32px;padding:0 .7rem;
   border-radius:999px;text-decoration:none;
   font-family:var(--mono, ui-monospace, monospace);
@@ -604,14 +604,19 @@ a:active,button:active{opacity:.72}
   color:var(--orange, var(--acc, #C4A484));
   background:var(--card, #171A19);
   border:1px solid var(--orange, var(--acc, #C4A484));
-  opacity:0;transform:translateY(8px);
+  opacity:0;transform:translate(-50%,8px);
   transition:opacity .2s, transform .2s;
   box-shadow:var(--shadow-md, 0 4px 16px rgba(0,0,0,.28));
   z-index:200;pointer-events:none}
-.to-src.show{opacity:1;transform:translateY(0);pointer-events:auto}
+/* Centred on the bottom edge, level with the back-to-top rather than stacked
+   over it: the two are peers -- one goes up, one goes down -- and a stack read
+   as one control with a label above it. translate carries the centring, so
+   both states have to restate it or the pill jumps left as it fades in. */
+.to-src.show{opacity:1;transform:translate(-50%,0);pointer-events:auto}
 .to-src:hover,.to-src:focus-visible{filter:brightness(1.12)}
 @media (prefers-reduced-motion:reduce){
   .to-src{transition:none}
+}
 }
 
 /* The brand mark, matching the portfolio and blog exactly.
