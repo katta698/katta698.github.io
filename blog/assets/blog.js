@@ -293,9 +293,17 @@
   // Only this page's cards are in the HTML, so a filter would otherwise search
   // 24 posts and quietly report that as the whole archive. Fetched after first
   // paint: landing on /blog/ and reading the newest posts costs nothing extra.
+  let hydrating = null;
   function hydrate() {
     if (hydrated) return Promise.resolve();
-    return fetch('/blog/cards.json')
+    // One request, however many entry points ask.
+    //
+    // Focusing the search box and typing into it both call this, and so does
+    // the click handler on any filter -- three calls inside a second, each
+    // starting its own fetch and its own 199-card build. The flag was only set
+    // on success, so it could not stop them.
+    if (hydrating) return hydrating;
+    hydrating = fetch('/blog/cards.json')
       .then(r => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
       .then(data => {
         const have = new Set(serverSlugs);
@@ -313,7 +321,9 @@
         // covers this page, which is worse than the whole archive but better
         // than an empty grid, and paging still works because it is plain links.
         hydrated = false;
+        hydrating = null;
       });
+    return hydrating;
   }
 
   let activeTag = 'all';
@@ -640,18 +650,39 @@
     applyFilters();
   }
 
-  // Pull in the rest of the archive once the page is interactive. Deferred to
-  // idle so it never competes with first paint; the paged view is already
-  // usable and correct without it.
+  // The rest of the archive is fetched when something actually needs it, and
+  // not before.
+  //
+  // It used to arrive at idle on every visit: requestIdleCallback with a
+  // 2500ms timeout, which on a phone means it fires whether the browser is
+  // idle or not, right while the reader is still scrolling. That built 199
+  // more cards into the page -- 5,473 DOM nodes against the 24 posts actually
+  // on screen -- and the cost is not the fetch, it is the layout and paint of
+  // everything after it. Traced on an emulated phone: 3.35s of paint and 3.34s
+  // of layout on this page.
+  //
+  // Nothing is lost, because every path that needs the whole set already asks
+  // for it: search, any filter, and sorting all call hydrate() and wait. A
+  // reader who lands on /blog/ and reads the newest posts now never pays for
+  // the other 199.
   if (grid) {
-    if (window.requestIdleCallback) requestIdleCallback(hydrate, { timeout: 2500 });
-    else setTimeout(hydrate, 400);
-    // A reader who types or clicks a filter before idle fires must not get a
-    // search over 24 posts, so every entry point waits for the full set first.
+    // A reader who types or clicks a filter must not get a search over 24
+    // posts, so every entry point waits for the full set first.
     if (searchInput) searchInput.addEventListener('focus', hydrate, { once: true });
     document.addEventListener('click', function (e) {
       if (e.target.closest('.filter-pill, .sb-tag, .svc-name, .topic-chip')) hydrate();
     }, true);
+
+    // Deep links are the exception: ?q=, ?tag=, ?service= and ?topic= all
+    // filter the page the moment it loads, with no click to hang the fetch
+    // off. They were correct only because idle hydration happened to run a
+    // moment later and re-applied the filter over the full set -- so removing
+    // it without this would make a shared link quietly return matches from
+    // the newest 24 posts and call that the archive.
+    const dl = new URLSearchParams(window.location.search);
+    if (dl.get('q') || dl.get('tag') || dl.get('service') || dl.get('topic')) {
+      hydrate().then(function () { applyFilters(); });
+    }
   }
 })();
 
