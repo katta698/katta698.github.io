@@ -42,13 +42,9 @@ DEVICES = [
 
 PROBE = """() => {
   const q = s => document.querySelectorAll(s).length;
-  const anims = (document.getAnimations ? document.getAnimations() : [])
-    .filter(a => a.animationName || (a.effect && a.effect.getTiming));
-  const running = anims.filter(a => a.playState === 'running').length;
   const pulses = [...document.querySelectorAll('.om-pulse')];
-  const pulseAnimated = pulses.filter(p =>
-    p.getAnimations && p.getAnimations().some(a => a.playState === 'running')
-  ).length;
+  const running = 0;
+  const pulseAnimated = 0;
   const svg = document.querySelector('.om-svg');
   const box = svg ? svg.getBoundingClientRect() : null;
   return {
@@ -107,16 +103,37 @@ def main():
                     continue
                 pg.wait_for_timeout(1500)
                 r = pg.evaluate(PROBE)
+                # Does the alarm actually MOVE? Measured, not asked.
+                #
+                # getAnimations() does not report SVG's own <animate>, and
+                # the earlier version of this check asked the browser whether
+                # an animation object existed rather than whether anything
+                # changed on screen -- which is how an animation that ran and
+                # was invisible passed. This samples the ring's drawn radius
+                # and looks at the spread.
+                if r["pulses"]:
+                    widths = []
+                    for _ in range(12):
+                        widths.append(pg.evaluate(
+                            "() => {const p=document.querySelector('.om-pulse');"
+                            "return p ? p.getBoundingClientRect().width : 0;}"))
+                        pg.wait_for_timeout(180)
+                    lo, hi = min(widths), max(widths)
+                    r["grow"] = round(hi / lo, 2) if lo > 0.5 else 0
                 tag = "%s/%s" % (engine, name)
                 print("  %-18s dots %2d  circles %2d  wedges %3d  pulses %d "
-                      "(animating %d)  alert %d  labels %2d  svg %4dpx%s"
+                      "(grows %sx)  alert %d  labels %2d  svg %4dpx%s"
                       % (tag, r["dots"], r["circles"], r["wedges"], r["pulses"],
-                         r["pulseAnimated"], r["alert"], r["labels"], r["svgW"],
+                         r.get("grow", "-"), r["alert"], r["labels"], r["svgW"],
                          "  OVERFLOW" if r["overflow"] else ""))
                 if not r["dots"]:
                     problems.append("%s: no dots drew" % tag)
-                if r["pulses"] and not r["pulseAnimated"]:
-                    problems.append("%s: the live pulse is not animating" % tag)
+                # A ring that never changes size is a static ring, whatever
+                # the browser says about animation objects existing.
+                if r["pulses"] and r.get("grow", 0) < 1.5:
+                    problems.append(
+                        "%s: the live ring barely moves (grows %sx, want 1.5x+)"
+                        % (tag, r.get("grow")))
                 if r["overflow"]:
                     problems.append("%s: the page scrolls sideways" % tag)
                 if errs:

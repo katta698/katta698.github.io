@@ -268,7 +268,18 @@
    * different stores and disagreed about 2022 by 210 incidents.
    */
   var yrs = document.querySelector('.pm-yrs');
-  var cls = document.querySelector('.pm-cls');
+  /* The archive's own cloud filter, by id.
+   *
+   * This used to be querySelector('.pm-cls'), which was unambiguous until the
+   * map above grew a cloud filter built from the same chip markup. From then
+   * on this matched the MAP's row -- it comes first in the document -- so the
+   * archive's chips had no handler at all and clicking AWS or Azure under
+   * Past outages did nothing, while the map's row quietly got a second
+   * listener it was never meant to have.
+   *
+   * Reusing the class was right; reaching for it with querySelector was not.
+   */
+  var cls = document.getElementById('pm-clouds');
   var list = document.getElementById('pm-list');
   if (yrs && list) {
     var all = null, pending = null, writeups = null;
@@ -485,6 +496,28 @@
     var CLOUD = { aws: 'AWS', azure: 'Azure', gcp: 'Google Cloud' };
     var mapLive = [], placeOf = {}, footMeta = null;
 
+    /* Whether the alarm is allowed to move, decided once.
+     *
+     * A reader who has asked their device for less motion gets none, and the
+     * alarm falls back to a heavier static ring plus the strip above the map.
+     * Everyone else gets the pulse -- drawn with SVG's own <animate> rather
+     * than a CSS transform.
+     *
+     * That choice is not stylistic. The CSS version scaled the ring about its
+     * own centre, which in SVG requires transform-box:fill-box, and that
+     * landed in Safari only in 15.4. On an iPad a version behind, the ring
+     * scaled about the viewBox origin instead and flew off the map -- which
+     * from the reader's chair is indistinguishable from an alarm that does
+     * not move at all, and it is exactly what was reported twice. SMIL needs
+     * no transform-box, no transform-origin, and has worked in every Safari
+     * that has ever shipped on an iPad.
+     */
+    var stillOnly = false;
+    try {
+      stillOnly = window.matchMedia &&
+                  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch (e) { stillOnly = false; }
+
     // Where a region code sits, from whichever feed knows. The footprint is
     // authoritative -- it is the vendors' own region list -- and the incident
     // index fills in codes the footprint has retired.
@@ -511,6 +544,34 @@
       var utcHours = now.getUTCHours() + now.getUTCMinutes() / 60;
       var subLon = -15 * (utcHours - 12);
       return { dec: dec, lon: subLon };
+    }
+
+    /* The expanding rings on a place that is broken right now.
+     *
+     * Two of them, half a cycle apart, so it reads as a repeating signal
+     * rather than one blink that is easy to look past. Each is an <animate>
+     * on the circle's own r and opacity: no transform, so nothing here
+     * depends on transform-box, and it runs on Safari versions that predate
+     * it by years.
+     */
+    function ping(xy, rad) {
+      var x = xy[0].toFixed(1), y = xy[1].toFixed(1);
+      var r0 = (rad + 1.5).toFixed(1), r1 = (rad + 13).toFixed(1);
+      function ring(delay) {
+        return '<circle class="om-pulse" cx="' + x + '" cy="' + y +
+               '" r="' + r0 + '">' +
+               (stillOnly ? '' :
+                 '<animate attributeName="r" from="' + r0 + '" to="' + r1 +
+                 '" dur="2.2s" begin="' + delay + '" repeatCount="indefinite"/>' +
+                 '<animate attributeName="opacity" values="0;.95;0" ' +
+                 'keyTimes="0;.15;1" dur="2.2s" begin="' + delay +
+                 '" repeatCount="indefinite"/>' +
+                 '<animate attributeName="stroke-width" values="2.6;.7" ' +
+                 'dur="2.2s" begin="' + delay + '" repeatCount="indefinite"/>') +
+               '</circle>';
+      }
+      // With motion off, one solid ring that stays put and stays visible.
+      return stillOnly ? ring('0s') : ring('0s') + ring('1.1s');
     }
 
     // One key swatch: an 18x18 window onto the same shapes the map draws.
@@ -862,12 +923,7 @@
                vendors.map(function (v) { return CLOUD[v]; }).join(' and ') +
                ', about ' + localClock(r.p[1]) + ' local, ' +
                (day ? 'daytime' : 'night') + '">' +
-               (r.live_now.length
-                 ? '<circle class="om-pulse" cx="' + xy[0].toFixed(1) + '" cy="' +
-                   xy[1].toFixed(1) + '" r="' + (rad + 5).toFixed(1) + '"/>' +
-                   '<circle class="om-pulse om-pulse-b" cx="' + xy[0].toFixed(1) +
-                   '" cy="' + xy[1].toFixed(1) + '" r="' + (rad + 5).toFixed(1) + '"/>'
-                 : '') +
+               (r.live_now.length ? ping(xy, rad) : '') +
                pie +
                // The bright ring is "something broke here in 90 days". Size
                // already says how much; this says whether at all, which is

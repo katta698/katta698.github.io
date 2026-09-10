@@ -899,7 +899,7 @@ def postmortems(cssv="1"):
               '<div class="pm-body"></div></dialog>')
 
     return ('<div class="pm-yrs">%s</div>'
-            '<div class="pm-yrs pm-cls">%s</div>'
+            '<div class="pm-yrs pm-cls" id="pm-clouds">%s</div>'
             '<div class="pm" id="pm-list"></div>'
             '<p class="pm-none note-sm" hidden></p>%s%s'
             '<script src="/intelligence/status/pm.js?v=%s" defer></script>'
