@@ -1228,7 +1228,38 @@
     try { return localStorage.getItem(KEY) === 'on'; } catch (e) { return false; }
   }
 
+  /* Play and pause, for pages that do not bring their own handler.
+   *
+   * The portfolio and the blog each wrote one -- toggleAudio() and
+   * toggleBlogAudio() -- and the Intelligence pages had no button at all, so
+   * a reader who turned sound on could not turn it off after clicking through
+   * to Live status. Adding the button to those three needs the behaviour too,
+   * and a fourth copy of a ten-line function is how the two that exist already
+   * came to differ. This binds only where nothing else has: a button carrying
+   * its own onclick is left alone.
+   */
+  function bindGeneric() {
+    var b = button();
+    if (!b || b.getAttribute('onclick') || b.getAttribute('data-bound')) return;
+    b.setAttribute('data-bound', '1');
+    b.addEventListener('click', function () {
+      var a = audio();
+      if (!a) return;
+      if (a.paused) {
+        // Read by hero-media.js's error handler, which swaps to the fallback
+        // track and retries only if the reader actually asked for sound.
+        a.dataset.wanted = '1';
+        a.play().then(function () { paint(true); }).catch(function () {});
+      } else {
+        a.dataset.wanted = '0';
+        a.pause();
+        paint(false);
+      }
+    });
+  }
+
   function start() {
+    bindGeneric();
     // The toggle itself belongs to each page; this only records what it did.
     document.addEventListener('click', function (e) {
       if (!e.target.closest || !e.target.closest('#audio-toggle')) return;

@@ -707,6 +707,8 @@ a:active,button:active{opacity:.72}
     <li><a href="/intelligence/">Intelligence</a></li>
     <li><a href="/intelligence/whats-new/" class="active" aria-current="page">What&rsquo;s new</a></li>
     <li><a href="/intelligence/status/">Live status</a></li>
+    <li class="nav-ctl"><button class="audio-toggle" id="audio-toggle" type="button"
+        title="Toggle beach sounds" aria-label="Toggle beach sounds">&#127907;</button></li>
     <li class="nav-ctl">
       <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn" type="button">
         <span id="theme-icon">&#9681;</span><span id="theme-label">Light</span>
@@ -989,6 +991,13 @@ fetch('/intelligence/news.json').then(function(r){return r.json();}).then(functi
 <script src="/blog/assets/site-footer.js?v=__JSV__" data-site-footer></script>
 __STAR__
 __TOP__
+<!-- Beach sounds, the same control the portfolio and the blog carry.
+     Audio only: these pages have no hero video and are not getting one.
+     hero-media.js picks the track -- the same file, so the three surfaces
+     cannot drift onto different music -- and it no-ops for video here
+     because it looks for #hero-video and there is none. -->
+<audio id="beach-audio" loop preload="none"></audio>
+<script src="/blog/assets/hero-media.js?v=__JSV__"></script>
 </body>
 </html>
 """
