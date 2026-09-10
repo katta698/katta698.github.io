@@ -1,0 +1,326 @@
+---
+title: "GCP Architecture Series #28 — gcloud, the REST API, and What the Console Quietly Does for You"
+date: '2026-09-10T09:00:00'
+slug: gcp-architecture-gcloud-and-the-api
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-09-10'
+verified_claims:
+  - claim: "Compute Engine returns an Operation object that you can then poll to get the status of the operations for your request"
+    source: https://docs.cloud.google.com/compute/docs/api/how-tos/api-requests-responses
+  - claim: "You can get the status of an operation by performing a request that uses the get or wait method for the specific Operation resource"
+    source: https://docs.cloud.google.com/compute/docs/api/how-tos/api-requests-responses
+  - claim: "the request returns when the operation is DONE or if the request is approaching the 2 minute deadline"
+    source: https://docs.cloud.google.com/compute/docs/api/how-tos/api-requests-responses
+  - claim: "Log all HTTP server requests and responses to stderr"
+    source: https://docs.cloud.google.com/sdk/gcloud/reference
+  - claim: "Disable all interactive prompts when running gcloud commands. If input is required, defaults will be used, or an error will be raised"
+    source: https://docs.cloud.google.com/sdk/gcloud/reference
+  - claim: "all API requests will be made as the given service account or target service account in an impersonation delegation chain instead of the currently selected account"
+    source: https://docs.cloud.google.com/sdk/gcloud/reference
+  - claim: "The gcloud CLI properties are settings that affect the behavior of the gcloud CLI tools"
+    source: https://docs.cloud.google.com/sdk/gcloud
+  - claim: "A configuration is a set of gcloud CLI properties"
+    source: https://docs.cloud.google.com/sdk/gcloud
+problem: "Three posts on tools that create infrastructure, and none of them said what actually happens when a resource is made. Underneath Terraform, Infrastructure Manager and Config Connector there is one REST API, and it does less than any of them lets on — it does not wait, it does not retry, and it does not remember your project."
+builds: "Why every mutating request hands back an Operation rather than a result, what the console's spinner is actually doing, the hidden local state that makes the same gcloud command behave differently on two machines, and the flag that shows you the requests instead of the story."
+catch: "The --quiet flag does not only suppress prompts. Google's own wording is that if input is required, defaults will be used — so an unattended script does not fail on a question it cannot answer, it silently accepts whatever the answer happens to be."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #028 &middot; Foundations</div>
+  <h1 class="post-title">gcloud, the REST API, and What the Console Quietly Does for You</h1>
+  <p class="post-subtitle">Posts #25 to #27 covered three ways to create a resource. This is what all three sit on &mdash; an API that hands you a receipt rather than a result.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Google Cloud &middot; APIs &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      All four of these come from the same gap: the console and the CLI both present a completed action, and the API underneath presents a job number.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"The API returned 200 but the VM does not exist"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Both facts are true. If you make a request that mutates data, Compute Engine returns an <strong>Operation object</strong> that you then poll to get the status of your request. The 200 acknowledges the instruction; it says nothing about the outcome.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat a mutating call as accepted rather than done, and poll the Operation until it reports <code>DONE</code>. Every client library that feels synchronous is doing this for you.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"Our script polls the operation every second"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          There is a purpose-built alternative. You can get the status of an operation using the <code>get</code> or the <code>wait</code> method, and a <code>wait</code> request returns when the operation is <code>DONE</code> or when the request is approaching the <strong>2 minute deadline</strong>. One call that blocks beats sixty that do not.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Use <code>wait</code> in a loop rather than <code>get</code> on a timer. Post #15's rate quotas and post #16's advice about short polling are the same lesson arriving from the other direction.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"It works on my machine and fails in CI"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Almost always the hidden local state. The gcloud CLI properties are settings that affect the behavior of the tools, and a configuration is a set of those properties &mdash; a profile. A command that omits <code>--project</code> is not project-agnostic; it is reading a value CI does not have.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Pass the scope explicitly in anything automated. A command whose meaning depends on the machine it runs on is not a script, it is a note to yourself.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"We added --quiet so it would not hang"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Read what it actually promises. It disables all interactive prompts, and if input is required, <em>defaults will be used</em>, or an error will be raised. So the prompt you were avoiding may have been answered on your behalf rather than skipped.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Use it, and know which prompts existed. A confirmation that becomes a default acceptance is the whole risk, and it is invisible in the log.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      There is one control plane and three faces on it. The console, the CLI and the client libraries all speak to the same REST API, and each adds a layer of convenience that is easy to mistake for the platform's behaviour.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-028-gcloud-and-the-api.svg" alt="Diagram: the console, gcloud and client libraries over one REST API, the Operation object every mutating request returns, the difference between the get and wait polling methods, and the hidden gcloud configuration state" />
+      <figcaption>One API, three faces. The convenience each adds is the thing you have to reimplement when you leave it.</figcaption>
+    </figure>
+
+    <h3>Everything that changes something returns a receipt</h3>
+    <p>
+      This is the single most useful fact about the platform's shape. A mutating request does not return the thing you asked for &mdash; Compute Engine returns an Operation object that you then poll to get the status of your request. Operations are global, regional or zonal, matching the resource they act on.
+    </p>
+    <p>
+      Once you know that, three things stop being mysterious. The console's spinner is a poll loop. <code>gcloud</code> appearing to block is a poll loop. A client library's synchronous-looking call is a poll loop. None of them are doing anything the API offers directly; they are all doing the same work, and when you write against the API you inherit it.
+    </p>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Polling method</th><th>Behaviour</th><th>Use it when</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>get</code></td>
+          <td>Returns the Operation immediately, whatever its state.</td>
+          <td>You want a status now and will decide what to do about it.</td>
+        </tr>
+        <tr>
+          <td><code>wait</code></td>
+          <td>Returns when the operation is <code>DONE</code>, or when the request is approaching the 2 minute deadline.</td>
+          <td>You are waiting for completion &mdash; which is nearly always.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      The two-minute figure is the number to design around. <code>wait</code> is not a promise of completion; it is a bounded block. A create that takes five minutes needs three <code>wait</code> calls, and a loop around <code>wait</code> is the correct shape rather than a workaround.
+    </p>
+
+    <div class="callout">
+      <strong>This is post #16's advice from the other side</strong>
+      <p>Post #16 listed Google's own guidance for reducing pressure on rate quotas: wait for operations to be done, minimize client-side retries, avoid short polling. From the API's side that guidance has a specific implementation, and it is <code>wait</code> rather than <code>get</code>. A script polling <code>get</code> every second burns sixty calls a minute against the quota to learn nothing sixty times; the same minute is one <code>wait</code> call. The rate limit and the polling method are the same conversation.</p>
+    </div>
+
+    <h3>gcloud is a program with memory</h3>
+    <p>
+      The CLI is not a thin wrapper. It holds local state, and that state changes what commands mean. Properties are settings that affect the behavior of the tools; a configuration is a set of properties, working like a profile.
+    </p>
+    <p>
+      That is genuinely useful at a terminal and a hazard everywhere else. The same command, byte for byte, creates a resource in different projects on two machines. Nothing in the command records which. And unlike an environment variable, the value lives in a file most people have never opened.
+    </p>
+
+    <div class="callout amber">
+      <strong>Impersonation is one flag, and it does not look like an identity change</strong>
+      <p><code>--impersonate-service-account</code> means that for that invocation, all API requests will be made as the given service account, or as the target account in a delegation chain, instead of the currently selected account. It is the right tool &mdash; better than a downloaded key, which post #22's baseline blocks by default. But note the shape: the audit log records the service account, the shell history records the flag, and the two live in different places. When reconstructing who did what, the flag is the part that goes missing.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Seeing What Actually Happens</h2>
+
+    <h3>One flag replaces a lot of guessing</h3>
+    <p>
+      <code>--log-http</code> logs all HTTP server requests and responses to stderr. That single flag turns every question in this post into an observation: which endpoint a command hits, how many calls one invocation makes, what the request body actually contained, and which of your arguments became defaults.
+    </p>
+    <p>
+      It is the fastest way to learn an unfamiliar corner of the API, and the fastest way to answer "why did that take so long" — usually because one command was several calls and a poll loop. Use it on a scratch project, read the output once, and most of the platform's shape stops being folklore.
+    </p>
+
+    <h3>Which face to use, and when</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Face</th><th>Best at</th><th>What it hides</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Console</td>
+          <td>Discovery, and reading state you did not create.</td>
+          <td>The calls it made, the defaults it chose, and the polling it did.</td>
+        </tr>
+        <tr>
+          <td>gcloud</td>
+          <td>Operating, scripting, and learning the API with <code>--log-http</code>.</td>
+          <td>Local configuration, so the same command is not the same command.</td>
+        </tr>
+        <tr>
+          <td>REST or a client library</td>
+          <td>Anything a program owns.</td>
+          <td>Nothing &mdash; which is the point, and the cost.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      The honest ranking for anything that runs unattended is the reverse of the ranking for anything a person does once. The console is the best place to understand a service and the worst place to configure one, because it leaves no artefact — a resource created by clicking has no record of what was chosen, which is exactly the reproducibility problem the last three posts were solving.
+    </p>
+
+    <div class="callout">
+      <strong>The console is not a worse CLI, it is a different audience</strong>
+      <p>Every default the console picks is a decision somebody has to make, and picking a reasonable one is a service to a person who does not yet know the field exists. The same helpfulness is a liability in automation, where an unspecified field should be a question rather than an assumption. That is the whole tension, and it explains why a console-built resource is so hard to reproduce: the console answered questions you were never shown.</p>
+    </div>
+
+    <h3>What to carry into anything automated</h3>
+    <ol>
+      <li><strong>Poll, do not assume.</strong> A mutating call returns an Operation. Success on the call is not success on the work.</li>
+      <li><strong>Use <code>wait</code>, in a loop.</strong> It returns on <code>DONE</code> or near the two-minute deadline, so the loop is the design, not a patch.</li>
+      <li><strong>Pass scope explicitly.</strong> Project, region and zone on the command, never from a configuration file the CI runner does not have.</li>
+      <li><strong>Know what <code>--quiet</code> answered.</strong> Defaults will be used where input was required.</li>
+      <li><strong>Prefer impersonation to keys</strong>, and record the flag somewhere the audit log's service-account entry can be joined to it.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Handling a mutating call</td>
+          <td>Poll the Operation to <code>DONE</code></td>
+          <td>The call returns an Operation object, not the resource.</td>
+        </tr>
+        <tr>
+          <td>Polling method</td>
+          <td><code>wait</code> in a loop, not <code>get</code> on a timer</td>
+          <td><code>wait</code> returns on <code>DONE</code> or near the 2 minute deadline; <code>get</code> returns immediately regardless.</td>
+        </tr>
+        <tr>
+          <td>Rate quota pressure from polling</td>
+          <td>Fix the polling method first</td>
+          <td>It is the concrete form of post #16's "avoid short polling".</td>
+        </tr>
+        <tr>
+          <td>Scope in automation</td>
+          <td>Explicit flags every time</td>
+          <td>A configuration is a set of properties on that machine, and CI does not have it.</td>
+        </tr>
+        <tr>
+          <td><code>--quiet</code> in a pipeline</td>
+          <td>Use it, and enumerate the prompts</td>
+          <td>If input is required, defaults will be used rather than the command failing.</td>
+        </tr>
+        <tr>
+          <td>Identity for a one-off task</td>
+          <td><code>--impersonate-service-account</code></td>
+          <td>All API requests are made as that account, with no key to leak.</td>
+        </tr>
+        <tr>
+          <td>Learning an unfamiliar API</td>
+          <td><code>--log-http</code> on a scratch project</td>
+          <td>It logs all HTTP requests and responses to stderr, including the calls you did not know about.</td>
+        </tr>
+        <tr>
+          <td>Diagnosing a slow command</td>
+          <td><code>--log-http</code> before profiling anything</td>
+          <td>One command is usually several calls plus a poll loop.</td>
+        </tr>
+        <tr>
+          <td>Creating anything durable</td>
+          <td>Not in the console</td>
+          <td>It leaves no artefact of what was chosen, which is the reproducibility problem #25 to #27 exist to solve.</td>
+        </tr>
+        <tr>
+          <td>Reading state you did not create</td>
+          <td>The console, freely</td>
+          <td>Discovery is what it is best at, and reading changes nothing.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The API underneath Google Cloud is smaller and blunter than any of its faces suggest. It does not wait. It does not retry. It does not know which project you meant. Every one of those courtesies is added by something above it, and the reason that matters is that the courtesies are invisible until you step outside them &mdash; at which point they arrive as bugs. The 200 that created nothing, the script that polls sixty times a minute, the command that works everywhere except CI.
+    </p>
+    <p>
+      Which suggests one habit worth more than the rest of this post. Run something familiar with <code>--log-http</code> and read what comes back. Not to learn the endpoints, but to see how much is being done for you by the thing you were treating as a thin layer. It is a short exercise, and afterwards the platform's odder behaviours mostly stop being odd &mdash; they were the API showing through.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#29 steps up from mechanism to a complete worked design: the enterprise foundations blueprint, section by section &mdash; what Google actually recommends for a whole organisation, and which parts of it the last twenty-eight posts have already argued about.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/compute/docs/api/how-tos/api-requests-responses" target="_blank" rel="noopener">Creating API requests and handling responses</a></li>
+      <li><a href="https://docs.cloud.google.com/compute/docs/api/best-practices" target="_blank" rel="noopener">Best practices for the Compute Engine API</a></li>
+      <li><a href="https://docs.cloud.google.com/sdk/gcloud" target="_blank" rel="noopener">gcloud CLI overview</a></li>
+      <li><a href="https://docs.cloud.google.com/sdk/gcloud/reference" target="_blank" rel="noopener">gcloud reference: top-level flags</a></li>
+      <li><a href="https://docs.cloud.google.com/compute/docs/reference/rest/v1/zoneOperations" target="_blank" rel="noopener">REST resource: zoneOperations</a></li>
+      <li><a href="https://docs.cloud.google.com/sdk/docs/configurations" target="_blank" rel="noopener">Managing gcloud CLI configurations</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
