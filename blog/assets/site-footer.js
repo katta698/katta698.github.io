@@ -1028,3 +1028,76 @@
     start();
   }
 })();
+
+
+/* ---------------------------------------------------------------------------
+ * The beach sound, carried between pages.
+ *
+ * Turning it on and following a link stopped it: the choice lived in the audio
+ * element's own dataset, which does not survive a page load, so every page
+ * started silent with the button showing muted. Theme and palette both persist
+ * across the site; sound was the one control that forgot.
+ *
+ * The catch is that browsers will not start audio on a fresh page without a
+ * gesture on THAT page -- Safari refuses outright, Chrome refuses until a site
+ * has earned enough engagement. So this does not promise to resume: it tries
+ * immediately, and if the browser says no it waits for the reader's next tap
+ * and tries once more, which is a gesture and is allowed.
+ *
+ * What it never does is show the playing glyph while nothing is playing. The
+ * button reports what the audio element is actually doing.
+ * ------------------------------------------------------------------------ */
+(function () {
+  'use strict';
+
+  var KEY = 'beachAudio';
+
+  function audio() { return document.getElementById('beach-audio'); }
+  function button() { return document.getElementById('audio-toggle'); }
+
+  function paint(playing) {
+    var b = button();
+    if (!b) return;
+    b.textContent = playing ? '🔊'
+      : ((window.jkInstrument && window.jkInstrument.glyph) || '🎻');
+  }
+
+  function remember() {
+    var a = audio();
+    if (!a) return;
+    try { localStorage.setItem(KEY, a.paused ? 'off' : 'on'); } catch (e) {}
+  }
+
+  function wanted() {
+    try { return localStorage.getItem(KEY) === 'on'; } catch (e) { return false; }
+  }
+
+  function start() {
+    // The toggle itself belongs to each page; this only records what it did.
+    document.addEventListener('click', function (e) {
+      if (!e.target.closest || !e.target.closest('#audio-toggle')) return;
+      // After the page's own handler has run and play()/pause() has settled.
+      window.setTimeout(remember, 150);
+    }, true);
+
+    var a = audio();
+    if (!a || !wanted() || !a.paused) return;
+
+    a.play().then(function () { paint(true); }).catch(function () {
+      // Blocked until this page has a gesture of its own. Take the next one.
+      var once = function () {
+        var el = audio();
+        if (!el || !wanted() || !el.paused) return;
+        el.play().then(function () { paint(true); }).catch(function () {});
+      };
+      document.addEventListener('click', once, { once: true, capture: true });
+      document.addEventListener('touchstart', once, { once: true, capture: true });
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})();
