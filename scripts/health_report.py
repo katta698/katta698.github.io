@@ -217,18 +217,65 @@ def freshness():
 # day something renders the other.
 # ---------------------------------------------------------------------------
 def agreement():
-    st = load("intelligence/status.json") or {}
-    tl = load("intelligence/timeline-index.json") or {}
-    a, b = st.get("history_count"), len(tl.get("incidents") or [])
-    if a is None or not b:
-        note("agreement", WARN, "cannot compare the two incident counts")
-    elif int(a) != int(b):
-        note("agreement", WARN,
-             "status.json says %s incidents in history, timeline-index.json "
-             "says %s — different jobs write them and they have drifted"
-             % (commas(a), commas(b)))
+    """The timeline must equal the store plus the write-ups it adds.
+
+    An earlier version of this compared status.json's history_count with the
+    timeline's length and reported them as "drifted" because one said 904 and
+    the other 922. They were never meant to be equal, and the report was wrong
+    rather than the data:
+
+      status-history.json  904  incidents captured from the live and history feeds
+      postmortems.json      73  published write-ups, including AWS summaries
+                                back to 2011 that its incident feed, which
+                                starts in 2025, has no record of
+      timeline-index.json  922  the 904, plus the 18 write-ups that have no
+                                matching incident
+
+    904 + 18 = 922, and THAT is the thing worth checking. Equality would have
+    to be broken deliberately; this equation breaks the moment the store
+    silently loses incidents, a write-up stops matching its incident, or the
+    timeline is built from something other than these two files -- which are
+    the ways this page could actually start lying.
+    """
+    st_hist = load("intelligence/status-history.json") or {}
+    pm = (load("intelligence/postmortems.json") or {}).get("postmortems") or []
+    tl = (load("intelligence/timeline-index.json") or {}).get("incidents") or []
+
+    store_keys = set()
+    for k in (st_hist.get("incidents") or {}):
+        cloud, _, ident = k.partition(":")
+        store_keys.add((cloud, ident))
+
+    unmatched = [w for w in pm if (w.get("cloud"), w.get("id")) not in store_keys]
+    expected = len(store_keys) + len(unmatched)
+
+    if not tl:
+        note("agreement", FAIL, "the timeline has no incidents at all")
+    elif expected != len(tl):
+        note("agreement", FAIL,
+             "the timeline shows %s incidents; the store holds %s and %s "
+             "write-up(s) have no matching incident, which should make %s"
+             % (commas(len(tl)), commas(len(store_keys)),
+                commas(len(unmatched)), commas(expected)))
     else:
-        note("agreement", OK, "both incident counts agree at %s" % commas(b))
+        note("agreement", OK,
+             "the timeline adds up: %s in the store + %s unmatched write-up(s) "
+             "= %s shown" % (commas(len(store_keys)), commas(len(unmatched)),
+                             commas(len(tl))))
+
+    # status.json counts the store, and says so. Kept as a separate statement
+    # rather than compared with the timeline, which is what went wrong before.
+    st = load("intelligence/status.json") or {}
+    hc = st.get("history_count")
+    if hc is None:
+        note("agreement", WARN, "status.json carries no history_count")
+    elif int(hc) != len(store_keys):
+        note("agreement", FAIL,
+             "status.json says the store holds %s incidents; it holds %s"
+             % (commas(hc), commas(len(store_keys))))
+    else:
+        note("agreement", OK,
+             "status.json's count of the store agrees at %s" % commas(hc))
 
     regions = load("intelligence/status/regions.json") or {}
     stale = regions.get("stale")
