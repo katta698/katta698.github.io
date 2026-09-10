@@ -1032,6 +1032,19 @@
       nav.style.setProperty('--nav-idle',
         pale ? 'rgba(28,33,32,.78)' : 'rgb(156,154,148)');
 
+      /* The disc behind the brand mark, and the ink the logo hands down.
+       *
+       * The mark is a transparent PNG on a coloured circle, and the blog's
+       * circle was a different colour from the other four in BOTH themes --
+       * rgb(33,28,28) against rgb(41,35,35) dark, rgb(250,242,242) against
+       * rgb(237,228,227) light. Small, and the first thing in the bar, so it
+       * is the first thing that looks not-quite-the-same when you move
+       * between pages. Theme-aware, so it is set from this measurement rather
+       * than pinned to one value. */
+      nav.style.setProperty('--nav-mark',
+        pale ? 'rgb(237,228,227)' : 'rgb(41,35,35)');
+      nav.style.setProperty('--nav-word', pale ? '#1C2120' : '#EDEBE6');
+
       /* The wordmark takes its ink from the same measurement.
        *
        * On a dark bar the Intelligence pages used #EDEBE6 -- the warm

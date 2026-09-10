@@ -132,8 +132,18 @@ PROBE = """() => {
     const e = nav.querySelector(s);
     if (!e) return null;
     const r = e.getBoundingClientRect(), c = getComputedStyle(e);
+    // Appearance as well as geometry.
+    //
+    // The instrument button was added to three pages and rendered as a raw
+    // browser button there -- grey fill, 2px outset border, square corners --
+    // while this check reported the header identical, because it was
+    // measuring position and size and those matched exactly. A control can be
+    // the right size in the right place and still look nothing like the one
+    // beside it.
     return [s, Math.round(r.x), Math.round(r.width), Math.round(r.height),
-            c.fontSize, c.lineHeight].join(' ');
+            c.fontSize, c.lineHeight,
+            c.backgroundColor, c.borderStyle, c.borderWidth, c.borderRadius,
+            c.color].join(' ');
   };
   // Only the parts every page carries. The instrument is on two of the five
   // by design, so it is compared separately.
