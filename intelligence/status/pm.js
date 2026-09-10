@@ -783,10 +783,28 @@
        * affected place can be found exactly rather than inferred, and it
        * pulses until the vendor closes it.
        */
+      var unplaceable = [];
       (live || []).forEach(function (i) {
         if (only && i.cloud !== only) return;
         var pt = coordOf(i.region_code) || coordOf(i.region);
-        if (!pt) return;
+        if (!pt) {
+          /* An open incident with nowhere to draw it.
+           *
+           * This used to `return` and the incident vanished -- no dot, no
+           * banner, no mention anywhere on the page. That is the common case
+           * for Azure, whose global services name no region at all: 33 of the
+           * 79 incidents on file arrive with an empty region, so a worldwide
+           * Front Door outage would have left this page looking perfectly
+           * calm. It is also what a vendor renaming its regions looks like
+           * from here.
+           *
+           * A map that quietly omits what it cannot draw is claiming a
+           * completeness it does not have. It cannot be drawn, so it is said
+           * instead.
+           */
+          unplaceable.push(i);
+          return;
+        }
         var g = at(pt);
         g.live_now.push(i);
       });
@@ -1012,9 +1030,10 @@
        */
       var openPlaces = placed.filter(function (r) { return r.live_now.length; });
       var banner = '';
-      if (openPlaces.length) {
+      if (openPlaces.length || unplaceable.length) {
         banner = '<div class="om-alert" role="status"><b>' +
-          openPlaces.reduce(function (a, r) { return a + r.live_now.length; }, 0) +
+          (openPlaces.reduce(function (a, r) { return a + r.live_now.length; }, 0)
+           + unplaceable.length) +
           ' open right now</b>' +
           openPlaces.map(function (r) {
             var label = (r.live[0] && r.live[0].city) ||
@@ -1025,6 +1044,16 @@
                    esc(r.keys.join('|')) + '">' +
                    (who ? '<i class="' + esc(who) + '"></i>' : '') +
                    esc(label) + '</button>';
+          }).join('') +
+          // Named, not drawn. The label says which cloud and admits there is
+          // no region to point at, rather than implying the map is complete.
+          unplaceable.map(function (i) {
+            var what = i.region || i.region_code || 'no region stated';
+            return '<button type="button" class="om-jump om-nowhere" ' +
+                   'data-region="' + esc(i.cloud + ':' + (i.region_code || '')) +
+                   '" title="' + esc(i.title || '') + '">' +
+                   '<i class="' + esc(i.cloud) + '"></i>' +
+                   esc(what) + '</button>';
           }).join('') + '</div>';
       }
 

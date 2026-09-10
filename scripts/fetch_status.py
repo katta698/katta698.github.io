@@ -316,6 +316,62 @@ MONTHS_FULL = ("January February March April May June July August September "
                "October November December").split()
 
 
+AZURE_PLACES = None
+
+
+def azure_places():
+    """Azure's own region names, longest first, mapped to this site's codes.
+
+    Built from regions.json -- the same list the map draws -- so a name can
+    only ever resolve to a region the map already knows how to place.
+
+    Longest first because "Central US", "West Central US" and "South Central
+    US" all contain one another. Matching the shortest would put a South
+    Central US outage in Iowa.
+    """
+    global AZURE_PLACES
+    if AZURE_PLACES is not None:
+        return AZURE_PLACES
+    AZURE_PLACES = []
+    path = os.path.join(ROOT, "intelligence", "status", "regions.json")
+    try:
+        rows = json.load(io.open(path, encoding="utf-8")).get("regions") or []
+    except Exception:                                           # noqa: BLE001
+        return AZURE_PLACES
+    for r in rows:
+        if r.get("cloud") != "azure":
+            continue
+        name = (r.get("name") or "").strip()
+        code = (r.get("code") or "").strip()
+        if name and code:
+            AZURE_PLACES.append((name, code))
+    AZURE_PLACES.sort(key=lambda nc: -len(nc[0]))
+    return AZURE_PLACES
+
+
+def azure_region(*parts):
+    """The region Azure names in its own words, or nothing.
+
+    Azure's feed has no region field. It says the region in the prose --
+    "Impact to multiple services in Central US" -- and every Azure incident
+    this site has ever stored carried an empty region because nothing read it.
+    Seventy-nine incidents, none of which could be drawn on the map: if Azure
+    had an outage, the map showed nothing at all, and a map that stays quiet
+    during an outage is worse than no map.
+
+    Only exact region names count, on word boundaries. This reads what Azure
+    wrote; it does not infer a region from a service name or a city, because a
+    dot in the wrong country is worse than no dot.
+    """
+    text_all = " ".join(p or "" for p in parts)
+    if not text_all.strip():
+        return "", ""
+    for name, code in azure_places():
+        if re.search(r"\b%s\b" % re.escape(name), text_all, re.I):
+            return name, code
+    return "", ""
+
+
 def parse_azure_history(pages=25):
     """Azure's resolved incidents, from the API behind its history page.
 
@@ -385,7 +441,9 @@ def parse_azure_history(pages=25):
                 "id": tid,
                 "title": title[:240],
                 "service": "",
-                "region": "",
+                # Azure states the region in the prose or not at all.
+                "region": azure_region(title, text)[0],
+                "region_code": azure_region(title, text)[1],
                 "begin": begin.isoformat(),
                 "end": end.isoformat(),
                 "update": text[:900],
@@ -430,11 +488,19 @@ def parse_azure(raw):
         t = re.search(r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", it, re.S)
         d = re.search(r"<pubDate>([^<]+)<", it)
         c = re.search(r"<description>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</description>", it, re.S)
+        title_txt = flat(t.group(1) if t else "", 240)
+        body_txt = flat(re.sub(r"<[^>]+>", " ", c.group(1)) if c else "")
+        place, code = azure_region(title_txt, body_txt)
         live.append({
             "id": flat(t.group(1) if t else "", 80),
-            "title": flat(t.group(1) if t else "", 240),
+            "title": title_txt,
+            # Without these two the map cannot place an Azure outage, which is
+            # the state this feed was in: 79 stored incidents, every one with
+            # an empty region.
+            "region": place,
+            "region_code": code,
             "begin": (d.group(1) if d else ""),
-            "update": flat(re.sub(r"<[^>]+>", " ", c.group(1)) if c else ""),
+            "update": body_txt,
             "updates": 1,
             "url": "https://azure.status.microsoft/en-us/status",
         })
@@ -480,6 +546,18 @@ def merge_history(past_by_cloud):
             if key not in items:
                 items[key] = dict(r, cloud=cloud)
                 added += 1
+            elif not items[key].get("region_code") and r.get("region_code"):
+                # Fill in a region the store never had.
+                #
+                # An incident already held is not replaced -- the vendor's
+                # first account of it is the one worth keeping. But every
+                # Azure incident ever stored arrived with an empty region,
+                # because nothing read the region out of Azure's prose until
+                # now, and 79 of them sat in the archive unable to be drawn on
+                # the map. Adding a field that was missing is not rewriting
+                # history; leaving them blank forever would be.
+                items[key]["region"] = r.get("region") or ""
+                items[key]["region_code"] = r.get("region_code")
             else:
                 # Refresh rather than freeze. The first version seen is not
                 # the best one: an incident's text is edited after the fact,
