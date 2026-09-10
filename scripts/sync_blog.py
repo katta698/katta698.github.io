@@ -1712,6 +1712,16 @@ def html_head(title, description, canonical, extra="", og_type="website",
      is render-blocking, which is the point: the bar is painted once, right.
      ensureStyles() finds this and skips, so nothing is loaded twice. -->
 <link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v={JS_VERSION}">
+<!-- ...and its script, linked here rather than injected by blog.js at the
+     end of the document. The Intelligence pages have always linked it
+     directly; the blog was the one page that did not, and the blog is also
+     the largest document on the site. Measured on a phone refresh, the five
+     site links sat in the bar for FOUR SECONDS before the cairn replaced
+     them -- 1470ms to 5557ms -- against under a second everywhere else.
+     That is the whole of "refreshing the blog is not seamless".
+     defer, so it still waits for the document but starts downloading now.
+     The injector in blog.js looks for data-site-footer and skips. -->
+<script src="/blog/assets/site-footer.js?v={JS_VERSION}" data-site-footer defer></script>
 </head>"""
 
 
