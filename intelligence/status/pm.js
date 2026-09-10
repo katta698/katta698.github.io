@@ -1186,10 +1186,40 @@
     // if that ever fails -- dots in the right places beat no map at all.
     Promise.all([
       loadMap(),
-      fetch('/intelligence/status/world.json', { cache: 'force-cache' })
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (w) { world = w; })
-        .catch(function () { world = null; }),
+      /* The coastlines, and a check that they were drawn the same way the
+       * dots are placed.
+       *
+       * This was fetched with cache:'force-cache', which tells the browser to
+       * use its stored copy without asking whether it changed. That was fine
+       * while coastlines never moved. Changing the projection moved all of
+       * them: pm.js is versioned so it updated to Mollweide, world.json was
+       * not so it stayed equirectangular, and the result was dots computed one
+       * way drawn over land drawn another -- regions out in the Indian Ocean.
+       *
+       * Two changes. It revalidates now, which costs a 304 and not a
+       * download. And the file records which projection built it, so a
+       * mismatch is caught rather than rendered: one forced refetch, and if
+       * that still disagrees the coastlines are dropped entirely. Dots on an
+       * empty field are obviously incomplete; dots on the wrong coastlines
+       * look authoritative and are worse than nothing.
+       */
+      (function () {
+        var WANT = 'mollweide';
+        function usable(w) {
+          return w && typeof w.projection === 'string' &&
+                 w.projection.indexOf(WANT) === 0;
+        }
+        return fetch('/intelligence/status/world.json')
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (w) {
+            if (usable(w)) return w;
+            return fetch('/intelligence/status/world.json', { cache: 'reload' })
+              .then(function (r) { return r.ok ? r.json() : null; })
+              .then(function (w2) { return usable(w2) ? w2 : null; });
+          })
+          .then(function (w) { world = w; })
+          .catch(function () { world = null; });
+      })(),
       // The footprint is a separate fetch for the same reason as the
       // coastline: if the region list fails, the incident lights still draw.
       fetch('/intelligence/status/regions.json', { cache: 'no-cache' })

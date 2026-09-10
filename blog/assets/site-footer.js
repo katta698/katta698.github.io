@@ -974,7 +974,24 @@
         return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
       };
       var L = 0.2126 * f(v[0]) + 0.7152 * f(v[1]) + 0.0722 * f(v[2]);
-      label.style.color = L > 0.4 ? '#7A5C3C' : '#C4A484';
+      var pale = L > 0.4;
+      label.style.color = pale ? '#7A5C3C' : '#C4A484';
+
+      /* The wordmark takes its ink from the same measurement.
+       *
+       * On a dark bar the Intelligence pages used #EDEBE6 -- the warm
+       * off-white the whole site is set in -- while the portfolio and the blog
+       * used pure #FFFFFF. Side by side that reads as one being cold and the
+       * other slightly yellow, which is the difference between a considered
+       * palette and a default. Light mode already agreed on #1C2120 across all
+       * five, so only the dark value was ever wrong.
+       *
+       * Set here rather than in CSS for the reason the label is: the two page
+       * families signal "dark" with opposite classes, so no rule serves both.
+       * The bar's own colour is the thing that actually decides this.
+       */
+      var word = nav.querySelector('.brand-name');
+      if (word) word.style.color = pale ? '#1C2120' : '#EDEBE6';
     }
 
     nav.appendChild(label);

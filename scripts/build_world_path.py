@@ -198,7 +198,9 @@ def main():
     payload = {
         "source": SRC,
         "licence": "Natural Earth, public domain",
-        "projection": "equirectangular %dx%d" % (W, H),
+        # Read back by the page, which refuses to draw coastlines whose
+        # projection is not the one it places dots with.
+        "projection": "mollweide %dx%d" % (W, H),
         "countries": countries,
         "water": water,
     }

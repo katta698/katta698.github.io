@@ -69,9 +69,12 @@ PROBE = """() => {
   // three different ways again.
   const word = document.querySelector('.brand-name');
   const ws = word ? getComputedStyle(word) : null;
+  // Colour is in here too: the two families agreed on the light-mode ink and
+  // not the dark one -- #EDEBE6 on three pages, pure #FFFFFF on the other two,
+  // which reads as one being warm and the other cold.
   const wordFace = ws
     ? [ws.fontFamily.split(',')[0].replace(/['"]/g, '').trim(),
-       ws.fontWeight, ws.letterSpacing].join('/')
+       ws.fontWeight, ws.letterSpacing, ws.color].join('/')
     : null;
 
   // Every destination reachable, whether in the bar or behind the mark.
