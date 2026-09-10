@@ -856,6 +856,27 @@
     sheet.className = 'ck-sheet';
     sheet.id = 'ck-sheet';
     sheet.hidden = true;
+    /* The page's own sections, when it has them.
+     *
+     * The portfolio's About, Writing, Skills, Contact and Tools are in-page
+     * anchors, and on a phone they lived in the hamburger drawer. The cairn
+     * replaced that drawer and did not carry them, so they simply vanished --
+     * the same way the theme control did, and for the same reason: the drawer
+     * was holding more than it looked like it was holding.
+     *
+     * They are read from the page rather than listed here, because they belong
+     * to whichever page defines them and nothing else should have an opinion
+     * about what they are.
+     */
+    var sections = [].slice.call(nav.querySelectorAll('a[href^="#"]'))
+      .filter(function (a) { return (a.getAttribute('href') || '').length > 1; })
+      .map(function (a) {
+        return { href: a.getAttribute('href'), label: a.textContent.trim() };
+      })
+      .filter(function (x, i, all) {
+        return x.label && all.findIndex(function (y) { return y.href === x.href; }) === i;
+      });
+
     sheet.innerHTML = '<ul>' + PAGES.map(function (p) {
       var on = here && p.href === here.href;
       return '<li><a href="' + p.href + '"' +
@@ -864,7 +885,14 @@
              '<span class="ck-label">' + text(p) + '</span>' +
              (on ? '<span class="ck-you">you are here</span>' : '') +
              '</a></li>';
-    }).join('') + '</ul>';
+    }).join('') + '</ul>' +
+      (sections.length
+        ? '<p class="ck-sub">On this page</p><ul class="ck-sections">' +
+          sections.map(function (x) {
+            return '<li><a href="' + x.href + '">' +
+                   '<span class="ck-label">' + x.label + '</span></a></li>';
+          }).join('') + '</ul>'
+        : '');
 
     // Collapse exactly the site's own links, wherever the page keeps them.
     //
@@ -945,6 +973,9 @@
     // of them, and nothing can take it away.
     var openedAt = 0;
     document.addEventListener('click', function (e) {
+      // A link inside the panel closes it. Section anchors scroll the page
+      // underneath, so leaving the panel open would cover what it moved to.
+      if (e.target.closest && e.target.closest('.ck-sheet a')) { close(); return; }
       var hit = e.target.closest ? e.target.closest('.ck-btn') : null;
       if (hit) {
         e.preventDefault();

@@ -77,7 +77,21 @@ PROBE = """() => {
   const here = document.querySelector('.ck-here');
   const active = document.querySelector('.nav-links a.active, .ck-sheet a.is-here');
 
+  // The bar's own order, left to right, so five pages cannot drift into five
+  // different arrangements again.
+  const seen = [];
+  const walk = el => { [...el.children].forEach(c => {
+    const r = c.getBoundingClientRect(); if (r.width < 1) return;
+    if (c.matches('button,a,img,span,div.pal-nav') || !c.children.length) {
+      seen.push([(c.className||'').toString().split(' ')[0] || c.tagName.toLowerCase(),
+                 Math.round(r.x)]);
+    } else walk(c); }); };
+  walk(nav);
+  seen.sort((a,b)=>a[1]-b[1]);
+  const order = seen.map(x => x[0]);
+
   return {
+    order,
     edge: Math.round(edge), vw: window.innerWidth, sideways,
     markVisible: !!(mr && mr.width > 0 && mr.height > 0),
     markRadius: mark ? getComputedStyle(mark).borderRadius : null,
@@ -137,6 +151,25 @@ def main():
                                     % (tag, ", ".join(missing)))
                 if not r["saysWhere"]:
                     problems.append("%s: nothing says which page this is" % tag)
+                # Same arrangement on every page: the mark first, the cairn
+                # last, the page's name immediately before it. Five pages grew
+                # five different bars once -- controls hard left on three,
+                # floated to the middle on one, and one missing its theme
+                # control entirely -- and every one of them looked reasonable
+                # on its own page.
+                order = r.get("order") or []
+                if order:
+                    if order[0] != "nav-logo":
+                        problems.append("%s: the bar does not start with the "
+                                        "brand mark (%s)" % (tag, order[0]))
+                    if order[-1] != "ck-btn" and "ck-btn" in order:
+                        problems.append("%s: the menu mark is not last (%s)"
+                                        % (tag, order[-1]))
+                    if "ck-here" in order and "ck-btn" in order:
+                        if order.index("ck-here") != order.index("ck-btn") - 1:
+                            problems.append(
+                                "%s: the page name is not beside the mark (%s)"
+                                % (tag, " ".join(order)))
                 notes.append("%d:%d" % (w, r["edge"]))
                 pg.close()
             print("  %-10s widths ok, bar width by viewport: %s"
