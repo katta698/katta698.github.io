@@ -879,6 +879,12 @@
     // leaves everything else alone, with no page-specific rule anywhere.
     var hrefs = PAGES.map(function (p) { return p.href; });
     [].forEach.call(nav.querySelectorAll('a[href]'), function (a) {
+      // Not the brand mark. It is an anchor to one of these five on every
+      // page -- "/" on the portfolio, "/blog/" on the blog -- so matching on
+      // href alone collapsed the logo along with the links, and the favicon
+      // disappeared from every page below 1080px. It is the mark, not
+      // navigation, and it stays.
+      if (a.closest('.nav-logo') || a.classList.contains('nav-logo')) return;
       var h = a.getAttribute('href');
       if (hrefs.indexOf(h) < 0) return;
       var li = a.closest('li');
