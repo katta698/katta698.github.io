@@ -984,8 +984,20 @@
      * that stays right when the palette changes the ground colour underneath,
      * which no theme class describes at all.
      */
+    var lastTone = null;
     function tone() {
       var bg = getComputedStyle(nav).backgroundColor || '';
+      /* Nothing to repaint if the bar has not changed colour.
+       *
+       * This runs on load, on the next frame, at 250ms, and four times after
+       * a theme toggle -- and each run WRITES inline styles on three elements,
+       * which invalidates style and makes the next getComputedStyle force a
+       * fresh recalculation. On a phone the profiler put 146ms on this
+       * function during one blog navigation, almost all of it recomputing an
+       * answer that had not changed.
+       */
+      if (bg === lastTone) return;
+      lastTone = bg;
       var n = bg.match(/[\d.]+/g);
       if (!n || n.length < 3) return;
       var v = bg.indexOf('srgb') >= 0

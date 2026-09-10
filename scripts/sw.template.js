@@ -88,6 +88,9 @@ function isAsset(pathname) {
   return /\.(css|js)$/.test(pathname);
 }
 
+// Pages that must never be served stale: their content IS the data.
+const LIVE_DATA = ['/intelligence/status/', '/intelligence/whats-new/'];
+
 function isImage(pathname) {
   return /\.(png|jpe?g|svg|webp|gif|ico|mp3|mp4|webm|woff2?)$/.test(pathname);
 }
@@ -158,7 +161,29 @@ self.addEventListener('fetch', function (event) {
   }
 
   if (request.mode === 'navigate') {
-    event.respondWith(networkFirst(request));
+    /* Serve the page we already have, then refresh it for next time.
+     *
+     * Every navigation used to wait for the whole HTML document over the
+     * network before painting anything. On a phone that is 150ms of latency
+     * plus the transfer -- the blog index is 610KB -- so moving between pages
+     * took seconds even though the browser already had the page. Reported as
+     * "navigating between pages is not seamless", twice.
+     *
+     * The cost is honest and worth stating: a returning reader sees the copy
+     * from their last visit, and the fresh one arrives a moment later for the
+     * visit after that. For writing, that is fine.
+     *
+     * It is NOT fine for the two pages whose entire claim is that their
+     * numbers are current. Live status has incidents rendered into the HTML,
+     * and What's New has this week's announcements; serving either from
+     * yesterday's cache would make the site quietly wrong in exactly the way
+     * the rest of it argues against. Those two keep waiting for the network.
+     */
+    if (LIVE_DATA.some(function (p) { return url.pathname.indexOf(p) === 0; })) {
+      event.respondWith(networkFirst(request));
+    } else {
+      event.respondWith(staleWhileRevalidate(request));
+    }
     return;
   }
   if (isAsset(url.pathname)) {

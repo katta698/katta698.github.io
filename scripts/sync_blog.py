@@ -3076,7 +3076,14 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
 
     // Constant speed regardless of how much news there is, so a busy day does
     // not race past and a quiet one does not crawl. ~60px per second.
-    requestAnimationFrame(function () {{
+    //
+    // Measured when the browser has nothing better to do, not in the next
+    // frame. Reading scrollWidth forces a full layout, and on the blog index
+    // that is a 5,000-node page still being built -- profiled at 1.8 SECONDS
+    // of blocked main thread on a phone, for a number that only sets an
+    // animation's speed. The ticker runs at the stylesheet's 60s until this
+    // lands, which is a speed, not a failure.
+    var measure = function () {{
       var w = track.scrollWidth / 2;
       // Guard the arithmetic. Math.round(w/60) is 0 for anything under 30px,
       // and animation-duration:0s does not mean "slow", it means the animation
@@ -3086,7 +3093,12 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
       if (w > 120) {{
         track.style.animationDuration = Math.max(20, Math.round(w / 60)) + 's';
       }}
-    }});
+    }};
+    if (window.requestIdleCallback) {{
+      window.requestIdleCallback(measure, {{ timeout: 3000 }});
+    }} else {{
+      window.setTimeout(measure, 1200);
+    }}
   }}).catch(function () {{}});
 }})();
 </script>
