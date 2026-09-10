@@ -1162,8 +1162,23 @@
       btn.setAttribute('aria-expanded', 'true');
       btn.setAttribute('aria-label', 'Close the menu');
       document.documentElement.classList.add('ck-open');
-      var first = sheet.querySelector('a');
-      if (first) first.focus();
+      /* Focus the PANEL, not the first link inside it.
+       *
+       * Focusing a link made the browser paint its own focus ring around it --
+       * a blue rounded rectangle on iOS Safari, sitting over "Portfolio" every
+       * time the menu was opened by tapping. It was reported as "why do I see
+       * this blue colour sometimes", and sometimes is right: whether a browser
+       * shows a ring for programmatic focus varies.
+       *
+       * A container with tabindex="-1" takes focus without being drawn, so a
+       * keyboard or screen-reader user still lands inside the panel -- which is
+       * the reason the focus call exists -- and a tapping user sees nothing.
+       * Tabbing from there still rings each link, in the site's own accent,
+       * because a keyboard user who cannot see where they are is worse off than
+       * a touch user seeing a ring they did not ask for.
+       */
+      sheet.setAttribute('tabindex', '-1');
+      sheet.focus({ preventScroll: true });
     }
 
     // The opening tap must not also be the closing one.

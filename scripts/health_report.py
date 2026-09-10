@@ -588,6 +588,11 @@ def prose():
 RENDER_CHECKS = [
     ("the map's dots sit on their own countries", "check_map_alignment.py"),
     ("the navigation holds on 5 pages at 6 widths", "check_nav.py"),
+    # Added after filtering the map to Azure and searching "Mumbai" answered
+    # "nothing matches Mumbai", with two Azure regions in that city. Nothing
+    # here noticed, because every check looked at the data behind the map and
+    # none asked the map a reader's question.
+    ("every place on the map can be searched for", "check_map_search.py"),
 ]
 
 
@@ -947,6 +952,19 @@ def main():
 
     lines = ["# Site health — %s" % NOW.strftime("%d %B %Y, %H:%M UTC"), "",
              "**%s**" % verdict, ""]
+    # Say what ran, before saying what it found.
+    #
+    # A section that reported nothing used to be dropped from the report
+    # entirely, so a check that never ran looked exactly like a check that
+    # passed -- and "healthy" would be printed over the top of it. The reader
+    # of this report cannot be asked to remember which sections ought to exist.
+    silent = [k for k in ORDER if not any(f[0] == k for f in findings)]
+    lines += ["%s individual checks ran, across %d of %d sections."
+              % (commas(len(findings)), len(ORDER) - len(silent), len(ORDER)), ""]
+    if silent:
+        lines += ["**Reported nothing at all, which is not the same as passing:** "
+                  + ", ".join(TITLES.get(k, k) for k in silent) + ".", ""]
+
     for key in ORDER:
         rows = [f for f in findings if f[0] == key]
         if not rows:

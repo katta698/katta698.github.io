@@ -939,6 +939,41 @@
           : r.regions;
         r.keys = keys;                 // the alert strip reuses these
         var name = (r.live[0] && r.live[0].name) || here.join(' · ');
+        /* The city and the country belong in the search text, not just the
+         * vendor's name for the place.
+         *
+         * Azure calls Mumbai "West India" and Pune "Central India". The city
+         * is only ever in our own record; it is never in the name Azure
+         * publishes. So with Azure selected, searching "Mumbai" found nothing
+         * -- while the identical search under AWS ("Asia Pacific (Mumbai)")
+         * or Google ("Mumbai, India") worked, because both of those vendors
+         * put the city in the region name themselves. Under All clouds it
+         * also worked, because AWS's name won the tie. It looked like Azure
+         * had no Mumbai region. Azure has two.
+         *
+         * A reader searches for the city they know, not the name a vendor
+         * chose for it.
+         */
+        var cities = [], alsoKnown = [];
+        r.live.forEach(function (x) {
+          if (x.city && cities.indexOf(x.city) < 0 &&
+              name.toLowerCase().indexOf(x.city.toLowerCase()) < 0) {
+            cities.push(x.city);
+          }
+          // Every vendor's name for this place, not only the first one's.
+          //
+          // One dot can be four regions across three clouds, and only
+          // the first one's name was reaching the search text. So with All
+          // clouds selected, "East US" -- Azure's name for Northern Virginia --
+          // found
+          // nothing, because AWS's "US East (N. Virginia)" had won the tie. 81
+          // searches failed that way, all of them for places plainly on the
+          // map.
+          [x.name, x.country].forEach(function (w) {
+            if (w && alsoKnown.indexOf(w) < 0) alsoKnown.push(w);
+          });
+        });
+        if (cities.length) name += ' (' + cities.join(', ') + ')';
         var label = here.join(' · ') + (r.n
           ? ' — ' + r.n + ' incident' + (r.n === 1 ? '' : 's') + ' in 90 days'
           : ' — nothing in 90 days') +
@@ -996,7 +1031,8 @@
                // The place in words as well as in codes. Without this a search
                // for "Mumbai" found nothing while "ap-south-1" found the dot --
                // and a reader looking for a city knows the city.
-               '" data-place="' + esc(name + ' ' + label) +
+               '" data-place="' + esc(name + ' ' + label +
+                 (alsoKnown.length ? '\n' + alsoKnown.join(' · ') : '')) +
                '" tabindex="0" role="button" ' +
                'aria-label="' + esc(here.join(', ')) + ', ' +
                (r.live_now.length ? r.live_now.length + ' open now, ' : '') +
@@ -1293,6 +1329,12 @@
         });
       }
       draw(mapRegions, mapFoot, mapCloud, mapLive);
+      // The suggestions are built FROM the dots, so they can only be filled
+      // once the dots exist. Filling them where the search box is wired ran
+      // before this line and produced an empty list -- the search worked and
+      // suggested nothing, which is the shape of the problem it was added to
+      // solve.
+      if (window.__omFill) window.__omFill();
       // Redraw periodically so the lit half does not go stale on a tab left
       // open. Cheap: it is one SVG rebuild against data already in memory.
       setInterval(function () {
@@ -1313,6 +1355,7 @@
           x.classList.toggle('is-on', x === b);
         });
         draw(mapRegions, mapFoot, mapCloud, mapLive);
+        if (window.__omFill) window.__omFill();
         if (window.__omApplyFind) window.__omApplyFind();
       });
     }
@@ -1330,6 +1373,43 @@
      */
     var omQ = document.getElementById('om-q');
     var omFound = document.getElementById('om-found');
+
+    /* Suggestions, so nobody has to remember that Mumbai is ap-south-1.
+     *
+     * Built from the dots that are actually on the map, so a suggestion can
+     * never offer a place the search would then fail to find. Each place is
+     * offered TWICE over: once by its name and once by its region code,
+     * because a reader arrives with one or the other -- someone who runs
+     * things in eu-west-1 may not think "Ireland", and someone looking for
+     * Ireland does not know eu-west-1.
+     *
+     * A native <datalist> rather than a hand-built dropdown: the browser's own
+     * suggestion list is the one a phone keyboard, a screen reader and a
+     * keyboard user all already know how to use, and it costs no code to keep
+     * accessible.
+     */
+    function fillSuggestions() {
+      var list = document.getElementById('om-places');
+      if (!list) return;
+      var seen = {}, opts = [];
+      [].forEach.call(mapHost.querySelectorAll('.om-dot'), function (d) {
+        var place = (d.getAttribute('data-place') || '').split('\n')[0].trim();
+        var codes = (d.getAttribute('data-region') || '').split('|');
+        if (place && !seen[place.toLowerCase()]) {
+          seen[place.toLowerCase()] = 1;
+          opts.push('<option value="' + esc(place) + '"></option>');
+        }
+        codes.forEach(function (k) {
+          var code = k.indexOf(':') >= 0 ? k.split(':')[1] : k;
+          if (!code || seen[code.toLowerCase()]) return;
+          seen[code.toLowerCase()] = 1;
+          opts.push('<option value="' + esc(code) + '"' +
+                    (place ? ' label="' + esc(place) + '"' : '') + '></option>');
+        });
+      });
+      list.innerHTML = opts.join('');
+    }
+
     if (omQ) {
       var applyFind = function () {
         var q = (omQ.value || '').trim().toLowerCase();
@@ -1366,6 +1446,7 @@
         if (e.key === 'Escape') { omQ.value = ''; applyFind(); }
       });
       window.__omApplyFind = applyFind;
+      window.__omFill = fillSuggestions;
     }
 
     // Clicking a region opens what happened there -- from the map, or from

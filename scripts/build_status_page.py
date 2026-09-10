@@ -915,11 +915,16 @@ def cloud_card(cloud, incidents, source):
         note = "as reported by the vendor"
     else:
         state, cls, note = "No active incidents", "ok", "vendor reports none"
-    return ('<div class="scard"><div class="sc-n">%s</div>'
+    # Which vendor is carried by the card's left edge, the same way the
+    # post-mortem cards already do it. The dot stays a health light: on this
+    # page a small round dot had come to mean "which vendor" in the filter
+    # chips and "how healthy" here, two meanings for one shape a few hundred
+    # pixels apart.
+    return ('<div class="scard %s"><div class="sc-n">%s</div>'
             '<div class="sc-v"><span class="pill %s"></span>%s</div>'
             '<div class="sc-s">%s</div>'
             '<div class="sc-t">read %s</div></div>'
-            % (e(LABEL[cloud]), cls, e(state), note,
+            % (e(cloud), e(LABEL[cloud]), cls, e(state), note,
                e(since(t(source.get("fetched"))))))
 
 
@@ -1095,9 +1100,16 @@ document.documentElement.setAttribute("data-palette",p);})();
        use a map instead of a list. -->
   <div class="om-find">
     <label class="om-find-label" for="om-q">Find a region</label>
+    <!-- list= is a native datalist, filled by pm.js from the regions the map
+         already holds. Native rather than a hand-built dropdown because the
+         browser's own suggestion list is the one a phone keyboard, a screen
+         reader and a keyboard user all already understand -- and nobody has
+         to remember that Mumbai is ap-south-1. -->
     <input id="om-q" class="om-find-in" type="search" autocomplete="off"
+           list="om-places"
            placeholder="Mumbai, eu-west-1, Germany&hellip;"
            aria-describedby="om-found">
+    <datalist id="om-places"></datalist>
     <span id="om-found" class="om-find-n" role="status" aria-live="polite"></span>
   </div>
   <div id="outage-map" class="om"></div>
