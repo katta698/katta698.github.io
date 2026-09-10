@@ -122,7 +122,18 @@
     localStorage.setItem('theme', isDark ? 'dark' : 'light');
     applyTheme(isDark);
   }
-  applyTheme(localStorage.getItem('theme') === 'dark');
+  // Dark unless the reader has asked for light, which is what every other
+  // page on the site does.
+  //
+  // This read `=== 'dark'`, so the blog was light until someone explicitly
+  // chose dark while the portfolio and the three Intelligence pages were dark
+  // until someone explicitly chose light. Both are defensible on their own;
+  // together they meant a first-time reader moving from the front page to the
+  // blog watched the site change colour, with no setting stored to explain
+  // it. Once a preference exists the two agreed all along -- they share the
+  // 'theme' key -- so this was only ever the default, and only ever visible
+  // before anyone had touched the control.
+  applyTheme(localStorage.getItem('theme') !== 'light');
   ['nav-theme-btn','nav-theme-btn-mobile'].forEach(function(id) {
     var btn = document.getElementById(id);
     if (btn) btn.addEventListener('click', function() {

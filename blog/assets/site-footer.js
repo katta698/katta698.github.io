@@ -919,6 +919,29 @@
       (li || a).classList.add('ck-collapsed');
     });
 
+    // An emptied list still costs a flex gap.
+    //
+    // On the blog and the portfolio every item in .nav-links is either a site
+    // link (now collapsed) or a section anchor their own stylesheet hides on a
+    // phone, so the <ul> is zero pixels wide and still sits between the mark
+    // and the controls collecting the bar's gap on both sides. That is the
+    // whole of the gap that remained after the ordering was fixed.
+    var list = nav.querySelector('.nav-links');
+    if (list) {
+      // Decided by what the list HOLDS, not by measuring it.
+      //
+      // The first version asked whether any item had a width, which was the
+      // wrong question asked at the wrong moment: this script injects its own
+      // stylesheet, so when it runs the collapse rules have not applied yet
+      // and every item still measured wide. The list stayed a flex item nine
+      // pixels wide in gaps, which is exactly the offset that survived on the
+      // blog after everything else had been lined up.
+      var holdsControls = list.querySelector(
+        '.nav-ctl, .pal-nav, .theme-toggle, .audio-toggle');
+      var holdsLinks = list.querySelector('li:not(.ck-collapsed)');
+      if (!holdsControls && !holdsLinks) list.style.display = 'none';
+    }
+
     nav.appendChild(label);
     nav.appendChild(btn);
     nav.appendChild(sheet);
