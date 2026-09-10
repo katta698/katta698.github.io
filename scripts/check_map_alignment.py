@@ -47,7 +47,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = 8951
-LOCAL = "http://127.0.0.1:%d/intelligence/status/" % PORT_USED
+LOCAL_TEMPLATE = "http://127.0.0.1:%d/intelligence/status/"
 
 # Natural Earth's names against the vendors'.
 ALIAS = {
@@ -138,6 +138,7 @@ def main():
             def log_message(self, *a):
                 pass
         srv, PORT_USED = _serve(Quiet, PORT)
+        LOCAL = LOCAL_TEMPLATE % PORT_USED
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         url = LOCAL
 

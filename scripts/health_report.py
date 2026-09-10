@@ -309,7 +309,268 @@ def vendors(enabled):
 
 
 # ---------------------------------------------------------------------------
-# 6. Anything on a reader's screen that should not be there.
+# 6. Do our regions still match what the vendors themselves publish.
+#
+# This is the objection the site is most exposed to: "your data centres do not
+# match Google's page". It is answered by asking Google. The same three
+# fetchers the site is built from are re-run and compared against what shipped,
+# so the check reads the vendors' own lists rather than a copy of them.
+#
+# It reports in both directions, and the second one matters more: a region we
+# list that the vendor has dropped is embarrassing, but a region the vendor has
+# LAUNCHED and we do not show is the site quietly going out of date.
+# ---------------------------------------------------------------------------
+def vendor_regions(enabled):
+    if not enabled:
+        note("regions", WARN, "skipped, --no-network was passed")
+        return
+    ours = load("intelligence/status/regions.json") or {}
+    mine = {}
+    for r in (ours.get("regions") or []):
+        mine.setdefault(r.get("cloud"), {})[r.get("code")] = r
+
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    try:
+        import fetch_regions as fr
+    except Exception as exc:                                    # noqa: BLE001
+        note("regions", WARN, "cannot load the vendor fetchers (%s)"
+             % str(exc)[:50])
+        return
+
+    for cloud, fn in (("aws", "fetch_aws"), ("gcp", "fetch_gcp"),
+                      ("azure", "fetch_azure")):
+        try:
+            live = getattr(fr, fn)()
+        except Exception as exc:                                # noqa: BLE001
+            note("regions", WARN, "%s: could not read the vendor's list (%s)"
+                 % (cloud, str(exc)[:50]))
+            continue
+        theirs = {r.get("code"): r for r in live if r.get("code")}
+        have = mine.get(cloud, {})
+        gone = sorted(set(have) - set(theirs))
+        new = sorted(set(theirs) - set(have))
+
+        if not theirs:
+            note("regions", WARN, "%s: the vendor returned no regions" % cloud)
+            continue
+        if gone:
+            note("regions", FAIL,
+                 "%s: we show %d region(s) the vendor no longer lists — %s"
+                 % (cloud, len(gone), ", ".join(gone[:6])))
+        if new:
+            note("regions", WARN,
+                 "%s: the vendor lists %d region(s) we do not show — %s"
+                 % (cloud, len(new), ", ".join(new[:6])))
+        if not gone and not new:
+            note("regions", OK, "%s: all %d regions match the vendor's own list"
+                 % (cloud, len(theirs)))
+
+        # And the city, for the ones both sides agree exist. A region in the
+        # wrong city is the version of this fault a reader can actually see on
+        # the map.
+        wrong = []
+        for code in sorted(set(have) & set(theirs)):
+            a = (have[code].get("city") or "").strip().lower()
+            b = (theirs[code].get("city") or "").strip().lower()
+            if a and b and a != b:
+                wrong.append("%s: we say %s, they say %s"
+                             % (code, have[code].get("city"),
+                                theirs[code].get("city")))
+        if wrong:
+            note("regions", FAIL, "%s: %d region(s) placed in a different city "
+                 "than the vendor states — %s"
+                 % (cloud, len(wrong), "; ".join(wrong[:3])))
+        elif set(have) & set(theirs):
+            note("regions", OK, "%s: every shared region sits in the city the "
+                 "vendor states" % cloud)
+
+
+# ---------------------------------------------------------------------------
+# 7. Typos and grammar in the copy a reader actually reads.
+#
+# A spellchecker over a site this technical is useless: every service name and
+# region code is an unknown word. The first version of this tried "a long word
+# used only once is suspicious" and reported 412 of them -- resilient, person,
+# believe -- because seven pages of copy is nowhere near enough text for
+# rarity to mean anything. A report with 412 false positives is a report
+# nobody opens, which is worse than no report.
+#
+# So it looks for the shape a typo actually has: a word used ONCE that is one
+# keystroke away from a word this site uses OFTEN. "recieve" next to 94 uses
+# of "receive" is a typo; "resilient" used once is just a word. The corpus is
+# every published post, which is enough text for "often" to mean something.
+# ---------------------------------------------------------------------------
+MECHANICAL = [
+    (r"\s+[,;](?:\s|$)", "a space before a comma or semicolon"),
+    (r"\s+\.(?:\s|$)", "a space before a full stop"),
+    (r"([A-Za-z]{3,}) ", "a doubled word"),
+    (r"[a-z]{2,},[A-Za-z]{2,}", "a missing space after a comma"),
+]
+
+
+# Tags that end a line of reading, and tags that sit inside one.
+#
+# Replacing EVERY tag with a space is what an earlier version did, and it
+# invented eight punctuation faults that were not there:
+#
+#   <strong>understanding before doing</strong>, and   ->  "doing , and"
+#   <a href="/blog/rss.xml">RSS</a>.                   ->  "RSS ."
+#
+# The copy was correct and the extractor was wrong -- which, in a report meant
+# to be trusted, is the worst kind of finding to publish.
+BLOCK = (r"p|div|li|ul|ol|br|hr|h[1-6]|section|header|footer|nav|aside|main|"
+         r"table|thead|tbody|tr|td|th|blockquote|pre|figure|figcaption|dl|dt|dd")
+
+
+def visible_text(page):
+    body = text(page)
+    if not body:
+        return ""
+    v = re.sub(r"<script.*?</script>|<style.*?</style>|<!--.*?-->", " ",
+               body, flags=re.S)
+    # An empty element carrying an id is a slot JavaScript fills in -- the page
+    # reads "fetched 10 Sep 2026." and only the file reads "fetched ." Standing
+    # in a character for it stops the extractor inventing a space before the
+    # full stop, which it reported as a copy fault until it was checked.
+    v = re.sub(r'<(\w+)[^>]*\bid="[^"]*"[^>]*>\s*</\1>', 'X', v)
+    # A block boundary is a space; an inline tag is nothing at all.
+    v = re.sub(r"</?(?:%s)\b[^>]*>" % BLOCK, " ", v, flags=re.I)
+    v = re.sub(r"<[^>]+>", "", v)
+    v = re.sub(r"&nbsp;", " ", v)
+    v = re.sub(r"&[a-z]+;|&#\d+;", "", v)
+    return re.sub(r"[ 	]+", " ", v)
+
+
+def one_edit_away(word, known):
+    """Is `word` one keystroke from anything in `known`?"""
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    for i in range(len(word)):
+        if word[:i] + word[i + 1:] in known:                    # a deletion
+            return word[:i] + word[i + 1:]
+        if i and word[:i - 1] + word[i] + word[i - 1] + word[i + 1:] in known:
+            return word[:i - 1] + word[i] + word[i - 1] + word[i + 1:]
+    for i in range(len(word)):
+        for c in letters:
+            if c != word[i]:
+                cand = word[:i] + c + word[i + 1:]
+                if cand in known:
+                    return cand
+    for i in range(len(word) + 1):
+        for c in letters:
+            cand = word[:i] + c + word[i:]
+            if cand in known:
+                return cand
+    return None
+
+
+def prose():
+    # The corpus is every post plus the reader-facing pages -- enough text that
+    # "this site uses that word often" is a real statement.
+    corpus = {}
+    posts_dir = os.path.join(ROOT, "blog")
+    scanned = 0
+    for base, dirs, files in os.walk(posts_dir):
+        dirs[:] = [d for d in dirs if d not in ("assets", "page", "digests")]
+        for name in files:
+            if name != "index.html":
+                continue
+            rel = os.path.relpath(os.path.join(base, name), ROOT)
+            v = visible_text(rel.replace("\\", "/"))
+            if not v:
+                continue
+            scanned += 1
+            for w in re.findall(r"[A-Za-z][A-Za-z]{3,}", v):
+                w = w.lower()
+                corpus[w] = corpus.get(w, 0) + 1
+
+    per_page = {}
+    for page in READER_PAGES:
+        v = visible_text(page)
+        if not v:
+            continue
+        per_page[page] = v
+        for w in re.findall(r"[A-Za-z][A-Za-z]{3,}", v):
+            w = w.lower()
+            corpus[w] = corpus.get(w, 0) + 1
+
+    common = {w for w, n in corpus.items() if n >= 8}
+    found = 0
+    for page, v in per_page.items():
+        seen = set()
+        for m in re.finditer(r"([a-z]{5,})", v):
+            w = m.group(1)
+            if corpus.get(w, 0) != 1 or w in seen:
+                continue
+            near = one_edit_away(w, common)
+            if not near:
+                continue
+            seen.add(w)
+            around = re.sub(r"\s+", " ",
+                            v[max(0, m.start() - 30):m.end() + 30]).strip()
+            note("prose", WARN,
+                 "%s: '%s' is used once and is one letter from '%s', which the "
+                 "site uses %d times — ...%s..."
+                 % (page, w, near, corpus[near], around[:66]))
+            found += 1
+    if not found:
+        note("prose", OK, "no likely typos across %d posts and %d pages"
+             % (scanned, len(per_page)))
+
+    mech = 0
+    for page, v in per_page.items():
+        for pattern, what in MECHANICAL:
+            m = re.search(pattern, v)
+            if not m:
+                continue
+            around = re.sub(r"\s+", " ",
+                            v[max(0, m.start() - 30):m.end() + 30]).strip()
+            note("prose", WARN, "%s: %s — ...%s..." % (page, what, around[:72]))
+            mech += 1
+    if not mech:
+        note("prose", OK, "no doubled words or stray punctuation in the copy")
+
+
+# ---------------------------------------------------------------------------
+# 8. Does the site still RENDER correctly.
+#
+# The data can be perfect and the page still wrong: a nav that does not fit, a
+# region drawn in the sea. These checks already exist and each needs a browser,
+# so they are run here rather than rewritten, and only their verdict is folded
+# into the report.
+# ---------------------------------------------------------------------------
+RENDER_CHECKS = [
+    ("the map's dots sit on their own countries", "check_map_alignment.py"),
+    ("the navigation holds on 5 pages at 6 widths", "check_nav.py"),
+]
+
+
+def rendering(enabled):
+    if not enabled:
+        note("rendering", WARN, "skipped, --no-browser was passed")
+        return
+    for label, script in RENDER_CHECKS:
+        path = os.path.join(ROOT, "scripts", script)
+        if not os.path.exists(path):
+            note("rendering", WARN, "%s is missing" % script)
+            continue
+        try:
+            out = subprocess.run([sys.executable, path], capture_output=True,
+                                 text=True, cwd=ROOT, timeout=900,
+                                 encoding="utf-8", errors="replace")
+        except Exception as exc:                                # noqa: BLE001
+            note("rendering", WARN, "%s did not run (%s)"
+                 % (script, str(exc)[:50]))
+            continue
+        tail = [l for l in (out.stdout or "").strip().splitlines() if l.strip()]
+        last = tail[-1].strip() if tail else "(no output)"
+        if out.returncode == 0:
+            note("rendering", OK, "%s — %s" % (label, last[:90]))
+        else:
+            note("rendering", FAIL, "%s — %s" % (label, last[:90]))
+
+
+# ---------------------------------------------------------------------------
+# 9. Anything on a reader's screen that should not be there.
 # ---------------------------------------------------------------------------
 LEFTOVERS = [
     (r"__[A-Z][A-Z0-9_]{2,}__", "an unresolved build token"),
@@ -355,9 +616,13 @@ TITLES = {
     "agreement": "Files that state the same fact",
     "jobs":      "Scheduled jobs",
     "vendors":   "Vendor endpoints the site cites",
+    "regions":   "Our regions against the vendors' own lists",
+    "prose":     "Typos and grammar in the copy",
+    "rendering": "Does it still render correctly",
     "leftovers": "Anything on a reader's screen that should not be",
 }
-ORDER = ["claims", "freshness", "agreement", "jobs", "vendors", "leftovers"]
+ORDER = ["claims", "regions", "freshness", "agreement", "jobs", "vendors",
+         "prose", "rendering", "leftovers"]
 MARK = {OK: "ok  ", WARN: "note", FAIL: "FAIL"}
 
 
@@ -365,7 +630,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--markdown", default=None,
                     help="also write the report as markdown to this path")
-    ap.add_argument("--no-network", action="store_true")
+    ap.add_argument("--no-network", action="store_true",
+                    help="skip anything that leaves this machine")
+    ap.add_argument("--no-browser", action="store_true",
+                    help="skip the render checks, which need Playwright")
     args = ap.parse_args()
 
     claims()
@@ -373,6 +641,9 @@ def main():
     agreement()
     jobs()
     vendors(not args.no_network)
+    vendor_regions(not args.no_network)
+    prose()
+    rendering(not args.no_browser)
     leftovers()
 
     fails = [f for f in findings if f[1] == FAIL]
