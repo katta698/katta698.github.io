@@ -65,6 +65,15 @@ PROBE = """() => {
   const mark = document.querySelector('.brand-mark');
   const mr = mark ? mark.getBoundingClientRect() : null;
 
+  // The wordmark's typography, so five pages cannot set the same two words
+  // three different ways again.
+  const word = document.querySelector('.brand-name');
+  const ws = word ? getComputedStyle(word) : null;
+  const wordFace = ws
+    ? [ws.fontFamily.split(',')[0].replace(/['"]/g, '').trim(),
+       ws.fontWeight, ws.letterSpacing].join('/')
+    : null;
+
   // Every destination reachable, whether in the bar or behind the mark.
   const sheet = document.querySelector('.ck-sheet');
   const inBar = [...nav.querySelectorAll('a[href]')]
@@ -102,6 +111,7 @@ PROBE = """() => {
   return {
     order,
     edge: Math.round(edge), vw: window.innerWidth, sideways,
+    wordFace,
     markVisible: !!(mr && mr.width > 0 && mr.height > 0),
     markRadius: mark ? getComputedStyle(mark).borderRadius : null,
     reach: [...new Set(inBar.concat(inSheet))],
@@ -128,6 +138,7 @@ def main():
     from playwright.sync_api import sync_playwright
 
     problems = []
+    faces = {}
     with sync_playwright() as pw:
         browser = getattr(pw, args.engine).launch()
         for name, path in PAGES:
@@ -179,12 +190,25 @@ def main():
                             problems.append(
                                 "%s: the page name is not beside the mark (%s)"
                                 % (tag, " ".join(order)))
+                if r.get("wordFace"):
+                    faces.setdefault(r["wordFace"], []).append(name)
                 notes.append("%d:%d" % (w, r["edge"]))
                 pg.close()
             print("  %-10s widths ok, bar width by viewport: %s"
                   % (name, " ".join(notes)))
         browser.close()
     srv.shutdown()
+
+    # Same wordmark everywhere, or nowhere. Three pages set it in Playfair
+    # at 600 while the portfolio and the blog used DM Sans at 700, with
+    # different letter spacing from each other -- three renderings of the
+    # same two words in a bar that is otherwise identical.
+    if len(faces) > 1:
+        for face, where in sorted(faces.items(), key=lambda kv: -len(kv[1])):
+            problems.append("the wordmark is %s on %s"
+                            % (face, ", ".join(sorted(set(where)))))
+    elif faces:
+        print("  wordmark: %s on every page" % list(faces)[0])
 
     if problems:
         print("\n  %d NAVIGATION PROBLEM(S)\n" % len(problems))
