@@ -2188,8 +2188,19 @@ def tabbed_progress_widget(entries):
     """
     if not entries:
         return ""
-    return TABBED_PROGRESS_TEMPLATE.replace(
-        "__ALL_SERIES__", json.dumps(entries, separators=(",", ":")))
+    # The first tab's real total, written into the markup.
+    #
+    # sp-total shipped as a literal 0 and was filled in by script, so the card
+    # read "0 of 0 posts read" until JavaScript arrived -- which is the exact
+    # thing the caller's comment says is worse than no card at all. The number
+    # is known here; there is no reason to make a reader wait for it, and on a
+    # slow connection or with scripting off it never came.
+    return (TABBED_PROGRESS_TEMPLATE
+            .replace("__ALL_SERIES__",
+                     json.dumps(entries, separators=(",", ":")))
+            .replace('<span id="sp-total">0</span>',
+                     '<span id="sp-total">%d</span>'
+                     % len(entries[0].get("posts") or [])))
 
 
 POSTS_PER_PAGE = 24
