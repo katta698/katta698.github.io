@@ -1672,6 +1672,11 @@ def html_head(title, description, canonical, extra="", og_type="website",
 <title>{escape(title)}</title>
 <meta name="description" content="{escape(description)}"/>
 <link rel="canonical" href="{canonical}"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
 <meta property="og:type" content="{og_type}"/>
 <meta property="og:site_name" content="Jayanth Katta"/>
 <meta property="og:title" content="{escape(social_title)}"/>

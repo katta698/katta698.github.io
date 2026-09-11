@@ -216,6 +216,8 @@ PAGE = """<!DOCTYPE html>
 <meta property="og:image" content="https://jayanthkatta.com/blog/assets/intelligence-card.png"/>
 <meta name="twitter:card" content="summary_large_image"/>
 <link rel="canonical" href="https://jayanthkatta.com/intelligence/whats-new/"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
 <link rel="icon" href="/favicon-transparent.png" type="image/png">
 <link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
 <link rel="manifest" href="/manifest.webmanifest"/>

@@ -107,6 +107,27 @@ def main():
         lines.append("    <changefreq>%s</changefreq>" % freq)
         lines.append("    <priority>%s</priority>" % prio)
         lines.append("  </url>")
+    # The feeds, which are not pages but are worth finding.
+    #
+    # Google accepts an RSS or Atom feed as a discovery source, and these are
+    # the two things on the site that change without a page changing: the blog
+    # feed when a post lands, the incident feeds when a cloud breaks. Listing
+    # them costs six lines and means a crawler learns about an incident without
+    # waiting to re-read the status page.
+    for loc, freq in [("/blog/rss.xml", "daily"),
+                      ("/intelligence/status/feed.xml", "hourly"),
+                      ("/intelligence/status/feed-aws.xml", "hourly"),
+                      ("/intelligence/status/feed-azure.xml", "hourly"),
+                      ("/intelligence/status/feed-gcp.xml", "hourly")]:
+        if not os.path.exists(os.path.join(ROOT, loc.lstrip("/"))):
+            continue
+        lines.append("  <url>")
+        lines.append("    <loc>%s%s</loc>" % (SITE, loc))
+        lines.append("    <lastmod>%s</lastmod>" % (git_date(loc.lstrip("/")) or today))
+        lines.append("    <changefreq>%s</changefreq>" % freq)
+        lines.append("    <priority>0.5</priority>")
+        lines.append("  </url>")
+
     lines.append("</urlset>")
 
     io.open(os.path.join(ROOT, "sitemap.xml"), "w",
