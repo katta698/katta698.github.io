@@ -639,6 +639,9 @@ RENDER_CHECKS = [
     # three different answers to the same gesture. Nothing looked broken on any
     # page; they simply did not agree with each other.
     ("the feedback modal behaves the same on every page", "check_feedback.py"),
+    # The footer text ran under the scroll-to-top button twice, the second
+    # time reintroduced by a rule 150 lines below the one that fixed it.
+    ("the footer clears the floating buttons", "check_footer_clear.py"),
 ]
 
 # Checks that need no browser, run the same way.
