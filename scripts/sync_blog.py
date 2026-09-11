@@ -3792,9 +3792,16 @@ def build_rss_feed(posts, max_items=None):
     # both. Without it, following the footer's "blog" link landed on "This XML
     # file does not appear to have any style information associated with it"
     # and a wall of tags -- which reads as a broken page, not as a feed.
+    # The day's palette travels in the file, because a stylesheet applied by
+    # XSLT cannot read localStorage or run a script -- scripts in XSLT output
+    # do not execute in any browser. rss.xsl puts it on <html> so the site's
+    # own CSS gives this page the same ground colour as the page it was linked
+    # from.
+    _pal = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][
+        int(datetime.utcnow().strftime("%w"))]
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <?xml-stylesheet type="text/xsl" href="/blog/rss.xsl"?>
-<rss version="2.0">
+<rss version="2.0" data-palette="{_pal}">
   <channel>
     <title>Jayanth Katta — Blog</title>
     <link>{BLOG_URL}/</link>

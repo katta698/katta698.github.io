@@ -175,9 +175,21 @@ def feed_xml(rows, cloud=None):
     # every hourly rebuild would look like news.
     newest = max((r["when"] for r in rows), default="1970-01-01T00:00:00Z")
 
+    # The day's palette travels in the file.
+    #
+    # The whole site shifts its ground colour with the weekday, and the feed
+    # was a fixed dark grey -- so following a link to it looked like leaving
+    # the site, which is the complaint status.css already records about the
+    # status page itself. A stylesheet applied by XSLT cannot read localStorage
+    # or run a script: scripts in XSLT output do not execute in any browser. So
+    # the day is written here, where the file is generated, and feed.xsl puts
+    # it on <html> for the site's own CSS to pick up.
+    day = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][
+        int(dt.datetime.now(dt.timezone.utc).strftime("%w"))]
+
     out = ['<?xml version="1.0" encoding="utf-8"?>',
            '<?xml-stylesheet type="text/xsl" href="feed.xsl"?>',
-           '<feed xmlns="http://www.w3.org/2005/Atom">',
+           '<feed xmlns="http://www.w3.org/2005/Atom" data-palette="%s">' % day,
            '  <title>Cloud incidents — %s</title>' % escape(which),
            '  <subtitle>Open incidents and the recent record, read from the '
            'vendors\' own status feeds. Nothing here is summarised or '
@@ -242,30 +254,36 @@ XSL = """<?xml version="1.0" encoding="utf-8"?>
 <xsl:output method="html" encoding="utf-8" indent="yes"/>
 <xsl:template match="/">
 <html lang="en">
+  <xsl:attribute name="data-palette"><xsl:value-of
+    select="/atom:feed/@data-palette"/></xsl:attribute>
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title><xsl:value-of select="atom:feed/atom:title"/></title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&amp;family=Playfair+Display:wght@600&amp;family=DM+Mono:wght@400&amp;display=swap" rel="stylesheet"/>
+  <!-- The site's own stylesheet, not a copy of its colours. That is what makes
+       the ground, the type and the weekday palette the same here as on the
+       page this was linked from; a second set of hex values would drift from
+       the first the day either changed. -->
+  <link rel="stylesheet" href="/intelligence/status/status.css"/>
   <style>
-    :root{color-scheme:dark}
-    body{margin:0;background:#14100F;color:#EDEBE6;
-      font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
-    .wrap{max-width:44rem;margin:0 auto;padding:2.5rem 1.25rem 4rem}
-    h1{font-size:1.5rem;margin:0 0 .4rem;font-weight:600}
-    .sub{color:#9C9A94;font-size:.92rem;margin:0 0 1.5rem}
-    .note{background:#1E1A19;border:1px solid rgba(196,164,132,.28);
+    .wrap{max-width:44rem;margin:0 auto;padding:2.25rem 1.25rem 4rem}
+    h1{font-family:var(--serif);font-size:1.5rem;margin:0 0 .4rem}
+    .sub{color:var(--mut);font-size:.92rem;margin:0 0 1.5rem}
+    .note{background:var(--card);border:1px solid var(--bd);
       border-radius:12px;padding:1rem 1.1rem;margin:0 0 2rem;font-size:.92rem}
-    .note strong{color:#C4A484}
-    .note code{background:rgba(255,255,255,.06);padding:.1rem .35rem;
-      border-radius:4px;font-size:.86em}
-    article{border-top:1px solid rgba(255,255,255,.09);padding:1.1rem 0}
-    h2{font-size:1rem;margin:0 0 .3rem;font-weight:600}
-    h2 a{color:#EDEBE6;text-decoration:none}
-    h2 a:hover{color:#C4A484}
-    .meta{color:#9C9A94;font-size:.8rem;margin:0 0 .45rem}
-    .open{color:#E0A458;font-weight:600}
-    p.body{margin:0;color:#C8C5BE;font-size:.92rem}
-    a{color:#C4A484}
+    .note strong{color:var(--acc)}
+    .note code{background:rgba(128,128,128,.16);padding:.1rem .35rem;
+      border-radius:4px;font-family:var(--mono);font-size:.86em}
+    article{border-top:1px solid var(--bd);padding:1.1rem 0}
+    h2{font-size:1rem;margin:0 0 .3rem;font-weight:600;font-family:var(--sans)}
+    h2 a{color:var(--tx);text-decoration:none}
+    h2 a:hover{color:var(--acc)}
+    .meta{color:var(--mut);font-size:.8rem;margin:0 0 .45rem;
+      font-family:var(--mono)}
+    .open{color:var(--red);font-weight:600}
+    p.body{margin:0;color:var(--tx);opacity:.88;font-size:.92rem}
+    a{color:var(--acc)}
   </style>
 </head>
 <body><div class="wrap">
@@ -276,8 +294,8 @@ XSL = """<?xml version="1.0" encoding="utf-8"?>
     a feed reader, or into Slack with
     <code>/feed subscribe &lt;address&gt;</code>, and you will be told when a
     cloud breaks and again when it clears. No sign-up, no email address, and
-    nothing to unsubscribe from — you are not on a list, because there is no
-    list. <a href="/intelligence/status/">Back to the status page</a>.
+    nothing to unsubscribe from &#8212; you are not on a list, because there is
+    no list. <a href="/intelligence/status/">Back to the status page</a>.
   </div>
   <xsl:for-each select="atom:feed/atom:entry">
     <article>
@@ -288,7 +306,7 @@ XSL = """<?xml version="1.0" encoding="utf-8"?>
       </h2>
       <p class="meta">
         <xsl:if test="atom:category[@term='open']">
-          <span class="open">Open now</span><xsl:text> · </xsl:text>
+          <span class="open">Open now</span><xsl:text> &#183; </xsl:text>
         </xsl:if>
         <xsl:value-of select="atom:updated"/>
       </p>

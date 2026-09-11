@@ -22,12 +22,15 @@ VALID.  It parses, every entry has a stable id and an RFC3339 date, and no id
         appears twice -- a duplicate id makes a reader show one incident twice
         or hide one entirely, depending on whose reader it is.
 """
+import http.server
 import io
 import json
 import os
 import re
+import socketserver
 import subprocess
 import sys
+import threading
 import xml.etree.ElementTree as ET
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -38,6 +41,32 @@ NS = {"a": "http://www.w3.org/2005/Atom"}
 FEEDS = ["feed.xml", "feed-aws.xml", "feed-azure.xml", "feed-gcp.xml"]
 RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 NAMES = {"aws": "AWS", "azure": "Azure", "gcp": "Google Cloud"}
+
+
+def serve_root():
+    """The whole site, so a feed and the page it belongs to can be compared."""
+    class H(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def guess_type(self, path):
+            # A stylesheet served as the wrong type is not applied, and the
+            # feed would then be raw XML while still passing every other check.
+            if path.endswith(".xsl"):
+                return "text/xsl"
+            if path.endswith(".xml"):
+                return "application/xml"
+            return http.server.SimpleHTTPRequestHandler.guess_type(self, path)
+
+    socketserver.TCPServer.allow_reuse_address = True
+    for port in range(8651, 8701):
+        try:
+            srv = socketserver.TCPServer(("127.0.0.1", port), H)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            return srv, port
+        except OSError:
+            continue
+    raise SystemExit("no free port")
 
 
 def main():
@@ -138,6 +167,48 @@ def main():
     else:
         print("  rebuild with nothing new: byte-identical, so no subscriber "
               "is woken twice")
+
+    # And it must not look like a different website.
+    #
+    # The feeds were styled with their own hardcoded dark grey, so following a
+    # link from the footer landed on something that did not share the site's
+    # ground colour, its type or the weekday palette -- which is the same
+    # complaint status.css already records about the status page before it
+    # joined the rotation. They use the site's own stylesheet now, with the
+    # day written into the file, because a stylesheet applied by XSLT cannot
+    # run a script to read it.
+    try:
+        from playwright.sync_api import sync_playwright
+        srv2, port2 = serve_root()
+        try:
+            with sync_playwright() as pw:
+                b = pw.chromium.launch()
+                seen = {}
+                for label, path in (("the status page", "/intelligence/status/"),
+                                    ("the feed", "/intelligence/status/feed.xml"),
+                                    ("the blog feed", "/blog/rss.xml")):
+                    pg = b.new_page(viewport={"width": 900, "height": 900})
+                    pg.goto("http://127.0.0.1:%d%s" % (port2, path),
+                            wait_until="commit", timeout=60000)
+                    pg.wait_for_timeout(2500)
+                    seen[label] = pg.evaluate(
+                        "() => getComputedStyle(document.body).backgroundColor"
+                        " + ' / ' + document.documentElement"
+                        ".getAttribute('data-palette')")
+                    pg.close()
+                b.close()
+            page_look = seen.get("the status page")
+            for label, look in seen.items():
+                if look != page_look:
+                    problems.append(
+                        "%s renders as %s while the site renders as %s"
+                        % (label, look, page_look))
+            print("  every feed renders in the site's own ground and palette "
+                  "(%s)" % page_look)
+        finally:
+            srv2.shutdown()
+    except Exception as exc:                                    # noqa: BLE001
+        print("  could not check how the feeds render (%s)" % str(exc)[:50])
 
     print()
     if problems:
