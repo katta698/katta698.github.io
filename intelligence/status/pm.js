@@ -598,20 +598,35 @@
     function ping(xy, rad) {
       var x = xy[0].toFixed(1), y = xy[1].toFixed(1);
       var r0 = (rad + 1.5).toFixed(1), r1 = (rad + 13).toFixed(1);
+      /* CSS keyframes, not SVG <animate>.
+       *
+       * The rings were SMIL and did not move in WebKit: the <animate> elements
+       * were in the DOM, animationsPaused() was false, and the SVG's own
+       * currentTime sat at 0 and never advanced. The same markup animates in
+       * that engine on a blank page, and a minimal test SVG added anywhere on
+       * THIS page does not -- so something here stops SMIL page-wide, and I
+       * could not find what. CSS animations were running on the same page at
+       * the same moment.
+       *
+       * Rather than keep hunting, the alarm stops depending on the thing that
+       * fails. This animates transform and opacity, which every engine handles,
+       * and it is the alarm: it has to work where it is least convenient.
+       *
+       * The growth is a scale factor rather than an animated radius, because
+       * transform is what browsers animate cheaply and consistently. Each ring
+       * carries its own factor so the drawn size matches what the radius
+       * animation produced -- r1/r0 differs per dot, since the ring starts just
+       * outside a dot whose size carries the incident count.
+       *
+       * transform-box: fill-box makes the transform-origin the circle's own
+       * centre rather than the SVG's origin; without it a scaled ring flies off
+       * the map, which this file has already been caught by once.
+       */
+      var grow = (r1 / r0).toFixed(3);
       function ring(delay) {
-        return '<circle class="om-pulse" cx="' + x + '" cy="' + y +
-               '" r="' + r0 + '">' +
-               (stillOnly
-                 ? '<animate attributeName="opacity" values=".35;.95;.35" ' +
-                   'dur="3.5s" repeatCount="indefinite"/>' :
-                 '<animate attributeName="r" from="' + r0 + '" to="' + r1 +
-                 '" dur="2.2s" begin="' + delay + '" repeatCount="indefinite"/>' +
-                 '<animate attributeName="opacity" values="0;.95;0" ' +
-                 'keyTimes="0;.15;1" dur="2.2s" begin="' + delay +
-                 '" repeatCount="indefinite"/>' +
-                 '<animate attributeName="stroke-width" values="2.6;.7" ' +
-                 'dur="2.2s" begin="' + delay + '" repeatCount="indefinite"/>') +
-               '</circle>';
+        return '<circle class="om-pulse' + (stillOnly ? ' om-pulse-still' : '') +
+               '" cx="' + x + '" cy="' + y + '" r="' + r0 +
+               '" style="--om-grow:' + grow + ';animation-delay:' + delay + '"/>';
       }
       // With motion off, one ring that stays put and breathes.
       //

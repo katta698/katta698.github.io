@@ -646,6 +646,11 @@ RENDER_CHECKS = [
     # Chrome drew over the header and Safari did not draw at all, and every
     # check here ran in Chromium, so the Safari half was never looked at.
     ("the region suggestions work in both engines", "check_region_suggest.py"),
+    # Never in this report until now, which is how the live-incident ring
+    # came to be frozen in WebKit without anything saying so: the alarm on
+    # the map did not move on any Apple device, and every other check ran
+    # in Chromium, where it did.
+    ("the map draws and the alarm moves on three engines", "check_map_devices.py"),
 ]
 
 # Checks that need no browser, run the same way.
