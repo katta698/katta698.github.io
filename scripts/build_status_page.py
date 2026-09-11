@@ -1124,16 +1124,28 @@ document.documentElement.setAttribute("data-palette",p);})();
        use a map instead of a list. -->
   <div class="om-find">
     <label class="om-find-label" for="om-q">Find a region</label>
-    <!-- list= is a native datalist, filled by pm.js from the regions the map
-         already holds. Native rather than a hand-built dropdown because the
-         browser's own suggestion list is the one a phone keyboard, a screen
-         reader and a keyboard user all already understand -- and nobody has
-         to remember that Mumbai is ap-south-1. -->
-    <input id="om-q" class="om-find-in" type="search" autocomplete="off"
-           list="om-places"
-           placeholder="Mumbai, eu-west-1, Germany&hellip;"
-           aria-describedby="om-found">
-    <datalist id="om-places"></datalist>
+    <!-- The suggestion list is built here rather than handed to the browser.
+         It was a native <datalist>, on the reasoning that the browser's own
+         control is the one a phone keyboard and a screen reader already
+         understand. That reasoning only holds where the browser draws it.
+
+         Chrome on Android drew a popup that covered the site header. Safari on
+         iPad drew nothing at all -- all 248 suggestions present in the markup,
+         no way to see one. Same page, same data, two different failures, and
+         neither fixable from here, because a native control is not ours to
+         position or style.
+
+         So it is ours now: same on every browser, placed under the field, and
+         it cannot paint over the nav. -->
+    <div class="om-find-box">
+      <input id="om-q" class="om-find-in" type="search" autocomplete="off"
+             autocapitalize="off" autocorrect="off" spellcheck="false"
+             role="combobox" aria-expanded="false" aria-autocomplete="list"
+             aria-controls="om-sug"
+             placeholder="Mumbai, eu-west-1, Germany&hellip;"
+             aria-describedby="om-found">
+      <ul id="om-sug" class="om-sug" role="listbox" aria-label="Matching regions" hidden></ul>
+    </div>
     <span id="om-found" class="om-find-n" role="status" aria-live="polite"></span>
   </div>
   <div id="outage-map" class="om"></div>

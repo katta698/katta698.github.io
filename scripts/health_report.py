@@ -642,6 +642,10 @@ RENDER_CHECKS = [
     # The footer text ran under the scroll-to-top button twice, the second
     # time reintroduced by a rule 150 lines below the one that fixed it.
     ("the footer clears the floating buttons", "check_footer_clear.py"),
+    # In Chromium AND WebKit. The suggestions were a native control that
+    # Chrome drew over the header and Safari did not draw at all, and every
+    # check here ran in Chromium, so the Safari half was never looked at.
+    ("the region suggestions work in both engines", "check_region_suggest.py"),
 ]
 
 # Checks that need no browser, run the same way.

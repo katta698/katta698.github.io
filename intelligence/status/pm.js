@@ -499,6 +499,9 @@
     // filter is showing. The search reads this so it can tell "we have never
     // heard of that" apart from "we carry it and cannot place it".
     var mapUnplaced = [];
+    // Every place name and region code the map can currently offer, rebuilt
+    // whenever it redraws. What a reader sees is filtered out of this.
+    var SUGGESTIONS = [];
 
     /* Whether the alarm is allowed to move, decided once.
      *
@@ -1405,8 +1408,9 @@
      * accessible.
      */
     function fillSuggestions() {
-      var list = document.getElementById('om-places');
+      var list = document.getElementById('om-sug');
       if (!list) return;
+      SUGGESTIONS = [];
       /* Gather first, emit second.
        *
        * A region code is not unique across clouds: us-east-2 is Ohio to AWS
@@ -1414,7 +1418,7 @@
        * dot came first claimed the code and the other was dropped, so the
        * suggestion for us-east-2 named one place and silently meant two.
        */
-      var byName = {}, byCode = {}, opts = [];
+      var byName = {}, byCode = {};
       [].forEach.call(mapHost.querySelectorAll('.om-dot'), function (d) {
         var at = (d.getAttribute('data-at') || '').split('|');
         var names = at.filter(function (x) { return x && x.length <= 34; });
@@ -1443,18 +1447,15 @@
         });
       });
       Object.keys(byName).sort().forEach(function (k) {
-        var p = byName[k], label = p.clouds.sort().join(' · ');
-        opts.push('<option value="' + esc(p.name) + '"' +
-                  (label ? ' label="' + esc(label) + '"' : '') + '></option>');
+        var p = byName[k];
+        SUGGESTIONS.push({ value: p.name, note: p.clouds.sort().join(' · ') });
       });
       Object.keys(byCode).sort().forEach(function (k) {
         var e = byCode[k];
         var label = e.where.join(' · ');
         if (label.length > 46) label = label.slice(0, 45) + '…';
-        opts.push('<option value="' + esc(e.code) + '"' +
-                  (label ? ' label="' + esc(label) + '"' : '') + '></option>');
+        SUGGESTIONS.push({ value: e.code, note: label });
       });
-      list.innerHTML = opts.join('');
     }
 
     if (omQ) {
@@ -1520,11 +1521,140 @@
       // Redrawing replaces every dot, so the filter has to be put back --
       // otherwise switching cloud silently clears a search that is still
       // typed into the box.
+      /* The suggestion list.
+       *
+       * This was a native <datalist>, chosen because the browser's own control
+       * is the one a phone keyboard and a screen reader already understand.
+       * That holds only where the browser draws it. Chrome on Android drew a
+       * popup over the site header; Safari on iPad drew nothing at all, with
+       * every suggestion sitting in the markup unreachable. A native control
+       * cannot be positioned or styled, so neither was fixable.
+       *
+       * Built here it behaves the same everywhere. The cost is that everything
+       * the native one did for free has to be done explicitly: arrow keys,
+       * Enter, Escape, tap, and the combobox roles a screen reader needs.
+       */
+      var omSug = document.getElementById('om-sug');
+      var cursor = -1, shown = [];
+
+      function closeSug() {
+        if (!omSug) return;
+        omSug.hidden = true;
+        omSug.innerHTML = '';
+        cursor = -1;
+        shown = [];
+        omQ.setAttribute('aria-expanded', 'false');
+        omQ.removeAttribute('aria-activedescendant');
+      }
+
+      function paintCursor() {
+        [].forEach.call(omSug.children, function (li, i) {
+          var on = i === cursor;
+          li.classList.toggle('on', on);
+          li.setAttribute('aria-selected', on ? 'true' : 'false');
+          if (on) {
+            omQ.setAttribute('aria-activedescendant', li.id);
+            // Keep the highlighted row in view when arrowing past the fold.
+            if (li.offsetTop < omSug.scrollTop) omSug.scrollTop = li.offsetTop;
+            else if (li.offsetTop + li.offsetHeight >
+                     omSug.scrollTop + omSug.clientHeight) {
+              omSug.scrollTop = li.offsetTop + li.offsetHeight - omSug.clientHeight;
+            }
+          }
+        });
+        if (cursor < 0) omQ.removeAttribute('aria-activedescendant');
+      }
+
+      function openSug() {
+        if (!omSug) return;
+        var q = (omQ.value || '').trim().toLowerCase();
+        if (!q) return closeSug();
+        // Matches that START with what was typed come first: someone typing
+        // "us-e" wants us-east-1 before "Belgium (Google Cloud us-east...)".
+        var starts = [], has = [];
+        SUGGESTIONS.forEach(function (s) {
+          var v = s.value.toLowerCase();
+          if (v.indexOf(q) === 0) starts.push(s);
+          else if (v.indexOf(q) >= 0 || (s.note || '').toLowerCase().indexOf(q) >= 0) {
+            has.push(s);
+          }
+        });
+        shown = starts.concat(has).slice(0, 8);
+        if (!shown.length) return closeSug();
+        omSug.innerHTML = shown.map(function (s, i) {
+          return '<li id="om-sug-' + i + '" role="option" aria-selected="false">' +
+                 '<span class="om-sug-v">' + esc(s.value) + '</span>' +
+                 (s.note ? '<span class="om-sug-n">' + esc(s.note) + '</span>' : '') +
+                 '</li>';
+        }).join('');
+        omSug.hidden = false;
+        cursor = -1;
+        omQ.setAttribute('aria-expanded', 'true');
+        omQ.removeAttribute('aria-activedescendant');
+      }
+
+      function choose(i) {
+        if (i < 0 || i >= shown.length) return;
+        omQ.value = shown[i].value;
+        closeSug();
+        applyFind();
+      }
+
+      omQ.addEventListener('input', openSug);
+      omQ.addEventListener('focus', openSug);
+
       omQ.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') { omQ.value = ''; applyFind(); }
+        var open = omSug && !omSug.hidden;
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          if (!open) { openSug(); return; }
+          e.preventDefault();
+          cursor += (e.key === 'ArrowDown' ? 1 : -1);
+          if (cursor >= shown.length) cursor = 0;
+          if (cursor < 0) cursor = shown.length - 1;
+          paintCursor();
+          return;
+        }
+        if (e.key === 'Enter' && open && cursor >= 0) {
+          e.preventDefault();
+          choose(cursor);
+          return;
+        }
+        if (e.key === 'Escape') {
+          // First Escape dismisses the list, second clears the box. Clearing
+          // on the first would throw away a search the reader is still typing.
+          //
+          // preventDefault matters here and only in Chrome: on a type="search"
+          // input it clears the field itself on Escape, so without this the
+          // first press dismissed the list AND emptied the box. WebKit does
+          // not, so the two engines disagreed about what one key did.
+          if (open) { e.preventDefault(); closeSug(); return; }
+          omQ.value = '';
+          applyFind();
+        }
       });
+
+      if (omSug) {
+        // pointerdown, not click: click arrives after blur, and blur closes the
+        // list, so by then the row being tapped no longer exists.
+        omSug.addEventListener('pointerdown', function (e) {
+          var li = e.target.closest ? e.target.closest('li') : null;
+          if (!li) return;
+          e.preventDefault();
+          choose([].indexOf.call(omSug.children, li));
+        });
+        omSug.addEventListener('mousemove', function (e) {
+          var li = e.target.closest ? e.target.closest('li') : null;
+          if (!li) return;
+          cursor = [].indexOf.call(omSug.children, li);
+          paintCursor();
+        });
+      }
+      omQ.addEventListener('blur', function () { setTimeout(closeSug, 120); });
+
       window.__omApplyFind = applyFind;
       window.__omFill = fillSuggestions;
+      window.__omSug = { open: openSug, close: closeSug,
+                         shown: function () { return shown; } };
     }
 
     // Clicking a region opens what happened there -- from the map, or from
