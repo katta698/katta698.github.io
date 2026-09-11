@@ -1,12 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""The floating star feedback button, for pages that do not load blog.css.
+"""The floating star feedback button: the markup here, the behaviour shared.
 
     from feedback_star import star_html, STAR_CSS
 
-The widget itself is the site's own: the same markup, the same Formspree form,
-the same five-star modal that the portfolio and blog index already carry. Only
-the `page` field differs, so reports can be told apart.
+star_html() returns the button and the modal for one page. What the modal
+DOES lives in blog/assets/feedback.js, loaded by all 239 pages that carry it.
+
+That split is the point. The behaviour used to be inlined alongside the markup
+in four separate places -- index.html, intelligence/index.html, sync_blog.py's
+post template, and here -- and four copies of anything drift. These had:
+
+    Escape closed it     on the 3 Intelligence pages, not on portfolio or blog
+    backdrop closed it   on blog and status, not on portfolio
+    scroll locked        on portfolio only
+
+So the same modal answered the same gesture three different ways depending on
+which page you were standing on, and on the portfolio it could only be
+dismissed by finding the Skip button. Every copy worked; they simply did not
+agree, and nothing about looking at a page would tell you.
+
+check_feedback.py asserts they still agree.
 
 Why the CSS is copied rather than linked
 ----------------------------------------
@@ -37,11 +51,19 @@ _STAR = ("url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
 
 
 def star_html(page_id):
-    """The button, the overlay and the behaviour, for one page."""
+    """The button and the overlay for one page. The behaviour is shared.
+
+    The markup stays inline -- it is small, it is identical everywhere, and
+    inlining avoids a gap where the button belongs while a script loads. The
+    behaviour used to be inlined with it, in four separate copies, and they
+    drifted: Escape closed the modal on three pages and did nothing on the
+    other two, the backdrop closed it on some, and the page behind it scrolled
+    on most. One file now answers all of that for every page.
+    """
     return """
-<!-- Feedback: the site's own star widget. -->
+<!-- Feedback: the site's own star widget. Behaviour: /blog/assets/feedback.js?v=5f3acc71 -->
 <button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
-<div class="fb-overlay" id="fb-overlay">
+<div class="fb-overlay" id="fb-overlay" data-page="%s">
   <div class="fb-modal" id="fb-modal">
     <div class="fb-title">How was your experience?</div>
     <div class="fb-sub">Your feedback helps improve this site.</div>
@@ -60,33 +82,7 @@ def star_html(page_id):
     </div>
   </div>
 </div>
-<script>
-(function(){
-  var FORM_ID='%s', PAGE='%s', rating=0;
-  var btn=document.getElementById('fb-btn'), overlay=document.getElementById('fb-overlay');
-  if(!btn||!overlay) return;
-  var stars=document.querySelectorAll('.fb-star');
-  btn.addEventListener('click',function(){overlay.classList.add('open');});
-  overlay.addEventListener('click',function(e){if(e.target===overlay)overlay.classList.remove('open');});
-  document.addEventListener('keydown',function(e){if(e.key==='Escape')overlay.classList.remove('open');});
-  document.getElementById('fb-skip').addEventListener('click',function(){overlay.classList.remove('open');});
-  Array.prototype.forEach.call(stars,function(s){
-    s.addEventListener('click',function(){
-      rating=parseInt(s.getAttribute('data-v'),10);
-      Array.prototype.forEach.call(stars,function(x){
-        x.classList.toggle('on',parseInt(x.getAttribute('data-v'),10)<=rating);});
-    });
-  });
-  document.getElementById('fb-send').addEventListener('click',function(){
-    var msg=document.getElementById('fb-text').value;
-    fetch('https://formspree.io/f/'+FORM_ID,{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({rating:rating,message:msg,page:PAGE})});
-    document.getElementById('fb-modal').innerHTML='<div class="fb-thanks"><span>&#10003;</span><strong>Thanks for your feedback!</strong><p>It means a lot.</p></div>';
-    setTimeout(function(){overlay.classList.remove('open');},2000);
-  });
-})();
-</script>""" % (FORM_ID, page_id)
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>""" % page_id
 
 
 STAR_CSS = """
@@ -109,7 +105,12 @@ STAR_CSS = """
 .fb-btn:hover,.fb-btn:focus-visible{
   border-color:var(--accent-gold, #C4A484);color:var(--accent-gold, #C4A484);
   box-shadow:0 3px 14px rgba(0,0,0,.34)}
-.fb-overlay{display:none;position:fixed;inset:0;z-index:901;
+/* Above the nav, not under it. The portfolio's header is fixed at
+   z-index 1000, so at 901 the nav painted on top of an open modal and
+   stayed clickable through the dimmed backdrop -- a tap meant for
+   'close' hit a nav link instead. Everywhere else the nav is 100, so
+   this showed on exactly one page. */
+.fb-overlay{display:none;position:fixed;inset:0;z-index:1200;
   background:rgba(0,0,0,.55);align-items:flex-end;justify-content:flex-start;
   padding:1.75rem}
 .fb-overlay.open{display:flex}
@@ -147,8 +148,15 @@ STAR_CSS = """
 .fb-thanks span{display:block;color:var(--accent-gold, #C4A484);font-size:28px;
   margin-bottom:.5rem}
 .fb-thanks p{color:#A7B0B4;font-size:13px;margin-top:.35rem}
+/* A 44px thumb target without a 44px block of paint.
+   The button is drawn at 34px on a phone, which already clears the 24px
+   WCAG 2.5.8 floor, and growing it would put more opaque square over the
+   body text it floats above. So the touch area is extended past the edge
+   instead: invisible, costs no layout, and nothing moves. */
+.fb-btn::after{content:'';position:absolute;top:50%%;left:50%%;
+  transform:translate(-50%%,-50%%);width:44px;height:44px}
 @media (max-width:640px){
-  .fb-btn{width:34px;height:34px;border-radius:10px}
+  .fb-btn{width:34px;height:34px;border-radius:10px;position:fixed}
   .fb-btn::before{width:16px;height:16px}
   .fb-overlay{padding:.75rem}
   .fb-modal{width:100%%}

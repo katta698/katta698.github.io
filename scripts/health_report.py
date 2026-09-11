@@ -635,6 +635,10 @@ RENDER_CHECKS = [
     # here noticed, because every check looked at the data behind the map and
     # none asked the map a reader's question.
     ("every place on the map can be searched for", "check_map_search.py"),
+    # The feedback modal existed as four inline copies that had drifted into
+    # three different answers to the same gesture. Nothing looked broken on any
+    # page; they simply did not agree with each other.
+    ("the feedback modal behaves the same on every page", "check_feedback.py"),
 ]
 
 

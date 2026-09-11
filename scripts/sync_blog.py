@@ -795,53 +795,17 @@ AWS_QUIZ_BANK = [
     {"q":"What is the purpose of an AWS IAM policy condition?","a":"Add fine-grained controls like IP range, time, or MFA requirement to permissions","opts":["Add fine-grained controls like IP range, time, or MFA requirement to permissions","Define which services a role can access","Set password complexity rules","Control account spending"],"e":"Conditions allow you to restrict when a policy applies — e.g., only allow S3 access from a specific IP range."},
 ]
 
-FEEDBACK_WIDGET_HTML = """
-<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
-<div class="fb-overlay" id="fb-overlay">
-  <div class="fb-modal" id="fb-modal">
-    <div class="fb-title">How was your experience?</div>
-    <div class="fb-sub">Your feedback helps improve this site.</div>
-    <div class="fb-stars" id="fb-stars">
-      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
-      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
-      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
-      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
-      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
-    </div>
-    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
-    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
-    <div class="fb-footer">
-      <button class="fb-skip" id="fb-skip">Skip</button>
-      <button class="fb-send" id="fb-send">Send feedback</button>
-    </div>
-  </div>
-</div>
-<script>
-(function(){
-  var FORM_ID='xzdqqvqd';
-  var rating=0;
-  var btn=document.getElementById('fb-btn'),overlay=document.getElementById('fb-overlay');
-  var stars=document.querySelectorAll('.fb-star');
-  btn.addEventListener('click',function(){overlay.classList.add('open');});
-  overlay.addEventListener('click',function(e){if(e.target===overlay)overlay.classList.remove('open');});
-  document.getElementById('fb-skip').addEventListener('click',function(){overlay.classList.remove('open');});
-  stars.forEach(function(s){
-    s.addEventListener('click',function(){
-      rating=parseInt(s.getAttribute('data-v'));
-      stars.forEach(function(x){x.classList.toggle('on',parseInt(x.getAttribute('data-v'))<=rating);});
-    });
-  });
-  document.getElementById('fb-send').addEventListener('click',function(){
-    var msg=document.getElementById('fb-text').value;
-    fetch('https://formspree.io/f/'+FORM_ID,{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({rating:rating,message:msg,page:window.location.pathname})
-    });
-    document.getElementById('fb-modal').innerHTML='<div class="fb-thanks"><span>&#10003;</span><strong>Thanks for your feedback!</strong><p style="color:#879196;font-size:13px;margin-top:0.35rem;">It means a lot.</p></div>';
-    setTimeout(function(){overlay.classList.remove('open');},2000);
-  });
-})();
-</script>"""
+# The widget the whole site shares. Its behaviour lives in
+# blog/assets/feedback.js, because four inline copies of it had drifted into
+# four different answers to the same gesture -- Escape closed the modal on the
+# Intelligence pages and did nothing here.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from feedback_star import star_html  # noqa: E402
+
+# No page id: a post is identified by its own path, which feedback.js reads
+# from location when data-page is empty. There are 223 of them and naming each
+# one here would be a list to keep in step with the posts.
+FEEDBACK_WIDGET_HTML = star_html("")
 
 ASK_WIDGET_HTML = f"""
 <button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
