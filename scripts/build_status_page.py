@@ -991,6 +991,14 @@ PAGE = """<!DOCTYPE html>
 <title>Cloud status &mdash; AWS, Azure and Google Cloud | Jayanth Katta</title>
 <meta name="description" content="Live incident status for AWS, Azure and Google Cloud, read from each vendor own status feed, with the time each source was last checked."/>
 <link rel="canonical" href="https://jayanthkatta.com/intelligence/status/"/>
+<!-- Feed readers and browser extensions look for these, so a reader can
+     subscribe without giving anyone an email address and without me keeping a
+     list of anyone. Per-cloud as well as all three: somebody who only runs on
+     AWS should not be woken by a Google incident. -->
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents &mdash; all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents &mdash; AWS" href="/intelligence/status/feed-aws.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents &mdash; Azure" href="/intelligence/status/feed-azure.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents &mdash; Google Cloud" href="/intelligence/status/feed-gcp.xml"/>
 <link rel="icon" href="/favicon-transparent.png" type="image/png">
 <link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
 <!-- The same request the other Intelligence pages make. This asked for DM
@@ -1142,6 +1150,21 @@ document.documentElement.setAttribute("data-palette",p);})();
   <p class="src">No ETA appears anywhere on this page. None of the three publishes one
      as structured data, and lifting &ldquo;we expect recovery shortly&rdquo; out of an
      update would manufacture a commitment the vendor never made.</p>
+
+  <h2 id="subscribe">Be told, rather than checking</h2>
+  <p class="src">These pages are feeds. Put one into a feed reader, or into Slack with
+     <code>/feed subscribe</code> and the address, and you will hear once when a cloud
+     breaks and once when it clears &mdash; nothing in between, because an alert that
+     repeats is one you learn to ignore.</p>
+  <p class="src"><strong>There is no sign-up and no email address.</strong> You are not
+     on a list; there is no list. If you would rather have it by email, point a service
+     such as Blogtrottr at one of these and give your address to them instead of to me.</p>
+  <p class="om-feeds">
+    <a href="/intelligence/status/feed.xml">All three clouds</a>
+    <a href="/intelligence/status/feed-aws.xml">AWS only</a>
+    <a href="/intelligence/status/feed-azure.xml">Azure only</a>
+    <a href="/intelligence/status/feed-gcp.xml">Google Cloud only</a>
+  </p>
 </div>
 <footer></footer>
 <script>

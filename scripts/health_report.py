@@ -641,12 +641,24 @@ RENDER_CHECKS = [
     ("the feedback modal behaves the same on every page", "check_feedback.py"),
 ]
 
+# Checks that need no browser, run the same way.
+QUIET_CHECKS = [
+    # A feed that re-stamps itself on every hourly rebuild would alert
+    # every subscriber, hourly, about incidents they already know.
+    ("the incident feeds are valid and stay quiet", "check_status_feed.py"),
+]
+
 
 def rendering(enabled):
+    # Only the browser ones can be skipped. Putting both behind one gate meant
+    # --no-browser silently dropped a check that needs no browser at all, and a
+    # check that did not run reads exactly like one that passed.
+    checks = (RENDER_CHECKS + QUIET_CHECKS) if enabled else QUIET_CHECKS
     if not enabled:
-        note("rendering", WARN, "skipped, --no-browser was passed")
-        return
-    for label, script in RENDER_CHECKS:
+        note("rendering", WARN,
+             "the %d browser check(s) were skipped, --no-browser was passed"
+             % len(RENDER_CHECKS))
+    for label, script in checks:
         path = os.path.join(ROOT, "scripts", script)
         if not os.path.exists(path):
             note("rendering", WARN, "%s is missing" % script)
