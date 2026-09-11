@@ -52,9 +52,27 @@
     // The palette explanation used to live here as an expandable panel. It moved
     // into the nav control, which does the same job where readers actually look
     // -- keeping both was the same thing said twice.
+    // The feeds, named once, on every page.
+    //
+    // Both existed and neither was findable by a person: /blog/rss.xml had
+    // nothing anywhere pointing at it, and the incident feed was named only at
+    // the very bottom of the status page -- 99% of the way down, below the
+    // map, the timeline and the sources table. Discovery links in <head> serve
+    // software. A reader needs somewhere to look.
+    //
+    // One paragraph, not two: the footer is a 64px flex row, so a second <p>
+    // would sit beside this one rather than under it.
+    //
+    // "blog, incidents" and not "blog posts, cloud incidents". The longer
+    // wording wrapped an extra line at 320px and took the footer from 100px to
+    // 117px. This way only 390px gains one, 82px to 100px, and that is the
+    // footer alone, below everything else on the page.
     footer.innerHTML =
       '<p>&copy; <span data-current-year></span> Jayanth Katta &mdash; ' +
-      '<a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>';
+      '<a href="https://jayanthkatta.com/">jayanthkatta.com</a>' +
+      '<span class="foot-feeds"> &mdash; feeds: ' +
+      '<a href="/blog/rss.xml">blog</a>, ' +
+      '<a href="/intelligence/status/feed.xml">incidents</a></span></p>';
     updateYear();
     // paintInstrument BEFORE buildNavControl. It publishes window.jkInstrument,
     // and buildNavControl paints the palette dot, which now needs to know which

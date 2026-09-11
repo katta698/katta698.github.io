@@ -1083,6 +1083,22 @@ document.documentElement.setAttribute("data-palette",p);})();
 </header>
 <div class="wrap">
   __CARDS__
+  <!-- Directly under the verdict, because this is the moment a reader has just
+       learned whether anything is broken and is most likely to want telling
+       next time. It sat at the foot of the page before -- 99% of the way down,
+       below the map, the timeline and the sources -- where essentially nobody
+       reached it. -->
+  <p class="om-sub-line">Rather than checking: these are
+     <a href="/intelligence/status/feed.xml">feeds</a>. Put one in a feed reader
+     or in Slack and you will hear once when a cloud breaks and once when it
+     clears. No sign-up and no email address &mdash; you are not on a list,
+     because there is no list.</p>
+  <p class="om-feeds">
+    <a href="/intelligence/status/feed.xml">All three clouds</a>
+    <a href="/intelligence/status/feed-aws.xml">AWS only</a>
+    <a href="/intelligence/status/feed-azure.xml">Azure only</a>
+    <a href="/intelligence/status/feed-gcp.xml">Google Cloud only</a>
+  </p>
   __BODY__
   <h2>Last 90 days</h2>
   <p class="sub">One cell per day. A cell is marked only where a vendor published an
@@ -1151,20 +1167,6 @@ document.documentElement.setAttribute("data-palette",p);})();
      as structured data, and lifting &ldquo;we expect recovery shortly&rdquo; out of an
      update would manufacture a commitment the vendor never made.</p>
 
-  <h2 id="subscribe">Be told, rather than checking</h2>
-  <p class="src">These pages are feeds. Put one into a feed reader, or into Slack with
-     <code>/feed subscribe</code> and the address, and you will hear once when a cloud
-     breaks and once when it clears &mdash; nothing in between, because an alert that
-     repeats is one you learn to ignore.</p>
-  <p class="src"><strong>There is no sign-up and no email address.</strong> You are not
-     on a list; there is no list. If you would rather have it by email, point a service
-     such as Blogtrottr at one of these and give your address to them instead of to me.</p>
-  <p class="om-feeds">
-    <a href="/intelligence/status/feed.xml">All three clouds</a>
-    <a href="/intelligence/status/feed-aws.xml">AWS only</a>
-    <a href="/intelligence/status/feed-azure.xml">Azure only</a>
-    <a href="/intelligence/status/feed-gcp.xml">Google Cloud only</a>
-  </p>
 </div>
 <footer></footer>
 <script>
