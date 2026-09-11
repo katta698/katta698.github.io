@@ -982,15 +982,6 @@
           });
         });
         if (cities.length) name += ' (' + cities.join(', ') + ')';
-        // The short names a person would actually type: the city if the vendor
-        // gives one, otherwise its name for the region. Capped, because a
-        // dropdown is only useful while it can be read at a glance.
-        var findNames = [];
-        r.live.forEach(function (x) {
-          var w = (x.city || x.name || '').trim();
-          if (w && w.length <= 34 && findNames.indexOf(w) < 0) findNames.push(w);
-        });
-        findNames = findNames.slice(0, 4);
         var label = here.join(' · ') + (r.n
           ? ' — ' + r.n + ' incident' + (r.n === 1 ? '' : 's') + ' in 90 days'
           : ' — nothing in 90 days') +
@@ -1045,19 +1036,19 @@
         return '<g class="om-dot ' + (r.n ? esc(cloud) : 'om-quiet') +
                (r.live_now.length ? ' is-live' : '') +
                '" data-region="' + esc(keys.join('|')) +
+               // One place name per code, in the same order as data-region.
+               // A dot can cover two cities -- Mumbai and Pune merge into a
+               // single light -- and labelling every code on it with the dot's
+               // first name told the reader Azure's central-india is in
+               // Mumbai. It is in Pune.
+               '" data-at="' + esc((r.live.length
+                 ? r.live.map(function (x) { return x.city || x.name || ''; })
+                 : []).join('|')) +
                // The place in words as well as in codes. Without this a search
                // for "Mumbai" found nothing while "ap-south-1" found the dot --
                // and a reader looking for a city knows the city.
                '" data-place="' + esc(name + ' ' + label +
                  (alsoKnown.length ? '\n' + alsoKnown.join(' · ') : '')) +
-               // Short, pickable names for the suggestion list. The searchable
-               // text above is long on purpose -- it carries every vendor's
-               // name, the city and the country. Offering THAT as a suggestion
-               // filled the dropdown with wrapped paragraphs, and choosing one
-               // pasted the whole line into the box.
-               '" data-city="' + esc(findNames.join('|')) +
-               '" data-clouds="' + esc(vendors.map(function (v) {
-                 return CLOUD[v]; }).join(' · ')) +
                '" tabindex="0" role="button" ' +
                'aria-label="' + esc(here.join(', ')) + ', ' +
                (r.live_now.length ? r.live_now.length + ' open now, ' : '') +
@@ -1425,28 +1416,36 @@
        */
       var byName = {}, byCode = {}, opts = [];
       [].forEach.call(mapHost.querySelectorAll('.om-dot'), function (d) {
-        var names = (d.getAttribute('data-city') || '').split('|')
-                      .filter(function (x) { return x; });
-        var clouds = d.getAttribute('data-clouds') || '';
-        names.forEach(function (n) {
-          if (!byName[n.toLowerCase()]) byName[n.toLowerCase()] = [n, clouds];
-        });
-        (d.getAttribute('data-region') || '').split('|').forEach(function (k) {
+        var at = (d.getAttribute('data-at') || '').split('|');
+        var names = at.filter(function (x) { return x && x.length <= 34; });
+        (d.getAttribute('data-region') || '').split('|').forEach(function (k, i) {
           var bits = k.split(':');
           var cloud = bits.length > 1 ? bits[0] : '';
           var code = bits.length > 1 ? bits[1] : k;
           if (!code) return;
           var e = byCode[code.toLowerCase()] ||
                   (byCode[code.toLowerCase()] = { code: code, where: [] });
-          var says = (CLOUD[cloud] ? CLOUD[cloud] + ' ' : '') + (names[0] || '');
-          says = says.trim();
+          // This region's own city, not the dot's first one.
+          var says = ((CLOUD[cloud] ? CLOUD[cloud] + ' ' : '') +
+                      (at[i] || names[0] || '')).trim();
           if (says && e.where.indexOf(says) < 0) e.where.push(says);
+
+          // And the place, credited only to the clouds that are in it. A dot
+          // covering Mumbai and Pune would otherwise have offered "Pune —
+          // AWS · Azure · Google Cloud"; only Azure is in Pune.
+          var place = at[i];
+          if (!place || place.length > 34) return;
+          var pk = place.toLowerCase();
+          var p = byName[pk] || (byName[pk] = { name: place, clouds: [] });
+          if (CLOUD[cloud] && p.clouds.indexOf(CLOUD[cloud]) < 0) {
+            p.clouds.push(CLOUD[cloud]);
+          }
         });
       });
       Object.keys(byName).sort().forEach(function (k) {
-        opts.push('<option value="' + esc(byName[k][0]) + '"' +
-                  (byName[k][1] ? ' label="' + esc(byName[k][1]) + '"' : '') +
-                  '></option>');
+        var p = byName[k], label = p.clouds.sort().join(' · ');
+        opts.push('<option value="' + esc(p.name) + '"' +
+                  (label ? ' label="' + esc(label) + '"' : '') + '></option>');
       });
       Object.keys(byCode).sort().forEach(function (k) {
         var e = byCode[k];
