@@ -270,6 +270,29 @@
   // page on screen.
   let cards = Array.from(document.querySelectorAll('.post-card'));
   const pills = Array.from(document.querySelectorAll('.filter-pill'));
+
+  /* Keep the chosen chip in sight.
+   *
+   * Below 1200px each filter row is a single line that scrolls sideways rather
+   * than wrapping to three -- the pinned block was 318px on an iPad, 29% of the
+   * screen, with the cards sliding under it. The cost of one line is that the
+   * active chip can sit off to the right, so the row shows a set of filters
+   * with none of them apparently chosen, which is worse than the height was.
+   *
+   * Called on load and after any filter changes. inline:'nearest' so a chip
+   * already visible is left where it is instead of jumping to the middle.
+   */
+  function showActiveChip() {
+    document.querySelectorAll('.filter-stack .filters').forEach(function (row) {
+      if (row.scrollWidth <= row.clientWidth + 2) return;   // not scrolling
+      const on = row.querySelector('.filter-pill.active');
+      if (!on) return;
+      const r = on.getBoundingClientRect(), b = row.getBoundingClientRect();
+      if (r.left >= b.left && r.right <= b.right) return;   // already in view
+      on.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+    });
+  }
+  window.__showActiveChip = showActiveChip;
   const sbTags = Array.from(document.querySelectorAll('.sb-tag'));
   const searchInput = document.getElementById('blog-search');
   const countEl = document.getElementById('results-count');
@@ -395,6 +418,9 @@
   }
 
   function applyFilters() {
+    // Whatever changed the filters, the chosen chip should be the one you can
+    // see. Cheap: it measures two boxes and usually returns immediately.
+    setTimeout(showActiveChip, 0);
     const pager = document.getElementById('pagination');
     const browsing = !filtersActive();
     if (pager) pager.style.display = browsing ? '' : 'none';

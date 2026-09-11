@@ -87,6 +87,16 @@ def run(engine, base, name):
     if not pg.query_selector("#om-sug"):
         return ["%s: the page has no suggestion list at all" % name]
 
+    # Nothing typed: there must be no clear cross. It shipped visible over an
+    # empty field, offering to clear nothing, because an author
+    # `display: flex` beats the browser's own `[hidden] { display: none }` and
+    # the hidden attribute quietly meant nothing.
+    if pg.evaluate("""() => {
+          const x = document.getElementById('om-clear');
+          return !!x && getComputedStyle(x).display !== 'none';
+        }"""):
+        problems.append("%s: the clear cross shows on an empty field" % name)
+
     # It opens, and it ranks what was typed first.
     pg.click("#om-q")
     pg.type("#om-q", "mum", delay=40)
@@ -97,6 +107,23 @@ def run(engine, base, name):
     elif not s["rows"] or "mumbai" not in s["rows"][0].lower():
         problems.append("%s: 'mum' ranked %r first, not Mumbai"
                         % (name, (s["rows"] or ["nothing"])[0]))
+    x2 = pg.evaluate('''() => {
+      const x = document.getElementById('om-clear');
+      const i = document.getElementById('om-q');
+      const a = x.getBoundingClientRect(), b = i.getBoundingClientRect();
+      const s = getComputedStyle(x), sa = getComputedStyle(x, '::after');
+      return { shown: s.display !== 'none',
+               inside: a.right <= b.right - 1 && a.left >= b.left,
+               hit: Math.round(Math.min(parseFloat(sa.width) || a.width,
+                                        parseFloat(sa.height) || a.height)) };
+    }''')
+    if not x2["shown"]:
+        problems.append("%s: typing showed no clear cross" % name)
+    if not x2["inside"]:
+        problems.append("%s: the clear cross sits outside the input's border" % name)
+    if x2["hit"] < 40:
+        problems.append("%s: the clear cross has only a %dpx target" % (name, x2["hit"]))
+
     if s["expanded"] != "true":
         problems.append("%s: aria-expanded is %r while the list is open"
                         % (name, s["expanded"]))
