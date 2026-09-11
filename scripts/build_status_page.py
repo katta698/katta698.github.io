@@ -1246,13 +1246,27 @@ def _shared_js_version():
 
     Imported rather than recomputed: three builders each hashing their own idea
     of "the shared assets" is how one page ends up pinned to a stale copy while
-    the others move on, which is exactly what happened here.
+    the others move on.
+
+    It used to import sync_blog for this and fall back to "0" if that failed.
+    sync_blog imports markdown, yaml and BeautifulSoup at module level and the
+    hourly status workflow installs none of them, so the import raised every
+    hour, the fallback caught it, and this page shipped
+
+        site-footer.js?v=0
+
+    to everyone. A constant is not a cache-buster: the shared script was pinned
+    on the one page that rebuilds hourly, so a returning reader kept running
+    whatever copy they already had. Nothing reported it -- the page had a
+    version and looked fine.
+
+    asset_version imports nothing but hashlib and pathlib, so there is no
+    failure left to fall back from. If the assets cannot be read this raises,
+    which is the correct outcome: a build that cannot stamp its assets should
+    stop, not publish something that looks stamped.
     """
-    try:
-        import sync_blog
-        return sync_blog.JS_VERSION
-    except Exception:                                           # noqa: BLE001
-        return "0"
+    from asset_version import JS_VERSION
+    return JS_VERSION
 
 
 def main():

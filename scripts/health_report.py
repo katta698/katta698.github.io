@@ -695,6 +695,16 @@ QUIET_CHECKS = [
     # A feed that re-stamps itself on every hourly rebuild would alert
     # every subscriber, hourly, about incidents they already know.
     ("the incident feeds are valid and stay quiet", "check_status_feed.py"),
+    # Neither of these was in this report, and the status page spent an
+    # unknown number of hours serving site-footer.js?v=0 -- a constant
+    # where a content hash belongs, so the shared script was pinned for
+    # every returning reader on the page that rebuilds most often.
+    ("every page asks for the current shared assets", "check_asset_stamps.py"),
+    # --check, emphatically: without it this script REWRITES every page
+    # it finds stale. A report that edits the site while describing it
+    # is not a report.
+    ("every page asks for the current feedback.js",
+     "stamp_feedback.py", ["--check"]),
 ]
 
 
@@ -707,13 +717,16 @@ def rendering(enabled):
         note("rendering", WARN,
              "the %d browser check(s) were skipped, --no-browser was passed"
              % len(RENDER_CHECKS))
-    for label, script in checks:
+    for entry in checks:
+        label, script = entry[0], entry[1]
+        extra = entry[2] if len(entry) > 2 else []
         path = os.path.join(ROOT, "scripts", script)
         if not os.path.exists(path):
             note("rendering", WARN, "%s is missing" % script)
             continue
         try:
-            out = subprocess.run([sys.executable, path], capture_output=True,
+            out = subprocess.run([sys.executable, path] + extra,
+                                 capture_output=True,
                                  text=True, cwd=ROOT, timeout=900,
                                  encoding="utf-8", errors="replace")
         except Exception as exc:                                # noqa: BLE001

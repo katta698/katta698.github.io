@@ -96,6 +96,9 @@ def _js_version():
                                         "hero-media.js", "occasion-banner.js")])
 
 
+# Both tokens come from scripts/asset_version.py, which the other builders
+# import too. One definition, so the blog and the status page cannot stamp
+# different numbers for the same files.
 JS_VERSION = _js_version()
 
 # ── PWA ───────────────────────────────────────────────────────
