@@ -1156,6 +1156,15 @@ document.documentElement.setAttribute("data-palette",p);})();
     <span id="om-found" class="om-find-n" role="status" aria-live="polite"></span>
   </div>
   <div id="outage-map" class="om"></div>
+  <!-- Expanded in the page rather than through the Fullscreen API.
+       Element.requestFullscreen does not exist for Safari on the iPhone --
+       there it is video only -- so the button would work on a desktop and an
+       iPad and do nothing at all on a phone, which is the same split that cost
+       the region suggestions. A fixed overlay behaves the same everywhere. -->
+  <p class="om-tools">
+    <button type="button" id="om-expand" class="om-expand"
+            aria-expanded="false">Expand the map</button>
+  </p>
 
   <h2>What the vendors do and don&rsquo;t tell you</h2>
   <p class="sub">The three publish very different amounts, and that difference is

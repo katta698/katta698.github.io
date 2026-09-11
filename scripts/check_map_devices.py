@@ -156,6 +156,43 @@ def main():
                         % (tag, r.get("grow")))
                 if r["overflow"]:
                     problems.append("%s: the page scrolls sideways" % tag)
+                # Expanding the map must actually make the map bigger.
+                #
+                # Fitting the whole world into the screen was the obvious
+                # reading and gained four per cent on a phone -- a 2:1 map in a
+                # 1:2 viewport letterboxes, so "maximise" returned very nearly
+                # what was already there. It fills the height and pans sideways
+                # instead, which is several times the area. A button that
+                # appears to do nothing is worse than no button, so the gain is
+                # measured rather than assumed.
+                if pg.query_selector("#om-expand"):
+                    before = pg.evaluate(
+                        "() => {const s=document.querySelector('.om-svg');"
+                        "const b=s.getBoundingClientRect();"
+                        "return Math.round(b.width*b.height);}")
+                    pg.click("#om-expand")
+                    pg.wait_for_timeout(600)
+                    after = pg.evaluate(
+                        "() => {const s=document.querySelector('.om-svg');"
+                        "const b=s.getBoundingClientRect();"
+                        "return Math.round(b.width*b.height);}")
+                    closed = pg.query_selector(".om-close") is not None
+                    pg.keyboard.press("Escape")
+                    pg.wait_for_timeout(400)
+                    still = pg.evaluate(
+                        "() => document.getElementById('outage-map')"
+                        ".classList.contains('is-big')")
+                    grew = round(after / max(1, before), 1)
+                    if grew < 2:
+                        problems.append(
+                            "%s: expanding the map gained only %sx the area"
+                            % (tag, grew))
+                    if not closed:
+                        problems.append("%s: expanded with no way to close it" % tag)
+                    if still:
+                        problems.append("%s: Escape did not close the expanded map"
+                                        % tag)
+
                 if errs:
                     problems.append("%s: console error %s" % (tag, errs[0][:70]))
                 if args.shots:

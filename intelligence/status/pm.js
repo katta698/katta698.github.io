@@ -1683,6 +1683,64 @@
                          shown: function () { return shown; } };
     }
 
+    /* Expanding the map.
+     *
+     * A fixed overlay rather than the Fullscreen API, because
+     * Element.requestFullscreen is video-only in Safari on the iPhone: the
+     * button would have worked on a desktop and an iPad and done nothing at
+     * all on a phone. The same split that made the native suggestion list
+     * useless on an iPad.
+     *
+     * Nothing is redrawn. The map is an SVG with a viewBox, so growing its
+     * container is all that is needed -- and a redraw would reshuffle the
+     * dot-collision pass and move lights the reader was looking at.
+     */
+    var omExpand = document.getElementById('om-expand');
+    if (omExpand && mapHost) {
+      var omClose = null, expandOpener = null;
+
+      function shrinkMap() {
+        mapHost.classList.remove('is-big');
+        document.body.style.overflow = '';
+        omExpand.setAttribute('aria-expanded', 'false');
+        omExpand.textContent = 'Expand the map';
+        if (omClose) { omClose.remove(); omClose = null; }
+        // Back to the button that opened it, or focus lands at the top of the
+        // page and a keyboard reader walks down again.
+        if (expandOpener && expandOpener.focus) {
+          expandOpener.focus({ preventScroll: true });
+        }
+        expandOpener = null;
+      }
+
+      function growMap() {
+        expandOpener = document.activeElement;
+        mapHost.classList.add('is-big');
+        document.body.style.overflow = 'hidden';
+        omExpand.setAttribute('aria-expanded', 'true');
+        omExpand.textContent = 'Close the map';
+        omClose = document.createElement('button');
+        omClose.type = 'button';
+        omClose.className = 'om-close';
+        omClose.setAttribute('aria-label', 'Close the expanded map');
+        omClose.innerHTML = '&times;';
+        omClose.addEventListener('click', shrinkMap);
+        document.body.appendChild(omClose);
+        mapHost.setAttribute('tabindex', '-1');
+        mapHost.focus({ preventScroll: true });
+      }
+
+      omExpand.addEventListener('click', function () {
+        if (mapHost.classList.contains('is-big')) shrinkMap();
+        else growMap();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && mapHost.classList.contains('is-big')) {
+          shrinkMap();
+        }
+      });
+    }
+
     // Clicking a region opens what happened there -- from the map, or from
     // the alert strip above it, which carries the same keys.
     mapHost.addEventListener('click', function (ev) {
