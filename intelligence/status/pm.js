@@ -1697,14 +1697,45 @@
      */
     var omExpand = document.getElementById('om-expand');
     if (omExpand && mapHost) {
-      var omClose = null, expandOpener = null;
+      var omBar = null, expandOpener = null, parked = [];
+
+      /* The cloud chips and the region search come WITH the map.
+       *
+       * Otherwise choosing AWS means closing the expanded map, picking the
+       * chip, and expanding again -- and the reason to expand is to study the
+       * dots, which is exactly when filtering them matters most.
+       *
+       * The real controls are moved, not copied. A second set would be a
+       * second set to keep in step, and this file has spent the last day
+       * undoing copies that drifted. Moving a node keeps its listeners, so
+       * everything already wired to these keeps working untouched.
+       */
+      function park(el) {
+        if (!el) return;
+        parked.push({ el: el, parent: el.parentNode, next: el.nextSibling });
+        omBar.appendChild(el);
+      }
+
+      function unpark() {
+        // In reverse, so each returns to a sibling that is already home.
+        parked.slice().reverse().forEach(function (p) {
+          if (p.next && p.next.parentNode === p.parent) {
+            p.parent.insertBefore(p.el, p.next);
+          } else {
+            p.parent.appendChild(p.el);
+          }
+        });
+        parked = [];
+      }
 
       function shrinkMap() {
+        unpark();
         mapHost.classList.remove('is-big');
+        mapHost.style.paddingTop = '';
         document.body.style.overflow = '';
         omExpand.setAttribute('aria-expanded', 'false');
         omExpand.textContent = 'Expand the map';
-        if (omClose) { omClose.remove(); omClose = null; }
+        if (omBar) { omBar.remove(); omBar = null; }
         // Back to the button that opened it, or focus lands at the top of the
         // page and a keyboard reader walks down again.
         if (expandOpener && expandOpener.focus) {
@@ -1719,13 +1750,27 @@
         document.body.style.overflow = 'hidden';
         omExpand.setAttribute('aria-expanded', 'true');
         omExpand.textContent = 'Close the map';
-        omClose = document.createElement('button');
-        omClose.type = 'button';
-        omClose.className = 'om-close';
-        omClose.setAttribute('aria-label', 'Close the expanded map');
-        omClose.innerHTML = '&times;';
-        omClose.addEventListener('click', shrinkMap);
-        document.body.appendChild(omClose);
+
+        omBar = document.createElement('div');
+        omBar.className = 'om-big-bar';
+        // Fixed to the viewport rather than placed inside the map, which
+        // scrolls sideways -- a bar in there would slide off with Asia.
+        document.body.appendChild(omBar);
+
+        park(document.getElementById('om-clouds'));
+        park(document.querySelector('.om-find'));
+
+        var close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'om-close';
+        close.setAttribute('aria-label', 'Close the expanded map');
+        close.innerHTML = '&times;';
+        close.addEventListener('click', shrinkMap);
+        omBar.appendChild(close);
+
+        // However tall the bar turns out, the map starts below it. Measured
+        // rather than guessed: the chips wrap to two rows on a narrow phone.
+        mapHost.style.paddingTop = (omBar.offsetHeight + 8) + 'px';
         mapHost.setAttribute('tabindex', '-1');
         mapHost.focus({ preventScroll: true });
       }
