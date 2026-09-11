@@ -367,6 +367,48 @@ def vendors(enabled):
 # list that the vendor has dropped is embarrassing, but a region the vendor has
 # LAUNCHED and we do not show is the site quietly going out of date.
 # ---------------------------------------------------------------------------
+def zone_coverage():
+    """How much of the zone detail the site actually holds, per cloud.
+
+    This exists because AWS's zone counts are scraped out of a JSON blob
+    embedded in a marketing page. That parse will break one day -- the key will
+    be renamed, or the blob will move -- and it will break the quiet way:
+    aws_zone_counts() catches the failure and returns nothing, the regions
+    still draw, and the zone column simply goes blank. Nothing would look
+    wrong. So the coverage is a number that gets watched, not a thing assumed
+    to keep working.
+
+    The floors are set below today's figures rather than at them, so ordinary
+    movement -- a new region arriving before its count is published -- is not
+    reported as a fault.
+    """
+    rs = (load("intelligence/status/regions.json") or {}).get("regions") or []
+    if not rs:
+        note("regions", FAIL, "regions.json holds nothing")
+        return
+    FLOORS = {"aws": 25, "gcp": 38, "azure": 50}
+    for cloud, floor in sorted(FLOORS.items()):
+        rows = [r for r in rs if r.get("cloud") == cloud]
+        known = [r for r in rows
+                 if r.get("zones") or r.get("az_n") or r.get("az") in (True, False)]
+        how = ("named" if cloud == "gcp"
+               else "counted" if cloud == "aws" else "stated as yes or no")
+        if len(known) < floor:
+            note("regions", FAIL,
+                 "%s zone detail has collapsed: %d of %d regions, was at least "
+                 "%d — the parse behind it has probably broken silently"
+                 % (cloud, len(known), len(rows), floor))
+        else:
+            note("regions", OK, "%s zone detail %s for %d of %d regions"
+                 % (cloud, how, len(known), len(rows)))
+
+    total = sum(r.get("az_n") or 0 for r in rs if r.get("cloud") == "aws")
+    if total:
+        note("regions", OK,
+             "AWS zone counts add up to %d across the regions that state one"
+             % total)
+
+
 def vendor_regions(enabled):
     if not enabled:
         note("regions", WARN, "skipped, --no-network was passed")
@@ -931,6 +973,7 @@ def main():
     jobs()
     incidents()
     vendors(not args.no_network)
+    zone_coverage()
     vendor_regions(not args.no_network)
     availability(not args.no_network)
     secrets()

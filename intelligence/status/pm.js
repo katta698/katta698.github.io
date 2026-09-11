@@ -495,6 +495,10 @@
     // The archive has its own copy; this block is a separate scope.
     var CLOUD = { aws: 'AWS', azure: 'Azure', gcp: 'Google Cloud' };
     var mapLive = [], placeOf = {}, footMeta = null;
+    // The regions the vendors publish but do not locate, under whichever cloud
+    // filter is showing. The search reads this so it can tell "we have never
+    // heard of that" apart from "we carry it and cannot place it".
+    var mapUnplaced = [];
 
     /* Whether the alarm is allowed to move, decided once.
      *
@@ -841,6 +845,10 @@
       });
       placed = merged.sort(function (a, b) { return b.n - a.n; });
       var unplaced = (footprint || []).filter(function (r) { return !r.p; });
+      // The same regions, narrowed to the cloud on screen, for the search.
+      mapUnplaced = unplaced.filter(function (r) {
+        return !only || r.cloud === only;
+      });
       var most = Math.max.apply(null, placed.map(function (r) { return r.n; }).concat([1]));
       var s = sun(new Date());
 
@@ -974,6 +982,15 @@
           });
         });
         if (cities.length) name += ' (' + cities.join(', ') + ')';
+        // The short names a person would actually type: the city if the vendor
+        // gives one, otherwise its name for the region. Capped, because a
+        // dropdown is only useful while it can be read at a glance.
+        var findNames = [];
+        r.live.forEach(function (x) {
+          var w = (x.city || x.name || '').trim();
+          if (w && w.length <= 34 && findNames.indexOf(w) < 0) findNames.push(w);
+        });
+        findNames = findNames.slice(0, 4);
         var label = here.join(' · ') + (r.n
           ? ' — ' + r.n + ' incident' + (r.n === 1 ? '' : 's') + ' in 90 days'
           : ' — nothing in 90 days') +
@@ -1033,6 +1050,14 @@
                // and a reader looking for a city knows the city.
                '" data-place="' + esc(name + ' ' + label +
                  (alsoKnown.length ? '\n' + alsoKnown.join(' · ') : '')) +
+               // Short, pickable names for the suggestion list. The searchable
+               // text above is long on purpose -- it carries every vendor's
+               // name, the city and the country. Offering THAT as a suggestion
+               // filled the dropdown with wrapped paragraphs, and choosing one
+               // pasted the whole line into the box.
+               '" data-city="' + esc(findNames.join('|')) +
+               '" data-clouds="' + esc(vendors.map(function (v) {
+                 return CLOUD[v]; }).join(' · ')) +
                '" tabindex="0" role="button" ' +
                'aria-label="' + esc(here.join(', ')) + ', ' +
                (r.live_now.length ? r.live_now.length + ' open now, ' : '') +
@@ -1391,21 +1416,44 @@
     function fillSuggestions() {
       var list = document.getElementById('om-places');
       if (!list) return;
-      var seen = {}, opts = [];
+      /* Gather first, emit second.
+       *
+       * A region code is not unique across clouds: us-east-2 is Ohio to AWS
+       * and Virginia to Azure. Emitting as we walked the dots meant whichever
+       * dot came first claimed the code and the other was dropped, so the
+       * suggestion for us-east-2 named one place and silently meant two.
+       */
+      var byName = {}, byCode = {}, opts = [];
       [].forEach.call(mapHost.querySelectorAll('.om-dot'), function (d) {
-        var place = (d.getAttribute('data-place') || '').split('\n')[0].trim();
-        var codes = (d.getAttribute('data-region') || '').split('|');
-        if (place && !seen[place.toLowerCase()]) {
-          seen[place.toLowerCase()] = 1;
-          opts.push('<option value="' + esc(place) + '"></option>');
-        }
-        codes.forEach(function (k) {
-          var code = k.indexOf(':') >= 0 ? k.split(':')[1] : k;
-          if (!code || seen[code.toLowerCase()]) return;
-          seen[code.toLowerCase()] = 1;
-          opts.push('<option value="' + esc(code) + '"' +
-                    (place ? ' label="' + esc(place) + '"' : '') + '></option>');
+        var names = (d.getAttribute('data-city') || '').split('|')
+                      .filter(function (x) { return x; });
+        var clouds = d.getAttribute('data-clouds') || '';
+        names.forEach(function (n) {
+          if (!byName[n.toLowerCase()]) byName[n.toLowerCase()] = [n, clouds];
         });
+        (d.getAttribute('data-region') || '').split('|').forEach(function (k) {
+          var bits = k.split(':');
+          var cloud = bits.length > 1 ? bits[0] : '';
+          var code = bits.length > 1 ? bits[1] : k;
+          if (!code) return;
+          var e = byCode[code.toLowerCase()] ||
+                  (byCode[code.toLowerCase()] = { code: code, where: [] });
+          var says = (CLOUD[cloud] ? CLOUD[cloud] + ' ' : '') + (names[0] || '');
+          says = says.trim();
+          if (says && e.where.indexOf(says) < 0) e.where.push(says);
+        });
+      });
+      Object.keys(byName).sort().forEach(function (k) {
+        opts.push('<option value="' + esc(byName[k][0]) + '"' +
+                  (byName[k][1] ? ' label="' + esc(byName[k][1]) + '"' : '') +
+                  '></option>');
+      });
+      Object.keys(byCode).sort().forEach(function (k) {
+        var e = byCode[k];
+        var label = e.where.join(' · ');
+        if (label.length > 46) label = label.slice(0, 45) + '…';
+        opts.push('<option value="' + esc(e.code) + '"' +
+                  (label ? ' label="' + esc(label) + '"' : '') + '></option>');
       });
       list.innerHTML = opts.join('');
     }
@@ -1432,9 +1480,40 @@
           if (on) hits++;
         });
         if (omFound) {
-          omFound.textContent = hits === 0
-            ? 'nothing matches ' + omQ.value.trim()
-            : hits + (hits === 1 ? ' place' : ' places');
+          if (hits) {
+            omFound.textContent = hits + (hits === 1 ? ' place' : ' places');
+          } else {
+            /* "We cannot draw it" is a different answer from "it does not
+             * exist", and the reader deserves the one that is true.
+             *
+             * Twelve of the 159 regions publish no location -- GovCloud and
+             * DoD, whose sites are deliberately unstated, and regions the
+             * vendors have announced but not built. They are real, the site
+             * carries them, and the map simply cannot place them. Answering
+             * "nothing matches us-gov-east-1" said the opposite, in the same
+             * confident tone as a genuine miss.
+             */
+            var typed = omQ.value.trim();
+            var near = mapUnplaced.filter(function (r) {
+              return ((r.code || '') + ' ' + (r.name || '') + ' ' +
+                      (r.city || '') + ' ' + (r.country || '')
+                     ).toLowerCase().indexOf(q) >= 0;
+            });
+            if (near.length === 1) {
+              // Short enough to clear the floating buttons on a phone, where
+              // the longer wording ran under the one at the right margin.
+              omFound.textContent = near[0].code + ': ' +
+                (CLOUD[near[0].cloud] || near[0].cloud) +
+                ' publishes no location, so it is not on the map';
+            } else if (near.length) {
+              omFound.textContent = near.length +
+                ' regions match, but none of them publish a location, so ' +
+                'they are not on the map: ' +
+                near.map(function (r) { return r.code; }).join(', ');
+            } else {
+              omFound.textContent = 'nothing matches ' + typed;
+            }
+          }
         }
       };
       omQ.addEventListener('input', applyFind);
@@ -1535,6 +1614,9 @@
               var z;
               if (r.zones && r.zones.length) {
                 z = r.zones.length + ' zone' + (r.zones.length === 1 ? '' : 's');
+              } else if (r.az_n) {
+                // AWS states a count without naming the zones.
+                z = r.az_n + ' zone' + (r.az_n === 1 ? '' : 's');
               } else if (r.az === true) {
                 z = 'has zones';               // Azure says whether, not how many
                 zoneNote = true;
@@ -1553,9 +1635,12 @@
           }).join('') + '</tbody></table>' +
           (zoneNote
             ? '<p class="note-sm">Google names its zones, so those are counted. ' +
-              'Azure publishes whether a region has availability zones and not ' +
-              'how many. AWS publishes its counts only on a page this cannot ' +
-              'read, so it is left blank rather than guessed at.</p>'
+              'AWS states a count without naming them, and each one is taken ' +
+              'only where AWS’s own coordinate for the region agrees with ' +
+              'the location held here — its page misplaces at least one ' +
+              'region, so an unchecked number from it would be a confident ' +
+              'wrong answer. Azure publishes whether a region has availability ' +
+              'zones and never how many. A dash means nobody states it.</p>'
             : '');
       }
       if (openNow.length) {

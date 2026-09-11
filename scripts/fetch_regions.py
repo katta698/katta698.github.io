@@ -43,6 +43,7 @@ import argparse
 import datetime
 import io
 import json
+import math
 import os
 import re
 import ssl
@@ -69,6 +70,10 @@ AWS_LIST = "https://ip-ranges.amazonaws.com/ip-ranges.json"
 # where they were. A vendor page that lags is a vendor problem; a third
 # party that lags is a problem I chose.
 AWS_NAMES = "https://docs.aws.amazon.com/general/latest/gr/rande.html"
+# AWS's own global-infrastructure page. Its embedded JSON is the only
+# public, machine-readable statement of AWS zone counts. See
+# aws_zone_counts() for why every row from it is validated first.
+AWS_GLOBAL = ("https://aws.amazon.com/about-aws/global-infrastructure/regions_az/")
 GCP_LIST = "https://www.gstatic.com/ipranges/cloud.json"
 GCP_GEO = ("https://raw.githubusercontent.com/GoogleCloudPlatform/"
            "region-picker/main/data/regions.json")
@@ -200,6 +205,68 @@ def in_parens(text):
     return m.group(1).strip() if m else ""
 
 
+def haversine(a, b):
+    """Kilometres between two (lat, lng) pairs."""
+    la1, lo1, la2, lo2 = [math.radians(x) for x in (a[0], a[1], b[0], b[1])]
+    d = (math.sin((la2 - la1) / 2) ** 2 +
+         math.cos(la1) * math.cos(la2) * math.sin((lo2 - lo1) / 2) ** 2)
+    return 6371.0 * 2 * math.asin(math.sqrt(d))
+
+
+def aws_zone_counts(placed):
+    """How many availability zones each AWS region has, where it can be trusted.
+
+    AWS's own global-infrastructure page carries a JSON blob of every region:
+    an id, a name, a latitude and longitude, and a zone count. It is the only
+    public, machine-readable statement of those counts -- and it is a marketing
+    page, which shows.
+
+    Its ids arrive with trailing spaces ("eu-west-2 "), it lists codes that do
+    not exist ("cn-north-4", "ap-southeast-7x"), and it puts ap-southeast-7 --
+    Thailand -- in New Zealand, 9,573 km away. Printing a number off a row like
+    that is how a wrong figure gets a confident label.
+
+    So each row is validated against a location this site already holds,
+    arrived at independently: if AWS's coordinate for a code sits more than
+    500 km from ours, the row is about a different place and its count is
+    dropped. The furthest row that passes is 234 km -- Boardman against
+    Portland, for Oregon -- so the gate has room without being wide enough to
+    admit a continent error.
+
+    `placed` maps region code to the [lat, lng] this site already carries. A
+    region we cannot place cannot be validated, so it gets no count. That is
+    the honest outcome rather than the convenient one.
+    """
+    out = {}
+    try:
+        html = get(AWS_GLOBAL)
+    except Exception:                                           # noqa: BLE001
+        return out
+    i = html.find('"continents":"')
+    if i < 0:
+        return out
+    raw = html[i + len('"continents":"'): i + 400000]
+    raw = raw.replace('\\"', '"').replace("\\\\", "\\")
+    try:
+        # The attribute runs on past the array, so decode the array and stop.
+        blob, _end = json.JSONDecoder().raw_decode(raw)
+    except Exception:                                           # noqa: BLE001
+        return out
+    for cont in blob:
+        for r in cont.get("regions") or []:
+            code = (r.get("id") or "").strip()
+            n = r.get("availabilityZones")
+            if not code or not isinstance(n, int) or not 1 <= n <= 12:
+                continue
+            mine = placed.get(code)
+            if not mine or r.get("lat") is None or r.get("lng") is None:
+                continue
+            if haversine(mine, (r["lat"], r["lng"])) > 500:
+                continue
+            out[code] = n
+    return out
+
+
 def fetch_aws():
     codes = sorted({p.get("region") for p in json.loads(get(AWS_LIST))["prefixes"]
                     if p.get("region") and p["region"] != "GLOBAL"})
@@ -216,22 +283,33 @@ def fetch_aws():
     except Exception:                                           # noqa: BLE001
         pass
     out = []
+    placed = {}
     for c in codes:
         label = names.get(c, "")
         city = in_parens(label) or label
         xy = city_coord(city) or region_map.place(c)
+        if xy:
+            placed[c] = list(xy)
         out.append({
             "cloud": "aws", "code": c, "name": label or c,
             "city": city,
             # AWS states the city in the region's own name and the country
             # nowhere machine-readable, so the country comes from the city.
             "country": one_country(region_map.country_of(c, city)),
-            # AWS publishes its zone counts only on a JavaScript-rendered
-            # marketing page. Guessing three because that is usual would be
-            # inventing a number, so this stays empty and the page says why.
+            # AWS names no zones, so there is no list to hold. The count comes
+            # below, from AWS's own page, and only where it can be checked.
             "zones": [], "az": None,
             "p": list(xy) if xy else None,
         })
+
+    counts = aws_zone_counts(placed)
+    for r in out:
+        n = counts.get(r["code"])
+        if n:
+            r["az_n"] = n
+            r["az"] = True
+    print("  aws zone counts: %d of %d regions, validated against a location "
+          "already held" % (len(counts), len(out)))
     return out
 
 

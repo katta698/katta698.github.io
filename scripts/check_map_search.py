@@ -63,11 +63,15 @@ def serve():
 # nothing.
 ASK = """(terms) => {
   const q = document.getElementById('om-q');
+  const found = document.getElementById('om-found');
   const out = {};
   terms.forEach(t => {
     q.value = t;
     q.dispatchEvent(new Event('input', { bubbles: true }));
-    out[t] = document.querySelectorAll('.om-dot.om-match').length;
+    out[t] = {
+      dots: document.querySelectorAll('.om-dot.om-match').length,
+      said: (found ? found.textContent : '').trim()
+    };
   });
   q.value = '';
   q.dispatchEvent(new Event('input', { bubbles: true }));
@@ -86,9 +90,9 @@ def wanted(regions, cloud):
     #
     # Twelve of the 159 have no coordinates -- GovCloud and DoD, whose
     # locations are not published, and regions the vendors have announced but
-    # not built. There is no dot to find, so "nothing matches" is the honest
-    # answer, and demanding one would be the check inventing a fault. That is
-    # the failure mode this file exists to avoid, so it must not commit it.
+    # not built. There is no dot to find, so demanding one would be the check
+    # inventing a fault. They are not ignored either: unplaceable() below
+    # requires the page to say it cannot place them.
     rows = [r for r in regions
             if (cloud == "all" or r.get("cloud") == cloud) and r.get("p")]
     terms = {}
@@ -99,6 +103,18 @@ def wanted(regions, cloud):
                 continue
             terms.setdefault(v, set()).add("%s/%s" % (r.get("cloud"), r.get("code")))
     return terms
+
+
+def unplaceable(regions, cloud):
+    """Regions this filter carries but cannot draw.
+
+    Searching for one of these must not answer "nothing matches". That is the
+    same sentence a genuine miss produces, in the same confident tone, and it
+    says the region does not exist when the truth is that its location is not
+    published.
+    """
+    return [r for r in regions
+            if (cloud == "all" or r.get("cloud") == cloud) and not r.get("p")]
 
 
 def main():
@@ -131,11 +147,25 @@ def main():
                 terms = wanted(regions, cloud)
                 got = page.evaluate(ASK, sorted(terms))
                 asked += len(terms)
-                blind = [t for t, n in got.items() if not n]
+                blind = [t for t, r in got.items() if not r["dots"]]
                 for t in sorted(blind):
                     missed.append((cloud, t, sorted(terms[t])[:2]))
-                print("  %-6s %4d term(s) asked, %d found nothing"
-                      % (cloud, len(terms), len(blind)))
+
+                # And the ones that cannot be drawn must be admitted, not
+                # denied.
+                gone = [r.get("code") for r in unplaceable(regions, cloud)
+                        if r.get("code")]
+                said = page.evaluate(ASK, sorted(gone)) if gone else {}
+                asked += len(gone)
+                denied = [c for c in gone
+                          if "not on the map" not in (said.get(c) or {}).get("said", "")]
+                for c in sorted(denied):
+                    missed.append((cloud, c,
+                                   ["carried but unplaceable — the page denies it"]))
+
+                print("  %-6s %4d term(s) asked, %d found nothing; "
+                      "%d unplaceable, %d denied"
+                      % (cloud, len(terms), len(blind), len(gone), len(denied)))
             browser.close()
     finally:
         srv.shutdown()
@@ -153,9 +183,10 @@ def main():
         print("  broken. It looks like an answer.")
         return 1
 
-    print("  every city, country, region name and region code the site carries")
-    print("  finds its dot — %s asked across %d filters."
-          % ("{:,}".format(asked), len(CLOUDS)))
+    print("  every city, country, region name and region code finds its dot,")
+    print("  and every region that cannot be drawn says so — %s asked across"
+          % "{:,}".format(asked))
+    print("  %d filters." % len(CLOUDS))
     return 0
 
 
