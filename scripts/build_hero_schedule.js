@@ -35,6 +35,11 @@ const bStart = indexHtml.indexOf('<div id="occasion-banner"');
 const bannerSrc = indexHtml.slice(indexHtml.indexOf('<script>', bStart) + 8,
                                  indexHtml.indexOf('</script>', bStart));
 
+// Noon, so the output is reproducible whenever this runs. The hour used to
+// matter more than that: a dusk rule turned every row of the schedule to
+// sunset if the stub sat in the evening. That rule is gone and the hour no
+// longer decides the theme, but the schedule still should not depend on when
+// it was built.
 function withClock(y, m, d, fn) {
   class Frozen extends RealDate {
     constructor(...a) { if (!a.length) super(y, m, d, 12); else super(...a); }

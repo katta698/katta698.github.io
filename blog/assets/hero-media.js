@@ -85,21 +85,18 @@
   // hero would go blank for a week, once every five or six years.
   var theme = PLAN[(isoWeek(now) - 1) % PLAN.length];
 
-  // Dusk: sunset takes the evening whatever the week's theme is, then hands it
-  // back. The hero otherwise shows one clip from midnight to midnight, so a
-  // reader who visits in the morning and again after dinner saw no change at
-  // all -- the week and the day were the only two dimensions.
+  // There was a dusk rule here: between 17:00 and 21:00 local, sunset took the
+  // evening whatever the week said. The intent was variety for someone
+  // visiting morning and evening.
   //
-  // Deliberately still a pure function of the clock, which is the property
-  // build_hero_schedule.js depends on: it evaluates this file against a stubbed
-  // date to render a year ahead, and cannot do that for anything needing a
-  // network call. Weather or location would have ended that page.
+  // It did the opposite for anyone whose habit is evening browsing. Four hours
+  // is 17% of the day and 100% of their visits, so they saw sunset every
+  // single time and never learned the other five themes existed. Removed: the
+  // week picks the theme and the day picks the clip, at any hour.
   //
-  // The stub fixes the hour at noon, so the schedule keeps reporting the week's
-  // theme rather than every row turning to sunset.
-  var DUSK_FROM = 17, DUSK_TO = 21;
-  var dusk = now.getHours() >= DUSK_FROM && now.getHours() < DUSK_TO;
-  if (dusk && COUNTS.sunset) theme = 'sunset';
+  // If something like it comes back, it must not be able to swallow a whole
+  // audience's entire experience. A rule that fires for everyone briefly is
+  // not the same as a rule that fires for some people always.
 
   // ?theme=forest forces a theme, for previewing without waiting for the
   // calendar. Ignored unless it names a theme that actually has clips.
@@ -202,5 +199,5 @@
 
   // Exposed so scripts/validate_hero_media.py and manual checks can see what
   // today resolves to without reading the clock by hand.
-  window.__heroTheme = { theme: theme, clip: n, week: isoWeek(now), dusk: dusk };
+  window.__heroTheme = { theme: theme, clip: n, week: isoWeek(now) };
 })();
