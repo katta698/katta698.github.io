@@ -1409,7 +1409,15 @@ def reading_time(html):
 def excerpt(html, max_chars=160):
     soup = BeautifulSoup(html, "html.parser")
     for p in soup.find_all("p"):
-        txt = p.get_text(strip=True)
+        # get_text(" ", ...), not get_text(...). Without a separator
+        # BeautifulSoup joins the strings either side of an inline tag with
+        # nothing at all, so "adding <em>six ... issues</em> on top" came out
+        # as "addingsix ... issueson top". That hit every excerpt drawn from a
+        # paragraph containing <em>, <strong>, <code> or a link -- on the blog
+        # cards, in the RSS descriptions, and in the meta description a search
+        # result shows. The fallback two lines down always passed a separator;
+        # this branch, which handles almost every post, did not.
+        txt = re.sub(r"\s+", " ", p.get_text(" ", strip=True)).strip()
         if len(txt) > 30:
             return txt[:max_chars].rstrip() + ("…" if len(txt) > max_chars else "")
     text = soup.get_text(" ", strip=True)
@@ -3780,7 +3788,12 @@ def build_rss_feed(posts, max_items=None):
     </item>""")
 
     items_xml = "\n".join(items)
+    # Browsers apply the stylesheet; feed readers ignore it, so one file serves
+    # both. Without it, following the footer's "blog" link landed on "This XML
+    # file does not appear to have any style information associated with it"
+    # and a wall of tags -- which reads as a broken page, not as a feed.
     return f"""<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="/blog/rss.xsl"?>
 <rss version="2.0">
   <channel>
     <title>Jayanth Katta — Blog</title>
