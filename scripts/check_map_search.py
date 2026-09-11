@@ -39,6 +39,11 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLOUDS = ["all", "aws", "azure", "gcp"]
+# Both engines. The suggestions this search feeds were a native control Safari
+# would not draw, and this file -- which drove Chromium alone -- passed 906
+# times while an iPad reader saw nothing at all. Chromium covers Chrome and
+# Edge; WebKit covers Safari on the Mac, the iPad and the iPhone.
+ENGINES = [("chromium", "Chrome / Edge"), ("webkit", "Safari, iPad, iPhone")]
 
 
 def serve():
@@ -117,6 +122,47 @@ def unplaceable(regions, cloud):
             if (cloud == "all" or r.get("cloud") == cloud) and not r.get("p")]
 
 
+def sweep(browser, port, regions, engine_label):
+    """One engine's pass over every term, under every cloud filter."""
+    missed, asked = [], 0
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.goto("http://127.0.0.1:%d/intelligence/status/" % port,
+              wait_until="domcontentloaded", timeout=90000)
+    page.wait_for_timeout(3000)
+
+    if not page.query_selector("#om-q"):
+        return [("%s" % engine_label, "(none)",
+                 ["the page has no region search box at all"])], 0
+
+    for cloud in CLOUDS:
+        page.click('#om-clouds .pm-cl[data-cl="%s"]' % cloud)
+        page.wait_for_timeout(700)
+        terms = wanted(regions, cloud)
+        got = page.evaluate(ASK, sorted(terms))
+        asked += len(terms)
+        blind = [t for t, r in got.items() if not r["dots"]]
+        for t in sorted(blind):
+            missed.append(("%s, %s" % (engine_label, cloud), t,
+                           sorted(terms[t])[:2]))
+
+        # And the ones that cannot be drawn must be admitted, not denied.
+        gone = [r.get("code") for r in unplaceable(regions, cloud)
+                if r.get("code")]
+        said = page.evaluate(ASK, sorted(gone)) if gone else {}
+        asked += len(gone)
+        denied = [c for c in gone
+                  if "not on the map" not in (said.get(c) or {}).get("said", "")]
+        for c in sorted(denied):
+            missed.append(("%s, %s" % (engine_label, cloud), c,
+                           ["carried but unplaceable — the page denies it"]))
+
+        print("    %-6s %4d term(s) asked, %d found nothing; "
+              "%d unplaceable, %d denied"
+              % (cloud, len(terms), len(blind), len(gone), len(denied)))
+    page.close()
+    return missed, asked
+
+
 def main():
     os.chdir(ROOT)
     path = os.path.join(ROOT, "intelligence", "status", "regions.json")
@@ -131,42 +177,13 @@ def main():
     missed, asked = [], 0
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch()
-            page = browser.new_page(viewport={"width": 1280, "height": 900})
-            page.goto("http://127.0.0.1:%d/intelligence/status/" % port,
-                      wait_until="networkidle", timeout=90000)
-            page.wait_for_timeout(2500)
-
-            if not page.query_selector("#om-q"):
-                print("  the page has no region search box at all.")
-                return 1
-
-            for cloud in CLOUDS:
-                page.click('#om-clouds .pm-cl[data-cl="%s"]' % cloud)
-                page.wait_for_timeout(700)
-                terms = wanted(regions, cloud)
-                got = page.evaluate(ASK, sorted(terms))
-                asked += len(terms)
-                blind = [t for t, r in got.items() if not r["dots"]]
-                for t in sorted(blind):
-                    missed.append((cloud, t, sorted(terms[t])[:2]))
-
-                # And the ones that cannot be drawn must be admitted, not
-                # denied.
-                gone = [r.get("code") for r in unplaceable(regions, cloud)
-                        if r.get("code")]
-                said = page.evaluate(ASK, sorted(gone)) if gone else {}
-                asked += len(gone)
-                denied = [c for c in gone
-                          if "not on the map" not in (said.get(c) or {}).get("said", "")]
-                for c in sorted(denied):
-                    missed.append((cloud, c,
-                                   ["carried but unplaceable — the page denies it"]))
-
-                print("  %-6s %4d term(s) asked, %d found nothing; "
-                      "%d unplaceable, %d denied"
-                      % (cloud, len(terms), len(blind), len(gone), len(denied)))
-            browser.close()
+            for engine, label in ENGINES:
+                print("  %s" % label)
+                browser = getattr(pw, engine).launch()
+                m, a = sweep(browser, port, regions, label)
+                browser.close()
+                missed += m
+                asked += a
     finally:
         srv.shutdown()
 
@@ -174,9 +191,9 @@ def main():
     if missed:
         print("  %d SEARCH(ES) THAT SHOULD HAVE FOUND A DOT AND DID NOT\n"
               % len(missed))
-        for cloud, term, who in missed[:30]:
-            print("  - with %-5s selected, \"%s\" finds nothing — but %s is there"
-                  % (cloud, term, ", ".join(who)))
+        for where, term, who in missed[:30]:
+            print("  - %s: \"%s\" finds nothing — but %s is there"
+                  % (where, term, ", ".join(who)))
         if len(missed) > 30:
             print("    ...and %d more" % (len(missed) - 30))
         print("\n  A search that answers \"nothing matches\" does not look")

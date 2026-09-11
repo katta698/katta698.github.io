@@ -1535,7 +1535,14 @@
        * Enter, Escape, tap, and the combobox roles a screen reader needs.
        */
       var omSug = document.getElementById('om-sug');
+      var omClear = document.getElementById('om-clear');
       var cursor = -1, shown = [];
+
+      // The cross only exists while there is something to clear. Showing it on
+      // an empty box would offer an action that does nothing.
+      function paintClear() {
+        if (omClear) omClear.hidden = !(omQ.value || '').length;
+      }
 
       function closeSug() {
         if (!omSug) return;
@@ -1597,11 +1604,29 @@
         if (i < 0 || i >= shown.length) return;
         omQ.value = shown[i].value;
         closeSug();
+        paintClear();
         applyFind();
       }
 
       omQ.addEventListener('input', openSug);
       omQ.addEventListener('focus', openSug);
+      omQ.addEventListener('input', paintClear);
+
+      if (omClear) {
+        // pointerdown, not click: the input's blur handler closes the list, and
+        // on a touch screen blur lands first, so by the time click arrives the
+        // press has already been spent elsewhere.
+        omClear.addEventListener('pointerdown', function (e) {
+          e.preventDefault();
+          omQ.value = '';
+          closeSug();
+          paintClear();
+          applyFind();
+          // Focus back in the box: clearing is almost always the first half of
+          // typing something else.
+          omQ.focus();
+        });
+      }
 
       omQ.addEventListener('keydown', function (e) {
         var open = omSug && !omSug.hidden;
@@ -1629,6 +1654,7 @@
           // not, so the two engines disagreed about what one key did.
           if (open) { e.preventDefault(); closeSug(); return; }
           omQ.value = '';
+          paintClear();
           applyFind();
         }
       });

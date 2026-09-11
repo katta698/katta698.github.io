@@ -42,6 +42,10 @@ PAGES = [("portfolio", "/"), ("blog", "/blog/"),
          ("live status", "/intelligence/status/"),
          ("a post", "/blog/why-i-started-jayanthkatta-com/")]
 WIDTHS = [320, 390, 412, 768]
+# Both engines: this is a layout check, and layout is exactly where Safari and
+# Chrome differ. The fault this file exists for was reported from a phone and
+# reproduced in neither engine at first.
+ENGINES = [("chromium", "Chrome / Edge"), ("webkit", "Safari, iPad, iPhone")]
 
 # Every floating control that shares the bottom of the screen with the footer.
 FLOATERS = ".back-top, .ask-launcher, .to-src, .fb-btn"
@@ -100,7 +104,9 @@ def main():
     problems = []
     try:
         with sync_playwright() as pw:
-            b = pw.chromium.launch()
+          for engine, elabel in ENGINES:
+            print("  %s" % elabel)
+            b = getattr(pw, engine).launch()
             for name, path in PAGES:
                 worst = None
                 for w in WIDTHS:
@@ -121,11 +127,11 @@ def main():
                         if fl["right"] > tl and fl["left"] < tr:
                             gap = min(fl["right"] - tl, tr - fl["left"])
                             problems.append(
-                                "%s at %dpx: footer text runs under %s by %dpx"
-                                % (name, w, fl["cls"], gap))
+                                "%s, %s at %dpx: footer text runs under %s by %dpx"
+                                % (elabel, name, w, fl["cls"], gap))
                             worst = (w, fl["cls"], gap)
-                print("  %-13s %s" % (name, "ok" if not worst else
-                                      "FAIL at %dpx under %s by %dpx" % worst))
+                print("    %-13s %s" % (name, "ok" if not worst else
+                                        "FAIL at %dpx under %s by %dpx" % worst))
             b.close()
     finally:
         if srv:

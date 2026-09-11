@@ -60,12 +60,19 @@ def serve():
     raise SystemExit("no free port")
 
 
-def probe(page, url):
-    """Open the modal and try every way a person would expect to close it."""
+def probe(page, url, engine="chromium"):
+    """Open the modal and try every way a person would expect to close it.
+
+    In both engines. Escape, scroll locking and focus behaviour are exactly the
+    kind of thing browsers disagree about -- Chrome clears a type="search" input
+    on Escape and WebKit does not, which is how one key came to do two different
+    things on the region search. A modal checked in one engine is a modal
+    checked for half the readers.
+    """
     from playwright.sync_api import sync_playwright
     out = {}
     with sync_playwright() as pw:
-        b = pw.chromium.launch()
+        b = getattr(pw, engine).launch()
         pg = b.new_page(viewport={"width": 390, "height": 844})
         pg.goto(url, wait_until="networkidle", timeout=90000)
         pg.wait_for_timeout(1600)
@@ -134,21 +141,24 @@ def main():
 
     bad = []
     try:
-        for name, path in PAGES:
-            r = probe(name, base + path)
-            if not r.get("button"):
-                bad.append("%s has no feedback button" % name)
-                print("  %-13s NO BUTTON" % name)
-                continue
-            missing = [label for key, label in WANT if not r.get(key)]
-            hit = r.get("hit") or 0
-            if hit < 24:
-                missing.append("hit area only %dpx" % hit)
-            for m in missing:
-                bad.append("%s: %s" % (name, m))
-            print("  %-13s %-4s hit %dpx  %s"
-                  % (name, "ok" if not missing else "FAIL", hit,
-                     "" if not missing else "— missing: " + ", ".join(missing)))
+        for engine, label in (("chromium", "Chrome / Edge"),
+                              ("webkit", "Safari, iPad and iPhone")):
+            print("  %s" % label)
+            for name, path in PAGES:
+                r = probe(name, base + path, engine)
+                if not r.get("button"):
+                    bad.append("%s in %s has no feedback button" % (name, label))
+                    print("    %-13s NO BUTTON" % name)
+                    continue
+                missing = [lab for key, lab in WANT if not r.get(key)]
+                hit = r.get("hit") or 0
+                if hit < 24:
+                    missing.append("hit area only %dpx" % hit)
+                for m in missing:
+                    bad.append("%s in %s: %s" % (name, label, m))
+                print("    %-13s %-4s hit %dpx  %s"
+                      % (name, "ok" if not missing else "FAIL", hit,
+                         "" if not missing else "— missing: " + ", ".join(missing)))
     finally:
         if srv:
             srv.shutdown()

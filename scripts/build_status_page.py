@@ -1144,6 +1144,13 @@ document.documentElement.setAttribute("data-palette",p);})();
              aria-controls="om-sug"
              placeholder="Mumbai, eu-west-1, Germany&hellip;"
              aria-describedby="om-found">
+      <!-- Our own clear button. type="search" gets a native one in Chrome and
+           an unreliable one in Safari, which is the same split that cost the
+           suggestions: a control the browser owns is a control that behaves
+           differently, or not at all, depending on who is reading. The native
+           one is hidden in the stylesheet so there are never two. -->
+      <button type="button" id="om-clear" class="om-clear"
+              aria-label="Clear the search" hidden>&times;</button>
       <ul id="om-sug" class="om-sug" role="listbox" aria-label="Matching regions" hidden></ul>
     </div>
     <span id="om-found" class="om-find-n" role="status" aria-live="polite"></span>
