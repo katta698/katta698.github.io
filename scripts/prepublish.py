@@ -169,6 +169,16 @@ CHECKS = [
     # and have shipped twice; prose findings are advisory for the same reason
     # audit_claims.py is.
     ("check_assertions.py",     True,  False, True,  True),
+    # The blind spot in verify_claims.py: it checks the source I chose, never
+    # whether I chose the right one. Architecture #48 priced AWS CloudTrail
+    # Lake in detail, citing the pricing page, which carries rates and says
+    # nothing about availability -- the service had been closed to new
+    # customers since 31 May 2026 and the notice sits on the Lake user guide
+    # page the post never opened. Every check passed; a reader found it.
+    # Advisory rather than blocking: a pricing page cited without its
+    # documentation is a prompt to go and look, not proof of an error, and
+    # three older posts are in that state already.
+    ("check_sources.py",        False, False, True,  False),
     ("audit_claims.py",         False, False, False, True),
 ]
 

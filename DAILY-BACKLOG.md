@@ -92,6 +92,34 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 10 September 2026 — covered by post #30
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Network health indicator extended to Transit Gateway inter-Region peering — a binary "is it AWS" metric, covering the path up to the peering connection | CloudWatch | **#30** | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/cloudwatch-network-monitoring-tgw-support/) |
+| CVE-2026-89049 — SSRF in Session Manager port forwarding in SSM Agent; a denylist bypassed by an equivalent address representation, reaching link-local and yielding the instance role's credentials, usable off-instance. Fixed in 3.3.4851.0 | SSM Agent | **open — high urgency** | High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-107-aws/) |
+| Second-generation single-rack Outposts | Outposts | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/single-rack-aws-outposts/) |
+| 1 MB execution logs with configurable delivery destinations | API Gateway | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-api-gateway-1-mb-execution-logs/) |
+| IAM condition keys ecs:task-cpu and ecs:task-memory on RunTask and StartTask | ECS | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-ecs-expands-condition-key-support/) |
+| FIPS-compliant private connectivity for S3 File Gateway | Storage Gateway | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/storage-gateway-fips-privatelink-s3/) |
+| RabbitMQ 4.3 | Amazon MQ | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-mq-rabbitmq-43/) |
+| Durable functions integrate with Pydantic AI; recursive loop detection in Europe Sovereign Cloud | Lambda | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-lambda-durable-pydantic-ai/) |
+| CVE-2026-85228 — integer overflow in tensor buffer validation in Deep Java Library | DJL | open | Low-Med | — |
+| Five AWS Elemental launches (contextual metadata, MediaTailor yield optimization and LL-HLS ad insertion, MediaLive A/B watermarking, Dynamic Multiview); Transform .NET unit tests; OpenSearch Serverless on v0; Redshift RG in Zurich; EVS in more Regions | Elemental, Transform, OpenSearch, Redshift, EVS | skipped | Low | — |
+
+**The SSM Agent CVE is the item to watch.** It was written up and then set aside
+when the daily slot went to the CloudWatch item on a reader steer; it is the
+strongest open item on this file and it is a patch-now finding rather than a
+feature. Session Manager port forwarding is the recommended replacement for a
+bastion host, so the permission is widely granted. Worth taking the next slot
+unless something larger lands.
+
+**Two held drafts now.** `posts/daily-029-lambda-90-minute-timeout.html` carries
+`draft: true` with claims and diagram complete — the Lambda 90-minute timeout,
+needing only a renumber. The SSM CVE was researched but not written to disk.
+
+---
+
 ## 9 September 2026 — covered by post #29
 
 | Item | Service | Status | Importance | Reference |

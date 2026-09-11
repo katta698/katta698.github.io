@@ -68,6 +68,25 @@ PRICING = re.compile(r'https?://aws\.amazon\.com/([a-z0-9][a-z0-9-]*)/pricing/?'
 DOCS = re.compile(r'https?://docs\.aws\.amazon\.com/', re.I)
 ANY_URL = re.compile(r'https?://[^\s"\'<>)]+')
 
+# Services whose documentation does not live at a path containing their own
+# name. Transit Gateway is the case that exposed this: its guide sits under
+# /vpc/latest/tgw/, so the slug match alone reported arch-001 as unsourced when
+# the post cites the Transit Gateway design guide in its reference list. A
+# checker that cries wolf on a correctly sourced post gets switched off, so
+# each of these is a real path checked by hand rather than a guess.
+ALIASES = {
+    "transit-gateway":  ["vpclatesttgw"],
+    "vpc":              ["vpclatest"],
+    "cloudtrail":       ["awscloudtrail"],
+    "s3":               ["amazons3"],
+    "cloudwatch":       ["amazoncloudwatch"],
+    "ec2":              ["awsec2", "amazonec2"],
+    "secrets-manager":  ["secretsmanager"],
+    "systems-manager":  ["systemsmanager"],
+    "eventbridge":      ["eventbridge"],
+    "aws-cost-management": ["costmanagement", "awsaccountbilling"],
+}
+
 # Phrases AWS uses when a service stops being an option. Kept deliberately
 # short: every one of these has appeared verbatim on a service page, and a
 # longer list of near-synonyms would fire on ordinary prose about deprecating
@@ -114,7 +133,13 @@ def check_offline(path):
     if not priced:
         return []
     docs = norm(" ".join(u for u in urls if DOCS.search(u)))
-    missing = [svc for svc in priced if norm(svc) not in docs]
+
+    def sourced(svc):
+        if norm(svc) in docs:
+            return True
+        return any(alias in docs for alias in ALIASES.get(svc, []))
+
+    missing = [svc for svc in priced if not sourced(svc)]
     if not missing:
         return []
     return ["prices %s but cites no docs.aws.amazon.com page for %s -- a "
