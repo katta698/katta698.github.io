@@ -552,6 +552,43 @@ def one_edit_away(word, known):
     return None
 
 
+def zero_claims():
+    """Sentences that describe something there is none of.
+
+    "and 0 AWS summaries state a month and day with no year anywhere in the
+    text, so they sit under Undated rather than being guessed into one" -- on
+    the live page, explaining a bucket with nothing in it. Four summaries had
+    been dated from the vendor's own index and the paragraph went on describing
+    them.
+
+    Every number in that paragraph verified. 922 outages, 73 reports, AWS back
+    to 2011: all correct, all checked, and the paragraph was still wrong --
+    because the fault was a sentence that should no longer have been printed,
+    not a figure that disagreed with its file. A count check cannot see that.
+
+    So this reads the rendered prose and objects to a claim whose own number is
+    zero. Progress readouts like "0 of 17 weeks done" are a reader's own state
+    rather than a claim about the data, and are left alone.
+    """
+    hits = 0
+    pat = re.compile(r"[^.]{0,80}\b0 [A-Za-z][A-Za-z-]{2,}[^.]{0,80}")
+    for page in READER_PAGES:
+        body = visible_text(page)
+        if not body:
+            continue
+        for m in pat.finditer(body):
+            said = " ".join(m.group(0).split())
+            if re.search(r"\b0 of \d", said):
+                continue
+            note("prose", FAIL,
+                 "%s states a quantity of zero and then explains it: “%s”"
+                 % (page, said[:96]))
+            hits += 1
+    if not hits:
+        note("prose", OK,
+             "no sentence explains something there is none of")
+
+
 def prose():
     # The corpus is every post plus the reader-facing pages -- enough text that
     # "this site uses that word often" is a real statement.
@@ -1007,6 +1044,7 @@ def main():
     secrets()
     metadata()
     prose()
+    zero_claims()
     rendering(not args.no_browser)
     leftovers()
 

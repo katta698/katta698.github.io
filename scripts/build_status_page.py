@@ -882,17 +882,32 @@ def postmortems(cssv="1"):
         span[c] = (min(lo, r["b"]), max(hi, r["b"]))
     reach_txt = "; ".join("%s back to %s" % (LABEL[c], span[c][0][:4])
                           for c in ORDER if c in span)
+    # The sentence about Undated only appears while there is an Undated
+    # bucket. Four AWS summaries used to state a month and a day with no year
+    # anywhere in the text; they were dated from the vendor's own index, and
+    # the paragraph went on explaining them -- "and 0 AWS summaries state a
+    # month and day with no year ... so they sit under Undated" -- describing a
+    # bucket with nothing in it, on the live page, to every reader.
+    #
+    # The count was right the whole time. It was the prose around it that had
+    # not noticed, which is the sort of thing a count check cannot catch: every
+    # number in this paragraph verifies, and the paragraph was still wrong.
+    undated = sum(1 for r in rows if not r.get("b"))
+    undated_txt = (
+        ' A missing year means nothing was published for it — and %d AWS '
+        'summar%s state a month and day with no year anywhere in the text, so '
+        'they sit under Undated rather than being guessed into one.'
+        % (undated, "y" if undated == 1 else "ies")) if undated else (
+        ' A missing year means nothing was published for it.')
+
     note = ('<p class="note-sm">%d outage%s recorded across the three clouds, '
             'the same set the timeline above is drawn from. %d of them have a '
             'full incident report from the vendor; the rest carry what the '
             'vendor recorded — what it was, when, and a link to their page '
             'for it. Nothing is left out for being minor. How far back each '
-            'goes is their choice, not a filter here: %s. A missing year means '
-            'nothing was published for it — and %d AWS summaries state a '
-            'month and day with no year anywhere in the text, so they sit under '
-            'Undated rather than being guessed into one.</p>'
+            'goes is their choice, not a filter here: %s.%s</p>'
             % (len(rows), "" if len(rows) == 1 else "s", wrote, e(reach_txt),
-                 sum(1 for r in rows if not r.get("b"))))
+               undated_txt))
 
     dialog = ('<dialog id="pm-dialog" aria-labelledby="pm-title">'
               '<button class="pm-x" data-pm-close aria-label="Close">×</button>'
