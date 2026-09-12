@@ -125,6 +125,30 @@ def posts_with_badges():
 # it is the failure this script actually had. See THROTTLED below.
 UNCHECKABLE_STATUS = {403, 429}
 
+# Transport-level failures that are not evidence a page is gone.
+#
+# learn.microsoft.com answered the 2026-09-08 run with "An existing connection
+# was forcibly closed by the remote host", and the report called it a broken
+# citation. Fetched three times by hand from this machine it returns HTTP 200
+# and 298KB every time -- the page is fine and the host simply declined to talk
+# to a checker. That is the same judgement UNCHECKABLE_STATUS already makes for
+# 403 and 429, applied to the layer below HTTP.
+#
+# A host that has genuinely gone fails to resolve, which is a different string
+# and still counts as broken. Guessing the other way costs a false alarm every
+# week; guessing this way costs a delayed one, and the run stays honest.
+DECLINED_TO_ANSWER = ("forcibly closed", "connection reset", "timed out",
+                      "timeout", "ssl", "handshake", "connection aborted",
+                      "remote end closed")
+
+
+def declined(err):
+    """True when the error says 'I will not answer', not 'I am not here'."""
+    low = (err or "").lower()
+    if "name or service not known" in low or "getaddrinfo" in low:
+        return False                      # the host itself is gone
+    return any(k in low for k in DECLINED_TO_ANSWER)
+
 # One in-flight request per host at a time, with a gap between them. The first
 # three weekly runs all failed, and 168 of the 304 "broken citations" they
 # reported were HTTP 429 against learn.microsoft.com -- 190 citations fired at
@@ -191,7 +215,7 @@ def same_page(a, b):
 def audit(check_network=True):
     posts = posts_with_badges()
     today = datetime.date.today()
-    broken, moved, stale, unchecked = [], [], [], []
+    broken, moved, stale, unchecked, offlist = [], [], [], [], []
 
     jobs = []
     for p in posts:
@@ -226,13 +250,38 @@ def audit(check_network=True):
         host = host_of(url)
         allowed = any(host == h or host.endswith("." + h) for h in p["doc_hosts"])
         if not allowed:
-            broken.append((p["name"], url, "host %s is outside the %s allowlist"
-                           % (host, p["vendor"])))
+            # Off the allowlist is a SOURCING observation, not a dead page.
+            #
+            # It used to be filed under "broken", whose own definition two
+            # hundred lines up is "a cited page is gone" -- and then `continue`
+            # meant the URL was never fetched, so the report could not have
+            # known either way. On 2026-09-08 all ten "broken citations" were
+            # this, and every one returned HTTP 200: links to this author's own
+            # lab repo, a HashiCorp issue, the MCP specification. The run has
+            # failed every week since at least 18 August on them.
+            #
+            # The cost is not the noise. It is that a genuinely dead vendor page
+            # would have sat in that same list, indistinguishable, while the
+            # workflow stayed red for a reason nobody was reading any more.
+            #
+            # So: still fetched, and still reported -- under a heading that says
+            # what it actually is. Only a page that does not resolve is broken.
+            offlist.append((p["name"], url, "host %s is outside the %s allowlist"
+                            % (host, p["vendor"])))
+            if r is not None and r["error"] and declined(r["error"]):
+                unchecked.append((p["name"], url, r["error"]))
+            elif r is not None and (r["error"] or
+                                    (r["status"] and r["status"] >= 400)):
+                why = r["error"] or "HTTP %s" % r["status"]
+                broken.append((p["name"], url, "unreachable: %s" % why))
             continue
         if r is None:
             continue
         if r["error"]:
-            broken.append((p["name"], url, "unreachable: %s" % r["error"]))
+            if declined(r["error"]):
+                unchecked.append((p["name"], url, r["error"]))
+            else:
+                broken.append((p["name"], url, "unreachable: %s" % r["error"]))
         elif r["status"] in UNCHECKABLE_STATUS:
             # The server declined to answer this checker. That is not evidence
             # the page is gone, so it must not read as a broken citation.
@@ -250,10 +299,10 @@ def audit(check_network=True):
             moved.append((p["name"], url, r["final"]))
 
     stale.sort(key=lambda p: p["age"], reverse=True)
-    return posts, broken, moved, stale, unchecked
+    return posts, broken, moved, stale, unchecked, offlist
 
 
-def report(posts, broken, moved, stale, unchecked, batch):
+def report(posts, broken, moved, stale, unchecked, batch, offlist=()):
     L = []
     add = L.append
     add("# Documentation freshness report")
@@ -264,6 +313,7 @@ def report(posts, broken, moved, stale, unchecked, batch):
     add("| | Count |")
     add("| --- | --- |")
     add("| Broken citations | %d |" % len(broken))
+    add("| Cited outside the vendor's own docs | %d |" % len(offlist))
     add("| Moved (redirecting) | %d |" % len(moved))
     add("| Badges older than %d days | %d |" % (STALE_DAYS, len(stale)))
     add("| Could not check (throttled / bot-blocked) | %d |" % len(unchecked))
@@ -272,10 +322,24 @@ def report(posts, broken, moved, stale, unchecked, batch):
     if broken:
         add("## Broken — fix these")
         add("")
-        add("A cited page no longer resolves, or is not the vendor's own "
-            "documentation. The post asserts a figure a reader can no longer check.")
+        add("A cited page no longer resolves. The post asserts a figure a "
+            "reader can no longer check. Being off the allowlist is reported "
+            "separately -- that is a sourcing question, not a dead link.")
         add("")
         for name, url, why in broken:
+            add("- **%s** — %s" % (name, why))
+            add("  - %s" % url)
+        add("")
+
+    if offlist:
+        add("## Cited outside the vendor's own docs")
+        add("")
+        add("These resolve. A reader can follow them and check the figure, so "
+            "nothing here is broken -- they simply are not on the series' "
+            "allowlist of vendor documentation hosts. Worth a look when the "
+            "claim is load-bearing; not worth failing a build over.")
+        add("")
+        for name, url, why in offlist:
             add("- **%s** — %s" % (name, why))
             add("  - %s" % url)
         add("")
@@ -353,8 +417,10 @@ def main():
                     help="exit non-zero when a citation is broken")
     args = ap.parse_args()
 
-    posts, broken, moved, stale, unchecked = audit(check_network=not args.no_network)
-    text = report(posts, broken, moved, stale, unchecked, args.stale_batch)
+    posts, broken, moved, stale, unchecked, offlist = audit(
+        check_network=not args.no_network)
+    text = report(posts, broken, moved, stale, unchecked, args.stale_batch,
+                  offlist)
     print(text)
     if args.out:
         io.open(args.out, "w", encoding="utf-8", newline="\n").write(text)
