@@ -41,7 +41,31 @@
     document.head.appendChild(link);
   }
 
+  /* Turn smooth scrolling on only once the page has settled.
+   *
+   * `html { scroll-behavior: smooth }` also applies to the browser's own
+   * scroll restoration, and a restore is a programmatic scroll -- so on a
+   * refresh Safari ANIMATES its way back to where you were. Measured in WebKit
+   * from 2600px: 2600 -> 1095 -> 135 -> 0 across three frames, which reads as
+   * the page scrolling itself, quickly and then slowly. Chromium jumps
+   * straight there, which is why this only ever showed on a phone.
+   *
+   * The stylesheets now key smooth behaviour on this class, so restoration
+   * lands instantly and an anchor link clicked later still glides. Two frames
+   * of delay, because a restore happens before the first paint and `load` can
+   * be seconds away on a slow connection -- long enough for a reader to click
+   * something and get a jump where they expected a glide.
+   */
+  function enableSmoothScroll() {
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        document.documentElement.classList.add('scroll-ready');
+      });
+    });
+  }
+
   function initFooter() {
+    enableSmoothScroll();
     ensureStyles();
     var footer = document.querySelector('footer');
     if (!footer) {

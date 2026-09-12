@@ -153,6 +153,13 @@ CHECKS = [
     # shipped to this live site in one day and was found by a person reading
     # the page rather than by any of the checks above -- all of which passed.
     ("check_reader_facing.py",   True,  False, False, False),
+    # Screenshots are numbered in capture order, so inside "How We Built It"
+    # they must ascend -- a lower number after a higher one is a picture of
+    # live state sitting above the step that creates it. Week 18 shipped that
+    # twice in one day and a reader found both. Scoped to changed posts, so it
+    # gates what is being published rather than re-litigating the archive.
+    ("check_figure_order.py",    True,  False, True,  True),
+
     ("check_index_complete.py", True,  False, False, False),
     ("fix_series_nav.py",       True,  False, False, False),
     # The announcement store behind /intelligence/whats-new/. Nothing else in
