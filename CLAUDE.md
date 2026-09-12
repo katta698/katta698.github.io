@@ -220,6 +220,42 @@ Check before doing anything.
 | Azure | `C:\Projects\Engineering\katta698-azure` | `azure` | Azure Architecture, Azure Weekly Intelligence |
 | GCP | `C:\Projects\Engineering\katta698-gcp` | `gcp` | GCP Architecture, GCP Weekly Intelligence |
 | Life | `C:\Projects\Engineering\katta698-life` | `life` | Health, Life, Career and Personal Growth posts |
+| Validation | `C:\Projects\Engineering\katta698-validation` | `validation` | The shared claim checks in `scripts/` &mdash; all clouds |
+
+### The Validation window
+
+Added 2026-09-12. **Read `scripts/VALIDATION.md` first &mdash; it is the brief
+for this window and carries the detail this section only summarises.**
+
+The checks that decide whether a post is factually sound are shared by all
+three series: they live in `scripts/`, run from `prepublish.py`, and every
+cloud window inherits them on its next rebase from `main`. They were being
+edited by whichever window happened to hit a bug, and that is how
+`check_sources.py` came to hold an AWS-only rule while reporting a clean result
+for 31 Azure posts &mdash; a green light that meant "nothing was tested". Azure
+Architecture #31 went out through it.
+
+So: **one window owns the checks, three windows consume them.** Same principle
+Jayanth set for the monthly report &mdash; adding a cloud is a registry entry,
+not a fork, so three windows do not each invent an answer to the same problem.
+
+**This window touches `scripts/*.py` and check docs. Nothing else.** Not
+`posts/`, not `blog/`, not anything generated &mdash; those belong to the cloud
+windows, and staying out of them is why this window almost never hits the
+rebase conflicts the others live with.
+
+**What the cloud windows need to know from here:** if a check fires on your
+post, fix the post. If you think the *rule* is wrong, do not edit the rule in
+your window &mdash; raise it here, or the fix lands on one branch and the other
+two clouds never see it. If you add a series, it needs a `TOPIC_RULES` entry in
+`check_sources.py` or it gets the same false green Azure got.
+
+**Standards for changing a rule**, inherited from the AWS window and not to be
+softened: a rule that passes the case it was written for is worse than no rule;
+a checker that cries wolf gets switched off; a checker that cannot fail is
+worse than no checker. Every pattern carries a canary that runs on each
+invocation. New rules are advisory first &mdash; the other windows did not opt
+into them mid-series.
 
 ### The Life window
 
