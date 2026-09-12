@@ -180,6 +180,41 @@ ABSOLUTE = re.compile(
     r'|entirely dependent|wholly dependent'
     r')', re.I)
 
+# Consequences drawn from correct facts, which is the one shape neither of the
+# patterns above can see. COMPARATIVE is gated on HAS_NUMBER by design -- see
+# the note above -- so a sentence that states a *billing or eligibility
+# outcome* without a digit is invisible to this file.
+#
+# That is not hypothetical. Azure Architecture #31, published 2026-09-12, said:
+#
+#     "So a single access review spanning employees and partners is billed two
+#      ways at once: a held seat count for the members, and a monthly active
+#      charge against an Azure subscription for the guests."
+#
+# Every quoted fact around it was correct and sourced. The sentence was not,
+# and contains no digit, so nothing here fired. Microsoft's rule is that guests
+# are billed only for capabilities exclusive to ID Governance; a review using
+# P2 capabilities is not billed twice.
+#
+# Two conditions, deliberately: a connective that signals the author is drawing
+# a conclusion, *and* a verb that asserts a cost or a requirement. Either alone
+# is ordinary prose and fires constantly. Together they are rare, and they are
+# where the error lives. Report-only, like everything else in this half.
+CONSEQUENCE_CUE = re.compile(
+    r'\b(?:so|therefore|which means|that means|meaning|so that|hence|'
+    r'as a result|in other words|put plainly|the upshot)\b', re.I)
+CONSEQUENCE_VERB = re.compile(
+    r'\b(?:is|are|was|were|gets?|becomes?)\s+(?:\w+\s+){0,2}'
+    r'(?:billed|charged|priced|licen[cs]ed|required|exempt|covered|free)\b'
+    r'|\b(?:you|teams?|estates?)\s+(?:then\s+)?(?:pay|owe|need|must)\b'
+    r'|\bcosts? (?:you )?(?:nothing|twice|double)\b'
+    r'|\brequires? (?:a |an |two |both )', re.I)
+
+# A sentence that quotes its source is not an unsupported inference. The quote
+# marks the assertion as the vendor's rather than the author's, which is the
+# whole distinction this file was written to police.
+HAS_QUOTE = re.compile(r'<em>|&ldquo;|"')
+
 SENTENCE = re.compile(r'(?<=[.!?])\s+')
 
 
@@ -239,6 +274,41 @@ def prose(body):
     return re.sub(r"\s+", " ", body)
 
 
+QUOTE_MARK = "\x01"
+
+# A table with no sentence-ending punctuation flattens into one pseudo-sentence
+# hundreds of characters long, and over that distance a cue and a verb co-occur
+# by accident rather than by argument. The first version of this rule reported
+# 30 findings, and the three sampled were all flattened tables -- "Tradeoffs
+# Decision Benefit Cost One CMK per service per account ...". Requiring the two
+# to sit in the same clause is what separates a drawn conclusion from two
+# unrelated words in the same cell.
+CONSEQUENCE_WINDOW = 120
+
+
+def consequence_span(s):
+    """True when a consequence cue and a cost/requirement verb share a clause."""
+    for cue in CONSEQUENCE_CUE.finditer(s):
+        for verb in CONSEQUENCE_VERB.finditer(s):
+            if 0 <= verb.start() - cue.end() <= CONSEQUENCE_WINDOW:
+                return True
+    return False
+
+
+def prose_marked(body):
+    """prose(), but with quoted spans still identifiable.
+
+    prose() strips every tag, so by the time a sentence reaches the scan loop
+    there is no way to tell a vendor quotation from the author's own claim --
+    and that distinction is the entire basis of the consequence rule below. So
+    the <em> spans are collapsed to a sentinel byte first, which survives the
+    tag strip and cannot appear in ordinary text.
+    """
+    marked = re.sub(r"<em>([\s\S]*?)</em>",
+                    QUOTE_MARK + r"\1" + QUOTE_MARK, body)
+    return prose(marked)
+
+
 def series_of(name):
     for key, spec in SERIES.items():
         if name.startswith(spec["file_prefix"]):
@@ -270,10 +340,64 @@ def check(path, show_absolutes):
             notes.append(("ratio", s))
         elif show_absolutes and ABSOLUTE.search(s):
             notes.append(("absolute", s))
+
+    # Consequences are scanned over the marked text so a quoted sentence can
+    # be told from an inferred one. Separate loop rather than another branch
+    # above, because the two passes read different strings.
+    for sentence in SENTENCE.split(prose_marked(body)):
+        s = sentence.strip()
+        if not s or QUOTE_MARK in s:
+            continue
+        if consequence_span(s):
+            notes.append(("consequence", s.replace(QUOTE_MARK, "")))
     return name, errors, notes, derives
 
 
+# --- the controls the note above promises -----------------------------------
+#
+# That note has said "the controls at the bottom of this file exist" since the
+# non-raw-string incident, and until now they did not. The gap was not
+# theoretical: check_sources.py had the same shape of hole -- an AWS-only rule
+# that reported "0 sourcing gaps" for 31 Azure posts because it had nothing to
+# apply -- and Azure #31 went out through it.
+#
+# So each pattern gets a string it must match and a string it must not. If a
+# pattern is edited into inertness, this fails at startup instead of printing a
+# clean corpus. Cheap enough to run on every invocation.
+CANARIES = [
+    (COMPARATIVE, "the reservation is about a third of the price",
+     "read that twice before shipping"),
+    (ABSOLUTE, "this role depends on nothing outside IAM",
+     "the account depends on a pipeline"),
+    (CONSEQUENCE_CUE, "So the delivery is billed either way", "delivery billing"),
+    (CONSEQUENCE_VERB, "the review is billed twice", "the review completed"),
+    (HAS_NUMBER, "costs $4", "costs nothing"),
+]
+
+
+def selftest():
+    """Fail loudly if any pattern has stopped matching what it was written for."""
+    bad = []
+    for pattern, must_match, must_not in CANARIES:
+        if not pattern.search(must_match):
+            bad.append("pattern no longer matches %r" % must_match)
+        if pattern.search(must_not):
+            bad.append("pattern now over-matches %r" % must_not)
+    if not consequence_span("So a single access review is billed two ways at once"):
+        bad.append("consequence_span no longer fires on the Azure #31 sentence")
+    if consequence_span("So the team met. " + "x " * 200 + "it is billed monthly"):
+        bad.append("consequence_span ignores its proximity window")
+    return bad
+
+
 def main():
+    broken = selftest()
+    if broken:
+        print("check_assertions.py is not checking anything:")
+        for b in broken:
+            print("   %s" % b)
+        return 2
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("posts", nargs="*")
     ap.add_argument("--series")
