@@ -1,0 +1,325 @@
+---
+title: "AWS Architecture Series #50 — Bought in one account, spent in another"
+date: '2026-09-12T09:00:00'
+slug: aws-architecture-commitment-sharing
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-12'
+verified_claims:
+  - claim: "Savings Plans apply to your usage after the Amazon EC2 Reserved Instances are applied"
+    source: https://docs.aws.amazon.com/savingsplans/latest/userguide/sp-applying.html
+  - claim: "EC2 Instance Savings Plans are applied before Compute Savings Plans because Compute Savings Plans have broader applicability"
+    source: https://docs.aws.amazon.com/savingsplans/latest/userguide/sp-applying.html
+  - claim: "In a Consolidated Billing Family, Savings Plans are applied first to the owner account's usage and then to other accounts' usage, and this occurs only if you have sharing enabled"
+    source: https://docs.aws.amazon.com/savingsplans/latest/userguide/sp-applying.html
+  - claim: "Savings Plans are applied to the highest savings percentage first, and if multiple usages have equal savings percentages they are applied to the first usage with the lowest Savings Plans rate"
+    source: https://docs.aws.amazon.com/savingsplans/latest/userguide/sp-applying.html
+  - claim: "Savings Plans continue to apply until there are no more remaining usages or the commitment is exhausted, and any remaining usage is charged at On-Demand rates"
+    source: https://docs.aws.amazon.com/savingsplans/latest/userguide/sp-applying.html
+  - claim: "Each hour's commitment can only be used within that hour and cannot be carried over"
+    source: https://docs.aws.amazon.com/savingsplans/latest/userguide/sp-applying.html
+  - claim: "In AWS's worked example an r5.4xlarge Linux instance has an On-Demand rate of $1.00 and a Compute Savings Plans rate of $0.70, which is a 30 percent saving"
+    derive: "(1.00 - 0.70) / 1.00 * 100"
+    expect: "30"
+    source: https://docs.aws.amazon.com/savingsplans/latest/userguide/sp-applying.html
+  - claim: "The management account of an organization can control Reserved Instance discount and Savings Plans discount sharing for any accounts in that organization"
+    source: https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ri-turn-off.html
+  - claim: "AWS offers three sharing modes: organization-wide sharing, prioritized group sharing, and restricted group sharing, and in all of them commitments benefit the account owner first"
+    source: https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ri-turn-off.html
+  - claim: "Under restricted group sharing, commitments are exclusively shared within defined account groups and no sharing occurs outside designated groups even with unused capacity"
+    source: https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ri-turn-off.html
+  - claim: "Group sharing uses AWS Cost Categories to define account groups, each account can only belong to one sharing group, the payer account cannot be part of a sharing group, and only the Accounts dimension can be used"
+    source: https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ri-turn-off.html
+  - claim: "Both the purchasing account and the benefit-receiving account must have sharing activated for discounts to be shared, and accounts with the largest calculated savings are prioritized"
+    source: https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ri-turn-off.html
+  - claim: "Each estimated bill is computed using the last set of preferences, and the final bill for the month is calculated based on the preferences set at 23:59:59 UTC on the last day of the month"
+    source: https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ri-turn-off.html
+  - claim: "If a Savings Plans owner account leaves the organization, Savings Plans no longer apply to the consolidated bill"
+    source: https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ri-turn-off.html
+  - claim: "AWS warns that deactivating Reserved Instance and Savings Plans discount sharing can result in higher monthly bills, and that group-based sharing might result in some underutilized commitments in restricted mode"
+    source: https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ri-turn-off.html
+  - claim: "To share a Savings Plans discount, the Savings Plans owner account must be active in the Reserved Instance and Savings Plans discount sharing preferences"
+    source: https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ri-turn-off.html
+problem: "The previous post built an allocation model out of tags, backfill and split charge rules. Commitment discounts move money between accounts before any of that runs — hourly, by savings percentage, to whichever account happened to have the most discountable usage. The account that bought the Savings Plan is frequently not the account that shows the saving."
+builds: "A commitment model that is honest about where the benefit lands: the application order that decides it, the sharing mode that constrains it, and the reporting consequence of a discount that is reassigned every hour and finalised on the last day of the month."
+catch: "The whole month is recomputed from one setting. AWS states the final bill is calculated using the sharing preferences as they stood at 23:59:59 UTC on the last day of the month — so a sharing change made on the 30th rewrites the allocation for every hour since the 1st, and any chargeback figure circulated mid-month was provisional."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #050 &middot; Cost &amp; Governance</div>
+  <h1 class="post-title">Bought in one account, spent in another</h1>
+  <p class="post-subtitle">A commitment discount is reassigned every hour to whichever account saves most by it. That happens before tagging, before cost categories, and before anything your allocation model can see.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Cost Optimization &middot; Governance</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The previous post built an allocation model: tags for what can be labelled, backfill for what was
+      labelled late, split charge rules for what has no single owner. It works on the numbers that reach
+      it. This post is about the layer underneath, which has already moved the money by the time those
+      numbers exist.
+    </p>
+    <p>
+      A platform team buys a three-year Compute Savings Plan from the shared services account, because
+      that is where the commitment budget lives and where finance wanted the purchase recorded. The
+      following month, shared services shows almost none of the benefit. A product account nobody
+      consulted shows most of it. Nothing is wrong, nobody misconfigured anything, and the report is
+      accurate.
+    </p>
+    <p>
+      It happened because a commitment is not attached to the account that bought it. It is applied,
+      hour by hour, to whichever eligible usage saves the most &mdash; owner first, then everyone else.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The discount goes where the saving is largest</strong></div>
+      <div class="challenge-body">
+        <p>
+          The rule is explicit. Savings Plans <em>&ldquo;are applied to your highest savings percentage
+          first&rdquo;</em>, with ties broken by <em>&ldquo;the first usage with the lowest Savings Plans
+          rate&rdquo;</em>. Across an organisation, <em>&ldquo;accounts with the largest calculated
+          savings are prioritized&rdquo;</em>.
+        </p>
+        <p>
+          So the benefit follows the shape of usage, not the shape of your org chart. An account running
+          expensive Windows instances and an account running cheap Linux ones will not receive the same
+          share of the same commitment, and the split changes as their workloads change.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Stop treating the purchase account as the beneficiary. It is the payer of record, not the recipient.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The allocation is provisional until the last day of the month</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the detail that turns a reporting inconvenience into a reporting trap. AWS: <em>&ldquo;each
+          estimated bill is computed by using the last set of preferences. The final bill for the month is
+          calculated based on the preferences set at 23:59:59 UTC time on the last day of the
+          month.&rdquo;</em>
+        </p>
+        <p>
+          A sharing preference changed on the 30th does not apply from the 30th. It applies to the whole
+          month. Every hour since the 1st is recomputed against it, so a chargeback figure circulated on
+          the 15th can be wrong by month end without anybody touching a workload.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat mid-month commitment allocation as an estimate, and say so on the report. Freeze sharing preferences during the month if finance needs stability.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>An account leaving can switch the discount off</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;If a Savings Plans owner account leaves the organization, Savings Plans no longer
+          apply to the consolidated bill.&rdquo;</em> The commitment is still paid for. It simply stops
+          discounting everyone else.
+        </p>
+        <p>
+          That makes an account migration &mdash; a divestment, a reorganisation, moving an account
+          between organisations &mdash; a financial event as well as an administrative one, and it is
+          rarely on the checklist for either.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Know which account owns each commitment, and make owner-account moves a change that requires sign-off from whoever bought it.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Two mechanisms decide where a discount lands: the order commitments are applied in, and the sharing
+      mode that scopes who is eligible.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-050-commitment-sharing.svg" alt="Diagram: how an AWS commitment discount is assigned each hour, and the three sharing modes that scope it. The application order runs top to bottom: EC2 Reserved Instances are applied first, then EC2 Instance Savings Plans, then Compute Savings Plans because those have broader applicability, and any remaining usage is charged at On-Demand rates. Within Savings Plans the commitment is applied to the highest savings percentage first, with ties broken by the lowest Savings Plans rate, and each hour's commitment can only be used within that hour and cannot be carried over. Across an organisation the owner account is satisfied first and then the benefit flows outward according to the sharing mode: organization-wide sharing spreads remaining benefit across all accounts, prioritized group sharing serves a defined group before the rest of the organisation, and restricted group sharing shares only within the defined group even when capacity goes unused. A panel records that the final monthly bill is calculated from the sharing preferences as they stood at 23:59:59 UTC on the last day of the month." />
+      <figcaption>The order is fixed and the destination is not. Owner first, then whoever saves most — recomputed every hour, and finalised against whatever the preferences say on the last day of the month.</figcaption>
+    </figure>
+
+    <h3>The application order</h3>
+    <p>
+      Reserved Instances are consumed before Savings Plans. Then EC2 Instance Savings Plans, which are
+      narrower, before Compute Savings Plans, which AWS applies later precisely <em>because they have
+      broader applicability</em> &mdash; spending the specific commitment first leaves the flexible one
+      available for whatever is left. Anything still uncovered is billed On-Demand.
+    </p>
+    <p>
+      Inside that, the commitment is spent on the highest discount percentage available. AWS's own
+      worked example has an <code class="inline">r5.4xlarge</code> at $1.00 On-Demand against $0.70 under
+      a Compute Savings Plan &mdash; a 30% saving &mdash; and Fargate at 25%, so the r5 usage is covered
+      first even if the Fargate usage belongs to a different team.
+    </p>
+    <p>
+      And none of it banks: <em>&ldquo;each hour's commitment can only be used within that hour and cannot
+      be carried over&rdquo;</em>. An idle hour is simply spent. That is the real argument for sharing
+      being on &mdash; not fairness, but that unused commitment is money already gone.
+    </p>
+
+    <h3>The three sharing modes</h3>
+    <div class="grid-2">
+      <div class="card">
+        <h4>Organization-wide</h4>
+        <p>Owner first, then remaining benefit is available to any account in the organisation. AWS's framing: it <em>maximizes overall commitment discount rates</em>. Best utilisation, least predictable allocation.</p>
+      </div>
+      <div class="card">
+        <h4>Prioritized group</h4>
+        <p>Owner first, then a defined group, then the rest of the organisation. A middle position: a business unit gets first refusal on what it paid for, and nothing is wasted if it does not use it all.</p>
+      </div>
+      <div class="card">
+        <h4>Restricted group</h4>
+        <p>Owner first, then the group, and <strong>nowhere else</strong> — AWS notes no sharing occurs outside designated groups <em>even with unused capacity</em>. Predictable, and it can leave commitment unspent.</p>
+      </div>
+      <div class="card">
+        <h4>Per-account deactivation</h4>
+        <p>Sharing can be switched off for individual accounts. Both the purchasing account and the receiving account must have it on for a discount to flow between them.</p>
+      </div>
+    </div>
+
+    <div class="callout amber">
+      <strong>Group sharing is built on Cost Categories, with real constraints</strong>
+      <p>Groups are defined with AWS Cost Categories, and the rules are narrow: each account can belong to only one sharing group, <strong>the payer account cannot be part of a sharing group</strong>, and only the <em>Accounts</em> dimension may be used. If you have already built Cost Categories for the allocation model in the previous post, they are probably not reusable here without checking those conditions first.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Utilisation and attribution are in direct tension</h3>
+    <p>
+      The three modes are a single dial between two things you cannot have at once. Organization-wide
+      sharing maximises the chance a commitment is fully consumed, and makes the beneficiary
+      unpredictable. Restricted group sharing makes the beneficiary predictable, and AWS says plainly it
+      <em>&ldquo;might result in some underutilized commitments&rdquo;</em>.
+    </p>
+    <p>
+      There is no configuration that gives both, and the choice is a finance decision rather than an
+      engineering one. The engineering contribution is making the trade explicit: restricted sharing has
+      a price, and that price is unspent commitment on a plan already paid for.
+    </p>
+
+    <div class="callout red">
+      <strong>Turning sharing off is not a neutral act</strong>
+      <p>AWS states it directly: <em>&ldquo;deactivating Reserved Instance and Savings Plans discount sharing can result in higher monthly bills&rdquo;</em>. It is sometimes still the right call — a regulated subsidiary that cannot receive cross-entity benefit, an account being prepared for divestment — but it should be taken as a decision with a number attached, not as tidying.</p>
+    </div>
+
+    <h3>What this does to the allocation model from #49</h3>
+    <p>
+      The previous post's mechanisms all operate on costs that already exist. Commitment discounts
+      operate before that: they decide what the cost <em>is</em> for a given account-hour. So a tag
+      cannot attribute a discount, and a split charge rule cannot redistribute one, because by the time
+      either runs the money has already moved.
+    </p>
+    <p>
+      That is why commitment reporting usually needs its own treatment rather than folding into the tag
+      model &mdash; and why the honest version of a chargeback statement separates <em>usage attributed
+      by tag</em> from <em>discount received by commitment sharing</em>. They answer different questions
+      and only one of them is under the receiving team's control.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Default sharing mode</td>
+        <td>Organization-wide, unless there is a reason not to</td>
+        <td>Unused commitment does not carry to the next hour. Maximum utilisation is the default that wastes least.</td>
+      </tr>
+      <tr>
+        <td>When predictability matters more</td>
+        <td>Prioritized group before restricted</td>
+        <td>It gives a business unit first claim on what it bought without stranding the remainder, which restricted mode can.</td>
+      </tr>
+      <tr>
+        <td>Purchase account</td>
+        <td>Treated as payer of record, not beneficiary</td>
+        <td>Owner is served first, but the rest follows savings percentage. Expect the benefit to land elsewhere.</td>
+      </tr>
+      <tr>
+        <td>Mid-month reporting</td>
+        <td>Labelled as an estimate</td>
+        <td>The final bill uses the preferences in force at 23:59:59 UTC on the last day, applied to the whole month.</td>
+      </tr>
+      <tr>
+        <td>Owner account moves</td>
+        <td>Gated, with the commitment owner consulted</td>
+        <td>If the owner leaves the organisation, the Savings Plans stop applying to the consolidated bill entirely.</td>
+      </tr>
+      <tr>
+        <td>Chargeback statement</td>
+        <td>Usage and commitment benefit reported separately</td>
+        <td>One is attributable to the team, the other is an artefact of organisation-wide optimisation. Merging them makes both unarguable.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The sequencing detail that catches people out</h3>
+    <p>
+      Both sides must be switched on. AWS states that <em>both purchasing and benefit receiving accounts
+      must have sharing activated to share discounts</em>, and separately that the Savings Plans owner
+      account <em>&ldquo;must be active in the RI and Savings Plans discount sharing preferences&rdquo;</em>
+      for the discount to reach other accounts at all.
+    </p>
+    <p>
+      That produces a quiet failure mode. Deactivating sharing on the purchasing account &mdash; perhaps
+      to stop it receiving other teams' discounts &mdash; also stops its own commitment from benefiting
+      anybody else. The plan keeps billing and the discount stops flowing, and nothing announces it.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Fifty posts in, the recurring finding has not changed much: most cost and security controls are
+      real, correctly configured, and answering a narrower question than the sentence used to describe
+      them. Commitment sharing is the purest example yet, because here the gap is not in the tooling at
+      all. AWS documents the behaviour precisely. It is just that almost nobody reads the application
+      order before buying, and the mental model &mdash; <em>we bought it, so we have it</em> &mdash; is
+      wrong in a way that produces a correct report nobody believes.
+    </p>
+    <p>
+      The useful reframe is to stop thinking of a commitment as an asset held by an account and start
+      thinking of it as a discount schedule applied to the organisation, hour by hour, in a fixed order,
+      finalised at the end of the month. Every confusing thing about it follows from that sentence, and
+      so does every sensible decision: why sharing should usually be on, why restricted mode costs
+      something real, and why a mid-month chargeback number is an estimate.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Cost &amp; Governance &mdash; budgets and anomaly detection: why a budget alert almost always arrives after the money is spent, what anomaly detection actually models, and the difference between a control that warns you and one that stops you.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/savingsplans/latest/userguide/sp-applying.html" target="_blank" rel="noopener">Understanding how Savings Plans apply to your usage &#8212; the application order and five worked scenarios</a></li>
+      <li><a href="https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ri-turn-off.html" target="_blank" rel="noopener">Reserved Instances and Savings Plans discount sharing &#8212; the three sharing modes and the month-end preference rule</a></li>
+      <li><a href="https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/con-bill-blended-rates.html" target="_blank" rel="noopener">Understanding consolidated bills</a></li>
+      <li><a href="https://docs.aws.amazon.com/savingsplans/latest/userguide/what-is-savings-plans.html" target="_blank" rel="noopener">What are Savings Plans</a></li>
+      <li><a href="https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/splitcharge-cost-categories.html" target="_blank" rel="noopener">Splitting charges within cost categories &#8212; the allocation model this sits underneath</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

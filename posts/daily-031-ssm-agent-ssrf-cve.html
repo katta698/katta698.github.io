@@ -1,0 +1,247 @@
+---
+title: 'AWS Daily Intelligence #31 - The denylist had fewer spellings than the address'
+date: '2026-09-12T10:00:00'
+slug: aws-daily-intelligence-ssm-agent-ssrf-cve
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-09-12'
+verified_claims:
+  - claim: "CVE-2026-89049 is a server-side request forgery in the Session Manager port forwarding functionality in AWS Systems Manager Agent, published 09/10/2026"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-107-aws/
+  - claim: "The issue affects SSM Agent versions below 3.3.4851.0, described as all versions supporting remote-host port forwarding"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-107-aws/
+  - claim: "The flaw is improper validation of equivalent address representations in port-forwarding functionality, allowing users to bypass the remote destination denylist and reach link-local endpoints"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-107-aws/
+  - claim: "An authenticated user with port-forwarding permission could obtain the managed instance's temporary IAM role credentials and act with that role's permissions from outside the instance"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-107-aws/
+  - claim: "The issue is fixed in SSM Agent version 3.3.4851.0 and AWS recommends upgrading to the latest version"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-107-aws/
+  - claim: "As an interim measure AWS recommends restricting use of the AWS-StartPortForwardingSessionToRemoteHost document by scoping ssm:StartSession IAM permissions so untrusted principals cannot initiate remote-host port-forwarding sessions"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-107-aws/
+  - claim: "IMDSv2 uses session-oriented requests: a PUT request initiates a session and returns a token that must be included in subsequent GET requests, with a session duration of a minimum of one second and a maximum of six hours"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
+  - claim: "The IMDSv2 token is an instance-specific key that is not valid on other EC2 instances and will be rejected if you attempt to use it outside of the instance on which it was generated"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
+  - claim: "By default the response to IMDSv2 PUT requests has a response hop limit of 1 at the IP protocol level, adjustable with modify-instance-metadata-options"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
+  - claim: "IMDSv2 PUT requests are rejected if they contain an X-Forwarded-For header"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
+  - claim: "When IMDS token usage is set to required, requests without a valid token or with an expired token receive a 401 Unauthorized HTTP error code"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
+  - claim: "The Instance Metadata Service is reachable at the IPv4 address 169.254.169.254, and over IPv6 at fd00:ec2::254 on Nitro-based instances in an IPv6-supported subnet"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
+  - claim: "AWS describes IMDSv2 as defence in depth against open firewalls, reverse proxies and SSRF vulnerabilities"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
+  - claim: "To be a managed node, SSM Agent must be installed on the machine and Systems Manager must have permission to perform actions on it, provided for EC2 instances at the account level using an IAM role or at the instance level using an instance profile"
+    source: https://docs.aws.amazon.com/systems-manager/latest/userguide/diagnose-and-remediate.html
+problem: "Session Manager port forwarding is the recommended replacement for a bastion host — no inbound ports, no SSH keys, every session authorised by IAM and logged. CVE-2026-89049 turns the permission to use it into a route to the instance's own IAM role credentials, usable from anywhere."
+builds: "A reading of what the flaw actually is, why a denylist was the wrong shape of control for the job, and a precise answer to the question every reader asks next: whether IMDSv2 changes the outcome."
+catch: "The root cause is a class, not a bug: improper validation of equivalent address representations. A denylist of forbidden destinations has to enumerate every way of spelling an address, and there are always more spellings than anyone enumerates — the same failure as the incomplete list of disallowed SQL inputs in post #26."
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      AWS published <strong>CVE-2026-89049</strong> on Thursday: a server-side request forgery in the Session Manager port forwarding functionality in SSM Agent, affecting every version below <strong>3.3.4851.0</strong> that supports remote-host port forwarding.
+    </p>
+    <p>
+      The mechanism is stated plainly in the bulletin. The flaw is <em>improper validation of equivalent address representations</em>, which lets a user <em>bypass the remote destination denylist and reach link-local endpoints</em>. The consequence is the one that matters: an authenticated user with port-forwarding permission could obtain <em>the managed instance's temporary IAM role credentials and act with that role's permissions from outside the instance</em>.
+    </p>
+    <p>
+      That is worth sitting with, because of what Session Manager port forwarding is <em>for</em>. It is the recommended way to stop running bastion hosts — no inbound ports, no long-lived SSH keys, every session gated by IAM and recorded. This turns the permission to use the safer thing into a path to the instance profile. The fix is a version number; the interim control is an IAM scope.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>
+      A denylist that was supposed to keep port-forwarding sessions away from link-local addresses could be walked around by writing the address a different way.
+    </p>
+    <div class="table-scroll">
+      <table>
+        <tr>
+          <th>Item</th>
+          <th>Detail</th>
+        </tr>
+        <tr>
+          <td>Affected</td>
+          <td>SSM Agent below 3.3.4851.0 — AWS scopes it as all versions supporting remote-host port forwarding</td>
+        </tr>
+        <tr>
+          <td>Flaw</td>
+          <td>Improper validation of equivalent address representations, bypassing the remote destination denylist</td>
+        </tr>
+        <tr>
+          <td>Reachable</td>
+          <td>Link-local endpoints — which is where the instance metadata service lives</td>
+        </tr>
+        <tr>
+          <td>Impact</td>
+          <td>An authenticated user with port-forwarding permission obtains the instance's temporary IAM role credentials and can use them from outside the instance</td>
+        </tr>
+        <tr>
+          <td>Fixed in</td>
+          <td><strong>3.3.4851.0</strong></td>
+        </tr>
+        <tr>
+          <td>Interim control</td>
+          <td>Scope <code>ssm:StartSession</code> so untrusted principals cannot use <code>AWS-StartPortForwardingSessionToRemoteHost</code></td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-031-ssm-agent-ssrf-cve.svg" alt="Diagram: how CVE-2026-89049 turns a port-forwarding permission into portable credentials. A user holding ssm:StartSession opens a remote-host port forwarding session through SSM Agent. The agent holds a denylist of forbidden remote destinations intended to block link-local addresses, but the comparison is made against the literal spelling, so an equivalent representation of the same address is not matched and passes. The forwarded connection therefore terminates on the instance metadata service at the link-local address, reached from the instance's own network stack. The temporary IAM role credentials returned are ordinary credentials with no binding to the instance, so they can be used from anywhere. A second panel contrasts the IMDSv2 protections, which bind the session token to the instance, reject PUT requests carrying an X-Forwarded-For header, and default the PUT response hop limit to one — all of which target a request arriving from outside the instance through a proxy rather than one that terminates on the instance itself." />
+      <figcaption>The denylist compared a spelling, not an address. Everything downstream of that comparison behaved exactly as designed.</figcaption>
+    </figure>
+    <p>
+      Remote-host port forwarding exists so an operator can reach a database or an internal service <em>through</em> a managed instance without that instance exposing a port. The agent therefore accepts a destination from the requester, and something has to decide which destinations are acceptable.
+    </p>
+    <p>
+      That decision was implemented as a denylist, and a denylist of addresses has a hard problem: an IP address has many equivalent written forms. The metadata service alone is documented at <code>169.254.169.254</code> over IPv4 and at <code>fd00:ec2::254</code> over IPv6 — two addresses for one endpoint before anyone starts on alternative encodings of the first. A comparison that matches text rather than resolving and normalising the address will always have gaps, and the gaps are not enumerable in advance.
+    </p>
+    <p>
+      This is the same failure that appeared in post #26, where a read-only mode in a database MCP server was enforced by <em>an incomplete list of disallowed inputs</em> in SQL validation. Different product, different language, same shape: a control expressed as a list of forbidden things, in a domain where the attacker chooses the spelling.
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      There is no feature here to adopt — the value is in patching quickly and in knowing what your exposure was. Two questions answer that: which principals hold <code>ssm:StartSession</code> without a document scope, and what the instance profiles on your managed fleet can actually do.
+    </p>
+    <p>
+      The second question is the one most organisations have not asked recently. This CVE converts a session permission into whatever the instance role holds, so the blast radius is not "someone reached the metadata service" — it is the union of every permission attached to every instance profile a port-forwarding user could reach.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      The question every reader will ask is whether IMDSv2 changes the outcome. <strong>The bulletin does not address it</strong>, and the two remediations AWS gives are the version upgrade and the IAM scope. What follows is reasoning from what the IMDS documentation separately states, not an AWS statement — and it is worth being explicit about that line.
+    </p>
+    <p>
+      IMDSv2's protections are aimed at a request arriving from <em>outside</em> the instance. AWS describes it as defence in depth against <em>open firewalls, reverse proxies, and SSRF vulnerabilities</em>. Concretely: a <code>PUT</code> carrying an <code>X-Forwarded-For</code> header is rejected, and the response to a <code>PUT</code> has a hop limit of 1 by default, so a proxy one hop away cannot obtain a token.
+    </p>
+    <p>
+      A port-forwarding session does not arrive from outside. It terminates on the instance, and the onward connection to the link-local address is made by the instance's own network stack — which is the position IMDS exists to serve. The hop limit is satisfied, there is no forwarding header to reject, and the token is generated on the instance where it is valid.
+    </p>
+    <p>
+      And the piece that decides it: the documentation says <em>the token is an instance-specific key</em> that <em>is not valid on other EC2 instances and will be rejected if you attempt to use it outside of the instance on which it was generated</em>. That binding is on the <em>token</em>. The credentials the token lets you retrieve are ordinary temporary IAM credentials, and nothing binds those to the instance at all — which is exactly why the bulletin can say they are usable <em>from outside the instance</em>.
+    </p>
+    <div class="callout amber">
+      <strong>The honest summary</strong>
+      <p>IMDSv2 is worth enforcing and is not the control that stops this. It hardens the path from a network position outside the instance; this attack borrows a position inside it. Patch the agent, and scope the session permission.</p>
+    </div>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      None directly. The relevant cost is operational: upgrading SSM Agent across a fleet, which is free but not instant, and which depends on the agent being reachable — the subject of post #29.
+    </p>
+    <p>
+      There is an unpleasant interaction worth naming. An instance that is unmanaged cannot be updated through Systems Manager, so the machines least likely to receive this patch are the ones whose agent is already failing to check in. They are also still running the vulnerable agent.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      Treat this as two workstreams that run at different speeds. The IAM scope can be applied today, centrally, and does not require touching a single instance. The agent upgrade has to reach every managed node and will leave a tail.
+    </p>
+    <p>
+      Do the IAM scope first for that reason, not because it is the better control. Restricting <code>ssm:StartSession</code> so only named principals can invoke <code>AWS-StartPortForwardingSessionToRemoteHost</code> is AWS's stated interim measure, and it closes the path for everyone who should not have had it anyway.
+    </p>
+    <p>
+      Then measure the agent version distribution across the fleet rather than assuming automatic updates handled it, and reconcile that list against the unmanaged count from post #29. The two lists together are the real exposure.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <div class="table-scroll">
+      <table>
+        <tr>
+          <th>Control</th>
+          <th>Works well when</th>
+          <th>Breaks down when</th>
+        </tr>
+        <tr>
+          <td>Upgrade to 3.3.4851.0</td>
+          <td>Always. It is the actual fix and everything else is mitigation.</td>
+          <td>The agent cannot be reached — which is the population most likely to be stale.</td>
+        </tr>
+        <tr>
+          <td>Scope <code>ssm:StartSession</code> by document</td>
+          <td>Immediately, account-wide, with no instance access required.</td>
+          <td>Port forwarding is routine in how your engineers work. This removes it for whoever is scoped out.</td>
+        </tr>
+        <tr>
+          <td>Least-privilege instance profiles</td>
+          <td>Always, and it bounds this CVE and every future variant of it.</td>
+          <td>It is slow work and does not help today. It explains why the blast radius was large, not why the flaw existed.</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      Apply the IAM scope first. Identify which principals genuinely need remote-host port forwarding, and restrict the session permission to that document for everyone else. This is AWS's documented interim measure and it is reversible.
+    </p>
+    <p>
+      Then inventory agent versions and drive them past 3.3.4851.0, prioritising instances whose profiles carry the broadest permissions rather than working alphabetically. If you cannot enumerate which instance profiles those are, that is the more important finding of the day.
+    </p>
+    <p>
+      Finally, review CloudTrail for <code>StartSession</code> calls using the remote-host port forwarding document, and reconcile the destinations against what those sessions should plausibly have been reaching.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <ul>
+      <li>Scope session permissions by document, not just by instance. <code>ssm:StartSession</code> without a document condition is broader than most people intend.</li>
+      <li>Keep instance profiles narrow. This CVE is only as damaging as the role it exposes.</li>
+      <li>Enforce IMDSv2 anyway — it is real defence in depth, just not against this.</li>
+      <li>Track agent version as a fleet metric alongside unmanaged count. Both are patch-reachability problems.</li>
+      <li>Be suspicious of any control described as a list of forbidden values. Prefer an allowlist, or normalise before comparing.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt this</h2>
+    <p>
+      Everyone running SSM Agent, which is effectively everyone running EC2 at scale. The urgency scales with two things: how widely <code>ssm:StartSession</code> is granted, and how permissive your instance profiles are.
+    </p>
+    <p>
+      Organisations that moved off bastion hosts onto Session Manager — which is the recommended direction and remains so — should treat this with particular attention, because port forwarding is likely to be routine rather than exceptional in those environments.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>CVE-2026-89049: SSRF in SSM Agent remote-host port forwarding, fixed in 3.3.4851.0.</li>
+      <li>A denylist of remote destinations was bypassed by an equivalent representation of a link-local address, reaching the metadata service.</li>
+      <li>The payoff is the instance's temporary IAM role credentials, usable from outside the instance.</li>
+      <li>IMDSv2 binds the session <em>token</em> to the instance; it does not bind the <em>credentials</em>, which is why they travel.</li>
+      <li>Two speeds of response: scope <code>ssm:StartSession</code> today, upgrade the agent everywhere after.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/security/security-bulletins/rss/2026-107-aws/" target="_blank" rel="noopener">AWS Security Bulletin &#8212; CVE-2026-89049, SSRF in Session Manager port forwarding in SSM Agent</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html" target="_blank" rel="noopener">Use the Instance Metadata Service to access instance metadata &#8212; IMDSv2 sessions, token binding and the hop limit</a></li>
+      <li><a href="https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent-get-version.html" target="_blank" rel="noopener">Checking the SSM Agent version number</a></li>
+      <li><a href="https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent-automatic-updates.html" target="_blank" rel="noopener">Automating updates to SSM Agent</a></li>
+      <li><a href="https://aws.amazon.com/security/security-bulletins/" target="_blank" rel="noopener">AWS Security Bulletins</a></li>
+    </ul>
+  </div>
+</div>
