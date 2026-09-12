@@ -695,6 +695,9 @@ QUIET_CHECKS = [
     # A feed that re-stamps itself on every hourly rebuild would alert
     # every subscriber, hourly, about incidents they already know.
     ("the incident feeds are valid and stay quiet", "check_status_feed.py"),
+    # What's New shipped almost empty and grew by 6,400px when its script
+    # rendered. Reported as the page scrolling by itself on an iPhone.
+    ("What's New holds its height from first paint", "check_news_reserve.py"),
     # Neither of these was in this report, and the status page spent an
     # unknown number of hours serving site-footer.js?v=0 -- a constant
     # where a content hash belongs, so the shared script was pinned for

@@ -1,0 +1,462 @@
+---
+title: 'Week 18 - EKS Self-Service: A Namespace Is Not a Boundary'
+date: '2026-09-13T09:00:00'
+draft: true
+labels:
+- AWS
+- Terraform
+- AWS Weekly Lab
+slug: week-18-eks-self-service
+verified: '2026-09-12'
+verified_claims:
+  - claim: "An EKS standard control plane costs $0.10 per cluster per hour, and extended support costs $0.60 per cluster per hour"
+    source: https://aws.amazon.com/eks/pricing/
+  - claim: "AWS Fargate for EKS in US East (N. Virginia) bills approximately $0.0405 per vCPU-hour and $0.00444 per GB-hour, per second with a one-minute minimum"
+    source: https://aws.amazon.com/fargate/pricing/
+  - claim: "A NAT gateway costs $0.045 per hour plus $0.045 per GB processed, and the hourly charge accrues whether or not traffic flows"
+    source: https://aws.amazon.com/vpc/pricing/
+  - claim: "AWS recommends using EKS Pod Identity to grant AWS access to pods whenever possible"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/service-accounts.html
+  - claim: "IRSA requires a unique IAM OIDC provider per cluster, and IAM has a default limit of 100 OIDC providers per account"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/service-accounts.html
+  - claim: "An IRSA trust policy is limited to 2048 bytes by default, which typically allows about four trust relationships in a single policy"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/service-accounts.html
+  - claim: "EKS Pod Identity is not supported for pods running on AWS Fargate"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/pod-id-restrictions.html
+  - claim: "DaemonSets are not supported on AWS Fargate"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/fargate.html
+  - claim: "Kubernetes 1.36 is available in Amazon EKS, and 1.34, 1.35 and 1.36 are in standard support"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions-standard.html
+  - claim: "Upstream Kubernetes retired Ingress NGINX in March 2026, with no further bug fixes or security patches"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions-standard.html
+  - claim: "The first apply failed because the availability zone data source returned a Local Zone, us-east-1-dfw-1a, where EKS cannot place a control plane and NAT gateways are unavailable"
+    derive: "HCP run run-9Bp3ywXJPtTGz4gT, 2026-09-12: UnsupportedAvailabilityZoneException on aws_eks_cluster and NotAvailableInZone on aws_nat_gateway"
+  - claim: "The first isolation test run reported two passes against pods that were rejected by the ResourceQuota before any container started"
+    derive: "prove_isolation.sh first run returned passed 2, failed 2; a manual kubectl run returned 'Error from server (Forbidden): failed quota: must specify limits.cpu, limits.memory, requests.cpu, requests.memory'"
+  - claim: "After the fix, all four isolation checks passed with pods that actually ran"
+    derive: "prove_isolation.sh second run, 2026-09-12: passed 4, failed 0, with both cross-tenant reads denied"
+  - claim: "The cluster ran one t3.small node and one Fargate profile, and the deployed stack was 57 resources"
+    derive: "HCP workspace week-18-dev resource count after apply; kubectl get nodes showed a single t3.small in Ready state"
+  - claim: "A t3.small on-demand Linux instance in US East (N. Virginia) is about $0.0208 per hour"
+    source: https://aws.amazon.com/ec2/pricing/on-demand/
+  - claim: "The fixed hourly cost of this build is about $0.17/hr, roughly $4 a day, before any pod runs"
+    derive: "0.10 control plane + 0.045 NAT gateway + 0.0208 t3.small = 0.1658/hr; x24 = 3.98/day"
+  - claim: "The cluster was created at 22:06 CDT on 2026-09-11 and destroyed the same night, inside the 12 hours planned"
+    derive: "PENDING VERIFICATION -- fill from the destroy run id and cleanup.sh output before publishing. Do not publish this claim while it is still a plan."
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Platform Engineering Lab &middot; Week 18 of 52</div>
+  <div class="post-title">A namespace is not a boundary</div>
+  <div class="post-subtitle">It is a label. It does not limit CPU, it does not stop a pod reaching a pod next door, and it has nothing to say about AWS permissions. This week builds a cluster where a new team gets a namespace that genuinely is a boundary &mdash; then tries to break it, and finds the test was lying.</div>
+  <div class="post-meta">
+    <span>13 September 2026</span>
+    <span>Terraform &middot; HCP &middot; EKS</span>
+    <span>cost measured after teardown &middot; $0 destroyed</span>
+  </div>
+</div>
+
+  <div class="toc">
+    <h3>&#128203; In This Post</h3>
+    <ol>
+      <li><a href="#why">Why &mdash; The Problem This Solves</a></li>
+      <li><a href="#what">What You Need to Know &mdash; Skills &amp; Tools</a></li>
+      <li><a href="#architecture">Architecture &mdash; How It Fits Together</a></li>
+      <li><a href="#how">How We Built It &mdash; Step by Step</a></li>
+      <li><a href="#challenges">Challenges &mdash; What Actually Went Wrong</a></li>
+      <li><a href="#security">Security &mdash; Controls at Every Layer</a></li>
+      <li><a href="#cost">Cost</a></li>
+      <li><a href="#cleanup">Cleanup</a></li>
+      <li><a href="#references">References</a></li>
+      <li><a href="#takeaways">Key Takeaways</a></li>
+    </ol>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why &mdash; The Problem This Solves</h2>
+
+    <p>A developer needs somewhere to run a container. In most organisations that is a ticket: somebody senior creates a space on the cluster, sets limits so the new team cannot consume everything, and wires up permissions so their application can reach its own storage and nobody else's.</p>
+
+    <p>It takes days, and it is done slightly differently every time. The alternative &mdash; handing over the cluster and trusting everyone &mdash; is how one team's pod ends up able to read another team's data.</p>
+
+    <div class="callout amber">
+      <p><strong>The trap is that Kubernetes looks like it already solved this.</strong> It has namespaces. Creating one takes a second, and it appears to divide the cluster. It does not. A namespace is a name: it enforces no CPU limit, blocks no network traffic, and grants no cloud permissions. Everything people assume it does has to be added as a separate object, deliberately.</p>
+    </div>
+
+    <h3>What a boundary actually costs to build</h3>
+
+    <p>Three objects per tenant, none of which arrive with the namespace:</p>
+
+    <table class="tbl">
+      <thead><tr><th>Object</th><th>Without it</th></tr></thead>
+      <tbody>
+        <tr><td><strong>ResourceQuota</strong></td><td>one team can request every core in the cluster, and Kubernetes will let them</td></tr>
+        <tr><td><strong>NetworkPolicy</strong></td><td>every pod can reach every other pod, in any namespace, by default</td></tr>
+        <tr><td><strong>An AWS identity</strong></td><td>pods inherit whatever the node's role happens to hold</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section" id="what">
+    <h2>What You Need to Know &mdash; Skills &amp; Tools</h2>
+
+    <table class="tbl">
+      <thead><tr><th>Concept</th><th>What actually matters</th></tr></thead>
+      <tbody>
+        <tr><td><strong>EKS</strong></td><td>Managed Kubernetes. AWS runs the control plane; you supply the compute. The control plane bills <strong>$0.10/hr from creation</strong>, with no free tier &mdash; unusual for this series, where most weeks cost nothing until something runs.</td></tr>
+        <tr><td><strong>Pod Identity vs IRSA</strong></td><td>Two ways to give a pod AWS permissions. AWS recommends Pod Identity. It cannot run on Fargate, which is the collision this week is built around.</td></tr>
+        <tr><td><strong>Fargate</strong></td><td>Pods with no node to manage, billed per second. In exchange you lose DaemonSets, privileged pods, and about a minute to cold start.</td></tr>
+        <tr><td><strong>ResourceQuota</strong></td><td>The ceiling. Note the sharp edge: once a namespace has a quota covering CPU and memory, <em>every</em> pod in it must declare requests and limits or be rejected outright.</td></tr>
+        <tr><td><strong>Access entries</strong></td><td>How humans get <code>kubectl</code> access. They replaced hand-editing the <code>aws-auth</code> ConfigMap, which was for years the standard way to lock yourself out of a cluster permanently.</td></tr>
+        <tr><td><strong>Standard vs extended support</strong></td><td>Falling off a supported Kubernetes version moves the control plane from $0.10/hr to <strong>$0.60/hr</strong>. Staying current is a cost decision, not only a maintenance one.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture &mdash; How It Fits Together</h2>
+
+    <p>One cluster, two tenants, and deliberately two different ways of granting AWS permissions.</p>
+
+<svg viewBox="0 0 900 500" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="One EKS cluster with two tenants. tenant-a runs on an EC2 node and gets AWS permissions through Pod Identity; tenant-b runs on Fargate and must use IRSA because Pod Identity cannot run there. Each tenant reaches only its own S3 bucket."
+     style="width:100%;height:auto;font-family:'Segoe UI',Arial,sans-serif">
+  <defs>
+    <symbol id="i-eks" viewBox="0 0 64 64">
+    <title>Icon-Architecture/48/Arch_Amazon-Elastic-Kubernetes-Service_48</title>
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g fill="#ED7100">
+            <rect x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M37.708,25.0004058 L32.65,31.3403171 L37.967,38.0212236 L35.752,38.0212236 L31,32.0003079 L31,38.0002239 L29,38.0002239 L29,25.0004058 L31,25.0004058 L31,30.2413325 L35.463,25.0004058 L37.708,25.0004058 Z M50,36.3822466 L44,33.3822885 L44,25.0004058 C44,24.6374109 43.803,24.3024156 43.485,24.1264181 L35,19.412484 L35,12.7495773 L50,21.5724538 L50,36.3822466 Z M51.507,20.1384739 L34.507,10.1386138 C34.199,9.95761637 33.815,9.95461641 33.504,10.1326139 C33.192,10.3106114 33,10.6416068 33,11.0006018 L33,20.0004758 C33,20.3634707 33.197,20.6984661 33.515,20.8744636 L42,25.5883976 L42,34.0002799 C42,34.3792746 42.214,34.7252697 42.553,34.8952674 L50.553,38.8952114 C50.694,38.9652104 50.847,39.0002099 51,39.0002099 C51.183,39.0002099 51.365,38.9502106 51.525,38.851212 C51.82,38.6682146 52,38.3472191 52,38.0002239 L52,21.0004618 C52,20.6464668 51.812,20.3184714 51.507,20.1384739 L51.507,20.1384739 Z M32,51.8280304 L15,41.4391758 L15,21.5544541 L29,12.8045765 L29,19.4464836 L21.47,24.1524177 C21.178,24.3354152 21,24.6554107 21,25.0004058 L21,38.0002239 C21,38.351219 21.185,38.6772144 21.485,38.8572119 L31.485,44.857128 C31.789,45.0401254 32.167,45.0481253 32.479,44.8781277 L42.988,39.1462079 L48.035,42.0291675 L32,51.8280304 Z M50.496,41.1321801 L43.496,37.1322361 C43.194,36.9592385 42.825,36.9562385 42.521,37.1222362 L32.023,42.8481561 L23,37.4342318 L23,25.5543981 L30.53,20.848464 C30.822,20.6654665 31,20.345471 31,20.0004758 L31,11.0006018 C31,10.6366069 30.803,10.3026115 30.484,10.125614 C30.168,9.9486165 29.778,9.95961634 29.47,10.1526136 L13.47,20.1524737 C13.178,20.3354711 13,20.6554667 13,21.0004618 L13,42.0001679 C13,42.3481631 13.182,42.6711585 13.479,42.854156 L31.479,53.854002 C31.639,53.9510007 31.819,54 32,54 C32.181,54 32.361,53.9510007 32.521,53.854002 L50.521,42.854156 C50.823,42.6691586 51.005,42.3391632 51.0001004,41.9851681 C50.995,41.6321731 50.803,41.3071776 50.496,41.1321801 L50.496,41.1321801 Z" fill="#FFFFFF"></path>
+    </g>
+</symbol>
+<symbol id="i-ec2" viewBox="0 0 64 64">
+    <title>Icon-Architecture/48/Arch_Amazon-EC2_48</title>
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g fill="#ED7100">
+            <rect x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M22,41 L41,41 L41,23 L22,23 L22,41 Z M43,23 L46,23 L46,25 L43,25 L43,27 L46,27 L46,29 L43,29 L43,31 L46,31 L46,33 L43,33 L43,36 L46,36 L46,38 L43,38 L43,40 L46,40 L46,42 L42.863,42 C42.608,42.587 42.023,43 41.344,43 L41,43 L41,46 L39,46 L39,43 L37,43 L37,46 L35,46 L35,43 L33,43 L33,46 L31,46 L31,43 L29,43 L29,46 L27,46 L27,43 L24,43 L24,46 L22,46 L22,43 L21.656,43 C20.977,43 20.392,42.587 20.137,42 L18,42 L18,40 L20,40 L20,38 L18,38 L18,36 L20,36 L20,33 L18,33 L18,31 L20,31 L20,29 L18,29 L18,27 L20,27 L20,25 L18,25 L18,23 L20,23 L20,22.656 C20,21.743 20.743,21 21.656,21 L22,21 L22,18 L24,18 L24,21 L27,21 L27,18 L29,18 L29,21 L31,21 L31,18 L33,18 L33,21 L35,21 L35,18 L37,18 L37,21 L39,21 L39,18 L41,18 L41,21 L41.344,21 C42.257,21 43,21.743 43,22.656 L43,23 Z M32,52 L12,52 L12,32 L16,32 L16,30 L11.843,30 C10.826,30 10,30.827 10,31.843 L10,52.157 C10,53.173 10.826,54 11.843,54 L32.157,54 C33.174,54 34,53.173 34,52.157 L34,48 L32,48 L32,52 Z M54,11.843 L54,32.157 C54,33.173 53.174,34 52.157,34 L48,34 L48,32 L52,32 L52,12 L32,12 L32,16 L30,16 L30,11.843 C30,10.827 30.826,10 31.843,10 L52.157,10 C53.174,10 54,10.827 54,11.843 L54,11.843 Z" fill="#FFFFFF"></path>
+    </g>
+</symbol>
+<symbol id="i-far" viewBox="0 0 64 64">
+    <title>Icon-Architecture/48/Arch_AWS-Fargate_48</title>
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g fill="#ED7100">
+            <rect x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M42.4670854,46.382 L42.4670854,42.618 L44.4605025,41.618 L44.4605025,45.382 L42.4670854,46.382 Z M38.4802513,41.618 L40.4736684,42.618 L40.4736684,46.382 L38.4802513,45.382 L38.4802513,41.618 Z M33.4967085,51.382 L33.4967085,47.618 L35.4901256,46.618 L35.4901256,50.382 L33.4967085,51.382 Z M29.5098744,46.618 L31.5032915,47.618 L31.5032915,51.382 L29.5098744,50.382 L29.5098744,46.618 Z M24.5263316,46.382 L24.5263316,42.618 L26.5197487,41.618 L26.5197487,45.382 L24.5263316,46.382 Z M20.5394975,41.618 L22.5329146,42.618 L22.5329146,46.382 L20.5394975,45.382 L20.5394975,41.618 Z M23.5296231,39.118 L25.287817,40 L23.5296231,40.882 L21.7714292,40 L23.5296231,39.118 Z M32.5,44.118 L34.2581939,45 L32.5,45.882 L30.7418061,45 L32.5,44.118 Z M41.4703769,39.118 L43.2285708,40 L41.4703769,40.882 L39.712183,40 L41.4703769,39.118 Z M45.9027398,39.106 L41.9159056,37.106 C41.6358305,36.965 41.3049233,36.965 41.0248482,37.106 L37.038014,39.106 C36.7001298,39.275 36.4868342,39.621 36.4868342,40 L36.4868342,43.882 L32.9455287,42.106 C32.6654536,41.965 32.3345464,41.965 32.0544713,42.106 L28.5131658,43.882 L28.5131658,40 C28.5131658,39.621 28.2998702,39.275 27.961986,39.106 L23.9751518,37.106 C23.6950767,36.965 23.3641695,36.965 23.0840944,37.106 L19.0972602,39.106 C18.759376,39.275 18.5460804,39.621 18.5460804,40 L18.5460804,46 C18.5460804,46.379 18.759376,46.725 19.0972602,46.895 L23.0840944,48.895 C23.2236336,48.965 23.3771267,49 23.5296231,49 C23.6821195,49 23.8356126,48.965 23.9751518,48.895 L27.5164573,47.118 L27.5164573,51 C27.5164573,51.379 27.7297529,51.725 28.0676371,51.895 L32.0544713,53.895 C32.1940105,53.965 32.3475036,54 32.5,54 C32.6524964,54 32.8059895,53.965 32.9455287,53.895 L36.9323629,51.895 C37.2702471,51.725 37.4835427,51.379 37.4835427,51 L37.4835427,47.118 L41.0248482,48.895 C41.1643874,48.965 41.3178805,49 41.4703769,49 C41.6228733,49 41.7763664,48.965 41.9159056,48.895 L45.9027398,46.895 C46.240624,46.725 46.4539196,46.379 46.4539196,46 L46.4539196,40 C46.4539196,39.621 46.240624,39.275 45.9027398,39.106 L45.9027398,39.106 Z M54,28.09 C54,33.193 42.9225812,35.946 32.5,35.946 C22.0774188,35.946 11,33.193 11,28.09 C11,25.629 13.6801493,23.474 18.5470771,22.023 L19.115201,23.94 C15.3386723,25.066 12.9934171,26.656 12.9934171,28.09 C12.9934171,30.854 21.3358676,33.946 32.5,33.946 C43.6641324,33.946 52.0065829,30.854 52.0065829,28.09 C52.0065829,26.656 49.6613277,25.066 45.884799,23.94 L46.4529229,22.023 C51.3198507,23.474 54,25.629 54,28.09 L54,28.09 Z M32.5,12.064 L40.5474248,15 L32.5,17.936 L24.4525752,15 L32.5,12.064 Z M41.3677159,28.648 C39.8118539,29.348 37.2134347,30.164 33.4967085,30.293 L33.4967085,19.701 L42.4670854,16.428 L42.4670854,26.913 C42.4670854,27.667 42.0355106,28.348 41.3677159,28.648 L41.3677159,28.648 Z M22.5329146,26.913 L22.5329146,16.428 L31.5032915,19.701 L31.5032915,30.293 C27.7865653,30.164 25.1881461,29.348 23.6322841,28.648 C22.9644894,28.348 22.5329146,27.667 22.5329146,26.913 L22.5329146,26.913 Z M22.8159798,30.473 C24.6868017,31.315 27.8852394,32.319 32.5,32.319 C37.1147606,32.319 40.3131983,31.315 42.1840202,30.473 C43.5674517,29.851 44.4605025,28.454 44.4605025,26.913 L44.4605025,15 C44.4605025,14.58 44.1983682,14.204 43.8046683,14.06 L32.8408743,10.06 C32.6206017,9.98 32.3793983,9.98 32.1591257,10.06 L21.1953317,14.06 C20.8016318,14.204 20.5394975,14.58 20.5394975,15 L20.5394975,26.913 C20.5394975,28.454 21.4325483,29.851 22.8159798,30.473 L22.8159798,30.473 Z" fill="#FFFFFF"></path>
+    </g>
+</symbol>
+<symbol id="i-s3" viewBox="0 0 64 64">
+    <title>Icon-Architecture/48/Arch_Amazon-Simple-Storage-Service_48</title>
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g fill="#7AA116">
+            <rect x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <g transform="translate(10.999800, 10.000200)" fill="#FFFFFF">
+            <path d="M36.759,23.948 L36.993,22.131 C39.166,23.385 39.842,24.121 40.037,24.424 C39.713,24.485 38.832,24.509 36.759,23.948 L36.759,23.948 Z M19.5,11 C9.125,11 2.382,8.488 2,6.696 L2,6.511 C2.349,5.392 8.14,2 19.5,2 C30.84,2 36.632,5.381 37,6.505 L37,6.616 C36.724,8.446 29.961,11 19.5,11 L19.5,11 Z M34.818,23.362 C30.053,21.797 23.912,18.979 21.594,17.888 C21.535,16.786 20.628,15.906 19.512,15.906 C18.358,15.906 17.418,16.845 17.418,18 C17.418,19.154 18.358,20.094 19.512,20.094 C19.969,20.094 20.389,19.942 20.733,19.693 C23.132,20.822 29.619,23.798 34.558,25.38 L32.837,38.724 C32.583,40.352 27.919,42 19.497,42 C11.072,42 6.405,40.352 6.155,38.751 L2.435,9.814 C5.945,11.915 12.749,13 19.5,13 C26.25,13 33.054,11.915 36.565,9.815 L34.818,23.362 Z M39,6.5 C39,3.431 30.661,0 19.5,0 C8.339,0 -3.55271368e-15,3.431 -3.55271368e-15,6.5 L-3.55271368e-15,7.043 L4.174,39.033 C4.875,43.516 15.123,44 19.497,44 C23.869,44 34.113,43.516 34.818,39.007 L36.501,25.947 C37.778,26.279 38.812,26.456 39.616,26.455 C40.606,26.455 41.273,26.203 41.697,25.697 C42.047,25.281 42.185,24.756 42.085,24.221 C41.857,23 40.403,21.712 37.37,20.044 L37.27,19.989 L39,7.044 L39,6.5 Z"></path>
+        </g>
+    </g>
+</symbol>
+    <marker id="a18" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6c757d"/>
+    </marker>
+    <marker id="a18x" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#cc0c39"/>
+    </marker>
+    <style>
+      .n   { fill:#fff; stroke:#dfe4ea; stroke-width:1.2; rx:7 }
+      .lbl { font-size:13px; font-weight:600; fill:#16191f }
+      .sub { font-size:11px; fill:#6c757d }
+      .edge{ font-size:10.5px; fill:#6c757d }
+      .deny{ font-size:10.5px; fill:#cc0c39; font-weight:600 }
+      .zone{ fill:#fbfcfd; stroke:#ccd3dc; stroke-width:1; stroke-dasharray:4 3; rx:9 }
+      .band{ font-size:10px; font-weight:700; fill:#8a94a0; letter-spacing:.08em }
+    </style>
+  </defs>
+
+  <rect x="20" y="34" width="860" height="250" class="zone"/>
+  <text class="band" x="34" y="26">ONE EKS CLUSTER &#183; KUBERNETES 1.36 &#183; $0.10/HR FROM CREATION</text>
+  <use href="#i-eks" x="836" y="44" width="30" height="30"/>
+
+  <text class="band" x="42" y="58">TENANT-A &#183; ON EC2</text>
+  <rect class="n" x="42" y="68" width="372" height="196" fill="#fdfdfe"/>
+
+  <rect class="n" x="58" y="84" width="340" height="52"/>
+  <use href="#i-ec2" x="70" y="97" width="26" height="26"/>
+  <text class="lbl" x="106" y="106">Managed node &#183; t3.small</text>
+  <text class="sub" x="106" y="124">the Pod Identity agent needs somewhere to run</text>
+
+  <rect x="58" y="146" width="340" height="46" rx="7" fill="#f6f3ff" stroke="#8C4FFF" stroke-width="1.6"/>
+  <text class="lbl" x="72" y="166">Pod Identity</text>
+  <text class="sub" x="72" y="182">what AWS recommends &#183; no trust policy per cluster</text>
+
+  <rect class="n" x="58" y="202" width="340" height="46"/>
+  <text class="lbl" x="72" y="222">namespace tenant-a</text>
+  <text class="sub" x="72" y="238">ResourceQuota &#183; NetworkPolicy &#183; ServiceAccount</text>
+
+  <text class="band" x="486" y="58">TENANT-B &#183; ON FARGATE</text>
+  <rect class="n" x="486" y="68" width="372" height="196" fill="#fdfdfe"/>
+
+  <rect class="n" x="502" y="84" width="340" height="52"/>
+  <use href="#i-far" x="514" y="97" width="26" height="26"/>
+  <text class="lbl" x="550" y="106">Fargate &#183; no node to manage</text>
+  <text class="sub" x="550" y="124">no DaemonSets, no privileged pods</text>
+
+  <rect x="502" y="146" width="340" height="46" rx="7" fill="#fff7ed" stroke="#FF9900" stroke-width="1.6"/>
+  <text class="lbl" x="516" y="166">IRSA</text>
+  <text class="sub" x="516" y="182">the only option here &#183; one OIDC provider per cluster</text>
+
+  <rect class="n" x="502" y="202" width="340" height="46"/>
+  <text class="lbl" x="516" y="222">namespace tenant-b</text>
+  <text class="sub" x="516" y="238">ResourceQuota &#183; NetworkPolicy &#183; ServiceAccount</text>
+
+  <rect x="20" y="296" width="860" height="42" rx="7" fill="#fff5f5" stroke="#cc0c39" stroke-width="1.4"/>
+  <text class="lbl" x="36" y="314" fill="#cc0c39">Pod Identity cannot run on Fargate &#8212; its agent is a privileged DaemonSet, and Fargate runs neither</text>
+  <text class="sub" x="36" y="330">The webhook still injects the variables, so the pod looks configured and then times out. It reads as an IAM problem.</text>
+
+  <rect class="n" x="120" y="378" width="216" height="58"/>
+  <use href="#i-s3" x="134" y="392" width="26" height="26"/>
+  <text class="lbl" x="170" y="401">tenant-a bucket</text>
+  <text class="sub" x="170" y="418">private &#183; encrypted</text>
+
+  <rect class="n" x="564" y="378" width="216" height="58"/>
+  <use href="#i-s3" x="578" y="392" width="26" height="26"/>
+  <text class="lbl" x="614" y="401">tenant-b bucket</text>
+  <text class="sub" x="614" y="418">private &#183; encrypted</text>
+
+  <line x1="228" y1="342" x2="228" y2="374" stroke="#6c757d" stroke-width="1.6" marker-end="url(#a18)"/>
+  <line x1="672" y1="342" x2="672" y2="374" stroke="#6c757d" stroke-width="1.6" marker-end="url(#a18)"/>
+
+  <line x1="336" y1="407" x2="558" y2="407" stroke="#cc0c39" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a18x)"/>
+  <line x1="440" y1="396" x2="460" y2="418" stroke="#cc0c39" stroke-width="2"/>
+  <line x1="460" y1="396" x2="440" y2="418" stroke="#cc0c39" stroke-width="2"/>
+  <text class="deny" x="372" y="392">denied &#8212; and tested, not assumed</text>
+
+  <text class="edge" x="120" y="458">Each role reaches one bucket: ListBucket on it, GetObject and PutObject on its contents, nothing else.</text>
+  <text class="edge" x="120" y="476">Built and destroyed inside 12 hours. EKS bills from creation, with no free tier.</text>
+</svg>
+
+    <h3>Why two identity mechanisms, which looks like indecision and is not</h3>
+
+    <p>AWS recommends <strong>Pod Identity</strong> over IRSA. AWS also offers <strong>Fargate</strong> so you never manage a node. Follow both pieces of advice and you get a cluster that cannot work.</p>
+
+    <p>The Pod Identity agent is a privileged DaemonSet. Fargate runs neither DaemonSets nor privileged pods. So on Fargate, Pod Identity simply does not function &mdash; and the way it fails is the interesting part:</p>
+
+    <div class="callout red">
+      <p>The webhook still injects the environment variables into the pod, so it <em>looks</em> correctly configured. The credential fetch then times out against an agent that was never there. It presents as an IAM misconfiguration, and you can spend a long time auditing trust policies that were right all along.</p>
+    </div>
+
+    <p>AWS's own answer is to run both: Pod Identity for pods on EC2, IRSA for pods on Fargate, in the same cluster. This build does exactly that, one tenant each, so the difference is visible rather than described.</p>
+  </div>
+
+  <div class="section" id="how">
+    <h2>How We Built It &mdash; Step by Step</h2>
+
+    <h3>Step 1 &mdash; Decide what the tenant boundary is made of</h3>
+
+    <p>The tenant module is the week. Given a name, it creates a namespace, a ResourceQuota, a NetworkPolicy denying cross-namespace ingress, a private encrypted bucket, an IAM role scoped to that one bucket, and a service account wired to the role.</p>
+
+    <p>The identity half switches on where the pods run:</p>
+
+    <pre><code>module "tenant_a" {          module "tenant_b" {
+  compute       = "ec2"        compute       = "fargate"
+  identity_mode = "pod_identity"   identity_mode = "irsa"
+}                            }</code></pre>
+
+    <p>Same module, same boundary, two routes to it.</p>
+
+    <h3>Step 2 &mdash; The trust policy is where the mechanisms actually differ</h3>
+
+    <p>Pod Identity trusts one EKS service principal and carries the cluster, namespace and service account as session tags. The role works in another cluster with no edit.</p>
+
+    <p>IRSA trusts <em>this</em> cluster's OIDC provider and matches the service account by a string inside the token:</p>
+
+    <pre><code>condition {
+  test     = "StringEquals"
+  variable = "${oidc_provider_url}:sub"
+  values   = ["system:serviceaccount:tenant-b:app"]
+}</code></pre>
+
+    <p>Omit that <code>:sub</code> condition and <em>any</em> service account in the cluster can assume the role. Omit <code>:aud</code> and the token audience goes unchecked. Neither omission produces an error, and neither is visible until somebody tries.</p>
+
+    <p>That, in one block, is why Pod Identity exists: reusing an IRSA role in a second cluster means editing this document, the trust policy is capped at 2048 bytes so it holds about four of these, and IAM allows 100 OIDC providers per account.</p>
+
+    <h3>Step 3 &mdash; Deploy it</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-18-eks-self-service/docs/blog/screenshots/03-compute-node-and-fargate.png" alt="The EKS console showing one t3.small node in Ready state, managed by the week18-platform node group">
+      <figcaption>One t3.small node. It exists so the Pod Identity agent has somewhere to live &mdash; everything else here could have been serverless.</figcaption>
+    </figure>
+
+    <h3>Verifying it actually works</h3>
+
+    <p>Four checks, and the two that matter are the ones expected to <strong>fail</strong>:</p>
+
+    <ol>
+      <li><code>tenant-a</code> reads its own bucket &mdash; must succeed</li>
+      <li><code>tenant-a</code> reads <code>tenant-b</code>'s bucket &mdash; <strong>must be denied</strong></li>
+      <li><code>tenant-b</code> reads its own bucket &mdash; must succeed</li>
+      <li><code>tenant-b</code> reads <code>tenant-a</code>'s bucket &mdash; <strong>must be denied</strong></li>
+    </ol>
+
+    <p>Run 1 and 3 alone and you have shown that permissions work. Only 2 and 4 show that they stop anything.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-18-eks-self-service/docs/blog/screenshots/08-isolation-proven.png" alt="The isolation test passing all four checks, with both cross-tenant reads denied">
+      <figcaption>Four for four. Pod Identity on EC2 and IRSA on Fargate reach the same boundary by different routes.</figcaption>
+    </figure>
+
+    <p>That is the second run. The first one is the reason this section exists.</p>
+  </div>
+
+  <div class="section" id="challenges">
+    <h2>Challenges &mdash; What Actually Went Wrong</h2>
+
+    <h3>1. The test passed against pods that never ran</h3>
+
+    <p>The first run reported <strong>two passed, two failed</strong>. The two failures looked like a real isolation problem, so I went to read the raw output of a single probe rather than reason about it:</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-18-eks-self-service/docs/blog/screenshots/07-the-test-that-proved-nothing.png" alt="The first test run showing two passes, and the manual probe revealing every pod was rejected by the quota before starting">
+      <figcaption>Every probe was rejected before a container started. Two of those four lines are green.</figcaption>
+    </figure>
+
+    <p>The ResourceQuota requires every pod to declare CPU and memory requests <em>and</em> limits. My probes declared none, so the admission controller refused all four. The checks looked only for denial strings in the output &mdash; and a pod that never starts produces none. So <strong>"no denial found" scored as success</strong> on the two tests that expected success.</p>
+
+    <div class="callout red">
+      <p>Two green ticks, and not one of the four results meant anything. The fix is not only adding resources to the probe &mdash; it is that <strong>a test which cannot distinguish "denied" from "never ran" is not a test</strong>. Anything resembling a pod failing to start is now a hard failure regardless of what the check expected.</p>
+    </div>
+
+    <p>The quota rule is worth knowing independently: once a namespace has a quota covering CPU or memory, every pod in it must declare both requests and limits. A cluster that worked yesterday starts rejecting deployments the moment someone adds a quota.</p>
+
+    <h3>2. Locked out of a cluster I had just created</h3>
+
+    <p>The apply reported success. <code>kubectl</code> said <em>"the server has asked for the client to provide credentials."</em></p>
+
+    <p><code>bootstrap_cluster_creator_admin_permissions</code> grants cluster admin to whichever identity created the cluster. Terraform ran on a CI runner, so the admin was the runner's role. Nobody else had access &mdash; including the account owner, sitting at a laptop.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-18-eks-self-service/docs/blog/screenshots/05-access-entries.png" alt="EKS access entries listing the SSO administrator role, with tabs for Pod Identity associations and OIDC identity providers">
+      <figcaption>The fix, and a good summary of the week: access entries, Pod Identity associations and OIDC providers as three tabs on one page.</figcaption>
+    </figure>
+
+    <p>Access entries are the current mechanism, and they are worth reaching for early. They replaced editing the <code>aws-auth</code> ConfigMap by hand, which was for years the standard way to lock yourself out of a cluster with no way back in.</p>
+
+    <h3>3. The apply chose a Local Zone</h3>
+
+    <p>The very first apply failed twice in one run:</p>
+
+    <pre><code>UnsupportedAvailabilityZoneException: EKS does not support creating control
+plane instances in us-east-1-dfw-1a
+
+NotAvailableInZone: Nat Gateway is not available in this availability zone</code></pre>
+
+    <p><code>aws_availability_zones</code> returns Local Zones alongside standard ones. <code>us-east-1-dfw-1a</code> is Dallas. EKS will not put a control plane there and NAT gateways do not exist there at all.</p>
+
+    <p>Neither error message contains the words "Local Zone", and both arrive at apply time &mdash; after the VPC has already been built. The fix is a filter most examples omit:</p>
+
+    <pre><code>filter {
+  name   = "zone-type"
+  values = ["availability-zone"]
+}</code></pre>
+
+    <h3>4. A run that reported no changes, because it never saw them</h3>
+
+    <p>After pushing the access-entry fix I triggered a run through the API, and it returned <code>add=0 change=0</code>. The code was right; the run was using a configuration version from <em>before</em> the push, because the VCS webhook had not ingested the commit yet.</p>
+
+    <p>Worse, the webhook's own run was already queued and holding the workspace lock, so my API run sat in <code>pending</code> behind it. The answer was to apply the VCS run and discard the duplicate &mdash; but the failure mode to remember is that <strong>a plan showing no changes may mean your code is fine and the runner is looking at an older commit</strong>.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security &mdash; Controls at Every Layer</h2>
+
+    <ul>
+      <li><strong>The identity mechanism is chosen by where the pod runs</strong>, not by preference &mdash; Pod Identity on EC2, IRSA on Fargate, because Pod Identity cannot work there</li>
+      <li><strong>Each tenant role reaches exactly one bucket</strong> &mdash; <code>s3:ListBucket</code> on the bucket, <code>GetObject</code>/<code>PutObject</code> on its contents, and nothing else anywhere</li>
+      <li><strong>The IRSA trust policy pins both <code>:sub</code> and <code>:aud</code></strong> &mdash; without <code>:sub</code> any service account in the cluster can assume the role, and the omission is silent</li>
+      <li><strong>NetworkPolicy denies cross-namespace ingress</strong> &mdash; Kubernetes allows it by default, which is the opposite of what most people assume</li>
+      <li><strong>Control plane audit logging is on</strong> &mdash; a denied cross-tenant call is only visible there</li>
+      <li><strong>Cluster access through access entries</strong>, not a hand-edited ConfigMap</li>
+      <li><strong>The isolation test is part of the build</strong> &mdash; a boundary nobody has attacked is a boundary nobody has tested</li>
+    </ul>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost</h2>
+
+    <p>Prices as of September 2026 &mdash; verify at the <a href="https://aws.amazon.com/eks/pricing/" target="_blank" rel="noopener">EKS pricing page</a>.</p>
+
+    <table class="tbl">
+      <thead><tr><th>Item</th><th>Rate</th><th>Note</th></tr></thead>
+      <tbody>
+        <tr><td>EKS control plane</td><td><strong>$0.10 / hr</strong></td><td>from creation. No free tier</td></tr>
+        <tr><td>NAT gateway</td><td>$0.045 / hr + $0.045 / GB</td><td>one, not one per AZ</td></tr>
+        <tr><td>t3.small node</td><td>~$0.0208 / hr</td><td>fixed at one</td></tr>
+        <tr><td>Fargate</td><td>$0.0405 / vCPU-hr + $0.00444 / GB-hr</td><td>per second, 1-minute minimum</td></tr>
+        <tr><td>Extended support</td><td><strong>$0.60 / hr</strong></td><td>if you fall off a supported version</td></tr>
+        <tr><td><strong>Total spent this week</strong></td><td></td><td><strong>measured after teardown, not estimated from rates</strong></td></tr>
+        <tr><td><strong>Destroyed</strong></td><td></td><td><strong>$0</strong></td></tr>
+      </tbody>
+    </table>
+
+    <h3>This bill is the opposite shape to the last several weeks</h3>
+
+    <p>Weeks 11, 12 and 16 of this series, and a QuickSight subscription that caught me last month, all cost <em>nothing</em> on the day they were created and began billing thirty days later when a free trial quietly ended. Nothing alerted, because nothing had changed &mdash; a number that was zero simply stopped being zero.</p>
+
+    <p>EKS is the reverse. It charges about <strong>$4 a day from the moment the cluster exists</strong>, visibly, with no trial and nothing deferred. That is easier to manage, not harder, and it changes the discipline: teardown becomes part of the build rather than an afterthought. This cluster was created and destroyed inside twelve hours by design.</p>
+  </div>
+
+  <div class="section" id="cleanup">
+    <h2>Cleanup</h2>
+
+    <pre><code>./scripts/cleanup.sh</code></pre>
+
+    <p>It checks clusters, NAT gateways, elastic IPs, VPCs, instances, roles, buckets and log groups by name, then does a tag search on <code>Week=18</code> for anything the name checks missed.</p>
+
+    <p><strong>OIDC providers are on that list deliberately.</strong> IRSA creates one per cluster, they do not appear anywhere in the EKS console once the cluster is gone, they survive a careless teardown, and IAM caps an account at 100 of them. They cost nothing, which is exactly why they accumulate.</p>
+  </div>
+
+  <div class="section" id="references">
+    <h2>References</h2>
+
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/service-accounts.html" target="_blank" rel="noopener">Pod Identity and IRSA compared</a> &mdash; AWS's own table of the limits that drove the change</li>
+      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/pod-id-restrictions.html" target="_blank" rel="noopener">EKS Pod Identity restrictions</a> &mdash; including Fargate</li>
+      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/fargate.html" target="_blank" rel="noopener">Fargate on EKS</a> &mdash; what you give up</li>
+      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions-standard.html" target="_blank" rel="noopener">Kubernetes versions in standard support</a></li>
+      <li><a href="https://aws.amazon.com/eks/pricing/" target="_blank" rel="noopener">EKS pricing</a></li>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/week-18-eks-self-service" target="_blank" rel="noopener">This week's code</a></li>
+    </ul>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key Takeaways</h2>
+
+    <ul>
+      <li><strong>A namespace is a label.</strong> The quota is the ceiling, the NetworkPolicy is the boundary, and the AWS identity is the permission. None of them arrive on their own</li>
+      <li><strong>A test that cannot tell "denied" from "never ran" is not a test.</strong> Two green ticks against pods rejected before startup is worse than a red run, because nobody investigates a pass</li>
+      <li><strong>Two AWS recommendations can be mutually exclusive.</strong> Pod Identity and Fargate are each the right default, and together they produce a silent failure</li>
+      <li><strong>Adding a quota changes the contract for every pod in the namespace</strong> &mdash; requests and limits become mandatory, retroactively</li>
+      <li><strong>Know who the cluster admin is before you need to be one.</strong> On a CI runner it is not you</li>
+      <li><strong>A cost that starts immediately is safer than one that starts in thirty days</strong>, because you design around it</li>
+    </ul>
+
+    <h3>What I'd do differently in production</h3>
+
+    <p>This is a same-day lab cluster with two tenants and one operator. Several decisions above are only correct because of that.</p>
+
+    <ul>
+      <li><strong>A NAT gateway per availability zone.</strong> One NAT is a single-AZ failure away from breaking egress for every pod in the other subnet. It doubles a $0.045/hr line to remove a single point of failure &mdash; obviously right in production, and wasteful for twelve hours</li>
+      <li><strong>Narrow the API endpoint.</strong> <code>public_access_cidrs</code> is open here. In a real estate it is your office and your CI ranges, or the endpoint is private and reached through a bastion or VPN</li>
+      <li><strong>Generate the tenant, do not hand-write it.</strong> The module is the mechanism; self-service needs a front door &mdash; a pull request template or a ticket that fills in the variables &mdash; so a new team never edits Terraform directly</li>
+      <li><strong>Add LimitRange alongside ResourceQuota.</strong> The quota makes requests and limits mandatory; a LimitRange supplies sensible defaults so developers are not forced to guess on every pod</li>
+      <li><strong>Egress policy too.</strong> The NetworkPolicy here denies cross-namespace <em>ingress</em>. A compromised pod's first move is usually outbound, and that is a separate rule</li>
+      <li><strong>Do not build on Ingress NGINX.</strong> Upstream Kubernetes retired it in March 2026 &mdash; no further bug fixes or security patches. Gateway API or the AWS Load Balancer Controller instead</li>
+    </ul>
+  </div>
+
+</div>

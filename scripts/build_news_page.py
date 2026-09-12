@@ -465,6 +465,23 @@ document.documentElement.setAttribute('data-palette',p);})();
 
   .day{font-family:var(--mono);font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;
        color:var(--text-muted);margin:1.4rem 0 .5rem;padding-bottom:.3rem;border-bottom:1px solid var(--border)}
+  /* Hold the space the announcements will fill.
+     Reported from an iPhone: opening or refreshing scrolls quickly, then
+     settles. The cause is measured and identical in every engine -- the
+     document arrives 1,549px tall and becomes 7,990px when the script renders
+     the list, 500-750ms later. A page that is a fifth of its height for half a
+     second is one the browser has to correct: the address bar un-collapses and
+     re-collapses, and a restored scroll position is clamped to a short
+     document and then re-applied to a long one. Either reads as the page
+     moving by itself.
+     Not reproducible in headless Chromium or WebKit, both of which restore
+     differently from Safari on a phone, so this fixes the measurable cause
+     rather than the symptom I could not see.
+     The two numbers are measured: a row is 107px where titles wrap and 69px
+     where they do not, and a day heading is 20px. The class is dropped after
+     the first render, so a filtered view is free to be shorter. */
+  .list-reserved{min-height:__RESERVE_WIDE__px}
+  @media (max-width:640px){.list-reserved{min-height:__RESERVE_NARROW__px}}
   .item{display:flex;gap:.7rem;padding:.55rem 0;border-bottom:1px solid transparent}
   .item:hover{border-bottom-color:var(--border)}
   .chip{flex:0 0 auto;font-family:var(--mono);font-size:.6rem;letter-spacing:.06em;
@@ -780,7 +797,7 @@ a:active,button:active{opacity:.72}
     </div>
     <div class="row" id="svcs"></div>
   </div>
-  <div id="list"></div>
+  <div id="list" class="list-reserved"></div>
   <button id="more" hidden>Show more</button>
   <p class="note">__NOTE__</p>
   <h2 class="src-h" id="sources">Where this comes from</h2>
@@ -941,6 +958,9 @@ function render(){
       + '</div></div>';
   });
   list.innerHTML = html;
+  // The reservation has done its job once the list has content; a
+  // filtered view is usually shorter and should not sit on a tall blank.
+  list.classList.remove('list-reserved');
   document.getElementById('more').hidden = rows.length <= shown;
 }
 
@@ -1083,9 +1103,25 @@ def build():
     except Exception:                                        # noqa: BLE001
         jsv = "1"
 
+    # How much room the default view needs: all clouds, the last 30 days, the
+    # first 60 rows -- the state the page opens in. Row heights are measured
+    # constants (a phone wraps titles, a tablet and up does not); the counts
+    # are real, so the reservation tracks the content rather than a guess made
+    # once.
+    ROW_NARROW, ROW_WIDE, DAY_HEAD = 107, 69, 20
+    cutoff = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
+    opening = [r for r in rows if r["d"] >= cutoff][:60]
+    day_heads = len({r["d"] for r in opening})
+    reserve_narrow = len(opening) * ROW_NARROW + day_heads * DAY_HEAD
+    reserve_wide = len(opening) * ROW_WIDE + day_heads * DAY_HEAD
+    print("  holding %dpx (phone) / %dpx (wider) for %d opening row(s)"
+          % (reserve_narrow, reserve_wide, len(opening)))
+
     html = (PAGE.replace("__LEDE__", lede)
                 .replace("__COUNT_FMT__", "{:,}".format(len(rows)))
                 .replace("__COUNT__", str(len(rows)))
+                .replace("__RESERVE_WIDE__", str(reserve_wide))
+                .replace("__RESERVE_NARROW__", str(reserve_narrow))
                 .replace("__NOTE__", note)
                 .replace("__SOURCES__", sources_table())
                 .replace("__STAR__", star_html("intelligence-whats-new"))
