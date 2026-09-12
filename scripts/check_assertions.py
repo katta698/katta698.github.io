@@ -180,6 +180,13 @@ ABSOLUTE = re.compile(
     r'|entirely dependent|wholly dependent'
     r')', re.I)
 
+
+# Both classes below were added on 2026-09-12, independently, in two windows,
+# from the same realisation: the errors that survive verification are the ones
+# in the author's own voice. They catch different shapes and both are kept.
+#   CONSEQUENCE_* - a conclusion drawn from correct facts (Azure #31).
+#   DOC_CLAIM     - a characterisation of what a document says (GCP #30).
+
 # Consequences drawn from correct facts, which is the one shape neither of the
 # patterns above can see. COMPARATIVE is gated on HAS_NUMBER by design -- see
 # the note above -- so a sentence that states a *billing or eligibility
@@ -214,6 +221,37 @@ CONSEQUENCE_VERB = re.compile(
 # marks the assertion as the vendor's rather than the author's, which is the
 # whole distinction this file was written to police.
 HAS_QUOTE = re.compile(r'<em>|&ldquo;|"')
+
+# A third class, added 2026-09-12 after GCP arch #30 shipped this sentence:
+#
+#     "The blueprint assumes a greenfield organisation with no prior
+#      commitments."
+#
+# The enterprise foundations blueprint assumes the opposite. Its own
+# authentication page says "We recommend federating your Cloud Identity
+# account with your existing identity provider", and its overview offers two
+# uses, the second being "To review an existing environment on Google Cloud".
+# The post also listed "No existing identity provider" among what the blueprint
+# assumes. Both were wrong, and an external reader caught them.
+#
+# Neither existing class could see it. There is no ratio and no absolute in
+# that sentence -- it is a characterisation of what a DOCUMENT assumes or
+# omits, which is a different kind of claim from a fact about a product. A
+# fact about a product either appears on the cited page or it does not, and
+# verify_claims.py settles it. A claim about a page's coverage can only be
+# settled by reading the whole page, and the workflow that produced the error
+# read excerpts. The reference list even carried the unread page as a link.
+#
+# Deliberately narrow. The broad version -- any "assumes" or "does not" --
+# fires on 23 of the 30 GCP arch posts, which is how a checker gets switched
+# off. Scoped to assertions whose subject is a document, it fires on 3 of 30,
+# and two of those three are sound. That ratio is what makes it worth reading.
+DOC_CLAIM = re.compile(
+    r'\b(?:blueprint|guide|documentation|docs|reference|whitepaper|spec)\b'
+    r'[^.]{0,70}?\b(?:assumes?|presumes?|expects?|omits?|offers no'
+    r'|says nothing|is silent|does not(?: cover| mention| say| support| address)?)\b'
+    r'|\b(?:assumes?|presumes?)\b[^.]{0,50}?'
+    r'\b(?:blueprint|guide|documentation|docs)\b', re.I)
 
 SENTENCE = re.compile(r'(?<=[.!?])\s+')
 
@@ -338,6 +376,11 @@ def check(path, show_absolutes):
             continue
         if COMPARATIVE.search(s) and HAS_NUMBER.search(s):
             notes.append(("ratio", s))
+        elif DOC_CLAIM.search(s):
+            notes.append(("doc-claim", s))
+        elif (CONSEQUENCE_CUE.search(s) and CONSEQUENCE_VERB.search(s)
+              and not HAS_QUOTE.search(s)):
+            notes.append(("inference", s))
         elif show_absolutes and ABSOLUTE.search(s):
             notes.append(("absolute", s))
 
@@ -439,10 +482,66 @@ def main():
     print("\nChecked %d post(s): %d code defect(s), %d assertion(s) to eyeball."
           % (len(paths), failed, flagged))
     if flagged and not failed:
-        print("Assertions are advisory. Each ratio above needs a derive claim "
-              "behind it, or a reason it does not need one.")
+        print("Assertions are advisory. Each ratio needs a derive claim behind "
+              "it; each doc-claim needs a verified_claim on the page it "
+              "characterises, or a reason it does not need one.")
     return 1 if failed else 0
 
 
+# Every pattern in this file is one bad escape away from matching nothing, and
+# a checker that matches nothing reports a clean corpus. That happened twice:
+# once to COMPARATIVE (see its comment) and once to DOC_CLAIM on the day it was
+# added, when a word-boundary escape arrived in the file as a literal backspace byte instead and all eight
+# cases below passed as "quiet". The fix is that the checker now proves it can
+# still see, on demand and in CI, rather than being trusted to.
+SELF_TEST = [
+    # (should_flag, sentence)
+    (True,  "The blueprint assumes a greenfield organisation with no prior commitments."),
+    (True,  "The blueprint's stage 1 presumes groups it can create."),
+    (True,  "The documentation does not cover what happens on delete."),
+    (False, "A policy page shows intent; it does not show the estate."),
+    (False, "Asset history is kept for 35 days and folders are not supported."),
+    (False, "This assumes you have already read post 29."),
+    # Intentionally quiet: HAS_NUMBER requires a numeral, which is what stops
+    # "read that twice" flagging. A wordy ratio with no digit is a known gap.
+    (False, "Athena reservations are about a third of the price of Redshift Serverless."),
+    (True,  "An Athena reservation is 20% below the smallest Redshift Serverless capacity."),
+    (False, "Read that twice before running it in production."),
+    # The inference class, from the Azure #31 sentence that motivated it.
+    (True,  "So a single access review spanning employees and partners is "
+            "billed two ways at once."),
+    # A quotation is the vendor's assertion, not the author's, so it is exempt.
+    (False, "Microsoft says guests &ldquo;are billed only for capabilities "
+            "exclusive to ID Governance&rdquo;."),
+]
+
+
+def self_test():
+    """Prove the patterns still match. Returns an exit code."""
+    bad = 0
+    for want, sentence in SELF_TEST:
+        if COMPARATIVE.search(sentence) and HAS_NUMBER.search(sentence):
+            got = True
+        elif DOC_CLAIM.search(sentence):
+            got = True
+        else:
+            got = bool(CONSEQUENCE_CUE.search(sentence)
+                       and CONSEQUENCE_VERB.search(sentence)
+                       and not HAS_QUOTE.search(sentence))
+        if got != want:
+            bad += 1
+            print("   FAIL  expected flag=%s: %s" % (want, sentence))
+    if chr(8) in io.open(__file__, encoding="utf-8").read():
+        bad += 1
+        print("   FAIL  this file contains a literal backspace byte -- a %sb "
+              "was written through a non-raw string and the pattern is dead"
+              % chr(92))
+    print("self-test: %d of %d case(s) behave as intended"
+          % (len(SELF_TEST) - bad, len(SELF_TEST)))
+    return 1 if bad else 0
+
+
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
     sys.exit(main())
