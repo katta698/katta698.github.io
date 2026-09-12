@@ -3,6 +3,37 @@
 This file is the brief for the **validation window**
 (`C:/Projects/Engineering/katta698-validation`, branch `validation`).
 
+## The goal, stated as a test
+
+**When a published post is sent to an external reviewer, it should only ever
+come back with framing or style suggestions — never a data correction.**
+
+That is the target, and it is deliberately a test rather than an aspiration,
+because it says when the work is done. "Make the checks better" never
+terminates; "reviews return framing only" either holds or it doesn't.
+
+Note what it does *not* require: it does not require the author to be perfect.
+It requires one property of the prose —
+
+> every sentence is either sourced to a page that was actually fetched, or
+> visibly a judgement.
+
+A reviewer cannot correct a judgement, only disagree with it. So the factual
+surface shrinks to the sourced sentences, and those are already checked. The
+errors have all lived in the third category: sentences that *read* as fact,
+carry no source, and sit in the same prose voice as the quotations around
+them. Azure #31's "is billed two ways at once" is the type specimen.
+
+**Where external review still fits.** Not as a daily gate — it runs after
+publication, it is manual, and what it finds depends on what the reviewer
+happens to look at. Run it **monthly, as measurement of whether the checks
+hold**: framing notes only means the gates are working; a data correction
+means a gate leaked and the leak is the thing to fix, not just the post.
+
+Keeping one independent pass matters. A window that writes the checks *and*
+certifies its own output has a blind spot by construction — the same reasoning
+that produced an error would certify it.
+
 ## Why this window exists
 
 The checks that decide whether a post is factually sound are **shared by all
