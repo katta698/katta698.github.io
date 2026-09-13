@@ -93,6 +93,12 @@
 
     var last = window.scrollY, biggest = 0, biggestWhen = '-';
     var touching = false, sinceTouch = 999;
+    // How many untouched jumps, and whether the viewport changed size when
+    // they happened. Safari reclaims its toolbars on the first scroll, which
+    // grows the viewport, shrinks the page's maximum scroll, and pulls the
+    // reader up by the difference -- once. If the count keeps climbing, or
+    // climbs without the viewport changing, it is not the toolbar.
+    var untouched = 0, vh = window.innerHeight, vhChanges = 0, lastVh = vh;
     addEventListener('touchstart', function () { touching = true; sinceTouch = 0; },
                      { passive: true });
     addEventListener('touchend', function () { touching = false; }, { passive: true });
@@ -100,6 +106,8 @@
     (function tick() {
       var y = window.scrollY, d = y - last;
       last = y;
+      if (window.innerHeight !== lastVh) { vhChanges++; lastVh = window.innerHeight; }
+      if (Math.abs(d) > 40 && !touching && sinceTouch >= 60) untouched++;
       if (Math.abs(d) > Math.abs(biggest)) {
         biggest = d;
         // The distinction that matters: a jump while no finger is down, and
@@ -113,8 +121,9 @@
           (document.documentElement.scrollHeight - innerHeight),
         'this frame   ' + Math.round(d) + 'px',
         'biggest      ' + Math.round(biggest) + 'px  (' + biggestWhen + ')',
-        'behavior     ' + getComputedStyle(document.documentElement).scrollBehavior,
-        'touching     ' + (touching ? 'yes' : 'no')
+        'untouched    ' + untouched + ' jump(s) over 40px',
+        'viewport     ' + window.innerHeight + 'px, resized ' + vhChanges + ' time(s)',
+        'behavior     ' + getComputedStyle(document.documentElement).scrollBehavior
       ].join('\n');
       requestAnimationFrame(tick);
     })();
