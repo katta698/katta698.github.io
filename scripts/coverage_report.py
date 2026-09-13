@@ -8,11 +8,17 @@
 Why this exists
 ---------------
 Every checker in `scripts/` reports on the posts it can see, and each one sees a
-different set. `check_assertions.py` scans 185 of 238 posts and says "Checked
-185 post(s)"; `check_sources.py` scans all 238 but has topic rules for two
-series; `audit_claims.py` reports a traced-figure percentage per post and no
-total. Read any one of them and the corpus looks covered. Read them together
-and it does not.
+different set. `check_assertions.py` scans 226 of 237 published posts and skips
+12 non-technical ones by declaration; `check_sources.py` scans all of them but
+carries topic rules for three series; `audit_claims.py` reports a traced-figure
+percentage per post and no total. Read any one of them and the corpus looks
+covered. Read them together and it does not.
+
+Of the posts `check_assertions.py` does scan, 41 have no `SERIES` entry at all
+-- the whole "30 Days of AWS Terraform" run plus the standalone Oracle, MongoDB
+and SQL Server write-ups. They are checked for assertions and nothing else: no
+`doc_hosts`, so no claim verification and no source rules. That is better than
+the silence they had, and it is not coverage.
 
 That gap is not hypothetical. `check_sources.py` once held an AWS-only rule
 while reporting a clean result for 31 Azure posts -- a green light that meant
@@ -118,6 +124,9 @@ def collect():
         rows.append({
             "post": name,
             "series": series_of(name, front),
+            # Resolved here rather than at each use: it needs the front matter,
+            # and carrying the whole block on every row would land it in --csv.
+            "scope": ca.in_scope(name, front) or "out of scope",
             "draft": bool(DRAFT_RE.search(front)),
             "date": parse_date(front, "date"),
             "verified": parse_date(front, "verified"),
@@ -135,7 +144,8 @@ def flags_by_post():
     out = defaultdict(lambda: defaultdict(int))
     for path in sorted(glob.glob(os.path.join(POSTS, "*.html"))):
         name = os.path.basename(path)
-        if ca.series_of(name) is None:
+        front, _ = front_matter(path)
+        if ca.in_scope(name, front) is None:
             continue
         _, errors, notes, _ = ca.check(path, False)
         # check() yields (kind, sentence, dispositioned). Unpacked by index
@@ -269,7 +279,7 @@ def main():
     for key in order:
         rs = by_series[key]
         scanned = sum(1 for r in rs
-                      if ca.series_of(r["post"]) is not None)
+                      if r["scope"] != "out of scope")
         nrules = 0 if key == UNCLASSIFIED else source_rule_count(key)
         verdict = "ok"
         if scanned == 0:
@@ -312,7 +322,7 @@ def main():
     table("5. OUTSTANDING ADVISORY FINDINGS", ["kind", "count"], body, ["<", ">"])
 
     # -- 6. blind spots ----------------------------------------------------
-    unscanned = [r for r in rows if ca.series_of(r["post"]) is None]
+    unscanned = [r for r in rows if r["scope"] == "out of scope"]
     nobadge = [r for r in rows if not r["badged"]]
     noclaims = [r for r in rows if r["badged"] and r["claims"] == 0]
     zerotraced = [r for r in rows
@@ -322,9 +332,13 @@ def main():
 
     print("\n6. BLIND SPOTS -- where nothing is looking")
     print("-" * 92)
+    unregistered = [r for r in rows if r["scope"] == ca.UNREGISTERED]
     print("  %-58s %4d posts  (%.0f%%)"
-          % ("never scanned by check_assertions (no series prefix)",
+          % ("out of scope by label (non-technical, no vendor facts)",
              len(unscanned), pct(len(unscanned), len(rows))))
+    print("  %-58s %4d posts  (%.0f%%)"
+          % ("scanned but unregistered -- assertions only, no claim check",
+             len(unregistered), pct(len(unregistered), len(rows))))
     print("  %-58s %4d posts  (%.0f%%)"
           % ("carry no verification badge", len(nobadge),
              pct(len(nobadge), len(rows))))

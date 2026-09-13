@@ -569,6 +569,44 @@ def series_of(name):
     return None
 
 
+# Scan by default; skip only what is declared out of scope. The old default was
+# the other way round -- a filename matching no file_prefix in SERIES was
+# skipped, silently, and the run still printed a clean summary. That hid 41
+# technical posts: the whole 30-post "30 Days of AWS Terraform" series plus
+# Oracle, MongoDB, SQL Server, MariaDB and Azure cost write-ups. 17% of the
+# corpus, carrying AWS content and no badge, checked by nothing.
+#
+# It is the same shape as the bug this window was opened for -- check_sources.py
+# reporting "0 findings" for 31 Azure posts it had no rule for -- and it recurred
+# because *absence of registration* was the skip condition. An exception has to
+# be declared to be honoured, so a series nobody registers now gets scanned
+# rather than ignored, and the next one inherits coverage instead of a hole.
+#
+# The non-technical posts are genuinely out of scope: no vendor facts, nothing
+# to cite, and validate_arch_post.py matches no series for them either. They are
+# excluded on their labels, which are explicit and visible in the front matter.
+NON_TECHNICAL = {
+    "Health", "Life", "Career", "Personal Growth", "Financial Thinking",
+}
+LABEL_LINE = re.compile(r'^\s*-\s+"?([^"\n]+?)"?\s*$', re.M)
+
+UNREGISTERED = "(unregistered)"
+
+
+def in_scope(name, front):
+    """The series key, '(unregistered)', or None when out of scope."""
+    key = series_of(name)
+    if key:
+        return key
+    labels_block = re.search(r'^labels:\s*\n((?:\s*-\s+.*\n?)+)', front, re.M)
+    if labels_block:
+        labels = {m.group(1).strip()
+                  for m in LABEL_LINE.finditer(labels_block.group(1))}
+        if labels & NON_TECHNICAL:
+            return None
+    return UNREGISTERED
+
+
 def check(path, show_absolutes):
     name = os.path.basename(path)
     body, front = body_and_front(path)
@@ -738,6 +776,16 @@ def selftest():
         bad.append("signed_judgement no longer honours a signature")
     elif signed_judgement("so the Fargate usage is covered first", signed):
         bad.append("signed_judgement matches a sentence it was not given")
+
+    # Scope must be scan-by-default. If this inverts again, 41 technical posts
+    # go quiet and the summary still reads clean.
+    if in_scope("day-12-terraform-functions-part-2.html",
+                "labels:\n  - AWS\n  - Terraform\n") != UNREGISTERED:
+        bad.append("an unregistered technical post is no longer scanned")
+    if in_scope("some-reflection.html", "labels:\n  - Life\n") is not None:
+        bad.append("a non-technical post is being scanned")
+    if in_scope("arch-050-x.html", "labels:\n  - AWS\n") != "arch":
+        bad.append("a registered series no longer resolves to its key")
     return bad
 
 
@@ -766,21 +814,28 @@ def main():
     if args.posts:
         for p in args.posts:
             paths += sorted(glob.glob(os.path.join(POSTS, p + "*.html")))
+    elif args.series:
+        pre = SERIES[args.series]["file_prefix"]
+        paths += sorted(glob.glob(os.path.join(POSTS, pre + "*.html")))
     else:
-        prefixes = ([SERIES[args.series]["file_prefix"]] if args.series
-                    else [s["file_prefix"] for s in SERIES.values()])
-        for pre in prefixes:
-            paths += sorted(glob.glob(os.path.join(POSTS, pre + "*.html")))
+        # Every post, not every registered prefix. See in_scope().
+        paths = sorted(glob.glob(os.path.join(POSTS, "*.html")))
     paths = sorted(set(paths))
 
     failed = 0
     flagged = 0
     undisposed = 0
     by_series = {}
+    skipped = 0
+    unregistered = 0
     for path in paths:
-        key = series_of(os.path.basename(path))
+        _, front = body_and_front(path)
+        key = in_scope(os.path.basename(path), front)
         if not key:
+            skipped += 1
             continue
+        if key == UNREGISTERED:
+            unregistered += 1
         name, errors, notes, derives = check(path, args.absolutes)
         open_here = sum(1 for n in notes if not n[2])
         if open_here:
@@ -824,7 +879,18 @@ def main():
         return 0
 
     print("\nChecked %d post(s): %d code defect(s), %d assertion(s) to eyeball, "
-          "%d undispositioned." % (len(paths), failed, flagged, undisposed))
+          "%d undispositioned."
+          % (len(paths) - skipped, failed, flagged, undisposed))
+    if skipped:
+        print("Skipped %d non-technical post(s) -- no vendor facts to check."
+              % skipped)
+    if unregistered:
+        # Named rather than silent: these are scanned, but nothing else knows
+        # about them. No SERIES entry means no doc_hosts, so verify_claims.py
+        # and validate_arch_post.py still cannot see them.
+        print("%d scanned post(s) have no SERIES entry. They are checked for "
+              "assertions only -- no claim verification, no source rules."
+              % unregistered)
     if flagged and not failed:
         print("Assertions are advisory. Each ratio needs a derive claim behind "
               "it; each doc-claim needs a verified_claim on the page it "
