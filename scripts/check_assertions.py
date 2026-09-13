@@ -151,9 +151,21 @@ COMPARATIVE = re.compile(
     r'(?:a|one)[- ](?:third|quarter|fifth|half) of\b'
     r'|half (?:the|of) (?:the )?(?:price|cost|rate|size|time)\b'
     r'|\d+(?:\.\d+)?\s*(?:times|x)\s+(?:the|as|more|less|cheaper|faster|slower)\b'
-    r'|\d+(?:\.\d+)?\s*%\s*(?:cheaper|dearer|more|less|below|above|faster|slower|of)\b'
+    r'|\d+(?:\.\d+)?\s*%\s*(?:cheaper|dearer|more|less|below|above|faster|slower)\b'
+    # "N% of" is quantification far more often than comparison. Twenty of the
+    # forty-two ratio flags were this branch, and not one was a comparative:
+    # "99.9% of newly written objects within one hour" is a durability target,
+    # "60-80% of S3 data is in the Standard tier" is a population share. A
+    # comparative needs something priced on the other side of the "of".
+    r'|\d+(?:\.\d+)?\s*%\s*of\s+(?:the\s+|its\s+)?'
+    r'(?:price|cost|rate|list|on-demand|budget|spend|bill|charge)\b'
     r'|(?:cheaper|dearer|faster|slower|larger|smaller)\s+by\b'
-    r'|exactly\s+(?:\d+(?:\.\d+)?|twice|half|double)\b'
+    # "exactly" was written for "exactly twice" / "exactly 60 percent" -- a
+    # stated ratio. Bare "exactly <number>" is a count or a version pin and
+    # compares nothing: "four functions at 250 each looks like exactly 1,000"
+    # and "pins AVM at exactly 0.10.0" were both flagged and both fine.
+    r'|exactly\s+(?:twice|half|double)\b'
+    r'|exactly\s+\d+(?:\.\d+)?\s*(?:%|percent|times)\b'
     r'|(?:twice|double|triple)\s+(?:the|that of)\b'
     r')', re.I)
 
@@ -212,10 +224,40 @@ CONSEQUENCE_CUE = re.compile(
     r'as a result|in other words|put plainly|the upshot)\b', re.I)
 CONSEQUENCE_VERB = re.compile(
     r'\b(?:is|are|was|were|gets?|becomes?)\s+(?:\w+\s+){0,2}'
-    r'(?:billed|charged|priced|licen[cs]ed|required|exempt|covered|free)\b'
-    r'|\b(?:you|teams?|estates?)\s+(?:then\s+)?(?:pay|owe|need|must)\b'
+    r'(?:billed|charged|priced|licen[cs]ed|exempt)\b'
+    r'|\b(?:you|teams?|estates?)\s+(?:then\s+)?(?:pay|owe)\b'
     r'|\bcosts? (?:you )?(?:nothing|twice|double)\b'
-    r'|\brequires? (?:a |an |two |both )', re.I)
+    # "requires a" alone is any requirement at all. az-024's "crossing between
+    # them requires a specific mechanism" is a definition of deployment scopes,
+    # not a cost. Name the thing being required.
+    r'|\brequires? (?:a |an |two |both )(?:\w+\s+){0,2}'
+    r'(?:licen[cs]e|subscription|plan|tier|sku|charge|fee|payment|seat|commitment)\b',
+    re.I)
+
+# The same words carry a billing sense and a scope sense, and only the rest of
+# the sentence decides which. Three of thirteen consequence flags were the
+# scope sense and all three were noise:
+#
+#   "Associate by Auto Scaling group tag so new instances are covered"  (alarms)
+#   "so its coverage is the coverage of your traffic"                   (dry run)
+#   "The adjuster is on, so we are covered"                             (quota)
+#
+# against one that is genuinely about money:
+#
+#   "$1.00 On-Demand against $0.70 ... so the r5 usage is covered first"
+#
+# So these fire only with a billing or entitlement term somewhere in the same
+# sentence. Entitlement counts as well as money because the docstring's subject
+# is "a billing *or eligibility* outcome" -- daily-014's "only to the number a
+# role now gets for free" is a quota entitlement and belongs on the list.
+AMBIGUOUS_VERB = re.compile(
+    r'\b(?:is|are|was|were|gets?|becomes?)\s+(?:\w+\s+){0,2}'
+    r'(?:covered|free|required)\b'
+    r'|\b(?:you|teams?|estates?)\s+(?:then\s+)?(?:need|must)\b', re.I)
+BILLING_CONTEXT = re.compile(
+    r'\b(?:billed?|billing|charges?|charged|costs?|cost|price[sd]?|pricing|'
+    r'rate|invoice|licen[cs]e[sd]?|licensing|commitment|savings plan|discount|'
+    r'on-demand|free tier|quota|limit|maximum|default)\b|\$', re.I)
 
 # A sentence that quotes its source is not an unsupported inference. The quote
 # marks the assertion as the vendor's rather than the author's, which is the
@@ -305,6 +347,17 @@ def prose(body):
                   " ", body)
     body = re.sub(r"<style[\s\S]*?</style>", " ", body)
     body = re.sub(r"<pre><code>[\s\S]*?</code></pre>", " ", body)
+    # A block-level element ends a sentence. HTML carries that boundary in the
+    # markup rather than in punctuation, and stripping tags without honouring
+    # it flattens a table into one pseudo-sentence hundreds of characters long.
+    # Over that distance a cue and a verb co-occur by accident rather than by
+    # argument: arch-005's tradeoffs table produced a 1,181-character "sentence"
+    # pairing a "so" in one cell with an "are free" in another. CONSEQUENCE_WINDOW
+    # narrowed that class but cannot close it, because two words inside one cell
+    # are genuinely adjacent. Giving every cell its own boundary keeps the
+    # table's content in scope while stopping it from reading as one assertion.
+    body = re.sub(r"</(?:td|th|tr|li|p|h[1-6]|div|blockquote|figcaption)>", ". ", body)
+    body = re.sub(r"<br\s*/?>", ". ", body)
     body = re.sub(r"<[^>]+>", " ", body)
     body = (body.replace("&mdash;", "-").replace("&ndash;", "-")
                 .replace("&amp;", "&").replace("&nbsp;", " ")
@@ -325,12 +378,44 @@ CONSEQUENCE_WINDOW = 120
 
 
 def consequence_span(s):
-    """True when a consequence cue and a cost/requirement verb share a clause."""
+    """True when a consequence cue and a cost/requirement verb share a clause.
+
+    Two verb sets. The unambiguous one fires on its own; the ambiguous one
+    needs a billing or entitlement term elsewhere in the sentence, because
+    "covered", "free", "required" and "you must" all have a scope sense that
+    has nothing to do with money.
+    """
+    return consequence_clause(s) is not None
+
+
+def consequence_clause(s):
+    """The conclusion half of the sentence, from its cue onward, or None.
+
+    Returned rather than a bare bool so the claim cross-reference can be
+    applied to the *conclusion* instead of to the whole sentence. That
+    distinction is load-bearing. daily-020 reads:
+
+        "this feature is available in all AWS Regions where Aurora DSQL is
+         available, with no separate opt-in and no pricing note, which means
+         it is priced as ordinary read and write activity rather than as a
+         feature."
+
+    The first half restates a sourced claim verbatim; the second half is an
+    unsourced inference about pricing drawn from the *absence* of a pricing
+    note. Testing the echo against the whole sentence suppressed it entirely --
+    a sourced fact acting as cover for the conclusion bolted onto it, which is
+    the exact shape of the Azure #31 error this rule was written for.
+    """
+    if REPORTED_BELIEF.search(s):
+        return None
+    verbs = list(CONSEQUENCE_VERB.finditer(s))
+    if BILLING_CONTEXT.search(s):
+        verbs += list(AMBIGUOUS_VERB.finditer(s))
     for cue in CONSEQUENCE_CUE.finditer(s):
-        for verb in CONSEQUENCE_VERB.finditer(s):
+        for verb in verbs:
             if 0 <= verb.start() - cue.end() <= CONSEQUENCE_WINDOW:
-                return True
-    return False
+                return s[cue.start():]
+    return None
 
 
 def prose_marked(body):
@@ -344,7 +429,73 @@ def prose_marked(body):
     """
     marked = re.sub(r"<em>([\s\S]*?)</em>",
                     QUOTE_MARK + r"\1" + QUOTE_MARK, body)
-    return prose(marked)
+    # Curly and straight quotes carry the same signal as <em>, and only <em>
+    # was ever honoured -- HAS_QUOTE was defined and never called, so the
+    # docstring's promise that "a sentence that quotes its source is not an
+    # unsupported inference" held for one of the three ways this repo quotes.
+    # The challenge cards are the common case: their headers open with a
+    # misconception in quotes, so the rule fired on the strawman rather than on
+    # the argument that demolishes it two words later.
+    #
+    #   <strong>"The adjuster is on, so we are covered"</strong>
+    #   <strong>"It is managed, so we do not think about state"</strong>
+    marked = re.sub(r"&ldquo;([\s\S]{0,500}?)&rdquo;",
+                    QUOTE_MARK + r"\1" + QUOTE_MARK, marked)
+    text = prose(marked)
+    # Straight quotes are marked after the tag strip, never before it: before,
+    # every HTML attribute value in the document would match.
+    return re.sub(r'"([^"\n]{0,500}?)"', QUOTE_MARK + r"\1" + QUOTE_MARK, text)
+
+
+# A belief the post attributes to someone -- usually to its own earlier self,
+# in order to refute it in the next sentence -- is not an assertion the post is
+# making. week-02: "The plan identity was first given roles/viewer at the
+# organization, reasoning that a plan only reads, so breadth costs nothing",
+# immediately followed by "That reasoning is wrong, and the documentation says
+# why". Flagging that is flagging the setup for the correction.
+REPORTED_BELIEF = re.compile(
+    r'\b(?:reasoning that|on the (?:reasoning|assumption|theory|basis) that'
+    r'|the (?:thinking|assumption|argument) (?:was|being)'
+    r'|we (?:assumed|thought)|it was assumed|the myth (?:is|was))\b', re.I)
+
+
+# A sentence that restates a claim the post already sources is not an
+# unsupported assertion -- it is the sourced one, written out in prose. The
+# checker had no idea, because it never read verified_claims:
+#
+#   claim:    "The capability runs as AWS Systems Manager Automation runbooks,
+#              so you pay standard Automation usage charges for the runbooks
+#              you run"                    -> sourced to the What's New page
+#   sentence: "It is available in all Regions enabled by default, and it runs
+#              as Automation runbooks, so you pay standard Automation usage
+#              charges for what you run."  -> flagged as an inference
+#
+# Eight consecutive words is long enough that an accidental match is not
+# credible, and short enough to survive the rewording every post does between
+# its claim list and its prose.
+CLAIM_ECHO = 8
+
+
+def _words(s):
+    return re.findall(r"[a-z0-9$.%]+", s.lower())
+
+
+def claim_texts(front):
+    return [_words(m.group(1))
+            for m in re.finditer(r'-\s+claim:\s*"([^"]*)"', front, re.S)]
+
+
+def _grams(words, n=CLAIM_ECHO):
+    return {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+
+def echoes_claim(sentence, claims):
+    """True when the sentence shares a long phrase with an existing claim."""
+    w = _words(sentence)
+    if len(w) < CLAIM_ECHO:
+        return False
+    grams = _grams(w)
+    return any(grams & _grams(c) for c in claims if len(c) >= CLAIM_ECHO)
 
 
 def series_of(name):
@@ -369,18 +520,31 @@ def check(path, show_absolutes):
                           'and a condition')
 
     derives = front.count("derive:")
+    claims = claim_texts(front)
     text = prose(body)
     for sentence in SENTENCE.split(text):
         s = sentence.strip()
         if not s:
             continue
-        if COMPARATIVE.search(s) and HAS_NUMBER.search(s):
-            notes.append(("ratio", s))
+        m = COMPARATIVE.search(s)
+        if m and HAS_NUMBER.search(s):
+            # Scoped to the comparative, for the same reason as the consequence
+            # clause: a claim quoted elsewhere in the sentence must not excuse
+            # the ratio drawn on top of it.
+            near = s[max(0, m.start() - 60):m.end() + 60]
+            if not echoes_claim(near, claims):
+                notes.append(("ratio", s))
         elif DOC_CLAIM.search(s):
-            notes.append(("doc-claim", s))
+            # A characterisation of what a document says or assumes. Kept whole
+            # rather than scoped: the assertion IS about the page's coverage, so
+            # there is no sub-span that carries it, and a claim quoting the page
+            # is exactly what would settle it.
+            if not echoes_claim(s, claims):
+                notes.append(("doc-claim", s))
         elif (CONSEQUENCE_CUE.search(s) and CONSEQUENCE_VERB.search(s)
               and not HAS_QUOTE.search(s)):
-            notes.append(("inference", s))
+            if not echoes_claim(s, claims):
+                notes.append(("inference", s))
         elif show_absolutes and ABSOLUTE.search(s):
             notes.append(("absolute", s))
 
@@ -391,7 +555,8 @@ def check(path, show_absolutes):
         s = sentence.strip()
         if not s or QUOTE_MARK in s:
             continue
-        if consequence_span(s):
+        clause = consequence_clause(s)
+        if clause and not echoes_claim(clause, claims):
             notes.append(("consequence", s.replace(QUOTE_MARK, "")))
     return name, errors, notes, derives
 
@@ -410,10 +575,23 @@ def check(path, show_absolutes):
 CANARIES = [
     (COMPARATIVE, "the reservation is about a third of the price",
      "read that twice before shipping"),
+    # The tightened branches, each against the sentence that motivated it.
+    (COMPARATIVE, "$1.20 against $1.50 is 20% below the smallest",
+     "99.9% of newly written objects land within one hour"),
+    (COMPARATIVE, "the SCP budget is exactly twice the RCP budget",
+     "four functions at 250 each looks like exactly 1,000"),
+    (COMPARATIVE, "the boundary has exactly 60 percent of the budget",
+     "the wrapper pins the module at exactly 0.10.0"),
     (ABSOLUTE, "this role depends on nothing outside IAM",
      "the account depends on a pipeline"),
     (CONSEQUENCE_CUE, "So the delivery is billed either way", "delivery billing"),
     (CONSEQUENCE_VERB, "the review is billed twice", "the review completed"),
+    (CONSEQUENCE_VERB, "so it requires a licence for each guest",
+     "crossing between them requires a specific mechanism"),
+    (AMBIGUOUS_VERB, "the r5 usage is covered first", "the runbook finished"),
+    (BILLING_CONTEXT, "billed against the commitment", "the instances are tagged"),
+    (REPORTED_BELIEF, "reasoning that a plan only reads",
+     "the reason is documented on that page"),
     (HAS_NUMBER, "costs $4", "costs nothing"),
 ]
 
@@ -430,6 +608,56 @@ def selftest():
         bad.append("consequence_span no longer fires on the Azure #31 sentence")
     if consequence_span("So the team met. " + "x " * 200 + "it is billed monthly"):
         bad.append("consequence_span ignores its proximity window")
+
+    # The ambiguous verbs must stay sensitive to their billing context: the
+    # same word decides a false positive and a true one.
+    if not consequence_span("$1.00 On-Demand against $0.70, so the r5 usage "
+                            "is covered first"):
+        bad.append("consequence_span lost the billing sense of 'covered'")
+    if consequence_span("Associate by Auto Scaling group tag so new instances "
+                        "are covered automatically"):
+        bad.append("consequence_span still fires on the scope sense of 'covered'")
+    if consequence_span("reasoning that a plan only reads, so breadth costs "
+                        "nothing"):
+        bad.append("consequence_span still fires on a reported belief")
+
+    # A block boundary must end a sentence, or tables flatten again.
+    if len(SENTENCE.split(prose("<td>so the key</td><td>rotations are free</td>"))) < 2:
+        bad.append("prose() no longer splits sentences on block boundaries")
+
+    # Quote marking must survive all three of the ways this repo quotes.
+    for markup in ('<em>so it is billed twice</em>',
+                   '&ldquo;so it is billed twice&rdquo;',
+                   '<strong>"so it is billed twice"</strong>'):
+        if QUOTE_MARK not in prose_marked(markup):
+            bad.append("prose_marked does not mark %s" % markup)
+
+    # The claim cross-reference must match a reworded restatement and must not
+    # match an unrelated sentence that happens to share short phrases.
+    claim = [_words("The capability runs as AWS Systems Manager Automation "
+                    "runbooks, so you pay standard Automation usage charges "
+                    "for the runbooks you run")]
+    if not echoes_claim("It runs as Automation runbooks, so you pay standard "
+                        "Automation usage charges for what you run.", claim):
+        bad.append("echoes_claim no longer recognises a restated claim")
+    if echoes_claim("The runbooks are listed in the console.", claim):
+        bad.append("echoes_claim over-matches on a short overlap")
+
+    # A sourced fact must not launder the inference bolted onto it. This is the
+    # daily-020 regression: the first cut tested the echo against the whole
+    # sentence, so a verbatim claim in the first half suppressed an unsourced
+    # pricing conclusion in the second -- the Azure #31 shape exactly.
+    dsql = [_words("This feature is available in all AWS Regions where Aurora "
+                   "DSQL is available")]
+    laundered = ("this feature is available in all AWS Regions where Aurora "
+                 "DSQL is available, with no separate opt-in and no pricing "
+                 "note, which means it is priced as ordinary read and write "
+                 "activity rather than as a feature")
+    clause = consequence_clause(laundered)
+    if clause is None:
+        bad.append("consequence_clause no longer fires on the daily-020 sentence")
+    elif echoes_claim(clause, dsql):
+        bad.append("a sourced first half still suppresses an unsourced conclusion")
     return bad
 
 

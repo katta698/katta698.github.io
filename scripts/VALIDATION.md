@@ -149,14 +149,52 @@ Inherited from the AWS window and worth keeping verbatim:
 - [ ] `check_sources.py --online` withdrawal scan is opt-in and slow. It belongs
       in a weekly sweep; nothing schedules it yet. This is the check that
       catches a retired service, which is Mode A's worst case.
-- [ ] The remaining consequence flags across the corpus (12 at last run) have
-      not been triaged. Some are real.
+- [x] ~~The remaining consequence flags across the corpus have not been
+      triaged.~~ Done 2026-09-12: all 55 flags (13 consequence, 42 ratio)
+      triaged, **no factual errors found**. Two sourcing defects went to the
+      cloud windows — `daily-020` infers pricing from silence on a What's New
+      page, `week-01-gcp-landing-zone` calls projects free with nothing cited.
+      One internal inconsistency in `arch-048` ("rate applies across
+      destinations alike" against its own claim that rates may vary by
+      destination). Every derived figure recomputed and correct, including
+      `arch-032`'s 20%-below, so the historical "a third of the price" error is
+      confirmed fixed in the published post.
 - [ ] Consider requiring a `sources_fetched:` frontmatter list, so "which pages
       did the author actually read" is checkable rather than inferred. Invasive
       — every existing post lacks it — so advisory and optional at first.
+
+## What a green `check_assertions.py` does and does not mean
+
+Worth stating plainly, because the run prints a clean-looking summary either
+way. Of 238 posts, `check_assertions.py` scans **185** — the other 53 match no
+`file_prefix` in `SERIES` and are skipped in silence. Of those 185, **20 carry
+no `verified_claims` block at all**, so there is nothing for `verify_claims.py`
+to check on them.
+
+And scanning is not reading. The prose half matches three regexes; it finds
+sentences *shaped* like an unsupported inference. A wrong fact in a shape it has
+no pattern for is invisible to it. So a clean run means "no sentence matched a
+known-bad shape", never "this post is correct". The independent monthly pass at
+the top of this file is not redundancy — it is the only thing measuring whether
+these gates hold.
 
 ## History
 
 - `2827666` (2026-09-12) — made both checks fire outside AWS; added the
   canaries `check_assertions.py` had promised since the non-raw-string incident
   and did not have.
+- 2026-09-12 — triaged all 55 prose flags and cut the false-positive rate:
+  **55 → 23**, consequence 13 → 6, ratio 42 → 17, with every true positive
+  retained. Five noise classes, each traced to the sentence that motivated it:
+  `% of` quantification read as comparison (20 flags — "99.9% of newly written
+  objects" is a durability target); bare `exactly <n>` on counts and version
+  pins; tables flattening into one pseudo-sentence because tag-stripping did not
+  honour block boundaries; the scope sense of "covered"/"free"/"you must"; and
+  a misconception quoted in order to be refuted, which got through because
+  `HAS_QUOTE` was defined and **never called**.
+
+  The claim cross-reference added here is deliberately scoped to the
+  *conclusion* of a sentence, not the whole of it. The first cut tested the
+  whole sentence and silently dropped `daily-020`, where a verbatim sourced
+  claim in the first half was laundering an unsourced pricing inference in the
+  second — the Azure #31 shape exactly. `selftest()` now carries that case.
