@@ -477,7 +477,17 @@ CLAIM_ECHO = 8
 
 
 def _words(s):
-    return re.findall(r"[a-z0-9$.%]+", s.lower())
+    """Word tokens, with decimals kept intact and sentence punctuation dropped.
+
+    The dot has to be inside the character class so "$0.70" survives as one
+    token, which means a sentence-final word arrives as "team." while the same
+    word quoted in front matter arrives as "team". That one-character
+    difference silently defeated a judgements: signature on the last word of
+    every sentence -- the failure looked exactly like a signature that had not
+    been written. Strip trailing dots only: 0.70 keeps its own.
+    """
+    return [t for t in (tok.rstrip(".")
+                        for tok in re.findall(r"[a-z0-9$.%]+", s.lower())) if t]
 
 
 def claim_texts(front):
@@ -496,6 +506,60 @@ def echoes_claim(sentence, claims):
         return False
     grams = _grams(w)
     return any(grams & _grams(c) for c in claims if len(c) >= CLAIM_ECHO)
+
+
+# --- dispositions ----------------------------------------------------------
+#
+# The gate this file is built towards does not ask "is this sentence true",
+# which no script can answer. It asks "has someone decided about this
+# sentence", which is checkable. A flagged sentence is dispositioned two ways:
+#
+#   * it restates a claim the post already sources  -- echoes_claim(), above
+#   * the author signed it as judgement rather than fact:
+#
+#         judgements:
+#           - "so the r5 usage is covered first"
+#
+# A reviewer cannot correct a judgement, only disagree with it, so a signed
+# sentence leaves the factual surface. That is the property VALIDATION.md states
+# as the goal: every sentence is either sourced to a page that was actually
+# fetched, or visibly a judgement.
+#
+# Matching is on a contiguous run of words, not a substring, so entity and
+# whitespace differences between the front matter and the rendered prose do not
+# matter. Editing the sentence *does* lapse the signature, and that is
+# deliberate: a sign-off applies to the wording it was given, and reworded prose
+# deserves a fresh look rather than an inherited pass.
+JUDGEMENTS_BLOCK = re.compile(r'^judgements:\s*\n((?:[ \t]*-[ \t]+.*\n?)+)', re.M)
+
+
+def judgement_texts(front):
+    m = JUDGEMENTS_BLOCK.search(front)
+    if not m:
+        return []
+    out = []
+    for line in m.group(1).splitlines():
+        t = line.strip()
+        if not t.startswith("-"):
+            continue
+        t = t[1:].strip()
+        if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'":
+            t = t[1:-1]
+        if t:
+            out.append(_words(t))
+    return out
+
+
+def _contains_run(hay, needle):
+    if not needle or len(needle) > len(hay):
+        return False
+    return any(hay[i:i + len(needle)] == needle
+               for i in range(len(hay) - len(needle) + 1))
+
+
+def signed_judgement(sentence, judgements):
+    w = _words(sentence)
+    return any(_contains_run(w, j) for j in judgements)
 
 
 def series_of(name):
@@ -521,6 +585,7 @@ def check(path, show_absolutes):
 
     derives = front.count("derive:")
     claims = claim_texts(front)
+    judgements = judgement_texts(front)
     text = prose(body)
     for sentence in SENTENCE.split(text):
         s = sentence.strip()
@@ -533,20 +598,20 @@ def check(path, show_absolutes):
             # the ratio drawn on top of it.
             near = s[max(0, m.start() - 60):m.end() + 60]
             if not echoes_claim(near, claims):
-                notes.append(("ratio", s))
+                notes.append(("ratio", s, signed_judgement(s, judgements)))
         elif DOC_CLAIM.search(s):
             # A characterisation of what a document says or assumes. Kept whole
             # rather than scoped: the assertion IS about the page's coverage, so
             # there is no sub-span that carries it, and a claim quoting the page
             # is exactly what would settle it.
             if not echoes_claim(s, claims):
-                notes.append(("doc-claim", s))
+                notes.append(("doc-claim", s, signed_judgement(s, judgements)))
         elif (CONSEQUENCE_CUE.search(s) and CONSEQUENCE_VERB.search(s)
               and not HAS_QUOTE.search(s)):
             if not echoes_claim(s, claims):
-                notes.append(("inference", s))
+                notes.append(("inference", s, signed_judgement(s, judgements)))
         elif show_absolutes and ABSOLUTE.search(s):
-            notes.append(("absolute", s))
+            notes.append(("absolute", s, signed_judgement(s, judgements)))
 
     # Consequences are scanned over the marked text so a quoted sentence can
     # be told from an inferred one. Separate loop rather than another branch
@@ -557,7 +622,9 @@ def check(path, show_absolutes):
             continue
         clause = consequence_clause(s)
         if clause and not echoes_claim(clause, claims):
-            notes.append(("consequence", s.replace(QUOTE_MARK, "")))
+            bare = s.replace(QUOTE_MARK, "")
+            notes.append(("consequence", bare,
+                          signed_judgement(bare, judgements)))
     return name, errors, notes, derives
 
 
@@ -658,6 +725,19 @@ def selftest():
         bad.append("consequence_clause no longer fires on the daily-020 sentence")
     elif echoes_claim(clause, dsql):
         bad.append("a sourced first half still suppresses an unsourced conclusion")
+
+    # The disposition mechanism has to recognise a signature, and has to lose it
+    # when the sentence it was given is reworded.
+    signed = judgement_texts(
+        'judgements:\n  - "so the r5 usage is covered first"\n')
+    if not signed:
+        bad.append("judgement_texts no longer parses a judgements: block")
+    elif not signed_judgement(
+            "AWS's worked example has r5 at 30%, so the r5 usage is covered "
+            "first even across teams.", signed):
+        bad.append("signed_judgement no longer honours a signature")
+    elif signed_judgement("so the Fargate usage is covered first", signed):
+        bad.append("signed_judgement matches a sentence it was not given")
     return bad
 
 
@@ -674,6 +754,12 @@ def main():
     ap.add_argument("--series")
     ap.add_argument("--absolutes", action="store_true",
                     help="also list absolute constructions, which are noisier")
+    ap.add_argument("--strict", action="store_true",
+                    help="fail on any assertion that has not been dispositioned "
+                         "-- either sourced by a claim or signed in judgements:")
+    ap.add_argument("--backlog", action="store_true",
+                    help="per-series count of what --strict would fail on, "
+                         "which is the work before the gate can be turned on")
     args = ap.parse_args()
 
     paths = []
@@ -689,30 +775,64 @@ def main():
 
     failed = 0
     flagged = 0
+    undisposed = 0
+    by_series = {}
     for path in paths:
-        if not series_of(os.path.basename(path)):
+        key = series_of(os.path.basename(path))
+        if not key:
             continue
         name, errors, notes, derives = check(path, args.absolutes)
+        open_here = sum(1 for n in notes if not n[2])
+        if open_here:
+            tally = by_series.setdefault(key, [0, 0])
+            tally[0] += open_here
+            tally[1] += 1
+        if args.backlog:
+            undisposed += open_here
+            flagged += len(notes)
+            failed += len(errors)
+            continue
         if not errors and not notes:
             continue
         print("\n%s" % name)
         for message in errors:
             failed += 1
             print("   ERROR  example code: %s" % message)
-        for kind, sentence in notes:
+        for kind, sentence, disposed in notes:
             flagged += 1
+            if not disposed:
+                undisposed += 1
             trimmed = sentence if len(sentence) <= 150 else sentence[:147] + "..."
-            print("   %-8s %s" % (kind + ":", trimmed))
+            print("   %-8s %s%s" % (kind + ":", "[signed] " if disposed else "",
+                                    trimmed))
         if notes:
             print("            (post has %d derive claim%s)"
                   % (derives, "" if derives == 1 else "s"))
 
-    print("\nChecked %d post(s): %d code defect(s), %d assertion(s) to eyeball."
-          % (len(paths), failed, flagged))
+    if args.backlog:
+        print("\nUndispositioned assertions -- what --strict would fail on today")
+        print("%-14s %8s %8s" % ("series", "open", "posts"))
+        print("-" * 32)
+        for key in sorted(by_series, key=lambda k: -by_series[k][0]):
+            n, posts = by_series[key]
+            print("%-14s %8d %8d" % (key, n, posts))
+        print("-" * 32)
+        print("%-14s %8d %8d" % ("TOTAL", undisposed,
+                                 sum(v[1] for v in by_series.values())))
+        print("\nEach one needs either a verified_claims entry that sources it,")
+        print("or a judgements: line signing it as the author's judgement.")
+        return 0
+
+    print("\nChecked %d post(s): %d code defect(s), %d assertion(s) to eyeball, "
+          "%d undispositioned." % (len(paths), failed, flagged, undisposed))
     if flagged and not failed:
         print("Assertions are advisory. Each ratio needs a derive claim behind "
               "it; each doc-claim needs a verified_claim on the page it "
               "characterises, or a reason it does not need one.")
+    if args.strict and undisposed:
+        print("\n--strict: %d assertion(s) carry neither a source nor a "
+              "judgements: signature." % undisposed)
+        return 1
     return 1 if failed else 0
 
 

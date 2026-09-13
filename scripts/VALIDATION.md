@@ -65,6 +65,61 @@ amount of work in `scripts/` can manufacture. Same argument as the note at the
 top of this file: a window that writes the checks and certifies its own output
 has a blind spot by construction.
 
+## The gate, and when to turn it on
+
+Decided 2026-09-13. The mechanical checks already run on every push —
+`prepublish.yml` fires on `posts/**` and runs the whole suite. What did not run
+was any requirement to *decide* about what they reported: a prose finding
+printed and the build passed, so a flagged sentence could ship with nobody
+having looked at it.
+
+`check_assertions.py --strict` closes that. It does not ask whether a sentence
+is true, which no script can answer. It asks whether the sentence has been
+**dispositioned**, which is checkable, and there are exactly two ways:
+
+- **sourced** — the sentence restates a `verified_claims` entry, detected
+  automatically by an eight-word phrase match; or
+- **signed** — the author declared it a judgement rather than a fact:
+
+  ```yaml
+  judgements:
+    - "so the r5 usage is covered first"
+  ```
+
+A reviewer cannot correct a judgement, only disagree with one. So a signed
+sentence leaves the factual surface, and the surface shrinks to the sourced
+sentences — which are already checked. That is this file's stated goal made
+enforceable.
+
+**A signature is scoped to the wording it was given.** Matching is on a
+contiguous run of words, so reworded prose lapses its own sign-off and gets
+looked at again. That is deliberate, not a limitation.
+
+### The flip
+
+```yaml
+# .github/workflows/prepublish.yml  -- one line, when the backlog is clear
+python scripts/check_assertions.py --strict
+```
+
+**Not yet.** `--backlog` prints what it would fail on, and today that is:
+
+| series | open | posts |
+|---|---|---|
+| arch | 9 | 8 |
+| daily | 6 | 5 |
+| az | 4 | 4 |
+| gcp | 2 | 1 |
+| awslab | 2 | 2 |
+| **total** | **23** | **20** |
+
+Standard #5 applies: the other windows did not opt into a new gate mid-series,
+and flipping it today stops three windows publishing tomorrow morning over
+sentences that are, as of the 2026-09-12 triage, all correct. The order is:
+those windows clear their 23, then the line goes in.
+
+Run `python scripts/check_assertions.py --backlog` to see where it stands.
+
 ## Why this window exists
 
 The checks that decide whether a post is factually sound are **shared by all
