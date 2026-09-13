@@ -1,0 +1,339 @@
+---
+title: "GCP Architecture Series #31 — IAM Principals: Users, Groups, Domains and Service Accounts"
+date: '2026-09-13T09:00:00'
+slug: gcp-architecture-iam-principals
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-09-13'
+verified_claims:
+  - claim: "It does not deduplicate principals that appear in more than one role binding"
+    source: https://docs.cloud.google.com/iam/quotas
+  - claim: "Domains and Google groups in all role bindings within a single allow policy"
+    source: https://docs.cloud.google.com/iam/quotas
+  - claim: "the principals that the allow policy exempts from Data Access audit logging"
+    source: https://docs.cloud.google.com/iam/quotas
+  - claim: "you can use a group's membership to manage users' roles instead of granting IAM roles to individual users"
+    source: https://docs.cloud.google.com/iam/docs/groups-in-cloud-console
+  - claim: "When granting access to a new service account in the Google Cloud console, omit the serviceAccount: prefix"
+    source: https://docs.cloud.google.com/iam/docs/principal-identifiers
+  - claim: "All service accounts in a project, folder, or organization"
+    source: https://docs.cloud.google.com/iam/docs/principal-identifiers
+problem: "A role binding needs something to bind to, and Google Cloud offers more kinds of something than most teams use. Two of them are addressed to everyone on the internet, one is both an identity and a resource, and the difference between the two that look interchangeable — a user and a group — is the difference between an access model that survives a reorganisation and one that does not."
+builds: "The principal types and their identifier formats, why a group scales membership but not bindings, the two limits that pull in opposite directions, and what shares the principal budget that has nothing to do with access at all."
+catch: "An allow policy holds 1,500 principals, and IAM does not deduplicate — the same user in three role bindings counts three times. Worse, the budget is shared with a feature that is not access control: the principals a policy exempts from Data Access audit logging count against the same 1,500."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #031 &middot; IAM</div>
+  <h1 class="post-title">IAM Principals: Users, Groups, Domains and Service Accounts</h1>
+  <p class="post-subtitle">A binding needs something to bind to. Two of the options are addressed to the whole internet, one is an identity and a resource at once, and only one of them scales.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Google Cloud &middot; IAM &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The principal is the half of a policy nobody reviews. All four of these come from choosing the wrong kind, or from not knowing what counts.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"We grant to users, it is more precise"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It is more precise and it does not survive people. Google's guidance is the other way round: you can use a group's membership to manage users' roles instead of granting IAM roles to individual users. Precision at the binding is what makes an access model that has to be edited every time somebody changes team.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Bind groups, manage membership. The binding then describes a <em>role in the organisation</em> rather than a person, and joining or leaving becomes a membership change rather than a policy change.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"We are nowhere near 1,500 principals"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Count again, because the count is not what you think. IAM counts every appearance: it <strong>does not deduplicate principals that appear in more than one role binding</strong>. A user granted three roles on a project is three principals against the limit, not one.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Measure occurrences rather than distinct identities. A policy with 400 people and four roles each is already past the limit.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"So we will use more groups instead"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Up to a point, and then a different ceiling. Domains and Google groups in all role bindings within a single allow policy are capped at <strong>250</strong>. Groups relieve the pressure on membership and add a constraint of their own on variety.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Few groups, bound few times, with membership doing the work. The two limits pull in opposite directions and the design that satisfies both is a small stable set of groups rather than one per team per role.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"Audit logging has nothing to do with our IAM limits"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It shares the budget. The 1,500 counts all appearances in role bindings <em>and</em> the principals that the allow policy exempts from Data Access audit logging. A logging decision consumes access-control capacity.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Know that the two features share one number before you hit it, because nothing about an audit-logging exemption suggests it will exhaust a policy.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      A principal is whatever a role can be granted to, and the identifier prefix tells you which kind you are looking at. That prefix is worth reading carefully, because several of them are not people.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-031-iam-principals.svg" alt="Diagram: the Google Cloud IAM principal types and their identifier prefixes, the two limits on an allow policy that pull in opposite directions, and why the principal count includes audit logging exemptions" />
+      <figcaption>Six kinds of principal, two limits that fight each other, and one budget shared with a feature that is not access control.</figcaption>
+    </figure>
+
+    <h3>The kinds, and what each is for</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Prefix</th><th>What it addresses</th><th>Use it for</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>user:</code></td>
+          <td>One human identity.</td>
+          <td>Break-glass and genuinely singular ownership. Not routine access.</td>
+        </tr>
+        <tr>
+          <td><code>group:</code></td>
+          <td>A Google group, by membership.</td>
+          <td>Everything routine. The only type whose population changes without a policy change.</td>
+        </tr>
+        <tr>
+          <td><code>serviceAccount:</code></td>
+          <td>A workload identity &mdash; which is also a resource with its own policy.</td>
+          <td>Anything not a person.</td>
+        </tr>
+        <tr>
+          <td><code>domain:</code></td>
+          <td>Every identity in a Cloud Identity or Workspace domain.</td>
+          <td>Rarely. It is a very wide grant that reads like a narrow one.</td>
+        </tr>
+        <tr>
+          <td><code>principalSet:</code></td>
+          <td>A set defined by a pool or a resource container &mdash; for example all service accounts in a project, folder, or organization.</td>
+          <td>Federated workforce and workload identities, and set-wise grants.</td>
+        </tr>
+        <tr>
+          <td><code>allUsers</code>, <code>allAuthenticatedUsers</code></td>
+          <td>Anyone on the internet; anyone with a Google account.</td>
+          <td>Deliberate public access, and nothing else.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      Two entries in that table deserve more than a row. <code>allUsers</code> and <code>allAuthenticatedUsers</code> are the public-access principals, and post #22's <code>storage.publicAccessPrevention</code> exists specifically to stop them being used on buckets &mdash; the organization policy and the principal type are two halves of one conversation. And <code>domain:</code> is the quiet one: it grants to every identity in a domain, which is an entire company, expressed in the same syntax as a single user.
+    </p>
+
+    <h3>A service account is two things at once</h3>
+    <p>
+      This is the structural oddity of IAM and it explains a great deal of later confusion. A service account is a principal &mdash; you grant it roles, and it acts. It is also a <em>resource</em>, with an allow policy of its own governing who may use it.
+      That second policy is what post #26 turned on: a user with Service Account User on a deploy account inherits everything that account can do, and the grant lives on the service account rather than on the thing being deployed.
+    </p>
+
+    <div class="callout">
+      <strong>The console drops the prefix, and only for new service accounts</strong>
+      <p>Google documents a small asymmetry worth knowing before it wastes an afternoon: when granting access to a <em>new</em> service account in the Google Cloud console, you omit the <code>serviceAccount:</code> prefix. The prefix is part of the identifier everywhere else &mdash; in the API, in Terraform, in a policy you read back &mdash; so a value copied out of the console into a configuration file is either right or wrong depending on which field it came from.</p>
+    </div>
+
+    <h3>The two limits, and why they disagree</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Limit</th><th>Value</th><th>What pushes against it</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Principals in one allow policy</td>
+          <td>1,500</td>
+          <td>Every <em>appearance</em>, not every identity. Granting individually blows this fast.</td>
+        </tr>
+        <tr>
+          <td>Domains and Google groups in one allow policy</td>
+          <td>250</td>
+          <td>Every distinct group you invent. Granting through many narrow groups blows this instead.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      The first limit punishes granting to people. The second punishes solving that by inventing a group per team per role. Between them they describe the shape of an access model Google expects: a modest number of groups, each meaning something durable, bound a small number of times, with the churn absorbed by membership.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why Only Groups Scale</h2>
+
+    <p>
+      All four principal types can hold a role. Only one of them has a population that changes without touching a policy, and that single property is what makes it the default.
+    </p>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>When someone joins or leaves</th><th>What has to change</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Bound as <code>user:</code></td><td>Every allow policy they appear in, found by searching the estate.</td></tr>
+        <tr><td>Bound via <code>group:</code></td><td>One membership list, outside IAM entirely.</td></tr>
+        <tr><td>Bound via <code>domain:</code></td><td>Nothing &mdash; which is the problem, not the feature.</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      The middle row is the entire argument. It is not that groups are tidier; it is that a group moves the churn to a system built for churn, and leaves the policy describing a durable fact. A binding that says "the platform on-call group may do this" stays true across three reorganisations. A binding naming a person stops being true the first time they change team, and nothing in IAM will tell you.
+    </p>
+
+    <div class="callout amber">
+      <strong>The counting rule that catches people out</strong>
+      <p>Because IAM does not deduplicate principals that appear in more than one role binding, the 1,500 is a budget on <em>bindings-times-principals</em>, not on people. Four roles for 400 people is 1,600 and fails. Four roles for four groups is 16, whatever the groups contain. That is the strongest quantitative argument for groups in the whole of IAM, and it is buried in a quotas page rather than stated as guidance.</p>
+    </div>
+
+    <h3>Where the other types genuinely belong</h3>
+    <ul>
+      <li><strong><code>user:</code></strong> &mdash; break-glass, and ownership of something that really is one person's. Post #22's domain-restricted sharing decides which users can be named at all.</li>
+      <li><strong><code>domain:</code></strong> &mdash; almost never in a grant. Its natural home is the <em>allowed values</em> of the domain-restriction policy, where breadth is the point.</li>
+      <li><strong><code>principalSet:</code></strong> &mdash; the federated cases from post #30, and container-wide grants such as all service accounts in a project, folder, or organization. Powerful and worth reading twice, because the set is defined by where a thing lives rather than by what it is.</li>
+      <li><strong><code>allUsers</code></strong> &mdash; public by intent, blocked by policy everywhere else. If it appears in a policy nobody chose deliberately, that is the finding.</li>
+    </ul>
+
+    <h3>What to do with this</h3>
+    <ol>
+      <li><strong>Audit for <code>user:</code> bindings</strong> and treat each as a question rather than a defect &mdash; some are legitimate. Post #23's asset export makes IAM policy queryable, which is how you find them across an estate.</li>
+      <li><strong>Count occurrences, not identities</strong>, when judging headroom against 1,500.</li>
+      <li><strong>Keep the group vocabulary small</strong> and durable enough to survive a reorganisation, which also keeps you clear of 250.</li>
+      <li><strong>Look for <code>allUsers</code> and <code>allAuthenticatedUsers</code> first</strong> in any review. They are the only principals whose presence is almost always either deliberate or an incident.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Routine human access</td>
+          <td><code>group:</code></td>
+          <td>Google's guidance is to manage roles through membership rather than granting to individual users.</td>
+        </tr>
+        <tr>
+          <td>Judging policy headroom</td>
+          <td>Count appearances</td>
+          <td>IAM does not deduplicate principals appearing in more than one role binding.</td>
+        </tr>
+        <tr>
+          <td>Group vocabulary</td>
+          <td>Small and durable</td>
+          <td>Domains and groups in one allow policy are capped at 250.</td>
+        </tr>
+        <tr>
+          <td>Before adding audit-logging exemptions</td>
+          <td>Check the principal count</td>
+          <td>Exempted principals count against the same 1,500.</td>
+        </tr>
+        <tr>
+          <td><code>domain:</code> in a grant</td>
+          <td>Almost never</td>
+          <td>It grants to every identity in the domain, in the syntax of a single user.</td>
+        </tr>
+        <tr>
+          <td>Workload identity</td>
+          <td><code>serviceAccount:</code>, and govern its own policy</td>
+          <td>It is a principal and a resource; who may act as it is a separate grant.</td>
+        </tr>
+        <tr>
+          <td>Copying an identifier from the console</td>
+          <td>Re-add the prefix</td>
+          <td>The console omits <code>serviceAccount:</code> when granting to a new one.</td>
+        </tr>
+        <tr>
+          <td>Reviewing a policy</td>
+          <td>Read the public principals first</td>
+          <td><code>allUsers</code> and <code>allAuthenticatedUsers</code> are deliberate or an incident, never incidental.</td>
+        </tr>
+        <tr>
+          <td>Finding user bindings estate-wide</td>
+          <td>The asset export from #23</td>
+          <td>IAM policy is one of its four metadata types.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Most IAM attention goes to the role &mdash; which permissions, how narrow, predefined or custom. The principal gets a fraction of it, which is odd, because the role decides what can be done and the principal decides for how long that stays correct. A perfectly scoped role granted to a named person is wrong the day they change team, and it goes on being wrong quietly.
+    </p>
+    <p>
+      The quotas page makes the argument better than any guidance does. Four roles for four hundred people is 1,600 principals and fails; four roles for four groups is sixteen, whatever those groups contain. That is not a limit you work around &mdash; it is the platform declining to support the access model you were about to build. The numbers are doing what good limits do: telling you the shape of the answer before you have finished asking.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#32 takes the other half of a binding: roles &mdash; basic, predefined and custom &mdash; what each costs to maintain, and why the three basic roles are still the most-granted and least-appropriate thing in IAM.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/iam/docs/principals-overview" target="_blank" rel="noopener">IAM principals</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/principal-identifiers" target="_blank" rel="noopener">Principal identifiers</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/quotas" target="_blank" rel="noopener">IAM quotas and limits</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/groups-in-cloud-console" target="_blank" rel="noopener">Create and manage Google groups in the console</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/allow-policies" target="_blank" rel="noopener">Understanding allow policies</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/service-account-overview" target="_blank" rel="noopener">Service accounts overview</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
