@@ -1,0 +1,355 @@
+---
+title: "AWS Architecture Series #51 — The alarm rings after the money is gone"
+date: '2026-09-13T09:00:00'
+slug: aws-architecture-budgets-anomaly-detection
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-13'
+verified_claims:
+  - claim: "AWS Budgets information is updated up to three times a day, and updates typically occur 8-12 hours after the previous update"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html
+  - claim: "There can be a delay between when you incur a charge and when you receive a notification from AWS Budgets for the charge, because of the delay between when an AWS resource is used and when that resource usage is billed"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html
+  - claim: "You might incur additional costs or usage that exceed your budget notification threshold before AWS Budgets can notify you, and your actual costs or usage may continue to increase or decrease after you receive the notification"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html
+  - claim: "You can choose to be alerted for both actual, after accruing, and forecasted, before accruing, spends"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html
+  - claim: "A management account can create a budget that tracks a specific member account's cost, but the member account can only view the same budget if they receive access to the management account"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html
+  - claim: "AWS billing data, which Budgets uses to monitor resources, is updated at least once per day, and budget information and associated alerts are updated and sent according to this data refresh cadence"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-best-practices.html
+  - claim: "AWS requires approximately 5 weeks of usage data to generate budget forecasts, and a budget set to alert on a forecasted amount is not triggered until there is enough historical usage information"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-best-practices.html
+  - claim: "Actual alerts are only sent out once per budget, per budget period, when a budget first reached the actual alert threshold"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-best-practices.html
+  - claim: "Forecast-based budget alerts might alert more than once in a budgeted period if the forecasted values exceed, dip below, and then exceed the alert threshold again"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-best-practices.html
+  - claim: "If a budget action is used to stop an Amazon EC2 instance in an Auto Scaling group, Amazon EC2 Auto Scaling restarts the instance or launches new instances to replace the stopped instance, unless a second budget action removes permissions on the role used by the Launch Configuration managing the ASG"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-best-practices.html
+  - claim: "Budget alerts can be sent to up to 10 email addresses and one Amazon SNS topic per alert"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-best-practices.html
+  - claim: "When a member account leaves an AWS Organization, AWS Budgets only track costs incurred after the member account leaves, historical cost data from before the departure is not included, and no notification is sent when this tracking behavior changes"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-best-practices.html
+  - claim: "A budget action can be configured to run either automatically or after your manual approval"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-controls.html
+  - claim: "Available budget actions include applying an IAM policy or a service control policy, and targeting specific Amazon EC2 or Amazon RDS instances in your account"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-controls.html
+  - claim: "From the management account you can apply an SCP to another account, however you can't target Amazon EC2 or Amazon RDS instances in another account"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-controls.html
+  - claim: "AWS Cost Anomaly Detection is a feature that uses machine learning models to detect and alert on anomalous spend patterns in your deployed AWS services"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/manage-ad.html
+  - claim: "After billing data is processed, AWS Cost Anomaly Detection runs approximately three times a day in order to monitor for anomalies in net unblended cost data"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/manage-ad.html
+  - claim: "Cost Anomaly Detection uses data from Cost Explorer, which has a delay of up to 24 hours, and as a result it can take up to 24 hours to detect an anomaly after a usage occurs"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/manage-ad.html
+  - claim: "If you create a new monitor it can take 24 hours to begin detecting new anomalies, and for a new service subscription 10 days of historical service usage data is needed before anomalies can be detected for that service"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/manage-ad.html
+  - claim: "Cost Anomaly Detection lets you investigate root causes ranked by their dollar impact and split across four dimensions: AWS service, AWS account, Region, or usage type"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/manage-ad.html
+  - claim: "Cost Anomaly Detection does not monitor third-party products and services available through AWS Marketplace, except for third-party foundation models on Amazon Bedrock, and AWS directs customers to use AWS Budgets to get alerts for other AWS Marketplace charges"
+    source: https://docs.aws.amazon.com/cost-management/latest/userguide/manage-ad.html
+problem: "A runaway workload costs four figures over a weekend. The team adds a budget with an alert at 80%, and the next incident still arrives as a surprise on the invoice — because the alert is bounded by a billing pipeline nobody looked at, it is designed to fire once, and alerting was never enforcement in the first place."
+builds: "A cost-control model that separates the three questions these tools actually answer: what the detection floor is and why no configuration lowers it, which tool models a threshold you chose versus a pattern you did not, and where the single mechanism that stops anything sits — along with the two ways that stop quietly fails."
+catch: "The forecast alert is the only warning that arrives before the money accrues, and AWS requires approximately 5 weeks of usage data before it will fire at all. The new account, the new workload and the first month of a migration — precisely the cases teams reach for a budget — are the cases where the before-accruing alert is silent."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #051 &middot; Cost &amp; Governance</div>
+  <h1 class="post-title">The alarm rings after the money is gone</h1>
+  <p class="post-subtitle">Budgets and Cost Anomaly Detection both read a billing pipeline that lags by up to a day. Only one of them can stop anything, and an Auto Scaling group can undo the stop.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Cost Optimization &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The last three posts were about what things cost, who owes it, and who gets the discount. This one
+      is about the control that was supposed to prevent the conversation: the budget alert.
+    </p>
+    <p>
+      A misconfigured job runs over a weekend and spends four figures. The postmortem action is
+      predictable and reasonable &mdash; create a budget, alert at 80%, tell the team. It gets done. The
+      next incident still surfaces as a line on the invoice, and the alert either arrived too late to
+      matter or did not arrive at all.
+    </p>
+    <p>
+      Three separate things went wrong, and only the third is a configuration mistake. The first two are
+      properties of the platform that no threshold setting changes.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The data is late, and that sets a floor</strong></div>
+      <div class="challenge-body">
+        <p>
+          Neither tool watches your resources. Both watch your <em>bill</em>, and the bill is assembled on
+          its own schedule. AWS Budgets information is <strong>updated up to three times a day</strong>,
+          with updates typically <strong>8&ndash;12 hours</strong> apart. Cost Anomaly Detection runs
+          approximately three times a day, on data from Cost Explorer, <em>&ldquo;which has a delay of up
+          to 24 hours.&rdquo;</em>
+        </p>
+        <p>
+          AWS states the consequence directly for Anomaly Detection: <em>&ldquo;it can take up to 24 hours
+          to detect an anomaly after a usage occurs.&rdquo;</em> A Friday-evening runaway is a Saturday
+          detection at best. Nothing you configure moves this.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>None. Design around the floor &mdash; and stop describing these as real-time controls in your runbook.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The actual alert fires once, by design</strong></div>
+      <div class="challenge-body">
+        <p>
+          This one surprises people who assume a threshold breach keeps nagging. AWS is explicit:
+          <em>&ldquo;Actual alerts are only sent out once per budget, per budget period, when a budget
+          first reached the actual alert threshold.&rdquo;</em>
+        </p>
+        <p>
+          One email at 80%, and then silence while spend goes to 300% of budget. The alert told you that
+          a line was crossed. It is not telling you how far past it you now are, and a team that treats
+          quiet as safe has misread the contract.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Multiple budgets at laddered thresholds, or forecast alerts &mdash; which can re-fire &mdash; or Anomaly Detection alongside.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>An alert was never a control</strong></div>
+      <div class="challenge-body">
+        <p>
+          The postmortem said &ldquo;add a budget&rdquo; and everyone heard &ldquo;add a limit&rdquo;.
+          A budget alert notifies. It does not restrict, throttle, or stop. Spend continues at exactly the
+          rate it would have without it.
+        </p>
+        <p>
+          There is a mechanism that stops things &mdash; <strong>budget actions</strong> &mdash; and it is
+          a separate feature that must be configured deliberately, with its own IAM role. Most budgets in
+          most accounts do not have one.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Budget actions, with the two failure modes in the Architecture section read first.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The useful mental model is a pipeline with a fixed latency floor, two different detectors reading
+      off the end of it, and exactly one enforcement point.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-051-budgets-anomaly-detection.svg" alt="Diagram: the AWS cost control pipeline and where its latency comes from. Usage occurs on the left, then passes through the billing pipeline, where AWS states billing data is updated at least once per day and Cost Explorer data has a delay of up to 24 hours. Two detectors read from the end of that pipeline: AWS Budgets, which is updated up to three times a day with updates typically 8 to 12 hours apart and compares spend against a threshold the customer chose, and Cost Anomaly Detection, which runs approximately three times a day using machine learning models against net unblended cost data and compares spend against the customer's own historical pattern. Because detection reads the bill rather than the resources, AWS states it can take up to 24 hours to detect an anomaly after a usage occurs, which is the floor no configuration lowers. Only one path leads to enforcement: a budget action, which can apply an IAM policy or a service control policy or target EC2 and RDS instances, and which can be set to run automatically or only after manual approval. A panel records two ways the stop fails quietly: an instance stopped by a budget action inside an Auto Scaling group is restarted or replaced unless a second action removes the scaling role's permissions, and from the management account an SCP can be applied to another account but EC2 and RDS instances in another account cannot be targeted." />
+      <figcaption>Both detectors read the bill, not the resources. The floor is set before either one runs, and only the budget-action path changes what happens next.</figcaption>
+    </figure>
+
+    <h3>The two detectors answer different questions</h3>
+    <p>
+      They are routinely described as alternatives. They are not, because they compare against different
+      reference points, and the reference point is the whole distinction.
+    </p>
+    <p>
+      A <strong>budget</strong> compares spend against a number <em>you</em> chose. It is an expression of
+      intent &mdash; this team gets $40,000 a month &mdash; and it is right or wrong only relative to that
+      intent. A <strong>Cost Anomaly Detection monitor</strong> compares spend against your own history,
+      using <em>&ldquo;machine learning models to detect and alert on anomalous spend patterns.&rdquo;</em>
+      It has no opinion about what you should spend, only about what is unlike you.
+    </p>
+    <p>
+      The practical consequence: a budget will never catch a $900 surprise inside a $40,000 budget, and
+      anomaly detection will never tell you that a perfectly stable, perfectly normal $40,000 is more than
+      the business agreed to. Running one and calling it cost control leaves an obvious hole, and which
+      hole you have depends on which one you picked.
+    </p>
+
+    <h3>Enforcement is one feature, and it has two quiet failure modes</h3>
+    <p>
+      Budget actions are genuinely capable. AWS lists <em>&ldquo;applying an IAM policy or a service
+      control policy (SCP)&rdquo;</em> and <em>&ldquo;targeting specific Amazon EC2 or Amazon RDS
+      instances&rdquo;</em>, and an action runs <em>&ldquo;either automatically or after your manual
+      approval&rdquo;</em>. That last choice matters more than it looks: manual approval adds human
+      response time on top of a detection floor already measured in hours.
+    </p>
+
+    <div class="callout red">
+      <strong>The stop that gets undone</strong>
+      <p>AWS documents this in the budgets best-practice guide, and it invalidates the most common design: <em>&ldquo;If a budget action is used to stop an Amazon EC2 instance in an Auto Scaling Group (ASG), Amazon EC2 Auto Scaling restarts the instance, or launches new instances to replace the stopped instance.&rdquo;</em> The remedy AWS gives is a second budget action that removes permissions on the role used by the Launch Configuration managing the ASG. A single stop action pointed at instances in an ASG is not a control &mdash; it is a restart loop with a bill attached.</p>
+    </div>
+
+    <div class="callout amber">
+      <strong>The cross-account boundary is not symmetric</strong>
+      <p>From the management account, <em>&ldquo;you can apply an SCP to another account. However, you can't target Amazon EC2 or Amazon RDS instances in another account.&rdquo;</em> Centralised enforcement therefore has exactly one shape: deny future provisioning via SCP. Stopping what is already running has to be actioned from inside the account that owns it, which means the account teams need the role and the runbook &mdash; central FinOps cannot do it for them.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The forecast alert is the only pre-emptive signal, and it needs history</h3>
+    <p>
+      Budgets alert on <em>&ldquo;both actual (after accruing) and forecasted (before accruing)&rdquo;</em>
+      spend, and only the second is a warning rather than a report. Forecast alerts also behave better
+      under sustained overspend: they <em>&ldquo;might alert more than once in a budgeted period if the
+      forecasted values exceed, dip below, and then exceed the alert threshold again&rdquo;</em>, unlike
+      the once-per-period actual alert.
+    </p>
+    <p>
+      The constraint is the one worth planning around. <em>&ldquo;AWS requires approximately 5 weeks of
+      usage data to generate budget forecasts. If you set a budget to alert based on a forecasted amount,
+      this budget alert isn't triggered until you have enough historical usage information.&rdquo;</em>
+    </p>
+    <p>
+      Read that against when teams actually create budgets. A new account in a landing zone. A new
+      workload. Week one of a migration. A sandbox handed to a team that has never had one. Every one of
+      those is a cold start, and for the first five weeks the only alert that would have arrived before
+      the money did is silent. Anomaly Detection has the same shape of limitation from the other side:
+      a new monitor <em>&ldquo;can take 24 hours to begin detecting&rdquo;</em>, and a new service
+      subscription needs <em>&ldquo;10 days of historical service usage data&rdquo;</em> first.
+    </p>
+
+    <div class="callout">
+      <strong>What to do during the cold start</strong>
+      <p>For the first five weeks, the useful control is not a budget at all &mdash; it is the one that does not depend on history. An SCP that denies expensive instance families, a Service Quota left deliberately low, or a sandbox with no NAT gateway all act at provisioning time with no learning period. Budgets and Anomaly Detection are what you switch to once there is a baseline for them to reason about.</p>
+    </div>
+
+    <h3>Root cause is where Anomaly Detection earns its place</h3>
+    <p>
+      Detection is only half of an incident. Anomaly Detection ranks root causes <em>&ldquo;by their dollar
+      impact&rdquo;</em> across four dimensions &mdash; <em>service, account, Region, usage type</em>
+      &mdash; which is the decomposition an on-call engineer needs and a budget alert never provides. A
+      budget email says the number is too big. This says which service, in which account, in which Region,
+      on which usage type, and how much of the total each explains.
+    </p>
+    <p>
+      Region is the one that repeatedly justifies the feature. A spend anomaly isolated to a Region nobody
+      deploys to is a different incident from the same dollar amount in your primary Region, and the
+      second dimension tells you that without a Cost Explorer session.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Expected detection time</td>
+        <td>Plan for up to 24 hours</td>
+        <td>Both tools read the billing pipeline. AWS states it can take up to 24 hours to detect an anomaly after usage occurs.</td>
+      </tr>
+      <tr>
+        <td>Budget or anomaly monitor</td>
+        <td>Both, for different questions</td>
+        <td>A budget tests spend against intent you set. A monitor tests it against your own history. Neither catches the other's case.</td>
+      </tr>
+      <tr>
+        <td>Alert type</td>
+        <td>Forecast, laddered with actual</td>
+        <td>Actual alerts fire once per budget period. Forecast alerts can re-fire and arrive before the spend accrues.</td>
+      </tr>
+      <tr>
+        <td>First five weeks</td>
+        <td>SCPs and quotas, not budgets</td>
+        <td>Forecasts need roughly 5 weeks of usage data. Provisioning-time controls have no learning period.</td>
+      </tr>
+      <tr>
+        <td>Enforcement</td>
+        <td>Budget action, automatic</td>
+        <td>Alerts do not restrict anything. Manual approval adds human latency to an already lagging signal.</td>
+      </tr>
+      <tr>
+        <td>Stopping ASG instances</td>
+        <td>Pair with a permissions action</td>
+        <td>Auto Scaling restarts or replaces a stopped instance unless a second action removes the scaling role's permissions.</td>
+      </tr>
+      <tr>
+        <td>Central enforcement</td>
+        <td>SCP only</td>
+        <td>The management account can apply an SCP cross-account but cannot target EC2 or RDS instances in another account.</td>
+      </tr>
+      <tr>
+        <td>Marketplace spend</td>
+        <td>Budgets, not monitors</td>
+        <td>Anomaly Detection excludes AWS Marketplace products except third-party Bedrock models. AWS directs you to Budgets.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>Three operational details that decide whether anyone acts on the alert</h3>
+    <p>
+      <strong>The people who can fix it may not be able to see it.</strong> AWS is clear that a management
+      account can create a budget tracking a member account's cost, <em>&ldquo;but the member account can
+      only view the same budget if they receive access to the management account.&rdquo;</em> A central
+      budget over a team's spend, with no corresponding visibility for that team, produces an alert that
+      lands with the only group who cannot act on the workload.
+    </p>
+    <p>
+      <strong>The notification fan-out is small.</strong> Up to 10 email addresses and one SNS topic per
+      alert. Ten addresses is a distribution list that rots; the SNS topic is the one worth wiring, because
+      it is the only path to chat, ticketing or an automated response.
+    </p>
+    <p>
+      <strong>Budgets quietly change meaning when the org changes.</strong> When a member account leaves an
+      organisation, Budgets <em>&ldquo;only track costs incurred after a member account leaves&rdquo;</em>,
+      historical data before the departure is excluded, and <em>&ldquo;no notification is sent when this
+      tracking behavior changes.&rdquo;</em> A budget that looks healthy after a divestiture may be healthy
+      only because it forgot the first three weeks of the month.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Cost controls get adopted in the aftermath of a surprise, which is the worst moment to reason about
+      them. The instinct is to put a number somewhere and feel covered, and the tooling is accommodating
+      enough to let that feeling survive until the next incident.
+    </p>
+    <p>
+      What the documentation describes is narrower and more useful than the instinct. These are
+      <em>reporting</em> instruments with an optional enforcement attachment, reading a ledger that is
+      assembled once or a few times a day. Used as reporting, they are good: a forecast alert with five
+      weeks of history behind it is a genuinely early warning, and anomaly root-cause ranking is the
+      fastest path from &ldquo;the bill is wrong&rdquo; to &ldquo;it is this usage type in that Region&rdquo;.
+      Used as a guardrail, they are hours late and, unless you configured an action, entirely advisory.
+    </p>
+    <p>
+      The architectural move is to stop asking these tools to be the limit. The limit belongs where
+      provisioning happens &mdash; an SCP, a quota, a permission that was never granted &mdash; because
+      that is the only layer that acts before the usage exists. Budgets and anomaly monitors then do the
+      job they are actually built for: telling you, as soon as the bill can tell anyone, that something
+      you did not intend is already underway.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Application patterns &mdash; idempotency: why at-least-once is the delivery contract you actually have, what an idempotency key's scope and expiry window really cover, and why the retry that duplicates your transaction is usually one the platform issued on your behalf rather than one you wrote.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html" target="_blank" rel="noopener">Managing your costs with AWS Budgets &#8212; the three-times-a-day refresh and the notification-delay note</a></li>
+      <li><a href="https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-best-practices.html" target="_blank" rel="noopener">Best practices for AWS Budgets &#8212; the 5-week forecast requirement, once-per-period actual alerts, and the Auto Scaling caveat</a></li>
+      <li><a href="https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-controls.html" target="_blank" rel="noopener">Configuring budget actions &#8212; IAM, SCP and instance actions, and the cross-account boundary</a></li>
+      <li><a href="https://docs.aws.amazon.com/cost-management/latest/userguide/manage-ad.html" target="_blank" rel="noopener">Detecting unusual spend with AWS Cost Anomaly Detection &#8212; the 24-hour detection ceiling, cold-start requirements and Marketplace exclusion</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
