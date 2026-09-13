@@ -1094,14 +1094,32 @@ def build():
             "authority."
             % (earliest["aws"], earliest["azure"], earliest["gcp"]))
 
-    # Reuse sync's JS token so the shared footer script busts cache in step with
-    # every other page; falling back to the literal keeps the page valid if the
-    # import is ever unavailable.
-    try:
-        import sync_blog
-        jsv = sync_blog.JS_VERSION
-    except Exception:                                        # noqa: BLE001
-        jsv = "1"
+    # The shared token, from the one module that has no dependencies.
+    #
+    # This used to import sync_blog and fall back to the literal "1" if that
+    # raised, on the reasoning that a literal "keeps the page valid". It does
+    # not: a constant is not a cache-buster. sync_blog imports markdown, yaml
+    # and BeautifulSoup at module level and the hourly workflow installs none
+    # of them, so in CI the import raised EVERY time and this page shipped
+    #
+    #     site-footer.css?v=1   site-footer.js?v=1   hero-media.js?v=1
+    #
+    # once an hour, for everyone. A returning reader kept running whatever copy
+    # of the shared script and stylesheet their browser already had, no matter
+    # what was fixed in them -- on the one page that rebuilds most often.
+    #
+    # It hid behind the clock rather than behind silence: check_asset_stamps.py
+    # flags it correctly, but it runs when I run it and the hourly job re-pins
+    # the page afterwards, so a green check and a broken page were the normal
+    # state. Found only by reading the stamps on disk while chasing something
+    # else. build_status_page.py had the identical fault with "0"; this was the
+    # copy that was missed when that one was fixed.
+    #
+    # asset_version imports hashlib and pathlib and nothing else, so there is
+    # no import left to fail and no reason for a fallback. If the assets cannot
+    # be read the checkout is broken and this should stop, not paper over it.
+    from asset_version import JS_VERSION
+    jsv = JS_VERSION
 
     # How much room the default view needs: all clouds, the last 30 days, the
     # first 60 rows -- the state the page opens in. Row heights are measured
