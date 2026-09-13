@@ -34,6 +34,37 @@ Keeping one independent pass matters. A window that writes the checks *and*
 certifies its own output has a blind spot by construction — the same reasoning
 that produced an error would certify it.
 
+## The per-post routine
+
+Agreed with Jayanth 2026-09-13, replacing "export every post to another model".
+
+1. The cloud window writes the post and runs `publish.py`. The mechanical
+   checks already run there — `validate_arch_post.py`, `verify_claims.py`,
+   `check_assertions.py`. Nothing changes about that step.
+2. **Before pushing**, `validate <post-name>` in this window. That means, for
+   that one post:
+   - fetch every page in `verified_claims` and confirm the claim against it;
+   - recompute every `derive:` and every ratio, break-even or effective rate in
+     the prose, from the cited numbers;
+   - triage every advisory flag `check_assertions.py` raises — each one is
+     either a real defect, or noise that belongs back here as a rule change;
+   - check the *governing* page was cited, not merely an adjacent one. This is
+     Mode A and no script catches it.
+3. Push.
+
+**Monthly, send three or four posts to a different model.** Not to catch those
+posts — to measure whether step 2 is working. Framing notes only means the gates
+hold; a data correction means one leaked, and the leak is the thing to fix.
+
+**Why the monthly pass cannot be dropped, and cannot be done here.** The cloud
+windows write the posts and this window checks them, but both are the same model
+reasoning the same way. A wrong inference drafted in the AWS window is the thing
+this window is *least* likely to notice, because it would re-derive it
+identically. Independence is the whole value, and it is the one property no
+amount of work in `scripts/` can manufacture. Same argument as the note at the
+top of this file: a window that writes the checks and certifies its own output
+has a blind spot by construction.
+
 ## Why this window exists
 
 The checks that decide whether a post is factually sound are **shared by all
