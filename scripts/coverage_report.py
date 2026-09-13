@@ -138,8 +138,13 @@ def flags_by_post():
         if ca.series_of(name) is None:
             continue
         _, errors, notes, _ = ca.check(path, False)
-        for kind, _sentence in notes:
-            out[name][kind] += 1
+        # check() yields (kind, sentence, dispositioned). Unpacked by index
+        # rather than by shape so a fourth field later does not break this the
+        # way adding the third one did.
+        for note in notes:
+            out[name][note[0]] += 1
+            if not note[2]:
+                out[name]["undispositioned"] += 1
         if errors:
             out[name]["code defect"] += len(errors)
     return out
