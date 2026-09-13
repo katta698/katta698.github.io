@@ -371,6 +371,7 @@ def main():
     cache = {}
     totals = collections.Counter()
     problems = []
+    nothing_verified = []
     print("%-46s %-6s %-5s %-6s %s"
           % ("post", "claims", "ok", "figs", "verdict"))
     print("-" * 92)
@@ -383,8 +384,27 @@ def main():
         figs = sum(len(r[4]) for r in rows)
         bad = [r for r in rows if r[0] in ("MISSING", "UNREACHABLE")]
         unchk = [r for r in rows if r[0] == "UNCHECKABLE"]
-        verdict = ("%d unverified" % len(bad) if bad
-                   else ("%d uncheckable" % len(unchk) if unchk else "all figures found"))
+        # "all figures found" when nothing carried a figure is a green light
+        # meaning nothing was tested -- the same shape as check_sources.py
+        # reporting 0 findings across 31 Azure posts it had no rule for, which
+        # is the failure this whole window exists to prevent.
+        #
+        # Measured 2026-09-13: 20 badged posts have no claim carrying a figure,
+        # and every one of them prints five or more figures in its body. GCP
+        # #31 printed "all figures found" having compared nothing at all, and
+        # its 1,500 / 250 limits sat in no claim. GCP #30 -- the post an
+        # external reader caught -- is on the same list.
+        #
+        # So say what happened instead of what did not.
+        if bad:
+            verdict = "%d unverified" % len(bad)
+        elif unchk:
+            verdict = "%d uncheckable" % len(unchk)
+        elif figs:
+            verdict = "all figures found"
+        else:
+            verdict = "NOTHING VERIFIED - no claim carries a figure"
+            nothing_verified.append(name)
         for r in rows:
             totals[r[0]] += 1
         print("%-46s %-6d %-5d %-6d %s" % (name[:46], len(rows), ok, figs, verdict))
@@ -405,6 +425,17 @@ def main():
             print()
 
     print("claims: %s" % ", ".join("%s=%d" % (k, v) for k, v in sorted(totals.items())))
+
+    if nothing_verified:
+        print("\n%d post(s) carry a verification badge that this tool cannot "
+              "check at all -- not one of their claims contains a figure, so "
+              "nothing was compared against any page:" % len(nothing_verified))
+        for name in nothing_verified:
+            print("   %s" % name)
+        print("A badge asserts the figures in the post were checked. Where the "
+              "figures live only in the prose and the claims paraphrase them, "
+              "that assertion has nothing behind it. Write the numbers into "
+              "the claims, in the vendor's own formatting.")
 
     # An unreachable page is a check that did not happen, not a defect that did.
     # Say which of the two is being counted, so a green run under --fail-on

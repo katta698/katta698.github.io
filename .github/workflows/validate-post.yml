@@ -1,0 +1,174 @@
+name: Deep validation of changed posts
+
+# The judgement half of publishing, run without anyone having to ask for it.
+#
+# prepublish.yml already runs the mechanical checks on every push: structure,
+# arithmetic in `derive:`, figures matched against the cited page, assertions
+# flagged. Those catch what a pattern can catch. They cannot answer the two
+# questions that have produced every factual error in this blog's history:
+#
+#   Mode A  Was the page that GOVERNS this topic the page that was cited, or
+#           merely a page adjacent to it? arch-048 priced a service that had
+#           been closed to new customers; the notice was on a docs page the
+#           post never cited. A reader caught it.
+#   Mode B  Are the sentences BUILT on top of correct quotations also correct?
+#           arch-018 cited two real pricing pages and stated a wrong
+#           break-even. gcp-030 said the foundations blueprint assumes a
+#           greenfield org; its own authentication page recommends federating
+#           with an existing IdP. An external reader caught that one too.
+#
+# Both need a reader, not a regex. This runs one over whatever the push
+# changed, and opens an issue only when it finds something.
+#
+# What it deliberately does NOT do
+# --------------------------------
+# It does not edit posts, and it does not stamp or refresh a verification
+# badge. A badge asserts that a human checked the figures on a date; a job
+# that stamped one would be making that claim on nobody's behalf. The rule in
+# CLAUDE.md is explicit and this workflow stays on the right side of it: it
+# reports, a person decides.
+#
+# It also does not replace the independent pass. This is the same model that
+# drafts the posts, so a wrong inference made while writing is the thing it is
+# least likely to notice while reviewing. Keep a quarterly spot-check by a
+# different model; its job is to measure whether these gates hold, and nothing
+# in this file can do that for itself.
+#
+# Setup required before this does anything
+# ----------------------------------------
+#   ANTHROPIC_API_KEY in repository secrets.
+# Without it the job is skipped rather than failed, so a missing secret cannot
+# masquerade as a clean review.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'posts/**'
+  workflow_dispatch:
+    inputs:
+      posts:
+        description: "Post filename substrings to review, space-separated. Blank = whatever the last push changed."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The diff has to be reachable to know which posts changed.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install --quiet pyyaml beautifulsoup4
+
+      - name: Work out which posts changed
+        id: scope
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.posts }}" ]; then
+            FILES=""
+            for frag in ${{ github.event.inputs.posts }}; do
+              FILES="$FILES $(ls posts/ | grep -F "$frag" | sed 's|^|posts/|' | tr '\n' ' ')"
+            done
+          else
+            FILES=$(git diff --name-only --diff-filter=AM \
+                      '${{ github.event.before }}' '${{ github.sha }}' -- 'posts/*.html' \
+                    | tr '\n' ' ')
+          fi
+          FILES=$(echo $FILES | xargs -n1 2>/dev/null | sort -u | tr '\n' ' ')
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+          if [ -z "$FILES" ]; then
+            echo "No post files changed; nothing to review."
+          else
+            echo "Reviewing:$FILES"
+          fi
+
+      - name: Mechanical checks, scoped to those posts
+        if: steps.scope.outputs.files != ''
+        id: mechanical
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          NAMES=$(echo "${{ steps.scope.outputs.files }}" | tr ' ' '\n' \
+                  | sed 's|posts/||; s|\.html$||' | tr '\n' ' ')
+          {
+            echo '### check_assertions'
+            python scripts/check_assertions.py $NAMES 2>&1 || true
+            echo
+            echo '### verify_claims'
+            python scripts/verify_claims.py $NAMES 2>&1 || true
+            echo
+            echo '### audit_claims'
+            python scripts/audit_claims.py $NAMES 2>&1 || true
+            echo
+            echo '### check_sources'
+            python scripts/check_sources.py $NAMES 2>&1 || true
+          } > mechanical.txt
+          cat mechanical.txt
+
+      - name: Skip if no API key
+        if: steps.scope.outputs.files != '' && env.ANTHROPIC_API_KEY == ''
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          echo "::warning::ANTHROPIC_API_KEY is not set, so the deep review did"
+          echo "::warning::not run. The mechanical checks above are all that"
+          echo "::warning::happened. This is not a clean review."
+
+      - name: Deep review
+        if: steps.scope.outputs.files != '' && env.ANTHROPIC_API_KEY != ''
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          allowed_tools: "WebFetch,WebSearch,Read,Glob,Grep,Bash(python scripts/*)"
+          prompt: |
+            Review these changed posts for factual defects, and nothing else:
+            ${{ steps.scope.outputs.files }}
+
+            Read scripts/VALIDATION.md first. It is the brief and it names the
+            two failure modes you are looking for.
+
+            The mechanical checks have already run; their output is in
+            mechanical.txt in the working directory. Do not repeat them. Your
+            job is the half they cannot do:
+
+            1. For every entry in the post's `verified_claims`, FETCH the cited
+               page and confirm the claim against it. A claim carrying no
+               figure is still a claim; verify_claims cannot check those and
+               you can.
+            2. Recompute every ratio, break-even, percentage and effective rate
+               in the PROSE from the cited numbers. Every confirmed error in
+               this blog's history has been a derived figure or an inference,
+               never a misquote.
+            3. Ask whether the page cited is the page that GOVERNS the topic,
+               or one adjacent to it. Search for a more specific page and for
+               any withdrawal, deprecation or closed-to-new-customers notice.
+               This is the check nothing else performs.
+            4. Check assertions about what a document "assumes", "omits" or
+               "does not support" against the whole document, not an excerpt.
+
+            Rules:
+            - Do NOT edit any file. Report only.
+            - Do NOT add, change or refresh a `verified:` badge.
+            - Verify before reporting. A false positive here costs more than
+              silence, because a report that cries wolf gets switched off.
+            - If everything checks out, say exactly: NO FINDINGS
+
+            If and only if you find something, open ONE GitHub issue titled
+            "Validation: <post name>" containing, per finding: the file, the
+            exact sentence, what the cited page actually says, the URL you
+            fetched, and the smallest correction that would fix it. Label it
+            `validation`.
