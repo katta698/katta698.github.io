@@ -32,6 +32,7 @@ import io
 import os
 import hashlib
 import re
+from datetime import datetime
 import sys
 import glob
 import xml.dom.minidom
@@ -810,6 +811,38 @@ def check_source(slug, spec):
         err(slug, '%s front matter parses but has no usable title/date — '
                   'sync_blog.py will skip this post silently' % name)
         return
+
+    # A post dated in the future is a post published before the day it claims.
+    # Week 4 of the GCP lab went live on 12 September carrying
+    # date: 2026-09-13, so the header read one day ahead of the verification
+    # banner a few centimetres below it, and the RSS pubDate sat in the future,
+    # where some aggregators hold items back.
+    #
+    # The cause was copying rather than reasoning: Week 1 and the whole
+    # architecture series date same-day, Week 2 used a next-day 09:20 timestamp,
+    # Week 3 copied Week 2's shape and Week 4 copied Week 3's. A one-off became a
+    # three-post pattern nobody decided on. Writing the convention down would not
+    # have helped — it was already visible in four other posts and got copied
+    # wrong anyway. So it is a check.
+    #
+    # Tomorrow onward is an error. Later today is fine: posts are routinely dated
+    # 09:00 and committed at 21:00, and failing those would fail every post
+    # written in an evening.
+    posted = parsed.get('date')
+    if posted is not None:
+        try:
+            when = posted if hasattr(posted, 'year') else datetime.fromisoformat(str(posted))
+            posted_day = when.date() if hasattr(when, 'date') else when
+            today = datetime.now().date()
+            if posted_day > today:
+                err(slug,
+                    '%s is dated %s, which is in the future (today is %s). '
+                    'Publishing it now puts a future date in the header and a '
+                    'future pubDate in the RSS feed. Date a post the day it '
+                    'actually goes out.' % (name, posted_day, today))
+        except (ValueError, TypeError):
+            warn(slug, '%s has a date front matter value that could not be '
+                       'parsed as a date: %r' % (name, posted))
 
     for field in ('title', 'date', 'slug', 'labels'):
         if not re.search(r'^%s:' % field, fm, re.MULTILINE):
