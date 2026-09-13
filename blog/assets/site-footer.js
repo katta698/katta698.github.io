@@ -69,6 +69,57 @@
    * a glide. It is asked for explicitly here. Back-to-top already passed
    * behavior itself.
    */
+  /* An opt-in scroll recorder, for a fault that only exists on a phone.
+   *
+   * Five attempts at "scrolling goes too fast and then slows down" have each
+   * fixed something real and none of them was the reported fault, because it
+   * does not reproduce in either headless engine at any width. Guessing a
+   * sixth time would be worse than measuring.
+   *
+   * Add ?scrolldebug=1 to any URL and a panel appears showing what the page
+   * is actually doing: where it is, how far it moved on the last frame, the
+   * largest single jump seen, whether the movement came from a touch or from
+   * the page itself, and what scroll-behavior is in force. Inert without the
+   * flag -- it is not loaded, it is not bound, it costs nothing.
+   */
+  function scrollDebug() {
+    if (!/[?&]scrolldebug=1/.test(location.search)) return;
+    var box = document.createElement('div');
+    box.setAttribute('style',
+      'position:fixed;left:8px;right:8px;bottom:8px;z-index:99999;' +
+      'background:rgba(0,0,0,.88);color:#EDEBE6;font:12px/1.5 ui-monospace,monospace;' +
+      'padding:10px 12px;border-radius:10px;white-space:pre;pointer-events:none');
+    document.body.appendChild(box);
+
+    var last = window.scrollY, biggest = 0, biggestWhen = '-';
+    var touching = false, sinceTouch = 999;
+    addEventListener('touchstart', function () { touching = true; sinceTouch = 0; },
+                     { passive: true });
+    addEventListener('touchend', function () { touching = false; }, { passive: true });
+
+    (function tick() {
+      var y = window.scrollY, d = y - last;
+      last = y;
+      if (Math.abs(d) > Math.abs(biggest)) {
+        biggest = d;
+        // The distinction that matters: a jump while no finger is down, and
+        // none recently, did not come from the reader.
+        biggestWhen = touching ? 'finger down'
+                    : (sinceTouch < 60 ? 'just after a flick' : 'NO TOUCH');
+      }
+      sinceTouch++;
+      box.textContent = [
+        'scrollY      ' + Math.round(y) + ' of ' +
+          (document.documentElement.scrollHeight - innerHeight),
+        'this frame   ' + Math.round(d) + 'px',
+        'biggest      ' + Math.round(biggest) + 'px  (' + biggestWhen + ')',
+        'behavior     ' + getComputedStyle(document.documentElement).scrollBehavior,
+        'touching     ' + (touching ? 'yes' : 'no')
+      ].join('\n');
+      requestAnimationFrame(tick);
+    })();
+  }
+
   function smoothAnchors() {
     document.addEventListener('click', function (e) {
       var a = e.target.closest ? e.target.closest('a[href^="#"]') : null;
@@ -91,6 +142,7 @@
 
   function initFooter() {
     smoothAnchors();
+    scrollDebug();
     ensureStyles();
     var footer = document.querySelector('footer');
     if (!footer) {
