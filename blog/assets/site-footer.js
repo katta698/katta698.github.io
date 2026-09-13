@@ -56,16 +56,41 @@
    * be seconds away on a slow connection -- long enough for a reader to click
    * something and get a jump where they expected a glide.
    */
-  function enableSmoothScroll() {
-    requestAnimationFrame(function () {
-      requestAnimationFrame(function () {
-        document.documentElement.classList.add('scroll-ready');
-      });
+  /* Smooth scrolling belongs to the gestures that ask for it.
+   *
+   * It was `html { scroll-behavior: smooth }`, which also governs the
+   * browser's own scroll restoration -- a restore IS a programmatic scroll --
+   * so Safari animated its way back to the reader's position on every refresh.
+   * Gating that rule behind a class added two frames after init did not fix
+   * it: iOS restores after layout settles, long past two frames, by which time
+   * smooth was on again. A timer cannot win that race, so the rule is gone.
+   *
+   * What remains is an anchor click, which is the one case that actually wants
+   * a glide. It is asked for explicitly here. Back-to-top already passed
+   * behavior itself.
+   */
+  function smoothAnchors() {
+    document.addEventListener('click', function (e) {
+      var a = e.target.closest ? e.target.closest('a[href^="#"]') : null;
+      if (!a) return;
+      var id = a.getAttribute('href').slice(1);
+      if (!id) return;
+      var target = document.getElementById(id);
+      if (!target) return;
+      // Reduce Motion asks for movement to stop; honour it here rather than
+      // animating anyway.
+      var still = window.matchMedia &&
+                  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      e.preventDefault();
+      target.scrollIntoView({ behavior: still ? 'auto' : 'smooth',
+                              block: 'start' });
+      // Keep the address bar honest, the way the default jump would.
+      if (history.replaceState) history.replaceState(null, '', '#' + id);
     });
   }
 
   function initFooter() {
-    enableSmoothScroll();
+    smoothAnchors();
     ensureStyles();
     var footer = document.querySelector('footer');
     if (!footer) {
