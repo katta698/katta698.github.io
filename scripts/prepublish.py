@@ -158,7 +158,10 @@ CHECKS = [
     # live state sitting above the step that creates it. Week 18 shipped that
     # twice in one day and a reader found both. Scoped to changed posts, so it
     # gates what is being published rather than re-litigating the archive.
-    ("check_figure_order.py",    True,  False, True,  True),
+    # Site-wide, not scoped to the diff. The archive is clean as of
+    # 2026-09-12, so a full pass costs nothing and cannot cry wolf -- and it
+    # means a post cannot drift back later without a red run.
+    ("check_figure_order.py",    True,  False, False, False),
 
     ("check_index_complete.py", True,  False, False, False),
     ("fix_series_nav.py",       True,  False, False, False),
