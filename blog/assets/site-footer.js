@@ -129,6 +129,51 @@
     })();
   }
 
+  /* A reload should not fling you back down the page.
+   *
+   * Measured on the reporting device, from the panel below:
+   *
+   *     biggest    10278px  (NO TOUCH)
+   *     untouched  1 jump over 40px
+   *     viewport   742px, resized 0 times
+   *
+   * Ten thousand pixels in a single frame, no finger down, and the viewport
+   * never changed size -- so it is not Safari reclaiming its toolbars, not
+   * momentum, and not scroll-behavior. It is the browser restoring the scroll
+   * position from the last visit, and on a page eleven thousand pixels tall
+   * that restore is enormous.
+   *
+   * Five earlier attempts each fixed something real and none of them was this,
+   * because I was theorising about the mechanism instead of recording it.
+   *
+   * Back and Forward still restore -- losing your place there would be a
+   * worse bug than this one. Only a reload, or opening the address fresh,
+   * starts at the top. performance navigation type is what tells them apart.
+   */
+  function tameScrollRestoration() {
+    if (!('scrollRestoration' in history)) return;
+    var nav = (performance.getEntriesByType &&
+               performance.getEntriesByType('navigation')[0]) || null;
+    var kind = nav ? nav.type : (performance.navigation &&
+               performance.navigation.type === 2 ? 'back_forward' : 'navigate');
+    // Only a reload. Not 'navigate', not 'back_forward'.
+    //
+    // The first version disabled restoration for everything except a detected
+    // back_forward, and lost the reader's place going Back in both engines --
+    // the navigation type is not reported as back_forward reliably enough to
+    // hang that on. A fresh navigation has no saved position to restore
+    // anyway, so reload is the whole of the reported fault and the whole of
+    // what needs changing.
+    if (kind !== 'reload') return;
+    history.scrollRestoration = 'manual';
+    // An anchor in the address is an explicit request for a position, and
+    // manual restoration would otherwise swallow it.
+    if (location.hash && location.hash.length > 1) {
+      var target = document.getElementById(location.hash.slice(1));
+      if (target) target.scrollIntoView({ block: 'start' });
+    }
+  }
+
   function smoothAnchors() {
     document.addEventListener('click', function (e) {
       var a = e.target.closest ? e.target.closest('a[href^="#"]') : null;
@@ -150,6 +195,7 @@
   }
 
   function initFooter() {
+    tameScrollRestoration();
     smoothAnchors();
     scrollDebug();
     ensureStyles();
