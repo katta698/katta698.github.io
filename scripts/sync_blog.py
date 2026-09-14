@@ -2594,6 +2594,38 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     index_years = ",".join(sorted(
         {p["date"].strftime("%Y") for p in posts}, reverse=True))
 
+    # The year and month rows, rendered here rather than built by blog.js.
+    #
+    # They used to be created after load, and they are two of the three rows in
+    # a stack 102-183px tall, so the entire post list dropped by that much a
+    # few hundred milliseconds into every visit. Reported as: every other page
+    # is "static and seamless" but the blog "gets refreshed". It was not a
+    # reload; it was the page rebuilding its own header in front of the reader.
+    #
+    # Measured at 1440px: at 498ms there was no .filter-stack at all, by 639ms
+    # it was 183px and the first card had moved from y=734 to y=863.
+    #
+    # Reserving the space instead was the obvious alternative and is the wrong
+    # tool here: the stack measures 102px at 640, 112px at 1024, 183px at 1440
+    # and 147px at 1920 -- it does not ladder, because the topic row wraps
+    # differently at each, and it would move again the day a topic is added.
+    # Markup that is simply present has no such problem at any width.
+    #
+    # The data was always server-side (data-years on the grid); only the DOM
+    # building was not. blog.js reuses these when it finds them.
+    _year_pills = "".join(
+        '<button class="filter-pill" data-year="%s">%s</button>' % (y, y)
+        for y in index_years.split(",") if y)
+    index_year_row = (
+        '<div class="filters year-filters">'
+        '<button class="filter-pill active" data-year="all">All years</button>'
+        '%s</div>' % _year_pills) if index_years.count(",") >= 1 else ""
+    # Empty and display:none until a year is chosen, exactly as blog.js left it.
+    # It occupies no height either way, so it is here only so blog.js has one
+    # to fill rather than one to insert.
+    index_month_row = ('<div class="filters month-filters" style="display:none">'
+                       '</div>') if index_year_row else ""
+
     # ── Pagination nav ────────────────────────────────────────
     # Hidden by blog.js the moment a filter or search is active, because those
     # run across every post rather than the current page, so a page-2 link
@@ -3119,8 +3151,12 @@ document.documentElement.setAttribute('data-palette',p);}})();</script>
   </div>
   <div class="hero-typer">$ <span id="hero-typer-text"></span><span class="hero-typer-cursor">|</span></div>
 </section>
-<div class="filters">
-  {filter_pills}
+<div class="filter-stack">
+  <div class="filters">
+    {filter_pills}
+  </div>
+  {index_year_row}
+  {index_month_row}
 </div>
 <!-- A news crawl, not a carousel. The sidebar card carrying the same link
      sits ELEVEN screens down on a 390px phone -- measured 2026-09-04, y=9251 of
@@ -3243,6 +3279,10 @@ document.documentElement.setAttribute('data-palette',p);}})();</script>
 }})();
 </script>
 <div class="results-count" id="results-count">{total_posts} posts</div>
+<!-- Rendered here, not created by blog.js after load. It is 27px, it sits
+     above the whole post list, and inserting it late pushed every card down
+     by that much on every visit. blog.js takes this one if it finds it. -->
+<button class="sort-btn" title="Toggle sort order"><span class="sort-icon">&#8595;</span> Newest</button>
 
 <div class="layout">
   <div>

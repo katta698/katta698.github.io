@@ -541,9 +541,16 @@
     applyFilters();
   }
 
-  // Month row — rebuilt whenever year changes
-  var monthRow = document.createElement('div');
-  monthRow.className = 'filters month-filters';
+  // Month row — rebuilt whenever year changes.
+  // Reused from the page when it is there, for the same reason as the year
+  // row above. It is empty and display:none until a year is picked, so it
+  // costs no height either way; taking the server's one only avoids a second
+  // element being inserted into the stack after paint.
+  var monthRow = document.querySelector('.month-filters');
+  if (!monthRow) {
+    monthRow = document.createElement('div');
+    monthRow.className = 'filters month-filters';
+  }
   monthRow.style.display = 'none';
   var monthPills = [];
 
@@ -592,22 +599,32 @@
   }
   years.sort(function(a, b) { return b - a; });
 
-  var yearRow = document.createElement('div');
-  yearRow.className = 'filters year-filters';
-  var allYearBtn = document.createElement('button');
-  allYearBtn.className = 'filter-pill active';
-  allYearBtn.dataset.year = 'all';
-  allYearBtn.textContent = 'All years';
-  yearRow.appendChild(allYearBtn);
-  years.forEach(function(yr) {
-    var btn = document.createElement('button');
-    btn.className = 'filter-pill';
-    btn.dataset.year = yr;
-    btn.textContent = yr;
-    yearRow.appendChild(btn);
-  });
+  // Reuse the row the page already shipped, and only build one if it is
+  // missing. sync_blog.py now renders the year row server-side, because
+  // creating it here meant a 102-183px block appeared a few hundred
+  // milliseconds after paint and pushed the whole post list down -- reported
+  // as the blog "getting refreshed" while every other page felt seamless.
+  // Post pages and any index built before this still hit the fallback.
+  var yearRow = document.querySelector('.year-filters');
+  if (!yearRow) {
+    yearRow = document.createElement('div');
+    yearRow.className = 'filters year-filters';
+    var allYearBtn = document.createElement('button');
+    allYearBtn.className = 'filter-pill active';
+    allYearBtn.dataset.year = 'all';
+    allYearBtn.textContent = 'All years';
+    yearRow.appendChild(allYearBtn);
+    years.forEach(function(yr) {
+      var btn = document.createElement('button');
+      btn.className = 'filter-pill';
+      btn.dataset.year = yr;
+      btn.textContent = yr;
+      yearRow.appendChild(btn);
+    });
+  }
   var filtersEl = document.querySelector('.filters');
-  if (filtersEl && years.length > 1) {
+  // Already wrapped by the server? Then there is nothing to move.
+  if (filtersEl && years.length > 1 && !document.querySelector('.filter-stack')) {
     // All three rows are position:sticky with the same top offset, so as
     // siblings they pin to the same spot and overlap — the year row lands on
     // top of the topic row's lower half. Nesting them in one sticky wrapper
@@ -675,11 +692,17 @@
 
   // Sort toggle — inject next to results count
   var sortAsc = false;
-  var sortBtn = document.createElement('button');
-  sortBtn.className = 'sort-btn';
-  sortBtn.title = 'Toggle sort order';
-  sortBtn.innerHTML = '<span class="sort-icon">↓</span> Newest';
-  if (countEl) countEl.after(sortBtn);
+  // Reused from the page when present, built only as a fallback -- the same
+  // reason as the year row above. Inserting a 27px control after paint pushed
+  // the entire post list down by that much on every visit.
+  var sortBtn = document.querySelector('.sort-btn');
+  if (!sortBtn) {
+    sortBtn = document.createElement('button');
+    sortBtn.className = 'sort-btn';
+    sortBtn.title = 'Toggle sort order';
+    sortBtn.innerHTML = '<span class="sort-icon">↓</span> Newest';
+    if (countEl) countEl.after(sortBtn);
+  }
 
   function applySort() {
     var sorted = Array.from(grid.querySelectorAll('.post-card')).sort(function(a, b) {
