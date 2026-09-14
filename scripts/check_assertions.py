@@ -192,6 +192,51 @@ ABSOLUTE = re.compile(
     r'|entirely dependent|wholly dependent'
     r')', re.I)
 
+# The same construction, in the two places a reader skims rather than reads:
+# a heading and a decision-table cell. Those are summary positions, stripped of
+# the qualification the body paragraph would carry, and that is where an
+# over-claim does its damage.
+#
+# arch-051 shipped the heading "The forecast alert is the only pre-emptive
+# signal" while the same post argues, three paragraphs later, that SCPs and
+# quotas "act at provisioning time with no learning period" -- which is to say
+# pre-emptively. An external reviewer caught it. ABSOLUTE could not, for two
+# reasons worth recording:
+#
+#   1. Its noun list is closed -- identity, thing, way, mechanism, one, control,
+#      answer -- so "signal" and "alert" walked straight past it.
+#   2. It only ran under --absolutes, and prepublish.py has never passed that
+#      flag. The whole class had never executed in the pipeline.
+#
+# A closed list behind a flag nobody sets is a checker that cannot fail, which
+# this file's own docstring calls worse than no checker.
+#
+# Scoped to "the only <noun>" in headings and cells because the alternatives
+# were measured and rejected: any "the only <noun>" anywhere gives 388 flags
+# across 152 posts, and adding "<noun> only" to the summary positions gives 90,
+# most of them terse table values like "Parquet only" that assert nothing.
+# This gives 60 across 47 posts -- about one post in four, comparable to the
+# advisory load already carried.
+SUMMARY_ABSOLUTE = re.compile(r'\bthe only \w+', re.I)
+SUMMARY_BLOCK = re.compile(
+    r'<h[1-6][^>]*>([\s\S]*?)</h[1-6]>|<t[dh][^>]*>([\s\S]*?)</t[dh]>')
+
+
+def summary_positions(body):
+    """Heading and table-cell text: what a reader takes in without reading."""
+    out = []
+    for m in SUMMARY_BLOCK.finditer(body):
+        raw = m.group(1) if m.group(1) is not None else m.group(2)
+        text = re.sub(r"<[^>]+>", " ", raw or "")
+        text = (text.replace("&mdash;", "-").replace("&ndash;", "-")
+                    .replace("&amp;", "&").replace("&nbsp;", " ")
+                    .replace("&#8212;", "-").replace("&quot;", '"'))
+        text = re.sub(r"&[a-z#0-9]+;", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            out.append(text)
+    return out
+
 
 # Both classes below were added on 2026-09-12, independently, in two windows,
 # from the same realisation: the errors that survive verification are the ones
@@ -663,6 +708,13 @@ def check(path, show_absolutes):
             bare = s.replace(QUOTE_MARK, "")
             notes.append(("consequence", bare,
                           signed_judgement(bare, judgements)))
+
+    # Absolutes in the positions a reader skims. Runs unconditionally: the
+    # --absolutes flag stays for the noisier prose-wide sweep, but the summary
+    # positions are where this class has actually shipped wrong.
+    for text in summary_positions(body):
+        if SUMMARY_ABSOLUTE.search(text) and not echoes_claim(text, claims):
+            notes.append(("absolute", text, signed_judgement(text, judgements)))
     return name, errors, notes, derives
 
 
@@ -689,6 +741,10 @@ CANARIES = [
      "the wrapper pins the module at exactly 0.10.0"),
     (ABSOLUTE, "this role depends on nothing outside IAM",
      "the account depends on a pipeline"),
+    # The noun after "the only" is open on purpose: a closed list is what let
+    # "the only pre-emptive signal" and "the only alert" through.
+    (SUMMARY_ABSOLUTE, "the forecast alert is the only pre-emptive signal",
+     "forecast alerts warn before spend accrues"),
     (CONSEQUENCE_CUE, "So the delivery is billed either way", "delivery billing"),
     (CONSEQUENCE_VERB, "the review is billed twice", "the review completed"),
     (CONSEQUENCE_VERB, "so it requires a licence for each guest",
@@ -786,6 +842,16 @@ def selftest():
         bad.append("a non-technical post is being scanned")
     if in_scope("arch-050-x.html", "labels:\n  - AWS\n") != "arch":
         bad.append("a registered series no longer resolves to its key")
+
+    # Summary positions must be extracted from both headings and cells, and the
+    # class must run without a flag. It never did before arch-051.
+    found = summary_positions(
+        "<h3>The forecast alert is the only pre-emptive signal</h3>"
+        "<td>Central enforcement</td><p>the only thing in a paragraph</p>")
+    if len(found) != 2:
+        bad.append("summary_positions no longer reads headings and cells")
+    elif any("paragraph" in f for f in found):
+        bad.append("summary_positions is reaching into body prose")
     return bad
 
 
