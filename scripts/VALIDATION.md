@@ -50,7 +50,47 @@ Agreed with Jayanth 2026-09-13, replacing "export every post to another model".
      either a real defect, or noise that belongs back here as a rule change;
    - check the *governing* page was cited, not merely an adjacent one. This is
      Mode A and no script catches it.
+   - **read the prose back against the claims, not only the claims against the
+     pages.** See below; this is the step that was missing.
 3. Push.
+
+### Check both directions, because the tools only check one
+
+Added 2026-09-14, after arch-051 leaked a real correction to an outside reader
+one day after this window validated it.
+
+`verify_claims.py` asks *does this claim appear on the page it cites?* When this
+window validates a post by hand it has been asking the same question, of the
+same claim list. Both directions of that check are the same direction, and the
+error lived in the other one:
+
+| Direction | Checked by | arch-051 |
+|---|---|---|
+| claim → cited page | `verify_claims.py`, and this window by hand | passed, correctly |
+| prose → claim | **nothing** | the scope was dropped here |
+
+arch-051's claim is exact: *"approximately 5 weeks of usage data to generate
+budget **forecasts**"*. Its body prose is exact too. Its callout then says *"the
+useful control is not a budget at all"* — dropping **forecasts** and condemning
+all of AWS Budgets, when actual-value alerts work on day one. Every claim was
+right; the advice built on them was wrong.
+
+So: **for every claim carrying a qualifier — forecasts, provisioned, per-Region,
+first-year, management-account-only — find where the prose restates it and
+confirm the qualifier survived.** A claim narrowed correctly and then widened in
+prose is invisible to everything in `scripts/`.
+
+**It does not mechanise cheaply, and that was measured rather than assumed.** A
+prototype comparing the noun phrase after a figure in the claims against the
+same figure in the prose produced 313 signals across the corpus, essentially all
+noise — ordinary rephrasing is indistinguishable from a dropped qualifier
+without knowing that "budget forecasts" is a narrower category than "a budget".
+That is semantics. Do not ship a version of this without measuring it first;
+313 flags is a checker switched off within a day.
+
+What *did* mechanise is the position: the over-claim landed in a callout, and
+callouts are now a summary position in `check_assertions.py` alongside headings
+and table cells. That catches the shape, not the scope.
 
 **Monthly, send three or four posts to a different model.** Not to catch those
 posts — to measure whether step 2 is working. Framing notes only means the gates
