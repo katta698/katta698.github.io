@@ -415,7 +415,27 @@ document.documentElement.setAttribute('data-palette',p);})();
   main{max-width:1000px;margin:0 auto;padding:1.6rem 2rem 4rem}
   @media(max-width:640px){main{padding:1.2rem 1.1rem 3rem}}
 
-  .controls{position:sticky;top:56px;z-index:50;background:var(--bg);
+  /* Sticks BELOW the header, whatever the header currently is.
+     ------------------------------------------------------------------------
+     Reported from a desktop: scrolling on What's New leaves the filter row
+     half hidden -- "I just see parts of it". It was pinned at a flat 56px
+     while the nav is 64px tall, so eight pixels of the row sat behind the nav
+     from the day it was written, which reads as a slightly clipped edge. Then
+     the occasion banner started showing on this page and put the nav at 33px
+     rather than 0, which turned eight pixels into forty-one and hid every one
+     of All clouds / AWS / Azure / Google Cloud / 7 days / 30 days completely.
+
+     Measured at 1440px: nav bottom 97, controls top 56, overlap 41px, all six
+     pills reporting the nav as the element at their own centre point.
+
+     Both terms are variables with fallbacks, so this follows the header
+     instead of restating its size: --occasion-banner-h is 0px on the days
+     with no banner and the sum is just the nav height. Same expression
+     blog.css already uses for the filter stack, which is why the blog did not
+     have this bug. */
+  .controls{position:sticky;
+            top:calc(var(--nav-h, 64px) + var(--occasion-banner-h, 0px));
+            z-index:50;background:var(--bg);
             padding:.9rem 0 .7rem;border-bottom:1px solid var(--border);margin-bottom:1.2rem}
   .row{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin-bottom:.55rem}
   .row:last-child{margin-bottom:0}
