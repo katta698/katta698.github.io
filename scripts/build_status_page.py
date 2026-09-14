@@ -935,12 +935,54 @@ def cloud_card(cloud, incidents, source):
     # page a small round dot had come to mean "which vendor" in the filter
     # chips and "how healthy" here, two meanings for one shape a few hundred
     # pixels apart.
-    return ('<div class="scard %s"><div class="sc-n">%s</div>'
-            '<div class="sc-v"><span class="pill %s"></span>%s</div>'
-            '<div class="sc-s">%s</div>'
-            '<div class="sc-t">read %s</div></div>'
-            % (e(cloud), e(LABEL[cloud]), cls, e(state), note,
-               e(since(t(source.get("fetched"))))))
+    # The chevron rides with the verdict, not at the card's right edge.
+    #
+    # It was pinned right, which is the conventional place and was wrong here:
+    # the feedback star is a fixed-position button at the right of the viewport
+    # and it landed exactly on top of the chevron on a phone. The only signal
+    # that the card could be opened was invisible on the device the question
+    # came from. Beside the text it cannot be covered by anything, and it sits
+    # where the reader is already looking.
+    def inner_for(go):
+        return ('<div class="sc-n">%s</div>'
+                '<div class="sc-v"><span class="pill %s"></span>'
+                '<span class="sc-vt">%s</span>%s</div>'
+                '<div class="sc-s">%s</div>'
+                '<div class="sc-t">read %s</div>'
+                % (e(LABEL[cloud]), cls, e(state), go, note,
+                   e(since(t(source.get("fetched"))))))
+
+    # A card opens its incidents only when it HAS incidents.
+    #
+    # "No active incidents" is the whole answer -- there is nothing behind it
+    # to show. Making all three tappable for consistency would mean a reader
+    # taps a healthy cloud, gets an empty panel, and learns that the cards lie
+    # about being tappable. One dead tap is enough to stop anyone trying the
+    # live one.
+    if not incidents:
+        return '<div class="scard %s">%s</div>' % (e(cloud), inner_for(""))
+
+    # An anchor, not a button, and the href is real.
+    #
+    # The incidents are still in the page, in a section with this id; the
+    # script below hides those sections and intercepts the click to open them
+    # in a dialog instead. With JavaScript off, nothing is intercepted and
+    # nothing is hidden, so the link jumps to the incidents exactly as the page
+    # behaved before. A <button> would have been dead in that case, and the
+    # detail unreachable -- which is a worse page than the one being replaced.
+    # data-cloud-inc, NOT data-inc.
+    #
+    # data-inc was already taken: the 90-day timeline puts it on every day
+    # cell, holding a comma-separated list of incident indexes, and pm.js has a
+    # document-level handler for [data-inc]. Naming the card's attribute the
+    # same made one tap open two dialogs -- mine, and the timeline's on top of
+    # it, reading "Nothing began on this day", because "aws".split(',') mapped
+    # through Number gives [NaN] and matches no incident. Both handlers were
+    # behaving correctly; the attribute was the bug.
+    go = '<span class="sc-go" aria-hidden="true">&rsaquo;</span>'
+    return ('<a class="scard tap %s" href="#inc-%s" data-cloud-inc="%s"'
+            ' aria-haspopup="dialog">%s</a>'
+            % (e(cloud), e(cloud), e(cloud), inner_for(go)))
 
 
 def incident_card(cloud, i):
@@ -1098,6 +1140,66 @@ document.documentElement.setAttribute("data-palette",p);})();
 </header>
 <div class="wrap">
   __CARDS__
+  <dialog id="inc-dialog" aria-labelledby="inc-title">
+    <button class="pm-x" data-inc-close aria-label="Close">&times;</button>
+    <div class="pm-body" id="inc-body"></div>
+  </dialog>
+  <script>
+  /* Open a cloud's incidents in a panel instead of listing them down the page.
+     Inline on purpose: it is forty lines, it belongs to markup this file
+     writes, and putting it in pm.js would tie it to that file's cache token --
+     which is derived from the STYLESHEET hash, so a change here could ship
+     behind a copy a returning reader already has. This page rebuilds hourly,
+     so inline is always the current version. */
+  (function () {
+    var dlg = document.getElementById('inc-dialog');
+    var body = document.getElementById('inc-body');
+    if (!dlg || !body) return;
+    var lastFocus = null;
+
+    function open(cloud, label) {
+      var src = document.getElementById('inc-' + cloud);
+      if (!src) return false;
+      lastFocus = document.activeElement;
+      var n = src.querySelectorAll('.inc').length;
+      body.innerHTML = '<h3 id="inc-title">' + label + ' · ' + n +
+        ' ongoing incident' + (n === 1 ? '' : 's') + '</h3>';
+      /* A copy, not a move: the originals stay in the document so the page is
+         still whole for a reader without JavaScript, for find-in-page, and for
+         anything that reads the markup rather than running it. */
+      var copy = src.cloneNode(true);
+      while (copy.firstChild) body.appendChild(copy.firstChild);
+      body.scrollTop = 0;
+      if (typeof dlg.showModal === 'function') dlg.showModal();
+      else dlg.setAttribute('open', '');
+      return true;
+    }
+
+    function close() {
+      if (typeof dlg.close === 'function' && dlg.open) dlg.close();
+      else dlg.removeAttribute('open');
+      if (lastFocus && lastFocus.focus) lastFocus.focus();
+    }
+
+    document.addEventListener('click', function (ev) {
+      var card = ev.target.closest ? ev.target.closest('[data-cloud-inc]') : null;
+      if (card) {
+        var label = (card.querySelector('.sc-n') || {}).textContent || '';
+        /* Only swallow the click if the panel actually opened. If the section
+           is missing the href still works and the reader lands on the
+           incidents, rather than tapping a card that does nothing. */
+        if (open(card.getAttribute('data-cloud-inc'), label)) ev.preventDefault();
+        return;
+      }
+      if (ev.target.hasAttribute && ev.target.hasAttribute('data-inc-close')) close();
+      if (ev.target === dlg) close();
+    });
+    dlg.addEventListener('cancel', function () { close(); });
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape' && dlg.open) close();
+    });
+  })();
+  </script>
   <!-- Directly under the verdict, because this is the moment a reader has just
        learned whether anything is broken and is most likely to want telling
        next time. It sat at the foot of the page before -- 99% of the way down,
@@ -1289,8 +1391,25 @@ def main():
     cards = '<div class="sum">%s</div>' % "".join(
         cloud_card(c, clouds.get(c, []), sources.get(c, {})) for c in ORDER)
 
-    inc = [incident_card(c, i) for c in ORDER for i in clouds.get(c, [])]
-    body = "".join(inc) if inc else (
+    # Grouped per cloud, and each group carries the id its card links to.
+    #
+    # These used to be a flat run of incident cards under the three summary
+    # cards -- so the page answered "is anything broken" in one screen and then
+    # spent several more on the detail, whether or not the reader wanted it.
+    # Now each group is the contents of its own card's panel. They stay in the
+    # HTML rather than being fetched: the panel opens instantly with no second
+    # request, and a reader without JavaScript still gets the whole page.
+    groups = []
+    for c in ORDER:
+        items = clouds.get(c, [])
+        if not items:
+            continue
+        groups.append(
+            '<section class="inc-src" id="inc-%s" data-inc-src="%s"'
+            ' aria-label="%s incidents">%s</section>'
+            % (e(c), e(c), e(LABEL[c]),
+               "".join(incident_card(c, i) for i in items)))
+    body = "".join(groups) if groups else (
         '<div class="allclear">No active incidents reported by any of the three '
         'vendors as of the last check.</div>')
 
