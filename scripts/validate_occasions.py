@@ -3,8 +3,8 @@
 """
 Check that the occasion-banner date tables have not run out.
 
-The banner on index.html greets visitors on holidays. Three kinds of date feed
-it, and only one of them can go stale:
+The banner greets visitors on holidays. Three kinds of date feed it, and only
+one of them can go stale:
 
     FIXED        same Gregorian date every year (Republic Day, 4 July, ...)
     NTH_WEEKDAY  computed ("4th Thursday in November"), so US federal holidays
@@ -36,7 +36,14 @@ import sys
 import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PAGE = os.path.join(ROOT, 'index.html')
+# The tables moved out of index.html in Aug 2026, when the banner was extracted
+# so it could show on every surface rather than only the home page. This script
+# kept reading index.html and printed its own "has the banner been
+# restructured?" error on every run from that day -- which is the good outcome
+# of the two available, but it means the runway warning it exists to give has
+# not been given since. The check that guards a silent failure can fail
+# silently too, if nothing reads its output.
+PAGE = os.path.join(ROOT, 'blog', 'assets', 'occasion-banner.js')
 
 WARN_YEARS = 3          # start nagging with this much runway left
 ERROR_YEARS = 1         # fail the build below this
@@ -49,15 +56,16 @@ def main():
         pass
 
     if not os.path.isfile(PAGE):
-        print('ERROR index.html not found at %s' % PAGE)
+        print('ERROR occasion-banner.js not found at %s' % PAGE)
         return 1
 
     html = io.open(PAGE, encoding='utf-8').read()
 
     m = re.search(r'var LUNAR = \{(.*?)\n    \};', html, re.DOTALL)
     if not m:
-        print('ERROR could not find the LUNAR table in index.html — has the '
-              'banner script been restructured? This check needs updating.')
+        print('ERROR could not find the LUNAR table in %s — has the '
+              'banner script been restructured? This check needs updating.'
+              % os.path.relpath(PAGE, ROOT))
         return 1
     body = m.group(1)
 

@@ -1680,3 +1680,50 @@
   // the panel exists -- a phone reader meets these links only in there.
   window.addEventListener('load', function () { window.setTimeout(start, 400); });
 })();
+
+/* The occasion banner, on every surface that loads this file.
+ * ---------------------------------------------------------------------------
+ * Asked as: "why don't I see festivals note on others except portfolio page?
+ * Is that deliberate?" It was not. It was three faults stacked on one feature,
+ * and each hid the next.
+ *
+ *   index.html      shipped its own <script> tag, so it worked -- and being
+ *                   the only page that worked is what made the other two
+ *                   look like a choice.
+ *   blog + posts    blog.js injects the banner, but its single early return
+ *                   for site-footer.js started matching once every page began
+ *                   shipping its own data-site-footer tag, and returned first.
+ *   everything else never loaded blog.js at all: the status page, What's New,
+ *                   /intelligence/ and now.html only ever load THIS file.
+ *
+ * So it goes here. site-footer.js is the one script all 144 pages load -- the
+ * same argument that put the service-worker registration in this file. blog.js
+ * still injects it too, guarded on the same marker, because the arch pages are
+ * never rebuilt and cannot be given a new tag; whichever arrives first wins and
+ * the other is a no-op.
+ *
+ * The banner is position:fixed at the top, so anything with a fixed header has
+ * to move down by its height. blog.css already did that. site-footer.css now
+ * carries the same two rules for the pages that do not load blog.css -- and
+ * because the custom property defaults to 0px, the nav sits exactly where it
+ * always has on every day that has no banner, which is nearly all of them.
+ */
+(function () {
+  if (document.querySelector('script[data-occasion-banner]')) return;
+
+  // Carry this file's own cache token onto it, the way blog.js does: both are
+  // stamped from one combined hash, so the version that loaded this is the
+  // correct version of what it loads.
+  var version = '';
+  var self = document.currentScript ||
+             document.querySelector('script[src*="/blog/assets/site-footer.js"]');
+  if (self) {
+    var match = /[?&]v=([0-9a-zA-Z]+)/.exec(self.getAttribute('src') || '');
+    if (match) version = '?v=' + match[1];
+  }
+
+  var ob = document.createElement('script');
+  ob.src = '/blog/assets/occasion-banner.js' + version;
+  ob.setAttribute('data-occasion-banner', '');
+  (document.body || document.documentElement).appendChild(ob);
+})();

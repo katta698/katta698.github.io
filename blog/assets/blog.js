@@ -860,8 +860,22 @@
 // script it injects. Without a token the browser reruns a cached copy — which
 // matters because site-footer.js is what registers the service worker.
 (function () {
-  if (document.querySelector('script[data-site-footer]')) return;
-
+  // Two injections, two guards. There used to be one:
+  //
+  //     if (document.querySelector('script[data-site-footer]')) return;
+  //
+  // at the top, which was right when site-footer.js was the only thing this
+  // block loaded. Then every page started shipping its own
+  // <script data-site-footer> tag in its head -- 426 of them -- so the guard
+  // matched on every single page and returned BEFORE the occasion banner
+  // below was ever reached. The banner had been extracted from index.html
+  // precisely so it would show on the blog and the posts, and from that day it
+  // showed on neither. Nothing errored; there is simply no banner, on days
+  // there ought to be one, and the next Diwali is the sort of thing you notice
+  // a year late.
+  //
+  // Each injection now guards on its OWN marker, so neither can suppress the
+  // other.
   var version = '';
   var self = document.currentScript ||
              document.querySelector('script[src*="/blog/assets/blog.js"]');
@@ -870,10 +884,12 @@
     if (match) version = '?v=' + match[1];
   }
 
-  var script = document.createElement('script');
-  script.src = '/blog/assets/site-footer.js' + version;
-  script.setAttribute('data-site-footer', '');
-  document.body.appendChild(script);
+  if (!document.querySelector('script[data-site-footer]')) {
+    var script = document.createElement('script');
+    script.src = '/blog/assets/site-footer.js' + version;
+    script.setAttribute('data-site-footer', '');
+    document.body.appendChild(script);
+  }
 
   // The occasion banner, injected the same way and for the same reason. It was
   // inline in index.html, so a reader arriving straight at a post on
