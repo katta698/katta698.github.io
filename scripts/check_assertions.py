@@ -217,16 +217,34 @@ ABSOLUTE = re.compile(
 # most of them terse table values like "Parquet only" that assert nothing.
 # This gives 60 across 47 posts -- about one post in four, comparable to the
 # advisory load already carried.
-SUMMARY_ABSOLUTE = re.compile(r'\bthe only \w+', re.I)
+# "not a <thing> at all" is the same over-claim written as a negation, and it
+# is how arch-051 leaked a real correction to an outside reader on 2026-09-14.
+# The post's claim is correctly scoped -- "approximately 5 weeks of usage data
+# to generate budget FORECASTS" -- and so is its body prose, which says the
+# alert that would have warned early "is silent". Then the callout drops the
+# scope: "For the first five weeks, the useful control is not a budget at all",
+# and "Budgets ... are what you switch to once there is a baseline".
+#
+# Only forecast alerts need the five weeks. Actual-value alerts work on day
+# one, so a reader following that box would leave a new account with no budget
+# alerting for five weeks. The post is right twice and wrong in the one place
+# that tells the reader what to do.
+SUMMARY_ABSOLUTE = re.compile(
+    r'\bthe only \w+|\bnot (?:a|an|the) \w+(?: \w+)? at all\b', re.I)
+# A callout is a summary position too, and the most load-bearing one: it is the
+# "what to do" box. It was not covered when this rule was written, which is the
+# whole reason the sentence above reached publication.
 SUMMARY_BLOCK = re.compile(
-    r'<h[1-6][^>]*>([\s\S]*?)</h[1-6]>|<t[dh][^>]*>([\s\S]*?)</t[dh]>')
+    r'<h[1-6][^>]*>([\s\S]*?)</h[1-6]>'
+    r'|<t[dh][^>]*>([\s\S]*?)</t[dh]>'
+    r'|<div class="callout"[^>]*>([\s\S]*?)</div>')
 
 
 def summary_positions(body):
-    """Heading and table-cell text: what a reader takes in without reading."""
+    """Heading, table-cell and callout text: what a reader takes in on a skim."""
     out = []
     for m in SUMMARY_BLOCK.finditer(body):
-        raw = m.group(1) if m.group(1) is not None else m.group(2)
+        raw = next((g for g in m.groups() if g is not None), "")
         text = re.sub(r"<[^>]+>", " ", raw or "")
         text = (text.replace("&mdash;", "-").replace("&ndash;", "-")
                     .replace("&amp;", "&").replace("&nbsp;", " ")
@@ -745,6 +763,9 @@ CANARIES = [
     # "the only pre-emptive signal" and "the only alert" through.
     (SUMMARY_ABSOLUTE, "the forecast alert is the only pre-emptive signal",
      "forecast alerts warn before spend accrues"),
+    # The negated form, which leaked the five-weeks scope error.
+    (SUMMARY_ABSOLUTE, "the useful control is not a budget at all",
+     "the useful control is not a budget you configured last week"),
     (CONSEQUENCE_CUE, "So the delivery is billed either way", "delivery billing"),
     (CONSEQUENCE_VERB, "the review is billed twice", "the review completed"),
     (CONSEQUENCE_VERB, "so it requires a licence for each guest",
@@ -847,11 +868,15 @@ def selftest():
     # class must run without a flag. It never did before arch-051.
     found = summary_positions(
         "<h3>The forecast alert is the only pre-emptive signal</h3>"
-        "<td>Central enforcement</td><p>the only thing in a paragraph</p>")
-    if len(found) != 2:
-        bad.append("summary_positions no longer reads headings and cells")
+        "<td>Central enforcement</td>"
+        '<div class="callout"><p>not a budget at all</p></div>'
+        "<p>the only thing in a paragraph</p>")
+    if len(found) != 3:
+        bad.append("summary_positions no longer reads headings, cells and callouts")
     elif any("paragraph" in f for f in found):
         bad.append("summary_positions is reaching into body prose")
+    elif not any("not a budget at all" in f for f in found):
+        bad.append("summary_positions no longer reads callouts")
     return bad
 
 
