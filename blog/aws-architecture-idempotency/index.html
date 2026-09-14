@@ -3,21 +3,21 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>AWS Architecture Series #50 — Bought in one account, spent in another | Jayanth Katta Blog</title>
-<meta name="description" content="The previous post built an allocation model out of tags, backfill and split charge rules. Commitment discounts move money between accounts before any of that runs — hourly, by savings percentage, to whichever account happened to have the most discountable usage. The account that bought the Savings Plan is frequently not the account that shows the saving."/>
+<title>AWS Architecture Series #52 — The retry you did not write | Jayanth Katta Blog</title>
+<meta name="description" content="A customer is charged twice for one order. Nobody wrote a retry, the queue is FIFO, and the handler looks correct — because the retry was issued by the platform, FIFO deduplicates the send rather than the processing, and the idempotency guard that would have caught it had already expired."/>
 <meta property="og:type" content="article"/>
 <meta property="og:site_name" content="Jayanth Katta"/>
 <!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
-<meta property="og:title" content="Bought in one account, spent in another"/>
-<meta property="og:description" content="The previous post built an allocation model out of tags, backfill and split charge rules. Commitment discounts move money between accounts before any of that runs — hourly, by savings percentage, to whichever account happened to have the most discountable usage. The account that bought the Savings Plan is frequently not the account that shows the saving."/>
-<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-commitment-sharing/"/>
+<meta property="og:title" content="The retry you did not write"/>
+<meta property="og:description" content="A customer is charged twice for one order. Nobody wrote a retry, the queue is FIFO, and the handler looks correct — because the retry was issued by the platform, FIFO deduplicates the send rather than the processing, and the idempotency guard that would have caught it had already expired."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-idempotency/"/>
 <!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
 <meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
 <meta name="twitter:card" content="summary"/>
-<meta name="twitter:title" content="Bought in one account, spent in another"/>
-<meta name="twitter:description" content="The previous post built an allocation model out of tags, backfill and split charge rules. Commitment discounts move money between accounts before any of that runs — hourly, by savings percentage, to whichever account happened to have the most discountable usage. The account that bought the Savings Plan is frequently not the account that shows the saving."/>
+<meta name="twitter:title" content="The retry you did not write"/>
+<meta name="twitter:description" content="A customer is charged twice for one order. Nobody wrote a retry, the queue is FIFO, and the handler looks correct — because the retry was issued by the platform, FIFO deduplicates the send rather than the processing, and the idempotency guard that would have caught it had already expired."/>
 <meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
-<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-commitment-sharing/"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-idempotency/"/>
 <!-- The blog's own feed. It has existed at /blog/rss.xml all along and
      nothing advertised it, so no reader or browser extension could find
      it: a feed nobody can discover is a feed nobody has. -->
@@ -58,21 +58,21 @@
   <div class="post-breadcrumb">
     <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
     <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
-    <span>AWS Architecture Series #50 — Bought in one account, spent in another…</span>
+    <span>AWS Architecture Series #52 — The retry you did not write…</span>
   </div>
   <article>
     <header class="post-header">
       <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
-      <h1>AWS Architecture Series #50 — Bought in one account, spent in another</h1>
-      <p class="post-description">The previous post built an allocation model out of tags, backfill and split charge rules. Commitment discounts move money between accounts before any of that runs — hourly, by savings percentage, to whichever account happened to have the most discountable usage. The account that bought the Savings Plan is frequently not the account that shows the saving.</p>
+      <h1>AWS Architecture Series #52 — The retry you did not write</h1>
+      <p class="post-description">A customer is charged twice for one order. Nobody wrote a retry, the queue is FIFO, and the handler looks correct — because the retry was issued by the platform, FIFO deduplicates the send rather than the processing, and the idempotency guard that would have caught it had already expired.</p>
       <div class="post-info">
-        <span>Sep 12, 2026</span>
+        <span>Sep 14, 2026</span>
         <span class="post-info-dot"></span>
-        <span>9 min read</span>
+        <span>11 min read</span>
       </div>
     </header>
-    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 12 September 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
-    <div class="quick-summary-mount" data-slug="aws-architecture-commitment-sharing" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 14 September 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-idempotency" data-topics="AWS,Architecture,AWS Architecture Series"></div>
     <div class="post-divider"></div>
     <div class="post-body"><div id="jk-post">
 <!-- ═══════════════════════════════════════════════════════════════════════
@@ -187,77 +187,85 @@
   <div class="section" id="challenge">
     <h2>Business Challenge</h2>
     <p>
-      The previous post built an allocation model: tags for what can be labelled, backfill for what was
-      labelled late, split charge rules for what has no single owner. It works on the numbers that reach
-      it. This post is about the layer underneath, which has already moved the money by the time those
-      numbers exist.
+      The last four posts were about money. This one opens a different block &mdash; the patterns that
+      decide whether a distributed system is correct &mdash; and it starts with the property that almost
+      every other one depends on.
     </p>
     <p>
-      A platform team buys a three-year Compute Savings Plan from the shared services account, because
-      that is where the commitment budget lives and where finance wanted the purchase recorded. The
-      following month, shared services shows almost none of the benefit. A product account nobody
-      consulted shows most of it. Nothing is wrong, nobody misconfigured anything, and the report is
-      accurate.
+      A customer is charged twice for one order. The investigation is uncomfortable because everything
+      looks right. Nobody wrote retry logic. The queue is FIFO, chosen specifically to avoid this. The
+      handler reads cleanly, and replaying the event by hand produces one charge, not two.
     </p>
     <p>
-      It happened because a commitment is not attached to the account that bought it. It is applied,
-      hour by hour, to whichever eligible usage saves the most &mdash; owner first, then everyone else.
+      Three assumptions failed, and none of them is a coding error. They are all misreadings of what the
+      platform promised.
     </p>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">1</span><strong>The discount goes where the saving is largest</strong></div>
+      <div class="challenge-header"><span class="num">1</span><strong>The retry was issued on your behalf</strong></div>
       <div class="challenge-body">
         <p>
-          The rule is explicit. Savings Plans <em>&ldquo;are applied to your highest savings percentage
-          first&rdquo;</em>, with ties broken by <em>&ldquo;the first usage with the lowest Savings Plans
-          rate&rdquo;</em>. Across an organisation, <em>&ldquo;accounts with the largest calculated
-          savings are prioritized&rdquo;</em>.
+          You do not have to write a retry to get one. For asynchronous invocation, <em>&ldquo;by default,
+          Lambda retries a failed asynchronous invocation up to two times.&rdquo;</em> One event, up to
+          three executions, no retry code anywhere in the repository.
         </p>
         <p>
-          So the benefit follows the shape of usage, not the shape of your org chart. Two accounts running
-          different eligible workloads may receive very different shares of the same commitment, because AWS
-          prioritises usage according to calculated savings percentage &mdash; not organisational ownership,
-          and not raw workload price. The split changes as their workloads change.
+          SQS does the same thing from the other direction. If a consumer does not delete a message before
+          the visibility timeout expires &mdash; <em>&ldquo;due to application errors, crashes, or
+          connectivity problems&rdquo;</em> &mdash; the message <em>&ldquo;becomes visible again in the
+          queue and can be retrieved by the same or a different consumer for another processing
+          attempt.&rdquo;</em> A handler that charges a card and then crashes before deleting has already
+          done the work, and the platform will hand the same message to somebody else.
+        </p>
+        <p>
+          AWS states the obligation this creates about as plainly as documentation ever does:
+          <em>&ldquo;ensure that your function's code can handle the same event multiple times without
+          causing duplicate transactions or other unwanted side effects.&rdquo;</em>
         </p>
         <span class="fix-label">Fix</span>
-        <p>Stop treating the purchase account as the beneficiary. It is the Savings Plans owner account, but it is not necessarily the account that receives most of the discount benefit.</p>
+        <p>Assume every handler runs more than once. The question is not whether, it is what that costs.</p>
       </div>
     </div>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">2</span><strong>The allocation is provisional until the last day of the month</strong></div>
+      <div class="challenge-header"><span class="num">2</span><strong>FIFO deduplicates the send, not the processing</strong></div>
       <div class="challenge-body">
         <p>
-          This is the detail that turns a reporting inconvenience into a reporting trap. AWS: <em>&ldquo;each
-          estimated bill is computed by using the last set of preferences. The final bill for the month is
-          calculated based on the preferences set at 23:59:59 UTC time on the last day of the
-          month.&rdquo;</em>
+          This is the assumption that does the most damage, because the page is titled
+          <em>&ldquo;Exactly-once processing&rdquo;</em> and the feature really does work &mdash; at the
+          thing it does. <em>&ldquo;FIFO queues help you avoid <strong>sending</strong> duplicates to a
+          queue.&rdquo;</em> If a producer retries <code class="inline">SendMessage</code> within the
+          5-minute deduplication interval, no duplicate enters the queue.
         </p>
         <p>
-          A sharing preference changed on the 30th does not apply from the 30th. It applies to the whole
-          month. Every hour since the 1st is recomputed against it, so a chargeback figure circulated on
-          the 15th can be wrong by month end without anybody touching a workload.
+          That is producer-side. It says nothing about a message being delivered to a consumer twice, and
+          AWS is explicit that choosing FIFO does not buy you that: in <em>both</em> standard and FIFO
+          queues, <em>&ldquo;due to the at-least-once delivery model of Amazon SQS, there's no absolute
+          guarantee that a message won't be delivered more than once during the visibility timeout
+          period.&rdquo;</em>
         </p>
         <span class="fix-label">Fix</span>
-        <p>Treat mid-month commitment allocation as an estimate, and say so on the report. Freeze sharing preferences during the month if finance needs stability.</p>
+        <p>Treat FIFO as ordering plus send-side deduplication. Consumer-side idempotency is still yours to build.</p>
       </div>
     </div>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">3</span><strong>An account leaving can switch the discount off</strong></div>
+      <div class="challenge-header"><span class="num">3</span><strong>The guard had already expired</strong></div>
       <div class="challenge-body">
         <p>
-          <em>&ldquo;If a Savings Plans owner account leaves the organization, Savings Plans no longer
-          apply to the consolidated bill.&rdquo;</em> The commitment is still paid for. It simply stops
-          discounting everyone else.
+          Say the team did everything right and added an idempotency key with the Powertools utility. It
+          <em>&ldquo;allows you to retry operations within a time window with the same input, producing the
+          same output&rdquo;</em> &mdash; and that window has a default. <em>&ldquo;By default, we expire
+          idempotency records after an hour (3600 seconds).&rdquo;</em>
         </p>
         <p>
-          That makes an account migration &mdash; a divestment, a reorganisation, moving an account
-          between organisations &mdash; a financial event as well as an administrative one, and it is
-          rarely on the checklist for either.
+          An hour is generous for a retry storm and far too short for an incident. The duplicate charge did
+          not come from a burst; it came from a dead-letter queue replayed the next morning, long after
+          every record had expired. To the handler, the replay was new work, because that is exactly what
+          an expired key means.
         </p>
         <span class="fix-label">Fix</span>
-        <p>Know which account owns each commitment, and make owner-account moves a change that requires sign-off from whoever bought it.</p>
+        <p>Set the expiry from how long a replay could realistically be delayed, not from the default.</p>
       </div>
     </div>
   </div>
@@ -265,92 +273,105 @@
   <div class="section" id="architecture">
     <h2>Architecture</h2>
     <p>
-      Two mechanisms decide where a discount lands: the order commitments are applied in, and the sharing
-      mode that scopes who is eligible.
+      There are three places a duplicate can be suppressed, they cover different things, and the useful
+      discipline is knowing which one is doing the work.
     </p>
 
     <figure class="screenshot">
-      <img src="/blog/assets/diagrams/arch-050-commitment-sharing.svg" alt="Diagram: how an AWS commitment discount is assigned each hour, and the three sharing modes that scope it. The application order runs top to bottom: EC2 Reserved Instances are applied first, then EC2 Instance Savings Plans, then Compute Savings Plans because those have broader applicability, and any remaining usage is charged at On-Demand rates. Within Savings Plans the commitment is applied to the highest savings percentage first, with ties broken by the lowest Savings Plans rate, and each hour's commitment can only be used within that hour and cannot be carried over. Across an organisation the owner account is satisfied first and then the benefit flows outward according to the sharing mode: organization-wide sharing spreads remaining benefit across all accounts, prioritized group sharing serves a defined group before the rest of the organisation, and restricted group sharing shares only within the defined group even when capacity goes unused. A panel records that the final monthly bill is calculated from the sharing preferences as they stood at 23:59:59 UTC on the last day of the month." />
-      <figcaption>The order is fixed and the destination is not. Owner first, then whoever saves most — recomputed every hour, and finalised against whatever the preferences say on the last day of the month.</figcaption>
+      <img src="/blog/assets/diagrams/arch-052-idempotency.svg" alt="Diagram: the three layers at which a duplicate request can be suppressed in AWS, and the boundary each one has. At the top, three sources issue retries that the application did not write: Lambda retries a failed asynchronous invocation up to two times by default, Amazon SQS makes a message visible again for another processing attempt if it is not deleted before the visibility timeout expires, and the client itself may retry after a timeout. Below that, three suppression layers are shown with their limits. The transport layer is SQS FIFO deduplication, which prevents duplicates being sent into the queue within a five-minute deduplication interval, but is producer-side only and does not guarantee single delivery to a consumer. The API layer is the Amazon EC2 client token, a string of up to 64 ASCII characters whose idempotency is scoped either regionally or zonally, so the same token used in another Region or Availability Zone launches additional instances, and which returns an IdempotentParameterMismatch error if retried with different parameters. The application layer is an idempotency key stored in DynamoDB, where a conditional write is idempotent when the condition checks the same attribute being updated, and where the Powertools utility expires its records after one hour by default and raises IdempotencyAlreadyInProgressError when a second invocation arrives with the same payload before the first has completed. A panel at the bottom records the gap: a dead-letter queue replayed after a multi-hour incident falls outside both the five-minute deduplication interval and the one-hour record expiry, so the replay is indistinguishable from new work." />
+      <figcaption>Three layers, three different boundaries. The transport layer is send-side, the API layer is scoped by Region or Availability Zone, and the application layer expires.</figcaption>
     </figure>
 
-    <h3>The application order</h3>
+    <h3>The API layer has a scope, and the scope is not obvious</h3>
     <p>
-      Reserved Instances are consumed before Savings Plans. Then EC2 Instance Savings Plans, which are
-      narrower, before Compute Savings Plans, which AWS applies later precisely <em>because they have
-      broader applicability</em> &mdash; spending the specific commitment first leaves the flexible one
-      available for whatever is left. Anything still uncovered is billed On-Demand.
+      AWS's own definition is the clearest statement of the property anywhere in the documentation:
+      <em>&ldquo;Idempotency ensures that an API request completes no more than one time. With an idempotent
+      request, if the original request completes successfully, any subsequent retries complete successfully
+      without performing any further actions.&rdquo;</em> EC2 implements it with a client token, a unique
+      string of up to 64 ASCII characters.
     </p>
     <p>
-      Inside that, the commitment is spent on the highest discount percentage available. AWS's own
-      worked example has an <code class="inline">r5.4xlarge</code> at $1.00 On-Demand against $0.70 under
-      a Compute Savings Plan &mdash; a 30% saving &mdash; and Fargate at 25%, so the r5 usage is covered
-      first even if the Fargate usage belongs to a different team.
+      The part that surprises people is that the token is not globally unique in effect. EC2 idempotency is
+      <strong>Regional or zonal</strong>, and the same client token used in a different Region &mdash; or,
+      for a zonal request, a different Availability Zone &mdash; launches <em>more instances</em>. A retry
+      helper that fails over to a second Region while reusing the token does not deduplicate. It doubles.
     </p>
     <p>
-      And none of it banks: <em>&ldquo;each hour's commitment can only be used within that hour and cannot
-      be carried over&rdquo;</em>. An idle hour is simply spent. That is the real argument for sharing
-      being on &mdash; not fairness, but that unused commitment is money already gone.
+      There is a useful guardrail alongside it: reusing a token with different parameters fails with
+      <code class="inline">IdempotentParameterMismatch</code> rather than silently doing something else.
+      That is the right failure &mdash; an error beats an ambiguous success &mdash; and it is worth knowing
+      that AWS also treats some actions as idempotent by default with no token at all, including
+      <code class="inline">TerminateInstances</code> and <code class="inline">AssociateAddress</code>.
     </p>
 
-    <h3>The three sharing modes</h3>
-    <div class="grid-2">
-      <div class="card">
-        <h4>Organization-wide</h4>
-        <p>Owner first, then remaining benefit is available to any account in the organisation. AWS's framing: it <em>maximizes overall commitment discount rates</em>. Best utilisation, least predictable allocation.</p>
-      </div>
-      <div class="card">
-        <h4>Prioritized group</h4>
-        <p>Owner first, then a defined group, then the rest of the organisation. A middle position: a business unit gets first refusal on what it paid for, and nothing is wasted if it does not use it all.</p>
-      </div>
-      <div class="card">
-        <h4>Restricted group</h4>
-        <p>Owner first, then the group, and <strong>nowhere else</strong> — AWS notes no sharing occurs outside designated groups <em>even with unused capacity</em>. Predictable, and it can leave commitment unspent.</p>
-      </div>
-      <div class="card">
-        <h4>Per-account deactivation</h4>
-        <p>Sharing can be switched off for individual accounts. Both the purchasing account and the receiving account must have it on for a discount to flow between them.</p>
-      </div>
-    </div>
+    <h3>The application layer is a conditional write, and the condition matters</h3>
+    <p>
+      Underneath any idempotency library is the same primitive: a write that succeeds only if this work has
+      not already been recorded. DynamoDB states the rule precisely &mdash; conditional writes
+      <em>&ldquo;can be idempotent if the conditional check is on the same attribute that is being
+      updated.&rdquo;</em> The qualifier is the whole sentence. A condition on a different attribute than
+      the one you are changing is not idempotent, and it will look like it works until two retries
+      interleave.
+    </p>
 
     <div class="callout amber">
-      <strong>Group sharing is built on Cost Categories, with real constraints</strong>
-      <p>Groups are defined with AWS Cost Categories, and the rules are narrow: each account can belong to only one sharing group, <strong>the payer account cannot be part of a sharing group</strong>, and only the <em>Accounts</em> dimension may be used. If you have already built Cost Categories for the allocation model in the previous post, they are probably not reusable here without checking those conditions first.</p>
+      <strong>The counter-example AWS supplies itself</strong>
+      <p>An atomic counter is the canonical thing that cannot be retried: <em>&ldquo;With an atomic counter, the updates are not idempotent. In other words, the numeric value increments or decrements each time you call <code class="inline">UpdateItem</code>.&rdquo;</em> AWS is direct about where that is acceptable &mdash; website visitor counts, where slight overcounting does not matter &mdash; and where it is not: <em>&ldquo;An atomic counter would not be appropriate where overcounting or undercounting can't be tolerated (for example, in a banking application).&rdquo;</em> If a balance is maintained by an atomic counter, retry safety was lost at the schema, not in the handler.</p>
     </div>
   </div>
 
   <div class="section" id="why-it-matters">
     <h2>Why This Architecture Holds Up</h2>
-    <h3>Utilisation and attribution are in direct tension</h3>
+    <h3>Concurrency is a separate problem from repetition</h3>
     <p>
-      The three modes are a single dial between two things you cannot have at once. Organization-wide
-      sharing maximises the chance a commitment is fully consumed, and makes the beneficiary
-      unpredictable. Restricted group sharing makes the beneficiary predictable, and AWS says plainly it
-      <em>&ldquo;might result in some underutilized commitments&rdquo;</em>.
+      Most idempotency discussions assume the duplicate arrives <em>after</em> the first attempt finished.
+      The harder case is two in flight at once, and a key-based guard alone does not resolve it: both
+      requests look up the key, both find nothing, both proceed.
     </p>
     <p>
-      There is no configuration that gives both, and the choice is a finance decision rather than an
-      engineering one. The engineering contribution is making the trade explicit: restricted sharing has
-      a price, and that price is unspent commitment on a plan already paid for.
+      This is why the Powertools utility raises <code class="inline">IdempotencyAlreadyInProgressError</code>
+      <em>&ldquo;if you receive multiple invocations with the same payload while the first invocation hasn't
+      completed yet&rdquo;</em>, and its reasoning is worth adopting verbatim: <em>&ldquo;Since we don't know
+      the result from the first invocation yet, we can't safely allow another concurrent execution.&rdquo;</em>
+    </p>
+    <p>
+      A guard that only records completions is a half-guard. The record has to be written when work
+      <em>starts</em>, not when it succeeds, which means the store holds three states &mdash; in progress,
+      completed, expired &mdash; and the in-progress state has to fail closed.
+    </p>
+
+    <h3>The windows are the design, not the defaults</h3>
+    <p>
+      Line the boundaries up and the gap is obvious. SQS FIFO deduplicates a resent message within
+      <strong>5 minutes</strong>. Powertools expires an idempotency record after <strong>1 hour</strong>. A
+      visibility timeout defaults to <strong>30 seconds</strong> and can be extended, but only to
+      <em>&ldquo;a maximum limit of 12 hours from when the message is first received&rdquo;</em>, and
+      extending it <em>&ldquo;doesn't reset this 12-hour limit.&rdquo;</em>
+    </p>
+    <p>
+      Now put an incident against that scale. A bad deployment runs for two hours. Failed messages land in
+      a DLQ. Someone triages in the morning and replays the queue &mdash; the standard, correct operational
+      response. Every one of those messages is outside the deduplication interval and outside the record
+      expiry, so every replayed message is new work by definition.
     </p>
 
     <div class="callout red">
-      <strong>Turning sharing off is not a neutral act</strong>
-      <p>AWS states it directly: <em>&ldquo;deactivating Reserved Instance and Savings Plans discount sharing can result in higher monthly bills&rdquo;</em>. It is sometimes still the right call — a regulated subsidiary that cannot receive cross-entity benefit, an account being prepared for divestment — but it should be taken as a decision with a number attached, not as tidying.</p>
+      <strong>The replay is the case the guard was bought for</strong>
+      <p>This is the uncomfortable part. Idempotency is usually justified by pointing at retries and redeliveries &mdash; events measured in seconds. But the scenario that actually produces duplicate charges is the deliberate human replay of a DLQ hours later, and that is the one case where every default window has already closed. If the expiry is not set from the maximum plausible replay delay, the guard protects against the cheap failure and not the expensive one.</p>
     </div>
 
-    <h3>What this does to the allocation model from #49</h3>
+    <h3>The key has to be the business event, not the message</h3>
     <p>
-      The previous post's mechanisms all operate on costs that already exist. Commitment discounts
-      operate before that: they decide what the cost <em>is</em> for a given account-hour. So a tag
-      cannot attribute a discount, and a split charge rule cannot redistribute one, because by the time
-      either runs the money has already moved.
+      One more trap sits in the transport layer. SQS content-based deduplication uses
+      <em>&ldquo;a SHA-256 hash to generate the message deduplication ID using the body of the message
+      &mdash; but not the attributes of the message.&rdquo;</em> Two sends with an identical body and
+      different attributes are the same message to the deduplication logic.
     </p>
     <p>
-      That is why commitment reporting usually needs its own treatment rather than folding into the tag
-      model &mdash; and why the honest version of a chargeback statement separates <em>usage attributed
-      by tag</em> from <em>discount received by commitment sharing</em>. They answer different questions
-      and only one of them is under the receiving team's control.
+      The same reasoning applies one layer up, in the opposite direction. If your application-level key is
+      derived from the whole payload, a retry carrying a fresh timestamp or a new trace ID hashes
+      differently and sails straight through. The key must be the identity of the business event &mdash;
+      the order ID, the payment reference &mdash; not a digest of the envelope that happened to carry it.
     </p>
   </div>
 
@@ -364,73 +385,87 @@
         <th>Reasoning</th>
       </tr>
       <tr>
-        <td>Default sharing mode</td>
-        <td>Organization-wide, unless there is a reason not to</td>
-        <td>Unused commitment does not carry to the next hour. Maximum utilisation is the default that wastes least.</td>
+        <td>Baseline assumption</td>
+        <td>Every handler runs more than once</td>
+        <td>Lambda retries async invocations twice by default and SQS redelivers on visibility-timeout expiry. Neither needs your code.</td>
       </tr>
       <tr>
-        <td>When predictability matters more</td>
-        <td>Prioritized group before restricted</td>
-        <td>It gives a business unit first claim on what it bought without stranding the remainder, which restricted mode can.</td>
+        <td>FIFO queue</td>
+        <td>For ordering, not for exactly-once</td>
+        <td>FIFO avoids <em>sending</em> duplicates. AWS states there is no absolute guarantee against redelivery in either queue type.</td>
       </tr>
       <tr>
-        <td>Purchase account</td>
-        <td>Treated as commitment owner, not guaranteed beneficiary</td>
-        <td>Owner is served first, but the rest follows savings percentage. Expect the benefit to land elsewhere.</td>
+        <td>Idempotency key</td>
+        <td>The business event identifier</td>
+        <td>A payload digest changes when a timestamp or trace ID does, and the retry passes straight through.</td>
       </tr>
       <tr>
-        <td>Mid-month reporting</td>
-        <td>Labelled as an estimate</td>
-        <td>The final bill uses the preferences in force at 23:59:59 UTC on the last day, applied to the whole month.</td>
+        <td>Record expiry</td>
+        <td>Maximum plausible replay delay</td>
+        <td>The one-hour default covers retry storms, not a DLQ replayed the next morning &mdash; which is the expensive case.</td>
       </tr>
       <tr>
-        <td>Owner account moves</td>
-        <td>Gated, with the commitment owner consulted</td>
-        <td>If the owner leaves the organisation, the Savings Plans stop applying to the consolidated bill entirely.</td>
+        <td>Concurrent duplicates</td>
+        <td>Write the record at start, fail closed</td>
+        <td>A guard that records only completions lets two in-flight requests both proceed.</td>
       </tr>
       <tr>
-        <td>Chargeback statement</td>
-        <td>Usage and commitment benefit reported separately</td>
-        <td>One is attributable to the team, the other is an artefact of organisation-wide optimisation. Merging them makes both unarguable.</td>
+        <td>Persistence primitive</td>
+        <td>Conditional write on the attribute being updated</td>
+        <td>DynamoDB's own qualifier. A condition on a different attribute is not idempotent.</td>
+      </tr>
+      <tr>
+        <td>Counters</td>
+        <td>Not for anything that must reconcile</td>
+        <td>AWS states atomic counter updates are not idempotent and names banking as the case where that is unacceptable.</td>
+      </tr>
+      <tr>
+        <td>Cross-Region retries</td>
+        <td>Do not reuse an EC2 client token</td>
+        <td>EC2 idempotency is Regional or zonal. The same token in another Region launches more instances.</td>
       </tr>
     </table>
     </div>
 
-    <h3>The sequencing detail that catches people out</h3>
+    <h3>Two costs worth putting in the design note</h3>
     <p>
-      Both sides must be switched on. AWS states that <em>both purchasing and benefit receiving accounts
-      must have sharing activated to share discounts</em>, and separately that the Savings Plans owner
-      account <em>&ldquo;must be active in the RI and Savings Plans discount sharing preferences&rdquo;</em>
-      for the discount to reach other accounts at all.
+      <strong>The guard is not free, including when it works.</strong> A rejected duplicate still writes:
+      <em>&ldquo;If a <code class="inline">ConditionExpression</code> evaluates to false during a conditional
+      write, DynamoDB still consumes write capacity from the table.&rdquo;</em> A retry storm that the guard
+      correctly suppresses is a storm of consumed capacity. That is a far better outcome than duplicate
+      charges, and it should still be sized rather than discovered.
     </p>
     <p>
-      That produces a quiet failure mode. Deactivating sharing on the purchasing account &mdash; perhaps
-      to stop it receiving other teams' discounts &mdash; also stops its own commitment from benefiting
-      anybody else. The plan keeps billing and the discount stops flowing, and nothing announces it.
+      <strong>Idempotency changes what a timeout means to the caller.</strong> Once an operation is safely
+      repeatable, a client that times out can simply retry, which is the entire point. Before that property
+      exists, a timeout is genuinely ambiguous and the only safe client behaviour is to stop and ask a human.
+      Idempotency is what converts an ambiguous failure into an ordinary one, and that is why it belongs
+      near the bottom of the dependency list for everything else in this block.
     </p>
   </div>
 
   <div class="section" id="closing">
     <h2>Closing Thought</h2>
     <p>
-      Fifty posts in, the recurring finding has not changed much: most cost and security controls are
-      real, correctly configured, and answering a narrower question than the sentence used to describe
-      them. Commitment sharing is the purest example yet, because here the gap is not in the tooling at
-      all. AWS documents the behaviour precisely. It is just that almost nobody reads the application
-      order before buying, and the mental model &mdash; <em>we bought it, so we have it</em> &mdash; is
-      wrong in a way that produces a correct report nobody believes.
+      Idempotency gets taught as a coding technique &mdash; check a key, skip if seen. The mechanics are
+      genuinely that simple, which is why the interesting failures are never in the mechanics. They are in
+      the boundaries: a deduplication interval measured in minutes, a record expiry measured in an hour, a
+      client token scoped to one Region, a condition attached to the wrong attribute.
     </p>
     <p>
-      The useful reframe is to stop thinking of a commitment as an asset held by an account and start
-      thinking of it as a discount schedule applied to the organisation, hour by hour, in a fixed order,
-      finalised at the end of the month. Every confusing thing about it follows from that sentence, and
-      so does every sensible decision: why sharing should usually be on, why restricted mode costs
-      something real, and why a mid-month chargeback number is an estimate.
+      Every one of those boundaries is a default that somebody accepted rather than chose. The default is
+      usually right for the failure everyone imagines, which is a fast retry, and wrong for the failure that
+      actually reaches a customer, which is a human replaying a queue after an incident has been resolved.
+    </p>
+    <p>
+      The architectural move is to stop asking whether the system is idempotent and start asking for how
+      long, and within what scope. Those two answers are the design. The key check is just where it gets
+      written down.
     </p>
 
     <div class="callout">
       <strong>Next in this series</strong>
-      <p>Cost &amp; Governance &mdash; budgets and anomaly detection: why a budget alert almost always arrives after the money is spent, what anomaly detection actually models, and the difference between a control that warns you and one that stops you.</p>
+      <p>Application patterns &mdash; the outbox pattern and the dual-write problem: why writing to a database and publishing an event is two writes that cannot be made atomic, what DynamoDB Streams and transactional outboxes actually guarantee, and how the idempotency property built here becomes the thing that makes an at-least-once event pipeline safe to consume.</p>
     </div>
 
     <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
@@ -440,11 +475,13 @@
   <div class="section" id="reference">
     <h2>Official AWS Reference</h2>
     <ul>
-      <li><a href="https://docs.aws.amazon.com/savingsplans/latest/userguide/sp-applying.html" target="_blank" rel="noopener">Understanding how Savings Plans apply to your usage &#8212; the application order and five worked scenarios</a></li>
-      <li><a href="https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ri-turn-off.html" target="_blank" rel="noopener">Reserved Instances and Savings Plans discount sharing &#8212; the three sharing modes and the month-end preference rule</a></li>
-      <li><a href="https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/con-bill-blended-rates.html" target="_blank" rel="noopener">Understanding consolidated bills</a></li>
-      <li><a href="https://docs.aws.amazon.com/savingsplans/latest/userguide/what-is-savings-plans.html" target="_blank" rel="noopener">What are Savings Plans</a></li>
-      <li><a href="https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/splitcharge-cost-categories.html" target="_blank" rel="noopener">Splitting charges within cost categories &#8212; the allocation model this sits underneath</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/standard-queues.html" target="_blank" rel="noopener">Amazon SQS standard queues &#8212; the at-least-once delivery model stated directly</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/FIFO-queues-exactly-once-processing.html" target="_blank" rel="noopener">Exactly-once processing in Amazon SQS &#8212; the 5-minute deduplication interval, and what it deduplicates</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html" target="_blank" rel="noopener">Amazon SQS visibility timeout &#8212; redelivery on failure, and the no-absolute-guarantee statement</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/invocation-retries.html" target="_blank" rel="noopener">Understanding retry behavior in Lambda &#8212; two automatic retries, and the obligation that follows</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Run_Instance_Idempotency.html" target="_blank" rel="noopener">Ensuring idempotency in Amazon EC2 API requests &#8212; client tokens, and Regional versus zonal scope</a></li>
+      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/WorkingWithItems.html" target="_blank" rel="noopener">Working with items in DynamoDB &#8212; conditional write idempotence, and why atomic counters are not</a></li>
+      <li><a href="https://docs.aws.amazon.com/powertools/python/latest/utilities/idempotency/" target="_blank" rel="noopener">Powertools for AWS Lambda idempotency utility &#8212; the one-hour default expiry and the in-progress lock</a></li>
     </ul>
   </div>
 
@@ -460,15 +497,15 @@
       <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
     </div>
     <!-- post-nav: include prev and/or next links as applicable -->
-    <nav class="post-nav"><a href="/blog/aws-daily-intelligence-cloudwatch-nhi-tgw/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Daily Intelligence #30 - One bit that says whether it is AWS, and it is not ready today</span></a><a href="/blog/azure-architecture-entra-editions/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">Azure Architecture Series #31 — Entra ID Editions: Free, P1, P2, and What Each Unlocks</span></a></nav>
+    <nav class="post-nav"><a href="/blog/gcp-architecture-iam-principals/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">GCP Architecture Series #31 — IAM Principals: Users, Groups, Domains and Service Accounts</span></a></nav>
   </article>
   <div class="comments-section">
   <h3>Comments</h3>
   <div id="disqus_thread"></div>
   <script>
     var disqus_config = function () {
-      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-commitment-sharing/';
-      this.page.identifier = 'aws-architecture-commitment-sharing';
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-idempotency/';
+      this.page.identifier = 'aws-architecture-idempotency';
     };
     (function() {
       var d = document, s = d.createElement('script');
@@ -633,7 +670,7 @@
   <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
 </footer>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script src="/blog/assets/blog.js?v=0ff1474f"></script>
+<script src="/blog/assets/blog.js?v=d5335db6"></script>
 <script>hljs.highlightAll();</script>
 </body>
 </html>

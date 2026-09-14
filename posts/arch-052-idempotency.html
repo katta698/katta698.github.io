@@ -1,0 +1,373 @@
+---
+title: "AWS Architecture Series #52 — The retry you did not write"
+date: '2026-09-14T09:00:00'
+slug: aws-architecture-idempotency
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-14'
+verified_claims:
+  - claim: "Amazon SQS standard queues ensure at-least-once message delivery, but due to the highly distributed architecture more than one copy of a message might be delivered, and messages may occasionally arrive out of order"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/standard-queues.html
+  - claim: "Standard queues are suitable as long as your application can handle messages that might arrive more than once or out of order"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/standard-queues.html
+  - claim: "Unlike standard queues, FIFO queues don't introduce duplicate messages, and FIFO queues help you avoid sending duplicates to a queue"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/FIFO-queues-exactly-once-processing.html
+  - claim: "If you retry the SendMessage action within the 5-minute deduplication interval, Amazon SQS doesn't introduce any duplicates into the queue"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/FIFO-queues-exactly-once-processing.html
+  - claim: "Content-based deduplication instructs Amazon SQS to use a SHA-256 hash to generate the message deduplication ID using the body of the message, but not the attributes of the message"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/FIFO-queues-exactly-once-processing.html
+  - claim: "In both standard and FIFO queues, due to the at-least-once delivery model of Amazon SQS, there's no absolute guarantee that a message won't be delivered more than once during the visibility timeout period"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html
+  - claim: "If you don't process and delete a message before the visibility timeout expires, due to application errors, crashes, or connectivity problems, the message becomes visible again in the queue and can be retrieved by the same or a different consumer for another processing attempt"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html
+  - claim: "The default visibility timeout for a queue is 30 seconds"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html
+  - claim: "The visibility timeout has a maximum limit of 12 hours from when the message is first received, and extending the timeout doesn't reset this 12-hour limit"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html
+  - claim: "By default, Lambda retries a failed asynchronous invocation up to two times"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/invocation-retries.html
+  - claim: "If you retry a Lambda function, ensure that your function's code can handle the same event multiple times without causing duplicate transactions or other unwanted side effects"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/invocation-retries.html
+  - claim: "Idempotency ensures that an API request completes no more than one time, and with an idempotent request, if the original request completes successfully, any subsequent retries complete successfully without performing any further actions"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Run_Instance_Idempotency.html
+  - claim: "An Amazon EC2 client token is a unique, case-sensitive string of up to 64 ASCII characters"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Run_Instance_Idempotency.html
+  - claim: "If you retry a successful request using the same client token but one or more of the parameters are different, other than the Region or Availability Zone, the retry fails with an IdempotentParameterMismatch error"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Run_Instance_Idempotency.html
+  - claim: "Amazon EC2 idempotency is either Regional or zonal, and the same client token can be used to launch instances in a different Region or in other Availability Zones in the Region"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Run_Instance_Idempotency.html
+  - claim: "The Amazon EC2 actions AssociateAddress, CreateVpnConnection, DisassociateAddress, ReplaceNetworkAclAssociation and TerminateInstances are idempotent by default and do not require additional configuration"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Run_Instance_Idempotency.html
+  - claim: "DynamoDB conditional writes can be idempotent if the conditional check is on the same attribute that is being updated"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/WorkingWithItems.html
+  - claim: "With a DynamoDB atomic counter the updates are not idempotent, because the numeric value increments or decrements each time you call UpdateItem"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/WorkingWithItems.html
+  - claim: "If a ConditionExpression evaluates to false during a conditional write, DynamoDB still consumes write capacity from the table"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/WorkingWithItems.html
+  - claim: "The Powertools for AWS Lambda idempotency utility allows you to retry operations within a time window with the same input, producing the same output, and uses Amazon DynamoDB as the default persistence layer"
+    source: https://docs.aws.amazon.com/powertools/python/latest/utilities/idempotency/
+  - claim: "By default the Powertools for AWS Lambda idempotency utility expires idempotency records after an hour, which is 3600 seconds"
+    source: https://docs.aws.amazon.com/powertools/python/latest/utilities/idempotency/
+  - claim: "The Powertools idempotency utility raises an IdempotencyAlreadyInProgressError exception if you receive multiple invocations with the same payload while the first invocation hasn't completed yet"
+    source: https://docs.aws.amazon.com/powertools/python/latest/utilities/idempotency/
+problem: "A customer is charged twice for one order. Nobody wrote a retry, the queue is FIFO, and the handler looks correct — because the retry was issued by the platform, FIFO deduplicates the send rather than the processing, and the idempotency guard that would have caught it had already expired."
+builds: "A layered model of duplicate suppression that names what each layer actually covers: which component issued the retry, what transport-level deduplication does and does not promise, and where an application-level idempotency key sits — with its scope and its expiry treated as architectural decisions rather than defaults."
+catch: "Every suppression mechanism here is bounded. SQS FIFO deduplicates sends within a 5-minute interval; the Powertools idempotency utility expires its records after an hour by default. A DLQ replayed the morning after a three-hour incident is outside both windows, so the replay is indistinguishable from new work — which is precisely the moment the protection was being relied on."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #052 &middot; Application Patterns</div>
+  <h1 class="post-title">The retry you did not write</h1>
+  <p class="post-subtitle">At-least-once is the delivery contract you actually have. Every mechanism AWS gives you to suppress a duplicate is bounded by a window or a scope, and the incident that needs it most outlasts both.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Reliability &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The last four posts were about money. This one opens a different block &mdash; the patterns that
+      decide whether a distributed system is correct &mdash; and it starts with the property that almost
+      every other one depends on.
+    </p>
+    <p>
+      A customer is charged twice for one order. The investigation is uncomfortable because everything
+      looks right. Nobody wrote retry logic. The queue is FIFO, chosen specifically to avoid this. The
+      handler reads cleanly, and replaying the event by hand produces one charge, not two.
+    </p>
+    <p>
+      Three assumptions failed, and none of them is a coding error. They are all misreadings of what the
+      platform promised.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The retry was issued on your behalf</strong></div>
+      <div class="challenge-body">
+        <p>
+          You do not have to write a retry to get one. For asynchronous invocation, <em>&ldquo;by default,
+          Lambda retries a failed asynchronous invocation up to two times.&rdquo;</em> One event, up to
+          three executions, no retry code anywhere in the repository.
+        </p>
+        <p>
+          SQS does the same thing from the other direction. If a consumer does not delete a message before
+          the visibility timeout expires &mdash; <em>&ldquo;due to application errors, crashes, or
+          connectivity problems&rdquo;</em> &mdash; the message <em>&ldquo;becomes visible again in the
+          queue and can be retrieved by the same or a different consumer for another processing
+          attempt.&rdquo;</em> A handler that charges a card and then crashes before deleting has already
+          done the work, and the platform will hand the same message to somebody else.
+        </p>
+        <p>
+          AWS states the obligation this creates about as plainly as documentation ever does:
+          <em>&ldquo;ensure that your function's code can handle the same event multiple times without
+          causing duplicate transactions or other unwanted side effects.&rdquo;</em>
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Assume every handler runs more than once. The question is not whether, it is what that costs.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>FIFO deduplicates the send, not the processing</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the assumption that does the most damage, because the page is titled
+          <em>&ldquo;Exactly-once processing&rdquo;</em> and the feature really does work &mdash; at the
+          thing it does. <em>&ldquo;FIFO queues help you avoid <strong>sending</strong> duplicates to a
+          queue.&rdquo;</em> If a producer retries <code class="inline">SendMessage</code> within the
+          5-minute deduplication interval, no duplicate enters the queue.
+        </p>
+        <p>
+          That is producer-side. It says nothing about a message being delivered to a consumer twice, and
+          AWS is explicit that choosing FIFO does not buy you that: in <em>both</em> standard and FIFO
+          queues, <em>&ldquo;due to the at-least-once delivery model of Amazon SQS, there's no absolute
+          guarantee that a message won't be delivered more than once during the visibility timeout
+          period.&rdquo;</em>
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat FIFO as ordering plus send-side deduplication. Consumer-side idempotency is still yours to build.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The guard had already expired</strong></div>
+      <div class="challenge-body">
+        <p>
+          Say the team did everything right and added an idempotency key with the Powertools utility. It
+          <em>&ldquo;allows you to retry operations within a time window with the same input, producing the
+          same output&rdquo;</em> &mdash; and that window has a default. <em>&ldquo;By default, we expire
+          idempotency records after an hour (3600 seconds).&rdquo;</em>
+        </p>
+        <p>
+          An hour is generous for a retry storm and far too short for an incident. The duplicate charge did
+          not come from a burst; it came from a dead-letter queue replayed the next morning, long after
+          every record had expired. To the handler, the replay was new work, because that is exactly what
+          an expired key means.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Set the expiry from how long a replay could realistically be delayed, not from the default.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      There are three places a duplicate can be suppressed, they cover different things, and the useful
+      discipline is knowing which one is doing the work.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-052-idempotency.svg" alt="Diagram: the three layers at which a duplicate request can be suppressed in AWS, and the boundary each one has. At the top, three sources issue retries that the application did not write: Lambda retries a failed asynchronous invocation up to two times by default, Amazon SQS makes a message visible again for another processing attempt if it is not deleted before the visibility timeout expires, and the client itself may retry after a timeout. Below that, three suppression layers are shown with their limits. The transport layer is SQS FIFO deduplication, which prevents duplicates being sent into the queue within a five-minute deduplication interval, but is producer-side only and does not guarantee single delivery to a consumer. The API layer is the Amazon EC2 client token, a string of up to 64 ASCII characters whose idempotency is scoped either regionally or zonally, so the same token used in another Region or Availability Zone launches additional instances, and which returns an IdempotentParameterMismatch error if retried with different parameters. The application layer is an idempotency key stored in DynamoDB, where a conditional write is idempotent when the condition checks the same attribute being updated, and where the Powertools utility expires its records after one hour by default and raises IdempotencyAlreadyInProgressError when a second invocation arrives with the same payload before the first has completed. A panel at the bottom records the gap: a dead-letter queue replayed after a multi-hour incident falls outside both the five-minute deduplication interval and the one-hour record expiry, so the replay is indistinguishable from new work." />
+      <figcaption>Three layers, three different boundaries. The transport layer is send-side, the API layer is scoped by Region or Availability Zone, and the application layer expires.</figcaption>
+    </figure>
+
+    <h3>The API layer has a scope, and the scope is not obvious</h3>
+    <p>
+      AWS's own definition is the clearest statement of the property anywhere in the documentation:
+      <em>&ldquo;Idempotency ensures that an API request completes no more than one time. With an idempotent
+      request, if the original request completes successfully, any subsequent retries complete successfully
+      without performing any further actions.&rdquo;</em> EC2 implements it with a client token, a unique
+      string of up to 64 ASCII characters.
+    </p>
+    <p>
+      The part that surprises people is that the token is not globally unique in effect. EC2 idempotency is
+      <strong>Regional or zonal</strong>, and the same client token used in a different Region &mdash; or,
+      for a zonal request, a different Availability Zone &mdash; launches <em>more instances</em>. A retry
+      helper that fails over to a second Region while reusing the token does not deduplicate. It doubles.
+    </p>
+    <p>
+      There is a useful guardrail alongside it: reusing a token with different parameters fails with
+      <code class="inline">IdempotentParameterMismatch</code> rather than silently doing something else.
+      That is the right failure &mdash; an error beats an ambiguous success &mdash; and it is worth knowing
+      that AWS also treats some actions as idempotent by default with no token at all, including
+      <code class="inline">TerminateInstances</code> and <code class="inline">AssociateAddress</code>.
+    </p>
+
+    <h3>The application layer is a conditional write, and the condition matters</h3>
+    <p>
+      Underneath any idempotency library is the same primitive: a write that succeeds only if this work has
+      not already been recorded. DynamoDB states the rule precisely &mdash; conditional writes
+      <em>&ldquo;can be idempotent if the conditional check is on the same attribute that is being
+      updated.&rdquo;</em> The qualifier is the whole sentence. A condition on a different attribute than
+      the one you are changing is not idempotent, and it will look like it works until two retries
+      interleave.
+    </p>
+
+    <div class="callout amber">
+      <strong>The counter-example AWS supplies itself</strong>
+      <p>An atomic counter is the canonical thing that cannot be retried: <em>&ldquo;With an atomic counter, the updates are not idempotent. In other words, the numeric value increments or decrements each time you call <code class="inline">UpdateItem</code>.&rdquo;</em> AWS is direct about where that is acceptable &mdash; website visitor counts, where slight overcounting does not matter &mdash; and where it is not: <em>&ldquo;An atomic counter would not be appropriate where overcounting or undercounting can't be tolerated (for example, in a banking application).&rdquo;</em> If a balance is maintained by an atomic counter, retry safety was lost at the schema, not in the handler.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Concurrency is a separate problem from repetition</h3>
+    <p>
+      Most idempotency discussions assume the duplicate arrives <em>after</em> the first attempt finished.
+      The harder case is two in flight at once, and a key-based guard alone does not resolve it: both
+      requests look up the key, both find nothing, both proceed.
+    </p>
+    <p>
+      This is why the Powertools utility raises <code class="inline">IdempotencyAlreadyInProgressError</code>
+      <em>&ldquo;if you receive multiple invocations with the same payload while the first invocation hasn't
+      completed yet&rdquo;</em>, and its reasoning is worth adopting verbatim: <em>&ldquo;Since we don't know
+      the result from the first invocation yet, we can't safely allow another concurrent execution.&rdquo;</em>
+    </p>
+    <p>
+      A guard that only records completions is a half-guard. The record has to be written when work
+      <em>starts</em>, not when it succeeds, which means the store holds three states &mdash; in progress,
+      completed, expired &mdash; and the in-progress state has to fail closed.
+    </p>
+
+    <h3>The windows are the design, not the defaults</h3>
+    <p>
+      Line the boundaries up and the gap is obvious. SQS FIFO deduplicates a resent message within
+      <strong>5 minutes</strong>. Powertools expires an idempotency record after <strong>1 hour</strong>. A
+      visibility timeout defaults to <strong>30 seconds</strong> and can be extended, but only to
+      <em>&ldquo;a maximum limit of 12 hours from when the message is first received&rdquo;</em>, and
+      extending it <em>&ldquo;doesn't reset this 12-hour limit.&rdquo;</em>
+    </p>
+    <p>
+      Now put an incident against that scale. A bad deployment runs for two hours. Failed messages land in
+      a DLQ. Someone triages in the morning and replays the queue &mdash; the standard, correct operational
+      response. Every one of those messages is outside the deduplication interval and outside the record
+      expiry, so every replayed message is new work by definition.
+    </p>
+
+    <div class="callout red">
+      <strong>The replay is the case the guard was bought for</strong>
+      <p>This is the uncomfortable part. Idempotency is usually justified by pointing at retries and redeliveries &mdash; events measured in seconds. But the scenario that actually produces duplicate charges is the deliberate human replay of a DLQ hours later, and that is the one case where every default window has already closed. If the expiry is not set from the maximum plausible replay delay, the guard protects against the cheap failure and not the expensive one.</p>
+    </div>
+
+    <h3>The key has to be the business event, not the message</h3>
+    <p>
+      One more trap sits in the transport layer. SQS content-based deduplication uses
+      <em>&ldquo;a SHA-256 hash to generate the message deduplication ID using the body of the message
+      &mdash; but not the attributes of the message.&rdquo;</em> Two sends with an identical body and
+      different attributes are the same message to the deduplication logic.
+    </p>
+    <p>
+      The same reasoning applies one layer up, in the opposite direction. If your application-level key is
+      derived from the whole payload, a retry carrying a fresh timestamp or a new trace ID hashes
+      differently and sails straight through. The key must be the identity of the business event &mdash;
+      the order ID, the payment reference &mdash; not a digest of the envelope that happened to carry it.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Baseline assumption</td>
+        <td>Every handler runs more than once</td>
+        <td>Lambda retries async invocations twice by default and SQS redelivers on visibility-timeout expiry. Neither needs your code.</td>
+      </tr>
+      <tr>
+        <td>FIFO queue</td>
+        <td>For ordering, not for exactly-once</td>
+        <td>FIFO avoids <em>sending</em> duplicates. AWS states there is no absolute guarantee against redelivery in either queue type.</td>
+      </tr>
+      <tr>
+        <td>Idempotency key</td>
+        <td>The business event identifier</td>
+        <td>A payload digest changes when a timestamp or trace ID does, and the retry passes straight through.</td>
+      </tr>
+      <tr>
+        <td>Record expiry</td>
+        <td>Maximum plausible replay delay</td>
+        <td>The one-hour default covers retry storms, not a DLQ replayed the next morning &mdash; which is the expensive case.</td>
+      </tr>
+      <tr>
+        <td>Concurrent duplicates</td>
+        <td>Write the record at start, fail closed</td>
+        <td>A guard that records only completions lets two in-flight requests both proceed.</td>
+      </tr>
+      <tr>
+        <td>Persistence primitive</td>
+        <td>Conditional write on the attribute being updated</td>
+        <td>DynamoDB's own qualifier. A condition on a different attribute is not idempotent.</td>
+      </tr>
+      <tr>
+        <td>Counters</td>
+        <td>Not for anything that must reconcile</td>
+        <td>AWS states atomic counter updates are not idempotent and names banking as the case where that is unacceptable.</td>
+      </tr>
+      <tr>
+        <td>Cross-Region retries</td>
+        <td>Do not reuse an EC2 client token</td>
+        <td>EC2 idempotency is Regional or zonal. The same token in another Region launches more instances.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>Two costs worth putting in the design note</h3>
+    <p>
+      <strong>The guard is not free, including when it works.</strong> A rejected duplicate still writes:
+      <em>&ldquo;If a <code class="inline">ConditionExpression</code> evaluates to false during a conditional
+      write, DynamoDB still consumes write capacity from the table.&rdquo;</em> A retry storm that the guard
+      correctly suppresses is a storm of consumed capacity. That is a far better outcome than duplicate
+      charges, and it should still be sized rather than discovered.
+    </p>
+    <p>
+      <strong>Idempotency changes what a timeout means to the caller.</strong> Once an operation is safely
+      repeatable, a client that times out can simply retry, which is the entire point. Before that property
+      exists, a timeout is genuinely ambiguous and the only safe client behaviour is to stop and ask a human.
+      Idempotency is what converts an ambiguous failure into an ordinary one, and that is why it belongs
+      near the bottom of the dependency list for everything else in this block.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Idempotency gets taught as a coding technique &mdash; check a key, skip if seen. The mechanics are
+      genuinely that simple, which is why the interesting failures are never in the mechanics. They are in
+      the boundaries: a deduplication interval measured in minutes, a record expiry measured in an hour, a
+      client token scoped to one Region, a condition attached to the wrong attribute.
+    </p>
+    <p>
+      Every one of those boundaries is a default that somebody accepted rather than chose. The default is
+      usually right for the failure everyone imagines, which is a fast retry, and wrong for the failure that
+      actually reaches a customer, which is a human replaying a queue after an incident has been resolved.
+    </p>
+    <p>
+      The architectural move is to stop asking whether the system is idempotent and start asking for how
+      long, and within what scope. Those two answers are the design. The key check is just where it gets
+      written down.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Application patterns &mdash; the outbox pattern and the dual-write problem: why writing to a database and publishing an event is two writes that cannot be made atomic, what DynamoDB Streams and transactional outboxes actually guarantee, and how the idempotency property built here becomes the thing that makes an at-least-once event pipeline safe to consume.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/standard-queues.html" target="_blank" rel="noopener">Amazon SQS standard queues &#8212; the at-least-once delivery model stated directly</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/FIFO-queues-exactly-once-processing.html" target="_blank" rel="noopener">Exactly-once processing in Amazon SQS &#8212; the 5-minute deduplication interval, and what it deduplicates</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html" target="_blank" rel="noopener">Amazon SQS visibility timeout &#8212; redelivery on failure, and the no-absolute-guarantee statement</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/invocation-retries.html" target="_blank" rel="noopener">Understanding retry behavior in Lambda &#8212; two automatic retries, and the obligation that follows</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Run_Instance_Idempotency.html" target="_blank" rel="noopener">Ensuring idempotency in Amazon EC2 API requests &#8212; client tokens, and Regional versus zonal scope</a></li>
+      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/WorkingWithItems.html" target="_blank" rel="noopener">Working with items in DynamoDB &#8212; conditional write idempotence, and why atomic counters are not</a></li>
+      <li><a href="https://docs.aws.amazon.com/powertools/python/latest/utilities/idempotency/" target="_blank" rel="noopener">Powertools for AWS Lambda idempotency utility &#8212; the one-hour default expiry and the in-progress lock</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
