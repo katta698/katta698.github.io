@@ -112,7 +112,39 @@ ALIASES = {
 #
 # Each entry: (topic seen in prose, page that must be cited, context that makes
 # the rule apply at all, message).
+PLAN_TYPE = re.compile(
+    r'\b(compute|ec2 instance|database|sagemaker(?: ai)?)\s+savings\s+plan',
+    re.I)
+
+
+def _plan_types(prose):
+    """The distinct Savings Plans types a post names."""
+    return {m.group(1).lower().replace(" ai", "") for m in PLAN_TYPE.finditer(prose)}
+
+
 TOPIC_RULES = {
+    "arch": [
+        # arch-050, found by an external reviewer on 2026-09-13 and not by
+        # anything here. The post reasons in detail about how commitments are
+        # applied -- Reserved Instances before Savings Plans, EC2 Instance
+        # before Compute -- citing sp-applying.html, and never cites the page
+        # that says which plan types exist. AWS offers four: Compute, Database,
+        # EC2 Instance and SageMaker AI. A reader can take a compute-specific
+        # hierarchy for a universal one, and nothing in the post stops them.
+        #
+        # This is Mode A exactly: the page adjacent to the topic was read, the
+        # page that governs it was not. It fires only on posts already citing
+        # the Savings Plans user guide, and only when the prose names two or
+        # more plan types -- one mention is a passing reference, two is a
+        # comparison between types and that is when the set matters.
+        (lambda prose: len(_plan_types(prose)) >= 2,
+         re.compile(r'savingsplans/latest/userguide/plan-types', re.I),
+         re.compile(r'savingsplans/latest/userguide', re.I),
+         "compares Savings Plans types while citing the Savings Plans user "
+         "guide but not plan-types -- AWS offers four (Compute, Database, EC2 "
+         "Instance, SageMaker AI) and a compute-only hierarchy reads as "
+         "universal without the page that enumerates them"),
+    ],
     "az": [
         (re.compile(r'\bguests?\b|\bB2B\b', re.I),
          re.compile(r'licensing-for-guest-users', re.I),
@@ -163,7 +195,12 @@ def check_topics(path):
     for topic, required, context, message in rules:
         if not context.search(urls):
             continue
-        if not topic.search(prose):
+        # `topic` is normally a compiled pattern, but a rule whose trigger is
+        # "more than one of these appears" cannot be written as one search.
+        # Allowing a callable keeps that logic beside the rule it belongs to
+        # rather than spreading a special case through this loop.
+        hit = topic(prose) if callable(topic) else bool(topic.search(prose))
+        if not hit:
             continue
         if required.search(urls):
             continue
@@ -257,7 +294,39 @@ def check_online(path):
     return found
 
 
+# Controls, for the same reason check_assertions.py has them: a topic rule
+# edited into inertness reports a clean corpus, and a clean corpus is exactly
+# what this file was written to stop being trusted blindly. This file had none
+# until the arch rule was added.
+def selftest():
+    bad = []
+    # Each rule must fire on prose that should trip it and stay quiet on prose
+    # that should not.
+    two = "Compute Savings Plans apply after EC2 Instance Savings Plans."
+    one = "A Compute Savings Plan covers Fargate and Lambda usage."
+    if len(_plan_types(two)) < 2:
+        bad.append("_plan_types no longer sees two distinct types")
+    if len(_plan_types(one)) != 1:
+        bad.append("_plan_types miscounts a single mention")
+    if _plan_types("savings plans are applied by percentage"):
+        bad.append("_plan_types matches prose naming no type at all")
+    # The callable path in check_topics must actually be exercised.
+    if not callable(TOPIC_RULES["arch"][0][0]):
+        bad.append("the arch plan-types rule is no longer a callable")
+    for key in ("az", "gcp"):
+        if not TOPIC_RULES.get(key):
+            bad.append("topic rules for %s have gone missing" % key)
+    return bad
+
+
 def main(argv):
+    broken = selftest()
+    if broken:
+        print("check_sources.py is not checking anything:")
+        for b in broken:
+            print("   %s" % b)
+        return 2
+
     online = "--online" in argv
     series = None
     if "--series" in argv:
