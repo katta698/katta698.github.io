@@ -166,6 +166,24 @@
         v.load();
       }
     });
+    // The poster goes on BEFORE the src, and it is the whole point.
+    //
+    // The <video> ships with no src and no poster, so until video data
+    // arrived the hero was a flat #1D2322 block -- 414px of it on the blog,
+    // 890px on the portfolio -- and then the clip appeared. Reported, many
+    // times, as the blog and the portfolio "refreshing" while Intelligence,
+    // What's New and Live status are seamless. Those three simply have no
+    // hero video, so nothing about them arrives late.
+    //
+    // A poster is one still from the same clip, about 20KB against 1.4MB of
+    // mp4, so it paints almost immediately and the video fades in over an
+    // image of itself rather than over a dark rectangle. Set first, because
+    // assigning src starts the load and the poster is what covers that gap.
+    //
+    // Generated from the clips themselves by scripts/make_hero_posters.py, so
+    // a new clip cannot end up with someone else's still.
+    v.poster = vs.themed.replace('/videos/', '/videos/posters/')
+                        .replace('.mp4', '.webp');
     v.src = vs.themed;
 
     var _tryPlay = function () { if (v.paused) v.play().catch(function () {}); };

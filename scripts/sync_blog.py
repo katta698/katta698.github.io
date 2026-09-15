@@ -3230,6 +3230,18 @@ document.documentElement.setAttribute('data-palette',p);}})();</script>
 {nav_html(show_audio=True)}
 <section class="hero">
   <video id="hero-video" class="hero-video" autoplay muted loop playsinline></video>
+  <!-- Loaded HERE, immediately after the element it fills, not at the foot
+       of the document.
+       The <video> ships with no src and no poster; this script picks the clip
+       from the date and sets it. It used to load ~600 lines further down, so
+       the hero -- 414px on the blog, 890px on the portfolio -- was empty at
+       first paint and the video appeared afterwards. That is the whole of why
+       these two pages "refresh" while Intelligence, What's New and Live status
+       are seamless: those three have no hero video, so nothing about them
+       arrives late.
+       It runs immediately rather than waiting for DOMContentLoaded, and only
+       needs #hero-video to exist, which it now does one line above. -->
+  <script src="{ASSETS_URL}/hero-media.js?v={JS_VERSION}"></script>
   <div class="hero-overlay"></div>
   <span class="hero-eyebrow">Engineering &amp; Life</span>
   <h1>Jayanth's Blog</h1>
@@ -3875,7 +3887,6 @@ document.documentElement.setAttribute('data-palette',p);}})();</script>
 {back_top_html()}
 {footer_html()}
 <audio id="beach-audio" loop preload="none"></audio>
-<script src="{ASSETS_URL}/hero-media.js?v={JS_VERSION}"></script>
 <script src="{ASSETS_URL}/blog.js?v={JS_VERSION}"></script>
 <script>
 /* hero rotation moved to blog/assets/hero-media.js — see that file */
