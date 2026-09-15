@@ -76,7 +76,10 @@ PROBE = r"""() => {
   const ctl = (sel) => { const e = g(sel); if (!e) return null;
     const r = e.getBoundingClientRect(); const c = getComputedStyle(e);
     return {w: Math.round(r.width), h: Math.round(r.height),
-            size: c.fontSize, radius: c.borderRadius}; };
+            size: c.fontSize, radius: c.borderRadius,
+            // Surface as well as size. Two icons can be 32x32 and still look
+            // nothing alike if one has a filled circle behind it.
+            bg: c.backgroundColor, border: c.borderWidth}; };
 
   const links = [].slice.call(document.querySelectorAll('nav a'));
   const link = links.filter(function (a) {
@@ -113,7 +116,13 @@ PROBE = r"""() => {
     // desktop block and the phone block set order and margin but never size.
     ctlAudio: ctl('#audio-toggle, .audio-toggle'),
     ctlTheme: ctl('#nav-theme-btn, .theme-toggle'),
-    ctlPalette: ctl('.pal-nav-btn, .pal-toggle')
+    ctlPalette: ctl('.pal-nav-btn, .pal-toggle'),
+    // Added after the subscribe glyph turned out to be the only icon in
+    // the bar with a background and a border -- and not even the same
+    // background: rgba(0,0,0,.05) on two pages, rgba(255,255,255,.08) on
+    // another. The check compared the other three and passed while this
+    // one wore a grey circle nobody else wore.
+    ctlSubscribe: ctl('#subnav-btn, .subnav-btn')
   };
 }"""
 
@@ -129,7 +138,8 @@ EXACT = [("markSrc", "brand mark image"), ("markRadius", "brand mark radius"),
 FONTS = [("nameFont", "wordmark"), ("linkFont", "nav link"),
          ("bannerFont", "festival banner"), ("bodyFont", "body text")]
 CONTROLS = [("ctlAudio", "music button"), ("ctlTheme", "theme button"),
-            ("ctlPalette", "palette button")]
+            ("ctlPalette", "palette button"),
+            ("ctlSubscribe", "subscribe button")]
 
 
 def serve():
@@ -191,7 +201,7 @@ def compare(w, ref_page, ref, page, cur, problems):
             continue
         if not a:
             continue
-        for f in ("w", "h", "size", "radius"):
+        for f in ("w", "h", "size", "radius", "bg", "border"):
             if a.get(f) != b.get(f):
                 note("%s %s" % (label, f), repr(a.get(f)), repr(b.get(f)))
 
