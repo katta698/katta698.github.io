@@ -1140,6 +1140,18 @@ document.documentElement.setAttribute("data-palette",p);})();
   </ul>
 </nav>
 <header class="hero">
+  <!-- Hero video, the same one the portfolio and the blog carry.
+       Asked for as "just mimic the same for other 3 as portfolio and
+       blog" -- these three were the pages WITHOUT it.
+       hero-media.js is already loaded at the foot of this page for the
+       audio control; it looks for #hero-video and, until now, found
+       none. It is left exactly where it is rather than moved up here:
+       it also wires #beach-audio, which lives at the bottom, and a
+       script that runs before that element would silently leave the
+       music button dead. The clip therefore arrives a little later
+       here than on the blog, which is the safe trade. -->
+  <video id="hero-video" class="hero-video" autoplay muted loop playsinline></video>
+  <div class="hero-overlay"></div>
   <div class="inner">
     <p class="eyebrow"><span class="dot"></span>Cloud status</p>
     <h1>Is anything broken right now?</h1>
@@ -1343,10 +1355,10 @@ applyTheme(localStorage.getItem("theme") !== "light");
 __STAR__
 __TOP__
 <!-- Beach sounds, the same control the portfolio and the blog carry.
-     Audio only: these pages have no hero video and are not getting one.
-     hero-media.js picks the track -- the same file, so the three surfaces
-     cannot drift onto different music -- and it no-ops for video here
-     because it looks for #hero-video and there is none. -->
+     This used to say "these pages have no hero video and are not getting
+     one". They have one now -- the same clip, from the same file, so the
+     five surfaces cannot drift apart. This tag stays at the foot because
+     it also wires #beach-audio just above it. -->
 <audio id="beach-audio" loop preload="none"></audio>
 <script src="/blog/assets/hero-media.js?v=__JSV__"></script>
 </body></html>
