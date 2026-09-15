@@ -204,9 +204,22 @@
     // switch, pageshow on a back-forward restore, and focus on a return from
     // another application. They overlap, and overlapping is the point --
     // _tryPlay is a no-op when the video is already running.
-    var _tryPlay = function () {
+    var _tryPlay = function (force) {
       if (!v.paused) return;
-      if (v.readyState === 0) { try { v.load(); } catch (e) {} }
+      // force, or nothing loaded, means reload before playing.
+      //
+      // The first version only reloaded at readyState 0, on the reasoning
+      // that a video with data just needs playing. Safari came back from an
+      // app switch paused WITH data still attached and play() did nothing --
+      // reported again from a private window, where there is no cache and no
+      // stale copy to blame. So the second attempt stops trusting readyState
+      // and reloads regardless.
+      //
+      // load() restarts the clip from the beginning. That is a real cost and
+      // it is the right trade: a hero that restarts is a hero that is
+      // playing, and the alternative on that device is one frozen frame until
+      // the reader refreshes the page themselves.
+      if (force || v.readyState === 0) { try { v.load(); } catch (e) {} }
       var p = v.play();
       if (p && p.catch) p.catch(function () {});
     };
@@ -214,9 +227,13 @@
     // is visible, and a single attempt at that moment is quietly dropped.
     var _resume = function () {
       if (document.hidden) return;
-      _tryPlay();
-      setTimeout(_tryPlay, 250);
-      setTimeout(_tryPlay, 1200);
+      // Gently first: if it simply needs playing, play it and keep the
+      // position. Only if it is still stopped a moment later is the clip
+      // reloaded, which costs the position but always works.
+      _tryPlay(false);
+      setTimeout(function () { _tryPlay(false); }, 250);
+      setTimeout(function () { _tryPlay(true); }, 900);
+      setTimeout(function () { _tryPlay(true); }, 2200);
     };
     v.addEventListener('loadeddata', _tryPlay, { once: true });
     v.addEventListener('canplay', _tryPlay, { once: true });

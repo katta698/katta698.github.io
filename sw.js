@@ -28,7 +28,7 @@
  */
 
 const VERSION = '3e198737';
-const JS_VERSION = '955d66d9';
+const JS_VERSION = 'ac8b5e20';
 const CACHE = 'jk-site-' + VERSION;
 const OFFLINE_URL = '/offline.html';
 
@@ -124,12 +124,51 @@ function networkFirst(request, fresh) {
 }
 
 // Serve cache immediately, refresh in the background.
+/* Serve the copy we have, fetch the current one, and SAY SO if it changed.
+ *
+ * The serving half is what makes moving between pages instant. The saying-so
+ * half was missing, and its absence cost an entire evening: every fix shipped
+ * invisible until the reader happened to load the page a second time. A fault
+ * would be reported, fixed, deployed and verified live from another machine
+ * -- and still be there on his phone, because his phone was showing the copy
+ * from before the fix with no way to know a newer one existed.
+ *
+ * His own diagnostic, after a pull-to-refresh, said it plainly:
+ *
+ *     entered by: reload
+ *     served from: cache / offline copy
+ *
+ * A reload that returns the previous page is indistinguishable from a fix
+ * that did not work.
+ *
+ * So when the revalidated HTML differs from what was served, every open
+ * window is told and decides what to do -- see site-footer.js. Bodies are
+ * compared rather than headers because GitHub Pages sends no useful ETag
+ * here, and a byte comparison cannot be wrong about whether the reader is
+ * looking at something out of date.
+ */
 function staleWhileRevalidate(request) {
   return caches.open(CACHE).then(function (cache) {
     return cache.match(request).then(function (cached) {
       const network = fetch(request)
         .then(function (response) {
-          if (response && response.ok) cache.put(request, response.clone());
+          if (response && response.ok) {
+            const fresh = response.clone();
+            cache.put(request, response.clone());
+            if (cached && request.mode === 'navigate') {
+              Promise.all([cached.clone().text(), fresh.text()])
+                .then(function (both) {
+                  if (both[0] === both[1]) return null;
+                  return self.clients.matchAll({ type: 'window' });
+                })
+                .then(function (clients) {
+                  (clients || []).forEach(function (c) {
+                    c.postMessage({ type: 'page-updated', url: request.url });
+                  });
+                })
+                .catch(function () { /* never break the response */ });
+            }
+          }
           return response;
         })
         .catch(function () { return cached; });
