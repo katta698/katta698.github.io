@@ -69,6 +69,71 @@ def _content_hash(*paths):
 def _css_version():
     return _content_hash(REPO_ROOT / "blog" / "assets" / "blog.css")
 
+def _critical_css():
+    """The colour variables blog.css needs before it can paint, inlined.
+
+    Reported as a white flash when moving to the blog, and only the blog:
+    "when I click Portfolio, Intelligence, What's New, Live status the whole
+    page doesn't refresh, but when I do blog, it refreshes."
+
+    Every other page carries a ~16KB inline <style> in its head defining the
+    palette, so the browser knows the background colour from the markup and
+    paints it immediately. The blog carried none, and its background lives in
+    blog.css -- 126KB, the largest stylesheet on the site, plus 56KB of
+    site-footer.css. Until both arrive and parse, the browser has no background
+    to paint and shows its own white. Chrome holds the previous page for a
+    short while to avoid exactly this, and on that one page it was giving up.
+
+    It could not be measured here. Headless Chromium rendered 55-75 real
+    screencast frames per navigation with no blank frame at all, and reported
+    the blog painting FASTER than Live status. The flash needed a real browser
+    on a real machine; what identified it was the head markup, where the blog
+    was the only page of five with no inline style at all.
+
+    Extracted from blog.css rather than written out again: the :root block and
+    the fourteen html[data-palette=...] rules, comments stripped, about 2.6KB.
+    A second copy of these hex values would drift from the first the day either
+    changed -- and the failure would be invisible, because a page whose inlined
+    background is stale still looks right once the real stylesheet lands.
+    """
+    import re as _re
+    css = (REPO_ROOT / "blog" / "assets" / "blog.css").read_text(encoding="utf-8")
+    # Character classes rather than backslash escapes throughout -- this file
+    # is routinely edited through shell heredocs, where a backslash does not
+    # survive the trip, and the last attempt at this function shipped a
+    # literal newline inside a regex string.
+    m = _re.search("(?m)^:root[ ]*[{]", css)
+    if not m:
+        raise RuntimeError("blog.css has no :root block to inline")
+    i, depth = m.end(), 1
+    while depth:
+        ch = css[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        i += 1
+    block = css[m.start():i]
+    palettes = _re.findall("(?m)^html[[]data-palette=[^" + chr(10) + "]*[}]", css)
+    if len(palettes) < 14:
+        raise RuntimeError("expected the 14 palette rules, found %d"
+                           % len(palettes))
+    strip = lambda t: _re.sub("/[*].*?[*]/", "", t, flags=_re.S)
+    out = strip(block) + "".join(strip(p) for p in palettes)
+    out = _re.sub("[ " + chr(9) + chr(10) + chr(13) + "]+", " ", out).strip()
+    # body only, deliberately. The palette rules set --surface ON BODY
+    # (html[data-palette=x] body.dark {...}), so html resolves var(--surface)
+    # to the :root default and painted #F5F5F5 while body painted the real
+    # #191E20 -- measured, with the stylesheets blocked. Worse, giving html a
+    # background of its own switches OFF the propagation that makes the
+    # browser paint the canvas from body, which is the mechanism every other
+    # page on the site already relies on. Leave html alone and the canvas
+    # follows body, correct on all fourteen palettes without naming any.
+    return out + "body{background:var(--surface);color:var(--text)}"
+
+
+CRITICAL_CSS = _critical_css()
+
 CSS_VERSION = _css_version()
 
 
@@ -1715,6 +1780,7 @@ def html_head(title, description, canonical, extra="", og_type="website",
 <meta name="twitter:image" content="{social_image}"/>
 <link rel="icon" href="/favicon-transparent.png" type="image/png"/>
 {PWA_HEAD}
+<style>{CRITICAL_CSS}</style>
 <link rel="stylesheet" href="{ASSETS_URL}/blog.css?v={CSS_VERSION}"/>
 {extra}
 <!-- The shared bar's stylesheet, linked rather than injected.
