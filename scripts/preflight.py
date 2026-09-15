@@ -57,7 +57,7 @@ BROWSER = {
     "check_brand", "check_shell_consistency", "check_page_settle",
     "check_sticky_clear", "check_occasion_banner", "check_status_cards",
     "check_music", "check_post_controls", "check_nav", "check_contrast",
-    "check_bar_settle",
+    "check_bar_settle", "check_feed_theme",
     "check_blog_filters", "check_dark_theme", "check_footer_clear",
     "check_map_devices", "check_map_alignment", "check_map_search",
     "check_news_reserve", "check_feedback", "check_region_suggest",

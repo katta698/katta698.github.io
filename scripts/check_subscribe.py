@@ -43,7 +43,20 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGES = ["/", "/blog/", "/intelligence/", "/intelligence/whats-new/",
-         "/intelligence/status/"]
+         "/intelligence/status/",
+         # Two posts, one of each kind.
+         #
+         # Posts used to carry their own signup at the foot. That was removed
+         # on 2026-09-15 -- it posted to Buttondown with target="_blank", so
+         # on a phone it left the site and the back button did not come back
+         # -- which makes the control in the bar the ONLY signup on a post,
+         # on the pages most readers actually arrive at.
+         #
+         # One sync-built and one externally_built, because those are two
+         # different code paths and the Architecture pages have been the ones
+         # to miss shared changes before.
+         "/blog/aws-daily-intelligence-dsql-foreign-keys/",
+         "/blog/aws-architecture-iceberg-table-formats/"]
 
 OPEN = """() => {
   const p = document.getElementById('sub-panel');
