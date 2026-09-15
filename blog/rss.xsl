@@ -44,7 +44,7 @@
     a{color:var(--acc)}
   </style>
 </head>
-<body><div class="wrap">
+<body><script>/*<![CDATA[*/(function(){try{if(localStorage.getItem('theme')==='light'){document.body.className='light';}}catch(e){}})();/*]]>*/</script><div class="wrap">
   <h1><xsl:value-of select="rss/channel/title"/></h1>
   <p class="sub"><xsl:value-of select="rss/channel/description"/></p>
   <div class="note">

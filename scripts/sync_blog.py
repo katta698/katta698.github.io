@@ -2417,7 +2417,32 @@ def subscribe_inline_html():
     Same markup and classes as the sidebar card, so it inherits the same
     styling and the same no-JavaScript fallback rather than being a second
     implementation that can drift.
+
+    Removed, 2026-09-15. Everything above was true when the bar had no
+    subscribe control. It has one now, on all five pages and on every post,
+    which left this as a second signup on the same page -- and the second one
+    behaved differently:
+
+        "in mobile, when I click on subscribe, like every post, it goes to
+         a different blog... I thought it would give me an option to enter
+         email ID... when I do back, it directly goes to the home page"
+
+    That is this form. It posts to Buttondown with target="_blank", so on a
+    phone it left the site for Buttondown's own page and the back button did
+    not come back to the post. The control in the bar opens a panel in place
+    with the email field in it, which is what was expected of both.
+
+    Returning "" rather than deleting the function is deliberate: the caller
+    strips the marked block from the 99 externally-built Architecture pages
+    when this is empty, so the next sync removes it from those too. Deleting
+    the function would leave the block on those 99 pages with nothing left to
+    take it out. The sidebar card on /blog/ is untouched -- one signup on the
+    index, where a reader is browsing rather than reading, is not the thing
+    that was reported.
     """
+    return ""
+
+    # unreachable, kept so restoring this is one line rather than a rewrite
     if not BUTTONDOWN_USER:
         return ""
     return f'''
