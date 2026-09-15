@@ -114,7 +114,11 @@ def _critical_css():
             depth -= 1
         i += 1
     block = css[m.start():i]
-    palettes = _re.findall("(?m)^html[[]data-palette=[^" + chr(10) + "]*[}]", css)
+    palettes = _re.findall("(?m)^html.data-palette=[^" + chr(10) + "]*[}]", css)
+    # "html." rather than a character class holding a bracket: [[] is legal
+    # but warns "possible nested set", and a warning printed on every build
+    # is noise that teaches people to ignore warnings. The dot matches the
+    # "[" of html[data-palette= and nothing else starts a line that way.
     if len(palettes) < 14:
         raise RuntimeError("expected the 14 palette rules, found %d"
                            % len(palettes))

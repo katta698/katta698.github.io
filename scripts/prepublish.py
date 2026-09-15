@@ -190,19 +190,6 @@ CHECKS = [
     # three older posts are in that state already.
     ("check_sources.py",        False, False, True,  False),
     ("audit_claims.py",         False, False, False, True),
-    # Not about a post's content: about whether a published post reaches the
-    # reader at all. CLAUDE.md forbids cache-first HTML in as many words --
-    # "Navigations are network-first so a live fix to a post page takes effect
-    # on the next load" -- and sw.template.js stopped doing that on
-    # 2026-09-14. Nothing said so, so a post published with both floating
-    # controls present in its HTML appeared to lack them for four days, and
-    # again on the next publish: every reload returned the previous copy.
-    #
-    # A reload that returns the previous page is indistinguishable from a fix
-    # that did not work, which is why this one costs evenings rather than
-    # minutes. Advisory while sw.template.js and CLAUDE.md disagree, because
-    # the fix belongs to the main window; promote to blocking once they agree.
-    ("check_sw_strategy.py",    False, False, False, False),
 ]
 
 

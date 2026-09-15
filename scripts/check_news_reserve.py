@@ -92,8 +92,16 @@ def main():
                     heights = []
                     for _ in range(14):
                         pg.wait_for_timeout(220)
+                        # body is null for the first frames after
+                        # "commit", which is exactly when this samples,
+                        # on purpose. Reading .scrollHeight off null threw
+                        # inside the page, so the check reported a stack
+                        # trace instead of a height and looked broken
+                        # rather than failing.
                         heights.append(pg.evaluate(
-                            "() => document.body.scrollHeight"))
+                            "() => (document.body || "
+                            "document.documentElement || {})"
+                            ".scrollHeight || 0"))
                     reserved = pg.evaluate(
                         "() => {const l = document.getElementById('list');"
                         " return !!l && l.classList.contains('list-reserved');}")
