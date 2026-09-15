@@ -36,6 +36,7 @@ The budget is deliberately generous. This is not a layout-shift score; it is
 in; they do not tolerate the article list jumping half a screen.
 """
 import argparse
+import json
 import http.server
 import os
 import socketserver
@@ -50,33 +51,51 @@ PAGES = ["/", "/blog/", "/intelligence/", "/intelligence/whats-new/",
 WIDTHS = [390, 1024, 1440]
 # What the budget actually contains today, measured rather than guessed:
 #
-#   ~37px  the occasion banner, injected by script on the days it shows. Every
-#          page pays this equally; it is the cost of the banner existing at
-#          all, and removing it means rendering the banner server-side on a
-#          page that is cached and served on other days too.
-#   ~31px  What's New, at 390px, releasing its row-height reservation. Smaller
-#          than the reservation is worth, and a separate item.
+#   0px   portfolio, Intelligence
+#   3px   blog
+#   18px  Live status
+#   31px  What's New, releasing its row-height reservation at 390px
 #
-# 80 catches what this check exists for -- the blog moved 666px at 390px and
-# 129px at 1440 -- without failing on those two, which are known, understood
-# and an order of magnitude smaller. If this ever needs raising again, that is
-# the signal to look rather than to raise it.
-BUDGET = 80
+# It was 80 while the occasion banner still arrived after paint and cost every
+# page ~37px; that banner is a blocking script in the head now and costs
+# nothing. 50 leaves room for the one real settle that remains without leaving
+# room for a new fault -- the bug this exists for moved the blog 666px.
+BUDGET = 50
 
-# Pin the element ONCE and then follow that same element.
+# An explicit anchor per page, and the shell on top of that.
 #
-# The first version called querySelector on every tick. The selector is a
-# group, so as the page built itself it could resolve to <main> early and a
-# .post-card later -- two elements at different heights -- and report the
-# distance between them as movement. It read 545px on a live page that a
-# direct measurement of one fixed element showed moving 3px, and 3px on the
-# same page a moment earlier. A check that reports a number that large at
-# random is worse than no check: the one time it is right, nobody believes it.
-INIT = """window.__settle=[];window.__el=null;
+# This has been wrong twice, both times by guessing at the element. It first
+# called querySelector on every tick with a GROUP selector, so it could measure
+# <main> early and a .post-card later -- two different elements -- and report
+# the distance between them as movement. Pinning the element once fixed that
+# and it still reported 512px on the portfolio and 545px on the blog at 390px,
+# intermittently, while a direct measurement showed 3px.
+#
+# The reason: there is no <main> on those pages, so the group fell through to
+# an <article> somewhere down the document, whose position legitimately moves
+# when an image above it loads. That is a real shift, but it is not what this
+# check is for, and reporting it as "the page rebuilt itself" cried wolf.
+#
+# So: name the anchor. HERO_BOTTOM is the shell -- if the header or the hero
+# changes height, everything below moves, and that is the seamlessness being
+# asked about. CONTENT is the first block a reader actually reads, named per
+# page, which is what caught the filter stack being inserted after paint.
+ANCHORS = {
+    "/": ".about, .section, .panel",
+    "/blog/": "#posts-grid, .posts-grid",
+    "/intelligence/": ".wrap, .cards, .grid",
+    "/intelligence/whats-new/": "#list, .controls",
+    "/intelligence/status/": ".sum, .wrap",
+}
+
+INIT_TMPL = """window.__settle=[];window.__a=null;window.__h=null;
 (function s(){
-  if(!window.__el) window.__el=document.querySelector('.post-card,article,.post,main');
-  var f=window.__el;
-  window.__settle.push(f&&f.isConnected?Math.round(f.getBoundingClientRect().top+window.scrollY):null);
+  if(!window.__a) window.__a=document.querySelector(%s);
+  if(!window.__h) window.__h=document.querySelector('header.hero,section.hero,.hero,nav');
+  var a=window.__a, h=window.__h;
+  window.__settle.push({
+    c: (a&&a.isConnected)?Math.round(a.getBoundingClientRect().top+window.scrollY):null,
+    s: (h&&h.isConnected)?Math.round(h.getBoundingClientRect().bottom+window.scrollY):null});
   if(window.__settle.length<42)setTimeout(s,80);
 })();"""
 
@@ -119,16 +138,19 @@ def main():
                 worst = 0
                 for w in WIDTHS:
                     ctx = b.new_context(viewport={"width": w, "height": 900})
-                    ctx.add_init_script(INIT)
+                    ctx.add_init_script(
+                        INIT_TMPL % json.dumps(ANCHORS.get(p, "body")))
                     pg = ctx.new_page()
                     pg.goto(base + p, wait_until="load", timeout=60000)
                     pg.wait_for_timeout(3400)
-                    ys = [y for y in pg.evaluate("() => window.__settle")
-                          if y is not None]
+                    rows = pg.evaluate("() => window.__settle")
+                    ys = [r["c"] for r in rows if r["c"] is not None]
+                    shell = [r["s"] for r in rows if r["s"] is not None]
                     ctx.close()
                     if not ys:
                         continue
-                    moved = max(ys) - min(ys)
+                    moved = max(max(ys) - min(ys),
+                                (max(shell) - min(shell)) if shell else 0)
                     worst = max(worst, moved)
                     if moved > BUDGET:
                         problems.append(
