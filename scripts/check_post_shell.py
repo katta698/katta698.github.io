@@ -105,14 +105,38 @@ def posts():
     return out
 
 
+COMMENT = re.compile(r"<!--.*?-->", re.S)
+
+
 def profile(path):
     t = io.open(path, encoding="utf-8", errors="replace").read()
     prof = {k: len(rx.findall(t)) for k, rx in SHELL.items()}
-    # Whole-document container balance. The number itself means nothing -- it
-    # is 0 for a sync-built page and 7 for an arch page, both longstanding.
-    # That it matches the other pages built the same way is the whole point:
-    # two extra unclosed <div> is what put the ask launcher and the back-top
-    # button inside .fb-overlay, which is display:none.
+    # Whole-document container balance, with comments removed first.
+    #
+    # This used to count the raw text, and several arch posts carry a
+    #
+    #     <!-- Structure:
+    #            <div class="container">
+    #              <div class="section" id="challenge">   <- Business Challenge
+    #              ...
+    #     -->
+    #
+    # block documenting their own layout. Those opens are not markup and
+    # never close, so the balance came out at 7 for a page with none of the
+    # comment and 9 for one with it -- and the report said "unclosed <div>:
+    # 9. Every other post has one of [0, 7]", which reads like two broken
+    # containers and is in fact a paragraph of prose.
+    #
+    # That mattered twice over. The noise is why the real fault was nearly
+    # dismissed: this page WAS unbalanced by two, and its last four sections
+    # were nesting inside each other rather than sitting side by side in
+    # .container -- measured in a browser, section parents read
+    # "container,container,section,section,section,section" against
+    # "container" six times on a healthy post. Comments hid a real defect
+    # inside a false one.
+    #
+    # With comments stripped, all 251 post pages balance at 0 exactly.
+    t = COMMENT.sub("", t)
     prof["_div_balance"] = (len(DIV_OPEN.findall(t))
                             - len(DIV_CLOSE.findall(t)))
     return prof
