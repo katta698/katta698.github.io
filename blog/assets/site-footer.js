@@ -1894,7 +1894,7 @@
  */
 (function () {
   var FEEDS = [
-    ['Every post', '/blog/rss.xml', 'new writing, as it goes up'],
+    ['Every post', '/blog/rss.xml', 'the same writing, in your reader'],
     ['Cloud incidents', '/intelligence/status/feed.xml', 'all three clouds'],
     ['AWS only', '/intelligence/status/feed-aws.xml', ''],
     ['Azure only', '/intelligence/status/feed-azure.xml', ''],
@@ -1918,20 +1918,34 @@
     //
     // Same action and the same field name as the form on the posts, so this
     // is that list rather than a second one.
+      // Two named routes, not one flat list.
+      //
+      // This was an email field with five links under it and nothing saying
+      // why both were there. Asked directly: "what's the point of having
+      // every post... if you have subscribe?" They are the same writing by
+      // two deliveries -- one wants an address, the other wants nothing at
+      // all -- and a reader who has to work that out will not bother.
+      //
+      // The three per-cloud feeds have no email equivalent, so the second
+      // group is not just an alternative to the first.
       '<div class="sub-head">Subscribe</div>' +
+      '<div class="sub-group">By email</div>' +
       '<form class="subnav-form" method="post" target="_blank" ' +
         'action="https://buttondown.com/api/emails/embed-subscribe/katta698">' +
-        // aria-label, not a visually-hidden <label>. .sr-only is defined in
-        // the page stylesheets rather than this one, so on the pages that
-        // do not load blog.css the label simply rendered -- "Email address"
-        // sat beside the field and squeezed it to half its width.
+        // aria-label rather than a visually-hidden <label>: .sr-only is
+        // defined in the page stylesheets, not this one, so on the pages that
+        // do not load blog.css the label simply rendered.
         '<input class="subnav-input" id="subnav-email" type="email" name="email" ' +
           'aria-label="Email address" placeholder="you@example.com" ' +
           'required autocomplete="email"/>' +
         '<button class="subnav-go" type="submit">Get posts by email</button>' +
       '</form>' +
-      '<p class="sub-lede">One email when a post goes up. Or take a feed for ' +
-      'your reader or Slack &mdash; no account, nothing to join.</p>' +
+      '<p class="sub-lede">One email when a post goes up. Unsubscribe in one ' +
+      'click.</p>' +
+      '<div class="sub-group">By feed reader' +
+        '<span class="sub-group-note">no email needed</span></div>' +
+      '<p class="sub-lede">Copy a link into Feedly, Inoreader, Slack or ' +
+      'anything else that reads feeds. Nothing is shared with me.</p>' +
       '<ul class="sub-list">' +
       FEEDS.map(function (f) {
         return '<li><a href="' + f[1] + '" target="_blank" rel="noopener">' +
