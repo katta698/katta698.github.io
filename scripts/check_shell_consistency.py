@@ -73,6 +73,11 @@ PROBE = r"""() => {
   // pages, which is the nav working correctly, not a fault. Comparing the
   // current-page link on one page against an ordinary link on another compares
   // two different things.
+  const ctl = (sel) => { const e = g(sel); if (!e) return null;
+    const r = e.getBoundingClientRect(); const c = getComputedStyle(e);
+    return {w: Math.round(r.width), h: Math.round(r.height),
+            size: c.fontSize, radius: c.borderRadius}; };
+
   const links = [].slice.call(document.querySelectorAll('nav a'));
   const link = links.filter(function (a) {
     const t = (a.textContent || '').trim();
@@ -101,7 +106,14 @@ PROBE = r"""() => {
     videoSrc: video ? (video.currentSrc || '').split('/').pop() : null,
     videoPoster: video ? (video.poster || '').split('/').pop() : null,
     bodyFont: font(document.body),
-    bodyBg: getComputedStyle(document.body).backgroundColor
+    bodyBg: getComputedStyle(document.body).backgroundColor,
+    // The three controls at the right of the bar. Added after the music icon
+    // turned out to be 32x20 on three pages, 32x34 on one and 32x44 on
+    // another -- at 390px only, because the rule that pins them lived in the
+    // desktop block and the phone block set order and margin but never size.
+    ctlAudio: ctl('#audio-toggle, .audio-toggle'),
+    ctlTheme: ctl('#nav-theme-btn, .theme-toggle'),
+    ctlPalette: ctl('.pal-nav-btn, .pal-toggle')
   };
 }"""
 
@@ -116,6 +128,8 @@ EXACT = [("markSrc", "brand mark image"), ("markRadius", "brand mark radius"),
          ("bodyBg", "page background")]
 FONTS = [("nameFont", "wordmark"), ("linkFont", "nav link"),
          ("bannerFont", "festival banner"), ("bodyFont", "body text")]
+CONTROLS = [("ctlAudio", "music button"), ("ctlTheme", "theme button"),
+            ("ctlPalette", "palette button")]
 
 
 def serve():
@@ -167,6 +181,17 @@ def compare(w, ref_page, ref, page, cur, problems):
         if not a or not b:
             continue
         for f in ("size", "weight", "family", "spacing", "transform"):
+            if a.get(f) != b.get(f):
+                note("%s %s" % (label, f), repr(a.get(f)), repr(b.get(f)))
+
+    for key, label in CONTROLS:
+        a, b = cur.get(key), ref.get(key)
+        if (a is None) != (b is None):
+            note("%s present" % label, bool(a), bool(b))
+            continue
+        if not a:
+            continue
+        for f in ("w", "h", "size", "radius"):
             if a.get(f) != b.get(f):
                 note("%s %s" % (label, f), repr(a.get(f)), repr(b.get(f)))
 
