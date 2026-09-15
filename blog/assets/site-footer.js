@@ -1934,7 +1934,8 @@
       'your reader or Slack &mdash; no account, nothing to join.</p>' +
       '<ul class="sub-list">' +
       FEEDS.map(function (f) {
-        return '<li><a href="' + f[1] + '"><span class="sub-name">' + f[0] +
+        return '<li><a href="' + f[1] + '" target="_blank" rel="noopener">' +
+               '<span class="sub-name">' + f[0] +
                '</span>' + (f[2] ? '<span class="sub-note">' + f[2] + '</span>' : '') +
                '</a><button class="sub-copy" data-url="' + f[1] +
                '" aria-label="Copy the link to ' + f[0] + '">copy</button></li>';
@@ -2020,16 +2021,41 @@
     });
 
     // And a row in the cairn, for the widths where the bar has no room.
+    // The cairn row OPENS THE PANEL. It used to be two links straight to the
+    // feed files.
+    //
+    // On a phone that was wrong three times over: tapping one left the site
+    // for a page of raw XML, the email signup -- the thing most people
+    // actually want -- was not offered at all because it lives in the panel,
+    // and coming back landed on the home page rather than where the reader
+    // was. Reported as "it goes to a different blog... when I do back it
+    // completely goes back".
+    //
+    // One row, same panel, same email field as the desktop. Nothing
+    // navigates.
     var sheet = document.getElementById('ck-sheet');
     if (sheet && !sheet.querySelector('.ck-subscribe')) {
       var wrap = document.createElement('div');
       wrap.className = 'ck-subscribe';
-      wrap.innerHTML = '<p class="ck-sub">Subscribe</p><ul class="ck-sections">' +
-        FEEDS.slice(0, 2).map(function (f) {
-          return '<li><a href="' + f[1] + '"><span class="ck-label">' +
-                 f[0] + '</span></a></li>';
-        }).join('') + '</ul>';
+      wrap.innerHTML = '<p class="ck-sub">Subscribe</p>' +
+        '<ul class="ck-sections"><li>' +
+        '<button type="button" class="ck-sub-open">' +
+        '<span class="ck-label">Email or a feed</span></button></li></ul>';
       sheet.appendChild(wrap);
+      wrap.addEventListener('click', function (ev) {
+        if (!ev.target.closest('.ck-sub-open')) return;
+        // Stop here, or the document-level "a click outside closes it"
+        // handler sees this same click, finds it outside the panel, and shuts
+        // the panel a moment after this opens it. It looked like the row did
+        // nothing at all.
+        ev.stopPropagation();
+        var ck = document.getElementById('ck-btn');
+        if (ck && ck.getAttribute('aria-expanded') === 'true') ck.click();
+        p.hidden = false;
+        btn.setAttribute('aria-expanded', 'true');
+        var f = p.querySelector('.subnav-input');
+        if (f) setTimeout(function () { f.focus(); }, 80);
+      });
     }
   }
 
