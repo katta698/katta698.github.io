@@ -1,0 +1,371 @@
+---
+title: "AWS Architecture Series #53 — The write was atomic. The event was not."
+date: '2026-09-15T09:00:00'
+slug: aws-architecture-outbox-dual-write
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-15'
+verified_claims:
+  - claim: "TransactWriteItems is a synchronous and idempotent write operation that groups up to 100 write actions in a single all-or-nothing operation, and the actions are completed atomically so that either all of them succeed or none of them succeeds"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html
+  - claim: "TransactWriteItems actions can target up to 100 distinct items in one or more DynamoDB tables within the same AWS account and in the same Region, and the aggregate size of the items in the transaction cannot exceed 4 MB"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html
+  - claim: "You can't target the same item with multiple operations within the same DynamoDB transaction"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html
+  - claim: "When a transaction completes in DynamoDB its changes start propagating to global secondary indexes, streams and backups gradually, stream records from the same transaction might appear at different times and could be interleaved with records from other transactions, and stream consumers shouldn't assume transaction atomicity or ordering guarantees"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html
+  - claim: "A DynamoDB transaction client token is valid for 10 minutes after the request that uses it finishes, and after 10 minutes any request that uses the same client token is treated as a new request"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html
+  - claim: "If you repeat a DynamoDB transaction request with the same client token within the 10-minute idempotency window but change some other request parameter, DynamoDB returns an IdempotentParameterMismatch exception"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html
+  - claim: "DynamoDB performs two underlying reads or writes of every item in a transaction, one to prepare the transaction and one to commit the transaction"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html
+  - claim: "Transaction capacity is consumed even when a transaction does not succeed, so a cancelled TransactWriteItems still consumes the underlying write capacity for the items it attempted"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html
+  - claim: "If any item-level request within TransactWriteItems or TransactGetItems is rejected the request fails with a TransactionCanceledException, and if that request fails AWS SDKs do not retry the request"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html
+  - claim: "Transactional operations provide ACID guarantees only within the AWS Region where the write API was invoked, and transactions aren't supported across Regions in global tables"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html
+  - claim: "DynamoDB recommends not grouping operations together in a transaction if it is not necessary, because simpler transactions improve throughput and are more likely to succeed"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html
+  - claim: "DynamoDB Streams captures a time-ordered sequence of item-level modifications in any DynamoDB table and stores this information in a log for up to 24 hours"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html
+  - claim: "DynamoDB Streams helps make sure that each stream record appears exactly once in the stream"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html
+  - claim: "For each item that is modified in a DynamoDB table, the stream records appear in the same sequence as the actual modifications to the item"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html
+  - claim: "If you perform a PutItem or UpdateItem operation that does not change any data in an item, DynamoDB Streams does not write a stream record for that operation"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html
+  - claim: "DynamoDB Streams guarantees ordering at the level of an individual item, across all modifications to the same primary key, not across an entire partition"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html
+  - claim: "All data in DynamoDB Streams is subject to a 24-hour lifetime, and data that is older than 24 hours is susceptible to trimming at any moment"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html
+  - claim: "No more than two processes at most should be reading from the same DynamoDB stream shard at the same time, because having more than two readers per shard can result in throttling"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html
+  - claim: "When Lambda consumes a DynamoDB stream through an event source mapping, one function instance processes one shard by default, and you can raise the ParallelizationFactor up to 10 while still preserving the order of changes for each item"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html
+  - claim: "An application must always process a parent shard before it processes a child shard, which helps make sure that the stream records are processed in the correct order"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html
+problem: "An order is saved and the downstream system never hears about it. The database write succeeded and the publish did not, because they were two writes with no transaction between them — and the obvious fix, making them one atomic write, does not deliver the guarantee people expect it to."
+builds: "A model of the dual-write problem and what AWS actually gives you against it: a genuinely atomic multi-item write, a change stream derived from that same write, and an explicit statement of where the atomicity stops — plus the consumer-side properties that have to be built because the transport will not supply them."
+catch: "AWS states it directly: stream records from one transaction may appear at different times, interleaved with other transactions, and consumers shouldn't assume transaction atomicity or ordering guarantees. The transaction makes the write atomic. It does not make the resulting events atomic, so a consumer that sees the outbox record before the entity is a supported outcome, not a bug."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #053 &middot; Application Patterns</div>
+  <h1 class="post-title">The write was atomic. The event was not.</h1>
+  <p class="post-subtitle">A transaction can make the entity and its outbox record a single all-or-nothing write. AWS then states plainly that the stream will not preserve that, and consumers must not assume it.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Reliability &middot; Performance Efficiency</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The previous post established idempotency &mdash; the property that makes an at-least-once pipeline
+      safe to consume. This one is about getting the events into that pipeline at all, which turns out to
+      be the harder half.
+    </p>
+    <p>
+      An order is saved. The downstream system never hears about it. The handler is four lines, it is
+      obviously correct, and it is the single most common correctness bug in event-driven systems:
+    </p>
+    <pre><code>save_order(order)            # write 1 — the database
+publish("OrderPlaced", order) # write 2 — the broker</code></pre>
+    <p>
+      Two writes to two systems with no transaction spanning them. If the process dies between them, the
+      order exists and the event does not. Swap the order and you get the opposite failure &mdash; an event
+      for an order that was never saved &mdash; which is worse, because it is unrecoverable rather than
+      merely late.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>There is no ordering of the two that is safe</strong></div>
+      <div class="challenge-body">
+        <p>
+          Teams usually discover this by trying both orders and finding each one broken, then reaching for
+          a retry. A retry does not help: the failure is that the process no longer exists to perform it.
+          Wrapping them in application-level compensation does not help either, because the compensation is
+          itself a write that can fail.
+        </p>
+        <p>
+          This is the dual-write problem, and it is not solvable at the call site. It is only solvable by
+          making the two facts &mdash; the state change, and the intent to publish &mdash; land in one
+          place that can commit or not commit as a unit.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Stop trying to coordinate two systems. Write the event into the same store, in the same transaction.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The atomic write does not produce atomic events</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the part that catches people who did everything right. You use
+          <code class="inline">TransactWriteItems</code>, the entity and the outbox record commit together,
+          and you assume the consumer sees them together. AWS says otherwise, and says it without hedging:
+        </p>
+        <p>
+          <em>&ldquo;This propagation occurs gradually: stream records from the same transaction might
+          appear at different times and could be interleaved with records from other transactions. Stream
+          consumers shouldn't assume transaction atomicity or ordering guarantees.&rdquo;</em>
+        </p>
+        <p>
+          The transaction is a guarantee about the <em>write</em>. It is not a guarantee about the stream
+          derived from that write. A consumer that observes the outbox record before the entity it refers
+          to is seeing supported behaviour.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Make each event self-contained, or make the consumer tolerate an entity that is not visible yet.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>An idempotent write emits nothing</strong></div>
+      <div class="challenge-body">
+        <p>
+          The previous post argued for idempotent handlers. Combine that with a stream-based outbox and
+          there is a trap sitting exactly at the join: <em>&ldquo;If you perform a
+          <code class="inline">PutItem</code> or <code class="inline">UpdateItem</code> operation that does
+          not change any data in an item, DynamoDB Streams does <strong>not</strong> write a stream record
+          for that operation.&rdquo;</em>
+        </p>
+        <p>
+          A retry that correctly writes the same values a second time is a no-op, and a no-op is silent. If
+          the first attempt wrote the row but died before the stream consumer ran, and the retry is a true
+          no-op, there is no second chance to emit. The idempotency that protects the database is the thing
+          that suppresses the event.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Give the outbox record a unique key per event, so writing it is always a genuine change.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The pattern has three moving parts, and the interesting design work is at the joints rather than in
+      any one of them.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-053-outbox-dual-write.svg" alt="Diagram: the dual-write problem and how an outbox built on DynamoDB addresses it, including where the guarantee stops. On the left, the broken shape: an application performs two writes, one to a database and one to a message broker, with no transaction spanning them, so a crash between the two leaves the state change without its event or the event without its state change. In the middle, the fix: a single TransactWriteItems call writes the entity and an outbox record together as one all-or-nothing operation of up to 100 actions, limited to one AWS account and one Region with an aggregate size of four megabytes. On the right, the relay: DynamoDB Streams derives change records from that same committed write, each stream record appears exactly once, and ordering is guaranteed per individual item rather than across a partition, with records retained for 24 hours before becoming subject to trimming. A panel across the bottom records where atomicity stops: AWS states that stream records from the same transaction might appear at different times and could be interleaved with records from other transactions, and that stream consumers should not assume transaction atomicity or ordering guarantees, so the consumer must treat each event as independently meaningful. A second note records that a write which does not change any data produces no stream record at all, so an idempotent no-op retry emits nothing." />
+      <figcaption>The transaction removes the dual write. It does not extend atomicity into the stream &mdash; that boundary is where the consumer's design starts.</figcaption>
+    </figure>
+
+    <h3>The transaction is real, and it is bounded</h3>
+    <p>
+      <code class="inline">TransactWriteItems</code> is <em>&ldquo;a synchronous and idempotent write
+      operation that groups up to 100 write actions in a single all-or-nothing operation&rdquo;</em>, and
+      the actions <em>&ldquo;are completed atomically so that either all of them succeed or none of them
+      succeeds.&rdquo;</em> For an outbox that is exactly the primitive required: the entity and its event
+      record commit together or not at all.
+    </p>
+    <p>
+      The bounds are worth knowing before you design around it. Up to 100 distinct items, in one or more
+      tables, <strong>within the same AWS account and the same Region</strong>, with an aggregate size no
+      greater than 4 MB. You cannot target the same item twice in one transaction. And the ACID guarantee
+      is Regional only: <em>&ldquo;transactions aren't supported across Regions in global tables&rdquo;</em>,
+      so a global table replica can show a partially propagated transaction.
+    </p>
+    <p>
+      It also costs double, by design. <em>&ldquo;DynamoDB performs two underlying reads or writes of every
+      item in the transaction: one to prepare the transaction and one to commit the transaction.&rdquo;</em>
+      An outbox therefore costs four write units per business event, not one &mdash; two items, doubled
+      &mdash; and that arithmetic belongs in the design note rather than in a bill.
+    </p>
+
+    <div class="callout amber">
+      <strong>A failed transaction is not a free transaction</strong>
+      <p>AWS is explicit that the capacity <em>&ldquo;is consumed even when a transaction does not succeed&rdquo;</em> &mdash; a cancelled call still consumes the underlying write capacity for the items it attempted. Worth pairing with the retry behaviour: a rejected item-level request fails the whole call with <code class="inline">TransactionCanceledException</code>, and <em>&ldquo;if that request fails, AWS SDKs do not retry the request.&rdquo;</em> Contention against a hot item is therefore paid for twice over, in capacity and in a retry you have to write yourself.</p>
+    </div>
+
+    <h3>The stream is the relay, and it has its own contract</h3>
+    <p>
+      The reason this pattern fits DynamoDB so well is that the relay does not have to be built. The stream
+      is derived from the committed write, so there is no second system to keep in step, and it carries a
+      guarantee most transports do not: <em>&ldquo;Each stream record appears exactly once in the
+      stream.&rdquo;</em>
+    </p>
+    <p>
+      Read that precisely. It is a statement about the stream's contents, not about delivery to your
+      consumer &mdash; a Lambda event source mapping can still hand you the same record twice, which is why
+      the previous post exists. Ordering is similarly specific: guaranteed <em>&ldquo;at the level of an
+      individual item&hellip; not across an entire partition.&rdquo;</em> Two different orders have no
+      defined relative order. The same order's three state changes do.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Self-contained events are what survive the boundary</h3>
+    <p>
+      Once you accept that a consumer may see the outbox record before the entity, and may see two
+      transactions interleaved, the design consequence is forced: the event has to carry what the consumer
+      needs rather than a pointer to fetch it.
+    </p>
+    <p>
+      An event that says <em>&ldquo;order 4471 changed, go and read it&rdquo;</em> is a lookup against a
+      table that may not show the change yet. An event carrying the order's relevant state is independently
+      meaningful. This is the same reasoning that makes the <code class="inline">NEW_AND_OLD_IMAGES</code>
+      view type the useful default for an outbox: the record is complete without a round trip.
+    </p>
+
+    <div class="callout red">
+      <strong>The 24-hour floor is the whole recovery window</strong>
+      <p>Stream data has <em>&ldquo;a 24-hour lifetime&rdquo;</em>, and records older than that are <em>&ldquo;susceptible to trimming (removal) at any moment.&rdquo;</em> That is not a tuning knob &mdash; there is no setting to extend it. If a consumer is broken over a long weekend, the events it never processed are gone, and the only recovery is to re-derive state from the table itself. An outbox on DynamoDB Streams therefore needs a documented reconciliation path, not just a DLQ, because the DLQ only holds what was successfully delivered and failed &mdash; not what expired before delivery was attempted.</p>
+    </div>
+
+    <h3>Consumer parallelism is capped by the shard, not by your concurrency setting</h3>
+    <p>
+      Throughput planning here surprises people who are used to scaling consumers freely. AWS advises that
+      <em>&ldquo;no more than two processes at most should be reading from the same stream's shard at the
+      same time&rdquo;</em>, since more <em>&ldquo;can result in throttling.&rdquo;</em>
+    </p>
+    <p>
+      With Lambda the shape is cleaner but still bounded: one function instance per open shard by default,
+      raisable via <code class="inline">ParallelizationFactor</code> <em>&ldquo;up to 10&rdquo;</em> while
+      <em>&ldquo;still preserving the order of changes for each item.&rdquo;</em> That last clause is the
+      one that makes the setting safe to use &mdash; ordering is preserved per item, which is the only
+      ordering the stream promised in the first place.
+    </p>
+    <p>
+      Shard lineage is the other constraint: an application <em>&ldquo;must always process a parent shard
+      before it processes a child shard.&rdquo;</em> Lambda handles this for you. A hand-rolled consumer
+      that ignores it will process records out of order during exactly the traffic spike that caused the
+      shard to split.
+    </p>
+
+    <h3>Where the outbox is genuinely the wrong answer</h3>
+    <p>
+      AWS's own transaction guidance argues against reaching for this reflexively:
+      <em>&ldquo;Don't group operations together in a transaction if it's not necessary&hellip; Simpler
+      transactions improve throughput and are more likely to succeed.&rdquo;</em>
+    </p>
+    <p>
+      If the only consumer needs the change and nothing else, a plain write with a stream consumer is
+      already sufficient &mdash; the stream <em>is</em> the outbox, derived from the same committed write,
+      with no second record and no doubled capacity. The explicit outbox record earns its cost when the
+      event's shape must differ from the entity's: a published contract that should not change when the
+      storage model does, an event that aggregates several items, or one that must carry intent the row
+      does not record.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Dual write</td>
+        <td>Never; one transaction</td>
+        <td>No ordering of two writes to two systems is crash-safe, and retries cannot help a dead process.</td>
+      </tr>
+      <tr>
+        <td>Explicit outbox record</td>
+        <td>Only when the event shape differs</td>
+        <td>Otherwise the stream is already the outbox. AWS advises against unnecessary transactions.</td>
+      </tr>
+      <tr>
+        <td>Outbox record key</td>
+        <td>Unique per event</td>
+        <td>A write that changes nothing produces no stream record, so a reused key emits silence on retry.</td>
+      </tr>
+      <tr>
+        <td>Event payload</td>
+        <td>Self-contained, not a pointer</td>
+        <td>Consumers may see the event before the entity is readable. AWS says not to assume otherwise.</td>
+      </tr>
+      <tr>
+        <td>Stream view type</td>
+        <td><code class="inline">NEW_AND_OLD_IMAGES</code></td>
+        <td>Makes the record complete without a round trip, and cannot be changed without recreating the stream.</td>
+      </tr>
+      <tr>
+        <td>Consumer semantics</td>
+        <td>Idempotent, order-tolerant across items</td>
+        <td>Exactly-once applies to the stream's contents, not to delivery. Ordering holds per item only.</td>
+      </tr>
+      <tr>
+        <td>Recovery beyond 24 hours</td>
+        <td>Reconcile from the table</td>
+        <td>Stream retention is fixed at 24 hours with no extension. Expired records were never delivered.</td>
+      </tr>
+      <tr>
+        <td>Capacity planning</td>
+        <td>Four write units per event</td>
+        <td>Two items, and DynamoDB writes each twice &mdash; prepare and commit &mdash; including on failure.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>Two details that decide whether the retry story works</h3>
+    <p>
+      <strong>The transaction's own idempotency window is ten minutes.</strong> A client token
+      <em>&ldquo;is valid for 10 minutes after the request that uses it finishes. After 10 minutes, any
+      request that uses the same client token is treated as a new request.&rdquo;</em> Reusing it with
+      changed parameters inside the window returns
+      <code class="inline">IdempotentParameterMismatch</code>. That is a tighter bound than the hour the
+      Powertools guard defaults to and far tighter than a next-morning replay &mdash; the same
+      window-versus-incident mismatch the previous post ended on, one layer down.
+    </p>
+    <p>
+      <strong>Disabling a stream is not reversible in the way people assume.</strong> Re-enabling creates a
+      new stream with a different descriptor, the view type cannot be edited in place, and the old stream's
+      data remains readable for 24 hours and then goes. Changing what an outbox publishes is therefore a
+      migration with a cutover, not a configuration change.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The dual-write problem is usually presented as a puzzle with a clever solution, and the outbox pattern
+      is presented as that solution. On AWS the mechanics are almost disappointingly easy &mdash; a
+      transaction, a stream, a Lambda &mdash; which is exactly why the failures land somewhere else.
+    </p>
+    <p>
+      They land at the boundary where one guarantee stops and the next has not started. The transaction
+      guarantees the write. The stream guarantees its own contents, once each, ordered per item. Neither
+      guarantees that a consumer sees a coherent transaction, and AWS says so in a sentence most people
+      never read: <em>stream consumers shouldn't assume transaction atomicity or ordering guarantees.</em>
+    </p>
+    <p>
+      The pattern that survives is the one that stops asking the transport for consistency it never offered.
+      Make each event true on its own. Make the consumer idempotent, because delivery is at-least-once.
+      Assume ordering only where it was promised, which is per item. Then the atomic write is doing the one
+      job it can actually do &mdash; making sure the event exists at all &mdash; and everything after it is
+      designed for the world as the documentation describes it.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Application patterns &mdash; retries, backoff, jitter and the thundering herd: why every client retrying politely still produces a synchronised stampede, what the AWS SDKs do by default, and how a retry budget differs from a retry policy.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html" target="_blank" rel="noopener">Amazon DynamoDB Transactions: how it works &#8212; the all-or-nothing write, and where its atomicity stops</a></li>
+      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html" target="_blank" rel="noopener">Change data capture for DynamoDB Streams &#8212; exactly-once records, per-item ordering and the 24-hour limit</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #53 — The write was atomic. The event was not. | Jayanth Katta Blog</title>
+<meta name="description" content="An order is saved and the downstream system never hears about it. The database write succeeded and the publish did not, because they were two writes with no transaction between them — and the obvious fix, making them one atomic write, does not deliver the guarantee people expect it to."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="The write was atomic. The event was not."/>
+<meta property="og:description" content="An order is saved and the downstream system never hears about it. The database write succeeded and the publish did not, because they were two writes with no transaction between them — and the obvious fix, making them one atomic write, does not deliver the guarantee people expect it to."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-outbox-dual-write/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="The write was atomic. The event was not."/>
+<meta name="twitter:description" content="An order is saved and the downstream system never hears about it. The database write succeeded and the publish did not, because they were two writes with no transaction between them — and the obvious fix, making them one atomic write, does not deliver the guarantee people expect it to."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-outbox-dual-write/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=3e198737"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #53 — The write was atomic. The event was not.…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #53 — The write was atomic. The event was not.</h1>
+      <p class="post-description">An order is saved and the downstream system never hears about it. The database write succeeded and the publish did not, because they were two writes with no transaction between them — and the obvious fix, making them one atomic write, does not deliver the guarantee people expect it to.</p>
+      <div class="post-info">
+        <span>Sep 15, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>11 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 15 September 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-outbox-dual-write" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The previous post established idempotency &mdash; the property that makes an at-least-once pipeline
+      safe to consume. This one is about getting the events into that pipeline at all, which turns out to
+      be the harder half.
+    </p>
+    <p>
+      An order is saved. The downstream system never hears about it. The handler is four lines, it is
+      obviously correct, and it is the single most common correctness bug in event-driven systems:
+    </p>
+    <pre><code>save_order(order)            # write 1 — the database
+publish("OrderPlaced", order) # write 2 — the broker</code></pre>
+    <p>
+      Two writes to two systems with no transaction spanning them. If the process dies between them, the
+      order exists and the event does not. Swap the order and you get the opposite failure &mdash; an event
+      for an order that was never saved &mdash; which is worse, because it is unrecoverable rather than
+      merely late.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>There is no ordering of the two that is safe</strong></div>
+      <div class="challenge-body">
+        <p>
+          Teams usually discover this by trying both orders and finding each one broken, then reaching for
+          a retry. A retry does not help: the failure is that the process no longer exists to perform it.
+          Wrapping them in application-level compensation does not help either, because the compensation is
+          itself a write that can fail.
+        </p>
+        <p>
+          This is the dual-write problem, and it is not solvable at the call site. It is only solvable by
+          making the two facts &mdash; the state change, and the intent to publish &mdash; land in one
+          place that can commit or not commit as a unit.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Stop trying to coordinate two systems. Write the event into the same store, in the same transaction.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The atomic write does not produce atomic events</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the part that catches people who did everything right. You use
+          <code class="inline">TransactWriteItems</code>, the entity and the outbox record commit together,
+          and you assume the consumer sees them together. AWS says otherwise, and says it without hedging:
+        </p>
+        <p>
+          <em>&ldquo;This propagation occurs gradually: stream records from the same transaction might
+          appear at different times and could be interleaved with records from other transactions. Stream
+          consumers shouldn't assume transaction atomicity or ordering guarantees.&rdquo;</em>
+        </p>
+        <p>
+          The transaction is a guarantee about the <em>write</em>. It is not a guarantee about the stream
+          derived from that write. A consumer that observes the outbox record before the entity it refers
+          to is seeing supported behaviour.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Make each event self-contained, or make the consumer tolerate an entity that is not visible yet.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>An idempotent write emits nothing</strong></div>
+      <div class="challenge-body">
+        <p>
+          The previous post argued for idempotent handlers. Combine that with a stream-based outbox and
+          there is a trap sitting exactly at the join: <em>&ldquo;If you perform a
+          <code class="inline">PutItem</code> or <code class="inline">UpdateItem</code> operation that does
+          not change any data in an item, DynamoDB Streams does <strong>not</strong> write a stream record
+          for that operation.&rdquo;</em>
+        </p>
+        <p>
+          A retry that correctly writes the same values a second time is a no-op, and a no-op is silent. If
+          the first attempt wrote the row but died before the stream consumer ran, and the retry is a true
+          no-op, there is no second chance to emit. The idempotency that protects the database is the thing
+          that suppresses the event.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Give the outbox record a unique key per event, so writing it is always a genuine change.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The pattern has three moving parts, and the interesting design work is at the joints rather than in
+      any one of them.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-053-outbox-dual-write.svg" alt="Diagram: the dual-write problem and how an outbox built on DynamoDB addresses it, including where the guarantee stops. On the left, the broken shape: an application performs two writes, one to a database and one to a message broker, with no transaction spanning them, so a crash between the two leaves the state change without its event or the event without its state change. In the middle, the fix: a single TransactWriteItems call writes the entity and an outbox record together as one all-or-nothing operation of up to 100 actions, limited to one AWS account and one Region with an aggregate size of four megabytes. On the right, the relay: DynamoDB Streams derives change records from that same committed write, each stream record appears exactly once, and ordering is guaranteed per individual item rather than across a partition, with records retained for 24 hours before becoming subject to trimming. A panel across the bottom records where atomicity stops: AWS states that stream records from the same transaction might appear at different times and could be interleaved with records from other transactions, and that stream consumers should not assume transaction atomicity or ordering guarantees, so the consumer must treat each event as independently meaningful. A second note records that a write which does not change any data produces no stream record at all, so an idempotent no-op retry emits nothing." />
+      <figcaption>The transaction removes the dual write. It does not extend atomicity into the stream &mdash; that boundary is where the consumer's design starts.</figcaption>
+    </figure>
+
+    <h3>The transaction is real, and it is bounded</h3>
+    <p>
+      <code class="inline">TransactWriteItems</code> is <em>&ldquo;a synchronous and idempotent write
+      operation that groups up to 100 write actions in a single all-or-nothing operation&rdquo;</em>, and
+      the actions <em>&ldquo;are completed atomically so that either all of them succeed or none of them
+      succeeds.&rdquo;</em> For an outbox that is exactly the primitive required: the entity and its event
+      record commit together or not at all.
+    </p>
+    <p>
+      The bounds are worth knowing before you design around it. Up to 100 distinct items, in one or more
+      tables, <strong>within the same AWS account and the same Region</strong>, with an aggregate size no
+      greater than 4 MB. You cannot target the same item twice in one transaction. And the ACID guarantee
+      is Regional only: <em>&ldquo;transactions aren't supported across Regions in global tables&rdquo;</em>,
+      so a global table replica can show a partially propagated transaction.
+    </p>
+    <p>
+      It also costs double, by design. <em>&ldquo;DynamoDB performs two underlying reads or writes of every
+      item in the transaction: one to prepare the transaction and one to commit the transaction.&rdquo;</em>
+      An outbox therefore costs four write units per business event, not one &mdash; two items, doubled
+      &mdash; and that arithmetic belongs in the design note rather than in a bill.
+    </p>
+
+    <div class="callout amber">
+      <strong>A failed transaction is not a free transaction</strong>
+      <p>AWS is explicit that the capacity <em>&ldquo;is consumed even when a transaction does not succeed&rdquo;</em> &mdash; a cancelled call still consumes the underlying write capacity for the items it attempted. Worth pairing with the retry behaviour: a rejected item-level request fails the whole call with <code class="inline">TransactionCanceledException</code>, and <em>&ldquo;if that request fails, AWS SDKs do not retry the request.&rdquo;</em> Contention against a hot item is therefore paid for twice over, in capacity and in a retry you have to write yourself.</p>
+    </div>
+
+    <h3>The stream is the relay, and it has its own contract</h3>
+    <p>
+      The reason this pattern fits DynamoDB so well is that the relay does not have to be built. The stream
+      is derived from the committed write, so there is no second system to keep in step, and it carries a
+      guarantee most transports do not: <em>&ldquo;Each stream record appears exactly once in the
+      stream.&rdquo;</em>
+    </p>
+    <p>
+      Read that precisely. It is a statement about the stream's contents, not about delivery to your
+      consumer &mdash; a Lambda event source mapping can still hand you the same record twice, which is why
+      the previous post exists. Ordering is similarly specific: guaranteed <em>&ldquo;at the level of an
+      individual item&hellip; not across an entire partition.&rdquo;</em> Two different orders have no
+      defined relative order. The same order's three state changes do.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>Self-contained events are what survive the boundary</h3>
+    <p>
+      Once you accept that a consumer may see the outbox record before the entity, and may see two
+      transactions interleaved, the design consequence is forced: the event has to carry what the consumer
+      needs rather than a pointer to fetch it.
+    </p>
+    <p>
+      An event that says <em>&ldquo;order 4471 changed, go and read it&rdquo;</em> is a lookup against a
+      table that may not show the change yet. An event carrying the order's relevant state is independently
+      meaningful. This is the same reasoning that makes the <code class="inline">NEW_AND_OLD_IMAGES</code>
+      view type the useful default for an outbox: the record is complete without a round trip.
+    </p>
+
+    <div class="callout red">
+      <strong>The 24-hour floor is the whole recovery window</strong>
+      <p>Stream data has <em>&ldquo;a 24-hour lifetime&rdquo;</em>, and records older than that are <em>&ldquo;susceptible to trimming (removal) at any moment.&rdquo;</em> That is not a tuning knob &mdash; there is no setting to extend it. If a consumer is broken over a long weekend, the events it never processed are gone, and the only recovery is to re-derive state from the table itself. An outbox on DynamoDB Streams therefore needs a documented reconciliation path, not just a DLQ, because the DLQ only holds what was successfully delivered and failed &mdash; not what expired before delivery was attempted.</p>
+    </div>
+
+    <h3>Consumer parallelism is capped by the shard, not by your concurrency setting</h3>
+    <p>
+      Throughput planning here surprises people who are used to scaling consumers freely. AWS advises that
+      <em>&ldquo;no more than two processes at most should be reading from the same stream's shard at the
+      same time&rdquo;</em>, since more <em>&ldquo;can result in throttling.&rdquo;</em>
+    </p>
+    <p>
+      With Lambda the shape is cleaner but still bounded: one function instance per open shard by default,
+      raisable via <code class="inline">ParallelizationFactor</code> <em>&ldquo;up to 10&rdquo;</em> while
+      <em>&ldquo;still preserving the order of changes for each item.&rdquo;</em> That last clause is the
+      one that makes the setting safe to use &mdash; ordering is preserved per item, which is the only
+      ordering the stream promised in the first place.
+    </p>
+    <p>
+      Shard lineage is the other constraint: an application <em>&ldquo;must always process a parent shard
+      before it processes a child shard.&rdquo;</em> Lambda handles this for you. A hand-rolled consumer
+      that ignores it will process records out of order during exactly the traffic spike that caused the
+      shard to split.
+    </p>
+
+    <h3>Where the outbox is genuinely the wrong answer</h3>
+    <p>
+      AWS's own transaction guidance argues against reaching for this reflexively:
+      <em>&ldquo;Don't group operations together in a transaction if it's not necessary&hellip; Simpler
+      transactions improve throughput and are more likely to succeed.&rdquo;</em>
+    </p>
+    <p>
+      If the only consumer needs the change and nothing else, a plain write with a stream consumer is
+      already sufficient &mdash; the stream <em>is</em> the outbox, derived from the same committed write,
+      with no second record and no doubled capacity. The explicit outbox record earns its cost when the
+      event's shape must differ from the entity's: a published contract that should not change when the
+      storage model does, an event that aggregates several items, or one that must carry intent the row
+      does not record.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Dual write</td>
+        <td>Never; one transaction</td>
+        <td>No ordering of two writes to two systems is crash-safe, and retries cannot help a dead process.</td>
+      </tr>
+      <tr>
+        <td>Explicit outbox record</td>
+        <td>Only when the event shape differs</td>
+        <td>Otherwise the stream is already the outbox. AWS advises against unnecessary transactions.</td>
+      </tr>
+      <tr>
+        <td>Outbox record key</td>
+        <td>Unique per event</td>
+        <td>A write that changes nothing produces no stream record, so a reused key emits silence on retry.</td>
+      </tr>
+      <tr>
+        <td>Event payload</td>
+        <td>Self-contained, not a pointer</td>
+        <td>Consumers may see the event before the entity is readable. AWS says not to assume otherwise.</td>
+      </tr>
+      <tr>
+        <td>Stream view type</td>
+        <td><code class="inline">NEW_AND_OLD_IMAGES</code></td>
+        <td>Makes the record complete without a round trip, and cannot be changed without recreating the stream.</td>
+      </tr>
+      <tr>
+        <td>Consumer semantics</td>
+        <td>Idempotent, order-tolerant across items</td>
+        <td>Exactly-once applies to the stream's contents, not to delivery. Ordering holds per item only.</td>
+      </tr>
+      <tr>
+        <td>Recovery beyond 24 hours</td>
+        <td>Reconcile from the table</td>
+        <td>Stream retention is fixed at 24 hours with no extension. Expired records were never delivered.</td>
+      </tr>
+      <tr>
+        <td>Capacity planning</td>
+        <td>Four write units per event</td>
+        <td>Two items, and DynamoDB writes each twice &mdash; prepare and commit &mdash; including on failure.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>Two details that decide whether the retry story works</h3>
+    <p>
+      <strong>The transaction's own idempotency window is ten minutes.</strong> A client token
+      <em>&ldquo;is valid for 10 minutes after the request that uses it finishes. After 10 minutes, any
+      request that uses the same client token is treated as a new request.&rdquo;</em> Reusing it with
+      changed parameters inside the window returns
+      <code class="inline">IdempotentParameterMismatch</code>. That is a tighter bound than the hour the
+      Powertools guard defaults to and far tighter than a next-morning replay &mdash; the same
+      window-versus-incident mismatch the previous post ended on, one layer down.
+    </p>
+    <p>
+      <strong>Disabling a stream is not reversible in the way people assume.</strong> Re-enabling creates a
+      new stream with a different descriptor, the view type cannot be edited in place, and the old stream's
+      data remains readable for 24 hours and then goes. Changing what an outbox publishes is therefore a
+      migration with a cutover, not a configuration change.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The dual-write problem is usually presented as a puzzle with a clever solution, and the outbox pattern
+      is presented as that solution. On AWS the mechanics are almost disappointingly easy &mdash; a
+      transaction, a stream, a Lambda &mdash; which is exactly why the failures land somewhere else.
+    </p>
+    <p>
+      They land at the boundary where one guarantee stops and the next has not started. The transaction
+      guarantees the write. The stream guarantees its own contents, once each, ordered per item. Neither
+      guarantees that a consumer sees a coherent transaction, and AWS says so in a sentence most people
+      never read: <em>stream consumers shouldn't assume transaction atomicity or ordering guarantees.</em>
+    </p>
+    <p>
+      The pattern that survives is the one that stops asking the transport for consistency it never offered.
+      Make each event true on its own. Make the consumer idempotent, because delivery is at-least-once.
+      Assume ordering only where it was promised, which is per item. Then the atomic write is doing the one
+      job it can actually do &mdash; making sure the event exists at all &mdash; and everything after it is
+      designed for the world as the documentation describes it.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Application patterns &mdash; retries, backoff, jitter and the thundering herd: why every client retrying politely still produces a synchronised stampede, what the AWS SDKs do by default, and how a retry budget differs from a retry policy.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html" target="_blank" rel="noopener">Amazon DynamoDB Transactions: how it works &#8212; the all-or-nothing write, and where its atomicity stops</a></li>
+      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html" target="_blank" rel="noopener">Change data capture for DynamoDB Streams &#8212; exactly-once records, per-item ordering and the 24-hour limit</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/gcp-architecture-iam-roles/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">GCP Architecture Series #32 — Roles: Basic, Predefined and Custom</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-outbox-dual-write/';
+      this.page.identifier = 'aws-architecture-outbox-dual-write';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  <<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>();
+</script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=80b4bf80"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
