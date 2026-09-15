@@ -64,6 +64,22 @@ NAVIGATE_BLOCK = re.compile(
     r"if\s*\(\s*request\.mode\s*===\s*['\"]navigate['\"]\s*\)\s*\{([\s\S]*?)\n\s{2}\}",
     re.M)
 
+# Inside that block, the condition that decides network-first from cached.
+NAV_CONDITION = re.compile(r"if\s*\(([\s\S]*?)\)\s*\{\s*\n\s*event\.respondWith")
+
+# Does that condition reach a blog post? Either a /blog/ prefix in the exempt
+# list, or a pattern tested against the path that a post URL matches.
+#
+# The first cut of this file asked a cruder question -- "does
+# staleWhileRevalidate appear in the navigate block" -- and that is wrong in
+# the one direction that matters. After the fix the block still contains it,
+# correctly, because the blog INDEX is still served from cache. So the check
+# fired on the fixed template exactly as loudly as on the broken one, which is
+# a checker that cannot pass. Caught by running it against the fix rather than
+# by reading it.
+POST_REACHED = re.compile(
+    r"POST_PAGE|/blog/\[\^/\]|\\?/blog\\?/\[\^", re.I)
+
 
 def read(path):
     return io.open(path, encoding="utf-8").read()
@@ -93,24 +109,31 @@ def main():
 
     if block:
         swr = "staleWhileRevalidate" in block
-        netfirst = "networkFirst" in block
-        if swr and rule_held:
+        cond = NAV_CONDITION.search(block)
+        condition = cond.group(1) if cond else ""
+        exempt = re.search(r"const LIVE_DATA\s*=\s*\[([^\]]*)\]", template)
+        listed = exempt.group(1).strip() if exempt else ""
+
+        # The question is not whether anything is cached -- the blog index
+        # should be. It is whether a POST page reaches the network.
+        post_is_fresh = bool(POST_REACHED.search(condition)
+                             or POST_REACHED.search(template)
+                             or "/blog/" in listed)
+
+        if swr and rule_held and not post_is_fresh:
             problems.append(
-                "navigations are served stale-while-revalidate, but CLAUDE.md "
-                "says \"Navigations are network-first so a live fix to a post "
-                "page takes effect on the next load\". A published post shows "
-                "the reader their previous copy, and a reload returns the same "
+                "a blog post page is served from cache. CLAUDE.md says "
+                "\"Navigations are network-first so a live fix to a post page "
+                "takes effect on the next load\". A published post shows the "
+                "reader their previous copy, and a reload returns the same "
                 "one -- which reads as a fix that did not work.")
-            if netfirst:
-                exempt = re.search(r"const LIVE_DATA\s*=\s*\[([^\]]*)\]", template)
-                listed = exempt.group(1).strip() if exempt else "(none)"
-                notes.append(
-                    "Some paths are exempted and do get network-first: %s. "
-                    "That list concedes the principle -- those pages are "
-                    "exempt because yesterday's copy would make them wrong. A "
-                    "blog post has the same property on the day it publishes, "
-                    "so adding the post paths there is the smallest fix."
-                    % listed)
+            notes.append(
+                "Exempted today: %s. That list concedes the principle -- those "
+                "pages wait for the network because yesterday's copy would "
+                "make them wrong. A post has the same property on the day it "
+                "publishes. Smallest fix: route /blog/<slug>/ to networkFirst "
+                "and leave the index cached, which is the page the cache-first "
+                "strategy was introduced for." % (listed or "(none)"))
         elif swr and not rule_held:
             notes.append(
                 "navigations are stale-while-revalidate and CLAUDE.md no "
