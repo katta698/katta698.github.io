@@ -265,7 +265,14 @@ document.documentElement.setAttribute('data-palette',p);})();
   a{color:inherit}
   nav{display:flex;align-items:center;justify-content:space-between;padding:0 3rem;height:64px;box-sizing:border-box;
       position:sticky;top:0;z-index:100;background:var(--ink);color:#EDEBE6}
-  .nav-logo{display:flex;align-items:center;gap:.6rem;text-decoration:none;color:#EDEBE6}
+  /* .65rem, matching blog.css and index.html. The bar carried two
+   different values -- .65rem on the portfolio and the blog, .6rem on the
+   three Intelligence pages -- so the wordmark sat 0.8px further from the
+   mark on two tabs than on the other three. Reported as the mark and name
+   'shrinking a little' on one tab and 'changing' on another. Everything
+   else about them was already identical: same file, same 96x96 source at
+   30x30, same radius, same Playfair face at 96.6px wide, no font swap. */
+.nav-logo{display:flex;align-items:center;gap:.65rem;text-decoration:none;color:#EDEBE6}
   .brand-name{font-family:var(--serif);font-weight:600;font-size:1rem}
   .nav-links{display:flex;gap:1.5rem;list-style:none;align-items:center;margin:0;padding:0}
   .nav-links a{font-size:14px;font-weight:500;color:rgba(237,235,230,.72);text-decoration:none;transition:color .2s}
