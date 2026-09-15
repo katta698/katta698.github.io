@@ -57,6 +57,7 @@ BROWSER = {
     "check_brand", "check_shell_consistency", "check_page_settle",
     "check_sticky_clear", "check_occasion_banner", "check_status_cards",
     "check_music", "check_post_controls", "check_nav", "check_contrast",
+    "check_bar_settle",
     "check_blog_filters", "check_dark_theme", "check_footer_clear",
     "check_map_devices", "check_map_alignment", "check_map_search",
     "check_news_reserve", "check_feedback", "check_region_suggest",
@@ -105,6 +106,9 @@ ADVISORY = {"validate_arch_post", "check_news_reserve", "check_contrast"}
 HOOK_BROWSER = {
     "check_shell_consistency",   # the five bars agreeing
     "check_shift",               # nothing moving sideways after paint
+    "check_bar_settle",          # ...at a phone width too, which check_shift
+                                 # never looked at, and without a list of
+                                 # element names a real shift can fall out of
     "check_brand",               # mark and wordmark identical
     "check_nav",                 # every page reachable, the bar fits
     "check_music",               # the button actually plays
