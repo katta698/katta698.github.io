@@ -286,7 +286,7 @@ XSL = """<?xml version="1.0" encoding="utf-8"?>
     a{color:var(--acc)}
   </style>
 </head>
-<body><div class="wrap">
+<body><script>/*<![CDATA[*/(function(){try{if(localStorage.getItem('theme')==='light'){document.body.className='light';}}catch(e){}})();/*]]>*/</script><div class="wrap">
   <h1><xsl:value-of select="atom:feed/atom:title"/></h1>
   <p class="sub"><xsl:value-of select="atom:feed/atom:subtitle"/></p>
   <div class="note">

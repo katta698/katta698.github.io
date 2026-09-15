@@ -4053,11 +4053,20 @@ def build_rss_feed(posts, max_items=None):
     # both. Without it, following the footer's "blog" link landed on "This XML
     # file does not appear to have any style information associated with it"
     # and a wall of tags -- which reads as a broken page, not as a feed.
-    # The day's palette travels in the file, because a stylesheet applied by
-    # XSLT cannot read localStorage or run a script -- scripts in XSLT output
-    # do not execute in any browser. rss.xsl puts it on <html> so the site's
-    # own CSS gives this page the same ground colour as the page it was linked
-    # from.
+    # The day's palette travels in the file. rss.xsl puts it on <html> so the
+    # site's own CSS gives this page the same ground colour as the page it was
+    # linked from.
+    #
+    # This used to say scripts in XSLT output "do not execute in any browser",
+    # and that sentence is why the feeds opened dark for a reader in light
+    # mode for as long as they did: it was written as fact, never measured,
+    # and it closed off the fix. They do execute -- verified in Chromium and
+    # WebKit -- and the feed is same-origin, so it can read the same 'theme'
+    # key the rest of the site writes. rss.xsl does exactly that now.
+    #
+    # The palette attribute stays: it is the DAY's colour, which is in the
+    # file rather than in the reader's browser, and the script only decides
+    # light or dark.
     _pal = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][
         int(datetime.utcnow().strftime("%w"))]
     return f"""<?xml version="1.0" encoding="UTF-8"?>
