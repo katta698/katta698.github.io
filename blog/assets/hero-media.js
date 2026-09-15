@@ -186,11 +186,43 @@
                         .replace('.mp4', '.webp');
     v.src = vs.themed;
 
-    var _tryPlay = function () { if (v.paused) v.play().catch(function () {}); };
+    // Coming back to the tab must not need a refresh.
+    //
+    // Reported: "in my iPhone when I switch to a different browser or a
+    // different app and come back, the video is stuck unless I refresh".
+    //
+    // This used to be play() and nothing else, on the assumption that a
+    // paused video only needs playing. iOS does more than pause: it frees the
+    // decoded data of a backgrounded video to reclaim memory, and the element
+    // comes back with readyState 0 -- HAVE_NOTHING. play() on an element with
+    // no data does not refetch it, so it stays on the last painted frame and
+    // looks frozen. load() is what puts the data back, and only a reload of
+    // the page was doing that.
+    //
+    // Three events rather than one, because a return from another app is not
+    // the same thing in every browser: visibilitychange fires on a tab
+    // switch, pageshow on a back-forward restore, and focus on a return from
+    // another application. They overlap, and overlapping is the point --
+    // _tryPlay is a no-op when the video is already running.
+    var _tryPlay = function () {
+      if (!v.paused) return;
+      if (v.readyState === 0) { try { v.load(); } catch (e) {} }
+      var p = v.play();
+      if (p && p.catch) p.catch(function () {});
+    };
+    // And a beat afterwards: iOS is not always ready the instant it says it
+    // is visible, and a single attempt at that moment is quietly dropped.
+    var _resume = function () {
+      if (document.hidden) return;
+      _tryPlay();
+      setTimeout(_tryPlay, 250);
+      setTimeout(_tryPlay, 1200);
+    };
     v.addEventListener('loadeddata', _tryPlay, { once: true });
     v.addEventListener('canplay', _tryPlay, { once: true });
-    document.addEventListener('visibilitychange', function () { if (!document.hidden) _tryPlay(); });
-    window.addEventListener('pageshow', _tryPlay);
+    document.addEventListener('visibilitychange', _resume);
+    window.addEventListener('pageshow', _resume);
+    window.addEventListener('focus', _resume);
     document.addEventListener('touchstart', _tryPlay, { once: true });
     var _n = 0, _iv = setInterval(function () { _tryPlay(); if (++_n >= 4 || !v.paused) clearInterval(_iv); }, 2000);
   }
