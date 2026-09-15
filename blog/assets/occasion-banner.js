@@ -17,7 +17,19 @@
   if (document.getElementById('occasion-banner')) return;
   var el = document.createElement('div');
   el.id = 'occasion-banner';
-  el.setAttribute('style', 'display:none; position:fixed; top:0; left:0; width:100%; z-index:1001; text-align:center; padding:0.5rem 1rem; font-size:0.8rem; font-family:\'Inter\',sans-serif; letter-spacing:0.02em;');
+  // line-height is pinned, not inherited.
+  //
+  // Reported as: the festival strip is taller on the portfolio than on every
+  // other tab, on desktop and on mobile. Measured -- portfolio 37px, the other
+  // four 33px, with identical font-size and identical padding. This element
+  // sets neither line-height nor anything to stop inheritance, so it took the
+  // portfolio's body line-height of 1.65 (21.12px, against a normal of about
+  // 17px) and grew by four pixels. Nothing was wrong with the banner; it was
+  // wearing whatever the page underneath it wore.
+  //
+  // 1.33 is what the other four already computed, so they do not move and the
+  // portfolio joins them. Unitless, so it still scales with the root size.
+  el.setAttribute('style', 'display:none; position:fixed; top:0; left:0; width:100%; z-index:1001; text-align:center; padding:0.5rem 1rem; font-size:0.8rem; font-family:\'Inter\',sans-serif; letter-spacing:0.02em; line-height:1.33;');
   // Before everything else in the body, so it reads first for a screen reader.
   (document.body || document.documentElement).insertBefore(
     el, (document.body || document.documentElement).firstChild);

@@ -63,10 +63,20 @@ WIDTHS = [390, 1024, 1440]
 # the signal to look rather than to raise it.
 BUDGET = 80
 
-INIT = """window.__settle=[];
+# Pin the element ONCE and then follow that same element.
+#
+# The first version called querySelector on every tick. The selector is a
+# group, so as the page built itself it could resolve to <main> early and a
+# .post-card later -- two elements at different heights -- and report the
+# distance between them as movement. It read 545px on a live page that a
+# direct measurement of one fixed element showed moving 3px, and 3px on the
+# same page a moment earlier. A check that reports a number that large at
+# random is worse than no check: the one time it is right, nobody believes it.
+INIT = """window.__settle=[];window.__el=null;
 (function s(){
-  var f=document.querySelector('.post-card,article,.post,main');
-  window.__settle.push(f?Math.round(f.getBoundingClientRect().top+window.scrollY):null);
+  if(!window.__el) window.__el=document.querySelector('.post-card,article,.post,main');
+  var f=window.__el;
+  window.__settle.push(f&&f.isConnected?Math.round(f.getBoundingClientRect().top+window.scrollY):null);
   if(window.__settle.length<42)setTimeout(s,80);
 })();"""
 
