@@ -46,6 +46,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGES = ["/", "/blog/", "/intelligence/", "/intelligence/whats-new/",
          "/intelligence/status/"]
 WIDTHS = [390, 1024, 1440]
+# Both, not just the default.
+#
+# The blog's bar was 92% opaque against solid on the other four, and its rule
+# was rgba(0,0,0,.06) against #CFCFCE -- in LIGHT MODE ONLY. This check ran in
+# the default theme and reported the shell identical the whole time.
+THEMES = ["dark", "light"]
 # Sub-pixel layout noise. The smallest fault actually reported was 0.8px, so
 # this sits just under it rather than at some round number.
 TOL = 0.6
@@ -76,7 +82,7 @@ PROBE = r"""() => {
   const ctl = (sel) => { const e = g(sel); if (!e) return null;
     const r = e.getBoundingClientRect(); const c = getComputedStyle(e);
     return {w: Math.round(r.width), h: Math.round(r.height),
-            size: c.fontSize, radius: c.borderRadius,
+            size: c.fontSize, radius: c.borderRadius, color: c.color,
             // Surface as well as size. Two icons can be 32x32 and still look
             // nothing alike if one has a filled circle behind it.
             bg: c.backgroundColor, border: c.borderWidth}; };
@@ -122,7 +128,22 @@ PROBE = r"""() => {
     // background: rgba(0,0,0,.05) on two pages, rgba(255,255,255,.08) on
     // another. The check compared the other three and passed while this
     // one wore a grey circle nobody else wore.
-    ctlSubscribe: ctl('#subnav-btn, .subnav-btn')
+    ctlSubscribe: ctl('#subnav-btn, .subnav-btn'),
+    // The bar's own ink, rule and backdrop.
+    //
+    // navBg was already compared and already agreed. These three did not,
+    // and nothing read them: four different border colours under five
+    // headers (rgba(255,255,255,.05), rgba(255,255,255,.06), #2F3131 and
+    // #2E3634), a blur(12px) on the blog and a saturate(1.8) blur(8px) on
+    // Live status where the other three had none, and #F5F5F3 against
+    // #EDEBE6 for the ink the subscribe and palette glyphs inherit.
+    //
+    // Each on its own is a difference nobody can point at. Together they
+    // are why moving between tabs does not feel like one site, which is
+    // what kept being reported while this check passed.
+    navInk: nav ? getComputedStyle(nav).color : null,
+    navRule: nav ? getComputedStyle(nav).borderBottomColor : null,
+    navBackdrop: nav ? (getComputedStyle(nav).backdropFilter || 'none') : null
   };
 }"""
 
@@ -134,7 +155,9 @@ EXACT = [("markSrc", "brand mark image"), ("markRadius", "brand mark radius"),
          ("navBg", "nav background"), ("hasHero", "hero section present"),
          ("hasVideo", "hero video present"), ("videoSrc", "hero clip"),
          ("videoPoster", "hero poster"), ("nameShown", "wordmark visible"),
-         ("bodyBg", "page background")]
+         ("bodyBg", "page background"),
+         ("navInk", "nav ink"), ("navRule", "nav rule colour"),
+         ("navBackdrop", "nav backdrop-filter")]
 FONTS = [("nameFont", "wordmark"), ("linkFont", "nav link"),
          ("bannerFont", "festival banner"), ("bodyFont", "body text")]
 CONTROLS = [("ctlAudio", "music button"), ("ctlTheme", "theme button"),
@@ -224,10 +247,15 @@ def main():
     try:
         with sync_playwright() as pw:
             b = pw.chromium.launch()
-            for w in WIDTHS:
+            for w, theme in [(w, t) for w in WIDTHS for t in THEMES]:
                 rows = {}
                 for p in PAGES:
                     ctx = b.new_context(viewport={"width": w, "height": 900})
+                    # Set before any document runs, so the page's own
+                    # pre-paint script reads it and no theme is applied late.
+                    ctx.add_init_script(
+                        "try{localStorage.setItem('theme','%s');}catch(e){}"
+                        % theme)
                     pg = ctx.new_page()
                     pg.goto(base + p, wait_until="load", timeout=60000)
                     pg.wait_for_timeout(3000)
@@ -238,9 +266,9 @@ def main():
                 before = len(problems)
                 for p in PAGES[1:]:
                     compare(w, ref_page, ref, p, rows[p], problems)
-                print("    %4dpx  nav %.0fpx, mark %.0fpx, banner %s, hero %s"
-                      "  -- %d difference(s)"
-                      % (w, ref["navH"] or 0,
+                print("    %4dpx %-5s nav %.0fpx, mark %.0fpx, banner %s, "
+                      "hero %s  -- %d difference(s)"
+                      % (w, theme, ref["navH"] or 0,
                          (ref["markBox"] or {}).get("w", 0),
                          ("%.0fpx" % ref["bannerH"]) if ref["bannerH"] else "none",
                          "video" if ref["hasVideo"]
@@ -260,8 +288,8 @@ def main():
             print("  ... and %d more" % (len(problems) - 25))
         print("\n  Moving between tabs should not change the furniture.")
         return 1
-    print("  The shell is identical on all %d pages, at %d widths."
-          % (len(PAGES), len(WIDTHS)))
+    print("  The shell is identical on all %d pages, at %d widths, in %d "
+          "themes." % (len(PAGES), len(WIDTHS), len(THEMES)))
     return 0
 
 
