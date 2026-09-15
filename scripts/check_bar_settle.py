@@ -61,7 +61,27 @@ IGNORE = ("ck-here", "ck-btn", "ck-sheet")
 WATCH = """window.__bar = [];
 (function sample() {
   var nav = document.querySelector('nav') || document.querySelector('.nav');
-  if (nav) {
+  /* Not before the shared stylesheet is in effect.
+     -----------------------------------------------------------------------
+     site-footer.css declares --nav-h on :root, so an empty value means the
+     bar is being drawn with the page's own CSS only and none of the rules
+     that place these controls have applied yet.
+
+     Sampling those frames made this check flaky: it reported the blog's
+     nav-links at 814 settling to 806 once, during a preflight run with six
+     browsers competing for the local server, and passed three times in a row
+     on its own immediately after. That is the stylesheet arriving late under
+     load, not a reservation holding the wrong space, and the two need
+     different fixes. A gate that fails once in four for a reason the change
+     did not cause is a gate that gets bypassed, which is what this one was
+     written to stop.
+
+     It narrows what is checked, deliberately and visibly: this asks whether
+     the bar is stable once its own CSS is applied. Whether that CSS arrives
+     late enough to show an unstyled frame is a real question and a different
+     one -- check_shift and the critical-CSS work cover it. */
+  if (nav && getComputedStyle(document.documentElement)
+               .getPropertyValue('--nav-h').trim()) {
     var at = {};
     [].slice.call(nav.children).forEach(function (c) {
       var r = c.getBoundingClientRect();
