@@ -226,9 +226,12 @@
     footer.innerHTML =
       '<p>&copy; <span data-current-year></span> Jayanth Katta &mdash; ' +
       '<a href="https://jayanthkatta.com/">jayanthkatta.com</a>' +
-      '<span class="foot-feeds"> &mdash; feeds: ' +
-      '<a href="/blog/rss.xml">blog</a>, ' +
-      '<a href="/intelligence/status/feed.xml">incidents</a></span></p>';
+      // The footer used to end with "-- feeds: blog, incidents". It was
+      // the only way to find them from four of the five pages, which is why
+      // it was there. Subscribing now lives in the bar, on every page, with
+      // the email list and all five feeds behind one control -- so this line
+      // is a second, quieter answer to a question already answered above.
+      '</p>';
     updateYear();
     // paintInstrument BEFORE buildNavControl. It publishes window.jkInstrument,
     // and buildNavControl paints the palette dot, which now needs to know which
@@ -1874,4 +1877,165 @@
     }
     location.replace(location.href);
   });
+})();
+
+/* Subscribe, in the bar, on every page.  [PROTOTYPE — not yet approved]
+ * ---------------------------------------------------------------------------
+ * The feeds have existed all along and were reachable from two places: a
+ * section at the foot of the blog and one line in the footer. A reader on the
+ * portfolio, Intelligence or What's New had no way to find them at all.
+ *
+ * Built here rather than in five templates for the same reason the cairn is:
+ * one definition, one appearance, and no page has to be told.
+ *
+ * Desktop gets a glyph beside the other controls. A phone gets a row inside
+ * the cairn, because the bar is already tight enough there that the controls
+ * had to be pinned to stop them moving.
+ */
+(function () {
+  var FEEDS = [
+    ['Every post', '/blog/rss.xml', 'new writing, as it goes up'],
+    ['Cloud incidents', '/intelligence/status/feed.xml', 'all three clouds'],
+    ['AWS only', '/intelligence/status/feed-aws.xml', ''],
+    ['Azure only', '/intelligence/status/feed-azure.xml', ''],
+    ['Google Cloud only', '/intelligence/status/feed-gcp.xml', '']
+  ];
+
+  function panel() {
+    var el = document.createElement('div');
+    el.className = 'sub-panel';
+    el.id = 'sub-panel';
+    el.hidden = true;
+    el.innerHTML =
+    // Email FIRST, then the feeds.
+    //
+    // The blog already had a Buttondown signup at the foot of every post, and
+    // the first version of this panel offered feeds only -- so moving
+    // subscribing into the bar and deleting that block would have quietly
+    // dropped the email list, which is the one most people actually use. The
+    // two are different things, and the panel has to carry both before the
+    // old block can go anywhere.
+    //
+    // Same action and the same field name as the form on the posts, so this
+    // is that list rather than a second one.
+      '<div class="sub-head">Subscribe</div>' +
+      '<form class="subnav-form" method="post" target="_blank" ' +
+        'action="https://buttondown.com/api/emails/embed-subscribe/katta698">' +
+        // aria-label, not a visually-hidden <label>. .sr-only is defined in
+        // the page stylesheets rather than this one, so on the pages that
+        // do not load blog.css the label simply rendered -- "Email address"
+        // sat beside the field and squeezed it to half its width.
+        '<input class="subnav-input" id="subnav-email" type="email" name="email" ' +
+          'aria-label="Email address" placeholder="you@example.com" ' +
+          'required autocomplete="email"/>' +
+        '<button class="subnav-go" type="submit">Get posts by email</button>' +
+      '</form>' +
+      '<p class="sub-lede">One email when a post goes up. Or take a feed for ' +
+      'your reader or Slack &mdash; no account, nothing to join.</p>' +
+      '<ul class="sub-list">' +
+      FEEDS.map(function (f) {
+        return '<li><a href="' + f[1] + '"><span class="sub-name">' + f[0] +
+               '</span>' + (f[2] ? '<span class="sub-note">' + f[2] + '</span>' : '') +
+               '</a><button class="sub-copy" data-url="' + f[1] +
+               '" aria-label="Copy the link to ' + f[0] + '">copy</button></li>';
+      }).join('') + '</ul>';
+    return el;
+  }
+
+  function wire(root) {
+    root.addEventListener('click', function (ev) {
+      var b = ev.target.closest && ev.target.closest('.sub-copy');
+      if (!b) return;
+      ev.preventDefault();
+      var url = location.origin + b.getAttribute('data-url');
+      var done = function () { b.textContent = 'copied';
+        setTimeout(function () { b.textContent = 'copy'; }, 1400); };
+      if (navigator.clipboard) navigator.clipboard.writeText(url).then(done, done);
+      else done();
+    });
+  }
+
+  function start() {
+    var nav = document.querySelector('nav');
+    if (!nav || nav.querySelector('.subnav-btn')) return;
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'subnav-btn';
+    btn.id = 'subnav-btn';
+    btn.setAttribute('aria-label', 'Subscribe');
+    btn.setAttribute('title', 'Subscribe');
+    btn.setAttribute('aria-expanded', 'false');
+    // The standard feed mark: a dot and two arcs. Drawn rather than an image
+    // so it takes the bar's colour like every other control.
+    btn.innerHTML =
+      '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">' +
+      '<circle cx="3.5" cy="12.5" r="1.8" fill="currentColor"/>' +
+      '<path d="M2 7.5a6.5 6.5 0 0 1 6.5 6.5" fill="none" stroke="currentColor" stroke-width="2"/>' +
+      '<path d="M2 3a11 11 0 0 1 11 11" fill="none" stroke="currentColor" stroke-width="2"/>' +
+      '</svg>';
+
+    // Anchored on the AUDIO control, not the theme one.
+    //
+    // Anchoring on theme put this before audio on the portfolio and the blog,
+    // where the controls are siblings, but AFTER it on the Intelligence pages,
+    // where each one is wrapped in its own <li class="nav-ctl"> -- 1213 on two
+    // pages and 1301 on three. The audio toggle is the first of the run on
+    // every page, so going in front of it lands in the same place everywhere
+    // whatever the wrapper is.
+    var anchor = nav.querySelector('#audio-toggle, .audio-toggle') ||
+                 nav.querySelector('.theme-toggle, #nav-theme-btn');
+    if (anchor && anchor.parentElement) {
+      var host = anchor.parentElement.classList.contains('nav-ctl')
+                 ? anchor.parentElement : anchor;
+      var carrier = btn;
+      if (host !== anchor) {
+        carrier = document.createElement('li');
+        carrier.className = 'nav-ctl';
+        carrier.appendChild(btn);
+      }
+      host.parentElement.insertBefore(carrier, host);
+    } else {
+      nav.appendChild(btn);
+    }
+
+    var p = panel();
+    document.body.appendChild(p);
+    wire(p);
+
+    btn.addEventListener('click', function () {
+      var open = !p.hidden;
+      p.hidden = open;
+      btn.setAttribute('aria-expanded', String(!open));
+    });
+    document.addEventListener('click', function (ev) {
+      if (p.hidden) return;
+      if (p.contains(ev.target) || btn.contains(ev.target)) return;
+      p.hidden = true; btn.setAttribute('aria-expanded', 'false');
+    });
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape' && !p.hidden) {
+        p.hidden = true; btn.setAttribute('aria-expanded', 'false');
+      }
+    });
+
+    // And a row in the cairn, for the widths where the bar has no room.
+    var sheet = document.getElementById('ck-sheet');
+    if (sheet && !sheet.querySelector('.ck-subscribe')) {
+      var wrap = document.createElement('div');
+      wrap.className = 'ck-subscribe';
+      wrap.innerHTML = '<p class="ck-sub">Subscribe</p><ul class="ck-sections">' +
+        FEEDS.slice(0, 2).map(function (f) {
+          return '<li><a href="' + f[1] + '"><span class="ck-label">' +
+                 f[0] + '</span></a></li>';
+        }).join('') + '</ul>';
+      sheet.appendChild(wrap);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () { setTimeout(start, 60); });
+  } else {
+    setTimeout(start, 60);
+  }
 })();
