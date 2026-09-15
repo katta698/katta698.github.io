@@ -1972,10 +1972,25 @@
 
   function start() {
     var nav = document.querySelector('nav');
-    if (!nav || nav.querySelector('.subnav-btn')) return;
+    // Skip only if the PANEL is already built, not if the button exists.
+    //
+    // This used to return whenever a .subnav-btn was found, which was right
+    // while the button was created here. Then the button moved into each
+    // page's markup -- to stop it arriving after first paint -- and the guard
+    // began firing on every page, so the panel was never created and no click
+    // handler was ever attached. The button was there and did nothing at all.
+    //
+    // Reported as "the subscribe button doesn't work, it still exists", which
+    // is exactly the shape of a guard that outlived its reason.
+    if (!nav || document.getElementById('sub-panel')) return;
 
-    var btn = document.createElement('button');
-    btn.type = 'button';
+    // Use the one the page shipped; build one only if a page has not got it
+    // yet, which is every post page and anything built before this.
+    var btn = nav.querySelector('#subnav-btn, .subnav-btn');
+    var existing = !!btn;
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
     btn.className = 'subnav-btn';
     btn.id = 'subnav-btn';
     btn.setAttribute('aria-label', 'Subscribe');
@@ -1990,7 +2005,9 @@
       '<path d="M2 3a11 11 0 0 1 11 11" fill="none" stroke="currentColor" stroke-width="2"/>' +
       '</svg>';
 
-    // Anchored on the AUDIO control, not the theme one.
+    }
+
+        // Anchored on the AUDIO control, not the theme one.
     //
     // Anchoring on theme put this before audio on the portfolio and the blog,
     // where the controls are siblings, but AFTER it on the Intelligence pages,
@@ -2000,7 +2017,7 @@
     // whatever the wrapper is.
     var anchor = nav.querySelector('#audio-toggle, .audio-toggle') ||
                  nav.querySelector('.theme-toggle, #nav-theme-btn');
-    if (anchor && anchor.parentElement) {
+    if (!existing && anchor && anchor.parentElement) {
       var host = anchor.parentElement.classList.contains('nav-ctl')
                  ? anchor.parentElement : anchor;
       var carrier = btn;
