@@ -37,7 +37,7 @@
     a{color:var(--acc)}
   </style>
 </head>
-<body><script>/*<![CDATA[*/(function(){try{if(localStorage.getItem('theme')==='light'){document.body.className='light';}}catch(e){}})();/*]]>*/</script><div class="wrap">
+<body><div class="wrap">
   <h1><xsl:value-of select="atom:feed/atom:title"/></h1>
   <p class="sub"><xsl:value-of select="atom:feed/atom:subtitle"/></p>
   <div class="note">
