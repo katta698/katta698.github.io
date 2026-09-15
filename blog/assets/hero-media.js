@@ -195,6 +195,25 @@
     var _n = 0, _iv = setInterval(function () { _tryPlay(); if (++_n >= 4 || !v.paused) clearInterval(_iv); }, 2000);
   }
 
+  // Wait for the element if it is not here yet.
+  //
+  // This file used to be loaded at the foot of every page, after
+  // <audio id="beach-audio">, so the element was always present. Then it was
+  // moved up beside the hero <video> on the portfolio and the blog -- the
+  // video ships with no src and this script sets it, and at the foot of the
+  // document that left the hero a flat rectangle until it got there.
+  //
+  // The audio element is still at the BOTTOM of those two pages. So this
+  // lookup returned null, the whole block below was skipped, and the music
+  // button did nothing at all: no src, readyState 0, no error, no sound.
+  // Reported as "the music icon doesn't work". Live status, which still
+  // loads this file at the foot, kept working -- which is what made it look
+  // like a per-page problem rather than an ordering one.
+  //
+  // Retrying on DOMContentLoaded makes the file safe to load from anywhere,
+  // which is the property it needed all along: nothing else here should have
+  // to know where in the document it sits.
+  function wireAudio() {
   var a = document.getElementById('beach-audio');
   if (a) {
     var as = audioSources();
@@ -213,6 +232,16 @@
       }
     });
     a.src = as.themed;
+  }
+
+  }
+
+  if (document.getElementById('beach-audio')) {
+    wireAudio();
+  } else if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wireAudio, { once: true });
+  } else {
+    wireAudio();
   }
 
   // Exposed so scripts/validate_hero_media.py and manual checks can see what
