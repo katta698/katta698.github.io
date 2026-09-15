@@ -190,6 +190,23 @@ CHECKS = [
     # three older posts are in that state already.
     ("check_sources.py",        False, False, True,  False),
     ("audit_claims.py",         False, False, False, True),
+    # Not about a post's content: about whether a published post reaches the
+    # reader at all. CLAUDE.md forbids cache-first HTML in as many words --
+    # "Navigations are network-first so a live fix to a post page takes effect
+    # on the next load" -- and sw.template.js stopped doing that on
+    # 2026-09-14. Nothing said so, so a post published with both floating
+    # controls present in its HTML appeared to lack them for four days, and
+    # again on the next publish: every reload returned the previous copy.
+    ("check_sw_strategy.py",    False, False, False, False),
+    # The other half of the same question. check_sw_strategy asks whether a
+    # published post REACHES the reader; this asks whether it looks like every
+    # other post once it does. Two faults on 2026-09-15 were the same species
+    # -- a page differing from its neighbours in the shared shell -- and both
+    # survived because nothing compared posts against each other.
+    # check_shell_consistency.py does exactly this, properly, and only across
+    # the five top-level tabs; the 248 post pages were compared to nothing.
+    # Advisory while one page is still outstanding.
+    ("check_post_shell.py",     False, False, False, False),
 ]
 
 
