@@ -1727,3 +1727,96 @@
   ob.setAttribute('data-occasion-banner', '');
   (document.body || document.documentElement).appendChild(ob);
 })();
+
+/* ?diag=1 — a meter for the reader's own device.
+ * ---------------------------------------------------------------------------
+ * Six rounds of "the blog refreshes" were spent measuring the wrong thing,
+ * because headless Chromium on a desktop kept disagreeing with a real phone:
+ * it reported the blog painting FASTER than every other page, captured 55-75
+ * screencast frames per navigation with no blank frame, and could not
+ * reproduce a single failed click. His phone said otherwise every time, and
+ * his phone was right -- the white flash was real and was found from the head
+ * markup, not from any timing I could take here.
+ *
+ * So this puts the numbers on HIS screen instead. Add ?diag=1 to any URL, take
+ * a screenshot, and the reply contains what my instrument cannot reach: how
+ * the page was entered (a pull-to-refresh is a RELOAD, which is a different
+ * code path from tapping a link), when it first painted, whether anything was
+ * painted before the stylesheets landed, how far the content moved afterwards,
+ * and the largest single jump.
+ *
+ * Deliberately plain and large: it is going to be photographed, not read in a
+ * console. Off unless asked for, so it costs nothing for everyone else.
+ */
+(function () {
+  if (!/[?&]diag=1/.test(location.search)) return;
+
+  var t0 = 0;
+  var shifts = [];
+  var anchorY = [];
+  var firstBg = null;
+
+  function sample() {
+    var b = document.body;
+    if (b && firstBg === null) {
+      firstBg = getComputedStyle(b).backgroundColor;
+    }
+    var a = document.querySelector('#posts-grid, .posts-grid, .sum, #list, .wrap');
+    if (a) anchorY.push(Math.round(a.getBoundingClientRect().top + window.scrollY));
+  }
+  var iv = setInterval(sample, 90);
+  setTimeout(function () { clearInterval(iv); render(); }, 4000);
+
+  try {
+    new PerformanceObserver(function (l) {
+      l.getEntries().forEach(function (e) {
+        if (!e.hadRecentInput && e.value > 0.002) shifts.push(e.value);
+      });
+    }).observe({ type: 'layout-shift', buffered: true });
+  } catch (e) { /* not in every browser; the rest still works */ }
+
+  function render() {
+    var nav = (performance.getEntriesByType &&
+               performance.getEntriesByType('navigation')[0]) || {};
+    var paint = {};
+    (performance.getEntriesByType ?
+      performance.getEntriesByType('paint') : []).forEach(function (e) {
+      paint[e.name] = Math.round(e.startTime);
+    });
+    var moved = anchorY.length ? (Math.max.apply(null, anchorY) -
+                                  Math.min.apply(null, anchorY)) : 0;
+    var biggest = shifts.length ? Math.max.apply(null, shifts).toFixed(3) : '0';
+    var total = shifts.reduce(function (a, b) { return a + b; }, 0).toFixed(3);
+
+    var rows = [
+      ['entered by', nav.type || '?'],
+      ['served from', nav.transferSize === 0 ? 'cache / offline copy' :
+                      ((Math.round((nav.transferSize || 0) / 1024)) + 'KB over the network')],
+      ['first paint', (paint['first-paint'] || 0) + 'ms'],
+      ['first content', (paint['first-contentful-paint'] || 0) + 'ms'],
+      ['background at first sample', firstBg || '(none yet)'],
+      ['content moved after paint', moved + 'px'],
+      ['biggest single jump', biggest],
+      ['total shift', total],
+      ['screen', window.innerWidth + ' x ' + window.innerHeight +
+                 '  dpr ' + (window.devicePixelRatio || 1)]
+    ];
+
+    var el = document.createElement('div');
+    el.setAttribute('style',
+      'position:fixed;left:8px;right:8px;top:8px;z-index:2147483647;' +
+      'background:#0F1413;color:#EDEBE6;border:2px solid #C4A484;' +
+      'border-radius:10px;padding:12px 14px;font:600 14px/1.5 ' +
+      'ui-monospace,Menlo,Consolas,monospace;box-shadow:0 10px 40px rgba(0,0,0,.6)');
+    el.innerHTML =
+      '<div style="color:#C4A484;margin-bottom:6px">DIAG &mdash; ' +
+      location.pathname + '</div>' +
+      rows.map(function (r) {
+        return '<div>' + r[0] + ': <span style="color:#9FCBA4">' +
+               String(r[1]).replace(/[<>&]/g, '') + '</span></div>';
+      }).join('') +
+      '<div style="margin-top:8px;color:#9AA09D;font-weight:400">' +
+      'screenshot this &middot; remove ?diag=1 to hide</div>';
+    document.body.appendChild(el);
+  }
+})();
