@@ -1805,7 +1805,19 @@ def html_head(title, description, canonical, extra="", og_type="website",
      JavaScript keeps the links: the cairn that replaces them is built in
      JS, and hiding them unconditionally would leave that reader with no
      navigation at all. -->
-<script>document.documentElement.className+=' ck-js';</script>
+<!-- Paint the ground before anything can block on a font.
+     Six of the seven pages load the Google Fonts stylesheet in the head,
+     and a remote stylesheet blocks first paint. Until it answered, the
+     browser had no background to draw and painted its own white -- caught
+     as a single frame at brightness 221 between two pages that are both
+     dark, on a phone, which is the flash reported when moving between
+     tabs. The blog self-hosts its fonts and is the one page that never
+     did it.
+     Reading the saved theme here rather than guessing means the first
+     frame is already the right colour instead of the wrong one; the real
+     stylesheet then refines it to the day's palette, which is a shade,
+     not a flash. -->
+<script>(function(){{var d=document.documentElement;d.className+=' ck-js';try{{d.style.backgroundColor=localStorage.getItem('theme')==='light'?'#F7F4EF':'#1F1D1B';}}catch(e){{}}}})();</script>
 <!-- A click on the audio control before its script exists must not vanish.
      The button carries onclick="toggleBlogAudio()" and that function is
      defined at the very bottom of the page, ~400ms in. Until then a click
