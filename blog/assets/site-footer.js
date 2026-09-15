@@ -2017,18 +2017,37 @@
     // whatever the wrapper is.
     var anchor = nav.querySelector('#audio-toggle, .audio-toggle') ||
                  nav.querySelector('.theme-toggle, #nav-theme-btn');
-    if (!existing && anchor && anchor.parentElement) {
-      var host = anchor.parentElement.classList.contains('nav-ctl')
-                 ? anchor.parentElement : anchor;
-      var carrier = btn;
-      if (host !== anchor) {
-        carrier = document.createElement('li');
-        carrier.className = 'nav-ctl';
-        carrier.appendChild(btn);
+    // Place it ONLY if this script made it.
+    //
+    // This read `if (!existing && anchor) { place } else { nav.appendChild }`,
+    // so the moment a page started shipping its own button the condition went
+    // false and the else moved that button to the end of <nav>. On the two
+    // pages whose controls are direct children of the bar nothing looked wrong
+    // -- CSS order put it back in front. On the three that keep their controls
+    // inside the links list it left the list entirely, so it rendered after
+    // everything in it:
+    //
+    //     blog          subscribe 1213  audio 1257  palette 1301
+    //     Live status   audio 1213  palette 1257  ...  subscribe 1345
+    //
+    // Which is the icons being in a different order on the two kinds of page
+    // -- reported as portfolio and blog being one thing and the other three
+    // being another. The fallback was for "no anchor to place it against" and
+    // quietly became "the page already did this".
+    if (!existing) {
+      if (anchor && anchor.parentElement) {
+        var host = anchor.parentElement.classList.contains('nav-ctl')
+                   ? anchor.parentElement : anchor;
+        var carrier = btn;
+        if (host !== anchor) {
+          carrier = document.createElement('li');
+          carrier.className = 'nav-ctl';
+          carrier.appendChild(btn);
+        }
+        host.parentElement.insertBefore(carrier, host);
+      } else {
+        nav.appendChild(btn);
       }
-      host.parentElement.insertBefore(carrier, host);
-    } else {
-      nav.appendChild(btn);
     }
 
     var p = panel();
