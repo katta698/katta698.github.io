@@ -2062,6 +2062,19 @@
     document.addEventListener('click', function (ev) {
       if (p.hidden) return;
       if (p.contains(ev.target) || btn.contains(ev.target)) return;
+      // A click on the bar itself does not close it.
+      //
+      // Reported: open subscribe, switch between dark and light, and the
+      // panel disappears -- so the theme has to be set first and subscribe
+      // opened again. The theme control sits inches away in the same bar, and
+      // as far as this handler was concerned pressing it was a click
+      // somewhere else on the page.
+      //
+      // Anything in the bar is part of the same piece of furniture as the
+      // panel: theme, palette, the instrument. Pressing one should not throw
+      // away what the other has open. A nav LINK closes it by navigating,
+      // which needs no help from here.
+      if (ev.target.closest && ev.target.closest('nav')) return;
       p.hidden = true; btn.setAttribute('aria-expanded', 'false');
     });
     document.addEventListener('keydown', function (ev) {
