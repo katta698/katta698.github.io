@@ -1,0 +1,318 @@
+---
+title: "GCP Architecture Series #33 — Allow Policies, Bindings, and the Union Rule"
+date: '2026-09-15T09:00:00'
+slug: gcp-architecture-allow-policies
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-09-15'
+verified_claims:
+  - claim: "The effective allow policy for a resource is the union of the allow policy set at that resource and the allow policy inherited from its parent"
+    source: https://docs.cloud.google.com/iam/docs/resource-hierarchy-access-control
+  - claim: "A specific access request to the resource is granted if any of the higher-level role bindings grant access to the request"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "the access grant scope increases"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "If a principal is bound to a role, and the role binding does not have a condition, then the principal always has that role"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "Adding the principal to a conditional role binding for the same role has no effect"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "it takes time for access changes to propagate through the system"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "If the request does not specify an allow policy version, IAM assumes that the caller wants a version 1 allow policy"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "IAM appends the string _withcond_ to the role name, followed by a hash value"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "The condition itself is not present"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "Reserved for internal use"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "If an allow policy contains an etag field, but no role bindings, then the allow policy does not grant any IAM roles"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "the value of this field changes each time an allow policy is updated"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "You should perform retries automatically"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "each appearance of a domain or Google group is counted as a single principal, regardless of the number of individual members in the domain or group"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "If you use IAM Conditions, or if you grant roles to many principals with unusually long identifiers, then IAM might allow fewer principals in the allow policy"
+    source: https://docs.cloud.google.com/iam/docs/policies
+  - claim: "If you create a new service account with the same name"
+    source: https://docs.cloud.google.com/iam/docs/policies
+problem: "An allow policy can only add access. There is no subtraction inside one, at any level of the hierarchy, which means two of the most natural ways to tighten a grant — adding a condition to it, or deleting the binding you can see — routinely change nothing at all."
+builds: "The anatomy of a binding, the union rule and what it does to inherited access, why a conditional binding cannot narrow an unconditional one, and the read path that silently discards the conditions you did write."
+catch: "Read a policy without asking for version 3 and IAM hands back version 1: conditional bindings arrive with _withcond_ and a hash appended to the role name, and the condition itself is not present. Write that back through the read-modify-write pattern and the conditions are gone."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #033 &middot; IAM</div>
+  <h1 class="post-title">Allow Policies, Bindings, and the Union Rule</h1>
+  <p class="post-subtitle">Access is additive at every level of the hierarchy. Adding a condition does not narrow a grant, and deleting the binding in front of you often changes nothing.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Google Cloud &middot; IAM &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #31 covered principals and #32 covered roles. This post is the object that joins them, and it has exactly one arithmetic operation: addition.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"We removed the role, so the access is gone"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Only if that binding was the only source. The effective allow policy for a resource is the union of the allow policy set at that resource and the allow policy inherited from its parent &mdash; so a binding at the folder or organization still grants what you just deleted at the project.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat a revocation as unproven until you have checked every level above the resource. Removing a binding removes one term from a union, not the union.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"We narrowed it by adding a condition"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          This is the one that catches careful people. If a principal is bound to a role, and the role binding does not have a condition, then the principal always has that role. Adding the principal to a conditional role binding for the same role has no effect.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          A condition constrains the binding it sits on, nothing else. To time-box or scope an existing grant you must <em>replace</em> the unconditional binding, not supplement it.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"Our automation manages the policy safely"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Check which version it asks for. If the request does not specify an allow policy version, IAM assumes that the caller wants a version 1 allow policy &mdash; and version 1 cannot express conditions, so it returns the binding with <code>_withcond_</code> and a hash appended to the role name, and the condition itself is not present.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Request version 3 explicitly on every read that might be written back. The console and the gcloud CLI set the version for you; libraries and raw REST calls do not.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"The revocation took effect when the API returned"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          The write committed; the access did not necessarily stop. Changes to access are eventually consistent &mdash; it takes time for access changes to propagate through the system.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          For incident response, treat an IAM change as the start of revocation rather than the end of it, and prefer mechanisms that cut sessions directly when you need immediacy.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      An allow policy is a list of bindings plus some metadata. The bindings are where access lives; the metadata is where the traps are.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-033-allow-policies.svg" alt="Diagram: the anatomy of a Google Cloud IAM allow policy binding, the union rule across the resource hierarchy, why a conditional role binding cannot narrow an unconditional one, and how reading a policy as version 1 discards conditions during read-modify-write" />
+      <figcaption>One operation: addition. Every level contributes, nothing subtracts, and the read path can quietly drop what you did write.</figcaption>
+    </figure>
+
+    <h3>What a binding contains</h3>
+    <p>
+      Each role binding has <strong>principals</strong> (the subject of #31), a single <strong>role</strong> (the subject of #32), and optionally a <strong>condition</strong> &mdash; a logic expression constraining that binding on request attributes. A binding carrying one is a conditional role binding. Not every service accepts them, which is worth checking before designing around one.
+    </p>
+    <p>
+      Around the bindings sit two metadata fields that do real work:
+    </p>
+    <ul>
+      <li><strong><code>etag</code></strong> &mdash; concurrency control. The value changes each time an allow policy is updated. A neat corollary: if an allow policy contains an etag field but no role bindings, then the allow policy does not grant any IAM roles. An empty policy is still a policy.</li>
+      <li><strong><code>version</code></strong> &mdash; the syntax schema. Version 1 has no conditions; version 3 introduces them. Version 2 is <em>reserved for internal use</em>, which is why the numbering appears to skip.</li>
+    </ul>
+
+    <h3>The union rule</h3>
+    <p>
+      Inheritance runs downward and access accumulates. The effective policy is the union of the policy set on the resource and the policies set at every ancestor level. Google states the evaluation consequence directly: a specific access request to the resource is granted if any of the higher-level role bindings grant access to the request. Each inherited binding is evaluated independently, and introducing a binding at any level means <strong>the access grant scope increases</strong>.
+    </p>
+    <p>
+      There is no operator in an allow policy that takes access away. That is the whole reason deny policies exist as a separate mechanism with its own evaluation order, which is #36.
+    </p>
+
+    <div class="callout amber">
+      <strong>Why adding a condition does not narrow anything</strong>
+      <p>Because evaluation is a union, a conditional binding is another term added to it &mdash; it cannot subtract from the unconditional binding already there. Google's worked example uses a service account in two bindings for the same role, one unconditional and one expiring: effectively, the policy always grants the role. The rule in one line: if the role binding does not have a condition, then the principal always has that role, and adding that principal to a conditional binding for the same role has no effect. A group present <em>only</em> in the conditional binding does get the time-boxed behaviour, which is what makes the failure so easy to miss &mdash; the same policy produces both outcomes depending on who else is listed where.</p>
+    </div>
+
+    <h3>The counting rules, restated precisely</h3>
+    <p>
+      #31 covered the two limits. The policy documentation adds two refinements worth having:
+    </p>
+    <ul>
+      <li><strong>A group counts once, not per member.</strong> Each appearance of a domain or Google group is counted as a single principal, regardless of the number of individual members in the domain or group. This is the mechanical basis for the #31 argument &mdash; four bindings for four groups is sixteen principals whatever those groups contain.</li>
+      <li><strong>Conditions consume the budget.</strong> If you use IAM Conditions, or if you grant roles to many principals with unusually long identifiers, then IAM might allow fewer principals in the allow policy. The 1,500 is a ceiling, not an allowance.</li>
+    </ul>
+
+    <h3>Deleted principals do not hand their access on</h3>
+    <p>
+      When a principal is deleted, its identifier in the binding gains a <code>deleted:</code> prefix and a <code>uid</code>. If you create a new service account with the same name, the old bindings do not apply to it. The name is not the identity &mdash; the underlying unique ID is &mdash; which is the same lesson as #31's identifier formats, arriving from the other direction.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>The Read-Modify-Write Trap</h2>
+
+    <p>
+      Allow policies are updated by reading the whole policy, changing it, and writing the whole thing back. Two independent hazards live in that sentence, and they compound.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Hazard</th><th>What happens</th><th>What protects you</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Concurrent writers</td>
+            <td>Two systems read, both write, one set of changes is lost.</td>
+            <td>The <code>etag</code>. Send it back; a stale one fails with <code>409 Conflict</code> and <code>ABORTED</code>.</td>
+          </tr>
+          <tr>
+            <td>Wrong version requested</td>
+            <td>Conditions are absent from what you read, so writing it back deletes them.</td>
+            <td>Nothing. There is no error &mdash; the read simply succeeds without them.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      The first hazard is well-engineered. Google's recommended response to a conflict is to retry the entire series of operations, and to do it properly: you should perform retries automatically, with exponential backoff, in any tools that you use to manage allow policies. The error message says as much in words.
+    </p>
+    <p>
+      The second has no safety net. Ask for a version the policy cannot be expressed in and IAM downgrades the answer rather than refusing it. The conditional binding still appears &mdash; IAM appends the string <code>_withcond_</code> to the role name, followed by a hash value &mdash; so a policy that <em>looks</em> intact comes back with a role name no role registry contains and no condition attached. Write it back and you have removed every condition on the resource while believing you edited one binding.
+    </p>
+
+    <div class="callout">
+      <strong>Why this is a tooling problem, not a reading problem</strong>
+      <p>The console and the gcloud CLI specify the version automatically, so nobody discovers this interactively. It surfaces only in the path that manages policies programmatically &mdash; which is the path that runs unattended, at scale, across many resources. The #28 pattern again: the interface is doing work for you that your automation has to do for itself, and the failure is silent on exactly the side with the least supervision.</p>
+    </div>
+
+    <h3>What to do with this</h3>
+    <ol>
+      <li><strong>Request <code>requestedPolicyVersion: 3</code></strong> on every programmatic read that may be written back. Treat an unversioned <code>getIamPolicy</code> in your codebase as a defect.</li>
+      <li><strong>Grep your policy tooling for <code>_withcond_</code>.</strong> If that string has ever appeared in a stored policy or a diff, a condition was dropped.</li>
+      <li><strong>Send the etag and retry with backoff.</strong> Not optional at any scale where two systems touch the same policy.</li>
+      <li><strong>Verify revocations against the whole ancestry</strong>, not the resource you edited. #34 does exactly this tracing, and #38 covers the tools that answer it directly.</li>
+      <li><strong>Replace bindings to narrow them.</strong> Adding a conditional binding beside an unconditional one changes nothing.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Reading a policy programmatically</td>
+          <td>Always specify version 3</td>
+          <td>Without a version, IAM assumes the caller wants a version 1 allow policy.</td>
+        </tr>
+        <tr>
+          <td>Narrowing an existing grant</td>
+          <td>Replace the binding</td>
+          <td>Adding the principal to a conditional role binding for the same role has no effect.</td>
+        </tr>
+        <tr>
+          <td>Confirming a revocation</td>
+          <td>Check every ancestor level</td>
+          <td>The effective policy is the union of the resource and its inherited policies.</td>
+        </tr>
+        <tr>
+          <td>Writing a policy</td>
+          <td>Include the etag, retry with backoff</td>
+          <td>Its value changes on every update; you should perform retries automatically.</td>
+        </tr>
+        <tr>
+          <td>Treating an IAM write as complete</td>
+          <td>No</td>
+          <td>It takes time for access changes to propagate through the system.</td>
+        </tr>
+        <tr>
+          <td>Budgeting principals</td>
+          <td>Leave headroom below 1,500</td>
+          <td>With IAM Conditions or long identifiers, IAM might allow fewer principals.</td>
+        </tr>
+        <tr>
+          <td>Counting a group against the limit</td>
+          <td>Once per appearance</td>
+          <td>A group counts as a single principal regardless of its membership.</td>
+        </tr>
+        <tr>
+          <td>Recreating a deleted service account</td>
+          <td>Expect no inherited access</td>
+          <td>Old bindings do not apply to a new account with the same name.</td>
+        </tr>
+        <tr>
+          <td>Subtracting access</td>
+          <td>Deny policies (#36)</td>
+          <td>An allow policy has no operator that takes access away.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The union rule is usually taught as a fact about inheritance, and it is really a fact about arithmetic. An allow policy adds. Every level of the hierarchy adds. Two bindings for the same role add. A condition on one of them does not subtract from the other. Once you hold that, the confusing behaviours stop being surprising and start being predictable: the revocation that changed nothing, the condition that never applied, the expiry that never expired.
+    </p>
+    <p>
+      What is less defensible is the read path. A system that knows the caller asked for a schema which cannot represent the data could refuse, or warn, or return an error code. Instead it returns the data with the unrepresentable part removed and a hash appended to a role name as the only clue. Everything else in IAM is built to prevent a policy from being clobbered accidentally &mdash; the etag exists for exactly that reason &mdash; and then the default read quietly discards the field it cannot express. Specify the version. It is one line, and it is the difference between editing a policy and rewriting it.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#34 makes the union rule practical: tracing why an account has access &mdash; working up a hierarchy from a resource to find which binding at which level is actually granting it, and why the answer is rarely where you looked first.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/iam/docs/policies" target="_blank" rel="noopener">Understanding allow policies</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/resource-hierarchy-access-control" target="_blank" rel="noopener">Allow policy inheritance and the resource hierarchy</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/conditions-overview" target="_blank" rel="noopener">Overview of IAM Conditions</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/access-change-propagation" target="_blank" rel="noopener">Access change propagation</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/principal-identifiers" target="_blank" rel="noopener">Principal identifiers</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/granting-changing-revoking-access" target="_blank" rel="noopener">Manage access to projects, folders, and organizations</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
