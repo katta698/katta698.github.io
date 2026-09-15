@@ -1820,3 +1820,58 @@
     document.body.appendChild(el);
   }
 })();
+
+/* The page you were served was out of date. Replace it, once, if it is safe.
+ * ---------------------------------------------------------------------------
+ * The service worker serves the copy it already has and fetches the current
+ * one for next time. That is what makes moving between pages instant, and it
+ * is also why a fix could be deployed, verified live from another machine, and
+ * still be absent on the reader's phone -- they were looking at the page from
+ * before it, with no way to know.
+ *
+ * It cost an evening on the music button alone: broken on two pages, fixed,
+ * deployed, confirmed playing on all five from here, and still silent on the
+ * phone because the phone was running the previous page.
+ *
+ * sw.js now compares the fetched HTML with what it served and posts a message
+ * when they differ. This acts on it, under conditions that make replacing the
+ * page unsurprising:
+ *
+ *   only for THIS page, not another tab's
+ *   only in the first 10 seconds, while it is still arriving rather than
+ *     being read
+ *   only if the reader has not scrolled, typed, or opened anything
+ *   only once per page view, guarded in sessionStorage so a reload cannot
+ *     trigger another reload
+ *
+ * Fail any of those and it does nothing at all. A page that reloads under
+ * someone mid-sentence is worse than a stale one, and the next visit will be
+ * current anyway -- this only shortens the window, it does not have to close
+ * every instance of it.
+ */
+(function () {
+  if (!('serviceWorker' in navigator)) return;
+
+  var touched = false;
+  var mark = function () { touched = true; };
+  window.addEventListener('scroll', mark, { passive: true, once: true });
+  window.addEventListener('keydown', mark, { once: true });
+  window.addEventListener('pointerdown', mark, { once: true });
+
+  navigator.serviceWorker.addEventListener('message', function (ev) {
+    var d = ev.data || {};
+    if (d.type !== 'page-updated') return;
+    if (d.url && d.url.split('#')[0] !== location.href.split('#')[0]) return;
+    if (touched) return;
+    if (performance.now() > 10000) return;
+
+    var key = 'jk-refreshed-' + location.pathname;
+    try {
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, '1');
+    } catch (e) {
+      return;            // no sessionStorage means no guard, so do nothing
+    }
+    location.replace(location.href);
+  });
+})();
