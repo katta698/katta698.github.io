@@ -83,6 +83,7 @@ PROBE = r"""() => {
     const r = e.getBoundingClientRect(); const c = getComputedStyle(e);
     return {w: Math.round(r.width), h: Math.round(r.height),
             size: c.fontSize, radius: c.borderRadius, color: c.color,
+            opacity: c.opacity,
             // Surface as well as size. Two icons can be 32x32 and still look
             // nothing alike if one has a filled circle behind it.
             bg: c.backgroundColor, border: c.borderWidth}; };
@@ -224,7 +225,15 @@ def compare(w, ref_page, ref, page, cur, problems):
             continue
         if not a:
             continue
-        for f in ("w", "h", "size", "radius", "bg", "border"):
+        # colour and opacity included.
+        #
+        # The probe already returned colour and this loop did not read it, so
+        # a control could be a different ink on every page and the check would
+        # still say the shell was identical. Opacity was not probed at all --
+        # and that is where the music glyph turned out to be 1 on three pages
+        # and .85 on two, which is visible.
+        for f in ("w", "h", "size", "radius", "bg", "border",
+                  "color", "opacity"):
             if a.get(f) != b.get(f):
                 note("%s %s" % (label, f), repr(a.get(f)), repr(b.get(f)))
 
