@@ -1857,6 +1857,15 @@ def nav_html(show_search=True, show_audio=False):
     # show_search is kept so callers do not all need editing; it now does
     # nothing.
     search_btn = ""
+    # The subscribe glyph is markup, not something a script builds.
+    #
+    # site-footer.js used to create it on every load, so it arrived after
+    # the bar had painted -- which is what "the icons blink when I shift
+    # between pages" is -- and it landed 10px further left on the three
+    # pages that wrap each control in an <li> than on the two that do not.
+    # In the markup it is in the same place on every page from the first
+    # frame. site-footer.js looks for it and skips when it is there.
+    subscribe_btn = ('  <button class="subnav-btn" id="subnav-btn" type="button" aria-label="Subscribe" title="Subscribe" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="12.5" r="1.8" fill="currentColor"/><path d="M2 7.5a6.5 6.5 0 0 1 6.5 6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M2 3a11 11 0 0 1 11 11" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>')
     audio_btn = """  <button class="audio-toggle" id="audio-toggle" onclick="toggleBlogAudio()" title="Toggle beach sounds">🎻</button>""" if show_audio else ""
     return f"""<nav class="nav">
   <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
@@ -1874,6 +1883,7 @@ def nav_html(show_search=True, show_audio=False):
     <li><a href="/intelligence/status/">Live status</a></li>
   </ul>
 {search_btn}
+{subscribe_btn}
 {audio_btn}
   <!-- The palette control, present rather than injected -- see the note in
        index.html. Injecting it three seconds in made the bar jump twice on

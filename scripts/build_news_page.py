@@ -800,6 +800,13 @@ a:active,button:active{opacity:.72}
     <li><a href="/intelligence/">Intelligence</a></li>
     <li><a href="/intelligence/whats-new/" class="active" aria-current="page">What&rsquo;s new</a></li>
     <li><a href="/intelligence/status/">Live status</a></li>
+    <!-- In the markup, not built by script.
+         It was created by site-footer.js on every load, so it appeared after
+         the bar had painted -- which reads as the icons blinking on every
+         navigation -- and it landed 10px further left on the three pages that
+         wrap each control in an <li>. Here it is in the same place on every
+         page from the first frame. site-footer.js finds it and skips. -->
+    <li class="nav-ctl"><button class="subnav-btn" id="subnav-btn" type="button" aria-label="Subscribe" title="Subscribe" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="12.5" r="1.8" fill="currentColor"/><path d="M2 7.5a6.5 6.5 0 0 1 6.5 6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M2 3a11 11 0 0 1 11 11" fill="none" stroke="currentColor" stroke-width="2"/></svg></button></li>
     <li class="nav-ctl"><button class="audio-toggle" id="audio-toggle" type="button"
         title="Toggle beach sounds" aria-label="Toggle beach sounds">&#127907;</button></li>
     <!-- The palette control, in the markup rather than injected.

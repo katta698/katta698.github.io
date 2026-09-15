@@ -28,7 +28,7 @@
  */
 
 const VERSION = '3e198737';
-const JS_VERSION = 'ceec469e';
+const JS_VERSION = '53f83088';
 const CACHE = 'jk-site-' + VERSION;
 const OFFLINE_URL = '/offline.html';
 
@@ -90,6 +90,27 @@ function isAsset(pathname) {
 
 // Pages that must never be served stale: their content IS the data.
 const LIVE_DATA = ['/intelligence/status/', '/intelligence/whats-new/'];
+
+// A post page: /blog/<slug>/ and nothing deeper or shallower. NOT /blog/
+// itself and NOT /blog/page/2/ -- those are the index, the 610KB page this
+// cache-first strategy was introduced to make fast, and an index that is one
+// visit behind is not wrong, only late.
+//
+// A post is different on exactly one day: the day it publishes, or the day it
+// is corrected. On that day the cached copy is wrong in the same way a stale
+// Live status page is wrong, which is why those two are already exempt. The
+// cost of getting this wrong was measured rather than imagined: a post
+// published on 10 September appeared to lack both floating controls for four
+// days, and again on the next publish. The controls were in the deployed HTML
+// the entire time. Every reload returned the copy from before they landed, and
+// a reload that returns the previous page is indistinguishable from a fix that
+// did not work.
+//
+// site-footer.js does auto-reload on the worker's page-updated message, and
+// deliberately does nothing if the reader has scrolled, typed or clicked, or
+// after ten seconds. That is right for a reader and wrong for an author
+// opening their own post to check it, who scrolls immediately.
+const POST_PAGE = /^\/blog\/[^/]+\/$/;
 
 function isImage(pathname) {
   return /\.(png|jpe?g|svg|webp|gif|ico|mp3|mp4|webm|woff2?)$/.test(pathname);
@@ -225,7 +246,8 @@ self.addEventListener('fetch', function (event) {
      * yesterday's cache would make the site quietly wrong in exactly the way
      * the rest of it argues against. Those two keep waiting for the network.
      */
-    if (LIVE_DATA.some(function (p) { return url.pathname.indexOf(p) === 0; })) {
+    if (LIVE_DATA.some(function (p) { return url.pathname.indexOf(p) === 0; }) ||
+        POST_PAGE.test(url.pathname)) {
       event.respondWith(networkFirst(request, true));
     } else {
       event.respondWith(staleWhileRevalidate(request));
