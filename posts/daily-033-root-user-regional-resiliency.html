@@ -1,0 +1,234 @@
+---
+title: 'AWS Daily Intelligence #33 - The root alarm was watching one Region'
+date: '2026-09-16T10:00:00'
+slug: aws-daily-intelligence-root-user-regional-resiliency
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-09-16'
+verified_claims:
+  - claim: "AWS root user sign-in is now served across US East (N. Virginia), US East (Ohio), and US West (Oregon), with sign-in traffic distributed across all three Regions, posted on September 14, 2026"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/root-user-regional-resiliency
+  - claim: "This change reduces reliance on US East (N. Virginia) and improves resiliency during service disruptions"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/root-user-regional-resiliency
+  - claim: "AWS automatically routes your root user sign-in to a supported Region without requiring you to select a Region or change how you sign in"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/root-user-regional-resiliency
+  - claim: "To maintain full visibility into root user sign-in activity, update your monitoring and alerting to cover US East (N. Virginia), US East (Ohio), and US West (Oregon)"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/root-user-regional-resiliency
+  - claim: "ConsoleLogin events for root user sign-ins are recorded in the Region that processed the sign-in request"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/root-user-regional-resiliency
+  - claim: "This improvement is available now for all AWS accounts"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/root-user-regional-resiliency
+  - claim: "If you sign in as the root user, CloudTrail records the event in one of the following Regions: us-east-1, us-east-2, or us-west-2"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-event-reference-aws-console-sign-in-events.html
+  - claim: "All IAM user and root user sign-in events, as well as all federated user sign-in events, generate records in CloudTrail log files"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-event-reference-aws-console-sign-in-events.html
+  - claim: "The Region recorded in a ConsoleLogin event varies based on the user type and whether you use a global or regional endpoint to sign in"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-event-reference-aws-console-sign-in-events.html
+  - claim: "If an IAM user signs in using the global endpoint and an account alias cookie is present in the browser, CloudTrail records the ConsoleLogin event in one of us-east-2, eu-north-1, or ap-southeast-2, because the console proxy redirects the user based on the latency from the user sign-in location"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-event-reference-aws-console-sign-in-events.html
+  - claim: "If an IAM user signs in using the global endpoint and an account alias cookie is not present in the browser, CloudTrail records the ConsoleLogin event in us-east-1"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-event-reference-aws-console-sign-in-events.html
+  - claim: "If an IAM user signs in using a Regional endpoint, CloudTrail records the ConsoleLogin event in the appropriate Region for the endpoint"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-event-reference-aws-console-sign-in-events.html
+  - claim: "CloudTrail event history provides a viewable, searchable, downloadable, and immutable record of the past 90 days of management events in an AWS Region, and the event history records events in the AWS Region where the event happened"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html
+  - claim: "An event history search is limited to a single AWS account, only returns events from a single AWS Region, and cannot query multiple attributes"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html
+  - claim: "There are no CloudTrail charges for viewing the event history"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html
+  - claim: "When you download events from the Event history page on the CloudTrail console you can download up to 200,000 events in a single file"
+    source: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html
+problem: "Root user sign-in alerting is one of the oldest controls in every AWS security baseline, and almost all of them watch us-east-1 because that is where the event has always landed. Root sign-in is now served from three Regions, and the event is recorded wherever the sign-in was processed."
+builds: "A reading of a resiliency improvement that is genuinely good and quietly moves a security signal: what changed about where root sign-in is served, where the ConsoleLogin event now lands, and why a single-Region trail or Region-scoped alarm turns an availability win into a detection gap."
+catch: "The failure is silent and inverted. A root sign-in processed in Ohio or Oregon does not fire a us-east-1 alarm and does not error either — the alarm simply stays quiet, which is indistinguishable from nobody using root. AWS names the action in the announcement, but nothing in the account will tell you that you skipped it."
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      AWS has made root user sign-in regionally resilient: it <strong>&ldquo;is now served across US East (N. Virginia), US East (Ohio), and US West (Oregon), with sign-in traffic distributed across all three Regions.&rdquo;</strong>
+    </p>
+    <p>
+      That is unambiguously good. Root sign-in is the credential you reach for when everything else has failed, and until now it leaned on a single Region &mdash; AWS's stated purpose is that the change <em>&ldquo;reduces reliance on US East (N. Virginia) and improves resiliency during service disruptions.&rdquo;</em> Nothing is required to get the benefit: <em>&ldquo;AWS automatically routes your root user sign-in to a supported Region without requiring you to select a Region or change how you sign in.&rdquo;</em>
+    </p>
+    <p>
+      The consequence is in the same announcement, and it is the reason this is worth a post rather than a line in a roundup: <em>&ldquo;ConsoleLogin events for root user sign-ins are recorded in the Region that processed the sign-in request.&rdquo;</em> The signal moved with the service.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>
+      Two things, and the second is the one that will cost somebody an incident review.
+    </p>
+    <p>
+      <strong>Root sign-in is now served from three Regions.</strong> Traffic is distributed across N. Virginia, Ohio and Oregon, automatically, with no configuration and no change to how anybody signs in.
+    </p>
+    <p>
+      <strong>The audit event lands wherever the sign-in was processed.</strong> The CloudTrail documentation states it plainly: <em>&ldquo;If you sign in as the root user, CloudTrail records the event in one of the following Regions: us-east-1, us-east-2, or us-west-2.&rdquo;</em>
+    </p>
+    <p>
+      AWS spells out the required action rather than leaving it implied: <em>&ldquo;To maintain full visibility into root user sign-in activity, update your monitoring and alerting to cover US East (N. Virginia), US East (Ohio), and US West (Oregon).&rdquo;</em>
+    </p>
+    <p>
+      It is available now, for every account. There was no opt-in, which means the behaviour changed underneath every existing detection rule at the same moment.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Sign-in event routing was never as simple as most teams assume, and this change adds a third case to a list that already had several.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-033-root-user-regional-resiliency.svg" alt="Diagram: where an AWS ConsoleLogin event is recorded, and how root user sign-in resiliency changes it. The upper half shows the change: root user sign-in is now served across US East N. Virginia, US East Ohio and US West Oregon, with traffic distributed across all three Regions automatically and no customer configuration, so the resulting ConsoleLogin event is recorded in us-east-1, us-east-2 or us-west-2 depending on which Region processed the request. The lower half shows the detection consequence: a security baseline whose CloudTrail metric filter, alarm or EventBridge rule is scoped only to us-east-1 will see root sign-ins processed there and will silently miss those processed in Ohio or Oregon, and because a missing event produces no error the alarm staying quiet is indistinguishable from nobody using root. A side panel records that the Region recorded in a ConsoleLogin event already varied by user type and endpoint before this change: an IAM user on the global endpoint with an account alias cookie present is recorded in us-east-2, eu-north-1 or ap-southeast-2 based on latency from the sign-in location, an IAM user on the global endpoint without that cookie is recorded in us-east-1, and an IAM user on a regional endpoint is recorded in the Region of that endpoint. A closing note records the durable fix: an organisation trail applied to all Regions captures the event wherever it lands, which is why the control belongs at the trail rather than at a Region-scoped alarm." />
+      <figcaption>The sign-in moved to three Regions and took its audit event with it. A Region-scoped detection rule does not follow.</figcaption>
+    </figure>
+
+    <p>
+      CloudTrail is explicit that this was never uniform: <em>&ldquo;The Region recorded in a <code class="inline">ConsoleLogin</code> event varies based on the user type and whether you use a global or regional endpoint to sign in.&rdquo;</em>
+    </p>
+    <p>
+      For an IAM user on the global endpoint, the recorded Region depends on a browser cookie. With an account alias cookie present, the event lands in <strong>us-east-2, eu-north-1 or ap-southeast-2</strong> &mdash; chosen by latency from the sign-in location. Without it, <strong>us-east-1</strong>. On a regional endpoint, the Region of that endpoint.
+    </p>
+    <p>
+      So the mental model worth carrying is that a sign-in event's Region is a property of <em>how the sign-in was routed</em>, not of the account, the user, or anything you configured. Root has simply joined the set of identities whose routing can vary.
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      The resiliency gain is the headline and it is real. Root is the credential of last resort &mdash; the one used when federation is broken, when an IAM misconfiguration has locked everyone out, when a support case needs an account-level action nobody else can perform. A break-glass path that depended on one Region being healthy was a genuine single point of failure in exactly the scenario break-glass exists for.
+    </p>
+    <p>
+      Three Regions, automatic routing, no configuration, every account, today. There is no adoption project and no migration. As improvements go it is about as clean as they come.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      This is where the work is, and the shape of the risk deserves stating precisely.
+    </p>
+    <p>
+      Alerting on root user sign-in is one of the oldest controls in the catalogue. It appears in the CIS AWS Foundations Benchmark, in Well-Architected security guidance, and in essentially every security baseline any organisation has ever written. A very large number of those implementations are a CloudWatch metric filter over a CloudTrail log group, or an EventBridge rule, scoped to <strong>us-east-1</strong> &mdash; because for years that is where the event reliably appeared.
+    </p>
+    <p>
+      Those rules did not break. They still match every root sign-in processed in N. Virginia. They simply never see the ones processed in Ohio or Oregon.
+    </p>
+
+    <div class="callout red">
+      <strong>The failure mode is silence, which reads as good news</strong>
+      <p>A missing event does not raise an error. The alarm does not fail, the rule does not error, the dashboard does not go red. It stays quiet &mdash; and a quiet root-sign-in alarm is exactly what a healthy account looks like. There is no signal anywhere in the account that distinguishes &ldquo;nobody used root&rdquo; from &ldquo;somebody used root in a Region we do not watch.&rdquo; That is the worst available property for a detection control, and it is why this deserves action this week rather than at the next baseline review.</p>
+    </div>
+
+    <p>
+      The durable fix is not to add two more Region-scoped alarms. It is to make sure the trail capturing these events is multi-Region &mdash; an organisation trail applied to all Regions delivers the event to one place regardless of which Region processed the sign-in &mdash; and then to alert off that. A control that has to be updated every time AWS adds a Region to a service's routing is a control with a recurring maintenance bug in it.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      No pricing change is stated, and the resiliency improvement itself carries no charge.
+    </p>
+    <p>
+      Checking whether you already have a blind spot costs nothing. CloudTrail event history is available by default, holds <em>&ldquo;the past 90 days of management events in an AWS Region&rdquo;</em>, and <em>&ldquo;there are no CloudTrail charges for viewing the event history.&rdquo;</em> So the immediate audit &mdash; did a root sign-in land in Ohio or Oregon in the last three months? &mdash; is free to run.
+    </p>
+    <p>
+      If the fix requires changing CloudTrail configuration rather than just alerting, prefer widening an existing trail to creating a second one. Two trails capturing the same management events means two copies delivered, and the second copy is the one that carries a charge. Check whether the existing trail can simply be made multi-Region before adding another.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      <strong>The change is already live.</strong> There is no rollout window to prepare for and no flag to flip. Any root sign-in from now on may be recorded in any of the three Regions, so the gap, if you have it, is open now.
+    </p>
+    <p>
+      <strong>Testing it is awkward, and that is the point.</strong> You cannot reliably steer which Region processes a root sign-in &mdash; routing is AWS's decision. So verifying your detection works cannot be done by signing in once and watching the alarm fire; that only proves the path you happened to get. The check has to be structural: confirm the trail is multi-Region, and confirm the alerting reads from the trail rather than from a Region-scoped log group.
+    </p>
+    <p>
+      <strong>Check the analysis path too, not just the alarm.</strong> Anything that queries sign-in history &mdash; an Athena table over CloudTrail, a SIEM ingestion filter, a CloudTrail Lake event data store, a quarterly access-review script &mdash; carries the same assumption. An access review that reports zero root sign-ins is reassuring and, if it reads one Region, possibly wrong.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <p>
+      <strong>Resiliency and observability pulled in opposite directions here, and AWS chose correctly.</strong> A sign-in path that fails when one Region is impaired is worse than a sign-in path whose audit events need multi-Region collection. The alternative &mdash; keeping the event in one Region for tidiness &mdash; would mean the recording Region is available when the processing Region is not, which is not a property you can promise.
+    </p>
+    <p>
+      <strong>The cost is borne by the customer, unevenly.</strong> Organisations with a multi-Region organisation trail and alerting built on it are already correct and need to do nothing. Organisations with a single-Region trail have a real gap. The teams most likely to have the narrow configuration are the ones who set this up years ago, following guidance that was accurate when written &mdash; so the change penalises age, not carelessness.
+    </p>
+    <p>
+      <strong>It is a reminder that global is a routing decision, not a fact.</strong> Several AWS services described as global have a Region where their events actually land, and that Region is an implementation detail which can change. Building detection on top of one is borrowing against a promise nobody made.
+    </p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      <strong>Confirm the trail first.</strong> Check whether the trail capturing sign-in events is multi-Region and, in an organisation, whether it is an organisation trail. If it is, the events are already being collected from all three Regions and only the alerting layer needs checking.
+    </p>
+    <p>
+      <strong>Then find every rule that names a Region.</strong> Metric filters, EventBridge rules, SIEM ingest filters, Athena partitions, Security Hub custom insights. Anything scoped to <code class="inline">us-east-1</code> for sign-in events is now partial. Search your infrastructure-as-code for the Region string next to <code class="inline">ConsoleLogin</code> &mdash; that grep is the fastest audit available.
+    </p>
+    <p>
+      <strong>Alert on the trail, not on a Region.</strong> Point root-sign-in detection at the multi-Region trail's destination so it keeps working the next time AWS changes routing. This is the fix that does not need repeating.
+    </p>
+    <p>
+      <strong>Re-run any historical root-access review that covered a single Region.</strong> If a previous review concluded root had not been used, and it read only <code class="inline">us-east-1</code>, that conclusion is only as good as the routing during the period reviewed. Worth re-running against the full set before relying on it for an audit.
+    </p>
+    <p>
+      <strong>Use event history for the immediate check, but repeat it per Region.</strong> It covers the past 90 days of management events and costs nothing to view, which makes it the fastest way to find out whether you already have sign-ins you never saw. The constraint is the same one causing the problem: an event history search <em>&ldquo;only returns events from a single AWS Region.&rdquo;</em> So this is three searches, not one &mdash; N. Virginia, Ohio, Oregon &mdash; and anything older than 90 days has to come from a trail or an event data store instead.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <p>
+      <strong>Treat &ldquo;which Region records this event&rdquo; as a question with no permanent answer.</strong> It is an operational detail of a service's routing, and services change routing to improve availability, which is a good thing they will keep doing.
+    </p>
+    <p>
+      <strong>Collect broadly, alert narrowly.</strong> A multi-Region trail costs nothing extra for the first copy of management events and removes an entire class of blind spot. Narrow the scope in the query, never in the collection.
+    </p>
+    <p>
+      <strong>Write the assumption down next to the control.</strong> The teams with a gap today are not careless; they encoded a true fact that later stopped being true, and nothing prompted a re-check. A one-line comment recording <em>why</em> a rule is scoped to a Region is what lets the next person notice.
+    </p>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt this</h2>
+    <p>
+      The resiliency improvement is already adopted for everyone &mdash; no action, no opt-in.
+    </p>
+    <p>
+      The people who must <em>act</em> are anyone whose root-sign-in detection is Region-scoped, which in practice means anyone whose baseline predates this week and who has not checked. Regulated environments should treat it as higher priority: root sign-in alerting is frequently a named control in an audit scope, and &ldquo;the alarm was correctly configured for the Region we monitored&rdquo; is not a comfortable sentence to write in a finding.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Root user sign-in is now served from N. Virginia, Ohio and Oregon, with traffic distributed across all three. Automatic, no configuration, every account, now.</li>
+      <li>The <code class="inline">ConsoleLogin</code> event is recorded in whichever of <code class="inline">us-east-1</code>, <code class="inline">us-east-2</code> or <code class="inline">us-west-2</code> processed the sign-in.</li>
+      <li>Region-scoped root-sign-in alarms are now partial. They do not error &mdash; they stay quiet, which looks identical to healthy.</li>
+      <li>AWS states the required action explicitly: extend monitoring and alerting to cover all three Regions.</li>
+      <li>The durable fix is a multi-Region or organisation trail with alerting built on it, not three Region-scoped alarms.</li>
+      <li>Sign-in event Regions already varied by user type and endpoint before this. Root has joined a list it was previously absent from.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/09/root-user-regional-resiliency" target="_blank" rel="noopener">AWS improves regional resiliency for root user sign-in</a></li>
+      <li><a href="https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-event-reference-aws-console-sign-in-events.html" target="_blank" rel="noopener">AWS Management Console sign-in events &#8212; which Region a ConsoleLogin event is recorded in, by user type and endpoint</a></li>
+      <li><a href="https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html" target="_blank" rel="noopener">Working with CloudTrail event history &#8212; the 90-day window, and the single-Region search limit</a></li>
+      <li><a href="https://docs.aws.amazon.com/signin/latest/userguide/introduction-to-root-user-sign-in-tutorial.html" target="_blank" rel="noopener">Sign in to the AWS Management Console as the root user</a></li>
+    </ul>
+  </div>
+</div>

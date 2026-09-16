@@ -3,21 +3,21 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>AWS Architecture Series #53 — The write was atomic. The event was not. | Jayanth Katta Blog</title>
-<meta name="description" content="An order is saved and the downstream system never hears about it. The database write succeeded and the publish did not, because they were two writes with no transaction between them — and the obvious fix, making them one atomic write, does not deliver the guarantee people expect it to."/>
+<title>AWS Architecture Series #54 — The herd is spread, not smaller | Jayanth Katta Blog</title>
+<meta name="description" content="A dependency returns 503 for ninety seconds. Every client retries correctly — exponential backoff, full jitter, sensible attempt limits, none of it hand-written — and the dependency still cannot recover, because politeness is a property of each client alone and nothing in the SDK coordinates across a fleet."/>
 <meta property="og:type" content="article"/>
 <meta property="og:site_name" content="Jayanth Katta"/>
 <!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
-<meta property="og:title" content="The write was atomic. The event was not."/>
-<meta property="og:description" content="An order is saved and the downstream system never hears about it. The database write succeeded and the publish did not, because they were two writes with no transaction between them — and the obvious fix, making them one atomic write, does not deliver the guarantee people expect it to."/>
-<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-outbox-dual-write/"/>
+<meta property="og:title" content="The herd is spread, not smaller"/>
+<meta property="og:description" content="A dependency returns 503 for ninety seconds. Every client retries correctly — exponential backoff, full jitter, sensible attempt limits, none of it hand-written — and the dependency still cannot recover, because politeness is a property of each client alone and nothing in the SDK coordinates across a fleet."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-retries-backoff-jitter/"/>
 <!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
 <meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
 <meta name="twitter:card" content="summary"/>
-<meta name="twitter:title" content="The write was atomic. The event was not."/>
-<meta name="twitter:description" content="An order is saved and the downstream system never hears about it. The database write succeeded and the publish did not, because they were two writes with no transaction between them — and the obvious fix, making them one atomic write, does not deliver the guarantee people expect it to."/>
+<meta name="twitter:title" content="The herd is spread, not smaller"/>
+<meta name="twitter:description" content="A dependency returns 503 for ninety seconds. Every client retries correctly — exponential backoff, full jitter, sensible attempt limits, none of it hand-written — and the dependency still cannot recover, because politeness is a property of each client alone and nothing in the SDK coordinates across a fleet."/>
 <meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
-<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-outbox-dual-write/"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-retries-backoff-jitter/"/>
 <!-- The blog's own feed. It has existed at /blog/rss.xml all along and
      nothing advertised it, so no reader or browser extension could find
      it: a feed nobody can discover is a feed nobody has. -->
@@ -65,21 +65,21 @@
   <div class="post-breadcrumb">
     <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
     <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
-    <span>AWS Architecture Series #53 — The write was atomic. The event was not.…</span>
+    <span>AWS Architecture Series #54 — The herd is spread, not smaller…</span>
   </div>
   <article>
     <header class="post-header">
       <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
-      <h1>AWS Architecture Series #53 — The write was atomic. The event was not.</h1>
-      <p class="post-description">An order is saved and the downstream system never hears about it. The database write succeeded and the publish did not, because they were two writes with no transaction between them — and the obvious fix, making them one atomic write, does not deliver the guarantee people expect it to.</p>
+      <h1>AWS Architecture Series #54 — The herd is spread, not smaller</h1>
+      <p class="post-description">A dependency returns 503 for ninety seconds. Every client retries correctly — exponential backoff, full jitter, sensible attempt limits, none of it hand-written — and the dependency still cannot recover, because politeness is a property of each client alone and nothing in the SDK coordinates across a fleet.</p>
       <div class="post-info">
-        <span>Sep 15, 2026</span>
+        <span>Sep 16, 2026</span>
         <span class="post-info-dot"></span>
-        <span>12 min read</span>
+        <span>11 min read</span>
       </div>
     </header>
-    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 15 September 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
-    <div class="quick-summary-mount" data-slug="aws-architecture-outbox-dual-write" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 16 September 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-retries-backoff-jitter" data-topics="AWS,Architecture,AWS Architecture Series"></div>
     <div class="post-divider"></div>
     <div class="post-body"><div id="jk-post">
 <!-- ═══════════════════════════════════════════════════════════════════════
@@ -194,83 +194,88 @@
   <div class="section" id="challenge">
     <h2>Business Challenge</h2>
     <p>
-      The previous post established idempotency &mdash; the property that makes an at-least-once pipeline
-      safe to consume. This one is about getting the events into that pipeline at all, which turns out to
-      be the harder half.
+      The last two posts made a pipeline safe to consume: idempotent handlers, then events that exist at
+      all. This one is about the traffic those retries generate, which is a different problem and a more
+      counter-intuitive one.
     </p>
     <p>
-      An order is saved. The downstream system never hears about it. The handler is four lines, it is
-      obviously correct, and it is the single most common correctness bug in event-driven systems:
+      A dependency starts returning 503 and keeps it up for ninety seconds. Every client behaves
+      impeccably. Exponential backoff, full jitter, a sane attempt limit &mdash; and not one line of it
+      hand-written, because the SDK does it. The dependency still struggles to recover, and the graph shows
+      request volume rising while the service is down.
     </p>
-    <pre><code>save_order(order)            # write 1 — the database
-publish("OrderPlaced", order) # write 2 — the broker</code></pre>
     <p>
-      Two writes to two systems with no transaction spanning them. If the process dies between them, the
-      order exists and the event does not. Swap the order and you get the opposite failure &mdash; an event
-      for an order that was never saved &mdash; which is worse, because it is unrecoverable rather than
-      merely late.
+      Three things are true at once here, and only the first is widely understood.
     </p>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">1</span><strong>There is no ordering of the two that is safe</strong></div>
+      <div class="challenge-header"><span class="num">1</span><strong>Jitter spreads the burst; it does not shrink it</strong></div>
       <div class="challenge-body">
         <p>
-          Teams usually discover this by trying both orders and finding each one broken, then reaching for
-          a retry. A retry does not help: the failure is that the process no longer exists to perform it.
-          Wrapping them in application-level compensation does not help either, because the compensation is
-          itself a write that can fail.
+          The mechanism is exactly as advertised, and AWS explains the problem it solves in the documentation's
+          own words: without the random multiplier, <em>&ldquo;all clients that hit an error at the same time
+          would retry at the same time, creating a burst of retry traffic (the &lsquo;thundering herd&rsquo;
+          problem).&rdquo;</em>
         </p>
         <p>
-          This is the dual-write problem, and it is not solvable at the call site. It is only solvable by
-          making the two facts &mdash; the state change, and the intent to publish &mdash; land in one
-          place that can commit or not commit as a unit.
+          Then read the worked example carefully. <em>&ldquo;Suppose 1,000 clients all receive a 503 at the
+          same moment. Full jitter distributes their first retries uniformly across a 50 ms window instead of
+          having all 1,000 retry at exactly 50 ms.&rdquo;</em>
+        </p>
+        <p>
+          A thousand requests still arrive. They arrive spread across fifty milliseconds rather than stacked
+          on one instant, which genuinely helps a service absorb them &mdash; but the load is unchanged. For a
+          transient error the base delay is <strong>50 ms</strong>, and that is a narrow place in which to
+          distribute a large fleet.
         </p>
         <span class="fix-label">Fix</span>
-        <p>Stop trying to coordinate two systems. Write the event into the same store, in the same transaction.</p>
+        <p>Expect jitter to smooth a spike, not to reduce volume. Reducing volume is a different control.</p>
       </div>
     </div>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">2</span><strong>The atomic write does not produce atomic events</strong></div>
+      <div class="challenge-header"><span class="num">2</span><strong>The circuit breaker is per client, not per fleet</strong></div>
       <div class="challenge-body">
         <p>
-          This is the part that catches people who did everything right. You use
-          <code class="inline">TransactWriteItems</code>, the entity and the outbox record commit together,
-          and you assume the consumer sees them together. AWS says otherwise, and says it without hedging:
+          The retry quota is the better-kept secret and the more useful mechanism. It is a token bucket:
+          <strong>500 tokens</strong>, a transient retry costs <strong>14</strong>, a throttling retry costs
+          <strong>5</strong>, and a request that succeeds first time restores <strong>1</strong>. Drain it and
+          the SDK stops retrying and returns errors immediately.
         </p>
         <p>
-          <em>&ldquo;This propagation occurs gradually: stream records from the same transaction might
-          appear at different times and could be interleaved with records from other transactions. Stream
-          consumers shouldn't assume transaction atomicity or ordering guarantees.&rdquo;</em>
+          That is a real circuit breaker, and it is exactly the behaviour you want during an outage. But its
+          scope is the sentence people skip: <em>&ldquo;The token budget is typically scoped to a single SDK
+          client instance&hellip; It is <strong>not shared across processes or hosts</strong>.&rdquo;</em>
         </p>
         <p>
-          The transaction is a guarantee about the <em>write</em>. It is not a guarantee about the stream
-          derived from that write. A consumer that observes the outbox record before the entity it refers
-          to is seeing supported behaviour.
+          A fleet of a thousand hosts therefore holds a thousand independent budgets, each discovering the
+          outage privately and each draining on its own schedule. Nothing aggregates them.
         </p>
         <span class="fix-label">Fix</span>
-        <p>Make each event self-contained, or make the consumer tolerate an entity that is not visible yet.</p>
+        <p>Treat it as per-client self-protection. Fleet-level backpressure has to come from somewhere else.</p>
       </div>
     </div>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">3</span><strong>An idempotent write emits nothing</strong></div>
+      <div class="challenge-header"><span class="num">3</span><strong>You are probably not running any of this yet</strong></div>
       <div class="challenge-body">
         <p>
-          The previous post argued for idempotent handlers. Combine that with a stream-based outbox and
-          there is a trap sitting exactly at the join: <em>&ldquo;If you perform a
-          <code class="inline">PutItem</code> or <code class="inline">UpdateItem</code> operation that does
-          not change any data in an item, DynamoDB Streams does <strong>not</strong> write a stream record
-          for that operation.&rdquo;</em>
+          This is the detail that reframes the whole page, and it sits in a notice at the top of it. The
+          documented behaviour <em>&ldquo;requires opting in until it becomes the default behavior. Set
+          <code class="inline">AWS_NEW_RETRIES_2026=true</code> in your environment.&rdquo;</em>
         </p>
         <p>
-          A retry that correctly writes the same values a second time is a no-op, and a no-op is silent. If
-          the first attempt wrote the row but died before the stream consumer ran, and the retry is a true
-          no-op, there is no second chance to emit. The idempotency that protects the database is the thing
-          that suppresses the event.
+          And the consequence of not doing so is not cosmetic: <em>&ldquo;Without this setting, your SDK uses
+          pre-2026 retry behavior, which differs in backoff timing, retry quota costs, and service-specific
+          defaults.&rdquo;</em>
+        </p>
+        <p>
+          Every number below &mdash; the 500-token budget, the 14-token cost, the 50 ms base, the 20-second cap
+          &mdash; describes the opted-in system. Reading the page and changing nothing leaves you running
+          something else.
         </p>
         <span class="fix-label">Fix</span>
-        <p>Give the outbox record a unique key per event, so writing it is always a genuine change.</p>
+        <p>Decide deliberately. Set the variable and adopt these semantics, or know precisely which ones you are not getting.</p>
       </div>
     </div>
   </div>
@@ -278,112 +283,108 @@ publish("OrderPlaced", order) # write 2 — the broker</code></pre>
   <div class="section" id="architecture">
     <h2>Architecture</h2>
     <p>
-      The pattern has three moving parts, and the interesting design work is at the joints rather than in
-      any one of them.
+      There are two independent defences in the SDK and one decision that sits above both of them. They
+      operate at different points in the request lifecycle, and neither reaches past the client it runs in.
     </p>
 
     <figure class="screenshot">
-      <img src="/blog/assets/diagrams/arch-053-outbox-dual-write.svg" alt="Diagram: the dual-write problem and how an outbox built on DynamoDB addresses it, including where the guarantee stops. On the left, the broken shape: an application performs two writes, one to a database and one to a message broker, with no transaction spanning them, so a crash between the two leaves the state change without its event or the event without its state change. In the middle, the fix: a single TransactWriteItems call writes the entity and an outbox record together as one all-or-nothing operation of up to 100 actions, limited to one AWS account and one Region with an aggregate size of four megabytes. On the right, the relay: DynamoDB Streams derives change records from that same committed write, each stream record appears exactly once, and ordering is guaranteed per individual item rather than across a partition, with records retained for 24 hours before becoming subject to trimming. A panel across the bottom records where atomicity stops: AWS states that stream records from the same transaction might appear at different times and could be interleaved with records from other transactions, and that stream consumers should not assume transaction atomicity or ordering guarantees, so the consumer must treat each event as independently meaningful. A second note records that a write which does not change any data produces no stream record at all, so an idempotent no-op retry emits nothing." />
-      <figcaption>The transaction removes the dual write. It does not extend atomicity into the stream &mdash; that boundary is where the consumer's design starts.</figcaption>
+      <img src="/blog/assets/diagrams/arch-054-retries-backoff-jitter.svg" alt="Diagram: the two retry defences an AWS SDK provides and the boundary each one has. At the top, the backoff formula: the delay equals a uniformly random value between zero and one, multiplied by the smaller of twenty thousand milliseconds and the base delay doubled for each retry. The base delay is 50 milliseconds for transient errors and 1,000 milliseconds for throttling errors, and no individual delay exceeds the 20 second cap, although with the default of three max attempts the cap is never reached. In the middle, the first defence, full jitter, which spreads retries uniformly across the backoff window rather than stacking them on one instant, illustrated by AWS's own example of a thousand clients receiving a 503 simultaneously and having their first retries distributed across a 50 millisecond window. Beside it, the second defence, the retry quota token bucket, with a capacity of 500 tokens, a cost of 14 tokens for a transient retry and 5 for a throttling retry, restoring 1 token when a request succeeds on the first attempt, and beginning to drain above roughly 22 percent sustained transient failures or 32 percent throttling failures. A panel across the bottom records the shared limitation: the token budget is scoped to a single SDK client instance and is not shared across processes or hosts, so a fleet holds one independent budget per client and nothing aggregates them, meaning jitter smooths the spike and the quota protects the individual caller while neither reduces total fleet load. A final note records that all of this behaviour is opt-in until it becomes default, requiring the environment variable AWS underscore NEW underscore RETRIES underscore 2026 set to true." />
+      <figcaption>Two defences, both local to one client. Jitter changes when a request arrives; the quota changes whether it is sent at all.</figcaption>
     </figure>
 
-    <h3>The transaction is real, and it is bounded</h3>
+    <h3>The formula, and what the default hides</h3>
     <p>
-      <code class="inline">TransactWriteItems</code> is <em>&ldquo;a synchronous and idempotent write
-      operation that groups up to 100 write actions in a single all-or-nothing operation&rdquo;</em>, and
-      the actions <em>&ldquo;are completed atomically so that either all of them succeed or none of them
-      succeeds.&rdquo;</em> For an outbox that is exactly the primitive required: the entity and its event
-      record commit together or not at all.
+      The whole backoff scheme is one line:
+    </p>
+    <pre><code>delay = random(0, 1) × min(20,000 ms, base_delay × 2^retry)</code></pre>
+    <p>
+      <code class="inline">base_delay</code> is <strong>50 ms</strong> for transient errors and
+      <strong>1,000 ms</strong> for throttling, which is a deliberate distinction: a throttle means the service
+      actively rejected you and needs time, while a connection reset usually resolves in milliseconds.
     </p>
     <p>
-      The bounds are worth knowing before you design around it. Up to 100 distinct items, in one or more
-      tables, <strong>within the same AWS account and the same Region</strong>, with an aggregate size no
-      greater than 4 MB. You cannot target the same item twice in one transaction. And the ACID guarantee
-      is Regional only: <em>&ldquo;transactions aren't supported across Regions in global tables&rdquo;</em>,
-      so a global table replica can show a partially propagated transaction.
-    </p>
-    <p>
-      It also costs double, by design. <em>&ldquo;DynamoDB performs two underlying reads or writes of every
-      item in the transaction: one to prepare the transaction and one to commit the transaction.&rdquo;</em>
-      With both items inside 1 KB that is four write units per business event, not one &mdash; two items,
-      doubled. A WCU covers one write of up to 1 KB and rounds up, so a 2 KB order item and a 1 KB outbox
-      record cost six, not four. That arithmetic belongs in the design note rather than in a bill.
+      The 20-second cap is real but mostly theoretical in practice, and AWS says so plainly: <em>&ldquo;With
+      the default of 3 max attempts (1 initial request + 2 retries), the backoff cap is never reached.&rdquo;</em>
+      Three attempts is the default for most clients &mdash; DynamoDB and DynamoDB Streams use
+      <strong>4</strong>, with a <strong>25 ms</strong> transient base rather than 50 ms.
     </p>
 
     <div class="callout amber">
-      <strong>A failed transaction is not a free transaction</strong>
-      <p>AWS is explicit that the capacity <em>&ldquo;is consumed even when a transaction does not succeed&rdquo;</em> &mdash; a cancelled call still consumes the underlying write capacity for the items it attempted. Worth pairing with the retry behaviour: a rejected item-level request fails the whole call with <code class="inline">TransactionCanceledException</code>, and <em>&ldquo;if that request fails, AWS SDKs do not retry the request.&rdquo;</em> Contention against a hot item is therefore paid for twice over, in capacity and in a retry you have to write yourself.</p>
+      <strong>The error taxonomy decides the delay, and one rule is easy to get wrong</strong>
+      <p>Classification runs on error code first and HTTP status second, which produces a case worth knowing: <em>&ldquo;An HTTP 5XX with a throttling error code is classified as a throttling error, not a transient error, even though 5XX errors are normally transient.&rdquo;</em> The practical effect is a twentyfold difference in base delay for two responses that look alike in a status-code dashboard &mdash; so a latency investigation that groups by status will not explain why some 5XX retries wait a second and others wait fifty milliseconds.</p>
     </div>
 
-    <h3>The stream is the relay, and it has its own contract</h3>
+    <h3>The service can override your backoff, and it is trusted to</h3>
     <p>
-      The reason this pattern fits DynamoDB so well is that the relay does not have to be built. The stream
-      is derived from the committed write, so there is no second system to keep in step, and it carries a
-      guarantee most transports do not: <em>&ldquo;Each stream record appears exactly once in the
-      stream.&rdquo;</em>
+      Some AWS services return an <code class="inline">x-amz-retry-after</code> header. When present, the SDK
+      uses the server's delay, <em>&ldquo;clamped to a minimum of the computed backoff delay and a maximum of
+      the computed backoff delay plus 5,000 ms&rdquo;</em>, an effective ceiling of <strong>25 seconds</strong>.
     </p>
     <p>
-      Read that precisely. It is a statement about the stream's contents, not about delivery to your
-      consumer &mdash; a Lambda event source mapping can still hand you the same record twice, which is why
-      the previous post exists. Ordering is similarly specific: guaranteed <em>&ldquo;at the level of an
-      individual item&hellip; not across an entire partition.&rdquo;</em> Two different orders have no
-      defined relative order. The same order's three state changes do.
+      One detail in that mechanism is a small lesson in protocol design: <em>&ldquo;The SDK does not apply
+      jitter to this value, because the service is expected to jitter it.&rdquo;</em> Responsibility for
+      spreading the herd moves to the only party that can see the whole herd. That is the right place for it,
+      and it is precisely the capability an individual client does not have.
     </p>
   </div>
 
   <div class="section" id="why-it-matters">
     <h2>Why This Architecture Holds Up</h2>
-    <h3>Self-contained events are what survive the boundary</h3>
+    <h3>The quota is a better circuit breaker than most people hand-build</h3>
     <p>
-      Once you accept that a consumer may see the outbox record before the entity, and may see two
-      transactions interleaved, the design consequence is forced: the event has to carry what the consumer
-      needs rather than a pointer to fetch it.
+      The token economics are deliberately asymmetric. A transient retry costs <strong>14</strong> tokens; a
+      throttling retry costs <strong>5</strong>. AWS's reasoning is that transient errors <em>&ldquo;often
+      indicate a service-wide problem&rdquo;</em> where <em>&ldquo;continued retrying is unlikely to
+      succeed&rdquo;</em>, while a throttle only signals that the service <em>&ldquo;needs more time before
+      the request can succeed.&rdquo;</em> Retrying into a broken service is priced higher than retrying into
+      a busy one.
     </p>
     <p>
-      An event that says <em>&ldquo;order 4471 changed, go and read it&rdquo;</em> is a lookup against a
-      table that may not show the change yet. An event carrying the order's relevant state is independently
-      meaningful. This is the same reasoning that makes the <code class="inline">NEW_AND_OLD_IMAGES</code>
-      view type the useful default for an outbox: the record is complete without a round trip.
+      The thresholds that result are specific: the budget begins draining above roughly <strong>22%</strong>
+      sustained transient failures, or <strong>32%</strong> for throttling. Below that, first-try successes
+      refill it faster than retries drain it. And because <em>&ldquo;the budget's starting balance of 500
+      tokens provides a buffer&rdquo;</em>, a brief severe spike does not trip it at all &mdash; only a
+      sustained one does. That is the behaviour you would want from a circuit breaker and rarely get from one
+      written in an afternoon.
     </p>
 
     <div class="callout red">
-      <strong>The 24-hour floor is the whole recovery window</strong>
-      <p>Stream data has <em>&ldquo;a 24-hour lifetime&rdquo;</em>, and records older than that are <em>&ldquo;susceptible to trimming (removal) at any moment.&rdquo;</em> That is not a tuning knob &mdash; there is no setting to extend it. If a consumer is broken over a long weekend, the events it never processed are gone, and the only recovery is to re-derive state from the table itself. An outbox on DynamoDB Streams therefore needs a documented reconciliation path, not just a DLQ, because the DLQ only holds what was successfully delivered and failed &mdash; not what expired before delivery was attempted.</p>
+      <strong>But both defences stop at the client boundary</strong>
+      <p>Jitter spreads retries within one client's window. The quota stops one client retrying into a failure. Neither one knows another client exists, and the budget is explicitly <em>&ldquo;not shared across processes or hosts.&rdquo;</em> A thousand hosts each hold a full budget, each independently discover the outage, and each independently spend 500 tokens learning it. The SDK protects the caller from wasting its own resources. It was never designed to protect the callee from the aggregate, and expecting that of it is the mistake that makes a fleet-wide incident surprising.</p>
     </div>
 
-    <h3>Consumer parallelism is capped by the shard, not by your concurrency setting</h3>
+    <h3>Adaptive mode is the one control that throttles the first request</h3>
     <p>
-      Throughput planning here surprises people who are used to scaling consumers freely. AWS advises that
-      <em>&ldquo;no more than two processes at most should be reading from the same stream's shard at the
-      same time&rdquo;</em>, since more <em>&ldquo;can result in throttling.&rdquo;</em>
+      Standard mode has a hard boundary: <em>&ldquo;The retry quota never delays or blocks the initial
+      request. Only retries are affected.&rdquo;</em> So no matter how badly a dependency is failing, standard
+      mode sends every first attempt.
     </p>
     <p>
-      With Lambda the shape is cleaner but still bounded: one function instance per open shard by default,
-      raisable via <code class="inline">ParallelizationFactor</code> <em>&ldquo;up to 10&rdquo;</em> while
-      <em>&ldquo;still preserving the order of changes for each item.&rdquo;</em> That last clause is the
-      one that makes the setting safe to use &mdash; ordering is preserved per item, which is the only
-      ordering the stream promised in the first place.
+      Adaptive mode is the exception &mdash; it <em>&ldquo;can delay or block the <em>initial</em> request, not
+      just retries, when throttling is detected.&rdquo;</em> That sounds like the fleet-level answer, and it is
+      not, for a reason worth stating: <em>&ldquo;The rate limiter operates per SDK client instance. All
+      requests from a client share the same rate limit, regardless of which API operation or resource they
+      target.&rdquo;</em>
     </p>
     <p>
-      Shard lineage is the other constraint: an application <em>&ldquo;must always process a parent shard
-      before it processes a child shard.&rdquo;</em> Lambda handles this for you. A hand-rolled consumer
-      that ignores it will process records out of order during exactly the traffic spike that caused the
-      shard to split.
+      So one throttled resource slows every call that client makes, including calls to healthy resources. AWS
+      is direct that this is not a general default and recommends it only for a client targeting a single
+      resource with frequent throttling &mdash; a batch processor against one table, not a shared service
+      client. Use it where a client has one job.
     </p>
 
-    <h3>Where the outbox is genuinely the wrong answer</h3>
+    <h3>Long polling gets an exception, and the reason generalises</h3>
     <p>
-      AWS's own transaction guidance argues against reaching for this reflexively:
-      <em>&ldquo;Don't group operations together in a transaction if it's not necessary&hellip; Simpler
-      transactions improve throughput and are more likely to succeed.&rdquo;</em>
+      There is a special case for <code class="inline">SQS.ReceiveMessage</code> and the Step Functions and
+      SWF polling operations: when the quota is depleted and retries are blocked, <em>&ldquo;the SDK still
+      applies a backoff delay before returning the error.&rdquo;</em>
     </p>
     <p>
-      If the only consumer needs the change and nothing else, a plain write with a stream consumer is
-      already sufficient &mdash; the stream <em>is</em> the outbox, derived from the same committed write,
-      with no second record and no doubled capacity. The explicit outbox record earns its cost when the
-      event's shape must differ from the entity's: a published contract that should not change when the
-      storage model does, an event that aggregates several items, or one that must carry intent the row
-      does not record.
+      The reasoning is worth borrowing. These are called in a tight loop, so returning an error instantly would
+      mean the application <em>&ldquo;would then immediately send the next request, spiking client CPU usage
+      and generating additional traffic.&rdquo;</em> Failing fast is correct for a request a human is waiting
+      on, and actively harmful inside a polling loop. If you build your own fail-fast path, check which of
+      those two shapes your caller has.
     </p>
   </div>
 
@@ -397,90 +398,85 @@ publish("OrderPlaced", order) # write 2 — the broker</code></pre>
         <th>Reasoning</th>
       </tr>
       <tr>
-        <td>Dual write</td>
-        <td>Never; one transaction</td>
-        <td>No ordering of two writes to two systems is crash-safe, and retries cannot help a dead process.</td>
+        <td>Adopting the 2026 behaviour</td>
+        <td>Set it deliberately, per environment</td>
+        <td>It is opt-in. Without <code class="inline">AWS_NEW_RETRIES_2026=true</code> the SDK uses pre-2026 timing, quota costs and defaults.</td>
       </tr>
       <tr>
-        <td>Explicit outbox record</td>
-        <td>Only when the event shape differs</td>
-        <td>Otherwise the stream is already the outbox. AWS advises against unnecessary transactions.</td>
+        <td>Retry mode</td>
+        <td>Standard</td>
+        <td>AWS's own recommendation for all workloads, and the only one standardised across SDKs.</td>
       </tr>
       <tr>
-        <td>Outbox record key</td>
-        <td>Unique per event</td>
-        <td>A write that changes nothing produces no stream record, so a reused key emits silence on retry.</td>
+        <td>Adaptive mode</td>
+        <td>Single-resource clients only</td>
+        <td>The rate limiter is per client, so one throttled resource slows that client's calls to every other.</td>
       </tr>
       <tr>
-        <td>Event payload</td>
-        <td>Self-contained, not a pointer</td>
-        <td>Consumers may see the event before the entity is readable. AWS says not to assume otherwise.</td>
+        <td>Legacy mode</td>
+        <td>Migrate off it</td>
+        <td>No standardised quota, and behaviour differs per language. Not even available in .NET, Go, Kotlin, Rust, Swift or JavaScript.</td>
       </tr>
       <tr>
-        <td>Stream view type</td>
-        <td><code class="inline">NEW_AND_OLD_IMAGES</code></td>
-        <td>Makes the record complete without a round trip, and cannot be changed without recreating the stream.</td>
+        <td>Max attempts</td>
+        <td>Leave at 3</td>
+        <td>Raising it multiplies fleet load during an outage. The 20-second cap is never reached at the default anyway.</td>
       </tr>
       <tr>
-        <td>Consumer semantics</td>
-        <td>Idempotent, order-tolerant across items</td>
-        <td>Exactly-once applies to the stream's contents, not to delivery. Ordering holds per item only.</td>
+        <td>Hand-written retry loops</td>
+        <td>Delete them</td>
+        <td>They nest with the SDK's, multiplying attempts, and they carry no token budget.</td>
       </tr>
       <tr>
-        <td>Recovery beyond 24 hours</td>
-        <td>Reconcile from the table</td>
-        <td>Stream retention is fixed at 24 hours with no extension. Expired records were never delivered.</td>
+        <td>Fleet-level protection</td>
+        <td>Server-side, not client-side</td>
+        <td>The budget is not shared across processes or hosts. Only the service sees the aggregate.</td>
       </tr>
       <tr>
-        <td>Capacity planning</td>
-        <td>Size the items, then double</td>
-        <td>Two items written twice each &mdash; prepare and commit, including on failure. A WCU covers 1 KB and rounds up, so four units only holds if both items fit in 1 KB.</td>
+        <td>Polling loops</td>
+        <td>Keep a delay on the failure path</td>
+        <td>Fail-fast in a tight loop spikes CPU and traffic. AWS special-cases the long-polling operations for this reason.</td>
       </tr>
     </table>
     </div>
 
-    <h3>Two details that decide whether the retry story works</h3>
+    <h3>The multiplication nobody plans for</h3>
     <p>
-      <strong>The transaction's own idempotency window is ten minutes.</strong> A client token
-      <em>&ldquo;is valid for 10 minutes after the request that uses it finishes. After 10 minutes, any
-      request that uses the same client token is treated as a new request.&rdquo;</em> Reusing it with
-      changed parameters inside the window returns
-      <code class="inline">IdempotentParameterMismatch</code>. That is a tighter bound than the hour the
-      Powertools guard defaults to and far tighter than a next-morning replay &mdash; the same
-      window-versus-incident mismatch the previous post ended on, one layer down.
+      The most common way to turn a recoverable incident into a long one is layered retries. An SDK client
+      configured for 3 attempts, inside an application retry loop of 3, behind a queue redelivery, produces an
+      attempt count that nobody wrote down and nobody intended &mdash; and only the innermost layer has a token
+      budget. The outer layers retry at full rate regardless of how the service is doing.
     </p>
     <p>
-      <strong>Disabling a stream is not reversible in the way people assume.</strong> Re-enabling creates a
-      new stream with a different descriptor, the view type cannot be edited in place, and the old stream's
-      data remains readable for 24 hours and then goes. Changing what an outbox publishes is therefore a
-      migration with a cutover, not a configuration change.
+      The discipline is to retry at exactly one layer and let the others surface the error. If the SDK is doing
+      it, the application should not be. If the application must, the SDK's attempts should be set to
+      <strong>1</strong>, which AWS documents as the way to disable retries entirely.
     </p>
   </div>
 
   <div class="section" id="closing">
     <h2>Closing Thought</h2>
     <p>
-      The dual-write problem is usually presented as a puzzle with a clever solution, and the outbox pattern
-      is presented as that solution. On AWS the mechanics are almost disappointingly easy &mdash; a
-      transaction, a stream, a Lambda &mdash; which is exactly why the failures land somewhere else.
+      Retry advice is usually a list of techniques &mdash; exponential backoff, add jitter, cap the attempts
+      &mdash; and all of it is correct. The SDK implements every item on that list, to a standard most teams
+      would not reach by hand, and it does it without being asked.
     </p>
     <p>
-      They land at the boundary where one guarantee stops and the next has not started. The transaction
-      guarantees the write. The stream guarantees its own contents, once each, ordered per item. Neither
-      guarantees that a consumer sees a coherent transaction, and AWS says so in a sentence most people
-      never read: <em>stream consumers shouldn't assume transaction atomicity or ordering guarantees.</em>
+      What the list omits is that each technique is a property of one client. Jitter decides <em>when</em> a
+      client retries. The token budget decides <em>whether</em> it retries. Neither decides how many clients
+      there are, and during an incident that is the only number that matters to the service on the other end.
     </p>
     <p>
-      The pattern that survives is the one that stops asking the transport for consistency it never offered.
-      Make each event true on its own. Make the consumer idempotent, because delivery is at-least-once.
-      Assume ordering only where it was promised, which is per item. Then the atomic write is doing the one
-      job it can actually do &mdash; making sure the event exists at all &mdash; and everything after it is
-      designed for the world as the documentation describes it.
+      So the architectural question is not whether your retries are polite. Assume they are; the defaults are
+      good. The question is what happens when a thousand polite clients discover the same failure in the same
+      second &mdash; and the answer has to come from somewhere with fleet-wide visibility: a server-side
+      throttle, a queue that absorbs the arrival rate, a <code class="inline">x-amz-retry-after</code> the
+      service chooses itself. The client library has done its job. It cannot do that one.
     </p>
 
     <div class="callout">
       <strong>Next in this series</strong>
-      <p>Application patterns &mdash; retries, backoff, jitter and the thundering herd: why every client retrying politely still produces a synchronised stampede, what the AWS SDKs do by default, and how a retry budget differs from a retry policy.</p>
+      <p>Application patterns &mdash; backpressure, and what a queue is really telling you: why queue depth is a lagging indicator of a problem that started upstream, the difference between a buffer and a shock absorber, and when adding consumers makes an overload worse rather than better.</p>
     </div>
 
     <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
@@ -490,9 +486,8 @@ publish("OrderPlaced", order) # write 2 — the broker</code></pre>
   <div class="section" id="reference">
     <h2>Official AWS Reference</h2>
     <ul>
-      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html" target="_blank" rel="noopener">Amazon DynamoDB Transactions: how it works &#8212; the all-or-nothing write, and where its atomicity stops</a></li>
-      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html" target="_blank" rel="noopener">Change data capture for DynamoDB Streams &#8212; exactly-once records, per-item ordering and the 24-hour limit</a></li>
-      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/provisioned-capacity-mode.html" target="_blank" rel="noopener">DynamoDB provisioned capacity mode &#8212; what a write capacity unit covers, and the round-up rule</a></li>
+      <li><a href="https://docs.aws.amazon.com/sdkref/latest/guide/feature-retry-behavior.html" target="_blank" rel="noopener">Retry behavior &#8212; AWS SDKs and Tools Reference Guide: modes, the backoff formula, the token bucket, and the 2026 opt-in</a></li>
+      <li><a href="https://aws.amazon.com/blogs/developer/announcing-updated-retry-behavior-for-aws-sdks-and-tools/" target="_blank" rel="noopener">Announcing updated retry behavior for AWS SDKs and Tools &#8212; the announcement the opt-in notice points to</a></li>
     </ul>
   </div>
 
@@ -508,15 +503,15 @@ publish("OrderPlaced", order) # write 2 — the broker</code></pre>
       <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
     </div>
     <!-- post-nav: include prev and/or next links as applicable -->
-    <nav class="post-nav"><a href="/blog/gcp-architecture-iam-roles/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">GCP Architecture Series #32 — Roles: Basic, Predefined and Custom</span></a><a href="/blog/azure-architecture-app-registrations-service-principals/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">Azure Architecture Series #34 — App Registrations and Service Principals</span></a></nav>
+    <nav class="post-nav"><a href="/blog/aws-daily-intelligence-glue-zero-etl-ownership/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Daily Intelligence #32 - The table had two writers and no owner</span></a><a href="/blog/aws-daily-intelligence-root-user-regional-resiliency/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">AWS Daily Intelligence #33 - The root alarm was watching one Region</span></a></nav>
   </article>
   <div class="comments-section">
   <h3>Comments</h3>
   <div id="disqus_thread"></div>
   <script>
     var disqus_config = function () {
-      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-outbox-dual-write/';
-      this.page.identifier = 'aws-architecture-outbox-dual-write';
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-retries-backoff-jitter/';
+      this.page.identifier = 'aws-architecture-retries-backoff-jitter';
     };
     (function() {
       var d = document, s = d.createElement('script');
