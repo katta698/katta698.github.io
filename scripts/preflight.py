@@ -210,6 +210,34 @@ def install():
     return 0
 
 
+# The five rules from CHECKLIST.md, printed on every run.
+#
+# Every one of them was written the day it cost hours, and every one was
+# already known when it cost them. A rule kept in a file nobody opens is a
+# rule that gets relearned; this puts them in front of whoever is about to
+# ship, beside the result they are about to trust.
+RULES = [
+    ("name the instrument, and what it cannot see",
+     "a headless browser with autoplay granted is not a phone"),
+    ("a check must assert what a READER would notice",
+     "not that a number stayed the same"),
+    ("re-run after the fix, and re-run the neighbours",
+     "a change that helps twenty can ruin two"),
+    ("never edit a generated file",
+     "check what writes it first"),
+    ("do not state a limitation you have not measured", ""),
+]
+
+
+def checklist():
+    print("
+  Before saying fixed  --  CHECKLIST.md")
+    for i, (head, tail) in enumerate(RULES, 1):
+        print("    %d. %s" % (i, head))
+        if tail:
+            print("       %s" % tail)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fast", action="store_true",
@@ -241,6 +269,7 @@ def main():
                     (name, out.strip()))
 
     print("\n  %d check(s) in %.0fs" % (len(names), time.time() - t0))
+    checklist()
     for aname, aout in advisory:
         tail = [l for l in aout.splitlines() if l.strip()][-1:]
         print("  advisory, not blocking -- %s: %s"

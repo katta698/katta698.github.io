@@ -234,7 +234,45 @@
       setTimeout(function () { _tryPlay(false); }, 250);
       setTimeout(function () { _tryPlay(true); }, 900);
       setTimeout(function () { _tryPlay(true); }, 2200);
+      // and the same again for a video that never stopped and never moved
+      _clockStalled();
+      setTimeout(_clockStalled, 1500);
     };
+    // The case every line above misses: NOT paused, and not moving.
+    //
+    // Reported as the hero freezing after switching to another app and back,
+    // needing a manual refresh. Everything above opens with
+    //
+    //     if (!v.paused) return;
+    //
+    // which is the right question for a video that stopped and the wrong one
+    // for this. iOS frees the decoded frames of a backgrounded video; the
+    // element can come back reporting paused === false, with a readyState it
+    // is happy about, and simply never advance. It is not stopped. It is
+    // playing nothing, forever, and every recovery path here exits on its
+    // first line.
+    //
+    // So this asks the only question that cannot be answered wrongly: did the
+    // clock move? Sample currentTime, wait, sample again. A video that is
+    // genuinely playing has advanced; one that has been gutted has not, no
+    // matter what it says about itself. Then load() puts the data back.
+    //
+    // 600ms because a real frame at 25fps arrives every 40ms, so anything
+    // still identical after 600 is not slow, it is stopped. The comparison is
+    // against a tolerance rather than equality: currentTime is a float and a
+    // stalled element occasionally reports a hair of drift.
+    var _clockStalled = function () {
+      if (document.hidden) return;
+      var t0 = v.currentTime;
+      window.setTimeout(function () {
+        if (document.hidden || v.paused) return;   // paused is handled above
+        if (Math.abs(v.currentTime - t0) > 0.05) return;    // it is moving
+        try { v.load(); } catch (e) {}
+        var p = v.play();
+        if (p && p.catch) p.catch(function () {});
+      }, 600);
+    };
+
     v.addEventListener('loadeddata', _tryPlay, { once: true });
     v.addEventListener('canplay', _tryPlay, { once: true });
     document.addEventListener('visibilitychange', _resume);
