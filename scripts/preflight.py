@@ -230,8 +230,8 @@ RULES = [
 
 
 def checklist():
-    print("
-  Before saying fixed  --  CHECKLIST.md")
+    print()
+    print("  Before saying fixed  --  CHECKLIST.md")
     for i, (head, tail) in enumerate(RULES, 1):
         print("    %d. %s" % (i, head))
         if tail:
