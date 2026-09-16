@@ -173,6 +173,43 @@ def main():
                               % (name, want, seq[-1],
                                  "playing" if playing else "silent"))
 
+            # A browser that will NOT autoplay, which is what a phone is.
+            #
+            # Everything above runs with autoplay permitted, so the resume
+            # always succeeds and the speaker is always truthful. That is not
+            # an iPhone. iOS refuses to start audio on a freshly loaded page,
+            # and the fault reported -- a button showing the speaker on every
+            # page while nothing played -- only exists in that case. A check
+            # that grants itself permission the reader does not have cannot
+            # see it.
+            blocked = pw.chromium.launch()
+            print("  and with autoplay refused, as on a phone")
+            for name, path in PAGES:
+                ctx = blocked.new_context(**pw.devices["iPhone 13"])
+                ctx.add_init_script(
+                    "try{localStorage.setItem('beachAudio','on');}catch(e){}")
+                pg = ctx.new_page()
+                url = base + path
+                if args.live:
+                    url += "?n=%d" % random.randint(1, 999999)
+                pg.goto(url, wait_until="domcontentloaded", timeout=90000)
+                pg.wait_for_timeout(3000)
+                st = pg.evaluate(STATE)
+                g = pg.evaluate("() => getComputedStyle("
+                                "document.getElementById('audio-toggle'),"
+                                "'::before').content")
+                ctx.close()
+                if SPEAKER in g and not st["playing"]:
+                    problems.append(
+                        "%s: the button shows the speaker while the audio is "
+                        "silent -- it is reporting what the reader wanted, "
+                        "not what the browser allowed" % name)
+                    print("     FAIL %-11s says playing, is silent" % name)
+                else:
+                    print("     ok   %-11s %s, audio %s" % (
+                        name, g, "playing" if st["playing"] else "silent"))
+            blocked.close()
+
             print("  the sound carries between tabs")
             ctx = b.new_context(viewport={"width": 1440, "height": 900})
             pg = ctx.new_page()
