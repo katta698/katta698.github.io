@@ -1452,6 +1452,19 @@
   function button() { return document.getElementById('audio-toggle'); }
 
   function paint(playing) {
+    /* A class on <html>, not textContent.
+     *
+     * The glyph is drawn by CSS from --jk-ins and html.jk-audio-on, both set
+     * in <head> before the first frame -- see the note beside those rules.
+     * Writing textContent here would be invisible (the button's own text is
+     * sized to nothing) and would leave the class saying the opposite.
+     *
+     * The textContent write is kept as well, so that anything still reading
+     * the button's text -- the two page-level toggle handlers, and any check
+     * that asserts on it -- sees the same answer the reader sees. */
+    var d = document.documentElement;
+    if (playing) { d.classList.add('jk-audio-on'); }
+    else { d.classList.remove('jk-audio-on'); }
     var b = button();
     if (!b) return;
     b.textContent = playing ? '🔊'
@@ -1504,11 +1517,69 @@
     document.addEventListener('click', function (e) {
       if (!e.target.closest || !e.target.closest('#audio-toggle')) return;
       // After the page's own handler has run and play()/pause() has settled.
-      window.setTimeout(remember, 150);
+      //
+      // paint() as well as remember(): the portfolio's toggleAudio() and the
+      // blog's toggleBlogAudio() set the button's text themselves and know
+      // nothing about the class the glyph is now drawn from. Reading the
+      // element and painting from that keeps the two in step without a
+      // fourth copy of the toggle logic.
+      window.setTimeout(function () {
+        remember();
+        var a = audio();
+        if (a) paint(!a.paused);
+      }, 150);
     }, true);
 
     var a = audio();
     if (!a || !wanted() || !a.paused) return;
+
+    /* Not before the element has a file to play.
+     * ---------------------------------------------------------------------
+     * Reported as: sound carries from the portfolio to Intelligence, What's
+     * New and Live status, and stops the moment you open the blog.
+     *
+     * The audio element ships with no src -- hero-media.js picks the track
+     * and sets it. On three pages that file is loaded at the FOOT, after the
+     * <audio> tag, so the src is set while the document is still parsing and
+     * is there by the time this runs. On the blog it is loaded early, beside
+     * the hero video, so it defers its own work to DOMContentLoaded and sets
+     * the src AFTER this. Measured at DOMContentLoaded:
+     *
+     *     /intelligence/   src=/blog/assets/audio/boho-3.mp3
+     *     /blog/           src=(none)
+     *
+     * So this called play() on an element with nothing loaded. That does not
+     * throw and does not warn -- it resolves or rejects quietly -- and then
+     * hero-media.js assigns the src, which RESETS the media element and
+     * discards the play. Silence, with the button correctly showing not-
+     * playing, and no error anywhere.
+     *
+     * This is the third bug caused by where hero-media.js is loaded. Rather
+     * than move it again and trade one page's problem for another's, the
+     * resume now waits for the thing it actually depends on: a source. If
+     * one is already set it goes immediately, as before; if not it watches
+     * the attribute and goes when it arrives.
+     */
+    if (!(a.getAttribute('src') || a.src)) {
+      try {
+        var mo = new MutationObserver(function () {
+          var el = audio();
+          if (!el || !(el.getAttribute('src') || el.src)) return;
+          mo.disconnect();
+          if (!wanted() || !el.paused) return;
+          el.play().then(function () { paint(true); }).catch(function () {});
+        });
+        mo.observe(a, { attributes: true, attributeFilter: ['src'] });
+        // A source can also arrive as a <source> child or via load(), which
+        // the attribute filter would not see.
+        a.addEventListener('loadstart', function () {
+          var el = audio();
+          if (!el || !wanted() || !el.paused) return;
+          el.play().then(function () { paint(true); }).catch(function () {});
+        }, { once: true });
+      } catch (e) {}
+      return;
+    }
 
     a.play().then(function () { paint(true); }).catch(function () {
       // Blocked until this page has a gesture of its own. Take the next one.

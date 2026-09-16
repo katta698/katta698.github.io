@@ -58,6 +58,7 @@ BROWSER = {
     "check_sticky_clear", "check_occasion_banner", "check_status_cards",
     "check_music", "check_post_controls", "check_nav", "check_contrast",
     "check_bar_settle", "check_feed_theme", "check_sheet_align",
+    "check_audio_glyph",
     "check_blog_filters", "check_dark_theme", "check_footer_clear",
     "check_map_devices", "check_map_alignment", "check_map_search",
     "check_news_reserve", "check_feedback", "check_region_suggest",
@@ -112,6 +113,7 @@ HOOK_BROWSER = {
     "check_brand",               # mark and wordmark identical
     "check_nav",                 # every page reachable, the bar fits
     "check_music",               # the button actually plays
+    "check_audio_glyph",         # ...once, and keeps playing across tabs
     "check_post_controls",       # ask, arrow and star not swallowed
     "check_page_settle",         # the page not rebuilding itself
     "check_sticky_clear",        # nothing hiding under the header
