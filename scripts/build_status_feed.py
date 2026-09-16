@@ -286,7 +286,14 @@ XSL = """<?xml version="1.0" encoding="utf-8"?>
     a{color:var(--acc)}
   </style>
 </head>
-<body><script>/*<![CDATA[*/(function(){try{if(localStorage.getItem('theme')==='light'){document.body.className='light';}}catch(e){}})();/*]]>*/</script><div class="wrap">
+<body><script>/*<![CDATA[*/(function(){try{if(localStorage.getItem('theme')==='light'){document.body.className='light';}}catch(e){}/* The day, from the READER's clock, exactly as the site does it.
+           The attribute baked into the file is the build machine's UTC day,
+           and check_status_feed caught the two disagreeing: the feed rendered
+           wed while the site rendered tue, because it is past midnight UTC
+           and not yet midnight here. It is wrong for a reader in any timezone
+           behind UTC for part of every day, and the site itself has always
+           used new Date().getDay(). The baked attribute stays as the answer
+           for a reader with no JavaScript. */try{var D=['sun','mon','tue','wed','thu','fri','sat'];document.documentElement.setAttribute('data-palette',D[new Date().getDay()]);}catch(e){}})();/*]]>*/</script><div class="wrap">
   <h1><xsl:value-of select="atom:feed/atom:title"/></h1>
   <p class="sub"><xsl:value-of select="atom:feed/atom:subtitle"/></p>
   <div class="note">
