@@ -57,6 +57,8 @@ import threading
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SPEAKER = "🔊"
+
 PAGES = [("portfolio", "/"), ("blog", "/blog/"), ("hub", "/intelligence/"),
          ("whats-new", "/intelligence/whats-new/"),
          ("status", "/intelligence/status/")]
@@ -133,20 +135,43 @@ def main():
                     pg.goto(url, wait_until="commit", timeout=90000)
                     pg.wait_for_timeout(3000)
                     seq = pg.evaluate("() => window.__v")
+                    # Read BEFORE closing the context, or the evaluate below
+                    # runs against a dead page.
+                    playing = pg.evaluate(STATE)["playing"]
                     ctx.close()
+                    # The instrument must not churn, and the speaker must
+                    # never appear unless the audio is really playing.
+                    #
+                    # An earlier version of this required exactly ONE glyph,
+                    # which the pre-painted speaker satisfied -- it never
+                    # flickered, it was simply wrong, showing sound-on on an
+                    # iPhone that was silent. A check can be passed by the
+                    # bug it was written to catch if it measures steadiness
+                    # instead of truth.
+                    quiet = [g for g in seq if SPEAKER not in g]
                     if not seq:
                         problems.append("%s (sound %s): no music button"
                                         % (name, want))
-                    elif len(seq) > 1:
+                    elif len(quiet) > 1:
                         problems.append(
-                            "%s (sound %s): the button shows %d different "
-                            "glyphs while loading -- %s"
-                            % (name, want, len(seq), " then ".join(seq)))
+                            "%s (sound %s): the instrument changes while "
+                            "loading -- %s" % (name, want, " then ".join(quiet)))
                         print("     FAIL %-11s sound %-3s %s"
                               % (name, want, " -> ".join(seq)))
+                    elif (SPEAKER in seq[-1]) != playing:
+                        problems.append(
+                            "%s (sound %s): the button shows %s while the "
+                            "audio is %s -- the glyph is reporting what was "
+                            "wanted, not what is happening"
+                            % (name, want, seq[-1],
+                               "playing" if playing else "silent"))
+                        print("     FAIL %-11s sound %-3s %s, audio %s"
+                              % (name, want, seq[-1],
+                                 "playing" if playing else "silent"))
                     else:
-                        print("     ok   %-11s sound %-3s %s"
-                              % (name, want, seq[0]))
+                        print("     ok   %-11s sound %-3s %s (audio %s)"
+                              % (name, want, seq[-1],
+                                 "playing" if playing else "silent"))
 
             print("  the sound carries between tabs")
             ctx = b.new_context(viewport={"width": 1440, "height": 900})

@@ -1106,7 +1106,7 @@ document.documentElement.setAttribute("data-palette",p);})();
      frame is already the right colour instead of the wrong one; the real
      stylesheet then refines it to the day's palette, which is a shade,
      not a flash. -->
-<script>(function(){var d=document.documentElement;d.className+=' ck-js';try{d.style.backgroundColor=localStorage.getItem('theme')==='light'?'#F7F4EF':'#1F1D1B';}catch(e){}var I=['🎻','🎸','🪕','🪈','🪘','🥁','🎺','🪗','🎷','🎹'],n=Math.floor((Date.now()-new Date().getTimezoneOffset()*60000)/86400000);d.style.setProperty('--jk-ins',"'"+I[((n%10)+10)%10]+"'");try{if(localStorage.getItem('beachAudio')==='on')d.className+=' jk-audio-on';}catch(e){}})();</script>
+<script>(function(){var d=document.documentElement;d.className+=' ck-js';try{d.style.backgroundColor=localStorage.getItem('theme')==='light'?'#F7F4EF':'#1F1D1B';}catch(e){}var I=['🎻','🎸','🪕','🪈','🪘','🥁','🎺','🪗','🎷','🎹'],n=Math.floor((Date.now()-new Date().getTimezoneOffset()*60000)/86400000);d.style.setProperty('--jk-ins',"'"+I[((n%10)+10)%10]+"'");})();</script>
 <!-- Before first paint, not injected after load.
      The banner is position:fixed and the nav offsets itself by its
      height, so arriving late moved the whole header down 37px about
