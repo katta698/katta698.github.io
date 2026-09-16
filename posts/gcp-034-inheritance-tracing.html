@@ -1,0 +1,345 @@
+---
+title: "GCP Architecture Series #34 — Inheritance in Practice: Tracing Why an Account Has Access"
+date: '2026-09-16T09:00:00'
+slug: gcp-architecture-inheritance-tracing
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-09-16'
+verified_claims:
+  - claim: "Resources inherit the allow policies of the parent resource"
+    source: https://docs.cloud.google.com/iam/docs/resource-hierarchy-access-control
+  - claim: "Allow policies are hierarchical and propagate down the structure"
+    source: https://docs.cloud.google.com/iam/docs/resource-hierarchy-access-control
+  - claim: "IAM roles granted at this level are inherited by all resources under the organization"
+    source: https://docs.cloud.google.com/iam/docs/resource-hierarchy-access-control
+  - claim: "Roles granted at the highest folder level will be inherited by projects or other folders that are contained in that parent folder"
+    source: https://docs.cloud.google.com/iam/docs/resource-hierarchy-access-control
+  - claim: "Projects represent a trust boundary within your company"
+    source: https://docs.cloud.google.com/iam/docs/resource-hierarchy-access-control
+  - claim: "additional resources such as Pub/Sub topics and Compute Engine instances support lower-level roles"
+    source: https://docs.cloud.google.com/iam/docs/resource-hierarchy-access-control
+  - claim: "If an inherited role already gives a principal all of the permissions that they need"
+    source: https://docs.cloud.google.com/iam/docs/resource-hierarchy-access-control
+  - claim: "Granting another role that contains the same or fewer permissions is redundant"
+    source: https://docs.cloud.google.com/iam/docs/resource-hierarchy-access-control
+  - claim: "allow policy does not show any roles gained through policy inheritance"
+    source: https://docs.cloud.google.com/iam/docs/manage-access-other-resources
+  - claim: "To view inherited roles, use the Google Cloud console"
+    source: https://docs.cloud.google.com/iam/docs/manage-access-other-resources
+  - claim: "This request only returns principals who have been granted the Owner role on the project"
+    source: https://docs.cloud.google.com/asset-inventory/docs/searching-iam-policies
+  - claim: "The caller must have the iam.roles.get permission for permissions to be listed in a searchAllIamPolicies response"
+    source: https://docs.cloud.google.com/asset-inventory/docs/searching-iam-policies
+  - claim: "Contains one of the following IAM principal types"
+    source: https://docs.cloud.google.com/asset-inventory/docs/searching-iam-policies
+  - claim: "get the ancestors for a project"
+    source: https://docs.cloud.google.com/sdk/gcloud/reference/projects/get-ancestors
+  - claim: "print the folder and organization hierarchy for the given project"
+    source: https://docs.cloud.google.com/sdk/gcloud/reference/projects/get-ancestors
+problem: "Someone has access they should not have, and the resource's own policy does not mention them. Effective access is a union over the whole ancestry, so the answer is somewhere above — and both of the tools you would naturally reach for answer a narrower question than the one you asked, without telling you so."
+builds: "The four levels a binding can sit at, exactly what each inspection method shows and hides, a tracing procedure that terminates, and why the binding you eventually find may not be the one granting the access."
+catch: "A resource's allow policy does not show roles gained through inheritance, and the asset search that looks like it answers who-has-access returns only principals granted the role directly on that resource. Neither reports the omission — and if you lack iam.roles.get, the search quietly returns fewer permissions than exist."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #034 &middot; IAM</div>
+  <h1 class="post-title">Inheritance in Practice: Tracing Why an Account Has Access</h1>
+  <p class="post-subtitle">The resource does not know why. Two tools look like they answer the question and both answer a smaller one, silently.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Google Cloud &middot; IAM &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #33 established that effective access is a union over the ancestry. This post is the operational consequence: given a principal and a resource, find the binding responsible. Every failure below comes from an inspection that silently narrowed the question.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"I checked the resource policy and they are not in it"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          You checked one term of the union. An allow policy does not show any roles gained through policy inheritance &mdash; the output is what was set <em>at</em> that resource, and nothing about it indicates that more applies.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Read a <code>get-iam-policy</code> result as "bindings set here", never as "access here". The absence of a principal is not evidence.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"I searched all IAM policies across the organization"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Closer, but the search finds bindings <em>as written</em>. Google's own worked example is explicit: this request only returns principals who have been granted the Owner role on the project, and does not include those who inherit it.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Use the search to enumerate bindings at every level of the ancestry, then compute the union yourself. It is an inventory tool, not an evaluation engine.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"The search returned nothing, so they have no access"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Two ways that conclusion fails. The principal may never be named &mdash; a group is, and they are in it. And your own permissions can truncate the answer: the caller must have the <code>iam.roles.get</code> permission for permissions to be listed in a <code>searchAllIamPolicies</code> response.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Search for the groups the principal belongs to as well as the principal, and confirm you hold <code>iam.roles.get</code> before trusting an empty or permission-less result.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"Found the binding, deleted it, done"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          The binding you found may not be the one granting the access. If an inherited role already gives a principal all of the permissions that they need, a grant on the resource itself is redundant &mdash; granting another role that contains the same or fewer permissions is redundant, and has no effect.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Before deleting, establish whether the binding is the <em>source</em> or a duplicate of something inherited. Removing a redundant binding changes nothing and looks like a completed remediation.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Allow policies are hierarchical and propagate down the structure. A binding can sit at any of four levels, and tracing means enumerating all four.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-034-inheritance-tracing.svg" alt="Diagram: the four levels a Google Cloud IAM binding can sit at, what each inspection method shows and hides, a terminating procedure for tracing why a principal has access to a resource, and the redundant-binding trap that makes a deletion appear to work" />
+      <figcaption>Four places a binding can hide, three tools that each answer a different question, and one procedure that terminates.</figcaption>
+    </figure>
+
+    <h3>The four levels</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Level</th><th>What a binding here reaches</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Organization</strong></td>
+          <td>IAM roles granted at this level are inherited by all resources under the organization. The widest blast radius and the least frequently reviewed.</td>
+        </tr>
+        <tr>
+          <td><strong>Folder</strong></td>
+          <td>Roles granted at the highest folder level will be inherited by projects or other folders that are contained in that parent folder &mdash; so folder nesting means more than one folder may contribute.</td>
+        </tr>
+        <tr>
+          <td><strong>Project</strong></td>
+          <td>Everything in the project. Projects represent a trust boundary within your company, which is why this is where most grants land.</td>
+        </tr>
+        <tr>
+          <td><strong>Resource</strong></td>
+          <td>One object. Additional resources such as Pub/Sub topics and Compute Engine instances support lower-level roles, alongside the Cloud Storage and BigQuery systems.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>What each tool actually tells you</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Method</th><th>Answers</th><th>Hides</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>get-iam-policy</code> on the resource</td>
+          <td>Bindings set at this exact level.</td>
+          <td>Everything inherited. No indication any exists.</td>
+        </tr>
+        <tr>
+          <td><code>asset search-all-iam-policies</code></td>
+          <td>Bindings as written, anywhere in scope.</td>
+          <td>Inheritance; group membership; permissions you cannot read.</td>
+        </tr>
+        <tr>
+          <td>The Google Cloud console</td>
+          <td>Inherited roles &mdash; to view them, use the console.</td>
+          <td>Less than the others, which is the surprise.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout">
+      <strong>The one place the console is the more informative interface</strong>
+      <p>#32 and #33 both ran the other way: the console made the weaker choice easy, or hid a version flag that the API exposed. Here it inverts. The documented route to seeing inherited roles is the console; the CLI returns the local policy only. So the habit those posts encourage &mdash; prefer the API, it tells you more &mdash; is wrong for this one question, and a team that has standardised on the CLI will systematically miss inherited grants.</p>
+    </div>
+
+    <h3>A procedure that terminates</h3>
+    <ol>
+      <li><strong>Establish the ancestry.</strong> <code>gcloud projects get-ancestors</code> will get the ancestors for a project and print the folder and organization hierarchy for the given project. This is the list of levels you must check; without it you are guessing at depth.</li>
+      <li><strong>Expand the principal into a set.</strong> The principal itself, plus every group it belongs to, plus any group those groups belong to. Bindings name groups far more often than people, by #31's design argument.</li>
+      <li><strong>Read the policy at every level</strong> &mdash; resource, project, each folder, organization &mdash; asking for <strong>version 3</strong>, or conditions will be missing from what you read, per #33.</li>
+      <li><strong>Collect every binding matching any member of the set</strong>, and note which level each came from.</li>
+      <li><strong>Reduce.</strong> Of the bindings found, determine which actually confer the permission in question, and which are redundant against a wider inherited role.</li>
+    </ol>
+    <p>
+      The search API helps with steps 3 and 4 at scale &mdash; it takes a <code>memberTypes</code> filter that contains one of the following IAM principal types, so you can restrict a sweep to service accounts or groups &mdash; but the union in step 5 is yours to compute.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why the Answer Is Rarely Where You Looked</h2>
+
+    <p>
+      Two structural facts make the naive search fail, and they pull in opposite directions.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Fact</th><th>Effect on a search for a principal</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Good practice binds groups, not users (#31).</td>
+            <td>The principal is not in any binding. Searching for them returns nothing, correctly and uselessly.</td>
+          </tr>
+          <tr>
+            <td>Policies inherit downward, and grants concentrate at project and above.</td>
+            <td>The binding is not near the resource. Searching the resource returns nothing, correctly and uselessly.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      So the better an organisation follows the guidance in #31 and #32 &mdash; few durable groups, bound at a sensible level, no per-user grants on individual objects &mdash; the further the answer sits from the thing you are investigating. Tidy IAM is harder to trace, not easier. That is not an argument against tidiness; it is an argument for treating tracing as a procedure rather than a lookup.
+    </p>
+
+    <div class="callout amber">
+      <strong>The redundancy trap, which makes a failed fix look like a successful one</strong>
+      <p>Google's example uses the concentric basic roles: grant Kalani Editor at the project, and a Viewer grant on a topic beneath it is redundant, because Editor already contains everything Viewer has. Now invert it into an incident. You are asked to remove someone's read access to that topic. You find the Viewer binding on the topic, delete it, and verify the topic policy no longer mentions them. Nothing has changed &mdash; they still read the topic through Editor at the project. The deletion succeeded, the policy diff looks right, and the access is intact. The only defence is step 5: ask which binding is the source before removing any of them.</p>
+    </div>
+
+    <h3>What to do with this</h3>
+    <ol>
+      <li><strong>Never conclude from one level.</strong> A principal absent from a resource policy tells you nothing about their access to it.</li>
+      <li><strong>Get the ancestry first.</strong> It defines when the search is finished, which is the difference between a procedure and a hunt.</li>
+      <li><strong>Search for groups, not just the account.</strong> In a well-run estate the account will not appear anywhere.</li>
+      <li><strong>Confirm your own read permissions.</strong> Missing <code>iam.roles.get</code> makes results quietly incomplete rather than erroneous.</li>
+      <li><strong>Prove the revocation, do not assume it.</strong> Re-check effective access after the change, at the resource, not at the level you edited.</li>
+      <li><strong>Reach for the purpose-built tools when the manual walk gets long</strong> &mdash; Policy Troubleshooter and Policy Analyzer exist precisely to compute this, and they are #38.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Interpreting a resource policy</td>
+          <td>Read it as "set here", not "access here"</td>
+          <td>An allow policy does not show roles gained through policy inheritance.</td>
+        </tr>
+        <tr>
+          <td>Seeing inherited roles</td>
+          <td>The Google Cloud console</td>
+          <td>It is the documented route to view inherited roles.</td>
+        </tr>
+        <tr>
+          <td>Using the asset search for access questions</td>
+          <td>As an inventory of bindings</td>
+          <td>It returns only principals granted the role directly on the resource.</td>
+        </tr>
+        <tr>
+          <td>Scoping the investigation</td>
+          <td><code>get-ancestors</code> first</td>
+          <td>It prints the folder and organization hierarchy for the project.</td>
+        </tr>
+        <tr>
+          <td>Identifying the principal</td>
+          <td>Expand to groups, recursively</td>
+          <td>Well-designed policies bind groups, so the account may appear nowhere.</td>
+        </tr>
+        <tr>
+          <td>Reading policies during a trace</td>
+          <td>Request version 3</td>
+          <td>Otherwise conditions are absent from what you read (#33).</td>
+        </tr>
+        <tr>
+          <td>Trusting an empty search result</td>
+          <td>Only after checking your permissions</td>
+          <td><code>iam.roles.get</code> is required for permissions to be listed.</td>
+        </tr>
+        <tr>
+          <td>Removing a binding you found</td>
+          <td>Establish it is the source first</td>
+          <td>A role redundant against a wider inherited role has no effect to remove.</td>
+        </tr>
+        <tr>
+          <td>Verifying a revocation</td>
+          <td>Re-check at the resource</td>
+          <td>The union may still grant it from a level you did not edit.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      There is a particular kind of tool that is dangerous not because it is wrong but because it is narrower than its name suggests. <code>get-iam-policy</code> on a bucket returns a document called the bucket's allow policy, and it is complete and accurate about bindings set on the bucket. Search across an organization for a role and you get every binding granting it, accurately. Neither is lying. Both invite a conclusion they do not support, and neither says so in its output.
+    </p>
+    <p>
+      The defence is not a better tool &mdash; #38 covers those, and they are worth using. It is knowing what question you asked. "Is this principal in this policy" and "can this principal act on this resource" are different questions with different answers, and almost every access investigation that goes wrong went wrong by treating the first as an answer to the second. Get the ancestry, expand the groups, read every level, then decide.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#35 returns to roles and goes a level deeper on the one kind you own: custom roles &mdash; launch stages, and the permissions you cannot put in one no matter how much you want to.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/iam/docs/resource-hierarchy-access-control" target="_blank" rel="noopener">Allow policy inheritance and the resource hierarchy</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/manage-access-other-resources" target="_blank" rel="noopener">Manage access to other resources</a></li>
+      <li><a href="https://docs.cloud.google.com/asset-inventory/docs/searching-iam-policies" target="_blank" rel="noopener">Search IAM allow policies with Cloud Asset Inventory</a></li>
+      <li><a href="https://docs.cloud.google.com/sdk/gcloud/reference/projects/get-ancestors" target="_blank" rel="noopener">gcloud projects get-ancestors</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/policies" target="_blank" rel="noopener">Understanding allow policies</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/groups-in-cloud-console" target="_blank" rel="noopener">Create and manage Google groups in the console</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
