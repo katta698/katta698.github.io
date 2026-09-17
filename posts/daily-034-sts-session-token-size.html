@@ -1,0 +1,219 @@
+---
+title: 'AWS Daily Intelligence #34 - The limit you could hit but never measure'
+date: '2026-09-17T10:00:00'
+slug: aws-daily-intelligence-sts-session-token-size
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-09-17'
+verified_claims:
+  - claim: "AWS Security Token Service now enforces a single 4,096-byte size limit on session tokens, posted on September 15, 2026"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/aws-sts
+  - claim: "Previously STS had separate limits on session token size and passed-in parameters, namely inline policies, managed policies, and session tags"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/aws-sts
+  - claim: "STS now provides response elements indicating session token size and percentage utilization relative to the token size limit, and these are logged in CloudTrail and published to CloudWatch"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/aws-sts
+  - claim: "A new optional API parameter lets you generate larger session tokens, up to the 4,096-byte limit, to test whether your applications and infrastructure can handle them"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/aws-sts
+  - claim: "The features are available in all commercial AWS Regions, the AWS GovCloud (US) Regions, and the AWS European Sovereign Cloud Region"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/aws-sts
+  - claim: "The SessionTokenUtilization response element shows what percentage of the size limit the token uses, and the PackedPolicySize response element is deprecated with AWS directing customers to use SessionTokenUtilization instead"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "For role session policies the size of the passed JSON policy document and all passed managed policy ARN characters combined can't exceed 2,048 characters"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "You can pass a maximum of 10 managed policy ARNs when you create a session, and only one JSON policy document"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "You can pass up to 50 session tags, and session tags must meet the tag key limit of 128 characters and the tag value limit of 256 characters"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "AWS recommends passing session policies using the AWS CLI or AWS API because the AWS Management Console might increase the session token size by adding session information"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "Role session duration can range from 900 seconds, which is 15 minutes, up to a maximum session duration of 12 hours, and if you don't specify a value for DurationSeconds your security credentials are valid for one hour"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+  - claim: "For AWS STS requests made using AWS credentials the default request quota is 600 requests per second, per account, per Region, shared across AssumeRole, DecodeAuthorizationMessage, GetAccessKeyInfo, GetCallerIdentity, GetFederationToken and GetSessionToken"
+    source: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+problem: "Session token size is a limit almost nobody models and plenty of teams hit — session tags, inline session policies and managed policy ARNs all consume it, and until now the budget was split across several opaque sub-limits with no way to see how much of it a given session actually used."
+builds: "A reading of what consolidating to one 4,096-byte limit changes: a single number instead of several, a response element that reports utilisation as a percentage, CloudTrail and CloudWatch visibility, and an opt-in parameter that lets you generate an oversized token deliberately to find out what breaks."
+catch: "The announcement does not mention it, but the IAM quota reference does: PackedPolicySize is deprecated, and AWS now directs you to SessionTokenUtilization. Any tooling, dashboard or alarm reading the old element is reading a deprecated field — and it measured packed policy size, which was never the same thing as the token budget it is now replacing."
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      AWS STS <strong>&ldquo;now enforces a single 4,096-byte size limit on session tokens&rdquo;</strong>, replacing what were previously <em>&ldquo;separate limits on session token size and passed-in parameters (i.e., inline policies, managed policies, and session tags).&rdquo;</em>
+    </p>
+    <p>
+      This is a small announcement about an unglamorous constraint, and it is worth attention because of how that constraint fails. A session token that grows too large does not degrade &mdash; it breaks the call, in a component that usually has no idea what a session tag is. Federation with many attributes, role chaining, an ABAC model that tags generously: all of them spend from a budget that, until now, you could not read.
+    </p>
+    <p>
+      Two things come with the consolidation. STS now returns <em>&ldquo;response elements indicating session token size and percentage utilization relative to the token size limit&rdquo;</em>, logged in CloudTrail and published to CloudWatch. And there is an opt-in fault-injection parameter: <em>&ldquo;a new optional API parameter also lets you generate larger session tokens (up to the 4,096-byte limit) to test whether your applications and infrastructure can handle them.&rdquo;</em>
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>
+      Three things, and only the first is the headline.
+    </p>
+    <p>
+      <strong>One limit instead of several.</strong> A single 4,096-byte ceiling on the session token, rather than a token limit plus separate allowances for what you passed in. Fewer numbers to reason about, and one number that can actually be measured.
+    </p>
+    <p>
+      <strong>Utilisation is now observable.</strong> Size and percentage-of-limit come back on the response, land in CloudTrail, and are published to CloudWatch. That converts a cliff into a gauge &mdash; you can see a session at 80% before you meet the one at 101%.
+    </p>
+    <p>
+      <strong>You can deliberately make it big.</strong> The optional parameter that generates an oversized token is the most unusual part of this release. AWS shipping a supported way to produce the bad case, so you can find out which proxy, SDK or gateway falls over, is a testing affordance that most limits never get.
+    </p>
+    <p>
+      Availability is broad from the start: all commercial Regions, GovCloud (US), and the European Sovereign Cloud Region.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      To know whether this matters to you, it helps to know what spends the budget.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-034-sts-session-token-size.svg" alt="Diagram: what consumes the AWS STS session token budget and what changed. On the left, the inputs that spend the budget when a session is created: session tags, of which up to 50 may be passed with a tag key limit of 128 characters and a tag value limit of 256 characters; session policies, where the passed JSON policy document and all passed managed policy ARN characters combined cannot exceed 2,048 characters, with a maximum of 10 managed policy ARNs and only one JSON document; and identity provider attributes carried through federation. A note records that AWS recommends passing session policies through the CLI or API because the Management Console might increase the session token size by adding session information. In the centre, the change: previously there were separate limits on session token size and on passed-in parameters, and now STS enforces a single 4,096-byte limit on the session token. On the right, what is new for operators: response elements report session token size and percentage utilisation relative to the limit, those values are logged in CloudTrail and published to CloudWatch, and an optional API parameter generates deliberately larger tokens up to the limit so applications and infrastructure can be tested against the bad case. A panel at the bottom records the deprecation that the announcement omits but the IAM quota reference states: the PackedPolicySize response element is deprecated and AWS directs customers to use SessionTokenUtilization instead, so any tooling reading the old element is reading a deprecated field that measured something different." />
+      <figcaption>Everything on the left spends one budget. What is new is that the budget is a single number, and you can finally read it.</figcaption>
+    </figure>
+
+    <p>
+      <strong>Session tags.</strong> Up to <strong>50</strong> of them, with a tag key limit of <strong>128 characters</strong> and a tag value limit of <strong>256 characters</strong>. An ABAC model that passes department, cost centre, project and environment on every session is spending real budget on every call.
+    </p>
+    <p>
+      <strong>Session policies.</strong> <em>&ldquo;The size of the passed JSON policy document and all passed managed policy ARN characters combined can't exceed 2,048 characters&rdquo;</em>, with a maximum of <strong>10</strong> managed policy ARNs and exactly one JSON document. Note that the ARNs count as characters, so ten long ARNs consume the allowance before any policy is written.
+    </p>
+    <p>
+      <strong>And the console adds its own.</strong> A detail worth carrying: AWS recommends passing session policies via CLI or API because <em>&ldquo;the AWS Management Console might increase the session token size by adding session information.&rdquo;</em> The same role assumed two ways does not produce the same token size &mdash; which is exactly the sort of thing that makes this class of failure reproduce in one path and not another.
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      The value is diagnostic time on a failure that is genuinely horrible to debug.
+    </p>
+    <p>
+      An oversized session token does not announce itself as a size problem. It surfaces as a request rejected by a load balancer, a proxy returning 400 on a header it considers too large, or an SDK failing in a way that points at anything but STS. Teams lose days to this, because the thing that failed is not the thing that grew.
+    </p>
+    <p>
+      A percentage-of-limit figure in CloudTrail changes that from an investigation into a lookup. And for anyone rolling out ABAC or adding attributes to a federation, it converts &ldquo;will this fit?&rdquo; from a question answered in production into one answered before merge.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      No permission boundary changes here, and it would be wrong to imply one. Nothing about who can assume what has moved.
+    </p>
+    <p>
+      The security-adjacent point is about what teams do when they hit the old limit. The usual workarounds are to drop session tags or to loosen a session policy &mdash; both of which weaken the controls those features exist to provide. ABAC depends on the tags arriving; a session policy is a least-privilege narrowing at assume time. Trimming them to fit a budget nobody could measure is a security decision made for a size reason, and a measurable budget lets that trade-off be made knowingly rather than by trial and error.
+    </p>
+    <p>
+      Worth noting the surrounding session settings while you are in this area: role session duration runs from <strong>900 seconds</strong> up to a maximum of <strong>12 hours</strong>, and <em>&ldquo;if you don't specify a value for the <code class="inline">DurationSeconds</code> parameter, your security credentials are valid for one hour.&rdquo;</em> Duration and size are independent budgets, and only one of them has just become visible.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      No pricing change is stated, and STS itself is not charged per call.
+    </p>
+    <p>
+      There is a modest indirect cost if you act on the new telemetry: these values are published to CloudWatch, and a custom metric or a CloudTrail-derived alarm on session token utilisation is billable like any other. That is a small, deliberate spend and an easy one to justify against the debugging time it replaces.
+    </p>
+    <p>
+      The adjacent quota worth knowing is the request rate rather than the size: <em>&ldquo;the default request quota is 600 requests per second, per account, per Region&rdquo;</em>, shared across <code class="inline">AssumeRole</code>, <code class="inline">GetCallerIdentity</code>, <code class="inline">GetSessionToken</code> and the rest. Size and rate are separate ceilings and are hit by different workloads.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      <strong>The deprecation is the action item, and it is not in the announcement.</strong> The IAM quota reference states it: <em>&ldquo;The <code class="inline">PackedPolicySize</code> response element is deprecated. Use <code class="inline">SessionTokenUtilization</code> instead.&rdquo;</em>
+    </p>
+    <p>
+      That matters more than a rename. <code class="inline">PackedPolicySize</code> reported the packed size of the policies you passed &mdash; a component of the problem, not the problem. <code class="inline">SessionTokenUtilization</code> reports the percentage of the actual token limit consumed, which is the number that decides whether the call works. Anything logging, alarming on, or asserting against the old element is reading a deprecated field that measured a different quantity.
+    </p>
+    <p>
+      <strong>Test with the new parameter before you need it.</strong> The ability to generate a deliberately large token is worth spending an afternoon on, because the failure lands outside AWS &mdash; in an ALB, an API gateway, a reverse proxy, a CI runner's environment size. Those are the components that will decide whether a future ABAC expansion is survivable, and none of them are covered by an AWS limit document.
+    </p>
+    <p>
+      <strong>Check the paths separately.</strong> Since the console may add to token size, a session that fits when assumed programmatically is not proof that the same role fits when assumed in the console. Test the path your users actually take.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <p>
+      <strong>Consolidation is simpler and slightly less forgiving.</strong> One 4,096-byte ceiling is far easier to reason about than a token limit plus separate parameter allowances. But a single shared budget means the components now compete directly: more session tags leaves less room for session policy, and the trade is explicit rather than absorbed by whichever sub-limit had slack.
+    </p>
+    <p>
+      <strong>Visibility invites a new alarm, which invites new noise.</strong> A utilisation metric is genuinely useful and will tempt a threshold alarm on every assume-role. Worth scoping to the sessions that actually vary &mdash; federated and ABAC-heavy paths &mdash; rather than every service-role assumption in the estate.
+    </p>
+    <p>
+      <strong>A test parameter is a capability like any other.</strong> Generating oversized tokens on purpose is exactly right in a test account and not something to leave reachable in production. It belongs behind the same controls as any other fault-injection tool.
+    </p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      <strong>Grep for <code class="inline">PackedPolicySize</code> first.</strong> It is the fastest audit available and it has a definite answer. Anywhere it appears &mdash; log parsers, dashboards, integration test assertions, a custom CloudWatch metric filter &mdash; is a place now reading a deprecated element.
+    </p>
+    <p>
+      <strong>Then measure your worst real session.</strong> Find the assume-role path with the most session tags and the largest session policy, and read the utilisation figure. That single number tells you how much headroom the estate has before an ABAC expansion becomes an outage.
+    </p>
+    <p>
+      <strong>Use the oversize parameter against your edge, not your code.</strong> The interesting failures are in the components between the client and AWS. Point the test at the real path &mdash; proxy, gateway, load balancer &mdash; because your own SDK almost certainly handles it fine.
+    </p>
+    <p>
+      <strong>Record the budget next to the ABAC design.</strong> If a tagging strategy is documented, note what it costs against 4,096 bytes. The next person adding two tags will otherwise discover the limit the same way the last one did.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <p>
+      <strong>Pass session policies through the CLI or API.</strong> It is AWS's own recommendation, and the reason is size &mdash; the console may add session information of its own.
+    </p>
+    <p>
+      <strong>Treat managed policy ARNs as characters, not slots.</strong> The 2,048-character allowance covers the JSON document and every ARN together. Long ARNs with long paths are not free.
+    </p>
+    <p>
+      <strong>Measure before expanding, not after.</strong> The whole value of this release is that the answer is now available before the failure. Reading it only after an incident wastes the improvement.
+    </p>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt this</h2>
+    <p>
+      The consolidated limit and the new response elements are already live everywhere, with nothing to enable.
+    </p>
+    <p>
+      The people who should act are narrower: anyone using session tags for ABAC, anyone passing session policies at assume time, anyone federating with an identity provider that carries many attributes, and anyone doing role chaining. If none of those apply, your session tokens are small, stable and uninteresting &mdash; and the only thing worth doing is the <code class="inline">PackedPolicySize</code> grep.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>STS now enforces one 4,096-byte session token limit, replacing separate limits on the token and on passed-in parameters.</li>
+      <li>Session token size and percentage utilisation are now returned on the response, logged in CloudTrail, and published to CloudWatch.</li>
+      <li><code class="inline">PackedPolicySize</code> is deprecated in favour of <code class="inline">SessionTokenUtilization</code> &mdash; stated in the quota reference, not the announcement.</li>
+      <li>The two elements do not measure the same thing: one was packed policy size, the other is percentage of the token limit.</li>
+      <li>An optional parameter generates deliberately oversized tokens so you can test the components that actually break &mdash; proxies, gateways, load balancers.</li>
+      <li>Spending the budget: up to 50 session tags, and 2,048 characters covering the session policy document plus all 10 possible managed policy ARNs.</li>
+      <li>The console may add to token size, so a programmatic assume-role is not proof the console path fits.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/09/aws-sts" target="_blank" rel="noopener">AWS STS simplifies session token size limits and adds session token size monitoring</a></li>
+      <li><a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html" target="_blank" rel="noopener">IAM and AWS STS quotas &#8212; session policy and session tag limits, the SessionTokenUtilization element, and the PackedPolicySize deprecation</a></li>
+    </ul>
+  </div>
+</div>

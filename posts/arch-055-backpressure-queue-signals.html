@@ -1,0 +1,366 @@
+---
+title: "AWS Architecture Series #55 — The oldest message is not the oldest message"
+date: '2026-09-17T09:00:00'
+slug: aws-architecture-backpressure-queue-signals
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-17'
+verified_claims:
+  - claim: "ApproximateAgeOfOldestMessage is the age of the oldest unprocessed message in the queue, reported in seconds if the queue contains at least one active message"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html
+  - claim: "For standard queues, if a message is received three or more times and not deleted, SQS moves it to the back of the queue, and the ApproximateAgeOfOldestMessage metric then reflects the age of the next message that hasn't exceeded the receive threshold, and this reordering occurs even when a redrive policy is in place"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html
+  - claim: "Poison-pill messages, those repeatedly received but never deleted, are excluded from the ApproximateAgeOfOldestMessage metric until successfully processed"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html
+  - claim: "When a message is moved to a dead-letter queue after exceeding the maxReceiveCount the age resets, and the DLQ's metric reflects the time the message was moved, not when it was originally sent"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html
+  - claim: "FIFO queues don't reorder messages to preserve order, and a failed message blocks its message group until it's deleted or expires"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html
+  - claim: "ApproximateNumberOfMessagesVisible is the number of messages currently available for retrieval and processing, reflects the current processing backlog in the queue, and a consistently high value may indicate under-provisioned consumers or stuck processing logic"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html
+  - claim: "On rare occasions ApproximateNumberOfMessagesNotVisible might report a non-zero value including when the queue is otherwise empty or has had no ReceiveMessage calls, it typically resolves within minutes, and AWS advises evaluating multiple consecutive data points rather than a single non-zero value"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html
+  - claim: "For some Amazon SQS metrics the result is approximate because of the distributed architecture of Amazon SQS"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html
+  - claim: "Messages automatically moved to a dead-letter queue due to processing failures are not captured by the NumberOfMessagesSent metric, so NumberOfMessagesSent and NumberOfMessagesReceived may show discrepancies for DLQs"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html
+  - claim: "For standard queues Lambda uses long polling to poll a queue until it becomes active, and when messages are available Lambda starts processing five batches at a time with five concurrent invocations of your function"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/services-sqs-scaling.html
+  - claim: "If messages are still available, Lambda increases the number of processes that are reading batches by up to 300 more concurrent invokes per minute"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/services-sqs-scaling.html
+  - claim: "The maximum number of invokes that an Amazon SQS event source mapping can process simultaneously is 1,250"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/services-sqs-scaling.html
+  - claim: "When traffic is low Lambda scales back the processing to five concurrent invokes and can optimize to as few as 2 concurrent invokes to reduce the Amazon SQS calls and corresponding costs, however this optimization is not available when you enable the maximum concurrency setting"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/services-sqs-scaling.html
+  - claim: "For maximum concurrency on an Amazon SQS event source you enter a number between 2 and 1,000, and there is no charge for configuring maximum concurrency"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/services-sqs-scaling.html
+  - claim: "Maximum concurrency and reserved concurrency are two independent settings, you should not set maximum concurrency higher than the function's reserved concurrency, and otherwise Lambda might throttle your messages"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/services-sqs-scaling.html
+  - claim: "For FIFO queues concurrent invocations are capped either by the number of message group IDs or the maximum concurrency setting, whichever is lower, so with six message group IDs and maximum concurrency set to 10 the function can have a maximum of six concurrent invocations"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/services-sqs-scaling.html
+  - claim: "When your account's concurrency quota is set to the default value of 1,000, an Amazon SQS event source mapping can scale to invoke function instances up to this value unless you specify a maximum concurrency"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/services-sqs-scaling.html
+  - claim: "By default Lambda polls up to 10 messages in your queue at once and sends that batch to your function, and you can configure the event source to buffer records for up to 5 minutes by configuring a batch window"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html
+  - claim: "If you're using a batch window and your SQS queue contains very low traffic, Lambda might wait for up to 20 seconds before invoking your function, and this is true even if you set a batch window lower than 20 seconds"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html
+  - claim: "Amazon SQS event source mapping configured with Provisioned Mode scales 3x faster, up to 1,000 concurrent invokes per minute, and supports 80x higher concurrency, up to 100,000 concurrent invokes, than default Amazon SQS event source mapping capability"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html
+  - claim: "Each event poller in provisioned mode can handle up to 1 MB/s of throughput, up to 10 concurrent invokes, or up to 10 Amazon SQS polling API calls per second"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html
+  - claim: "The range of accepted values for MinimumPollers is between 2 and 200 with a default of 2, and the range for MaximumPollers is between 2 and 10,000 with a default of 200"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html
+  - claim: "Lambda event source mappings process each event at least once and duplicate processing of records can occur, so AWS strongly recommends making your function code idempotent"
+    source: https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html
+problem: "A queue is backing up, the age-of-oldest-message alarm is calm, and the team adds consumers. All three of those facts are misleading: depth is a lagging aggregate, the age metric excludes exactly the messages that are stuck, and scaling consumers moves the overload downstream rather than removing it."
+builds: "A reading of what a queue's signals actually report, and what backpressure means on AWS: which metric answers which question, where the consumer's scaling ceiling sits and how fast it is reached, and how to use a concurrency limit deliberately as a valve rather than discovering it as a throttle."
+catch: "AWS documents that a standard-queue message received three or more times and not deleted is moved to the back of the queue, and that the age metric then reports the next message instead. Poison pills are excluded from the metric until successfully processed. The signal most teams alarm on for 'are we falling behind' gets healthier precisely as messages get stuck."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #055 &middot; Application Patterns</div>
+  <h1 class="post-title">The oldest message is not the oldest message</h1>
+  <p class="post-subtitle">Queue depth is a lagging aggregate, the age metric excludes the messages that are stuck, and adding consumers usually relocates an overload rather than absorbing it.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Reliability &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The previous post ended on a fleet of polite clients overwhelming a dependency, and the standard
+      answer to that: put a queue in front of it. This post is about what the queue then tells you, which
+      is less than most dashboards imply.
+    </p>
+    <p>
+      A backlog is growing. The consumers are Lambda functions on an SQS event source mapping. The
+      age-of-oldest-message alarm has not fired. Somebody adds capacity, the queue drains, and two hours
+      later the database behind the consumers is the incident instead.
+    </p>
+    <p>
+      Three assumptions failed, and the second one is the kind of thing you only find by reading the metric
+      definition rather than the metric.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Depth tells you the past, not the trend</strong></div>
+      <div class="challenge-body">
+        <p>
+          <code class="inline">ApproximateNumberOfMessagesVisible</code> is defined as the messages
+          <em>&ldquo;currently available for retrieval and processing&rdquo;</em>, and AWS is careful to
+          call it what it is: it <em>&ldquo;reflects the current processing backlog in the queue&rdquo;</em>,
+          where a consistently high value <em>&ldquo;may indicate under-provisioned consumers or stuck
+          processing logic.&rdquo;</em>
+        </p>
+        <p>
+          <em>May indicate</em>, and two different causes. Depth is an integral &mdash; the accumulated
+          difference between arrival and completion since the imbalance started. By the time it is visibly
+          large, the imbalance is old. It is a good alarm and a poor early warning, and it cannot tell you
+          which of the two causes you have.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Alarm on it, but diagnose with something else. Depth says &ldquo;behind&rdquo;, never &ldquo;why&rdquo;.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The age metric hides exactly what you need</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the one worth the whole post. <code class="inline">ApproximateAgeOfOldestMessage</code>
+          is the metric everyone reaches for, because latency beats volume as a health signal. Then read
+          what it does under failure:
+        </p>
+        <p>
+          <em>&ldquo;For standard queues, if a message is received three or more times and not deleted, SQS
+          moves it to the back of the queue. The metric then reflects the age of the next message that
+          hasn't exceeded the receive threshold. This reordering occurs even when a redrive policy is in
+          place.&rdquo;</em>
+        </p>
+        <p>
+          And explicitly: <em>&ldquo;Poison-pill messages (those repeatedly received but never deleted) are
+          excluded from this metric until successfully processed.&rdquo;</em>
+        </p>
+        <p>
+          So a message your consumer keeps failing on is removed from the very metric meant to reveal that
+          it is stuck. The alarm gets <em>healthier</em> as the failure sets in.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat the age metric as a measure of the <em>healthy</em> path. Detect stuck work at the DLQ and the receive count.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Adding consumers moved the problem</strong></div>
+      <div class="challenge-body">
+        <p>
+          A queue does not absorb load. It defers it. Draining faster means delivering the deferred load to
+          whatever the consumers depend on &mdash; a database, a third-party API, a downstream service with
+          its own limits.
+        </p>
+        <p>
+          On a default SQS event source mapping this happens without anybody choosing it. Lambda
+          <em>&ldquo;starts processing five batches at a time with five concurrent invocations&rdquo;</em>,
+          then <em>&ldquo;increases the number of processes that are reading batches by up to 300 more
+          concurrent invokes per minute&rdquo;</em>, up to a ceiling of <strong>1,250</strong>. The backlog
+          itself is the trigger. Nobody scaled anything.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Decide the drain rate deliberately, sized to the slowest thing downstream, not to the queue.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The useful frame is that a queue has two independent rates &mdash; arrival and drain &mdash; and
+      backpressure is the decision about which one you are willing to constrain.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-055-backpressure-queue-signals.svg" alt="Diagram: what an Amazon SQS queue's signals actually report, and where the consumer's drain rate is decided. On the left, the three queue metrics and what each one answers. ApproximateNumberOfMessagesVisible is the accumulated backlog, an integral of arrival minus completion, so it reports that you are behind but never why, and AWS notes a consistently high value may mean under-provisioned consumers or stuck processing logic. ApproximateAgeOfOldestMessage appears to report latency but excludes failing work: AWS states that a standard-queue message received three or more times and not deleted is moved to the back of the queue, the metric then reports the next message that has not exceeded the receive threshold, this happens even with a redrive policy in place, and poison-pill messages are excluded from the metric until successfully processed, so the metric improves as messages become stuck. ApproximateNumberOfMessagesNotVisible counts in-flight messages but may rarely report non-zero on an empty queue, so AWS advises evaluating several consecutive data points. On the right, the drain rate: a default Lambda event source mapping begins at five concurrent invocations, increases by up to 300 more concurrent invokes per minute driven by the backlog itself rather than by any human decision, and stops at a ceiling of 1,250 simultaneous invokes. The maximum concurrency setting, accepting a value between 2 and 1,000, is the valve that caps this deliberately, and provisioned mode instead scales up to 1,000 concurrency per minute toward as many as 100,000 concurrent invokes. A panel at the bottom records the consequence: the queue defers load rather than absorbing it, so raising the drain rate delivers the deferred load to whatever the consumers depend on, and the drain rate should be sized to the slowest dependency downstream rather than to the depth of the queue." />
+      <figcaption>Three signals, three different questions &mdash; and a drain rate that rises on its own unless something caps it.</figcaption>
+    </figure>
+
+    <h3>The default drain rate is aggressive, and it is automatic</h3>
+    <p>
+      The scaling curve is worth knowing precisely, because it is the thing that turns a queue into an
+      amplifier. Five concurrent invocations to start. Up to <strong>300 more per minute</strong> while
+      messages remain. A hard ceiling of <strong>1,250</strong> simultaneous invokes for the event source
+      mapping, and if the account concurrency quota is at its default of <strong>1,000</strong>, that quota
+      binds first.
+    </p>
+    <p>
+      In the other direction it is thriftier than most people expect: low traffic scales back to five, and
+      <em>&ldquo;can optimize to as few as 2 concurrent invokes to reduce the Amazon SQS calls and
+      corresponding costs.&rdquo;</em> With one caveat that matters if you reach for the obvious valve:
+      <em>&ldquo;this optimization is not available when you enable the maximum concurrency setting.&rdquo;</em>
+      Capping the top costs you the floor.
+    </p>
+
+    <h3>Maximum concurrency is the valve, and it has a trap</h3>
+    <p>
+      The event source's <strong>maximum concurrency</strong> &mdash; a value <em>&ldquo;between 2 and
+      1,000&rdquo;</em>, with <em>&ldquo;no charge for configuring&rdquo;</em> it &mdash; is the correct
+      place to express &ldquo;this queue may consume at most this much of my system.&rdquo; It is per event
+      source, so several queues on one function can each have their own.
+    </p>
+
+    <div class="callout amber">
+      <strong>Two independent settings that look like one</strong>
+      <p>AWS is direct about the failure: <em>&ldquo;Maximum concurrency and reserved concurrency are two independent settings. Don't set maximum concurrency higher than the function's reserved concurrency&hellip; Otherwise, Lambda might throttle your messages.&rdquo;</em> Setting a generous maximum concurrency against a smaller reserved concurrency does not raise the ceiling &mdash; it produces throttling, which the event source treats as failure, which drives retries and receive counts up. The valve, misconfigured, manufactures the poison pills that then vanish from your age metric.</p>
+    </div>
+
+    <p>
+      FIFO queues have a second ceiling that no setting overrides: concurrency is capped
+      <em>&ldquo;either by the number of message group IDs&hellip; or the maximum concurrency setting &mdash;
+      whichever is lower.&rdquo;</em> AWS's own example is six message groups against a maximum concurrency
+      of ten, yielding six. On a FIFO queue, your parallelism is a property of how producers assign group
+      IDs, decided upstream and often by a different team.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Every signal here is explicitly approximate</h3>
+    <p>
+      AWS opens the metric reference with the caveat: <em>&ldquo;For some metrics, the result is approximate
+      because of the distributed architecture of Amazon SQS.&rdquo;</em> That is not boilerplate, and one
+      case has a concrete operational consequence.
+    </p>
+    <p>
+      <code class="inline">ApproximateNumberOfMessagesNotVisible</code> <em>&ldquo;might report a non-zero
+      value, including when the queue is otherwise empty or has had no <code class="inline">ReceiveMessage</code>
+      calls&rdquo;</em> &mdash; and AWS's guidance is to <em>&ldquo;evaluate multiple consecutive data points
+      rather than a single non-zero value.&rdquo;</em> Any alarm here wants several datapoints to alarm, not
+      one. A single-datapoint alarm on an SQS metric is a pager that will eventually fire at 3am for nothing.
+    </p>
+
+    <div class="callout red">
+      <strong>Where stuck work actually becomes visible</strong>
+      <p>Since the age metric hides poison pills and depth cannot distinguish causes, the DLQ is the signal that does not lie &mdash; with one correction to make first. AWS documents that DLQ arrivals via redrive are invisible to the obvious counter: <em>&ldquo;Messages automatically moved to a DLQ due to processing failures are not captured by&rdquo;</em> <code class="inline">NumberOfMessagesSent</code>. The recommended metric for a DLQ is <code class="inline">ApproximateNumberOfMessagesVisible</code> on the DLQ itself. And note the age resets on arrival: a DLQ's age metric <em>&ldquo;reflects the time the message was moved&mdash;not when it was originally sent.&rdquo;</em> The DLQ tells you something is broken; it cannot tell you how long it has been broken.</p>
+    </div>
+
+    <h3>FIFO fails differently, and more honestly</h3>
+    <p>
+      The reordering that hides poison pills is a standard-queue behaviour. FIFO cannot do it:
+      <em>&ldquo;FIFO queues don't reorder messages to preserve order. A failed message blocks its message
+      group until it's deleted or expires.&rdquo;</em>
+    </p>
+    <p>
+      That is worse for throughput and better for observability. A stuck message on a FIFO queue halts its
+      group and the age metric climbs, which is exactly the alarm you wanted. On a standard queue the same
+      failure is smoothed away. When choosing between them, this belongs in the comparison alongside
+      ordering and deduplication &mdash; a standard queue is more forgiving of a bad message and quieter
+      about it.
+    </p>
+
+    <h3>Provisioned mode changes the shape, not the principle</h3>
+    <p>
+      For workloads that cannot wait through the default ramp, provisioned mode <em>&ldquo;scales 3x
+      faster (up to 1,000 concurrent invokes per minute) and supports 80x higher concurrency (up to 100,000
+      concurrent invokes).&rdquo;</em> Pollers are configured as a range &mdash;
+      <code class="inline">MinimumPollers</code> between <strong>2 and 200</strong>,
+      <code class="inline">MaximumPollers</code> between <strong>2 and 10,000</strong> &mdash; and each
+      poller handles <em>&ldquo;up to 1 MB/s of throughput, up to 10 concurrent invokes, or up to 10 Amazon
+      SQS polling API calls per second.&rdquo;</em>
+    </p>
+    <p>
+      It is a bigger, faster tap. The reasoning does not change: 100,000 concurrent invokes is a number your
+      downstream dependency has to survive. And the two controls are mutually exclusive &mdash; provisioned
+      mode cannot be combined with maximum concurrency, so you cap by poller count instead.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Primary backlog alarm</td>
+        <td>Depth, multi-datapoint</td>
+        <td>It is the honest aggregate. SQS metrics are approximate, so alarm on consecutive datapoints, never one.</td>
+      </tr>
+      <tr>
+        <td>Latency signal</td>
+        <td>Age, understood as healthy-path only</td>
+        <td>Standard queues move messages received 3+ times to the back, and exclude poison pills from the metric.</td>
+      </tr>
+      <tr>
+        <td>Stuck-work detection</td>
+        <td>DLQ depth, not the age metric</td>
+        <td>Redriven messages never appear in <code class="inline">NumberOfMessagesSent</code>. DLQ visible-count is AWS's recommendation.</td>
+      </tr>
+      <tr>
+        <td>Drain rate</td>
+        <td>Capped deliberately</td>
+        <td>The default ramps to 1,250 on backlog alone. Size it to the slowest dependency, not the queue.</td>
+      </tr>
+      <tr>
+        <td>Maximum concurrency</td>
+        <td>Set below reserved concurrency</td>
+        <td>They are independent. Maximum above reserved produces throttling, which becomes retries and receive counts.</td>
+      </tr>
+      <tr>
+        <td>Cost of capping</td>
+        <td>Accept the lost floor</td>
+        <td>Enabling maximum concurrency disables the scale-down to 2 concurrent invokes.</td>
+      </tr>
+      <tr>
+        <td>FIFO parallelism</td>
+        <td>Design the message group IDs</td>
+        <td>Concurrency is capped by group count or the setting, whichever is lower. Producers decide your ceiling.</td>
+      </tr>
+      <tr>
+        <td>Provisioned mode</td>
+        <td>Only with a downstream that can take it</td>
+        <td>Up to 100,000 concurrent invokes. Cap by poller count, since maximum concurrency cannot be used with it.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The batching detail that distorts a low-traffic latency SLO</h3>
+    <p>
+      Lambda <em>&ldquo;polls up to 10 messages in your queue at once&rdquo;</em> by default, and a batch
+      window can buffer for up to five minutes. On a quiet queue there is a floor worth knowing:
+      <em>&ldquo;If you're using a batch window and your SQS queue contains very low traffic, Lambda might
+      wait for up to 20 seconds before invoking your function. This is true even if you set a batch window
+      lower than 20 seconds.&rdquo;</em>
+    </p>
+    <p>
+      A five-second batch window does not promise five-second latency on a quiet queue. If a low-volume path
+      has a latency commitment, either drop the batch window or set the SLO above twenty seconds, because
+      the documented behaviour will not honour anything tighter.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      A queue is usually introduced as a shock absorber, and it genuinely is one &mdash; for the producer. It
+      lets a burst be accepted without being served. What it never does is make the work smaller, and every
+      message in it is a promise that something downstream still has to keep.
+    </p>
+    <p>
+      That is why the instinct to drain faster is so often wrong. Draining is not resolving; it is choosing
+      when the deferred load arrives and how concentrated it is when it does. The default event source
+      mapping makes that choice for you, on the basis of backlog alone, up to 1,250 concurrent invocations
+      &mdash; which is a decision about your database made by a queue that cannot see it.
+    </p>
+    <p>
+      And read the metric definitions rather than the metric names. <code class="inline">ApproximateAgeOfOldestMessage</code>
+      sounds like the one number that would tell you something is stuck. AWS documents that it is specifically
+      the number that will not.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Application patterns &mdash; multi-tenancy: pool, silo and bridge, what a noisy neighbour actually costs in a shared queue or table, and why the isolation decision is usually made implicitly by the first partition key somebody chose.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html" target="_blank" rel="noopener">Available CloudWatch metrics for Amazon SQS &#8212; what the age metric excludes, and why DLQ counters disagree</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/services-sqs-scaling.html" target="_blank" rel="noopener">Configuring scaling behavior for SQS event source mappings &#8212; five to 1,250, and the maximum concurrency valve</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html" target="_blank" rel="noopener">Using Lambda with Amazon SQS &#8212; batching, the 20-second low-traffic floor, and provisioned mode</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

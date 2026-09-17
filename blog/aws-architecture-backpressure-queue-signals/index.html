@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #55 — The oldest message is not the oldest message | Jayanth Katta Blog</title>
+<meta name="description" content="A queue is backing up, the age-of-oldest-message alarm is calm, and the team adds consumers. All three of those facts are misleading: depth is a lagging aggregate, the age metric excludes exactly the messages that are stuck, and scaling consumers moves the overload downstream rather than removing it."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="The oldest message is not the oldest message"/>
+<meta property="og:description" content="A queue is backing up, the age-of-oldest-message alarm is calm, and the team adds consumers. All three of those facts are misleading: depth is a lagging aggregate, the age metric excludes exactly the messages that are stuck, and scaling consumers moves the overload downstream rather than removing it."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-backpressure-queue-signals/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="The oldest message is not the oldest message"/>
+<meta name="twitter:description" content="A queue is backing up, the age-of-oldest-message alarm is calm, and the team adds consumers. All three of those facts are misleading: depth is a lagging aggregate, the age metric excludes exactly the messages that are stuck, and scaling consumers moves the overload downstream rather than removing it."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-backpressure-queue-signals/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=f612e7fb"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=934303f1" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=934303f1">
+<script src="/blog/assets/site-footer.js?v=934303f1" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #55 — The oldest message is not the oldest message…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #55 — The oldest message is not the oldest message</h1>
+      <p class="post-description">A queue is backing up, the age-of-oldest-message alarm is calm, and the team adds consumers. All three of those facts are misleading: depth is a lagging aggregate, the age metric excludes exactly the messages that are stuck, and scaling consumers moves the overload downstream rather than removing it.</p>
+      <div class="post-info">
+        <span>Sep 17, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>10 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 17 September 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-backpressure-queue-signals" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The previous post ended on a fleet of polite clients overwhelming a dependency, and the standard
+      answer to that: put a queue in front of it. This post is about what the queue then tells you, which
+      is less than most dashboards imply.
+    </p>
+    <p>
+      A backlog is growing. The consumers are Lambda functions on an SQS event source mapping. The
+      age-of-oldest-message alarm has not fired. Somebody adds capacity, the queue drains, and two hours
+      later the database behind the consumers is the incident instead.
+    </p>
+    <p>
+      Three assumptions failed, and the second one is the kind of thing you only find by reading the metric
+      definition rather than the metric.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Depth tells you the past, not the trend</strong></div>
+      <div class="challenge-body">
+        <p>
+          <code class="inline">ApproximateNumberOfMessagesVisible</code> is defined as the messages
+          <em>&ldquo;currently available for retrieval and processing&rdquo;</em>, and AWS is careful to
+          call it what it is: it <em>&ldquo;reflects the current processing backlog in the queue&rdquo;</em>,
+          where a consistently high value <em>&ldquo;may indicate under-provisioned consumers or stuck
+          processing logic.&rdquo;</em>
+        </p>
+        <p>
+          <em>May indicate</em>, and two different causes. Depth is an integral &mdash; the accumulated
+          difference between arrival and completion since the imbalance started. By the time it is visibly
+          large, the imbalance is old. It is a good alarm and a poor early warning, and it cannot tell you
+          which of the two causes you have.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Alarm on it, but diagnose with something else. Depth says &ldquo;behind&rdquo;, never &ldquo;why&rdquo;.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The age metric hides exactly what you need</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the one worth the whole post. <code class="inline">ApproximateAgeOfOldestMessage</code>
+          is the metric everyone reaches for, because latency beats volume as a health signal. Then read
+          what it does under failure:
+        </p>
+        <p>
+          <em>&ldquo;For standard queues, if a message is received three or more times and not deleted, SQS
+          moves it to the back of the queue. The metric then reflects the age of the next message that
+          hasn't exceeded the receive threshold. This reordering occurs even when a redrive policy is in
+          place.&rdquo;</em>
+        </p>
+        <p>
+          And explicitly: <em>&ldquo;Poison-pill messages (those repeatedly received but never deleted) are
+          excluded from this metric until successfully processed.&rdquo;</em>
+        </p>
+        <p>
+          So a message your consumer keeps failing on is removed from the very metric meant to reveal that
+          it is stuck. The alarm gets <em>healthier</em> as the failure sets in.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat the age metric as a measure of the <em>healthy</em> path. Detect stuck work at the DLQ and the receive count.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Adding consumers moved the problem</strong></div>
+      <div class="challenge-body">
+        <p>
+          A queue does not absorb load. It defers it. Draining faster means delivering the deferred load to
+          whatever the consumers depend on &mdash; a database, a third-party API, a downstream service with
+          its own limits.
+        </p>
+        <p>
+          On a default SQS event source mapping this happens without anybody choosing it. Lambda
+          <em>&ldquo;starts processing five batches at a time with five concurrent invocations&rdquo;</em>,
+          then <em>&ldquo;increases the number of processes that are reading batches by up to 300 more
+          concurrent invokes per minute&rdquo;</em>, up to a ceiling of <strong>1,250</strong>. The backlog
+          itself is the trigger. Nobody scaled anything.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Decide the drain rate deliberately, sized to the slowest thing downstream, not to the queue.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The useful frame is that a queue has two independent rates &mdash; arrival and drain &mdash; and
+      backpressure is the decision about which one you are willing to constrain.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-055-backpressure-queue-signals.svg" alt="Diagram: what an Amazon SQS queue's signals actually report, and where the consumer's drain rate is decided. On the left, the three queue metrics and what each one answers. ApproximateNumberOfMessagesVisible is the accumulated backlog, an integral of arrival minus completion, so it reports that you are behind but never why, and AWS notes a consistently high value may mean under-provisioned consumers or stuck processing logic. ApproximateAgeOfOldestMessage appears to report latency but excludes failing work: AWS states that a standard-queue message received three or more times and not deleted is moved to the back of the queue, the metric then reports the next message that has not exceeded the receive threshold, this happens even with a redrive policy in place, and poison-pill messages are excluded from the metric until successfully processed, so the metric improves as messages become stuck. ApproximateNumberOfMessagesNotVisible counts in-flight messages but may rarely report non-zero on an empty queue, so AWS advises evaluating several consecutive data points. On the right, the drain rate: a default Lambda event source mapping begins at five concurrent invocations, increases by up to 300 more concurrent invokes per minute driven by the backlog itself rather than by any human decision, and stops at a ceiling of 1,250 simultaneous invokes. The maximum concurrency setting, accepting a value between 2 and 1,000, is the valve that caps this deliberately, and provisioned mode instead scales up to 1,000 concurrency per minute toward as many as 100,000 concurrent invokes. A panel at the bottom records the consequence: the queue defers load rather than absorbing it, so raising the drain rate delivers the deferred load to whatever the consumers depend on, and the drain rate should be sized to the slowest dependency downstream rather than to the depth of the queue." />
+      <figcaption>Three signals, three different questions &mdash; and a drain rate that rises on its own unless something caps it.</figcaption>
+    </figure>
+
+    <h3>The default drain rate is aggressive, and it is automatic</h3>
+    <p>
+      The scaling curve is worth knowing precisely, because it is the thing that turns a queue into an
+      amplifier. Five concurrent invocations to start. Up to <strong>300 more per minute</strong> while
+      messages remain. A hard ceiling of <strong>1,250</strong> simultaneous invokes for the event source
+      mapping, and if the account concurrency quota is at its default of <strong>1,000</strong>, that quota
+      binds first.
+    </p>
+    <p>
+      In the other direction it is thriftier than most people expect: low traffic scales back to five, and
+      <em>&ldquo;can optimize to as few as 2 concurrent invokes to reduce the Amazon SQS calls and
+      corresponding costs.&rdquo;</em> With one caveat that matters if you reach for the obvious valve:
+      <em>&ldquo;this optimization is not available when you enable the maximum concurrency setting.&rdquo;</em>
+      Capping the top costs you the floor.
+    </p>
+
+    <h3>Maximum concurrency is the valve, and it has a trap</h3>
+    <p>
+      The event source's <strong>maximum concurrency</strong> &mdash; a value <em>&ldquo;between 2 and
+      1,000&rdquo;</em>, with <em>&ldquo;no charge for configuring&rdquo;</em> it &mdash; is the correct
+      place to express &ldquo;this queue may consume at most this much of my system.&rdquo; It is per event
+      source, so several queues on one function can each have their own.
+    </p>
+
+    <div class="callout amber">
+      <strong>Two independent settings that look like one</strong>
+      <p>AWS is direct about the failure: <em>&ldquo;Maximum concurrency and reserved concurrency are two independent settings. Don't set maximum concurrency higher than the function's reserved concurrency&hellip; Otherwise, Lambda might throttle your messages.&rdquo;</em> Setting a generous maximum concurrency against a smaller reserved concurrency does not raise the ceiling &mdash; it produces throttling, which the event source treats as failure, which drives retries and receive counts up. The valve, misconfigured, manufactures the poison pills that then vanish from your age metric.</p>
+    </div>
+
+    <p>
+      FIFO queues have a second ceiling that no setting overrides: concurrency is capped
+      <em>&ldquo;either by the number of message group IDs&hellip; or the maximum concurrency setting &mdash;
+      whichever is lower.&rdquo;</em> AWS's own example is six message groups against a maximum concurrency
+      of ten, yielding six. On a FIFO queue, your parallelism is a property of how producers assign group
+      IDs, decided upstream and often by a different team.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>Every signal here is explicitly approximate</h3>
+    <p>
+      AWS opens the metric reference with the caveat: <em>&ldquo;For some metrics, the result is approximate
+      because of the distributed architecture of Amazon SQS.&rdquo;</em> That is not boilerplate, and one
+      case has a concrete operational consequence.
+    </p>
+    <p>
+      <code class="inline">ApproximateNumberOfMessagesNotVisible</code> <em>&ldquo;might report a non-zero
+      value, including when the queue is otherwise empty or has had no <code class="inline">ReceiveMessage</code>
+      calls&rdquo;</em> &mdash; and AWS's guidance is to <em>&ldquo;evaluate multiple consecutive data points
+      rather than a single non-zero value.&rdquo;</em> Any alarm here wants several datapoints to alarm, not
+      one. A single-datapoint alarm on an SQS metric is a pager that will eventually fire at 3am for nothing.
+    </p>
+
+    <div class="callout red">
+      <strong>Where stuck work actually becomes visible</strong>
+      <p>Since the age metric hides poison pills and depth cannot distinguish causes, the DLQ is the signal that does not lie &mdash; with one correction to make first. AWS documents that DLQ arrivals via redrive are invisible to the obvious counter: <em>&ldquo;Messages automatically moved to a DLQ due to processing failures are not captured by&rdquo;</em> <code class="inline">NumberOfMessagesSent</code>. The recommended metric for a DLQ is <code class="inline">ApproximateNumberOfMessagesVisible</code> on the DLQ itself. And note the age resets on arrival: a DLQ's age metric <em>&ldquo;reflects the time the message was moved&mdash;not when it was originally sent.&rdquo;</em> The DLQ tells you something is broken; it cannot tell you how long it has been broken.</p>
+    </div>
+
+    <h3>FIFO fails differently, and more honestly</h3>
+    <p>
+      The reordering that hides poison pills is a standard-queue behaviour. FIFO cannot do it:
+      <em>&ldquo;FIFO queues don't reorder messages to preserve order. A failed message blocks its message
+      group until it's deleted or expires.&rdquo;</em>
+    </p>
+    <p>
+      That is worse for throughput and better for observability. A stuck message on a FIFO queue halts its
+      group and the age metric climbs, which is exactly the alarm you wanted. On a standard queue the same
+      failure is smoothed away. When choosing between them, this belongs in the comparison alongside
+      ordering and deduplication &mdash; a standard queue is more forgiving of a bad message and quieter
+      about it.
+    </p>
+
+    <h3>Provisioned mode changes the shape, not the principle</h3>
+    <p>
+      For workloads that cannot wait through the default ramp, provisioned mode <em>&ldquo;scales 3x
+      faster (up to 1,000 concurrent invokes per minute) and supports 80x higher concurrency (up to 100,000
+      concurrent invokes).&rdquo;</em> Pollers are configured as a range &mdash;
+      <code class="inline">MinimumPollers</code> between <strong>2 and 200</strong>,
+      <code class="inline">MaximumPollers</code> between <strong>2 and 10,000</strong> &mdash; and each
+      poller handles <em>&ldquo;up to 1 MB/s of throughput, up to 10 concurrent invokes, or up to 10 Amazon
+      SQS polling API calls per second.&rdquo;</em>
+    </p>
+    <p>
+      It is a bigger, faster tap. The reasoning does not change: 100,000 concurrent invokes is a number your
+      downstream dependency has to survive. And the two controls are mutually exclusive &mdash; provisioned
+      mode cannot be combined with maximum concurrency, so you cap by poller count instead.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Primary backlog alarm</td>
+        <td>Depth, multi-datapoint</td>
+        <td>It is the honest aggregate. SQS metrics are approximate, so alarm on consecutive datapoints, never one.</td>
+      </tr>
+      <tr>
+        <td>Latency signal</td>
+        <td>Age, understood as healthy-path only</td>
+        <td>Standard queues move messages received 3+ times to the back, and exclude poison pills from the metric.</td>
+      </tr>
+      <tr>
+        <td>Stuck-work detection</td>
+        <td>DLQ depth, not the age metric</td>
+        <td>Redriven messages never appear in <code class="inline">NumberOfMessagesSent</code>. DLQ visible-count is AWS's recommendation.</td>
+      </tr>
+      <tr>
+        <td>Drain rate</td>
+        <td>Capped deliberately</td>
+        <td>The default ramps to 1,250 on backlog alone. Size it to the slowest dependency, not the queue.</td>
+      </tr>
+      <tr>
+        <td>Maximum concurrency</td>
+        <td>Set below reserved concurrency</td>
+        <td>They are independent. Maximum above reserved produces throttling, which becomes retries and receive counts.</td>
+      </tr>
+      <tr>
+        <td>Cost of capping</td>
+        <td>Accept the lost floor</td>
+        <td>Enabling maximum concurrency disables the scale-down to 2 concurrent invokes.</td>
+      </tr>
+      <tr>
+        <td>FIFO parallelism</td>
+        <td>Design the message group IDs</td>
+        <td>Concurrency is capped by group count or the setting, whichever is lower. Producers decide your ceiling.</td>
+      </tr>
+      <tr>
+        <td>Provisioned mode</td>
+        <td>Only with a downstream that can take it</td>
+        <td>Up to 100,000 concurrent invokes. Cap by poller count, since maximum concurrency cannot be used with it.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The batching detail that distorts a low-traffic latency SLO</h3>
+    <p>
+      Lambda <em>&ldquo;polls up to 10 messages in your queue at once&rdquo;</em> by default, and a batch
+      window can buffer for up to five minutes. On a quiet queue there is a floor worth knowing:
+      <em>&ldquo;If you're using a batch window and your SQS queue contains very low traffic, Lambda might
+      wait for up to 20 seconds before invoking your function. This is true even if you set a batch window
+      lower than 20 seconds.&rdquo;</em>
+    </p>
+    <p>
+      A five-second batch window does not promise five-second latency on a quiet queue. If a low-volume path
+      has a latency commitment, either drop the batch window or set the SLO above twenty seconds, because
+      the documented behaviour will not honour anything tighter.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      A queue is usually introduced as a shock absorber, and it genuinely is one &mdash; for the producer. It
+      lets a burst be accepted without being served. What it never does is make the work smaller, and every
+      message in it is a promise that something downstream still has to keep.
+    </p>
+    <p>
+      That is why the instinct to drain faster is so often wrong. Draining is not resolving; it is choosing
+      when the deferred load arrives and how concentrated it is when it does. The default event source
+      mapping makes that choice for you, on the basis of backlog alone, up to 1,250 concurrent invocations
+      &mdash; which is a decision about your database made by a queue that cannot see it.
+    </p>
+    <p>
+      And read the metric definitions rather than the metric names. <code class="inline">ApproximateAgeOfOldestMessage</code>
+      sounds like the one number that would tell you something is stuck. AWS documents that it is specifically
+      the number that will not.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Application patterns &mdash; multi-tenancy: pool, silo and bridge, what a noisy neighbour actually costs in a shared queue or table, and why the isolation decision is usually made implicitly by the first partition key somebody chose.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html" target="_blank" rel="noopener">Available CloudWatch metrics for Amazon SQS &#8212; what the age metric excludes, and why DLQ counters disagree</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/services-sqs-scaling.html" target="_blank" rel="noopener">Configuring scaling behavior for SQS event source mappings &#8212; five to 1,250, and the maximum concurrency valve</a></li>
+      <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html" target="_blank" rel="noopener">Using Lambda with Amazon SQS &#8212; batching, the 20-second low-traffic floor, and provisioned mode</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-daily-intelligence-root-user-regional-resiliency/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Daily Intelligence #33 - The root alarm was watching one Region</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-backpressure-queue-signals/';
+      this.page.identifier = 'aws-architecture-backpressure-queue-signals';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=934303f1"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
