@@ -47,6 +47,9 @@ PRIORITY = [
     ("index.html", "1.0", "weekly"),
     ("intelligence/status/index.html", "0.9", "hourly"),
     ("intelligence/whats-new/index.html", "0.9", "daily"),
+    # Weekly: the store changes when a vendor announces something or a
+    # date is re-verified, which is neither hourly nor rare.
+    ("intelligence/events/index.html", "0.8", "weekly"),
     ("intelligence/index.html", "0.8", "weekly"),
     ("blog/index.html", "0.8", "daily"),
 ]

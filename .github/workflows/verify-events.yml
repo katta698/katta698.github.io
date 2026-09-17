@@ -1,0 +1,88 @@
+# Keep the events page honest without anyone remembering to look.
+#
+# The page claims every row links to the cloud's own page, carries only dates
+# that cloud published, and has been re-read recently. Those are promises, and
+# a promise nobody tests is decoration.
+#
+# What this does NOT do is bump the `verified` date. That is the whole point.
+# A link resolving proves the page still exists; it says nothing about whether
+# the dates on it still say what they said. Auto-stamping `verified` on a
+# successful link check would turn the one honest field in the store into a
+# rubber stamp, and the page would then claim freshness it had never earned.
+#
+# So: this fails when a link dies, and it fails when a row passes 30 days
+# without a human re-reading the source. The second failure is not a bug to be
+# silenced -- it is the reminder working. Re-read the vendor page, correct the
+# dates if they moved, set `verified` to today.
+#
+# Daily at 06:20 UTC, just after ingest-news.yml at 05:10, so the two crons on
+# this repo do not overlap and neither is mid-run when the other commits.
+name: Verify cloud events
+
+on:
+  schedule:
+    - cron: "20 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify every event link and freshness date
+        id: verify
+        run: |
+          set +e
+          python scripts/check_events.py > events-report.txt 2>&1
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+          cat events-report.txt
+
+      - name: Open or update an issue when something has drifted
+        if: steps.verify.outputs.code != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = [
+              'The events page has drifted. Either a vendor link stopped',
+              'resolving, or a row has gone 30 days without anyone re-reading',
+              'the source.',
+              '',
+              'This is the reminder working, not a bug to silence. Re-read the',
+              "vendor's page, correct the dates if they moved, and set",
+              '`verified` to today in `intelligence/events.json`.',
+              '',
+              '```',
+              fs.readFileSync('events-report.txt', 'utf8').slice(0, 55000),
+              '```',
+            ].join('\n');
+            const title = 'Cloud events need re-verifying';
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'events',
+            });
+            const existing = open.data.find(i => i.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['events'],
+              });
+            }
+
+      - name: Fail the run so it is visible in the Actions list
+        if: steps.verify.outputs.code != '0'
+        run: exit 1
