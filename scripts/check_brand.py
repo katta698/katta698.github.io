@@ -73,6 +73,57 @@ PROBE = r"""() => {
 }"""
 
 
+def settle(pg, ms=2400):
+    """Wait for the webfonts, not for a guess at how long they take.
+
+    This used to be a flat 2400ms, which is plenty on its own and not
+    plenty when six headless browsers are sharing one machine and one
+    local server. Under the full preflight run this check reported
+
+        1440px: wordmark width differs on /intelligence/ -- 114.8 against 96.6
+
+    and passed on its own immediately after. 114.8 is the wordmark drawn in
+    the fallback serif; 96.6 is Playfair Display. Nothing about the site had
+    changed between the two runs -- the font simply had not arrived yet.
+
+    document.fonts.ready is the property that was actually meant all along:
+    it resolves when font loading has finished, however long that takes. The
+    timeout is a floor, not a promise, so a machine under load waits longer
+    and a quiet one does not wait at all.
+
+    Kept deliberately short after that, because a check that is reliable and
+    slow gets bypassed just like one that is fast and flaky.
+    """
+    try:
+        pg.wait_for_function("() => document.fonts && document.fonts.status "
+                             "=== 'loaded'", timeout=ms * 4)
+    except Exception:                                       # noqa: BLE001
+        # No webfonts, or they failed: measuring is still worth doing, and a
+        # missing face is check_shell_consistency's business, not this one.
+        pass
+    pg.wait_for_timeout(400)
+
+
+# One connection at a time was the whole problem.
+#
+# socketserver.TCPServer is single-threaded: it serves one request, then the
+# next. A browser opening a page wants the HTML, two stylesheets, three
+# scripts and two font files, and it asks for them at once -- so they queued,
+# and with six checks running in parallel they queued behind each other's
+# queues too.
+#
+# That is why check_brand reported the wordmark at 114.8px (the fallback
+# serif) instead of 96.6px (Playfair) only during a full run, and why
+# check_bar_settle saw the portfolio's bar slide 18px only during a full run.
+# Neither was a fault in the site. Both were this line.
+#
+# ThreadingTCPServer serves them concurrently. daemon_threads so a hung
+# request cannot keep the process alive after the check is done.
+class _Threaded(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def serve():
     class H(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *a):
@@ -81,7 +132,7 @@ def serve():
     socketserver.TCPServer.allow_reuse_address = True
     for port in range(9101, 9151):
         try:
-            srv = socketserver.TCPServer(("127.0.0.1", port), H)
+            srv = _Threaded(("127.0.0.1", port), H)
             threading.Thread(target=srv.serve_forever, daemon=True).start()
             return srv, port
         except OSError:
@@ -113,7 +164,7 @@ def main():
                     ctx = b.new_context(viewport={"width": w, "height": 900})
                     pg = ctx.new_page()
                     pg.goto(base + p, wait_until="load", timeout=45000)
-                    pg.wait_for_timeout(2400)
+                    settle(pg)
                     rows[p] = pg.evaluate(PROBE)
                     ctx.close()
 

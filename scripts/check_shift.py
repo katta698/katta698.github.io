@@ -72,6 +72,19 @@ def biggest(entries, axis):
     return worst
 
 
+# Serve the requests at once, not one after another.
+#
+# socketserver.TCPServer is single-threaded, and a browser asks for the HTML,
+# the stylesheets, the scripts and the font files together. They queued -- and
+# with six checks in parallel, behind each other's queues as well. That is why
+# the wordmark measured 114.8px (the fallback serif) instead of 96.6px
+# (Playfair) only ever during a full run. daemon_threads so a hung request
+# cannot outlive the check.
+class _Threaded(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default=None, help="test a deployed site instead")
@@ -96,7 +109,7 @@ def main():
         port = None
         for p in range(8951, 8991):
             try:
-                srv = socketserver.TCPServer(("127.0.0.1", p), Quiet)
+                srv = _Threaded(("127.0.0.1", p), Quiet)
                 port = p
                 break
             except OSError:

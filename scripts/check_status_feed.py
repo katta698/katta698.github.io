@@ -43,6 +43,19 @@ RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 NAMES = {"aws": "AWS", "azure": "Azure", "gcp": "Google Cloud"}
 
 
+# Serve the requests at once, not one after another.
+#
+# socketserver.TCPServer is single-threaded, and a browser asks for the HTML,
+# the stylesheets, the scripts and the font files together. They queued -- and
+# with six checks in parallel, behind each other's queues as well. That is why
+# the wordmark measured 114.8px (the fallback serif) instead of 96.6px
+# (Playfair) only ever during a full run. daemon_threads so a hung request
+# cannot outlive the check.
+class _Threaded(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def serve_root():
     """The whole site, so a feed and the page it belongs to can be compared."""
     class H(http.server.SimpleHTTPRequestHandler):
@@ -61,7 +74,7 @@ def serve_root():
     socketserver.TCPServer.allow_reuse_address = True
     for port in range(8651, 8701):
         try:
-            srv = socketserver.TCPServer(("127.0.0.1", port), H)
+            srv = _Threaded(("127.0.0.1", port), H)
             threading.Thread(target=srv.serve_forever, daemon=True).start()
             return srv, port
         except OSError:

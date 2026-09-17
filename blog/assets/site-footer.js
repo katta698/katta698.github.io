@@ -2199,3 +2199,134 @@
     setTimeout(start, 60);
   }
 })();
+
+/* ---------------------------------------------------------------------------
+   Pull to refresh, and ONLY when there is no browser to do it for you.
+
+   Reported after adding the site to an iPhone home screen: inside Safari you
+   can pull the page down to reload it, but the installed app has no way to
+   refresh at all. That is correct and it is the manifest's doing --
+   "display": "standalone" removes the address bar, the reload button and the
+   pull gesture along with them.
+
+   The service worker does notice a changed page and reload it, but it is
+   deliberately hobbled so it can never yank the page out from under a reader:
+
+       if (touched) return;                      // you scrolled
+       if (performance.now() > 10000) return;    // more than 10s in
+
+   Open the app, scroll once, and nothing will ever refresh it again. So the
+   gesture the standalone window took away is given back here, and nowhere
+   else: in a browser tab this does not attach at all, because the browser's
+   own pull gesture is better than any imitation of it and two of them
+   fighting is worse than either.
+
+   Deliberately NOT a reload on returning to the app. It sounds tidier and it
+   throws away your scroll position in the middle of reading, which is a worse
+   annoyance than a stale page.
+   ------------------------------------------------------------------------ */
+(function () {
+  'use strict';
+
+  // Standalone only. matchMedia covers Android and desktop installs;
+  // navigator.standalone is the iOS-specific one and is what matters here.
+  var installed = false;
+  try {
+    installed = (window.matchMedia &&
+                 window.matchMedia('(display-mode: standalone)').matches) ||
+                window.navigator.standalone === true;
+  } catch (e) { installed = false; }
+  if (!installed) return;
+  if (!('ontouchstart' in window)) return;
+
+  /* Two distances, and keeping them apart matters.
+   *
+   * RAW is how far the thumb actually travelled. RESISTED is how far the
+   * indicator moves, damped so the pull feels like it is pulling against
+   * something rather than dragging a sheet of paper.
+   *
+   * The first version armed on the RESISTED value, which reads fine and is
+   * wrong: with dy = raw^0.82, arming at 72 needs 72^(1/0.82) = 184px of
+   * travel. On a phone that is most of the screen, and the check duly
+   * reported "pulled past the threshold and the indicator never armed" at a
+   * 110px pull -- the code was working exactly as written and the number
+   * meant something other than what it looked like.
+   *
+   * So: arm on the thumb, animate on the damping. */
+  var THRESHOLD = 90;   // raw finger travel before this arms
+  var MAX = 104;        // the indicator stops travelling here
+  var startY = null, raw = 0, dy = 0, pulling = false, firing = false;
+
+  var el = document.createElement('div');
+  el.className = 'jk-ptr';
+  el.setAttribute('aria-hidden', 'true');
+  el.innerHTML = '<span class="jk-ptr-mark"></span>';
+
+  function attach() {
+    if (!el.parentNode && document.body) document.body.appendChild(el);
+  }
+  if (document.body) attach();
+  else document.addEventListener('DOMContentLoaded', attach, { once: true });
+
+  function paint() {
+    var t = Math.min(dy, MAX);
+    el.style.transform = 'translate3d(-50%,' + t + 'px,0)';
+    el.style.opacity = String(Math.min(1, raw / THRESHOLD));
+    if (raw >= THRESHOLD) { el.classList.add('is-ready'); }
+    else { el.classList.remove('is-ready'); }
+  }
+
+  function reset() {
+    startY = null; raw = 0; dy = 0; pulling = false;
+    el.classList.remove('is-ready');
+    el.style.transition = 'transform .18s ease, opacity .18s ease';
+    el.style.transform = 'translate3d(-50%,0,0)';
+    el.style.opacity = '0';
+    window.setTimeout(function () { el.style.transition = ''; }, 200);
+  }
+
+  document.addEventListener('touchstart', function (e) {
+    if (firing || e.touches.length !== 1) return;
+    // Only from the very top. Anywhere else this is an ordinary scroll and
+    // must be left completely alone.
+    if ((window.scrollY || window.pageYOffset || 0) > 0) return;
+    startY = e.touches[0].clientY;
+    raw = 0; dy = 0;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', function (e) {
+    if (firing || startY === null || e.touches.length !== 1) return;
+    var d = e.touches[0].clientY - startY;
+    if (d <= 0) {                       // moving up: an ordinary scroll
+      if (pulling) reset();
+      return;
+    }
+    if ((window.scrollY || window.pageYOffset || 0) > 0) { reset(); return; }
+    pulling = true;
+    raw = d;
+    dy = Math.pow(d, 0.82);        // damped, for the indicator only
+    // preventDefault ONLY once we are certain this is a pull, and only while
+    // it continues. Calling it any earlier would break ordinary scrolling,
+    // which is the one thing this must not do.
+    if (e.cancelable) e.preventDefault();
+    paint();
+  }, { passive: false });
+
+  function release() {
+    if (firing || startY === null) return;
+    if (pulling && raw >= THRESHOLD) {
+      firing = true;
+      el.classList.add('is-firing');
+      // location.reload() can be served from the cache. Adding a token means
+      // the worker treats it as a new request, which is the entire point of
+      // pulling: the reader is asking for what is on the server now.
+      var u = location.href.split('#')[0];
+      u += (u.indexOf('?') === -1 ? '?' : '&') + 'r=' + Date.now();
+      window.setTimeout(function () { location.replace(u); }, 180);
+      return;
+    }
+    reset();
+  }
+  document.addEventListener('touchend', release, { passive: true });
+  document.addEventListener('touchcancel', reset, { passive: true });
+})();

@@ -128,6 +128,26 @@ def synthetic(rows):
             "history_count": real.get("history_count", 0)}
 
 
+# One connection at a time was the whole problem.
+#
+# socketserver.TCPServer is single-threaded: it serves one request, then the
+# next. A browser opening a page wants the HTML, two stylesheets, three
+# scripts and two font files, and it asks for them at once -- so they queued,
+# and with six checks running in parallel they queued behind each other's
+# queues too.
+#
+# That is why check_brand reported the wordmark at 114.8px (the fallback
+# serif) instead of 96.6px (Playfair) only during a full run, and why
+# check_bar_settle saw the portfolio's bar slide 18px only during a full run.
+# Neither was a fault in the site. Both were this line.
+#
+# ThreadingTCPServer serves them concurrently. daemon_threads so a hung
+# request cannot keep the process alive after the check is done.
+class _Threaded(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def serve(payload):
     """The real site, with one file swapped in memory."""
     body = json.dumps(payload).encode("utf-8")
@@ -154,7 +174,7 @@ def serve(payload):
     socketserver.TCPServer.allow_reuse_address = True
     for port in range(8971, 9011):
         try:
-            srv = socketserver.TCPServer(("127.0.0.1", port), Handler)
+            srv = _Threaded(("127.0.0.1", port), Handler)
             threading.Thread(target=srv.serve_forever, daemon=True).start()
             return srv, port
         except OSError:

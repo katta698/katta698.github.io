@@ -37,6 +37,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = 8961
 
 
+# Serve the requests at once, not one after another.
+#
+# socketserver.TCPServer is single-threaded, and a browser asks for the HTML,
+# the stylesheets, the scripts and the font files together. They queued -- and
+# with six checks in parallel, behind each other's queues as well. That is why
+# the wordmark measured 114.8px (the fallback serif) instead of 96.6px
+# (Playfair) only ever during a full run. daemon_threads so a hung request
+# cannot outlive the check.
 def _serve(handler, port):
     """A local server on `port`, or the next free one after it.
 
@@ -48,9 +56,17 @@ def _serve(handler, port):
     """
     import socketserver as _ss
     _ss.TCPServer.allow_reuse_address = True
+
+    # Defined here, not at module level: _ss is imported inside this function,
+    # so a class built on it outside cannot see the name. That crashed four
+    # checks in 1.7s each -- which in a parallel run reads like a fast failure
+    # rather than a file that does not import.
+    class _Threaded(_ss.ThreadingTCPServer):
+        daemon_threads = True
+        allow_reuse_address = True
     for p in range(port, port + 40):
         try:
-            return _ss.TCPServer(("127.0.0.1", p), handler), p
+            return _Threaded(("127.0.0.1", p), handler), p
         except OSError:
             continue
     raise SystemExit("no free port in %d-%d" % (port, port + 40))

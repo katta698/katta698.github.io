@@ -58,6 +58,7 @@ BROWSER = {
     "check_sticky_clear", "check_occasion_banner", "check_status_cards",
     "check_music", "check_post_controls", "check_nav", "check_contrast",
     "check_bar_settle", "check_feed_theme", "check_sheet_align",
+    "check_pull_refresh",
     "check_audio_glyph",
     "check_blog_filters", "check_dark_theme", "check_footer_clear",
     "check_map_devices", "check_map_alignment", "check_map_search",

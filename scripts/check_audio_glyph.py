@@ -72,7 +72,15 @@ WATCH = """window.__v = [];
       window.__v.push(g);
     }
   }
-  if (window.__v.length < 40) setTimeout(sample, 70);
+  /* Keep looking until the button has actually been seen.
+     On three of the five pages the button is built by script, so a fixed
+     budget is a bet on how fast the machine is. Under the full preflight run
+     this reported "no music button" on the portfolio and passed alone
+     straight after -- the sampler had simply run out before the button
+     arrived. The cap is now on TIME SPENT, not on samples collected. */
+  if (window.__n === undefined) window.__n = 0;
+  window.__n += 1;
+  if (window.__n < 140) setTimeout(sample, 70);
 })();"""
 
 STATE = """() => {
@@ -80,6 +88,26 @@ STATE = """() => {
   return {playing: a ? !a.paused : false,
           t: a ? +a.currentTime.toFixed(1) : 0};
 }"""
+
+
+# One connection at a time was the whole problem.
+#
+# socketserver.TCPServer is single-threaded: it serves one request, then the
+# next. A browser opening a page wants the HTML, two stylesheets, three
+# scripts and two font files, and it asks for them at once -- so they queued,
+# and with six checks running in parallel they queued behind each other's
+# queues too.
+#
+# That is why check_brand reported the wordmark at 114.8px (the fallback
+# serif) instead of 96.6px (Playfair) only during a full run, and why
+# check_bar_settle saw the portfolio's bar slide 18px only during a full run.
+# Neither was a fault in the site. Both were this line.
+#
+# ThreadingTCPServer serves them concurrently. daemon_threads so a hung
+# request cannot keep the process alive after the check is done.
+class _Threaded(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
 
 
 def serve():
@@ -90,7 +118,7 @@ def serve():
     socketserver.TCPServer.allow_reuse_address = True
     for port in range(9801, 9860):
         try:
-            srv = socketserver.TCPServer(("127.0.0.1", port), H)
+            srv = _Threaded(("127.0.0.1", port), H)
             threading.Thread(target=srv.serve_forever, daemon=True).start()
             return srv, port
         except OSError:
@@ -133,6 +161,14 @@ def main():
                     if args.live:
                         url += "?n=%d" % random.randint(1, 999999)
                     pg.goto(url, wait_until="commit", timeout=90000)
+                    # Wait for the thing being measured to exist, rather than
+                    # assuming three seconds is always enough for a script to
+                    # build it.
+                    try:
+                        pg.wait_for_selector("#audio-toggle", state="attached",
+                                             timeout=30000)
+                    except Exception:                       # noqa: BLE001
+                        pass
                     pg.wait_for_timeout(3000)
                     seq = pg.evaluate("() => window.__v")
                     # Read BEFORE closing the context, or the evaluate below
