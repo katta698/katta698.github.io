@@ -1,0 +1,344 @@
+---
+title: "Azure Architecture Series #36 — Managed Identity on VMs, App Service, Functions and AKS"
+date: '2026-09-17T09:00:00'
+slug: azure-architecture-managed-identity-by-host
+labels: [Azure, "Azure Architecture Series"]
+verified: '2026-09-17'
+verified_claims:
+  - claim: "The security boundary of managed identities for Azure resources is the resource where the identity is used, and all code or scripts running on a virtual machine can request and retrieve tokens for any managed identities available on it"
+    source: https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
+  - claim: "The recommended endpoint for acquiring a token on a virtual machine is the Azure Instance Metadata Service at http://169.254.169.254/metadata/identity/oauth2/token"
+    source: https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
+  - claim: "The IMDS token request requires an api-version query parameter, and the guidance is to use API version 2018-02-01 or greater"
+    source: https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
+  - claim: "The Metadata HTTP request header field is required by managed identities, is used as a mitigation against server side request forgery attacks, and must be set to true in all lower case"
+    source: https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
+  - claim: "On a virtual machine the object_id, client_id and msi_res_id query string parameters are optional individually but required if the VM has multiple user-assigned managed identities"
+    source: https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
+  - claim: "The refresh_token field in the IMDS token response is not used by managed identities for Azure resources"
+    source: https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
+  - claim: "The managed identities subsystem caches tokens, and on-the-wire calls to Microsoft Entra ID result only when a cache miss occurs or the cached token is expired"
+    source: https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
+  - claim: "A 410 response from IMDS indicates it is going through updates and will be available within a maximum of 70 seconds"
+    source: https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
+  - claim: "Retry if you receive a 404, 429, or 5xx error code from IMDS, while 4xx errors are design-time errors that should not be retried"
+    source: https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
+  - claim: "Throttling limits apply to the number of calls made to the IMDS endpoint, and when the threshold is exceeded IMDS returns HTTP status code 429 and the requests fail"
+    source: https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
+  - claim: "The recommended IMDS retry strategy is exponential backoff with a retry count of 5, minimum back-off 0 seconds, maximum 60 seconds and delta 2 seconds, producing delays of roughly 0, 2, 6, 14 and 30 seconds"
+    source: https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
+  - claim: "IMDS isn't intended to be used behind a proxy and doing so is unsupported"
+    source: https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
+  - claim: "Error descriptions returned by the managed identities endpoint can change at any time, and code should not branch based on values in the error description"
+    source: https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token
+  - claim: "An App Service or Functions app with a managed identity makes its token endpoint available by defining two environment variables, IDENTITY_ENDPOINT, the URL to the local token service, and IDENTITY_HEADER, a header that helps mitigate server-side request forgery attacks whose value the platform rotates"
+    source: https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity
+  - claim: "The App Service token API version to use is 2019-08-01, and the X-IDENTITY-HEADER header carries the value of the IDENTITY_HEADER environment variable"
+    source: https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity
+  - claim: "On App Service the optional identity parameters are client_id, principal_id, object_id and mi_res_id, and if all of them are omitted the system-assigned identity is used"
+    source: https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity
+  - claim: "If you're trying to get tokens for user-assigned identities on App Service you must include one of the optional identity properties, otherwise the token service tries to get a token for a system-assigned identity, which might or might not exist"
+    source: https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity
+  - claim: "The managed identity configuration in App Service is specific to the slot, and to configure a managed identity for a deployment slot in the portal you go to the slot first"
+    source: https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity
+  - claim: "An App Service app can have only one system-assigned identity, can have multiple user-assigned identities, and one user-assigned identity can be assigned to multiple Azure resources"
+    source: https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity
+  - claim: "Managed identities aren't available for apps deployed in Azure Arc"
+    source: https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity
+  - claim: "Because managed identities don't support cross-directory scenarios, they don't behave as expected if an app is migrated across subscriptions or tenants, and downstream resources also need to have access policies updated to use the new identity"
+    source: https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity
+  - claim: "Assigning a user-assigned identity to an App Service app requires Microsoft.Web/sites/write over the app or Microsoft.ManagedIdentity/userAssignedIdentities/*/assign/action over the identity, with Website Contributor and Managed Identity Operator as example built-in roles"
+    source: https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity
+  - claim: "The WEBSITE_DISABLE_MSI application setting disables only the local token service but leaves the identity in place, tooling still shows the managed identity as enabled, and Microsoft doesn't recommend using this setting"
+    source: https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity
+  - claim: "Microsoft Entra Workload ID uses Service Account Token Volume Projection to enable pods to use a Kubernetes identity, and OpenID Connect federation enables Kubernetes applications to access Azure resources based on annotated service accounts"
+    source: https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview
+  - claim: "In the AKS workload identity security model the AKS cluster acts as the token issuer, and Microsoft Entra ID uses OIDC to discover public signing keys and verify the authenticity of the service account token before exchanging it for a Microsoft Entra token"
+    source: https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview
+  - claim: "You can have a maximum of 20 federated identity credentials per managed identity, and it takes a few seconds for a federated identity credential to propagate after being initially added"
+    source: https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview
+  - claim: "When requesting tokens with WorkloadIdentityCredential you pass scopes using the Microsoft Entra ID v2 format resource slash .default, and a raw resource URI can fail because workload identity uses the Microsoft Entra v2 token endpoint rather than the IMDS resource flow used by managed identity"
+    source: https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview
+  - claim: "The label azure.workload.identity/use set to true is required in the pod template spec, only pods with this label are mutated by the webhook to inject the Azure environment variables and the projected service account token volume, and otherwise the pods fail after they're restarted"
+    source: https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview
+  - claim: "When the mutating admission webhook injects the projected service account token volume it sets the AZURE_FEDERATED_TOKEN_FILE environment variable to the path of the token file, and applications should not hard-code a path because the mount path is an implementation detail of the webhook and can change"
+    source: https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview
+  - claim: "Kubernetes refreshes the projected token in place before it expires, and applications should read the file again each time they exchange the token rather than caching its contents for the lifetime of the process"
+    source: https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview
+  - claim: "The projected service account token expiration defaults to 3600 seconds with a supported range of 3600 to 86400, and Kubernetes service account token expiry isn't correlated with Microsoft Entra tokens, which expire in 24 hours after they're issued"
+    source: https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview
+  - claim: "If you update the service account annotations you must restart the pod for the changes to take effect"
+    source: https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview
+  - claim: "On AKS Automatic clusters workload identity and the OIDC cluster issuer are preconfigured by default, while on AKS Standard you enable and configure workload identity separately"
+    source: https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview
+  - claim: "AKS supports Microsoft Entra Workload ID on version 1.22 and higher, and the virtual nodes add-on based on Virtual Kubelet isn't supported"
+    source: https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview
+  - claim: "A migration sidecar exists that converts the Instance Metadata Service transactions an application makes over to OIDC, and it isn't intended to be a long-term solution"
+    source: https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">Azure Architecture Series &middot; #036 &middot; Identity and Access</div>
+  <h1 class="post-title">Managed Identity on VMs, App Service, Functions and AKS</h1>
+  <p class="post-subtitle">One feature name, three entirely different front doors. The endpoint, the header, the API version, the parameter name and the scope format all change with the host &mdash; and one of them fails by returning a token for the wrong identity.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Microsoft Entra ID &middot; Managed Identities &middot; Identity and Access</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Post #35 argued for managed identities on their merits: no credential, no licence, no cost, and a user-assigned identity that behaves as the unit of authorisation for everything that runs. That post was about the object. This one is about the plumbing, because "enable managed identity" means something materially different on each host, and the differences are exactly the kind that survive code review and fail in production.
+    </p>
+    <p>
+      The short version: a VM asks a shared IP address for a token. An App Service app asks a private URL supplied to it in an environment variable. A pod in AKS asks nobody &mdash; it reads a file its cluster wrote, and trades it with Microsoft Entra ID for a token. Three mechanisms, one feature name.
+    </p>
+    <p>
+      Almost all of that is invisible if you use the Azure Identity client libraries, which is why they are the right answer and why this post ends up recommending them. But "use the SDK" is advice you can only follow deliberately if you know what it is hiding, and three things underneath are architecture decisions rather than implementation details: who can use the identity, what happens when you do not name it, and what AKS is actually doing instead.
+    </p>
+
+    <div class="callout amber">
+      <strong>The sentence that governs all of this</strong>
+      <p>From the VM token documentation, stated plainly and easy to skim past: <em>The security boundary of managed identities for Azure resources is the resource where the identity is used. All code/scripts running on a virtual machine can request and retrieve tokens for any managed identities available on it.</em> Post #35 reached this by inference &mdash; whoever can run code on a resource holds its identities' permissions. Here it is documented outright, and it applies to <em>all</em> code on the machine, not just yours.</p>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/az-036-managed-identity-by-host.svg" alt="Diagram: managed identity on Azure VMs, App Service and Functions, and AKS, comparing the token endpoint, required header, API version, user-assigned identity parameter and scope format for each host, the security boundary on a VM where all code can request tokens for any identity on it, the silent fallback to the system-assigned identity when no identity parameter is supplied on App Service, and the way AKS uses OIDC federation rather than an instance metadata endpoint" />
+      <figcaption>Every row differs by host. The two red panels are the failures that do not announce themselves.</figcaption>
+    </figure>
+
+    <h3>Virtual machines: a link-local address and one mandatory header</h3>
+    <p>
+      The VM path is the oldest and the most literal. A token comes from the Azure Instance Metadata Service:
+    </p>
+    <pre><code>GET http://169.254.169.254/metadata/identity/oauth2/token
+      ?api-version=2018-02-01&amp;resource=https://management.azure.com/
+Metadata: true</code></pre>
+    <p>
+      Two details carry weight. The <code>Metadata: true</code> header is not decoration &mdash; it <em>is used as a mitigation against server side request forgery (SSRF) attacks</em>, and must be <em>set to "true", in all lower case</em>. The reasoning is worth following: 169.254.169.254 is reachable from any code on the box, including code that has tricked your application into making an HTTP request on its behalf. Requiring a header that a naive URL-fetching bug will not set is the cheap defence against that.
+    </p>
+    <p>
+      The second: with more than one user-assigned identity attached, <code>object_id</code>, <code>client_id</code> and <code>msi_res_id</code> become <em>required, if your VM has multiple user-assigned managed identities</em>. Ambiguity is an error here, which turns out to be the kinder behaviour &mdash; see App Service below.
+    </p>
+    <p>
+      The operational surface is unusually well specified, and worth encoding once in whatever wrapper you use:
+    </p>
+    <ul>
+      <li><strong>Retry 404, 429 and 5xx. Do not retry 4xx</strong>, which <em>are design-time errors</em>.</li>
+      <li><strong>410 is a scheduled outage with a stated bound</strong>: <em>IMDS is going through updates</em> and <em>will be available within 70 seconds</em>.</li>
+      <li><strong>429 is throttling</strong> &mdash; <em>throttling limits apply to the number of calls made to the IMDS endpoint</em>. Cache tokens; the subsystem caches too, but <em>we still recommend that you implement token caching in your code</em>.</li>
+      <li><strong>Back off exponentially</strong>: five attempts at roughly <em>0, 2, 6, 14 and 30 seconds</em>.</li>
+      <li><strong>Never branch on the error text.</strong> <em>Error descriptions can change at any time. Do not write code that branches based on values in the error description.</em></li>
+      <li><strong>No proxies.</strong> <em>IMDS isn't intended to be used behind a proxy and doing so is unsupported</em> &mdash; which catches estates that set a blanket <code>HTTP_PROXY</code> across every VM.</li>
+    </ul>
+
+    <h3>App Service and Functions: a private endpoint, and a different word for the same thing</h3>
+    <p>
+      There is no IMDS here. Instead the platform <em>makes this endpoint available by defining two environment variables</em>: <code>IDENTITY_ENDPOINT</code>, <em>the URL to the local token service</em>, and <code>IDENTITY_HEADER</code>, <em>a header that can help mitigate server-side request forgery (SSRF) attacks</em> whose value <em>the platform rotates</em>.
+    </p>
+    <p>
+      That is a better design than the VM's, because the secret is per-app and rotating rather than a well-known constant. It is also completely incompatible, and the incompatibilities are petty enough to be dangerous:
+    </p>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>&nbsp;</th><th>Virtual machine</th><th>App Service / Functions</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Endpoint</td><td><code>169.254.169.254/metadata/identity/oauth2/token</code></td><td><code>$IDENTITY_ENDPOINT</code></td></tr>
+        <tr><td>Header</td><td><code>Metadata: true</code></td><td><code>X-IDENTITY-HEADER: $IDENTITY_HEADER</code></td></tr>
+        <tr><td>API version</td><td><code>2018-02-01</code></td><td><code>2019-08-01</code></td></tr>
+        <tr><td>Resource ID parameter</td><td><code>msi_res_id</code></td><td><code>mi_res_id</code></td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      <code>msi_res_id</code> against <code>mi_res_id</code>. One letter, same meaning, different host. Nothing about moving a workload from a VM to App Service will surface that until the token request comes back wrong &mdash; and on App Service, "wrong" has a specific and unhelpful shape.
+    </p>
+
+    <div class="callout amber">
+      <strong>The failure that returns 200 OK</strong>
+      <p><em>If you're trying to get tokens for user-assigned identities, include one of the optional properties. Otherwise, the token service tries to get a token for a system-assigned identity, which might or might not exist.</em></p>
+      <p>On a VM, an ambiguous request is an error. Here, omitting the identity parameter is a silent substitution. If the app also has a system-assigned identity, you get a perfectly valid token for the wrong principal, and the failure surfaces later at the target resource as an authorisation error &mdash; on a resource you <em>did</em> grant access to, for the other identity. That is a long way from the mistake.</p>
+    </div>
+
+    <p>
+      Two more App Service specifics that catch people. <strong>Identity is per-slot</strong>: <em>the managed identity configuration is specific to the slot</em>, so a staging slot has its own identity and its own grants, and a swap does not carry them across. And <strong>identities do not survive a tenant move</strong>: because <em>managed identities don't support cross-directory scenarios</em>, they <em>don't behave as expected if your app is migrated across subscriptions or tenants</em>, after which <em>downstream resources also need to have access policies updated to use the new identity</em>.
+    </p>
+    <p>
+      One anti-feature worth knowing exists so you can recognise it: <code>WEBSITE_DISABLE_MSI</code> <em>disables only the local token service</em> but <em>leaves the identity in place</em>, and <em>tooling still shows the managed identity as on or enabled</em>. Microsoft's own verdict &mdash; <em>we don't recommend that you use this setting</em>. If you meet an app whose identity is configured, visible, and returning nothing, this is the setting to look for.
+    </p>
+
+    <h3>AKS: the same identity, reached the other way round</h3>
+    <p>
+      The third host is not a variation on the first two. The identity at the far end is still usually a user-assigned managed identity &mdash; federated identity credentials are created on one, which is why the limit below is expressed per managed identity. What is missing is the <em>endpoint</em>: nothing local hands the pod a token. A Kubernetes token is issued, and exchanged for an Entra one.
+    </p>
+    <p>
+      <em>Microsoft Entra Workload ID uses Service Account Token Volume Projection to enable pods to use a Kubernetes identity</em>, and then <em>OpenID Connect (OIDC) federation enables Kubernetes applications to access Azure resources securely with Microsoft Entra ID, based on annotated service accounts.</em> The inversion is stated directly: <strong><em>the AKS cluster acts as the token issuer.</em></strong> Entra <em>uses OIDC to discover public signing keys and verify the authenticity of the service account token before exchanging it for a Microsoft Entra token.</em>
+    </p>
+    <p>
+      So the trust flows the other way. Kubernetes mints a token, Entra has been told to trust that issuer, and the exchange happens at Entra's v2 endpoint rather than at any Azure-local address. Which produces a failure mode unique to this host: <em>a raw resource URI, such as https://management.azure.com/, can fail because workload identity uses the Microsoft Entra v2 token endpoint rather than the IMDS resource flow used by managed identity.</em> Scopes must be <em>&lt;resource&gt;/.default</em>. Code carried over from a VM will pass the wrong shape and get an error that says nothing about hosts.
+    </p>
+    <p>
+      Three more that decide whether a deployment works:
+    </p>
+    <ul>
+      <li><strong>The label is load-bearing.</strong> <code>azure.workload.identity/use: "true"</code> is <em>required in the pod template spec</em>, because <em>only pods with this label are mutated by the azure-workload-identity mutating admission webhook</em>. Without it, <em>the pods fail after they're restarted</em> &mdash; so a deployment can look healthy right up until the first restart.</li>
+      <li><strong>Never hard-code the token path.</strong> The webhook <em>sets the AZURE_FEDERATED_TOKEN_FILE environment variable to the path of the token file</em>, and the guidance is explicit: <em>Don't hard-code a path ... The mount path is an implementation detail of the webhook and can change.</em></li>
+      <li><strong>Re-read the file.</strong> <em>Kubernetes refreshes the projected token in place before it expires</em>, so read it <em>again each time you exchange the token rather than caching its contents for the lifetime of the process</em>.</li>
+    </ul>
+    <p>
+      And a limit that shapes multi-cluster designs: <em>a maximum of 20 federated identity credentials per managed identity</em>. One credential per cluster means one identity stops at twenty clusters &mdash; which is why identity bindings exist in preview, and why post #37 takes federation on its own terms.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Is an Architecture Decision and Not a Configuration Step</h2>
+
+    <h3>Because the boundary is the host, not the process</h3>
+    <p>
+      Return to that sentence: <em>all code/scripts running on a virtual machine can request and retrieve tokens for any managed identities available on it.</em>
+    </p>
+    <p>
+      There is no process isolation in that statement. A sidecar, a monitoring agent, a scheduled task, an SSH session, a compromised dependency &mdash; each can call 169.254.169.254 and get the same tokens your application gets. Attaching two user-assigned identities to one VM does not give you two compartments; it gives every process on the box both sets of permissions.
+    </p>
+    <p>
+      The design consequence is concrete. If two workloads need different permissions, that is an argument for two hosts, not two identities on one host. And it reframes the containers question: on AKS, workload identity is per-<em>pod</em> via the service account, which is a genuinely finer boundary than the VM gives you &mdash; one of the better reasons to prefer it that has nothing to do with Kubernetes fashion.
+    </p>
+
+    <h3>Because "it works on my VM" is not portable</h3>
+    <p>
+      Every row of that comparison table is a migration hazard, and none produces a helpful error. Move a service from a VM to App Service and the endpoint, the header, the API version and the parameter spelling all change. Move it into AKS and the whole model changes, including the scope format.
+    </p>
+    <p>
+      Which is the real argument for the Azure Identity libraries, and it is stronger than convenience. They read <code>IDENTITY_ENDPOINT</code> when it exists, fall back to IMDS when it does not, and read <code>AZURE_FEDERATED_TOKEN_FILE</code> in a pod &mdash; the documentation confirms they <em>read AZURE_FEDERATED_TOKEN_FILE for you</em>. Hand-rolled HTTP calls to a token endpoint are host-specific code that looks host-agnostic, and that is the trap. If you must call the endpoint directly, the wrapper belongs in one place with the retry table above encoded in it.
+    </p>
+
+    <h3>Because the silent substitution deserves a rule of its own</h3>
+    <p>
+      Of everything here, the App Service fallback is the one to design against, because it is the only failure that produces a working token for an identity you did not ask for.
+    </p>
+    <p>
+      The rule that removes it: <strong>always name the identity explicitly, even when there is only one.</strong> Passing <code>client_id</code> costs nothing when the app has a single identity, and it converts a future silent substitution &mdash; the day someone enables the system-assigned identity for an unrelated reason &mdash; into an error at the right place. This is the same discipline as post #32's advice to create groups role-assignable on day one: the cheap explicit choice now removes an expensive implicit one later.
+    </p>
+
+    <h3>Because the AKS token lifetimes are two clocks, not one</h3>
+    <p>
+      A detail easy to miss and awkward to debug: <em>Kubernetes service account token expiry isn't correlated with Microsoft Entra tokens. Microsoft Entra tokens expire in 24 hours after they're issued.</em> The projected service account token defaults to <em>3600</em> seconds with a <em>supported range of 3600-86400</em>.
+    </p>
+    <p>
+      So there are two independent expiries in play: the Kubernetes token, refreshed in place by the kubelet, and the Entra token obtained by exchanging it. A process that caches the file contents rather than re-reading them will work for an hour and then fail at a boundary that has nothing to do with its own logic. That is precisely why the guidance says to re-read the file each time.
+    </p>
+    <p>
+      And when permissions change, post #35's cache still applies underneath all of this &mdash; the back-end maintains a cache per resource URI for around 24 hours, and it cannot be flushed. Three timers, none of which you control.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>What to do</th><th>Why</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Acquiring tokens anywhere</td>
+          <td>Use the Azure Identity client libraries; do not call the endpoint by hand</td>
+          <td>Every element of the request differs by host. The libraries read the right variable in each.</td>
+        </tr>
+        <tr>
+          <td>Requesting a token at all</td>
+          <td>Always name the identity, even with only one attached</td>
+          <td>On App Service, omitting it silently falls back to a system-assigned identity <em>which might or might not exist</em>.</td>
+        </tr>
+        <tr>
+          <td>Two workloads, different permissions</td>
+          <td>Two hosts, not two identities on one host</td>
+          <td><em>All code/scripts running on a virtual machine can request and retrieve tokens for any managed identities available on it.</em></td>
+        </tr>
+        <tr>
+          <td>If you must call IMDS directly</td>
+          <td>Encode the retry table: retry 404/429/5xx, never 4xx, 70s for 410, backoff 0/2/6/14/30</td>
+          <td>Documented behaviour, and 429 throttling is real at volume.</td>
+        </tr>
+        <tr>
+          <td>Estates with a blanket HTTP proxy</td>
+          <td>Exclude 169.254.169.254 explicitly</td>
+          <td><em>IMDS isn't intended to be used behind a proxy and doing so is unsupported.</em></td>
+        </tr>
+        <tr>
+          <td>Handling token errors</td>
+          <td>Branch on status code only</td>
+          <td><em>Error descriptions can change at any time.</em></td>
+        </tr>
+        <tr>
+          <td>App Service deployment slots</td>
+          <td>Configure and grant per slot, and test in the slot</td>
+          <td>The identity configuration <em>is specific to the slot</em>; a swap does not carry grants.</td>
+        </tr>
+        <tr>
+          <td>Moving an app between tenants</td>
+          <td>Plan to re-create identities and re-grant downstream</td>
+          <td>Managed identities <em>don't support cross-directory scenarios</em>.</td>
+        </tr>
+        <tr>
+          <td>AKS pod specs</td>
+          <td>Set <code>azure.workload.identity/use: "true"</code> and read <code>AZURE_FEDERATED_TOKEN_FILE</code></td>
+          <td>Without the label the webhook injects nothing and <em>the pods fail after they're restarted</em>.</td>
+        </tr>
+        <tr>
+          <td>AKS at multi-cluster scale</td>
+          <td>Count clusters against 20 before one identity per workload</td>
+          <td><em>A maximum of 20 federated identity credentials per managed identity.</em></td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      "Enable managed identity" is a single sentence in an architecture document and three unrelated mechanisms underneath it. A link-local address guarded by a header. A private URL guarded by a rotating secret. A file written by a cluster and exchanged with a directory that has been told to trust it. The only thing they truly share is the promise: no credential in your code.
+    </p>
+    <p>
+      What strikes me, having read all three, is how differently they fail. The VM refuses an ambiguous request. App Service answers it with the wrong identity. AKS works perfectly until a pod restarts. Those are three different relationships with the operator &mdash; strict, accommodating, and deferred &mdash; and only the first is the one you would choose for a security mechanism.
+    </p>
+    <p>
+      Which is why the two rules in this post are worth more than the endpoint details: <strong>always name the identity</strong>, and <strong>let the SDK find the door</strong>. The first removes the failure that returns a valid token for the wrong principal. The second means the next migration changes where your code runs and not what it says.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#37 takes workload identity federation on its own terms &mdash; the mechanism behind the AKS story here, and the one that lets a GitHub Actions workflow or another cloud's identity get an Azure token with no secret at all.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Azure Reference</h2>
+    <ul>
+      <li><a href="https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token" target="_blank" rel="noopener">Use managed identities on a virtual machine to acquire an access token</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity" target="_blank" rel="noopener">Managed identities in Azure App Service</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview" target="_blank" rel="noopener">Use a Microsoft Entra Workload ID on AKS</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/managed-identities-status" target="_blank" rel="noopener">Azure services that support managed identities</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/managed-identity-best-practice-recommendations" target="_blank" rel="noopener">Best practice recommendations for managed identities</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
