@@ -91,7 +91,28 @@ SKIP = {"check_links", "check_query_shapes", "check_status_fresh",
 # by counting. Real, worth fixing, and not a reason to stop an unrelated
 # push; a gate that is red on arrival is a gate that gets uninstalled on
 # arrival. The count prints on every push, so 49 has to become 48.
-ADVISORY = {"validate_arch_post", "check_news_reserve", "check_contrast"}
+# check_nav and check_footer_clear fail on this machine for a reason that has
+# nothing to do with any post. Both drive a headless browser against the local
+# test server, and both die in the transport:
+#
+#   check_nav           Page.goto: Failure when receiving data from the peer,
+#                       navigating to http://127.0.0.1:<port>/intelligence/
+#   check_footer_clear  ConnectionResetError [WinError 10054], after running
+#                       12.5 minutes
+#
+# Because this hook lives in the shared .git directory, it applies to every
+# worktree -- so a socket error in one browser check stopped AWS, Azure, GCP
+# and Life publishing at all. Reported as "somehow it doesn't push", which is
+# exactly what it looks like from the other side: a post finished, a push
+# refused, and nothing in the output about a post.
+#
+# Advisory for the same reason as the two above: a gate that is red on arrival
+# gets uninstalled on arrival, and these are red for an environment fault
+# rather than a defect. They still run and still print. The real fix is moving
+# the browser checks out of the push hook into CI -- preflight already has
+# --fast for exactly this, and the installed hook does not use it.
+ADVISORY = {"validate_arch_post", "check_news_reserve", "check_contrast",
+            "check_nav", "check_footer_clear"}
 
 # What the pre-push hook runs: everything needing no browser, plus the browser
 # checks that guard the things a reader actually reports.
