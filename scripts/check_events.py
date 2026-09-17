@@ -46,6 +46,7 @@ import datetime as dt
 import io
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -83,6 +84,99 @@ def host_ok(cloud, url):
     return False
 
 
+def deep_check(events):
+    """Render every link and require the page to be ABOUT the event.
+
+    A status code proves a server answered. It does not prove the answer is a
+    page, and it does not prove the page is the right one. Both failures got
+    through here on the first day:
+
+      Singapore was stored as .../singapore27/city -- a URL truncated at sixty
+      characters by the width of my own debug output. It answered 200 with an
+      empty document, and the check said "ok http 200".
+
+      six other city links were stored as the redirect SOURCE rather than
+      where they land, which works until the day it does not.
+
+    So this renders the page and looks for what the row claims: the city for a
+    tour stop, otherwise a distinctive word from the name. A page that is
+    blank, or that quietly bounced to a generic landing page, fails -- and
+    those are exactly the two states a reader meets as a broken link while
+    every status code reads fine.
+
+    Rendered rather than fetched, because all three vendors build these pages
+    in JavaScript: the raw HTML of a working AI Tour page contains none of its
+    own text.
+
+    Slow -- a browser, thirty-eight pages -- so it is not in the push gate.
+    The daily workflow runs it, which is the right place for something that
+    guards against the outside world changing rather than against an edit.
+    """
+    from playwright.sync_api import sync_playwright
+
+    bad = []
+    with sync_playwright() as pw:
+        b = pw.chromium.launch()
+        for e in events:
+            url = e.get("url")
+            if not url:
+                continue
+            want = e.get("city") or ""
+            if not want:
+                parts = [w.strip("—-,") for w in (e.get("name") or "").split()]
+                parts = [w for w in parts if len(w) > 4 and w.lower() not in
+                         ("microsoft", "google", "cloud", "amazon")]
+                want = parts[0] if parts else ""
+            ctx = b.new_context(viewport={"width": 1280, "height": 900})
+            pg = ctx.new_page()
+            try:
+                pg.goto(url, wait_until="load", timeout=70000)
+                pg.wait_for_timeout(4500)
+                text = pg.evaluate("() => document.body.innerText") or ""
+                final = pg.url
+            except Exception as exc:                        # noqa: BLE001
+                bad.append((e, "could not render: %s" % str(exc)[:45]))
+                ctx.close()
+                continue
+            ctx.close()
+
+            flat = " ".join(text.split())
+
+            # What "the right page" means, without assuming a language.
+            #
+            # The first version required the city's name in the page text, and
+            # it failed Mexico City and Dubai -- whose pages render in Spanish
+            # and Arabic. The city was there; it was spelled the way the
+            # reader of that page spells it. A check that demands English from
+            # a global tour is measuring the wrong thing, and "fix" would have
+            # meant deleting two correct rows.
+            #
+            # The slug in the URL is language-independent and is what proves
+            # arrival: mexicocity27 cannot serve Dubai's page. So: a page that
+            # renders, at a URL that still carries the stop's own segment.
+            slug = ""
+            m = re.search(r"/(notifyme[a-z]+|[a-z]+27)/", url)
+            if m:
+                slug = m.group(1)
+
+            if len(flat) < 120:
+                bad.append((e, "renders %d characters -- effectively a blank "
+                               "page" % len(flat)))
+            elif slug and slug not in final:
+                bad.append((e, "lands on %s, which is not %s -- it bounced to "
+                               "a generic page" % (final[:60], slug)))
+            elif not slug and want and want.lower() not in flat.lower():
+                bad.append((e, "the page never mentions %r; it may have "
+                               "bounced to a generic landing page" % want))
+            elif final.rstrip("/") != url.rstrip("/"):
+                bad.append((e, "redirects to %s -- store where it LANDS, so a "
+                               "broken redirect cannot hide" % final[:60]))
+            else:
+                print("     ok   %-44s %s" % (url[-44:], slug or want or "-"))
+        b.close()
+    return bad
+
+
 def _transport_failure(detail):
     """True when the request never reached a server at all."""
     d = (detail or "").lower()
@@ -111,6 +205,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--offline", action="store_true",
                     help="skip the link checks")
+    ap.add_argument("--deep", action="store_true",
+                    help="render each link and require it to mention the event")
     args = ap.parse_args()
 
     if not os.path.exists(STORE):
@@ -208,6 +304,13 @@ def main():
             if not ok:
                 problems.append("%s / %s: %s does not resolve (%s)"
                                 % (e.get("cloud"), e.get("name"), url, detail))
+
+    if args.deep and not args.offline:
+        print("  rendering every link (--deep)")
+        for e, why in deep_check(events):
+            problems.append("%s / %s: %s"
+                            % (e.get("cloud"), e.get("name"), why))
+            print("     BAD  %-44s %s" % ((e.get("url") or "")[-44:], why[:58]))
 
     print()
     if problems:
