@@ -255,16 +255,33 @@ def main():
                 pass
 
         # freshness
+        #
+        # The 30-day rule is about PROSE. A row whose dates were read off a
+        # marketing page can only be kept honest by a person reading it again;
+        # nothing automated can tell that "Nov. 30 - Dec. 4" now says
+        # something else, because nothing automated understood it the first
+        # time.
+        #
+        # A row imported from a structured feed is different. The AWS
+        # directory API and the AI Tour's own anchors return fields, not
+        # sentences, and a job that re-reads them HAS verified them -- so
+        # those may be re-stamped by the scheduled import. Holding both to
+        # the same rule would mean either a human re-reading 35 tour stops
+        # every month, or a machine rubber-stamping three rows it cannot
+        # actually check. The distinction is the point.
         v = e.get("verified")
+        limit = STALE_DAYS if e.get("source") != "api" else STALE_DAYS * 2
         if not v:
             problems.append("%s: never verified" % who)
         else:
             try:
                 age = (today - dt.date.fromisoformat(v)).days
-                if age > STALE_DAYS:
-                    problems.append("%s: last verified %d days ago -- "
-                                    "'always refreshed' cannot mean 'was true "
-                                    "once'" % (who, age))
+                if age > limit:
+                    problems.append("%s: last verified %d days ago (%s source, "
+                                    "limit %d) -- 'always refreshed' cannot "
+                                    "mean 'was true once'"
+                                    % (who, age, e.get("source") or "read",
+                                       limit))
             except ValueError:
                 problems.append("%s: verified=%r is not a date" % (who, v))
 

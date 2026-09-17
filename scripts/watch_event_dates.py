@@ -49,6 +49,15 @@ PATTERNS = [
     r"\.?\s+)?\d{1,2},?\s*20\d\d",
     r"\d{1,2}\s*[–—-]\s*\d{1,2}\s+" + MONTH + r"\.?\s*,?\s*20\d\d",
     MONTH + r"\.?\s+\d{1,2},?\s*20\d\d",
+    # ISO, because AWS writes its summit dates that way -- 2026-07-30 -- and
+    # every pattern above wants a month NAME. Thirty-one summits with dates
+    # sat behind that gap while this page said AWS had announced nothing.
+    r"20\d\d-\d{2}-\d{2}",
+    # A range with no year at all: "Nov. 30 - Dec. 4". re:Invent's own page
+    # says exactly that, and puts the year in the <title>. Requiring a year
+    # beside the day is why this watcher reported nothing for the single
+    # most obvious event on the site.
+    MONTH + r"\.?\s+\d{1,2}\s*[–—-]\s*" + MONTH + r"\.?\s+\d{1,2}",
 ]
 
 

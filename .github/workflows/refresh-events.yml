@@ -1,0 +1,89 @@
+# Pull new cloud events in without anyone remembering to.
+#
+# Asked directly: "if there's an event from AWS tomorrow, how do I see it here?
+# Does it update automatically, or does it require manual intervention?"
+#
+# Until this existed the answer was manual, and that is not an answer. The
+# importers had to be run by hand, so a summit announced on a Tuesday would sit
+# unlisted until somebody thought to look -- which is the same failure as the
+# one that made the What's New store need a cron: a page that looks perfectly
+# healthy while quietly missing things.
+#
+# What may be imported automatically, and what may not
+# ----------------------------------------------------
+# Both importers read STRUCTURED sources: AWS's own directory API returns
+# date, title, location and link as fields, and the AI Tour's index carries
+# one anchor per stop with the date inside it. Machines read those correctly
+# or not at all -- there is no interpretation to get wrong.
+#
+# Dates written as prose are the opposite, and stay manual. re:Invent's page
+# says "Join us Nov. 30 - Dec. 4", with the year only in the title, beside
+# quotes from 2025 attendees. A scraper pointed at that sentence is guessing,
+# and this page's entire value is that it does not guess. watch_event_dates.py
+# reports those for a person to read; it never writes them.
+#
+# So this commits rows from feeds, and check_events still refuses anything
+# whose link does not resolve or whose domain is not the vendor's.
+name: Refresh cloud events
+
+on:
+  schedule:
+    # 05:40 UTC: after ingest-news at 05:10, before verify-events at 06:20, so
+    # the verification that follows is checking what this just wrote.
+    - cron: "40 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # One at a time. Two runs importing the same store would race on the commit,
+  # and the loser would silently drop whatever the winner added.
+  group: refresh-events
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install a browser
+        run: |
+          pip install --quiet playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Import AWS Summits
+        run: python scripts/import_aws_events.py --write
+
+      - name: Import Microsoft AI Tour
+        run: python scripts/import_aitour.py --write
+
+      # The gate, before anything is committed rather than after. An importer
+      # that pulled in a dead link or a non-vendor domain must not be able to
+      # publish it and leave the next push to discover the mess.
+      - name: Verify what was just imported
+        run: python scripts/check_events.py --deep
+
+      - name: Rebuild the page
+        run: python scripts/build_events_page.py
+
+      - name: Commit only if something actually changed
+        run: |
+          if [ -z "$(git status --porcelain intelligence/events.json intelligence/events/)" ]; then
+            echo "no change; nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add intelligence/events.json intelligence/events/
+          n=$(python -c "import json,io;print(len(json.load(io.open('intelligence/events.json',encoding='utf-8'))['events']))")
+          git commit -m "Cloud events: refresh from vendor feeds (${n} events)"
+          # Rebase rather than force: the hourly status job and a person may
+          # both have pushed since checkout.
+          git pull --rebase --autostash origin main
+          git push origin HEAD:main

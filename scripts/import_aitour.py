@@ -178,6 +178,11 @@ def main():
             "url": f["href"],
             "verified": today,
             "announced": True,
+            # Structured feed, so the scheduled import counts as
+            # verification -- see the note on freshness in
+            # check_events.py. Rows read off prose are "read" and
+            # only a person may re-stamp those.
+            "source": "api",
         })
 
     rows.sort(key=lambda r: (r["start"], r["city"]))

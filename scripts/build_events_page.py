@@ -206,6 +206,22 @@ STYLE = """
   @media (max-width: 600px) {
     .ev-when { min-width: 0; }
     .ev-group-label { min-width: 100%; }
+    /* The first event was 1.2 screens down on an iPhone: two paragraphs of
+       lede plus three rows of filter pills filled the viewport, so the page
+       opened with none of the thing it exists for. The second paragraph is
+       an explanation of the TBC rows -- it belongs where those rows are, not
+       in front of everything. */
+    .ev-lede.ev-lede-2 { display: none; }
+    .ev-head h1 { font-size: 1.6rem; }
+    /* The floating back-to-top button sits over the right edge of a row
+       mid-list. Rows are full width, so the text ran underneath it. */
+    .ev-row { padding-right: 3.4rem; }
+  }
+  /* Shown under the list instead, on a phone. */
+  .ev-tail-note { display: none; }
+  @media (max-width: 600px) {
+    .ev-tail-note { display: block; color: var(--mut, var(--text-muted, #9C9A94));
+                    font-size: .85rem; line-height: 1.6; margin: 1.5rem 0 0; }
   }
 </style>
 """
@@ -360,6 +376,50 @@ FILTER_JS = """<script>
     if (none) none.hidden = shown > 0;
   }
 
+  /* The chosen filters live in the URL, not only in memory.
+   *
+   * Reported as: "when I select AWS and refresh my screen, it goes back to
+   * All." It did -- the selection was a JavaScript variable and nothing else,
+   * so every reload threw it away. On a phone that matters more than it
+   * sounds, because the installed app reloads on a pull.
+   *
+   * The URL rather than sessionStorage, because it also makes a filtered view
+   * something you can send to somebody: /intelligence/events/?cloud=aws is a
+   * link to AWS's events, not to a page they then have to filter themselves.
+   *
+   * replaceState rather than pushState: tapping four filters should not put
+   * four entries in the back stack for a reader to walk out through.
+   */
+  function toUrl() {
+    var q = [];
+    ['cloud', 'type', 'region'].forEach(function (k) {
+      if (state[k] && state[k] !== 'all') {
+        q.push(k + '=' + encodeURIComponent(state[k]));
+      }
+    });
+    var url = location.pathname + (q.length ? '?' + q.join('&') : '');
+    try { history.replaceState(null, '', url + location.hash); } catch (e) {}
+  }
+
+  function fromUrl() {
+    var p;
+    try { p = new URLSearchParams(location.search); } catch (e) { return; }
+    ['cloud', 'type', 'region'].forEach(function (k) {
+      var v = p.get(k);
+      if (!v) return;
+      // Only a value this page actually offers. A hand-edited URL asking for
+      // ?cloud=oracle should show everything, not nothing.
+      var pill = document.querySelector(
+        '.ev-pill[data-group="' + k + '"][data-value="' + v + '"]');
+      if (!pill) return;
+      state[k] = v;
+      [].slice.call(document.querySelectorAll(
+        '.ev-pill[data-group="' + k + '"]')).forEach(function (o) {
+        o.setAttribute('aria-pressed', String(o === pill));
+      });
+    });
+  }
+
   document.addEventListener('click', function (ev) {
     var b = ev.target.closest && ev.target.closest('.ev-pill');
     if (!b) return;
@@ -370,7 +430,10 @@ FILTER_JS = """<script>
       o.setAttribute('aria-pressed', String(o === b));
     });
     apply();
+    toUrl();
   });
+
+  fromUrl();
   apply();
 })();
 </script>
@@ -433,9 +496,10 @@ def build():
         'own page — nothing here is second-hand — and carries the date it '
         'was last read off that page.</p>')
     body.append(
-        '<p class="ev-lede">Where a cloud has announced an event but not its '
-        'dates, it is listed without them. A date nobody published is worse '
-        'than no date: people book flights around these.</p>')
+        '<p class="ev-lede ev-lede-2">Where a cloud has announced an event '
+        'but not its dates, it is listed without them. A date nobody '
+        'published is worse than no date: people book flights around '
+        'these.</p>')
     body.append('<p class="ev-checked">All %d links verified %s</p>'
                 % (len(events), esc(data.get("verified", "—"))))
     body.append("</div>")
@@ -465,6 +529,10 @@ def build():
 
     body.append('<p class="ev-none" id="ev-none" hidden>Nothing matches '
                 'those filters.</p>')
+    body.append('<p class="ev-tail-note">Where a cloud has announced an event '
+                'but not its dates, it is listed without them. A date nobody '
+                'published is worse than no date: people book flights around '
+                'these.</p>')
     body.append("</div>")
 
     html = (head_html(jsv) + STYLE + "</head>\n<body>\n" + nav_html()
