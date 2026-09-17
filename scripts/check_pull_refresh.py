@@ -76,6 +76,7 @@ PULL = """(dist) => new Promise(function (resolve) {
         moved: el ? el.style.transform : '',
         opacity: el ? el.style.opacity : ''
       };
+      state.hard = !!(el && el.classList.contains('is-hard'));
       fire('touchend', y);
       setTimeout(function () {
         state.firing = !!document.querySelector('.jk-ptr.is-firing');
@@ -255,6 +256,95 @@ def main():
                 print("     FAIL mid-page downward swipe cancelled")
             else:
                 print("     ok   both scroll directions left alone")
+
+            # The long pull: same gesture, carried much further, clears
+            # every cache and unregisters the worker before reloading.
+            #
+            # Checked by putting something in a cache first and requiring it
+            # to be gone afterwards. Asserting that the classes changed would
+            # only prove the indicator changed colour; the promise being made
+            # here is that the app's stored copy is actually discarded.
+            print("  the long pull must clear the caches")
+            ctx = b.new_context(**pw.devices["iPhone 13"])
+            ctx.add_init_script(STANDALONE)
+            pg = ctx.new_page()
+            pg.goto(base + "/blog/", wait_until="load", timeout=90000)
+            pg.wait_for_timeout(2500)
+            seeded = pg.evaluate("""() => caches.open('jk-probe')
+                .then(function (c) { return c.put('/probe-marker',
+                    new Response('x')); })
+                .then(function () { return caches.keys(); })""")
+            short_state = pg.evaluate(PULL, 110)
+            pg.wait_for_timeout(1500)
+            after_short = pg.evaluate("() => caches.keys()")
+            long_state = pg.evaluate(PULL, 240)
+            pg.wait_for_timeout(2500)
+            after_long = pg.evaluate("() => caches.keys()")
+            ctx.close()
+
+            if "jk-probe" not in (seeded or []):
+                print("     ??   could not seed a cache; skipping")
+            elif short_state.get("hard"):
+                problems.append("a 110px pull armed the FULL CLEAR -- the "
+                                "everyday refresh would be wiping the app's "
+                                "cache every time")
+                print("     FAIL short pull armed the hard clear")
+            elif "jk-probe" not in (after_short or []):
+                problems.append("an ordinary pull emptied the caches -- it is "
+                                "meant to reload, not to wipe")
+                print("     FAIL short pull cleared the caches")
+            elif not long_state.get("hard"):
+                problems.append("a 240px pull did not arm the full clear")
+                print("     FAIL long pull never armed")
+            elif "jk-probe" in (after_long or []):
+                problems.append("the long pull armed and the caches survived "
+                                "-- the one thing it exists to do did not "
+                                "happen")
+                print("     FAIL long pull left the caches in place")
+            else:
+                print("     ok   short pull keeps them, long pull clears them")
+
+            # Android must be left to Chrome.
+            #
+            # Chrome KEEPS its own pull-to-refresh in an installed PWA; only
+            # iOS takes the gesture away. An earlier version matched
+            # (display-mode: standalone) as well, which would have layered a
+            # second gesture over a working one -- the same fault as attaching
+            # in a browser tab, but harder to spot, because the symptom is a
+            # pull that feels slightly wrong rather than one that is missing.
+            print("  an installed Android app must keep Chrome's own gesture")
+            ctx = b.new_context(**pw.devices["Pixel 7"])
+            ctx.add_init_script(
+                "window.matchMedia = (function (real) {"
+                "  return function (q) {"
+                "    if (q && q.indexOf('display-mode: standalone') !== -1) {"
+                "      return {matches: true, media: q,"
+                "              addListener: function () {},"
+                "              removeListener: function () {},"
+                "              addEventListener: function () {},"
+                "              removeEventListener: function () {}};"
+                "    }"
+                "    return real(q);"
+                "  };"
+                "})(window.matchMedia.bind(window));")
+            pg = ctx.new_page()
+            pg.goto(base + "/blog/", wait_until="load", timeout=90000)
+            pg.wait_for_timeout(2200)
+            android = pg.evaluate(
+                "() => ({ptr: !!document.querySelector('.jk-ptr'),"
+                " standalone: window.matchMedia("
+                "'(display-mode: standalone)').matches})")
+            ctx.close()
+            if not android["standalone"]:
+                print("     ??   could not emulate an installed app; skipping")
+            elif android["ptr"]:
+                problems.append(
+                    "the pull indicator attached on an installed ANDROID app, "
+                    "where Chrome already provides the gesture -- two of them "
+                    "over one thumb")
+                print("     FAIL attached on Android")
+            else:
+                print("     ok   absent on Android, as it should be")
 
             # A short pull is an ordinary scroll and must be left alone.
             print("  a short pull must do nothing")

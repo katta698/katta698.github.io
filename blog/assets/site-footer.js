@@ -2228,14 +2228,24 @@
 (function () {
   'use strict';
 
-  // Standalone only. matchMedia covers Android and desktop installs;
-  // navigator.standalone is the iOS-specific one and is what matters here.
+  /* iOS home-screen only, and deliberately not Android.
+   *
+   * The first version also matched (display-mode: standalone), which is true
+   * for an installed app on Android and on desktop. That is the wrong test
+   * for the problem being solved. Chrome KEEPS its own pull-to-refresh in an
+   * installed PWA; only iOS takes the gesture away and gives nothing back.
+   *
+   * So on Android this would have been a second pull gesture layered over a
+   * working one, with preventDefault deciding which of them won -- the same
+   * mistake as attaching it in a browser tab, just harder to notice because
+   * the symptom is a gesture that feels slightly wrong rather than one that
+   * is missing.
+   *
+   * navigator.standalone is non-standard and iOS-only, which is exactly why
+   * it is the right test here. */
   var installed = false;
-  try {
-    installed = (window.matchMedia &&
-                 window.matchMedia('(display-mode: standalone)').matches) ||
-                window.navigator.standalone === true;
-  } catch (e) { installed = false; }
+  try { installed = (window.navigator.standalone === true); }
+  catch (e) { installed = false; }
   if (!installed) return;
   if (!('ontouchstart' in window)) return;
 
@@ -2254,7 +2264,25 @@
    *
    * So: arm on the thumb, animate on the damping. */
   var THRESHOLD = 90;   // raw finger travel before this arms
-  var MAX = 104;        // the indicator stops travelling here
+  /* Keep pulling and it escalates.
+   *
+   * The ordinary pull is already stronger than a browser reload: navigations
+   * are network-first and every asset URL carries a content hash, so a
+   * changed file is a changed URL and there is nothing stale to serve. It is
+   * enough in every case anyone can construct.
+   *
+   * Except one: a service worker that has itself gone wrong. Nothing inside
+   * the app can reach that -- there is no dev menu, no Cmd+Shift+R -- and the
+   * answer today is deleting the app or clearing all of Safari's website
+   * data. So the same gesture, carried well past the point where it would
+   * have let go, clears every cache and unregisters the worker first.
+   *
+   * 210 rather than something closer: this must be unreachable by accident,
+   * and the only cost of it being far is that the one time you want it you
+   * pull for longer. site-footer.js re-registers the worker on the next load,
+   * so it comes straight back. */
+  var HARD = 210;       // raw travel for a full clear
+  var MAX = 132;        // the indicator stops travelling here
   var startY = null, raw = 0, dy = 0, pulling = false, firing = false;
 
   var el = document.createElement('div');
@@ -2274,11 +2302,16 @@
     el.style.opacity = String(Math.min(1, raw / THRESHOLD));
     if (raw >= THRESHOLD) { el.classList.add('is-ready'); }
     else { el.classList.remove('is-ready'); }
+    // A second state, so you can see which of the two you are about to get
+    // before you let go rather than after.
+    if (raw >= HARD) { el.classList.add('is-hard'); }
+    else { el.classList.remove('is-hard'); }
   }
 
   function reset() {
     startY = null; raw = 0; dy = 0; pulling = false;
     el.classList.remove('is-ready');
+    el.classList.remove('is-hard');
     el.style.transition = 'transform .18s ease, opacity .18s ease';
     el.style.transform = 'translate3d(-50%,0,0)';
     el.style.opacity = '0';
@@ -2312,17 +2345,69 @@
     paint();
   }, { passive: false });
 
+  /* Clear everything this app is holding, then carry on regardless.
+   *
+   * Every step is optional and none of them may block the reload: a refresh
+   * that hangs because a cache would not open is worse than the stale page
+   * it was called to fix. So failures fall through, and a timer guarantees
+   * the navigation happens whatever the promises do.
+   */
+  function wipe(done) {
+    /* Not while offline.
+     *
+     * The caches ARE the app when there is no network. Clearing them and
+     * then asking for a page that cannot be fetched turns a stale page into
+     * no page at all, and the reader who reached for the strongest refresh
+     * would be the one who ends up with nothing. Offline, this degrades to
+     * the ordinary reload, which is the honest thing it can still do.
+     */
+    try {
+      if (navigator.onLine === false) { done(); return; }
+    } catch (e) {}
+    var fired = false;
+    var go = function () { if (!fired) { fired = true; done(); } };
+    var jobs = [];
+    try {
+      if (window.caches && caches.keys) {
+        jobs.push(caches.keys().then(function (keys) {
+          return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+        }));
+      }
+    } catch (e) {}
+    try {
+      var sw = navigator.serviceWorker;
+      if (sw && sw.getRegistrations) {
+        jobs.push(sw.getRegistrations().then(function (regs) {
+          return Promise.all(regs.map(function (r) { return r.unregister(); }));
+        }));
+      }
+    } catch (e) {}
+    if (!jobs.length) { go(); return; }
+    Promise.all(jobs).then(go, go);
+    window.setTimeout(go, 1500);
+  }
+
+  function reload() {
+    // A token, so the worker cannot answer this from its cache. That is the
+    // whole point of pulling: the reader is asking for what is on the server
+    // now, not for what was on it earlier.
+    var u = location.href.split('#')[0].replace(/[?&]r=\d+/, '');
+    u += (u.indexOf('?') === -1 ? '?' : '&') + 'r=' + Date.now();
+    location.replace(u);
+  }
+
   function release() {
     if (firing || startY === null) return;
+    if (pulling && raw >= HARD) {
+      firing = true;
+      el.classList.add('is-firing');
+      wipe(function () { window.setTimeout(reload, 60); });
+      return;
+    }
     if (pulling && raw >= THRESHOLD) {
       firing = true;
       el.classList.add('is-firing');
-      // location.reload() can be served from the cache. Adding a token means
-      // the worker treats it as a new request, which is the entire point of
-      // pulling: the reader is asking for what is on the server now.
-      var u = location.href.split('#')[0];
-      u += (u.indexOf('?') === -1 ? '?' : '&') + 'r=' + Date.now();
-      window.setTimeout(function () { location.replace(u); }, 180);
+      window.setTimeout(reload, 180);
       return;
     }
     reset();
