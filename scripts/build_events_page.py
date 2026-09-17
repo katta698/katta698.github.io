@@ -213,9 +213,14 @@ STYLE = """
        in front of everything. */
     .ev-lede.ev-lede-2 { display: none; }
     .ev-head h1 { font-size: 1.6rem; }
-    /* The floating back-to-top button sits over the right edge of a row
-       mid-list. Rows are full width, so the text ran underneath it. */
-    .ev-row { padding-right: 3.4rem; }
+    /* No padding here for the floating button.
+       The first attempt padded the RIGHT of every row. Measured afterwards,
+       .back-top sits at left: 24px -- bottom LEFT -- so that added dead space
+       on one side and did nothing about the overlap on the other. It is also
+       not solvable with padding: the button is position:fixed, so whatever
+       happens to be scrolled under it is covered, wherever the padding is.
+       It behaves this way on every long page on the site, and is worth
+       fixing there rather than papered over here. */
   }
   /* Shown under the list instead, on a phone. */
   .ev-tail-note { display: none; }

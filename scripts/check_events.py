@@ -285,6 +285,22 @@ def main():
             except ValueError:
                 problems.append("%s: verified=%r is not a date" % (who, v))
 
+        # an in-person event with no city
+        #
+        # Microsoft Ignite shipped showing only "Conference" while every row
+        # around it named a city, and the note in the store said the page did
+        # not state one. The page says "Nov 17-20, 2026 San Francisco,
+        # Moscone Center" -- the venue is beside the date that WAS read off
+        # it. Nobody had looked, and nothing complained, because a missing
+        # field is invisible: the row renders, it just says less.
+        #
+        # Online events genuinely have no city, so they are exempt. Everything
+        # else that has been announced has somewhere to be.
+        if announced and not e.get("online") and not e.get("city"):
+            problems.append("%s: announced, in person, and no city -- the "
+                            "row will render with no location at all while "
+                            "every row around it has one" % who)
+
         # vocabulary
         if e.get("region") not in REGIONS:
             problems.append("%s: region=%r is not one of %s"
