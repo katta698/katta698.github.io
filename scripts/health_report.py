@@ -492,7 +492,7 @@ def vendor_regions(enabled):
 MECHANICAL = [
     (r"\s+[,;](?:\s|$)", "a space before a comma or semicolon"),
     (r"\s+\.(?:\s|$)", "a space before a full stop"),
-    (r"([A-Za-z]{3,}) ", "a doubled word"),
+    (r"\b([A-Za-z]{3,}) \b", "a doubled word"),
     (r"[a-z]{2,},[A-Za-z]{2,}", "a missing space after a comma"),
 ]
 
@@ -605,7 +605,7 @@ def prose():
             if not v:
                 continue
             scanned += 1
-            for w in re.findall(r"[A-Za-z][A-Za-z]{3,}", v):
+            for w in re.findall(r"\b[A-Za-z][A-Za-z]{3,}\b", v):
                 w = w.lower()
                 corpus[w] = corpus.get(w, 0) + 1
 
@@ -615,7 +615,7 @@ def prose():
         if not v:
             continue
         per_page[page] = v
-        for w in re.findall(r"[A-Za-z][A-Za-z]{3,}", v):
+        for w in re.findall(r"\b[A-Za-z][A-Za-z]{3,}\b", v):
             w = w.lower()
             corpus[w] = corpus.get(w, 0) + 1
 
@@ -623,7 +623,7 @@ def prose():
     found = 0
     for page, v in per_page.items():
         seen = set()
-        for m in re.finditer(r"([a-z]{5,})", v):
+        for m in re.finditer(r"\b([a-z]{5,})\b", v):
             w = m.group(1)
             if corpus.get(w, 0) != 1 or w in seen:
                 continue

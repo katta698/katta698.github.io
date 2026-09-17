@@ -124,22 +124,30 @@ def head_html(jsv):
 
 
 STYLE = """
-<!-- This page's own rules, after the shell's. -->
+<!-- This page's own rules, after the shell's.
+
+     The token chain is --bg then --surface, not one or the other. The
+     Intelligence family names its ground --bg and does not define --surface;
+     the blog names it --surface. This page borrows Intelligence's head, so a
+     bare var(--surface, #1F1D1B) fell through to the DARK fallback and the
+     page stayed dark in light mode -- the theme class was being set correctly
+     the whole time and nothing looked like it was listening. Same for --tx,
+     --mut and --bd against --text, --text-muted and --border. -->
 <style>
   :root { --ev-gap: 1rem; }
-  body { margin: 0; background: var(--surface, #1F1D1B);
-         color: var(--text, #EDEBE6);
+  body { margin: 0; background: var(--bg, var(--surface, #1F1D1B));
+         color: var(--tx, var(--text, #EDEBE6));
          font-family: 'DM Sans', system-ui, sans-serif; }
   .ev-wrap { max-width: 62rem; margin: 0 auto; padding: 2rem 1.25rem 5rem; }
   .ev-head h1 { font-family: 'Playfair Display', Georgia, serif;
                 font-size: 1.9rem; margin: 0 0 .4rem; font-weight: 600; }
-  .ev-lede { color: var(--text-muted, #9C9A94); margin: 0 0 .35rem;
+  .ev-lede { color: var(--mut, var(--text-muted, #9C9A94)); margin: 0 0 .35rem;
              font-size: .95rem; line-height: 1.6; max-width: 46rem; }
   /* The honesty line, in the same place and the same words as Live status.
      A page claiming "always refreshed" has to say when it last was. */
   .ev-checked { font-family: 'DM Mono', ui-monospace, monospace;
                 font-size: .68rem; letter-spacing: .08em;
-                text-transform: uppercase; color: var(--text-muted, #9C9A94);
+                text-transform: uppercase; color: var(--mut, var(--text-muted, #9C9A94));
                 margin: 0 0 1.75rem; }
   .ev-filters { display: flex; flex-wrap: wrap; gap: .5rem;
                 margin: 0 0 .5rem; }
@@ -148,25 +156,25 @@ STYLE = """
   .ev-group-label { font-family: 'DM Mono', ui-monospace, monospace;
                     font-size: .62rem; letter-spacing: .12em;
                     text-transform: uppercase;
-                    color: var(--text-muted, #9C9A94);
+                    color: var(--mut, var(--text-muted, #9C9A94));
                     min-width: 4.5rem; }
   .ev-pill { font: inherit; font-size: .82rem; cursor: pointer;
              padding: .3rem .8rem; border-radius: 999px;
              background: transparent; color: inherit;
-             border: 1px solid var(--border, #2F3131); }
+             border: 1px solid var(--bd, var(--border, #2F3131)); }
   .ev-pill[aria-pressed="true"] { background: var(--acc, #C4A484);
                                   color: #1F1D1B; border-color: transparent;
                                   font-weight: 600; }
-  .ev-count { font-size: .82rem; color: var(--text-muted, #9C9A94);
+  .ev-count { font-size: .82rem; color: var(--mut, var(--text-muted, #9C9A94));
               margin: 1.25rem 0 .75rem; }
   .ev-month { font-family: 'DM Mono', ui-monospace, monospace;
               font-size: .66rem; letter-spacing: .14em;
-              text-transform: uppercase; color: var(--text-muted, #9C9A94);
+              text-transform: uppercase; color: var(--mut, var(--text-muted, #9C9A94));
               margin: 1.75rem 0 .6rem;
-              border-top: 1px solid var(--border, #2F3131);
+              border-top: 1px solid var(--bd, var(--border, #2F3131));
               padding-top: .8rem; }
   .ev-row { display: block; text-decoration: none; color: inherit;
-            padding: .85rem 0; border-bottom: 1px solid var(--border, #2F3131); }
+            padding: .85rem 0; border-bottom: 1px solid var(--bd, var(--border, #2F3131)); }
   .ev-row:hover .ev-name { color: var(--acc-ink, var(--acc, #C4A484)); }
   .ev-top { display: flex; flex-wrap: wrap; gap: .6rem;
             align-items: baseline; }
@@ -174,12 +182,12 @@ STYLE = """
              font-size: .76rem; color: var(--acc-ink, var(--acc, #C4A484));
              min-width: 7.5rem; }
   .ev-name { font-size: 1rem; font-weight: 500; }
-  .ev-meta { font-size: .78rem; color: var(--text-muted, #9C9A94);
+  .ev-meta { font-size: .78rem; color: var(--mut, var(--text-muted, #9C9A94));
              margin-top: .2rem; }
   .ev-tag { font-family: 'DM Mono', ui-monospace, monospace;
             font-size: .6rem; letter-spacing: .1em; text-transform: uppercase;
             padding: .12rem .45rem; border-radius: 3px;
-            border: 1px solid var(--border, #2F3131); }
+            border: 1px solid var(--bd, var(--border, #2F3131)); }
   .ev-aws   { color: #D6B896; }
   .ev-azure { color: #9DB6CE; }
   .ev-gcp   { color: #BCC98E; }
@@ -190,10 +198,10 @@ STYLE = """
      A reader looking for re:Invent should find it here with a link to AWS,
      and should be told plainly that AWS has not published the dates. */
   .ev-tbd { opacity: .82; }
-  .ev-tbd .ev-when { color: var(--text-muted, #9C9A94); }
-  .ev-none { color: var(--text-muted, #9C9A94); font-size: .9rem;
+  .ev-tbd .ev-when { color: var(--mut, var(--text-muted, #9C9A94)); }
+  .ev-none { color: var(--mut, var(--text-muted, #9C9A94)); font-size: .9rem;
              padding: 1.5rem 0; }
-  .ev-note { font-size: .78rem; color: var(--text-muted, #9C9A94);
+  .ev-note { font-size: .78rem; color: var(--mut, var(--text-muted, #9C9A94));
              margin-top: .25rem; font-style: italic; }
   @media (max-width: 600px) {
     .ev-when { min-width: 0; }
@@ -261,6 +269,54 @@ def row_html(e):
     }
 
 
+def tail_html(jsv):
+    """The three things the bar needs that live at the FOOT of a page.
+
+    Reported as: on this page the theme, the music and the rest do nothing.
+    Measured -- palette and subscribe worked, theme silently did not (the
+    class was never set), and there was no <audio> element on the page at all.
+
+    Taking the head gave this page the bar's markup and its CSS. It did not
+    give it the bar's CODE, because that lives at the bottom of each page:
+
+      applyTheme / toggleTheme   an inline script. The nav button calls
+                                 toggleTheme() by name, so without it the
+                                 button is present, correctly styled, and
+                                 inert -- which is exactly the failure the
+                                 subscribe button had in September, and it
+                                 looks like nothing is wrong.
+      <audio id="beach-audio">   the element hero-media.js wires. No element,
+                                 no sound, and nothing reports it.
+      hero-media.js              the file that picks the track and wires it.
+
+    Only the theme FUNCTIONS are lifted, not the block they sit in. That block
+    is 11.5KB and most of it is What's New's own list and filter code, touching
+    #list, #q and #svcs -- none of which exist here. Copying it whole would
+    have traded a dead button for a console full of errors.
+
+    The audio element comes before the scripts. hero-media.js waits for it
+    now, so either order works, but the wrong order is what silenced the music
+    button on two pages once already.
+    """
+    import build_news_page as bnp
+    import re as _re
+    page = bnp.PAGE
+    i = page.rindex("<script>")
+    blk = page[i + len("<script>"):page.index("</script>", i)]
+    start = blk.index("function applyTheme")
+    m = _re.search(r"applyTheme\(localStorage\.getItem\([^;]+;", blk[start:])
+    theme = blk[start:start + m.end()]
+    return (
+        "\n<!-- The bar's own moving parts. See tail_html() for why these\n"
+        "     three, and not the whole block they came from. -->\n"
+        '<audio id="beach-audio" loop preload="none"></audio>\n'
+        "<script>\n" + theme + "\n</script>\n"
+        '<script src="/blog/assets/site-footer.js?v=' + jsv +
+        '" data-site-footer></script>\n'
+        '<script src="/blog/assets/hero-media.js?v=' + jsv + '"></script>\n'
+    )
+
+
 FILTER_JS = """<script>
 /* Filtering, done on the rows that are already here.
  *
@@ -318,7 +374,6 @@ FILTER_JS = """<script>
   apply();
 })();
 </script>
-<script src="/blog/assets/site-footer.js?v=__JSV__" defer></script>
 </body>
 </html>
 """
@@ -412,7 +467,8 @@ def build():
                 'those filters.</p>')
     body.append("</div>")
 
-    html = (head_html(jsv) + STYLE + nav_html() + "\n" + "\n".join(body)
+    html = (head_html(jsv) + STYLE + "</head>\n<body>\n" + nav_html()
+            + "\n" + "\n".join(body) + tail_html(jsv)
             + FILTER_JS.replace("__JSV__", jsv))
 
     if not os.path.isdir(OUT_DIR):
