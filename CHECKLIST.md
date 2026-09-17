@@ -79,6 +79,37 @@ as long as nobody challenged it. The fix was one line.
 An unverified claim in a comment is worse than no comment. It closes off a fix
 and sounds authoritative doing it.
 
+## 6. An empty field is a claim. A zero result is not a fact.
+
+Every check here asked "is what is on the page correct?" Nothing asked "is
+anything missing?" -- and a page missing thirty events answers the first
+question perfectly.
+
+Six failures on the events page in one afternoon, every one a silent absence
+rather than a wrong value, and every one found by a reader:
+
+| what was missing | how it got missed |
+|---|---|
+| all AWS dates | one probe came back empty; written into three files as fact |
+| 31 AWS Summits | a guessed API id returned `totalHits: 0`, read as "not served" |
+| Ignite's city | the venue is three words after the date that WAS read |
+| Singapore's link | a URL truncated at 60 chars by the width of my debug output |
+
+Two habits, both cheap:
+
+**Reconcile against the source, not against yourself.** `check_events` proved
+every row valid while thirty were absent. `check_events_coverage` goes back to
+the vendors' feeds, counts what they list as upcoming, and names anything the
+store does not have. Deleting six rows makes it fail with six lines saying
+which.
+
+**A zero result has to be confirmed twice before it becomes a sentence.** "AWS
+has no API for this" came from one guessed parameter. Watching the page make
+its own request took two minutes and produced the real answer. If a negative
+finding is about to be written into a comment, it is load-bearing -- check it
+the way a claim gets checked, or write down which probe produced it and what
+that probe could not see.
+
 ---
 
 ## The shape of every bug above

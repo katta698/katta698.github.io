@@ -274,6 +274,8 @@ RULES = [
     ("never edit a generated file",
      "check what writes it first"),
     ("do not state a limitation you have not measured", ""),
+    ("an empty field is a claim; a zero result is not a fact",
+     "reconcile against the source -- 'is anything missing?' is a different question from 'is this right?'"),
 ]
 
 
