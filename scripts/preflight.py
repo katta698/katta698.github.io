@@ -146,7 +146,33 @@ PER_CHECK_TIMEOUT = 420
 # headless browser waiting rather than this machine working, so more of them
 # at once costs little. Raise it further only with the retry above in mind:
 # past a point they contend for ports and CPU and start failing each other.
-WORKERS = 6
+#
+# Lowered to 2 on 2026-09-16 from the azure window: six was past that point on
+# this machine, and the sentence above had already predicted how it would look.
+# Three was measured too, and was better but not enough -- six failures became
+# one, check_page_settle, which then passed on its own in 60s. Each step down
+# removes failures without changing a single check, which is what contention
+# looks like and what a real defect does not.
+#
+# Azure #35 was refused four times over an evening by check_audio_glyph,
+# check_bar_settle, check_brand, check_music and check_page_settle, all dying
+# in the transport -- Page.goto timeouts and ConnectionAbortedError
+# [WinError 10053] out of socketserver. It read as a broken machine. It was
+# not: run alone, every one of those checks passes. check_brand reports the
+# mark identical on all 5 pages at 2 widths; check_music reports the audio
+# genuinely playing, readyState 4, 2.4s, on all 5 pages, exit 0. They only
+# fail together, which is the signature of six browsers and six servers
+# contending rather than of any defect in the site.
+#
+# 0dd142e read the same symptom as an environment fault and made check_nav and
+# check_footer_clear advisory. That unblocked whichever windows happened to
+# fail on those two; it could not help a window failing on five others. Fewer
+# workers fixes the cause instead, and keeps every check blocking.
+#
+# The cost is wall-clock on a passing run. That is the right trade for a gate
+# whose failures were not real: a slower honest gate beats a fast one that
+# stops publishing for a day over a socket.
+WORKERS = 2
 
 
 def discover(fast, hook=False):
