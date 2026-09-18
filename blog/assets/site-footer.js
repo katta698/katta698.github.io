@@ -2455,12 +2455,35 @@
     }
     if (root.style.backgroundColor !== bg) root.style.backgroundColor = bg;
   }
+  /* Read it again once the colour has finished moving.
+   *
+   * The portfolio animates background-color, so getComputedStyle() at the
+   * instant the class changes returns the colour it is transitioning FROM.
+   * Syncing on that reading made html lag exactly one toggle behind body --
+   * which looks identical to not having this code at all, and measured that
+   * way: t1 html dark / body light, t2 html light / body dark.
+   *
+   * transitionend catches it properly; the timeout covers a page with no
+   * transition to end, and a transition interrupted by a second toggle. Both
+   * are idempotent -- sync() writes only when the value differs -- so running
+   * three times costs nothing and misses nothing.
+   */
+  function syncSoon() {
+    sync();
+    window.requestAnimationFrame(sync);
+    window.setTimeout(sync, 450);
+  }
   function start() {
     sync();
     // The class is what every toggle on this site changes, so watching it
     // covers all of them without any of them knowing this exists.
-    new MutationObserver(sync).observe(document.body,
+    new MutationObserver(syncSoon).observe(document.body,
       { attributes: true, attributeFilter: ['class'] });
+    document.body.addEventListener('transitionend', function (e) {
+      if (e.propertyName === 'background-color' && e.target === document.body) {
+        sync();
+      }
+    });
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', start);
