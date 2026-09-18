@@ -151,6 +151,21 @@ def tracked_files():
     return [f for f in out.stdout.splitlines() if f.strip()]
 
 
+# A newline byte inside a PNG is not a line.
+#
+# The first version counted every tracked file the same way, and reported the
+# site at 1,078,966 lines. 698,048 of those were newline BYTES inside images,
+# fonts and mp3s -- a number with no meaning, printed in the one sentence that
+# is supposed to be the trustworthy summary of a change.
+#
+# Binaries are still HASHED, because a swapped image is a change worth seeing.
+# They are just not counted in lines, and the summary now says how many were
+# treated that way rather than quietly folding them in.
+BINARY = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svgz",
+          ".woff", ".woff2", ".ttf", ".otf", ".eot",
+          ".mp3", ".mp4", ".webm", ".mov", ".pdf", ".zip", ".gz")
+
+
 def hash_code():
     files = {}
     for rel in tracked_files():
@@ -160,9 +175,11 @@ def hash_code():
                 data = fh.read()
         except OSError:
             continue
+        binary = rel.lower().endswith(BINARY)
         files[rel] = {"sha": hashlib.sha256(data).hexdigest()[:16],
-                      "lines": data.count(b"\n") + 1,
-                      "bytes": len(data)}
+                      "lines": 0 if binary else data.count(b"\n") + 1,
+                      "bytes": len(data),
+                      "binary": binary}
     return files
 
 
@@ -223,8 +240,9 @@ def cmd_snapshot(args):
     io.open(CODE, "w", encoding="utf-8").write(json.dumps(
         {"taken": dt.datetime.now().isoformat(timespec="seconds"),
          "files": code}, indent=1))
-    print("  code:      %d files, %d lines"
-          % (len(code), sum(f["lines"] for f in code.values())))
+    nbin = sum(1 for f in code.values() if f.get("binary"))
+    print("  code:      %d files, %d lines (%d binaries hashed, not counted)"
+          % (len(code), sum(f["lines"] for f in code.values()), nbin))
     if args.code_only:
         print("  behaviour: skipped (--code-only)")
         return 0
@@ -298,11 +316,14 @@ def cmd_compare(args):
     print()
     print("  " + "-" * 66)
     total_lines = sum(f["lines"] for f in now.values())
+    nbin = sum(1 for f in now.values() if f.get("binary"))
+    scope = ("%d files (%d text, %d binary) and %d lines"
+             % (len(now), len(now) - nbin, nbin, total_lines))
     if not (added or removed or changed) and not beh_diffs:
-        print("  Of %d files and %d lines, NOTHING changed and no page "
-              "behaves differently." % (len(now), total_lines))
+        print("  Of %s, NOTHING changed and no page behaves differently."
+              % scope)
     else:
-        print("  Of %d files and %d lines:" % (len(now), total_lines))
+        print("  Of %s:" % scope)
         print("    %d file(s) added, %d deleted, %d changed."
               % (len(added), len(removed), len(changed)))
         print("    %d behavioural difference(s) across %d page(s)."
