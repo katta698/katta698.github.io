@@ -438,6 +438,29 @@ def write_sitemap():
     except Exception as exc:                                    # noqa: BLE001
         print(f"  sitemap not regenerated ({str(exc)[:50]})")
 
+
+def write_colophon():
+    """Rebuild /how-this-was-made/, whose every figure is counted at build.
+
+    Called from here for the same reason write_sitemap() is: that page counts
+    the posts, the pages, the checks and the scheduled jobs at build time and
+    prints them as facts. Left to be run by hand it would say 253 posts a
+    fortnight after it said something true, and the one claim it makes about
+    itself -- that nothing on it is typed in -- would be the first thing
+    wrong with it.
+    """
+    import subprocess
+    try:
+        out = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "scripts" / "build_colophon.py")],
+            capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=300,
+            encoding="utf-8", errors="replace")
+        for line in (out.stdout or "").strip().splitlines()[-2:]:
+            print(line)
+    except Exception as exc:                                    # noqa: BLE001
+        print(f"  colophon not regenerated ({str(exc)[:50]})")
+
+
 SITE_URL    = "https://jayanthkatta.com"
 BLOG_URL    = f"{SITE_URL}/blog"
 DISQUS_ID   = "jayanthkatta"
@@ -4468,6 +4491,7 @@ def main():
     stamp_static_pages()
     write_service_worker()
     write_sitemap()
+    write_colophon()
 
     print(f"Done — {len(visible_posts)} public posts built at blog/ ({draft_count} draft)")
 
