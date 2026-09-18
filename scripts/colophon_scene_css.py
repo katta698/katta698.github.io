@@ -31,7 +31,14 @@ SCENE_CSS = """
               border-radius: 12px; overflow: hidden;
               background: color-mix(in srgb,
                           var(--tx, var(--text, #EDEBE6)) 3%, transparent); }
-  .cf-scene svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* The direct child only.
+     This rule exists to stretch the SCENE drawing across the frame. Once the
+     controls moved inside the frame, `.cf-scene svg` also caught every icon
+     in the bar: each button's 14px glyph became an absolutely positioned
+     348x42 sheet covering the whole bar, stacked five deep. The topmost one
+     -- Expand -- then swallowed every tap meant for CC, mute or replay.
+     Nothing looked wrong; the buttons simply did nothing. */
+  .cf-scene > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 
   .sc { opacity: 0; transition: opacity .45s ease; }
   .sc.is-on { opacity: 1; }
@@ -325,6 +332,7 @@ SCENE_CSS = """
      whatever the drawing is doing underneath it. */
   .cf-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
             display: flex; align-items: center; gap: .55rem;
+            max-width: 100%; box-sizing: border-box;
             padding: .5rem .7rem .55rem;
             background: linear-gradient(to top,
               rgba(0,0,0,.72), rgba(0,0,0,.42) 60%, rgba(0,0,0,0));
@@ -352,7 +360,14 @@ SCENE_CSS = """
                                 border-color: var(--acc-ink, #C4A484); }
   .cf-cc[aria-pressed="false"] { opacity: .62; }
 
-  .cf-seek { flex: 1 1 auto; -webkit-appearance: none; appearance: none;
+  /* min-width: 0 is load-bearing.
+     A range input has an intrinsic width near 129px and will not shrink
+     below it, so at 390px the bar overflowed its own frame and the controls
+     sat on top of each other -- Playwright caught it as the Expand button
+     intercepting taps meant for CC. A reader would have called it "the
+     subtitles button does nothing". */
+  .cf-seek { flex: 1 1 auto; min-width: 0; -webkit-appearance: none;
+             appearance: none;
              height: 4px; border-radius: 4px; cursor: pointer; margin: 0;
              background: linear-gradient(to right,
                var(--acc-ink, #C4A484) 0 var(--cf-pct, 0%),
@@ -374,10 +389,26 @@ SCENE_CSS = """
     width: min(94vw, 1180px); margin: 0; }
   .cf-player.is-zoomed .cf-cap { bottom: 62px; font-size: 1.1rem; }
 
+  /* On a phone the frame is about 200px tall, so a caption is competing
+     with the drawing for the same space rather than sitting under it. It
+     gets smaller, tighter and lower here -- and it is off unless asked for
+     in the first place. The count goes: the scrubber already says where you
+     are, and six controls on a 390px bar is a row of thumbnails. */
   @media (max-width: 560px) {
     .cf-player { max-width: 100%; }
-    .cf-cap { font-size: .8rem; bottom: 48px; padding: 0 .6rem; }
+    .cf-cap { font-size: .72rem; line-height: 1.5; bottom: 44px;
+              padding: 0 .5rem; }
+    .cf-cap span { padding: .14em .38em; }
     .cf-count { display: none; }
+    /* Clear of the feedback star.
+       .fb-btn is fixed at right:14px, top:50% -- so on a phone it floats in
+       the same column as the last control in this bar, and hit-testing
+       showed it covering Expand completely. The button was there, styled and
+       enabled, and a tap went to the star instead. Extra right padding moves
+       the controls out from under it rather than moving a site-wide control
+       for one page. */
+    .cf-bar { gap: .4rem; padding: .4rem 3.6rem .45rem .5rem; }
+    .cf-icon { width: 24px; height: 24px; }
   }
 
 

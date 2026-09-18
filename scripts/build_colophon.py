@@ -208,7 +208,7 @@ NARRATION = [
     "It starts here: an idea, away from the desk.",
 
     "A post is one hand-written file. It is the only thing on this site that "
-    "is not generated, and everything a reader sees is built from it.",
+    "is not generated, and everything you sees is built from it.",
 
     "Before anything is built, the draft is checked. Are the claims "
     "supported, do the links resolve, does the page have the structure its "
@@ -218,7 +218,7 @@ NARRATION = [
     "Then one file becomes the whole site. Every post page, the index, the "
     "paged archive, the tag and year data, the feed, the sitemap and the "
     "offline worker. Each page is stamped with a fingerprint of the shared "
-    "stylesheet and script, so a returning reader can never be served last "
+    "stylesheet and script, so you can never be served last "
     "week's design with this week's words.",
 
     "Nothing ships on trust. Fifty checks drive a real browser over the real "
@@ -241,6 +241,37 @@ NARRATION = [
     "came from, so it can say that nothing here covers it instead of "
     "inventing something that sounds right.",
 ]
+
+
+# Icons as SVG, not as characters.
+#
+# Reported with a screenshot: the expand control was rendering as an ICE
+# SKATE on an iPhone. U+26F6 and U+26F8 are "square four corners" and "ice
+# skate", they sit next to each other in the block, and iOS draws both as
+# colour emoji -- so a geometric symbol became a picture of a boot. The
+# speaker was a colour emoji too, next to two monochrome outlines.
+#
+# This is the flute bug again in a different costume: a character is a
+# request, and the device decides what to draw. An inline path is a drawing.
+# These are 14px, stroked in currentColor, so they inherit the bar's ink and
+# cannot be substituted by anything.
+def _svg(body):
+    return ('<svg viewBox="0 0 24 24" width="14" height="14" fill="none" '
+            'stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+            'stroke-linejoin="round" aria-hidden="true" '
+            'focusable="false">%s</svg>' % body)
+
+IC_PLAY   = _svg('<path d="M8 5l11 7-11 7V5z" fill="currentColor" '
+                 'stroke="none"/>')
+IC_PAUSE  = _svg('<path d="M9 5v14M15 5v14"/>')
+IC_SOUND  = _svg('<path d="M5 9v6h4l5 4V5L9 9H5z"/>'
+                 '<path d="M17.5 8.5a5 5 0 0 1 0 7"/>')
+IC_MUTED  = _svg('<path d="M5 9v6h4l5 4V5L9 9H5z"/>'
+                 '<path d="M17 9.5l4 5M21 9.5l-4 5"/>')
+IC_REPLAY = _svg('<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/>'
+                 '<path d="M6 3v4h4"/>')
+IC_EXPAND = _svg('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>')
+IC_SHRINK = _svg('<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>')
 
 
 STOPS = [
@@ -536,11 +567,11 @@ def build():
     # ON the picture is the picture talking. So the subtitle and the controls
     # are overlaid, and nothing at all follows the frame.
     b.append('<button type="button" class="cf-big" data-journey-big '
-             'aria-label="Play">&#9654;</button>')
+             'aria-label="Play">%s</button>' % IC_PLAY)
     b.append('<p class="cf-cap" data-caption></p>')
     b.append('<div class="cf-bar">')
     b.append('<button type="button" class="cf-play" data-journey-play '
-             'aria-label="Play">&#9654;</button>')
+             'aria-label="Play">%s</button>' % IC_PLAY)
     b.append('<input type="range" class="cf-seek" data-seek min="0" max="%d" '
              'value="0" step="1" aria-label="Position in the walkthrough">'
              % (len(STOPS) - 1))
@@ -552,18 +583,23 @@ def build():
     # enable, like YouTube." Subtitles carry the whole script here, so they
     # are ON unless somebody says otherwise, and the choice is remembered.
     b.append('<button type="button" class="cf-icon cf-cc" data-journey-cc '
-             'aria-pressed="true" aria-label="Turn subtitles off" '
+             'aria-pressed="false" aria-label="Turn subtitles on" '
              'title="Subtitles">CC</button>')
     b.append('<button type="button" class="cf-icon" data-journey-mute '
-             'aria-pressed="false" aria-label="Mute">&#128266;</button>')
+             'aria-pressed="false" aria-label="Mute">%s</button>' % IC_SOUND)
     b.append('<button type="button" class="cf-icon" data-journey-replay '
-             'aria-label="Start again" title="Start again">&#8635;</button>')
+             'aria-label="Start again" title="Start again">%s</button>'
+             % IC_REPLAY)
     b.append('<button type="button" class="cf-icon" data-journey-zoom '
-             'aria-label="Expand" title="Expand">&#9974;</button>')
+             'aria-label="Expand" title="Expand">%s</button>' % IC_EXPAND)
     b.append("</div>")
     b.append("</div>")
     b.append('<script type="application/json" data-narration>%s</script>'
              % json.dumps(NARRATION))
+    b.append('<script type="application/json" data-icons>%s</script>'
+             % json.dumps({"play": IC_PLAY, "pause": IC_PAUSE,
+                           "sound": IC_SOUND, "muted": IC_MUTED,
+                           "expand": IC_EXPAND, "shrink": IC_SHRINK}))
     b.append("</div>")
 
     # The same story as one picture.

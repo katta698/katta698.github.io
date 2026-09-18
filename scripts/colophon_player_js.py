@@ -46,6 +46,11 @@ PLAYER_JS = """
   var againBt = stage.querySelector('[data-journey-replay]');
   var zoomBt  = stage.querySelector('[data-journey-zoom]');
   var ccBt    = stage.querySelector('[data-journey-cc]');
+  var ICON = {};
+  try {
+    var ib = document.querySelector('[data-icons]');
+    if (ib) ICON = JSON.parse(ib.textContent);
+  } catch (e) { ICON = {}; }
   var bigBt   = stage.querySelector('[data-journey-big]');
   if (!scenes.length) return;
 
@@ -68,8 +73,15 @@ PLAYER_JS = """
   // Subtitles carry the whole script, so they are on unless a reader has
   // said otherwise. Only an explicit '0' turns them off -- an empty value
   // means they have never touched it.
-  var cc = true;
-  try { cc = localStorage.getItem('jk-cc') !== '0'; } catch (e) {}
+  // Subtitles OFF unless asked for.
+  //
+  // They were on by default and, on a phone, three lines of caption covered
+  // the entire drawing -- the picture was a background for a wall of text.
+  // "Subtitles has to be optional, users have to click subtitles if needed."
+  // Correct: a caption over a 16:9 frame on a 390px screen is most of the
+  // frame, and nobody asked for it.
+  var cc = false;
+  try { cc = localStorage.getItem('jk-cc') === '1'; } catch (e) {}
 
   function paint() {
     scenes.forEach(function (g, n) { g.classList.toggle('is-on', n === at); });
@@ -91,7 +103,7 @@ PLAYER_JS = """
 
   function setPlayIcon() {
     if (!playBt) return;
-    playBt.innerHTML = playing ? '&#10073;&#10073;' : '&#9654;';
+    playBt.innerHTML = playing ? (ICON.pause || '') : (ICON.play || '');
     playBt.setAttribute('aria-label', playing ? 'Pause' : 'Play');
   }
 
@@ -229,7 +241,7 @@ PLAYER_JS = """
 
   function paintMute() {
     if (!muteBt) return;
-    muteBt.innerHTML = muted ? '&#128263;' : '&#128266;';
+    muteBt.innerHTML = muted ? (ICON.muted || '') : (ICON.sound || '');
     muteBt.setAttribute('aria-pressed', String(muted));
     muteBt.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
   }
@@ -296,7 +308,7 @@ PLAYER_JS = """
       stage.style.minHeight = '';
     }
     if (zoomBt) {
-      zoomBt.innerHTML = on ? '&#9976;' : '&#9974;';
+      zoomBt.innerHTML = on ? (ICON.shrink || '') : (ICON.expand || '');
       zoomBt.setAttribute('aria-label', on ? 'Minimise' : 'Expand');
     }
   }
