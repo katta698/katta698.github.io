@@ -330,7 +330,15 @@ SCENE_CSS = """
 
   /* The control row, on the picture, over a scrim so it stays readable
      whatever the drawing is doing underneath it. */
-  .cf-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
+  /* z-index 901, and the number is not arbitrary.
+     The feedback star is fixed at right:14px, top:50% with z-index 900, so
+     on a phone it floats in the same column as the last control here. The
+     first fix padded this bar 58px clear of it -- which worked, and left the
+     controls visibly shoved left with a hole at the right edge, permanently,
+     to dodge an overlap that only happens at one scroll position. Sitting
+     above it instead keeps the row balanced and keeps every tap landing on
+     the button it was aimed at. */
+  .cf-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 901;
             display: flex; align-items: center; gap: .55rem;
             max-width: 100%; box-sizing: border-box;
             padding: .5rem .7rem .55rem;
@@ -407,7 +415,7 @@ SCENE_CSS = """
        enabled, and a tap went to the star instead. Extra right padding moves
        the controls out from under it rather than moving a site-wide control
        for one page. */
-    .cf-bar { gap: .4rem; padding: .4rem 3.6rem .45rem .5rem; }
+    .cf-bar { gap: .4rem; padding: .4rem .5rem .45rem; }
     .cf-icon { width: 24px; height: 24px; }
   }
 
