@@ -55,11 +55,14 @@ DESTINATIONS = ["/", "/blog/", "/intelligence/", "/intelligence/whats-new/",
 
 # Reachable from SOMEWHERE rather than from everywhere.
 #
-# /how-this-was-made/ is a colophon, not a section of the site. It was in the
-# footer for a while and taken out again -- "why do we have how it's made in
-# the footer section? Just remove it" -- so on a desktop it is reached from
-# the About section of the portfolio, which is where somebody wondering about
-# it is already standing, and on a phone from the menu as well.
+# /how-this-was-made/ is a colophon, not a section of the site. It has exactly
+# one way in, on every screen size: the About section of the portfolio, where
+# somebody wondering who built this is already standing.
+#
+# It briefly had three -- About, the footer, and a row in the phone menu --
+# and each was removed on the same instruction: "just remove it", and then
+# "stay consistent with desktop by being in portfolio alone". Three entrances
+# to one page is not generosity, it is three things to keep in step.
 #
 # Written as its own rule rather than dropped from the check, because "you can
 # still get there from the right place" is the actual requirement and is worth
