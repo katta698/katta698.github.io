@@ -391,6 +391,17 @@
         cards = Array.from(grid.querySelectorAll('.post-card'));
         totalPosts = cards.length;
         hydrated = true;
+        // The month row is built by scanning `cards`, and until this line
+        // ran that meant the 24 posts the page ships -- which all fall in
+        // the same month or two. rebuildMonthRow() then found fewer than two
+        // months and hid itself, every time, for every year.
+        //
+        // So the month filter has never worked on the live site: the row is
+        // in the HTML, it is display:none, and nothing says why. Picking a
+        // year appeared to do nothing beyond the year. Found while checking
+        // that a restored ?month= comes back -- a parameter that, before
+        // this, no reader could ever have set.
+        rebuildMonthRow();
         applyFilters();
       })
       .catch(() => {
@@ -480,6 +491,41 @@
         : `${visible} of ${total} posts`;
     }
     if (emptyEl) emptyEl.style.display = visible === 0 ? '' : 'none';
+    writeUrl();
+  }
+
+  /* The filters live in the URL, so leaving the page does not clear them.
+   *
+   * Same behaviour as What's New and Cloud events, and for the same reason:
+   * a post opens in a new tab, and "coming back" can mean a tab the browser
+   * threw away and reloaded while the reader was reading. Held only in these
+   * variables, a reader's tag, year, month, service, sort and search are gone
+   * on return -- with nothing broken on screen to explain it.
+   *
+   * Written from applyFilters() rather than from each setter. Every control
+   * on this page funnels through here, so there is one place to keep correct
+   * instead of six; a seventh filter added later gets this for free, and
+   * cannot be the one somebody forgot to wire.
+   *
+   * replaceState, not pushState: picking a year, then a month, then a sort
+   * should not leave three entries for a reader to walk back out through.
+   */
+  var urlReady = false;
+  function writeUrl() {
+    if (!urlReady) return;     // the restore below is still running
+    var q = [];
+    if (activeTag !== 'all') q.push('tag=' + encodeURIComponent(activeTag));
+    if (activeYear !== 'all') q.push('year=' + encodeURIComponent(activeYear));
+    if (activeMonth !== 'all') q.push('month=' + encodeURIComponent(activeMonth));
+    if (activeService && activeService !== 'all')
+      q.push('service=' + encodeURIComponent(activeService));
+    if (sortAsc) q.push('sort=oldest');
+    var term = searchInput ? searchInput.value.trim() : '';
+    if (term) q.push('q=' + encodeURIComponent(term));
+    try {
+      history.replaceState(null, '',
+        location.pathname + (q.length ? '?' + q.join('&') : '') + location.hash);
+    } catch (e) {}
   }
 
   // Clicking a service in the sidebar answers "what have you written about
@@ -589,15 +635,35 @@
       if (m && !seenM[m]) { seenM[m] = true; months.push(m); }
     });
     months.sort();
+    // A month the chosen year does not have cannot stay selected. This is
+    // the one place that knows which months exist, and it now runs twice --
+    // once on the 24 cards the page ships and again on the full archive --
+    // so it is also the right place to sanitise a restored or hand-edited
+    // ?month=99. Without this the state survives as a lit pill over an empty
+    // grid, which is worse than not restoring it at all.
+    // ...but only once the full archive is here. Before hydration `cards`
+    // is the 24 posts this page ships, which all fall in the newest month or
+    // two -- so a perfectly valid restored ?month=03 was being thrown away
+    // for not appearing among them, and the reader came back to the whole
+    // year. Measured: ?year=2026&month=03 reloaded to 250 posts instead of
+    // 13. Sanitise against the archive, never against a sample of it.
+    if (hydrated && activeMonth !== 'all'
+        && months.indexOf(activeMonth) === -1) {
+      activeMonth = 'all';
+    }
     if (months.length < 2) { monthRow.style.display = 'none'; return; }
     var allM = document.createElement('button');
-    allM.className = 'filter-pill active';
+    // Reflect the month that is actually set, rather than assuming "all".
+    // This function now runs a second time when the archive arrives, and
+    // hard-coding `active` here would light "All months" over a filtered
+    // list -- the same shape as the year-pill bug: lit control, wrong list.
+    allM.className = 'filter-pill' + (activeMonth === 'all' ? ' active' : '');
     allM.dataset.month = 'all';
     allM.textContent = 'All months';
     monthRow.appendChild(allM);
     months.forEach(function(m) {
       var btn = document.createElement('button');
-      btn.className = 'filter-pill';
+      btn.className = 'filter-pill' + (activeMonth === m ? ' active' : '');
       btn.dataset.month = m;
       btn.textContent = MONTH_NAMES[parseInt(m, 10) - 1];
       monthRow.appendChild(btn);
@@ -744,14 +810,54 @@
     hydrate().then(function () { applySort(); applyFilters(); });
   });
 
-  // Pre-select tag filter from ?tag= param (set by portfolio teaser links)
+  // Put the reader back where they were.
+  //
+  // ?tag= was already honoured here, because the portfolio links in with it.
+  // Year, month and sort were not, so a reader who picked 2025 / March /
+  // Oldest, opened a post and came back got the default view -- the same
+  // complaint as What's New, on a page that already had half the machinery.
+  //
+  // Order matters: setYear() clears the month by design (a month without its
+  // year is meaningless), so the month has to be restored after it. Sort is
+  // applied before the filters so the count and the order settle together
+  // rather than in two visible steps.
   var urlParams = new URLSearchParams(window.location.search);
   var tagParam = urlParams.get('tag');
+  var yearParam = urlParams.get('year');
+  var monthParam = urlParams.get('month');
+
+  if (urlParams.get('sort') === 'oldest' && sortBtn) {
+    sortAsc = true;
+    sortBtn.innerHTML = '<span class="sort-icon">↑</span> Oldest';
+    applySort();
+  }
+  // Only a value this page actually offers. A stale or hand-edited
+  // ?year=1998 should show the archive, not an empty grid under a lit pill.
+  if (yearParam && yearPills.some(function (p) {
+        return p.dataset.year === yearParam; })) {
+    setYear(yearParam);
+    // Assigned rather than clicked. setYear() clears the month by design, and
+    // at this point the archive has not arrived -- so the month's pill does
+    // not exist yet to be found or pressed. rebuildMonthRow() runs again when
+    // cards.json lands, lights the right pill, and drops a month this year
+    // does not have.
+    if (monthParam && /^[01][0-9]$/.test(monthParam)) {
+      activeMonth = monthParam;
+      rebuildMonthRow();
+    }
+  }
   if (tagParam) {
     setTag(tagParam.toLowerCase());
   } else {
     applyFilters();
   }
+
+  // Everything above restores; from here on, changes are written back.
+  // Set after the restore so that re-applying the state cannot rewrite the
+  // URL it was just read from -- which on a half-applied restore would mean
+  // saving a state the reader never chose.
+  urlReady = true;
+  writeUrl();
 
   // The rest of the archive is fetched when something actually needs it, and
   // not before.
@@ -782,9 +888,18 @@
     // moment later and re-applied the filter over the full set -- so removing
     // it without this would make a shared link quietly return matches from
     // the newest 24 posts and call that the archive.
+    //
+    // year, month and sort are in this list for the same reason. A restored
+    // ?year=2025 filtering over the 24 posts this page ships would show a
+    // convincing, short year -- the worst kind of wrong, because nothing
+    // about it looks broken.
     const dl = new URLSearchParams(window.location.search);
-    if (dl.get('q') || dl.get('tag') || dl.get('service') || dl.get('topic')) {
-      hydrate().then(function () { applyFilters(); });
+    if (dl.get('q') || dl.get('tag') || dl.get('service') || dl.get('topic') ||
+        dl.get('year') || dl.get('month') || dl.get('sort')) {
+      hydrate().then(function () {
+        if (sortAsc) applySort();
+        applyFilters();
+      });
     }
   }
 })();

@@ -221,7 +221,67 @@ def main():
                     "every year shows the same %d posts -- the pills change "
                     "which one is lit and nothing else"
                     % list(counts.values())[0])
-        pg3.close()
+        # 6. The month row, which never once appeared on the live site.
+        #
+        # It is rendered into the HTML and hidden, and rebuildMonthRow() used
+        # to run only on the 24 cards the page ships. Those all fall in the
+        # newest month or two, so it found fewer than two months and hid
+        # itself -- for every year, on every visit, with nothing to say so.
+        # Picking a year simply looked like it did nothing further.
+        #
+        # This asserts the reader's sequence: pick the year with the most
+        # posts, and a month row must appear and must narrow the list.
+        pg4 = b.new_page(viewport={"width": 1280, "height": 900})
+        pg4.goto(base, wait_until="load", timeout=90000)
+        pg4.wait_for_timeout(4000)
+        big = max(counts, key=counts.get) if counts else None
+        if not big:
+            print("  no year to test the month row against")
+        else:
+            pg4.click(".year-filters .filter-pill[data-year='%s']" % big,
+                      timeout=8000)
+            pg4.wait_for_timeout(3000)
+            m = pg4.evaluate(
+                """() => {
+                     const r = document.querySelector('.month-filters');
+                     if (!r) return {row: false};
+                     return {row: true,
+                             shown: getComputedStyle(r).display !== 'none',
+                             pills: [...r.querySelectorAll('.filter-pill')]
+                                      .map(p => p.dataset.month)};
+                   }""")
+            print("  year %s -> month row %s, pills: %s"
+                  % (big, "visible" if m.get("shown") else "HIDDEN",
+                     ",".join(m.get("pills") or []) or "none"))
+            if not m.get("row"):
+                problems.append("there is no month row in the page at all")
+            elif not m.get("shown") or len(m.get("pills") or []) < 2:
+                problems.append(
+                    "picking year %s (%d posts) left the month row hidden "
+                    "with %d pill(s) -- the control is in the HTML and a "
+                    "reader can never reach it"
+                    % (big, counts[big], len(m.get("pills") or [])))
+            else:
+                one = [x for x in m["pills"] if x != "all"][0]
+                pg4.click(".month-filters .filter-pill[data-month='%s']" % one,
+                          timeout=8000)
+                pg4.wait_for_timeout(1500)
+                narrowed = pg4.evaluate(
+                    "() => [...document.querySelectorAll('.post-card')]"
+                    ".filter(c => getComputedStyle(c).display !== 'none')"
+                    ".length")
+                print("     month %s -> %d post(s) of the year's %d"
+                      % (one, narrowed, counts[big]))
+                if narrowed >= counts[big]:
+                    problems.append(
+                        "month %s shows %d of the year's %d posts -- the "
+                        "pill lights and nothing is filtered"
+                        % (one, narrowed, counts[big]))
+                elif narrowed == 0:
+                    problems.append(
+                        "month %s shows nothing, though the row offered it"
+                        % one)
+        pg4.close()
 
         b.close()
     if srv:
