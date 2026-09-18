@@ -269,7 +269,29 @@
   // must end up holding every post or a filter would silently only search the
   // page on screen.
   let cards = Array.from(document.querySelectorAll('.post-card'));
-  const pills = Array.from(document.querySelectorAll('.filter-pill'));
+  /* Topic pills only -- NOT every .filter-pill on the page.
+   *
+   * Reported as: a single year cannot be picked, every year lights up at once.
+   *
+   * The year row uses the same .filter-pill class, so this query collected
+   * those too, and further down every pill it holds is given a setTag()
+   * handler. Clicking "2025" therefore ran both:
+   *
+   *     setYear('2025')     correct -- only 2025 active
+   *     setTag(undefined)   because a year pill has no data-tag
+   *
+   * and setTag does `p.dataset.tag === tag`, which for a year pill is
+   * undefined === undefined -- true for all four. Hence every year lit, the
+   * topic row cleared, and a count reading "0 of 24 posts".
+   *
+   * It worked until the year row moved into the server-rendered HTML, to stop
+   * it arriving after paint and shoving the post list down -- the "blog looks
+   * like it reloads" fix. Before that it was built by script AFTER this line
+   * ran, so this query could not see it. A fix for one reported problem
+   * silently breaking another feature in a file it never touched.
+   */
+  const pills = Array.from(document.querySelectorAll(
+    '.filters:not(.year-filters):not(.month-filters) .filter-pill'));
 
   /* Keep the chosen chip in sight.
    *

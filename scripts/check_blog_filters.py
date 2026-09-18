@@ -167,6 +167,62 @@ def main():
                 "matches from the newest page only" % (built2, total))
         pg2.close()
 
+        # 5. One year at a time.
+        #
+        # Reported as: a single year cannot be picked, every year lights up at
+        # once. This check existed and passed throughout, because it only ever
+        # exercised the TOPIC row -- the year row shares the .filter-pill
+        # class and had never been clicked here.
+        #
+        # The cause was a query for every .filter-pill on the page, which gave
+        # each year pill a setTag() handler as well. Clicking 2025 also ran
+        # setTag(undefined), and `p.dataset.tag === tag` is undefined ===
+        # undefined for all four year pills.
+        #
+        # Both halves are asserted, because the broken version still LOOKED
+        # filtered: pills lit, and every post on screen.
+        pg3 = b.new_page(viewport={"width": 1280, "height": 900})
+        pg3.goto(base, wait_until="load", timeout=90000)
+        pg3.wait_for_timeout(4000)
+        years = pg3.eval_on_selector_all(
+            ".year-filters .filter-pill[data-year]",
+            "els => els.map(e => e.dataset.year).filter(y => y !== 'all')")
+        if not years:
+            print("  no year pills to test")
+        else:
+            print("  year pills: %s" % ", ".join(years))
+            counts = {}
+            for y in years:
+                pg3.click(".year-filters .filter-pill[data-year='%s']" % y,
+                          timeout=8000)
+                pg3.wait_for_timeout(1200)
+                state = pg3.evaluate(
+                    "() => ({lit: [].slice.call(document.querySelectorAll("
+                    "'.year-filters .filter-pill.active')).map("
+                    "e => e.dataset.year), shown: [].slice.call("
+                    "document.querySelectorAll('.post-card')).filter("
+                    "c => c.style.display !== 'none').length})")
+                counts[y] = state["shown"]
+                if state["lit"] != [y]:
+                    problems.append(
+                        "clicking year %s left %s lit -- a reader cannot "
+                        "select one year" % (y, state["lit"] or "nothing"))
+                    print("     FAIL %s -> lit %s" % (y, state["lit"]))
+                elif state["shown"] >= total:
+                    problems.append(
+                        "year %s shows %d of %d posts -- the pill is lit and "
+                        "nothing was filtered" % (y, state["shown"], total))
+                    print("     FAIL %s -> %d posts (no filtering)"
+                          % (y, state["shown"]))
+                else:
+                    print("     ok   %s -> %d post(s)" % (y, state["shown"]))
+            if len(counts) > 1 and len(set(counts.values())) == 1:
+                problems.append(
+                    "every year shows the same %d posts -- the pills change "
+                    "which one is lit and nothing else"
+                    % list(counts.values())[0])
+        pg3.close()
+
         b.close()
     if srv:
         srv.shutdown()
