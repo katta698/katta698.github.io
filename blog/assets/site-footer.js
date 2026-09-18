@@ -445,17 +445,36 @@
   // already has. The button shows a glyph and not a name, so two entries
   // sharing one would read as the rotation having stalled. Every glyph here is
   // distinct, which is the same rule the palette marks follow.
+  // Six, in the same order as the <head> script, and that is not a
+  // coincidence -- it is the whole requirement.
+  //
+  // Two lists set this button. The <head> script picks the GLYPH, which CSS
+  // draws through ::before. This list picks the NAME in the tooltip. They are
+  // indexed by the same local-day arithmetic, so they only ever agree if they
+  // hold the same instruments in the same order.
+  //
+  // This morning they stopped. The head list was cut from ten to six -- four
+  // of the glyphs were Unicode too new for some phones to draw -- and this
+  // one was left at ten. Measured across the following week, the glyph and
+  // the name disagreed on every single day:
+  //
+  //     18 Sep   drum shown        tooltip said Mridangam
+  //     19 Sep   trumpet shown     tooltip said Tabla
+  //     20 Sep   saxophone shown   tooltip said Nadaswaram
+  //
+  // Veena, Flute, Mridangam and Harmonium are gone with their glyphs. Veena
+  // rode on the banjo and Mridangam on the long drum, and those are exactly
+  // the characters a 2019 phone renders as an empty box. The names that
+  // survive are the ones whose glyph can carry them honestly: a harmonium IS
+  // a keyboard, a tabla IS a drum, and a nadaswaram is the reed horn this set
+  // has a trumpet for.
   var INSTRUMENTS = [
     ['🎻', 'Violin'],
     ['🎸', 'Guitar'],
-    ['🪕', 'Veena'],
-    ['🪈', 'Flute'],
-    ['🪘', 'Mridangam'],
     ['🥁', 'Tabla'],
     ['🎺', 'Nadaswaram'],
-    ['🪗', 'Harmonium'],
     ['🎷', 'Saxophone'],
-    ['🎹', 'Keyboard']
+    ['🎹', 'Harmonium']
   ];
 
   // Whole days since the epoch in LOCAL time -- a property of the date rather

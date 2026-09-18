@@ -95,12 +95,24 @@ def rotation_files():
         for name in files:
             if not name.endswith((".html", ".py")):
                 continue
+            # A check never sets the rotation; it only ever talks about one.
+            # This file quotes both the setProperty call and the regex in its
+            # own comments, so every "does the text appear" rule I tried found
+            # this file and reported it as the page that disagrees. Excluding
+            # checks by name is blunt and it is also simply true.
+            if name.startswith("check_"):
+                continue
             path = os.path.join(base, name)
             try:
                 src = io.open(path, encoding="utf-8", errors="replace").read()
             except OSError:
                 continue
-            if "--jk-ins" in src and ROT.search(src):
+            # setProperty, not merely a mention. This check itself talks
+            # about --jk-ins at length and quotes the rotation regex, so
+            # "contains the string" made it find its own source and report
+            # itself as the odd one out. What matters is the files that SET
+            # the property; everything else is only describing it.
+            if "setProperty('--jk-ins'" in src and ROT.search(src):
                 out.append(os.path.relpath(path, ROOT).replace("\\", "/"))
     return sorted(out)
 MOD = re.compile(r"I\[\(\(n%(\d+)\)\+\d+\)%(\d+)\]")
@@ -151,6 +163,48 @@ def main():
                 "appear and the index can run off the end (undefined -- which "
                 "is, again, an empty button)"
                 % (rel, mm.group(1), len(glyphs)))
+
+    # The OTHER list: the names in the tooltip.
+    #
+    # site-footer.js holds its own INSTRUMENTS array -- glyph plus name --
+    # and paints btn.title from it, while the <head> script paints the glyph
+    # through --jk-ins. Two lists, one button, indexed by the same day
+    # arithmetic: they agree only if they hold the same instruments in the
+    # same order.
+    #
+    # This check could not see that list at all, because it looks for
+    # `var I=[...]`. So when the head list was cut from ten to six, this
+    # passed on 152 files while the glyph and the tooltip disagreed on every
+    # day of the following week -- the drum shown, "Mridangam" in the
+    # tooltip. Found because check_audio_glyph failed and its error message
+    # happened to quote the button's title attribute.
+    js_path = os.path.join(ROOT, "blog", "assets", "site-footer.js")
+    if os.path.exists(js_path) and seen:
+        js = io.open(js_path, encoding="utf-8", errors="replace").read()
+        jm = re.search(r"var INSTRUMENTS = \[(.*?)\];", js, re.S)
+        if not jm:
+            problems.append(
+                "site-footer.js no longer has an INSTRUMENTS list. It paints "
+                "the tooltip name on the music button, so either it moved or "
+                "this half of the check is looking at nothing")
+        else:
+            pairs = re.findall(r"\['([^']+)',\s*'([^']+)'\]", jm.group(1))
+            names = [g for g, _n in pairs]
+            head = next(iter(seen.values()))
+            print("  tooltip list: %s" % " ".join(
+                "%s=%s" % (g, n) for g, n in pairs))
+            if names != head:
+                problems.append(
+                    "the glyph list and the tooltip list do not match. The "
+                    "button would draw %s while its tooltip named %s. "
+                    "head=%s  tooltip=%s"
+                    % (head[0], pairs[0][1] if pairs else "?",
+                       "".join(head), "".join(names)))
+            for g in names:
+                if g not in ALLOWED:
+                    problems.append(
+                        "site-footer.js names %r in the tooltip list (%s)"
+                        % (g, KNOWN_BAD.get(g, "not in the allowed set")))
 
     # Every inlined copy is another chance to drift, and this is the branch
     # that fires on the reported bug: two pages holding different rotations,
