@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""The walkthrough player for /how-this-was-made/.
+
+Asked for: "just show something like a YouTube video -- pause, a scrolling
+option, start again, and an expand symbol in the corner of the video. As soon
+as we play it has to narrate by default; a user can mute it. Don't overkill
+it."
+
+So the controls are the ones a reader already knows, in the order they expect,
+directly under the picture: play/pause, a seek bar, a position count, mute,
+replay -- and expand as an icon on the picture itself.
+
+What was taken out, and why:
+
+    the list of eight steps   Its words ARE the subtitles now. The same
+                              sentences printed twice, once as a list and once
+                              as a caption, is one thought in two places -- and
+                              the architecture diagram below is the map, so
+                              nothing is lost by dropping the list.
+    previous / next buttons   A seek bar says where you are and where you can
+                              go. Two step buttons say neither.
+    "Play with narration"     The voice is the point, so it is simply on when
+                              you press play. Mute is where anyone looks to
+                              stop a sound.
+    the "Expand" text button  A corner icon, the way video players have done
+                              it for fifteen years.
+
+The voice drives the timing: a scene lasts exactly as long as its sentence
+takes to say, so the picture and the words cannot drift apart. Muted, or on a
+device with no speech at all, a timer takes over at a readable pace -- the
+subtitles are the whole content then, so they are given time to be read.
+"""
+
+PLAYER_JS = """
+<script>
+(function () {
+  var stage = document.querySelector('[data-stage]');
+  if (!stage) return;
+  var scenes  = [].slice.call(stage.querySelectorAll('.sc'));
+  var capEl   = stage.querySelector('[data-caption]');
+  var playBt  = stage.querySelector('[data-journey-play]');
+  var seek    = stage.querySelector('[data-seek]');
+  var countEl = stage.querySelector('[data-count]');
+  var muteBt  = stage.querySelector('[data-journey-mute]');
+  var againBt = stage.querySelector('[data-journey-replay]');
+  var zoomBt  = stage.querySelector('[data-journey-zoom]');
+  if (!scenes.length) return;
+
+  var script = [];
+  try {
+    var raw = document.querySelector('[data-narration]');
+    if (raw) script = JSON.parse(raw.textContent);
+  } catch (e) { script = []; }
+
+  var synth = window.speechSynthesis;
+  var canSpeak = !!(synth && window.SpeechSynthesisUtterance && script.length);
+  var still = window.matchMedia &&
+              window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var at = 0, playing = false, muted = false, timer = null, bed = null;
+  var zoomed = false, backdrop = null, resumeAudio = false;
+  var READ_MS = 5200;
+
+  try { muted = localStorage.getItem('jk-mute') === '1'; } catch (e) {}
+
+  function paint() {
+    scenes.forEach(function (g, n) { g.classList.toggle('is-on', n === at); });
+    if (capEl) capEl.textContent = script[at] || '';
+    if (seek && String(seek.value) !== String(at)) { seek.value = at; }
+    if (seek) {
+      var pct = scenes.length < 2 ? 0 : (at / (scenes.length - 1)) * 100;
+      seek.style.setProperty('--cf-pct', pct + '%');
+    }
+    if (countEl) countEl.textContent = (at + 1) + ' / ' + scenes.length;
+  }
+
+  function setPlayIcon() {
+    if (!playBt) return;
+    playBt.innerHTML = playing ? '&#10073;&#10073;' : '&#9654;';
+    playBt.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+  }
+
+  function bedOn(on) {
+    if (on && !muted) {
+      if (!bed) {
+        bed = new Audio('/blog/assets/audio/sunset-1.mp3');
+        bed.loop = true;
+        bed.volume = 0.12;
+      }
+      var b = bed.play();
+      if (b && b.catch) { b.catch(function () {}); }
+    } else if (bed) {
+      try { bed.pause(); } catch (e) {}
+    }
+  }
+
+  function siteAudio(quiet) {
+    var a = document.getElementById('beach-audio');
+    if (!a) return;
+    if (quiet) {
+      resumeAudio = !a.paused;
+      if (resumeAudio) { a.pause(); }
+    } else if (resumeAudio) {
+      resumeAudio = false;
+      var t = a.play();
+      if (t && t.catch) { t.catch(function () {}); }
+    }
+  }
+
+  function clearTimer() {
+    if (timer) { window.clearTimeout(timer); timer = null; }
+  }
+
+  function pickVoice() {
+    var vs = (synth && synth.getVoices()) || [];
+    var want = ['aria', 'jenny', 'michelle', 'ava',
+                'google us english', 'google uk english female',
+                'samantha', 'siri', 'karen', 'moira', 'tessa', 'fiona',
+                'serena', 'sonia', 'libby', 'female', 'zira'];
+    var en = vs.filter(function (v) { return /^en/i.test(v.lang || ''); });
+    for (var i = 0; i < want.length; i++) {
+      for (var j = 0; j < en.length; j++) {
+        if ((en[j].name || '').toLowerCase().indexOf(want[i]) !== -1) {
+          return en[j];
+        }
+      }
+    }
+    for (var k = 0; k < en.length; k++) {
+      if (en[k].localService === false) { return en[k]; }
+    }
+    return en[0] || null;
+  }
+  if (synth && synth.onvoiceschanged !== undefined) {
+    synth.onvoiceschanged = function () { pickVoice(); };
+  }
+
+  function speakCurrent() {
+    if (!canSpeak || muted) { return false; }
+    var u = new SpeechSynthesisUtterance(script[at]);
+    try {
+      var v = pickVoice();
+      if (v) { u.voice = v; u.lang = v.lang || 'en-US'; }
+    } catch (e) {}
+    u.rate = 0.92;
+    u.pitch = 1.04;
+    u.onend = function () {
+      if (!playing) return;
+      window.setTimeout(advance, 420);
+    };
+    u.onerror = function () {
+      if (!playing) return;
+      clearTimer();
+      timer = window.setTimeout(advance, READ_MS);
+    };
+    try { synth.cancel(); synth.speak(u); } catch (e) { return false; }
+    return true;
+  }
+
+  function advance() {
+    if (!playing) return;
+    if (at >= scenes.length - 1) { stop(); return; }
+    at += 1;
+    paint();
+    run();
+  }
+
+  function run() {
+    clearTimer();
+    if (!speakCurrent()) { timer = window.setTimeout(advance, READ_MS); }
+  }
+
+  function play() {
+    if (playing) return;
+    playing = true;
+    setPlayIcon();
+    siteAudio(true);
+    bedOn(true);
+    run();
+  }
+
+  function stop() {
+    playing = false;
+    setPlayIcon();
+    clearTimer();
+    try { if (synth) synth.cancel(); } catch (e) {}
+    bedOn(false);
+    siteAudio(false);
+  }
+
+  if (playBt) {
+    playBt.addEventListener('click', function () {
+      if (playing) { stop(); } else { play(); }
+    });
+  }
+
+  // Dragging moves the picture WHILE dragging, so it behaves like a scrubber
+  // rather than like a form control you submit.
+  if (seek) {
+    seek.addEventListener('input', function () {
+      var v = parseInt(seek.value, 10) || 0;
+      at = Math.max(0, Math.min(scenes.length - 1, v));
+      paint();
+      if (playing) { run(); }
+    });
+  }
+
+  function paintMute() {
+    if (!muteBt) return;
+    muteBt.innerHTML = muted ? '&#128263;' : '&#128266;';
+    muteBt.setAttribute('aria-pressed', String(muted));
+    muteBt.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
+  }
+  if (muteBt) {
+    paintMute();
+    muteBt.addEventListener('click', function () {
+      muted = !muted;
+      try { localStorage.setItem('jk-mute', muted ? '1' : '0'); } catch (e) {}
+      paintMute();
+      if (muted) {
+        try { if (synth) synth.cancel(); } catch (e) {}
+        bedOn(false);
+        if (playing) {
+          clearTimer();
+          timer = window.setTimeout(advance, READ_MS);
+        }
+      } else if (playing) {
+        bedOn(true);
+        run();
+      }
+    });
+  }
+
+  if (againBt) {
+    againBt.addEventListener('click', function () {
+      at = 0;
+      paint();
+      if (playing) { run(); } else { play(); }
+    });
+  }
+
+  function zoom(on) {
+    zoomed = on;
+    if (on) {
+      // Hold the height while the picture leaves the flow, so the paragraphs
+      // below do not jump up and then back down again.
+      stage.style.minHeight = stage.getBoundingClientRect().height + 'px';
+      backdrop = document.createElement('div');
+      backdrop.className = 'cf-backdrop';
+      backdrop.addEventListener('click', function () { zoom(false); });
+      document.body.appendChild(backdrop);
+      document.body.classList.add('cf-zoomed');
+      stage.classList.add('is-zoomed');
+    } else {
+      stage.classList.remove('is-zoomed');
+      document.body.classList.remove('cf-zoomed');
+      if (backdrop) { backdrop.remove(); backdrop = null; }
+      stage.style.minHeight = '';
+    }
+    if (zoomBt) {
+      zoomBt.innerHTML = on ? '&#9976;' : '&#9974;';
+      zoomBt.setAttribute('aria-label', on ? 'Minimise' : 'Expand');
+    }
+  }
+  if (zoomBt) {
+    zoomBt.addEventListener('click', function () { zoom(!zoomed); });
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && zoomed) { zoom(false); }
+  });
+
+  // Nothing starts on its own. A page that begins talking because it scrolled
+  // into view is the rudest thing on the internet.
+  paint();
+  setPlayIcon();
+  if (still) { scenes.forEach(function (g) { g.classList.add('is-on'); }); }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden && playing) { stop(); }
+  });
+  window.addEventListener('pagehide', function () { stop(); });
+})();
+</script>
+"""

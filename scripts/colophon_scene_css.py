@@ -272,53 +272,85 @@ SCENE_CSS = """
     .cf-arch-svg .aa, .cf-arch-svg .aw { animation: none; }
   }
 
-  /* ---- the stage: picture, caption, and the expanded view ---------------
-     Expanding does not MOVE the picture in the document. The stage keeps its
-     own height while the scene inside it goes position:fixed, so the words
-     below never jump up to fill a gap and then jump back down again -- which
-     is what moving the node into an overlay would have done. */
-  .cf-stage { position: relative; }
-  .cf-cap { margin: .5rem 0 0; max-width: 30rem; font-size: .9rem;
-            line-height: 1.55; color: var(--tx, var(--text, #EDEBE6));
-            background: color-mix(in srgb,
-                        var(--tx, var(--text, #EDEBE6)) 6%, transparent);
-            border-radius: 8px; padding: .55rem .7rem; }
-  .cf-cap[hidden] { display: none; }
-  .cf-btn[aria-pressed="true"] { color: var(--acc-ink, var(--acc, #C4A484));
-                                 border-color: var(--acc-ink, #C4A484); }
-  .cf-ico { font-size: .95rem; line-height: 1; padding: .2rem .55rem; }
-  .cf-close { position: fixed; top: 16px; right: 16px; z-index: 2010;
-              font: inherit; font-size: .8rem; cursor: pointer;
-              padding: .35rem .8rem; border-radius: 999px;
-              background: var(--bg, var(--surface, #1F1D1B));
-              color: var(--tx, var(--text, #EDEBE6));
-              border: 1px solid var(--bd, var(--border, #33302C)); }
-  .cf-close[hidden] { display: none; }
+  /* ---- the player -------------------------------------------------------
+     Shaped like a video player because that is what it is: picture, caption,
+     then the controls, in that order and touching. They used to sit after
+     the whole list of steps, which is the one place a reader would not think
+     to look.
+
+     Expanding does not MOVE the picture in the document -- the player keeps
+     its own height while the scene inside goes position:fixed -- so the words
+     below never jump up to fill a gap and back down again. */
+  .cf-player { position: relative; max-width: 30rem; margin: 1.2rem 0 0; }
+  .cf-player .cf-scene { position: relative; margin: 0; }
+
+  /* Expand lives on the picture, not in a row of words. */
+  .cf-corner { position: absolute; right: 8px; bottom: 8px; z-index: 3;
+               width: 30px; height: 30px; display: grid; place-items: center;
+               font-size: .92rem; line-height: 1; cursor: pointer;
+               border-radius: 8px;
+               color: var(--tx, var(--text, #EDEBE6));
+               background: color-mix(in srgb,
+                           var(--bg, var(--surface, #1F1D1B)) 72%, transparent);
+               border: 1px solid var(--bd, var(--border, #33302C)); }
+  .cf-corner:hover { color: var(--acc-ink, var(--acc, #C4A484)); }
+
+  /* Always present, so muting the sound costs a reader nothing. */
+  .cf-cap { margin: .6rem 0 .1rem; min-height: 3.2rem; font-size: .92rem;
+            line-height: 1.6; color: var(--tx, var(--text, #EDEBE6)); }
+
+  .cf-bar { display: flex; align-items: center; gap: .6rem;
+            padding: .4rem 0 0; }
+  .cf-play { width: 34px; height: 34px; flex: 0 0 auto; cursor: pointer;
+             display: grid; place-items: center; font-size: .8rem;
+             border-radius: 50%;
+             color: var(--bg, var(--surface, #1F1D1B));
+             background: var(--acc-ink, var(--acc, #C4A484));
+             border: none; }
+  .cf-icon { width: 30px; height: 30px; flex: 0 0 auto; cursor: pointer;
+             display: grid; place-items: center; font-size: .82rem;
+             border-radius: 8px; background: transparent;
+             color: var(--mut, var(--text-muted, #9C9A94));
+             border: 1px solid var(--bd, var(--border, #33302C)); }
+  .cf-icon:hover { color: var(--tx, var(--text, #EDEBE6)); }
+  .cf-count { font-family: 'DM Mono', ui-monospace, monospace;
+              font-size: .7rem; flex: 0 0 auto;
+              color: var(--mut, var(--text-muted, #9C9A94)); }
+
+  /* The scrubber. Track filled to --cf-pct behind the thumb, which is what
+     makes a range input read as progress rather than as a slider. */
+  .cf-seek { flex: 1 1 auto; -webkit-appearance: none; appearance: none;
+             height: 4px; border-radius: 4px; cursor: pointer; margin: 0;
+             background: linear-gradient(to right,
+               var(--acc-ink, #C4A484) 0 var(--cf-pct, 0%),
+               var(--bd, var(--border, #33302C)) var(--cf-pct, 0%) 100%); }
+  .cf-seek::-webkit-slider-thumb { -webkit-appearance: none; appearance: none;
+             width: 13px; height: 13px; border-radius: 50%; border: none;
+             background: var(--acc-ink, var(--acc, #C4A484)); }
+  .cf-seek::-moz-range-thumb { width: 13px; height: 13px; border: none;
+             border-radius: 50%;
+             background: var(--acc-ink, var(--acc, #C4A484)); }
+  .cf-seek:focus-visible { outline: 2px solid var(--acc-ink, #C4A484);
+                           outline-offset: 4px; }
 
   body.cf-zoomed { overflow: hidden; }
   .cf-backdrop { position: fixed; inset: 0; z-index: 2000;
                  background: var(--bg, var(--surface, #1F1D1B)); }
-  .cf-stage.is-zoomed .cf-scene {
-    position: fixed; z-index: 2001; left: 50%; top: 50%;
-    transform: translate(-50%, -58%);
-    width: min(92vw, 1100px); max-width: none; margin: 0; }
-  /* The controls come with it.
-     Without this they stay in the page at z-index auto, behind a backdrop at
-     2000: present in the DOM, invisible on screen, and unclickable. Expanding
-     the walkthrough to sit back and listen is exactly when pause and the step
-     buttons matter most, so they travel to the bottom of the expanded view. */
-  body.cf-zoomed .cf-ctl {
-    position: fixed; z-index: 2003; left: 50%; bottom: 4vh;
-    transform: translateX(-50%); margin: 0;
-    flex-wrap: wrap; justify-content: center; max-width: 92vw;
-    background: color-mix(in srgb,
-                var(--bg, var(--surface, #1F1D1B)) 88%, transparent);
-    padding: .5rem .6rem; border-radius: 999px; }
-
-  .cf-stage.is-zoomed .cf-cap {
+  .cf-player.is-zoomed { z-index: 2001; }
+  .cf-player.is-zoomed .cf-scene {
+    position: fixed; z-index: 2001; left: 50%; top: 46%;
+    transform: translate(-50%, -50%);
+    width: min(92vw, 1100px); margin: 0; }
+  .cf-player.is-zoomed .cf-cap,
+  .cf-player.is-zoomed .cf-bar {
     position: fixed; z-index: 2002; left: 50%; transform: translateX(-50%);
-    bottom: 12vh; width: min(92vw, 1100px); max-width: none;
-    font-size: 1.05rem; text-align: center; }
+    width: min(92vw, 1100px); max-width: none; }
+  .cf-player.is-zoomed .cf-cap { bottom: 13vh; text-align: center;
+                                 font-size: 1.05rem; }
+  .cf-player.is-zoomed .cf-bar { bottom: 5vh; }
+
+  @media (max-width: 560px) { .cf-player { max-width: 100%; } }
+
 
   /* Asked for less movement: every scene sits in its finished state. */
   @media (prefers-reduced-motion: reduce) {
