@@ -320,6 +320,18 @@ def stamp_static_pages():
     targets += sorted(BLOG_DIR.glob("azure-architecture-*/index.html"))
     targets += sorted(BLOG_DIR.glob("gcp-architecture-*/index.html"))
     targets.append(REPO_ROOT / "_templates" / "arch-post-template.html")
+    # /blog/digests/ and /blog/simulator/ are hand-built and both load blog.js,
+    # and neither was in this list. So they pinned whatever token they were
+    # written with and served it for as long as that lasted -- check_asset_stamps
+    # found them holding 5df07d39 while the shared assets had moved to 86ab36f6.
+    #
+    # That is the failure this function's own docstring describes, in the two
+    # pages it forgot. A page pinned to an old hash does not look broken; it
+    # looks like the change was never made, which is the hardest kind of report
+    # to act on. (The "deliberately absent" note further down is about the
+    # subscribe block, which is a different list and still correct.)
+    targets.append(BLOG_DIR / "digests" / "index.html")
+    targets.append(BLOG_DIR / "simulator" / "index.html")
 
     # The subscribe block, into the hand-built posts only. Not index.html,
     # resume.html or now.html -- they have no comments section and are not
