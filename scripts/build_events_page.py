@@ -33,6 +33,7 @@ import json
 import os
 import re
 import sys
+from urllib.parse import urlparse as _urlparse
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -460,6 +461,96 @@ def pills(group, label, values, names):
     return "".join(out)
 
 
+# How each row got here, counted from the store rather than written down.
+#
+# Two kinds, and the difference is the whole point of showing this. `api`
+# means the cloud publishes the event in a machine-readable directory and a
+# job reads it every morning: nobody transcribes anything, and a change on
+# their side arrives here on its own. `read` means a person read the date off
+# the vendor's announcement page, because there is no feed for it -- re:Invent,
+# Ignite and Next are announced in prose. Those rows are re-checked by hand and
+# carry a note saying where the wording came from.
+#
+# A reader who wants to know "is this current?" is really asking which of the
+# two they are looking at. Counting it from the data means the table cannot
+# drift from the page the way a hand-maintained list would.
+# Short enough to fit a phone. The first version wrote the whole sentence
+# into the cell -- "read from the cloud's own machine-readable directory,
+# every morning" -- which on an iPhone pushed the Held and Last read columns
+# off the right edge of a table that scrolls with no affordance saying so. A
+# reader on a phone saw three columns of a five-column table and nothing to
+# suggest the other two existed. The explanation belongs in the paragraph
+# below, which has the room for it.
+SOURCE_HOW = {
+    "api": "machine feed, daily",
+    "read": "read by hand",
+}
+
+
+def sources_html(events):
+    """The provenance table: one row per domain, per way of reading it."""
+    agg = {}
+    for e in events:
+        host = _urlparse(e.get("url") or "").netloc.lower()
+        if not host:
+            continue
+        key = (host, e.get("source") or "read")
+        d = agg.setdefault(key, {"n": 0, "clouds": set(), "last": ""})
+        d["n"] += 1
+        d["clouds"].add(CLOUD_NAME.get(e.get("cloud"), e.get("cloud") or "—"))
+        if (e.get("verified") or "") > d["last"]:
+            d["last"] = e.get("verified") or ""
+
+    rows = ""
+    per_host = {}
+    for (host, _s), d in agg.items():
+        per_host[host] = per_host.get(host, 0) + d["n"]
+    for (host, src), d in sorted(
+            agg.items(),
+            key=lambda kv: (-per_host[kv[0][0]], kv[0][0],
+                            -kv[1]["n"])):
+        rows += ('<tr><td>%s</td>'
+                 '<td class="host"><a href="https://%s/" target="_blank" '
+                 'rel="noopener">%s</a></td>'
+                 '<td>%s</td><td class="num">%d</td><td>%s</td></tr>'
+                 % (esc(", ".join(sorted(d["clouds"]))), esc(host), esc(host),
+                    esc(d["last"] or "—"), d["n"], SOURCE_HOW.get(src, src)))
+
+    n_api = sum(d["n"] for (h, s), d in agg.items() if s == "api")
+    n_read = sum(d["n"] for (h, s), d in agg.items() if s != "api")
+    return (
+        '<h2 class="src-h" id="sources">Where this comes from</h2>'
+        '<p class="note">Every event on this page is read from one of these '
+        'and links back to the cloud’s own page for it. Nothing is taken from '
+        'a news site, a newsletter or a summary, and no date is inferred.</p>'
+        # Last read before How it is read, deliberately. This table scrolls
+        # sideways on a phone -- the shared component has always done
+        # that, and What's New's copy of it overflows by the same 170px --
+        # so the columns a reader can see WITHOUT scrolling should be the
+        # ones that answer "is this current?". That is the date, not the
+        # method.
+        '<div class="tw"><table class="src-tbl"><thead><tr><th>Cloud</th>'
+        '<th>Source</th><th>Last read</th><th class="num">Held</th>'
+        '<th>How it is read</th></tr></thead><tbody>%s</tbody></table></div>'
+        '<p class="note"><b>How it stays current.</b> Two scheduled jobs run '
+        'every morning, and neither needs anybody to remember them. At '
+        '05:40&nbsp;UTC the clouds’ directories are re-imported, so an event '
+        'they add or move appears here the same day. At 06:20&nbsp;UTC every '
+        'link on this page is opened in a real browser and has to still be '
+        'the page it claims to be — a dead or redirected link fails the run '
+        'rather than sitting here looking fine — and the list is reconciled '
+        'against what the clouds are advertising, so an event that exists and '
+        'is <i>missing</i> here fails too. That second question is the one a '
+        'valid-looking page cannot answer about itself.</p>'
+        '<p class="note">%d of the %d entries come from a machine-readable '
+        'directory and update without anyone touching them. The other %d are '
+        'the big announcements — re:Invent, Ignite, Next — which the clouds '
+        'publish as prose rather than as data; those are read by hand, carry '
+        'a note saying where the wording came from, and are never given a '
+        'date the cloud has not published.</p>'
+        % (rows, n_api, n_api + n_read, n_read))
+
+
 def build():
     from asset_version import JS_VERSION
     jsv = JS_VERSION
@@ -498,14 +589,32 @@ def build():
     body.append(
         '<p class="ev-lede">Conferences, tours and summits across AWS, '
         'Microsoft Azure and Google Cloud. Every entry links to the cloud’s '
-        'own page — nothing here is second-hand — and carries the date it '
-        'was last read off that page.</p>')
+        'own page — nothing here is second-hand — and every link is '
+        're-read from that page each morning.</p>')
     body.append(
         '<p class="ev-lede ev-lede-2">Where a cloud has announced an event '
         'but not its dates, it is listed without them. A date nobody '
         'published is worse than no date: people book flights around '
         'these.</p>')
-    body.append('<p class="ev-checked">All %d links verified %s</p>'
+    # The same two-part pattern the other Intelligence pages carry: a
+    # freshness stamp a reader can act on, and a way down to where the data
+    # came from. Live status says "Last checked just now -- refresh is
+    # scheduled hourly and can run late, so this timestamp is the one to
+    # trust"; What's New has "Where this comes from" naming every feed. This
+    # page had half of it -- one bare date with no cadence beside it and no
+    # account of its sources at all -- so a reader had no way to tell a page
+    # refreshed this morning from one abandoned in March.
+    #
+    # Every class used here already exists in this page's stylesheet: the
+    # head is reused wholesale from build_news_page, which is where .src-h,
+    # .src-tbl, .tw, .note, .lede-links and .lede-go are defined. Same
+    # pattern, same components, no new CSS to drift.
+    body.append(
+        '<p class="ev-lede ev-lede-links">'
+        '<a class="lede-go" href="#sources">Where this comes from &darr;</a>'
+        '</p>')
+    body.append('<p class="ev-checked">All %d links checked %s'
+                ' &middot; re-read every morning</p>'
                 % (len(events), esc(data.get("verified", "—"))))
     body.append("</div>")
 
@@ -538,6 +647,7 @@ def build():
                 'but not its dates, it is listed without them. A date nobody '
                 'published is worse than no date: people book flights around '
                 'these.</p>')
+    body.append(sources_html(events))
     body.append("</div>")
 
     html = (head_html(jsv) + STYLE + "</head>\n<body>\n" + nav_html()
