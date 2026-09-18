@@ -118,10 +118,29 @@ def main():
                 return True
         return False
 
+    # A source that suddenly returns nothing is a broken reader, not an
+    # empty calendar.
+    #
+    # Without this the check has the very hole it was written to close: if
+    # Microsoft redesigns the tour index, the scrape finds 0 anchors, the
+    # loop below compares 0 events against the store, finds nothing missing,
+    # and reports "all present". A pass, produced by reading nothing at all.
+    #
+    # The floors are deliberately low -- one summit and one stop. The point is
+    # not to assert how many events exist, which changes; it is to tell a
+    # quiet calendar apart from a reader that has stopped working.
+    FLOOR = {"aws": 1, "aitour": 1}
+
     print("  AWS Summits")
     try:
         aws, total = aws_upcoming(today)
         print("     %s in the directory, %d still ahead" % (total, len(aws)))
+        if not total:
+            problems.append("AWS's directory returned NOTHING -- 0 summits "
+                            "of any date. AWS has not stopped running "
+                            "summits; the id or the API has changed, and "
+                            "every check below this would pass on an empty "
+                            "reading")
         for title, date in aws:
             city = re.sub(r"^AWS Summit\s+", "", title)
             city = re.sub(r"\s*20\d\d$", "", city).strip()
@@ -139,6 +158,11 @@ def main():
     try:
         tour, seen = aitour_upcoming(today)
         print("     %d stops linked, %d still ahead" % (seen, len(tour)))
+        if seen < FLOOR["aitour"]:
+            problems.append("the AI Tour index linked %d stops -- the page "
+                            "has changed shape and the reader is finding "
+                            "nothing. Comparing nothing against the store "
+                            "would report everything present" % seen)
         miss = 0
         for city, date in tour:
             if not held(date, city.split()[0] if city else ""):
