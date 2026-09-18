@@ -110,9 +110,21 @@ PLAYER_JS = """
   function bedOn(on) {
     if (on && !muted) {
       if (!bed) {
-        bed = new Audio('/blog/assets/audio/sunset-1.mp3');
+        // mountains-1: bansuri flute over a tarana rhythm.
+        //
+        // The first bed was sunset-1, a soft clavier piece, and the note was
+        // "I want something more creative, funny, festive instead of soft
+        // music." This one has a rhythm section and a melody going somewhere,
+        // it matches the instruments the music button already rotates through
+        // -- tabla, nadaswaram, harmonium -- and at 150 seconds against a
+        // ~75 second narration a single pass never reaches the loop point,
+        // so it never audibly restarts.
+        //
+        // Already in the repository and already credited: no new file, no new
+        // licence, nothing extra to download beyond this one.
+        bed = new Audio('/blog/assets/audio/mountains-1.mp3');
         bed.loop = true;
-        bed.volume = 0.12;
+        bed.volume = 0.14;
       }
       var b = bed.play();
       if (b && b.catch) { b.catch(function () {}); }
