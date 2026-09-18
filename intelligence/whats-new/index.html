@@ -888,6 +888,58 @@ function buildPills(){
             ? '<button class="pill" data-more="0">show fewer</button>' : ''));
 }
 
+/* The filters live in the URL, so that leaving the page does not clear them.
+ *
+ * Reported as: filter to AWS, last 7 days, one service, open an announcement,
+ * come back -- and it is showing all clouds and 30 days again. Every row links
+ * out with target="_blank", so "coming back" can mean a tab the browser threw
+ * away and reloaded while the reader was reading. State held only in these
+ * five variables cannot survive that; state held in the URL does, whether the
+ * page comes back from the back/forward cache or is reloaded from scratch.
+ *
+ * It also makes a filtered view something you can send to somebody:
+ * /intelligence/whats-new/?cloud=aws&days=7 is a link to what AWS shipped this
+ * week, not to a page somebody else then has to filter themselves.
+ *
+ * replaceState rather than pushState, for the same reason as the events page:
+ * tapping four filters should not put four entries in the back stack for a
+ * reader to walk out through.
+ *
+ * `shown` is deliberately NOT carried. Restoring a reader to row 300 means
+ * building 300 rows before first paint, which is the cost this page was
+ * rebuilt to avoid; the back/forward cache restores scroll position when it
+ * can, and that is the right mechanism for it.
+ */
+var DAY_OPTS = [7, 30, 90, 0];
+function toUrl(){
+  var p = [], qv = document.getElementById('q').value.trim();
+  if(cloud !== 'all') p.push('cloud=' + encodeURIComponent(cloud));
+  if(days !== 30) p.push('days=' + days);
+  if(svc) p.push('svc=' + encodeURIComponent(svc));
+  if(qv) p.push('q=' + encodeURIComponent(qv));
+  if(more) p.push('view=more');
+  var url = location.pathname + (p.length ? '?' + p.join('&') : '');
+  try{ history.replaceState(null, '', url + location.hash); }catch(e){}
+}
+/* Returns true when the blog and bulletin records are wanted, which the caller
+   has to fetch before it can show them. */
+function fromUrl(){
+  var p;
+  try{ p = new URLSearchParams(location.search); }catch(e){ return false; }
+  // Only values this page actually offers. A hand-edited ?cloud=oracle or
+  // ?days=4000 should land on the default view, not on an empty one.
+  var c = p.get('cloud');
+  if(c && ['all','aws','azure','gcp'].indexOf(c) !== -1) cloud = c;
+  var d = p.get('days');
+  if(d !== null && DAY_OPTS.indexOf(parseInt(d, 10)) !== -1)
+    days = parseInt(d, 10);
+  var s = p.get('svc');
+  if(s) svc = s;
+  var q = p.get('q');
+  if(q) document.getElementById('q').value = q;
+  return p.get('view') === 'more';
+}
+
 document.addEventListener('click', function(e){
   var b = e.target.closest('.pill'); if(!b) return;
   if(b.dataset.moreSrc !== undefined){
@@ -900,10 +952,11 @@ document.addEventListener('click', function(e){
       fetch('/intelligence/news-more.json').then(function(r){return r.json();})
         .then(function(d){ MORE = d.items || []; more = true; })
         .catch(function(){ MORE = []; })
-        .then(function(){ moreLoading = false; shown = 60; buildPills(); render(); });
+        .then(function(){ moreLoading = false; shown = 60;
+                          buildPills(); render(); toUrl(); });
       return;
     }
-    more = want; shown = 60; buildPills(); render();
+    more = want; shown = 60; buildPills(); render(); toUrl();
     return;
   }
   if(b.dataset.more !== undefined){
@@ -916,15 +969,39 @@ document.addEventListener('click', function(e){
   if(b.dataset.cloud) { cloud = b.dataset.cloud; svc = ''; allSvcs = false; }
   else if(b.dataset.days !== undefined) days = parseInt(b.dataset.days, 10);
   else if(b.dataset.svc !== undefined) svc = b.dataset.svc;
-  shown = 60; buildPills(); render();
+  shown = 60; buildPills(); render(); toUrl();
 });
 document.getElementById('q').addEventListener('input', function(){
-  shown = 60; buildPills(); render(); });
+  shown = 60; buildPills(); render(); toUrl(); });
 document.getElementById('more').addEventListener('click', function(){
   shown += 120; render(); });
 
 fetch('/intelligence/news.json').then(function(r){return r.json();}).then(function(d){
-  DATA = d.items || []; buildPills(); render();
+  DATA = d.items || [];
+  var wantMore = fromUrl();
+  // A restored ?svc= is only honoured if the data actually carries that
+  // service. Services come and go from the feeds, and a stale link should
+  // show the cloud it asked for rather than an empty list with a pill on it.
+  if(svc && !DATA.some(function(r){ return r.s.indexOf(svc) !== -1; })){
+    if(!wantMore) svc = '';
+  }
+  if(wantMore){
+    // Restoring the blog and bulletin view means the 1.2 MB record set has to
+    // be here before anything is rendered, or the reader gets their filters
+    // back over the wrong pool and watches the list change under them.
+    moreLoading = true; buildPills(); render();
+    fetch('/intelligence/news-more.json').then(function(r){return r.json();})
+      .then(function(d2){ MORE = d2.items || []; more = true; })
+      .catch(function(){ MORE = []; })
+      .then(function(){
+        moreLoading = false;
+        if(svc && !pool().some(function(r){ return r.s.indexOf(svc) !== -1; }))
+          svc = '';
+        buildPills(); render(); toUrl();
+      });
+    return;
+  }
+  buildPills(); render();
 }).catch(function(){
   document.getElementById('list').innerHTML =
     '<p class="empty">Could not load the announcement data.</p>';

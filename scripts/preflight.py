@@ -63,6 +63,7 @@ BROWSER = {
     "check_blog_filters", "check_dark_theme", "check_footer_clear",
     "check_map_devices", "check_map_alignment", "check_map_search",
     "check_news_reserve", "check_feedback", "check_region_suggest",
+    "check_news_state",
 }
 
 # Not run here. Each needs the network or an API and fails on a train.
