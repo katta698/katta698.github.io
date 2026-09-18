@@ -68,10 +68,41 @@ KNOWN_BAD = {
     "\U0001FA97": "accordion, Emoji 15.0 (2022)",
 }
 
-FILES = ["scripts/build_news_page.py", "scripts/build_status_page.py",
-         "scripts/sync_blog.py", "index.html"]
+# Every file carrying a rotation, FOUND rather than listed.
+#
+# This check shipped with a list of four: three builders and index.html. It
+# passed, and two pages kept the old ten-instrument rotation --
+# intelligence/index.html and now.html, both hand-maintained, neither on the
+# list. Reported as: "the toggle keeps changing when I change the tabs. When I
+# click blog I see one, when I click intelligence I see one, when I click
+# what's new it comes back to the blog."
+#
+# So the bug this file exists to prevent walked straight past it, because a
+# hardcoded list is only ever as complete as the afternoon it was written in.
+# It now walks the repository: anything that sets --jk-ins has to agree with
+# everything else that does.
+SKIP_DIRS = {".git", "node_modules", "_archive", "_templates", "__pycache__"}
 
 ROT = re.compile(r"var I=\[([^\]]*)\]")
+
+
+def rotation_files():
+    """Every file that sets --jk-ins, wherever it happens to live."""
+    out = []
+    for base, dirs, files in os.walk(ROOT):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS
+                   and not d.startswith(".")]
+        for name in files:
+            if not name.endswith((".html", ".py")):
+                continue
+            path = os.path.join(base, name)
+            try:
+                src = io.open(path, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            if "--jk-ins" in src and ROT.search(src):
+                out.append(os.path.relpath(path, ROOT).replace("\\", "/"))
+    return sorted(out)
 MOD = re.compile(r"I\[\(\(n%(\d+)\)\+\d+\)%(\d+)\]")
 
 
@@ -79,22 +110,25 @@ def main():
     problems = []
     seen = {}
 
-    for rel in FILES:
+    found = rotation_files()
+    if not found:
+        print("  nothing on this site sets --jk-ins. Either the instrument "
+              "moved\n  or this check has stopped looking at anything.")
+        return 1
+
+    for rel in found:
         path = os.path.join(ROOT, rel)
-        if not os.path.exists(path):
-            problems.append("%s is missing; the rotation cannot be checked"
-                            % rel)
-            continue
-        src = io.open(path, encoding="utf-8").read()
+        src = io.open(path, encoding="utf-8", errors="replace").read()
         m = ROT.search(src)
         if not m:
-            problems.append(
-                "%s no longer contains a `var I=[...]` rotation -- either it "
-                "moved or this check has stopped looking at anything" % rel)
             continue
         glyphs = re.findall(r"'([^']+)'", m.group(1))
         seen[rel] = glyphs
-        print("  %-32s %s" % (rel, " ".join(glyphs)))
+        # 150 pages carry this. Printing every one buries the answer, so the
+        # first few stand as a sample and any disagreement is named in full
+        # below -- a difference is the thing worth reading, not a list.
+        if len(seen) <= 4:
+            print("  %-44s %s" % (rel[-44:], " ".join(glyphs)))
 
         for g in glyphs:
             if g in ALLOWED:
@@ -118,12 +152,27 @@ def main():
                 "is, again, an empty button)"
                 % (rel, mm.group(1), len(glyphs)))
 
-    # Four inlined copies is four chances to drift.
-    if len(set(tuple(v) for v in seen.values())) > 1:
+    # Every inlined copy is another chance to drift, and this is the branch
+    # that fires on the reported bug: two pages holding different rotations,
+    # so the instrument changes as a reader moves between tabs.
+    #
+    # It had three placeholders and one argument, so reaching it raised
+    # TypeError instead of reporting anything -- the check would have crashed
+    # on the one failure it was written to describe. Found by making it fail
+    # on purpose rather than by reading it.
+    variants = {}
+    for rel, glyphs in seen.items():
+        variants.setdefault(tuple(glyphs), []).append(rel)
+    if len(variants) > 1:
+        big = max(variants.values(), key=len)
+        odd = [r for group in variants.values() if group is not big
+               for r in group]
         problems.append(
-            "the four copies of the rotation do not match: %s. The instrument "
-            "would change as a reader moves between pages on the same day"
-            % "; ".join("%s=%s" % (k, "".join(v)) for k, v in seen.items()))
+            "%d of the %d files disagree about the rotation, so the "
+            "instrument changes as a reader moves between pages on the same "
+            "day. The odd ones out: %s"
+            % (len(odd), len(seen), ", ".join(sorted(odd)[:6])
+               + (" ..." if len(odd) > 6 else "")))
 
     print()
     if problems:
@@ -134,8 +183,11 @@ def main():
         print("  An emoji the device cannot draw is not a missing icon in any")
         print("  log. It is a blank button, on some days, on some phones.")
         return 1
-    print("  All %d copies rotate the same %d instruments, and every one of "
-          "them\n  predates the devices that have to draw it."
+    if len(seen) > 5:
+        print("  ...and %d more" % (len(seen) - 5))
+    print()
+    print("  All %d files that set the instrument rotate the same %d, and "
+          "every one\n  of them predates the devices that have to draw it."
           % (len(seen), len(next(iter(seen.values())))))
     return 0
 

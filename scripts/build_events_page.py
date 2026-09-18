@@ -291,7 +291,7 @@ def row_html(e):
     }
 
 
-def tail_html(jsv):
+def tail_html(jsv, page_id="intelligence-events"):
     """The three things the bar needs that live at the FOOT of a page.
 
     Reported as: on this page the theme, the music and the rest do nothing.
@@ -328,11 +328,27 @@ def tail_html(jsv):
     start = blk.index("function applyTheme")
     m = _re.search(r"applyTheme\(localStorage\.getItem\([^;]+;", blk[start:])
     theme = blk[start:start + m.end()]
+    # The feedback star, which this used to leave out.
+    #
+    # Reported as: "there's no feedback star in cloud events page, make sure
+    # that pattern is consistent for any page I open moving forward."
+    #
+    # Not a missing stylesheet: the CSS for it was already on the page, taken
+    # with the head from build_news_page, so this page carried the styling for
+    # a button it never drew. The other four pages fill a __STAR__ placeholder
+    # in their own templates; this page builds its foot here instead, and
+    # nobody added it here.
+    #
+    # It belongs in tail_html rather than in each caller, so that every page
+    # built this way gets one by construction. /how-this-was-made/ was about
+    # to ship without a star for precisely the same reason, four days later.
+    from feedback_star import star_html
     return (
         "\n<!-- The bar's own moving parts. See tail_html() for why these\n"
         "     three, and not the whole block they came from. -->\n"
         '<audio id="beach-audio" loop preload="none"></audio>\n'
         "<script>\n" + theme + "\n</script>\n"
+        + star_html(page_id) + "\n"
         '<script src="/blog/assets/site-footer.js?v=' + jsv +
         '" data-site-footer></script>\n'
         '<script src="/blog/assets/hero-media.js?v=' + jsv + '"></script>\n'
