@@ -135,7 +135,30 @@ def main():
                                     % (p, str(exc)[:50]))
                     ctx.close()
                     continue
-                pg.wait_for_timeout(2500)
+                # Wait for the clock to MOVE, rather than for a guess at how
+                # long that takes.
+                #
+                # This was a flat 2.5s, and it began failing on three pages
+                # while the music worked perfectly. Measured: the track is a
+                # ~1MB mp3 and the browser buffers 78 SECONDS of audio before
+                # the clock starts. readyState went 1 -> 4 at about five
+                # seconds in, and currentTime first moved at eight:
+                #
+                #     2.5s  readyState 1, buffered 10.9, t=0
+                #     5.0s  readyState 4, buffered 78,   t=0
+                #     8.0s  readyState 4, buffered 78,   t=1.66
+                #
+                # So the check was calling a working button silent because a
+                # local server took longer than the number someone typed. The
+                # assertion is unchanged -- the clock must move, because
+                # paused=false proves nothing -- only the patience is.
+                try:
+                    pg.wait_for_function(
+                        "() => { const a = document.getElementById("
+                        "'beach-audio'); return a && a.currentTime > 0; }",
+                        timeout=20000)
+                except Exception:                              # noqa: BLE001
+                    pass                 # report it below, from the state
                 s = pg.evaluate(STATE)
                 ctx.close()
 
@@ -149,10 +172,15 @@ def main():
                         "and nothing reports that" % p)
                 elif s["time"] <= 0:
                     problems.append(
-                        "%s: source %s is set but the clock has not moved "
-                        "after 2.5s (paused=%s, readyState=%s, error=%s)"
+                        "%s: source %s is set but the clock never moved, "
+                        "after waiting 20s (paused=%s, readyState=%s, "
+                        "error=%s)"
                         % (p, s["src"], s["paused"], s["ready"], s["err"]))
-                print("    %-26s %-16s readyState %s, played %.1fs"
+                # Two decimals, not one. The wait above returns the moment
+                # the clock ticks past zero, so a pass often reads 0.01s --
+                # and "played 0.0s" beside a PASS is the kind of line that
+                # gets read as a failure and then ignored when it is not one.
+                print("    %-26s %-16s readyState %s, played %.2fs"
                       % (p, s["src"] or "NO SOURCE", s["ready"], s["time"]))
                 if errors:
                     problems.append("%s: script error -- %s" % (p, errors[0]))
