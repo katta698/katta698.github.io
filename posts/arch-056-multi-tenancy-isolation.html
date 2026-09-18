@@ -1,0 +1,361 @@
+---
+title: "AWS Architecture Series #56 — The blast radius was decided by a field name"
+date: '2026-09-18T09:00:00'
+slug: aws-architecture-multi-tenancy-isolation
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-18'
+verified_claims:
+  - claim: "Every partition in a DynamoDB table is designed to deliver a maximum capacity of 3,000 read units per second and 1,000 write units per second"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-partition-key-design.html
+  - claim: "One read unit represents one strongly consistent read operation per second, or two eventually consistent read operations per second, for an item up to 4 KB in size, and one write unit represents one write operation per second for an item up to 1 KB in size"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-partition-key-design.html
+  - claim: "In AWS's worked example, if the table has an item size of 20 KB a single consistent read operation will consume 5 read units, which means you can concurrently drive 600 consistent read operations per second on that single item before reaching the partition limits"
+    derive: "3000 / (20 / 4)"
+    expect: "600"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-partition-key-design.html
+  - claim: "You should design your application for uniform activity across all partition keys in the table and its secondary indexes"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-partition-key-design.html
+  - claim: "Adaptive capacity applies to on-demand mode and provisioned capacity"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-partition-key-design.html
+  - claim: "The total throughput across all partitions in the table can be constrained by the provisioned throughput in provisioned mode, or by the table level throughput limit in on-demand mode"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-partition-key-design.html
+  - claim: "Amazon SQS fair queues automatically mitigates the noisy-neighbor impact in multi-tenant queues that contain messages from multiple logical entities, such as customers, client applications, or message types"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html
+  - claim: "In shared queue environments one critical performance metric is dwell time, which measures the total time messages spend in a queue from arrival to processing"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html
+  - claim: "Amazon SQS detects noisy neighbors by monitoring message distribution among tenants during processing, the in-flight state, and when a tenant has a disproportionately large number of in-flight messages compared to others Amazon SQS identifies that tenant as a noisy neighbor and prioritizes message delivery for other tenants"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html
+  - claim: "A tenant can become a noisy neighbor by sending a larger volume of messages than other tenants, or when consumers take longer to process messages from that particular tenant"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html
+  - claim: "To enable fair queues, message producers should add a tenant identifier by setting a MessageGroupId on outgoing messages"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html
+  - claim: "The fairness capability is applied automatically in all Amazon SQS standard queues for messages with the MessageGroupId property, it does not require any change in the consumer code, it has no impact on API latency, and it does not come with any throughput limitations"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html
+  - claim: "MessageGroupId on standard queues with fair queues does not have the same behavior as MessageGroupId on FIFO queues, and on standard queues MessageGroupId is used only as a tenant identifier for fair queues and does not enforce message ordering"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html
+  - claim: "Amazon SQS does not limit the consumption rate per tenant, and it allows consumers to receive messages from noisy neighbor tenants when there is consumer capacity and the queue has no other messages to return"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html
+  - claim: "Like Amazon SQS standard queues, fair queues allow virtually unlimited throughput, and there are no limits on the number of tenants you could have in your queue"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html
+  - claim: "AWS advises considering fair queues when the queue is multi-tenant, the queue is high-throughput, and dwell time is part of your application's quality of service"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html
+  - claim: "At low throughput one tenant's burst rarely creates a backlog that affects other tenants, and at high throughput over-scaling the consumer fleet to absorb every burst is impractical, while even with auto-scaling the delay before new consumers come online can let backlogs form"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html
+  - claim: "ApproximateNumberOfNoisyGroups is the number of message groups that are considered noisy in a fair queue, where a noisy message group represents a noisy neighbor tenant of a multi-tenant queue"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html
+  - claim: "ApproximateNumberOfMessagesVisibleInQuietGroups is the number of messages visible excluding messages from noisy message groups, and helps identify the true processing backlog for typical message groups by filtering out the impact of noisy neighbors"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html
+  - claim: "ApproximateAgeOfOldestMessageInQuietGroups can be used to set alarms for message processing timeouts that ignore artificially aged messages from noisy neighbors"
+    source: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html
+problem: "Pool, silo and bridge get discussed as though the isolation model is chosen in a design review. On a shared table and a shared queue it was already chosen — by whoever picked the partition key and whoever decided what goes in the tenant identifier — usually before anybody framed it as an isolation decision at all."
+builds: "A model of where tenant isolation actually lives on AWS: the per-partition ceiling that caps any single tenant in a pooled table regardless of table capacity, the tenant identifier that makes noisy-neighbour mitigation possible in a shared queue, and an honest account of what that mitigation does and does not do."
+catch: "The queue's tenant identifier is MessageGroupId, and AWS states plainly that it does not mean the same thing on a standard queue as on a FIFO queue — on standard it is only a tenant identifier and does not enforce ordering. The same attribute name, set by the same producer code, changes meaning entirely with the queue type it happens to be sent to."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #056 &middot; Application Patterns</div>
+  <h1 class="post-title">The blast radius was decided by a field name</h1>
+  <p class="post-subtitle">Pool, silo and bridge are presented as a design choice. On a shared table and a shared queue the boundary was already set &mdash; by a partition key, and by an attribute that means two different things depending on the queue it is sent to.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Reliability &middot; Performance Efficiency</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The previous post ended with a queue that could not tell you which of its problems it had. This one
+      is about the case where the answer is &ldquo;one customer&rdquo; &mdash; and about how little of that
+      is decided at the moment anybody thinks they are deciding it.
+    </p>
+    <p>
+      A SaaS platform onboards a tenant several times larger than the rest. Nothing was mis-sized: the
+      table has plenty of capacity, the queue has no throughput limit, the consumers autoscale. Latency for
+      every <em>other</em> customer degrades anyway.
+    </p>
+    <p>
+      The isolation model was never chosen. It was inherited from two decisions made long before the large
+      tenant existed.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Table capacity is not tenant capacity</strong></div>
+      <div class="challenge-body">
+        <p>
+          The constraint people miss is not the table's throughput &mdash; it is the partition's.
+          <em>&ldquo;Every partition in a DynamoDB table is designed to deliver a maximum capacity of
+          <strong>3,000 read units per second and 1,000 write units per second</strong>.&rdquo;</em>
+        </p>
+        <p>
+          If the partition key is the tenant identifier &mdash; the obvious, clean, universally taught
+          choice &mdash; then that is a per-tenant ceiling. Provisioning the table for ten times the
+          traffic does not raise it. A tenant large enough to want more than one partition's worth cannot
+          have it, because their data is all under one key.
+        </p>
+        <p>
+          AWS states the design rule directly: <em>&ldquo;You should design your application for uniform
+          activity across all partition keys.&rdquo;</em> A tenant-per-partition-key model is a bet that
+          your customers are uniformly sized, which is a bet no SaaS business wins.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Shard the key for tenants that outgrow a partition, before one of them does.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Item size spends the same budget</strong></div>
+      <div class="challenge-body">
+        <p>
+          The ceiling is in <em>units</em>, not operations, and units are a function of size. AWS's own
+          worked example makes the gap concrete: with a 20 KB item, <em>&ldquo;a single consistent read
+          operation will consume 5 read units. This means you can concurrently drive
+          <strong>600 consistent read operations per second</strong> on that single item before reaching
+          the partition limits.&rdquo;</em>
+        </p>
+        <p>
+          Six hundred, not three thousand. Nothing about the tenant changed &mdash; only the row got
+          bigger. A schema that grows its items over time quietly lowers the ceiling for every tenant
+          sitting behind that key.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Recompute the per-tenant ceiling whenever item size changes. It is size-dependent, not fixed.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The queue could not tell tenants apart</strong></div>
+      <div class="challenge-body">
+        <p>
+          A shared queue has no concept of a customer unless the producer supplies one. SQS fair queues
+          exist to mitigate exactly this &mdash; they <em>&ldquo;automatically mitigate the noisy-neighbor
+          impact in multi-tenant queues&rdquo;</em> &mdash; and they are enabled by one thing:
+          <em>&ldquo;message producers should add a tenant identifier by setting a
+          <code class="inline">MessageGroupId</code> on outgoing messages.&rdquo;</em>
+        </p>
+        <p>
+          No identifier, no tenants, no fairness. The mitigation is not something the consumer or the queue
+          owner can switch on &mdash; it depends on a field the producing service decided whether to
+          populate, possibly years ago, possibly in another team's codebase.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Set the tenant identifier at the producer. It costs nothing and cannot be retrofitted downstream.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Pool, silo and bridge describe where tenants share infrastructure. The useful question is narrower:
+      for each shared resource, what is the unit the platform uses to tell tenants apart, and what does it
+      do with that knowledge?
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-056-multi-tenancy-isolation.svg" alt="Diagram: where tenant isolation actually lives in a pooled AWS architecture, across a shared table and a shared queue. On the left, the shared DynamoDB table: the partition key is the isolation boundary, and every partition is designed to deliver a maximum of 3,000 read units per second and 1,000 write units per second, so if the tenant identifier is the partition key that figure is a per-tenant ceiling that provisioning more table capacity does not raise. The ceiling is expressed in units rather than operations, so item size consumes it: AWS's worked example shows a 20 KB item costing 5 read units per consistent read, leaving 600 consistent reads per second against that single item before the partition limit is reached. On the right, the shared SQS queue: the queue has no notion of a tenant unless the producer sets a MessageGroupId, which fair queues use as the tenant identifier. Amazon SQS detects a noisy neighbour by monitoring how in-flight messages are distributed among tenants, and when one tenant holds a disproportionate share it prioritises delivery for the others, protecting their dwell time. A panel records what the mitigation does not do: Amazon SQS does not limit the consumption rate per tenant, so this is prioritisation rather than throttling, and consumers still receive noisy-tenant messages when capacity is free. A second panel records the trap: MessageGroupId does not mean the same thing on a standard queue as on a FIFO queue, where on standard queues it is only a tenant identifier and does not enforce ordering, so the same producer field changes meaning entirely with the queue type it is sent to." />
+      <figcaption>Two shared resources, two tenant identifiers, both set upstream &mdash; and only one of them does anything about a noisy neighbour on its own.</figcaption>
+    </figure>
+
+    <h3>In the table, the boundary is the key and the ceiling is fixed</h3>
+    <p>
+      The partition key is not merely how rows are found; it is the unit of throughput isolation. Two
+      consequences follow that a capacity plan does not show.
+    </p>
+    <p>
+      The first is that a large tenant is capped independently of the table. The second is subtler and
+      cuts the other way: several small tenants sharing a key share a ceiling, so a pooled design with a
+      coarse key can produce contention between customers who are each individually tiny.
+    </p>
+    <p>
+      <strong>Adaptive capacity</strong> softens this &mdash; and note that it <em>&ldquo;applies to
+      on-demand mode and provisioned capacity&rdquo;</em>, so it is not a provisioned-mode feature you can
+      opt out of by choosing on-demand. It redistributes capacity toward busy partitions. It does not
+      raise the per-partition maximum, so it helps with uneven load and not at all with a tenant whose
+      steady state exceeds one partition.
+    </p>
+
+    <h3>In the queue, the boundary is a field somebody else populates</h3>
+    <p>
+      Fair queues detect a noisy neighbour <em>&ldquo;by monitoring message distribution among tenants
+      during processing (the &lsquo;in-flight&rsquo; state)&rdquo;</em>, and when one tenant holds
+      <em>&ldquo;a disproportionately large number of in-flight messages compared to others&rdquo;</em>,
+      SQS <em>&ldquo;prioritizes message delivery for other tenants.&rdquo;</em>
+    </p>
+    <p>
+      Two properties make this unusually easy to adopt. It <em>&ldquo;does not require any change in the
+      consumer code&rdquo;</em>, has <em>&ldquo;no impact on API latency&rdquo;</em>, and carries
+      <em>&ldquo;no throughput limitations&rdquo;</em>. And a tenant becomes noisy either by volume or by
+      cost &mdash; AWS names both: sending more messages, <em>or</em> when
+      <em>&ldquo;consumers take longer to process messages from that particular tenant.&rdquo;</em> The
+      slow tenant is a noisy neighbour too, which is the case a rate limit at the producer would never
+      catch.
+    </p>
+
+    <div class="callout amber">
+      <strong>The same field, two meanings</strong>
+      <p>This is the detail to carry out of the post. <em>&ldquo;<code class="inline">MessageGroupId</code> on standard queues with fair queues does not have the same behavior as <code class="inline">MessageGroupId</code> on FIFO queues. On standard queues, <code class="inline">MessageGroupId</code> is used only as a tenant identifier for fair queues and does not enforce message ordering.&rdquo;</em> Producer code that sets a group ID is requesting ordering on one queue type and tenant fairness on the other. Move a workload from FIFO to standard for throughput and the ordering guarantee disappears silently, because the field that expressed it is still there and still accepted.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Fairness is prioritisation, not a quota</h3>
+    <p>
+      It would be easy to read fair queues as per-tenant throttling. AWS is explicit that it is not:
+      <em>&ldquo;Amazon SQS does not limit the consumption rate per tenant. It allows consumers to receive
+      messages from noisy neighbor tenants when there is consumer capacity and the queue has no other
+      messages to return.&rdquo;</em>
+    </p>
+    <p>
+      That is the right design and worth understanding precisely. The noisy tenant is not punished and
+      their work is not deferred indefinitely &mdash; they are simply no longer allowed to monopolise
+      in-flight slots while others wait. When there is spare capacity, they use it. Fairness here means
+      protecting the quiet tenants' dwell time, not capping the loud one.
+    </p>
+    <p>
+      The corollary matters for capacity planning: fair queues do not reduce total work, so they do not
+      remove the need for the drain-rate decision from the previous post. They change who waits, not how
+      much there is to do.
+    </p>
+
+    <div class="callout red">
+      <strong>It also does not help at low throughput, and AWS says so</strong>
+      <p>The guidance names the conditions: use fair queues when the queue is multi-tenant, <em>high-throughput</em>, and dwell time is part of your quality of service. The reasoning is honest about the limits: <em>&ldquo;At low throughput, one tenant's burst rarely creates a backlog that affects other tenants.&rdquo;</em> And it explains why scaling is not the answer at the top end: <em>&ldquo;over-scaling the consumer fleet to absorb every burst is impractical, and even with auto-scaling, the delay before new consumers come online can let backlogs form.&rdquo;</em> Fair queues fill the gap autoscaling cannot close &mdash; the minutes before capacity arrives.</p>
+    </div>
+
+    <h3>The quiet-group metrics are the ones worth alarming on</h3>
+    <p>
+      The previous post argued that queue depth cannot distinguish its causes. In a multi-tenant queue the
+      fair-queue metrics do exactly that, which is the strongest operational reason to adopt the pattern
+      even before the mitigation matters.
+    </p>
+    <p>
+      <code class="inline">ApproximateNumberOfMessagesVisibleInQuietGroups</code> reports the backlog
+      <em>&ldquo;excluding messages from noisy message groups&rdquo;</em>, which AWS describes as helping
+      <em>&ldquo;identify the true processing backlog for typical message groups.&rdquo;</em> The
+      queue-level metric spikes when one tenant surges; the quiet-group metric stays flat, and the
+      difference between them is the entire diagnosis.
+    </p>
+    <p>
+      There is an equivalent for latency &mdash;
+      <code class="inline">ApproximateAgeOfOldestMessageInQuietGroups</code>, explicitly intended to
+      <em>&ldquo;set alarms for message processing timeouts that ignore artificially aged messages from
+      noisy neighbors&rdquo;</em> &mdash; and <code class="inline">ApproximateNumberOfNoisyGroups</code>
+      to count the offenders. An alarm on quiet-group age answers &ldquo;are we failing our customers?&rdquo;
+      The queue-level one only answers &ldquo;is somebody busy?&rdquo;
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Tenant as partition key</td>
+        <td>Only for uniformly small tenants</td>
+        <td>It sets a hard per-tenant ceiling of 3,000 read and 1,000 write units per second.</td>
+      </tr>
+      <tr>
+        <td>Large tenants</td>
+        <td>Shard the key, or silo them</td>
+        <td>No table-level capacity raises a partition maximum. The bridge model exists for exactly this tenant.</td>
+      </tr>
+      <tr>
+        <td>Item growth</td>
+        <td>Treated as a capacity change</td>
+        <td>A 20 KB item costs 5 read units, leaving 600 reads per second against that key rather than 3,000.</td>
+      </tr>
+      <tr>
+        <td>Adaptive capacity</td>
+        <td>Relied on for skew, not for scale</td>
+        <td>It redistributes toward busy partitions but does not raise the per-partition maximum.</td>
+      </tr>
+      <tr>
+        <td>Queue tenant identifier</td>
+        <td>Always set <code class="inline">MessageGroupId</code></td>
+        <td>Fairness is impossible without it, it costs nothing, and only the producer can supply it.</td>
+      </tr>
+      <tr>
+        <td>Queue type change</td>
+        <td>Re-read what the group ID means</td>
+        <td>On standard queues it is a tenant identifier only and does not enforce ordering.</td>
+      </tr>
+      <tr>
+        <td>Multi-tenant alarms</td>
+        <td>Quiet-group metrics</td>
+        <td>Queue-level depth and age both move when one tenant surges. Quiet-group metrics report the rest.</td>
+      </tr>
+      <tr>
+        <td>Expecting a quota</td>
+        <td>Do not</td>
+        <td>AWS does not limit consumption rate per tenant. Fair queues reprioritise; they do not throttle.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>Why this decision is almost always made by accident</h3>
+    <p>
+      Both boundaries are set in code that does not look like an isolation decision. A partition key is
+      chosen in a data-model discussion, on access-pattern grounds, when the platform has three customers
+      of similar size. A <code class="inline">MessageGroupId</code> is populated &mdash; or not &mdash; by
+      whoever wrote the producer, in a line that looks like metadata.
+    </p>
+    <p>
+      Neither review asks &ldquo;what is the largest tenant this survives?&rdquo; By the time that question
+      is asked, the answer is already encoded in a key that a large amount of data is now stored under, and
+      changing it is a migration rather than a setting. That is the honest argument for asking it early: the
+      decision is cheap on the day it is made and expensive on every day after.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Pool, silo and bridge is a useful vocabulary and a slightly misleading one, because it suggests the
+      isolation model is a thing you select. In a pooled design the model is whatever the shared resources
+      use to tell tenants apart, and those are ordinary-looking fields chosen for ordinary-looking reasons.
+    </p>
+    <p>
+      The partition key is the clearest case. It is taught as a data-modelling decision, and it is
+      simultaneously a throughput ceiling, a contention boundary and a blast radius &mdash; 3,000 read units
+      and 1,000 write units per second, fixed, regardless of what the table is provisioned for. Nobody
+      writing that key is told they are setting a limit for a customer who has not signed yet.
+    </p>
+    <p>
+      The queue is the more encouraging case, because AWS has done the hard part. Fair queues need one
+      field, no consumer changes, no throughput cost, and they bring metrics that finally separate
+      &ldquo;we are behind&rdquo; from &ldquo;one customer is busy.&rdquo; The requirement is that somebody
+      upstream populates the identifier &mdash; which is, once again, a decision that looks like nothing at
+      the moment it is made.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Application patterns &mdash; event schema evolution: why a contract between two teams outlives the code on both sides of it, what actually breaks when a producer adds a field, and why the consumer that ignores unknown fields is doing the only thing that scales.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-partition-key-design.html" target="_blank" rel="noopener">Best practices for designing and using partition keys in DynamoDB &#8212; the per-partition ceiling and how item size spends it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html" target="_blank" rel="noopener">Amazon SQS fair queues &#8212; noisy-neighbour detection, the tenant identifier, and when it applies</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-available-cloudwatch-metrics.html" target="_blank" rel="noopener">Available CloudWatch metrics for Amazon SQS &#8212; the noisy and quiet group metrics</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
