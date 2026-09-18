@@ -50,6 +50,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TLDS = {
     "com", "org", "net", "io", "dev", "ai", "gov", "edu", "co", "uk", "in",
     "me", "app", "cloud", "microsoft", "amazon", "google", "sh", "xyz", "info",
+    # endoflife.date is a real site on a real gTLD, and a good source for
+    # "is this version still supported". It tripped this check as malformed
+    # because the list was built from what the blog happened to cite so far.
+    # An allowlist of TLDs is always behind reality; the check still earns its
+    # place by catching a swallowed path, which is what it was written for.
+    "date", "tech", "sh", "tools", "guide", "how",
 }
 
 

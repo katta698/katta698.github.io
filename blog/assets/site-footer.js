@@ -1035,23 +1035,7 @@
     { href: '/blog/',                     label: 'Blog' },
     { href: '/intelligence/',             label: 'Intelligence' },
     { href: '/intelligence/whats-new/',   label: '’s new', pre: 'What' },
-    { href: '/intelligence/status/',      label: 'Live status' },
-    // Sixth, and only here -- not in the bar.
-    //
-    // The bar has 11px of slack at 1440, 1280 and 1100px and the words would
-    // need 96px, so a sixth tab means renaming the two beside it. The sheet
-    // has room, is on all 278 pages, and is where somebody goes when they are
-    // looking for what else is here -- which is exactly who this page is for.
-    //
-    // Safe against the collapse logic below, which hides a bar link whose
-    // href is in this list: no page's bar contains this one, so nothing
-    // matches and nothing is hidden.
-    // `short` is the bar's label, `label` is the menu's. Seventeen
-    // characters truncated to "HOW THIS WA..." in the phone bar, next
-    // to BLOG and INTELLIGENCE which both fit. The menu has the room
-    // for the full name and is where the page is actually found.
-    { href: '/how-this-was-made/',        label: 'How this was made',
-      short: 'How it works' }
+    { href: '/intelligence/status/',      label: 'Live status' }
   ];
 
   function text(p) { return (p.pre || '') + p.label; }
@@ -1110,7 +1094,7 @@
     // Where am I, printed in the bar.
     var label = document.createElement('span');
     label.className = 'ck-here';
-    label.textContent = here ? (here.short || text(here)) : '';
+    label.textContent = here ? text(here) : '';
 
     var btn = document.createElement('button');
     btn.type = 'button';
