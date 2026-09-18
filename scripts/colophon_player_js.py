@@ -301,6 +301,43 @@ PLAYER_JS = """
     });
   }
 
+  // Where the caption goes when the picture is expanded.
+  //
+  // Under it, not on it -- and the frame's height depends on the viewport,
+  // so it is measured rather than guessed. Re-measured on resize and on
+  // rotation, which is when a guess would be most obviously wrong.
+  function placeCaption() {
+    if (!zoomed) { stage.style.removeProperty('--cf-cap-top'); return; }
+    // Two frames, not one. The scene goes position:fixed with a translate
+    // when the class lands, and a single rAF still measured the old box --
+    // the caption came out 250px below the picture instead of 20px, in the
+    // middle of nowhere. The second frame is after the new layout exists.
+    window.requestAnimationFrame(function () {
+      window.requestAnimationFrame(function () {
+        var sc = stage.querySelector('.cf-scene');
+        if (!sc) return;
+        // The scene's HEIGHT, not its bottom in the viewport.
+        //
+        // The caption is position:fixed and lives inside .cf-scene, which
+        // carries a translate when expanded -- and a transformed ancestor
+        // becomes the containing block for fixed children. So `top` is
+        // measured from the scene's own box, not from the window. Feeding it
+        // a viewport coordinate put the caption 320px too low, off the
+        // bottom of the screen: 319 (scene top) + 543 = 863 on an 844px
+        // phone. Offset from the scene, and it lands 18px under it.
+        // Viewport coordinates again, now that the caption is a sibling of
+        // the scene rather than a child of it: .cf-player carries no
+        // transform, so a fixed child resolves against the window the way
+        // the spec says it should.
+        var r = sc.getBoundingClientRect();
+        stage.style.setProperty('--cf-cap-top',
+                                Math.round(r.bottom + 18) + 'px');
+      });
+    });
+  }
+  window.addEventListener('resize', placeCaption);
+  window.addEventListener('orientationchange', placeCaption);
+
   function zoom(on) {
     zoomed = on;
     if (on) {
@@ -323,6 +360,7 @@ PLAYER_JS = """
       zoomBt.innerHTML = on ? (ICON.shrink || '') : (ICON.expand || '');
       zoomBt.setAttribute('aria-label', on ? 'Minimise' : 'Expand');
     }
+    placeCaption();
   }
   if (zoomBt) {
     zoomBt.addEventListener('click', function () { zoom(!zoomed); });

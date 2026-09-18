@@ -568,7 +568,6 @@ def build():
     # are overlaid, and nothing at all follows the frame.
     b.append('<button type="button" class="cf-big" data-journey-big '
              'aria-label="Play">%s</button>' % IC_PLAY)
-    b.append('<p class="cf-cap" data-caption></p>')
     b.append('<div class="cf-bar">')
     b.append('<button type="button" class="cf-play" data-journey-play '
              'aria-label="Play">%s</button>' % IC_PLAY)
@@ -592,8 +591,17 @@ def build():
              % IC_REPLAY)
     b.append('<button type="button" class="cf-icon" data-journey-zoom '
              'aria-label="Expand" title="Expand">%s</button>' % IC_EXPAND)
-    b.append("</div>")
-    b.append("</div>")
+    b.append("</div>")          # .cf-bar
+    b.append("</div>")          # .cf-scene
+    # The caption is a SIBLING of the picture, not a child of it.
+    #
+    # .cf-scene clips its overflow -- it has a border radius, and the drawing
+    # has to stay inside it. So a caption parked below the scene's box while
+    # living inside it was measured at exactly the right place and painted
+    # nowhere: clipped, invisible, and measurable as present. Out here it can
+    # sit over the picture when the player is inline and under it when the
+    # player is expanded, which is the whole point.
+    b.append('<p class="cf-cap" data-caption></p>')
     b.append('<script type="application/json" data-narration>%s</script>'
              % json.dumps(NARRATION))
     b.append('<script type="application/json" data-icons>%s</script>'

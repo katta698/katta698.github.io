@@ -395,7 +395,31 @@ SCENE_CSS = """
     position: fixed; z-index: 2001; left: 50%; top: 50%;
     transform: translate(-50%, -50%);
     width: min(94vw, 1180px); margin: 0; }
-  .cf-player.is-zoomed .cf-cap { bottom: 62px; font-size: 1.1rem; }
+  /* Expanded: the caption comes OFF the picture.
+     -----------------------------------------------------------------------
+     Reported as: "when I expand the video it doesn't show me anything, I
+     only see text." Measured on a phone, and he was right twice over:
+
+         normal     scene 350x197   caption 35px   18% of the frame
+         expanded   scene 367x206   caption 79px   38% of the frame
+
+     Expanding bought SEVENTEEN PIXELS -- min(94vw,1180px) on a 390px screen
+     is 367px, and a 16:9 picture cannot get taller without getting wider --
+     while the caption doubled. A slightly bigger frame with text across most
+     of it, floating in a screen that is otherwise empty black.
+
+     So in the expanded view the subtitle sits under the picture instead of
+     on it, in the space that was going to waste. --cf-cap-top is measured
+     from the scene when it opens, because the frame's height depends on the
+     viewport and a guess would be wrong on every device but one. */
+  .cf-player.is-zoomed .cf-cap {
+    /* z-index 2002: above the backdrop at 2000 and the picture at 2001.
+       Without it the caption was positioned perfectly and painted behind a
+       full-screen sheet -- measurably on screen, and invisible. */
+    position: fixed; z-index: 2002; left: 50%; transform: translateX(-50%);
+    top: var(--cf-cap-top, 62%); bottom: auto;
+    width: min(92vw, 900px); padding: 0;
+    font-size: 1rem; line-height: 1.6; text-align: center; }
 
   /* On a phone the frame is about 200px tall, so a caption is competing
      with the drawing for the same space rather than sitting under it. It
