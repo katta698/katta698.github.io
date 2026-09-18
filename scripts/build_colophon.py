@@ -342,6 +342,7 @@ JOURNEY_JS = """
     // and paused -- eight scenes' worth of keyframes running for seven
     // pictures nobody is looking at is a phone battery spent on nothing.
     scenes.forEach(function (g, n) { g.classList.toggle('is-on', n === i); });
+    if (typeof paintCaption === 'function') { paintCaption(); }
     if (fill) {
       fill.style.transform = 'scaleY(' +
         (stops.length < 2 ? 1 : (i / (stops.length - 1))) + ')';
@@ -370,7 +371,39 @@ JOURNEY_JS = """
   box.classList.add('is-live');
   show(0);
 
+  /* One button, whichever thing is driving.
+   *
+   * If the voice is talking, Pause must pause the VOICE -- speechSynthesis
+   * has pause() and resume(), and they are not cancel(): cancel throws the
+   * utterance away and the line would restart from its first word. If the
+   * voice is not talking, it pauses the slideshow timer as before.
+   *
+   * Reported as: "I can't just pause it or stop it, I have to go back or
+   * refresh my screen." The button existed; it only ever knew about the
+   * timer, so during narration it did nothing a listener could hear. */
   if (play) play.addEventListener('click', function () {
+    if (speaking) {
+      chosen = true;
+      try {
+        if (synth.paused) {
+          synth.resume();
+          play.textContent = 'Pause';
+          play.setAttribute('aria-label', 'Pause the walkthrough');
+        } else {
+          synth.pause();
+          play.textContent = 'Resume';
+          play.setAttribute('aria-label', 'Resume the walkthrough');
+        }
+        // The bed follows the voice. Music continuing over a paused
+        // narration is the clearest possible signal that pause did not
+        // work.
+        if (bed) {
+          if (synth.paused) { bed.pause(); }
+          else { var r = bed.play(); if (r && r.catch) { r.catch(function () {}); } }
+        }
+      } catch (e) { stopVoice(); }
+      return;
+    }
     if (running) { chosen = true; halt(); } else { chosen = false; start(); }
   });
   if (again) again.addEventListener('click', function () {
@@ -400,6 +433,98 @@ JOURNEY_JS = """
   } else {
     start();
   }
+
+  /* ---- stepping, captions and the expanded view ------------------------
+   *
+   * Reported as: "I can't just pause it or stop it, I have to go back or
+   * refresh my screen", and then: "it's good to have subtitles so users can
+   * read what's going on, not only listen."
+   *
+   * Pause has to mean pause, including mid-sentence. speechSynthesis has its
+   * own pause()/resume() and they are not the same as cancel(): cancel drops
+   * the utterance and the tour would restart the line from the top. So the
+   * button pauses whichever thing is actually driving -- the voice if it is
+   * talking, the timer if it is not.
+   */
+  var stage   = document.querySelector('[data-stage]');
+  var capEl   = document.querySelector('[data-caption]');
+  var ccBtn   = box.querySelector('[data-journey-cc]');
+  var zoomBtn = box.querySelector('[data-journey-zoom]');
+  var closeBtn = document.querySelector('[data-journey-close]');
+  var prevBtn = box.querySelector('[data-journey-prev]');
+  var nextBtn = box.querySelector('[data-journey-next]');
+  var backdrop = null, captionsOn = false, zoomed = false;
+
+  function paintCaption() {
+    if (!capEl) return;
+    if (!captionsOn) { capEl.hidden = true; capEl.textContent = ''; return; }
+    capEl.hidden = false;
+    capEl.textContent = script[at] || script[0] || '';
+  }
+
+  // Captions are the SPOKEN script, not the text beside the picture. They are
+  // what the voice is saying, so somebody who cannot hear it -- or has the
+  // sound off on a train -- gets exactly what a listener gets.
+  if (ccBtn) {
+    try {
+      captionsOn = localStorage.getItem('jk-cc') === '1';
+    } catch (e) { captionsOn = false; }
+    ccBtn.setAttribute('aria-pressed', String(captionsOn));
+    ccBtn.addEventListener('click', function () {
+      captionsOn = !captionsOn;
+      ccBtn.setAttribute('aria-pressed', String(captionsOn));
+      try { localStorage.setItem('jk-cc', captionsOn ? '1' : '0'); } catch (e) {}
+      paintCaption();
+    });
+  }
+
+  function step(delta) {
+    chosen = true;
+    var i = (at + delta + stops.length) % stops.length;
+    if (speaking) {
+      // Re-say from the new step rather than leaving the voice on the old
+      // line: the picture and the words must not come apart, which is the
+      // whole reason the tour advances on utterance end.
+      try { synth.cancel(); } catch (e) {}
+      show(i);
+      window.setTimeout(function () { sayFrom(i); }, 120);
+    } else {
+      halt();
+      show(i);
+    }
+  }
+  if (prevBtn) prevBtn.addEventListener('click', function () { step(-1); });
+  if (nextBtn) nextBtn.addEventListener('click', function () { step(1); });
+
+  function zoom(on) {
+    if (!stage) return;
+    zoomed = on;
+    if (on) {
+      // Hold the stage's height while the picture leaves the flow, so the
+      // paragraphs below do not jump up and then back down again.
+      stage.style.minHeight = stage.getBoundingClientRect().height + 'px';
+      backdrop = document.createElement('div');
+      backdrop.className = 'cf-backdrop';
+      backdrop.addEventListener('click', function () { zoom(false); });
+      document.body.appendChild(backdrop);
+      document.body.classList.add('cf-zoomed');
+      stage.classList.add('is-zoomed');
+      if (closeBtn) closeBtn.hidden = false;
+      if (zoomBtn) zoomBtn.setAttribute('aria-pressed', 'true');
+    } else {
+      stage.classList.remove('is-zoomed');
+      document.body.classList.remove('cf-zoomed');
+      if (backdrop) { backdrop.remove(); backdrop = null; }
+      if (closeBtn) closeBtn.hidden = true;
+      if (zoomBtn) zoomBtn.setAttribute('aria-pressed', 'false');
+      stage.style.minHeight = '';
+    }
+  }
+  if (zoomBtn) zoomBtn.addEventListener('click', function () { zoom(!zoomed); });
+  if (closeBtn) closeBtn.addEventListener('click', function () { zoom(false); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && zoomed) { zoom(false); }
+  });
 
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) { halt(); stopVoice(); }
@@ -440,10 +565,22 @@ JOURNEY_JS = """
     // matches the names that are reliably female on each platform, then any
     // English voice, then whatever the browser defaults to. A wrong-language
     // voice reading English is worse than a male one.
-    var want = ['zira', 'samantha', 'karen', 'moira', 'tessa', 'fiona',
-                'serena', 'google uk english female',
-                'google us english', 'aria', 'jenny', 'sonia', 'libby',
-                'female'];
+    // Order matters, and the old order was backwards.
+    //
+    // Reported as: "it's kind of a machine reading something, can we have a
+    // more natural tone." The list used to start with 'zira' -- Microsoft's
+    // 1990s-era SAPI voice, the flattest thing on a Windows machine -- so on
+    // the one platform that also ships Aria and Jenny, this actively chose
+    // the robot.
+    //
+    // The natural voices are the NETWORK ones: Google's, Microsoft's Aria and
+    // Jenny, Siri on iOS. They are neural, they breathe, and they are already
+    // installed. Named ones first, then anything the browser reports as
+    // non-local, and only then the old local voices as a floor.
+    var want = ['aria', 'jenny', 'michelle', 'ava',
+                'google us english', 'google uk english female',
+                'samantha', 'siri', 'karen', 'moira', 'tessa', 'fiona',
+                'serena', 'sonia', 'libby', 'female', 'zira'];
     var en = vs.filter(function (v) { return /^en/i.test(v.lang || ''); });
     for (var i = 0; i < want.length; i++) {
       for (var j = 0; j < en.length; j++) {
@@ -451,6 +588,12 @@ JOURNEY_JS = """
           return en[j];
         }
       }
+    }
+    // Nothing named matched: prefer a network voice over a local one. The
+    // local ones are the old built-in synthesisers; the remote ones are the
+    // neural models. localService is the only signal the API gives for this.
+    for (var k = 0; k < en.length; k++) {
+      if (en[k].localService === false) { return en[k]; }
     }
     // An English voice or none. The old fallback ended `|| vs[0]`, which on
     // a device carrying only, say, a German voice handed it English text to
@@ -460,7 +603,39 @@ JOURNEY_JS = """
     return en[0] || null;
   }
 
+  /* A bed under the voice, and the site's own music out of the way.
+   *
+   * Asked for "a nice background, some light tune" behind the narration.
+   * This is sunset-1 -- the clavier piece already in the repo and already
+   * credited -- at 14% volume. Not a new file: it is licensed, it is cached
+   * with everything else, and it is 79 seconds against a narration of about
+   * the same, so it does not loop awkwardly under a single pass.
+   *
+   * Loaded only when somebody presses play. A walkthrough most readers will
+   * never start should not cost them a 900KB download for a bed they will
+   * never hear.
+   *
+   * The site's own beach track is paused rather than mixed. Two pieces of
+   * music and a voice is noise, and the beach loop is the louder of the two.
+   */
+  var bed = null;
+
+  function bedPlay(on) {
+    if (on) {
+      if (!bed) {
+        bed = new Audio('/blog/assets/audio/sunset-1.mp3');
+        bed.loop = true;
+        bed.volume = 0.14;
+      }
+      var b = bed.play();
+      if (b && b.catch) { b.catch(function () {}); }
+    } else if (bed) {
+      try { bed.pause(); bed.currentTime = 0; } catch (e) {}
+    }
+  }
+
   function quietSite(on) {
+    bedPlay(on);
     var a = document.getElementById('beach-audio');
     if (!a) return;
     if (on) {
@@ -499,8 +674,11 @@ JOURNEY_JS = """
       var v = pickVoice();
       if (v) { u.voice = v; u.lang = v.lang || 'en-US'; }
     } catch (e) { /* the browser's default voice reads it instead */ }
-    u.rate = 0.98;
-    u.pitch = 1.0;
+    // Slower and very slightly warmer. At 1.0 the sentences ran together;
+    // this is about a word a second under conversational, which is what makes
+    // a technical explanation followable rather than recited.
+    u.rate = 0.92;
+    u.pitch = 1.04;
     u.onend = function () {
       if (!speaking) return;
       // A beat between scenes, so it does not run one thought into the next.
@@ -530,6 +708,14 @@ JOURNEY_JS = """
       chosen = true;              // the voice is driving now, not the timer
       halt();
       speaking = true;
+      // halt() has just set this to "Play", which is a lie while a voice is
+      // reading: pressing it pauses, it does not start anything. The label
+      // has to describe what the button will DO next, and what is running is
+      // the narration.
+      if (play) {
+        play.textContent = 'Pause';
+        play.setAttribute('aria-label', 'Pause the walkthrough');
+      }
       vbtn.textContent = 'Stop narration';
       quietSite(true);
       sayFrom(0);
@@ -741,10 +927,17 @@ def build():
     # of that box to the bottom, so with the picture inside, a 2px accent line
     # ran straight down the middle of every drawing -- visible in the sea, the
     # bookshelf and the clock alike.
+    # The caption sits UNDER the picture and outside it, so turning it on
+    # never crops the drawing. Empty until subtitles are switched on.
+    b.append('<div class="cf-stage" data-stage>')
     b.append('<div class="cf-scene"><svg viewBox="%s" '
              'preserveAspectRatio="xMidYMid meet" aria-hidden="true" '
              'focusable="false">%s</svg></div>'
              % (VIEWBOX, "".join(SCENES[i] for i in sorted(SCENES))))
+    b.append('<p class="cf-cap" data-caption hidden></p>')
+    b.append('<button type="button" class="cf-close" data-journey-close '
+             'aria-label="Close the expanded view" hidden>Close</button>')
+    b.append("</div>")
     b.append('<div class="cf-journey" data-journey>')
     b.append('<div class="cf-rail" aria-hidden="true">'
              '<div class="cf-rail-fill"></div></div>')
@@ -761,10 +954,18 @@ def build():
     b.append("</ol>")
     b.append(
         '<div class="cf-ctl">'
+        '<button type="button" class="cf-btn cf-ico" data-journey-prev '
+        'aria-label="Previous step" title="Previous step">&#9198;</button>'
         '<button type="button" class="cf-btn" data-journey-play '
         'aria-label="Pause the walkthrough">Pause</button>'
+        '<button type="button" class="cf-btn cf-ico" data-journey-next '
+        'aria-label="Next step" title="Next step">&#9197;</button>'
         '<button type="button" class="cf-btn" data-journey-replay>'
         'Start again</button>'
+        '<button type="button" class="cf-btn" data-journey-cc '
+        'aria-pressed="false" aria-label="Show subtitles">Subtitles</button>'
+        '<button type="button" class="cf-btn" data-journey-zoom '
+        'aria-label="Expand the walkthrough">Expand</button>'
         # Added by the script only if the browser can actually speak, so a
         # button that does nothing is never shown. See the note in the
         # narration block below.

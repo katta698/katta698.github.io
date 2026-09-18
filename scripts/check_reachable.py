@@ -51,7 +51,21 @@ FROM = ["/", "/blog/", "/intelligence/", "/intelligence/whats-new/",
 # Everywhere the site says it has. Taken from the sheet menu, which is the
 # site's own answer to "what else is here".
 DESTINATIONS = ["/", "/blog/", "/intelligence/", "/intelligence/whats-new/",
-                "/intelligence/status/", "/how-this-was-made/"]
+                "/intelligence/status/"]
+
+# Reachable from SOMEWHERE rather than from everywhere.
+#
+# /how-this-was-made/ is a colophon, not a section of the site. It was in the
+# footer for a while and taken out again -- "why do we have how it's made in
+# the footer section? Just remove it" -- so on a desktop it is reached from
+# the About section of the portfolio, which is where somebody wondering about
+# it is already standing, and on a phone from the menu as well.
+#
+# Written as its own rule rather than dropped from the check, because "you can
+# still get there from the right place" is the actual requirement and is worth
+# failing on. Deleting the destination would have made the check quietly
+# weaker, which is the failure mode this whole family of checks exists for.
+FROM_SOMEWHERE = {"/how-this-was-made/": "/"}
 
 WIDTHS = [(1440, "desktop"), (390, "phone")]
 
@@ -126,8 +140,12 @@ def main():
                     pg = ctx.new_page()
                     pg.goto(base + page, wait_until="load", timeout=90000)
                     pg.wait_for_timeout(2400)
+                    wanted = list(DESTINATIONS)
+                    for dest, home in FROM_SOMEWHERE.items():
+                        if page == home:
+                            wanted.append(dest)
                     how = {}
-                    for dest in DESTINATIONS:
+                    for dest in wanted:
                         if dest == page:
                             continue
                         how[dest] = pg.evaluate(PROBE, dest)

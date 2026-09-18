@@ -232,19 +232,6 @@
       // the email list and all five feeds behind one control -- so this line
       // is a second, quieter answer to a question already answered above.
       //
-      // "How this was made" is here for a blunter reason: on a desktop there
-      // was no way to reach it at all. It lives in the sheet menu, and that
-      // menu is a NARROW-SCREEN affordance -- display:none above 1080px.
-      // Measured at 1440, 1280 and 1100: the button 0x0, and not one visible
-      // link to the page anywhere on the site. A page nobody on a laptop can
-      // find. Reported as "I don't see menu in the desktop", which is exactly
-      // right and is not a thing any check was asking.
-      //
-      // The footer is where a colophon belongs anyway, it is on all 281
-      // pages, and it costs one short phrase on a line that already exists --
-      // no second paragraph, which in a 64px flex row would sit BESIDE this
-      // one rather than under it.
-      ' &middot; <a href="/how-this-was-made/">how this was made</a>' +
       '</p>';
     updateYear();
     // paintInstrument BEFORE buildNavControl. It publishes window.jkInstrument,

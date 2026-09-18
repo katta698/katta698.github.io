@@ -1,0 +1,468 @@
+---
+title: 'Week 19 - GitOps on EKS: Should You Run Argo CD, or Let AWS?'
+date: '2026-09-18T10:00:00'
+labels:
+- AWS
+- Terraform
+- AWS Weekly Lab
+slug: week-19-gitops-argocd
+verified: '2026-09-18'
+verified_claims:
+  - claim: "Amazon EKS offers Argo CD as a managed EKS Capability, where the Argo CD controllers run in AWS-managed infrastructure rather than on cluster nodes"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/argocd.html
+  - claim: "The EKS Capability for Argo CD costs $0.03 per capability hour plus $0.0015 per Argo CD Application hour"
+    source: https://aws.amazon.com/eks/pricing/
+  - claim: "An EKS standard control plane costs $0.10 per cluster per hour with no free tier, and extended support costs $0.60 per cluster per hour"
+    source: https://aws.amazon.com/eks/pricing/
+  - claim: "A NAT gateway costs $0.045 per hour plus $0.045 per GB processed, and the hourly charge accrues whether or not traffic flows"
+    source: https://aws.amazon.com/vpc/pricing/
+  - claim: "A t3.medium on-demand Linux instance in US East (N. Virginia) is about $0.0416 per hour, twice the price of a t3.small"
+    source: https://aws.amazon.com/ec2/pricing/on-demand/
+  - claim: "The managed capability requires AWS IAM Identity Center for authentication and does not support local Argo CD users"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/create-argocd-capability.html
+  - claim: "Creating an Argo CD capability installs Argo CD's Custom Resource Definitions into your cluster"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/create-argocd-capability.html
+  - claim: "The managed capability does not support Config Management Plugins, the Notifications controller, SSO providers other than Identity Center, or UI extensions, and its sync timeout is fixed at 120 seconds"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/argocd-comparison.html
+  - claim: "The capability does not automatically register the local cluster and accepts only EKS cluster ARNs as deployment targets, not Kubernetes API server URLs"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/argocd-register-clusters.html
+  - claim: "The capability IAM role's trust policy uses the service principal capabilities.eks.amazonaws.com with sts:AssumeRole and sts:TagSession, and Argo CD requires no IAM permissions by default"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/capability-role.html
+  - claim: "Argo CD 3.5.3 was released on 14 September 2026, and the three most recent minor versions receive patches"
+    source: https://endoflife.date/argo-cd
+  - claim: "Kubernetes 1.36 is available in Amazon EKS and is in standard support until August 2027"
+    source: https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions-standard.html
+  - claim: "The first apply failed because the Helm chart could not create Argo CD CRDs the capability had already installed"
+    derive: "HCP run run-NmVYdjpnMcNrAv5G, 2026-09-18: 'Unable to continue with install: CustomResourceDefinition \"applications.argoproj.io\" in namespace \"\" exists and cannot be imported into the current release: invalid ownership metadata; label validation error: missing key \"app.kubernetes.io/managed-by\"'. Resolved by setting crds.install=false on the Helm release; run run-LGGq29X6Vvqh2RQz applied"
+  - claim: "The managed capability placed no pods in the cluster, while the self-managed install placed seven"
+    derive: "kubectl get pods -n argocd returned 'No resources found in argocd namespace'; kubectl get pods -n argocd-self listed argocd-application-controller-0, applicationset-controller, dex-server, notifications-controller, redis, repo-server and server, all Running"
+  - claim: "The capability auto-creates an access entry granting AmazonEKSArgoCDClusterPolicy at cluster scope and AmazonEKSArgoCDPolicy scoped to the argocd namespace only"
+    derive: "aws eks list-associated-access-policies --cluster-name week19-gitops --principal-arn .../week19-gitops-argocd-capability returned AmazonEKSArgoCDClusterPolicy scope=cluster and AmazonEKSArgoCDPolicy scope=namespace namespaces=['argocd']"
+  - claim: "The auto-created access entry has no Kubernetes groups, so a ClusterRoleBinding to the documented group name eks-access-entry:PRINCIPAL_ARN binds to nothing"
+    derive: "aws eks describe-access-entry returned \"groups\": [] and username arn:aws:sts::ACCOUNT:assumed-role/week19-gitops-argocd-capability/{{SessionName}}. Binding to that group left the Application at Sync Unknown; adding a group with aws eks update-access-entry --kubernetes-groups argocd-capability and rebinding moved it to OutOfSync"
+  - claim: "Before RBAC was granted the Application reported Sync Status Unknown with Health Healthy, because Argo CD could not read cluster state rather than because anything was wrong"
+    derive: "kubectl get application podinfo -n argocd showed Unknown/Healthy with condition ComparisonError: 'appprojects.argoproj.io is forbidden: User .../week19-gitops-argocd-capability/... cannot list resource \"appprojects\" in API group \"argoproj.io\" at the cluster scope'"
+  - claim: "With both controllers pointed at the same resources, the capability took ownership and the self-managed install reported every resource OutOfSync"
+    derive: "The deployment carried argocd.argoproj.io/tracking-id: argocd_podinfo:apps/Deployment:gitops-demo/podinfo, the capability's namespace_appname format. Application podinfo in argocd listed Namespace/Service/Deployment all Synced; the same Application in argocd-self listed all three OutOfSync"
+  - claim: "The drift experiment ran eleven checks with no failures and no unmeasurable checks"
+    derive: "prove_drift.sh 2026-09-18 final run: passed 11, failed 0, BROKEN 0, 'All checks ran and behaved as described'"
+  - claim: "Argo CD reverted a change to a field Git specifies inside three seconds, faster than the test could observe the change persisting"
+    derive: "Deployment metadata.generation moved 5 to 7 while spec.replicas returned to 2 within the 3-second check window; two spec writes, the scale and the revert"
+  - claim: "A field Git does not mention survives self-heal, and a resource created by hand is never pruned"
+    derive: "Annotation lab.week19/probe survived 90 seconds and a separate 120-second idle test; configmap rogue-1789752102 created with kubectl was still present after 90 seconds because it carried no Argo CD tracking annotation"
+  - claim: "A resource deleted by hand is recreated from Git as a genuinely new object"
+    derive: "Deployment uid c8d39b5e before deletion, 8e777007 after recreation; a different uid proves destruction and recreation rather than a rejected delete"
+  - claim: "The cluster existed for 5 hours 19 minutes and teardown left nothing behind"
+    derive: "HCP apply 2026-09-18T13:02Z, destroy run run-EmVFRusvv6kDZ7tv applied 18:21Z destroying 38 resources; cleanup.sh reported CLEAN on all eleven checks including the EKS capability, OIDC providers and a Week=19 tag sweep"
+  - claim: "The step from a t3.small to a t3.medium adds about $0.0208 per hour, which is the real price of running free software"
+    derive: "t3.medium ~$0.0416/hr minus t3.small ~$0.0208/hr = $0.0208/hr. A t3.small has 2 GB of memory and cannot hold seven Argo CD pods beside kube-system"
+  - claim: "The fixed hourly rate for this build is about $0.22: $0.10 control plane, $0.045 NAT gateway, $0.0416 t3.medium and $0.03 for the Argo CD capability"
+    derive: "0.10 + 0.045 + 0.0416 + 0.03 = 0.2166/hr"
+  - claim: "Week 13 of this series published a cost of about $1.40 that the bill later showed as $4.93, and Week 18 published a rate line that came out about 6 percent under the billed $2.00"
+    derive: "4.93 / 1.40 = 3.52. Week 18: rate line predicted $1.885 for 11h22m against a measured $2.00, a 6% gap that was entirely an Elastic IP and an EBS root volume. Both posts carry the corrections"
+  - claim: "At publication the billed charges for 18 September had not yet posted in Cost Explorer, so no total is claimed"
+    derive: "Cost Explorer daily query on 2026-09-18 for 2026-09-18 returned no EKS, EC2-Compute or NAT gateway lines; billing runs roughly a day behind"
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Platform Engineering Lab &middot; Week 19 of 52</div>
+  <div class="post-title">Should you run Argo CD, or let AWS?</div>
+  <div class="post-subtitle">Every GitOps tutorial starts with <code>helm install</code>. AWS now offers Argo CD as a managed capability that runs outside your cluster entirely. This week builds both on one cluster, reading the same repository, and finds that the interesting differences are not the ones on the pricing page.</div>
+  <div class="post-meta">
+    <span>18 September 2026</span>
+    <span>Terraform &middot; HCP &middot; EKS &middot; Argo CD</span>
+    <span>5h 19m &middot; destroyed</span>
+  </div>
+</div>
+
+  <div class="toc">
+    <h3>&#128203; In This Post</h3>
+    <ol>
+      <li><a href="#why">Why &mdash; The Problem This Solves</a></li>
+      <li><a href="#what">What You Need to Know &mdash; Skills &amp; Tools</a></li>
+      <li><a href="#architecture">Architecture &mdash; How It Fits Together</a></li>
+      <li><a href="#how">How We Built It &mdash; Step by Step</a></li>
+      <li><a href="#challenges">Challenges &mdash; What Actually Went Wrong</a></li>
+      <li><a href="#security">Security &mdash; Controls at Every Layer</a></li>
+      <li><a href="#cost">Cost</a></li>
+      <li><a href="#cleanup">Cleanup</a></li>
+      <li><a href="#references">References</a></li>
+      <li><a href="#takeaways">Key Takeaways</a></li>
+    </ol>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why &mdash; The Problem This Solves</h2>
+
+    <p>Deploying to Kubernetes by hand does not scale past about one person. Somebody runs <code>kubectl apply</code> from a laptop, the cluster drifts away from what is in Git, and nobody can say with confidence what is actually running.</p>
+
+    <p><strong>GitOps is the answer almost everyone reaches for.</strong> You stop applying things. You commit, and a controller inside the cluster notices, pulls the change, and makes reality match. Git becomes the record of what should be running, and the cluster converges on it. Argo CD is the tool most teams use to do that &mdash; a CNCF graduated project, running in a large share of production clusters.</p>
+
+    <p>So far, so standard. Here is what changed.</p>
+
+    <p><strong>AWS now runs Argo CD for you.</strong> The EKS Capability for Argo CD puts the Argo CD controllers in AWS-managed infrastructure <em>outside</em> your cluster, authenticated through IAM Identity Center. Every tutorial you will find online installs Argo CD with Helm onto your own nodes, because until recently that was the only option.</p>
+
+    <p>That makes the interesting question no longer <em>how do I install Argo CD</em>. It is <strong>should I run it at all, or let AWS</strong> &mdash; and that is not a question a pricing page answers.</p>
+
+    <h3>What this week actually does</h3>
+
+    <p>Both, on one cluster, reading the same Git repository and deploying the same application. One variable: who operates Argo CD. Then a deliberate attempt to break the central GitOps promise &mdash; that the cluster converges on Git &mdash; to find where it stops being true.</p>
+  </div>
+
+  <div class="section" id="what">
+    <h2>What You Need to Know &mdash; Skills &amp; Tools</h2>
+
+    <p>Comfortable with Terraform, and the idea of a Kubernetes cluster. You do not need prior Argo CD experience; the vocabulary is small.</p>
+
+    <ul>
+      <li><strong>GitOps</strong> &mdash; you do not deploy, you commit. A controller reconciles the cluster towards Git, continuously.</li>
+      <li><strong>Application</strong> &mdash; Argo CD's unit of work. It says: take <em>this path</em> in <em>this repository</em> and make <em>this namespace</em> on <em>this cluster</em> match it.</li>
+      <li><strong>Sync and self-heal</strong> &mdash; a sync applies Git to the cluster. Self-heal does it automatically when the two diverge, without waiting for a human.</li>
+      <li><strong>Prune</strong> &mdash; delete things Argo CD created that Git no longer declares. This one carries a trap, covered later.</li>
+      <li><strong>CRD (Custom Resource Definition)</strong> &mdash; how Kubernetes learns a new object type. Argo CD ships several. They are <strong>cluster-scoped</strong>, which matters more in this post than it sounds like it should.</li>
+    </ul>
+
+    <p>Versions, checked the day this was built: <strong>Argo CD 3.5.3</strong> (released 14 September 2026), Helm chart <code>argo-cd</code> 10.9.1, <strong>Kubernetes 1.36</strong> on EKS, Terraform AWS provider 6.64.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture &mdash; How It Fits Together</h2>
+
+    <p>One cluster, one Git repository, and two controllers that disagree about where they should live.</p>
+
+<svg viewBox="0 0 900 470" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="One EKS cluster reading one Git repository through two Argo CD installations. The EKS Capability for Argo CD runs in AWS managed infrastructure outside the cluster and installs only CRDs into it. Upstream Argo CD installed by Helm runs seven pods inside the cluster on a t3.medium node. Both deploy the same application into the gitops-demo namespace."
+     style="width:100%;height:auto;font-family:'Segoe UI',Arial,sans-serif">
+  <defs>
+<symbol id="i-eks" viewBox="0 0 64 64">
+    <title>Icon-Architecture/48/Arch_Amazon-Elastic-Kubernetes-Service_48</title>
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g fill="#ED7100">
+            <rect x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M37.708,25.0004058 L32.65,31.3403171 L37.967,38.0212236 L35.752,38.0212236 L31,32.0003079 L31,38.0002239 L29,38.0002239 L29,25.0004058 L31,25.0004058 L31,30.2413325 L35.463,25.0004058 L37.708,25.0004058 Z M50,36.3822466 L44,33.3822885 L44,25.0004058 C44,24.6374109 43.803,24.3024156 43.485,24.1264181 L35,19.412484 L35,12.7495773 L50,21.5724538 L50,36.3822466 Z M51.507,20.1384739 L34.507,10.1386138 C34.199,9.95761637 33.815,9.95461641 33.504,10.1326139 C33.192,10.3106114 33,10.6416068 33,11.0006018 L33,20.0004758 C33,20.3634707 33.197,20.6984661 33.515,20.8744636 L42,25.5883976 L42,34.0002799 C42,34.3792746 42.214,34.7252697 42.553,34.8952674 L50.553,38.8952114 C50.694,38.9652104 50.847,39.0002099 51,39.0002099 C51.183,39.0002099 51.365,38.9502106 51.525,38.851212 C51.82,38.6682146 52,38.3472191 52,38.0002239 L52,21.0004618 C52,20.6464668 51.812,20.3184714 51.507,20.1384739 L51.507,20.1384739 Z M32,51.8280304 L15,41.4391758 L15,21.5544541 L29,12.8045765 L29,19.4464836 L21.47,24.1524177 C21.178,24.3354152 21,24.6554107 21,25.0004058 L21,38.0002239 C21,38.351219 21.185,38.6772144 21.485,38.8572119 L31.485,44.857128 C31.789,45.0401254 32.167,45.0481253 32.479,44.8781277 L42.988,39.1462079 L48.035,42.0291675 L32,51.8280304 Z M50.496,41.1321801 L43.496,37.1322361 C43.194,36.9592385 42.825,36.9562385 42.521,37.1222362 L32.023,42.8481561 L23,37.4342318 L23,25.5543981 L30.53,20.848464 C30.822,20.6654665 31,20.345471 31,20.0004758 L31,11.0006018 C31,10.6366069 30.803,10.3026115 30.484,10.125614 C30.168,9.9486165 29.778,9.95961634 29.47,10.1526136 L13.47,20.1524737 C13.178,20.3354711 13,20.6554667 13,21.0004618 L13,42.0001679 C13,42.3481631 13.182,42.6711585 13.479,42.854156 L31.479,53.854002 C31.639,53.9510007 31.819,54 32,54 C32.181,54 32.361,53.9510007 32.521,53.854002 L50.521,42.854156 C50.823,42.6691586 51.005,42.3391632 51.0001004,41.9851681 C50.995,41.6321731 50.803,41.3071776 50.496,41.1321801 L50.496,41.1321801 Z" fill="#FFFFFF"></path>
+    </g>
+</symbol>
+<symbol id="i-ec2" viewBox="0 0 64 64">
+    <title>Icon-Architecture/48/Arch_Amazon-EC2_48</title>
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g fill="#ED7100">
+            <rect x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M22,41 L41,41 L41,23 L22,23 L22,41 Z M43,23 L46,23 L46,25 L43,25 L43,27 L46,27 L46,29 L43,29 L43,31 L46,31 L46,33 L43,33 L43,36 L46,36 L46,38 L43,38 L43,40 L46,40 L46,42 L42.863,42 C42.608,42.587 42.023,43 41.344,43 L41,43 L41,46 L39,46 L39,43 L37,43 L37,46 L35,46 L35,43 L33,43 L33,46 L31,46 L31,43 L29,43 L29,46 L27,46 L27,43 L24,43 L24,46 L22,46 L22,43 L21.656,43 C20.977,43 20.392,42.587 20.137,42 L18,42 L18,40 L20,40 L20,38 L18,38 L18,36 L20,36 L20,33 L18,33 L18,31 L20,31 L20,29 L18,29 L18,27 L20,27 L20,25 L18,25 L18,23 L20,23 L20,22.656 C20,21.743 20.743,21 21.656,21 L22,21 L22,18 L24,18 L24,21 L27,21 L27,18 L29,18 L29,21 L31,21 L31,18 L33,18 L33,21 L35,21 L35,18 L37,18 L37,21 L39,21 L39,18 L41,18 L41,21 L41.344,21 C42.257,21 43,21.743 43,22.656 L43,23 Z M32,52 L12,52 L12,32 L16,32 L16,30 L11.843,30 C10.826,30 10,30.827 10,31.843 L10,52.157 C10,53.173 10.826,54 11.843,54 L32.157,54 C33.174,54 34,53.173 34,52.157 L34,48 L32,48 L32,52 Z M54,11.843 L54,32.157 C54,33.173 53.174,34 52.157,34 L48,34 L48,32 L52,32 L52,12 L32,12 L32,16 L30,16 L30,11.843 C30,10.827 30.826,10 31.843,10 L52.157,10 C53.174,10 54,10.827 54,11.843 L54,11.843 Z" fill="#FFFFFF"></path>
+    </g>
+</symbol>
+    <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5f6b7a"/>
+    </marker>
+  </defs>
+
+  <!-- Opaque background covering the whole viewBox. Without it the diagram
+       inherits whatever is behind it: correct inline, invisible in the
+       lightbox, which is a defect readers hit and authors never see. -->
+  <rect x="0" y="0" width="900" height="470" fill="#ffffff"/>
+
+  <rect x="330" y="10" width="240" height="52" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="450" y="33" text-anchor="middle" font-size="14" font-weight="600" fill="#16191f">Git repository</text>
+  <text x="450" y="51" text-anchor="middle" font-size="11.5" fill="#6c757d">gitops/workloads/podinfo</text>
+
+  <line x1="410" y1="62" x2="210" y2="108" stroke="#5f6b7a" stroke-width="1.6" marker-end="url(#arw)"/>
+  <line x1="490" y1="62" x2="690" y2="108" stroke="#5f6b7a" stroke-width="1.6" marker-end="url(#arw)"/>
+
+  <rect x="30" y="110" width="340" height="150" rx="10" fill="#f8f5ff" stroke="#8C4FFF" stroke-width="1.6"/>
+  <text x="200" y="134" text-anchor="middle" font-size="12.5" font-weight="700" fill="#8C4FFF">AWS-MANAGED &middot; OUTSIDE YOUR CLUSTER</text>
+  <text x="200" y="158" text-anchor="middle" font-size="14" font-weight="600" fill="#16191f">EKS Capability for Argo CD</text>
+  <text x="200" y="180" text-anchor="middle" font-size="12" fill="#6c757d">controllers run in AWS infrastructure</text>
+  <text x="200" y="199" text-anchor="middle" font-size="12" fill="#6c757d">Identity Center is the only sign-in</text>
+  <text x="200" y="218" text-anchor="middle" font-size="12" fill="#6c757d">$0.03/hr + $0.0015 per Application-hr</text>
+  <text x="200" y="242" text-anchor="middle" font-size="12.5" font-weight="600" fill="#cc0c39">0 pods on your nodes</text>
+
+  <rect x="530" y="110" width="340" height="150" rx="10" fill="#fff9f0" stroke="#FF9900" stroke-width="1.6"/>
+  <text x="700" y="134" text-anchor="middle" font-size="12.5" font-weight="700" fill="#b26a00">SELF-MANAGED &middot; ON YOUR NODES</text>
+  <text x="700" y="158" text-anchor="middle" font-size="14" font-weight="600" fill="#16191f">Argo CD 3.5.3, Helm chart 10.9.1</text>
+  <text x="700" y="180" text-anchor="middle" font-size="12" fill="#6c757d">every feature upstream has</text>
+  <text x="700" y="199" text-anchor="middle" font-size="12" fill="#6c757d">free software, not free to run</text>
+  <text x="700" y="218" text-anchor="middle" font-size="12" fill="#6c757d">needs a bigger node: +$0.0208/hr</text>
+  <text x="700" y="242" text-anchor="middle" font-size="12.5" font-weight="600" fill="#b26a00">7 pods on your nodes</text>
+
+  <line x1="200" y1="260" x2="380" y2="318" stroke="#8C4FFF" stroke-width="1.6" marker-end="url(#arw)"/>
+  <line x1="700" y1="260" x2="520" y2="318" stroke="#FF9900" stroke-width="1.6" marker-end="url(#arw)"/>
+
+  <text x="450" y="300" text-anchor="middle" font-size="11.5" font-style="italic" fill="#5f6b7a">the capability installs Argo CD's CRDs into the cluster &mdash; cluster-scoped, and shared</text>
+
+  <rect x="220" y="320" width="460" height="132" rx="10" fill="#fff" stroke="#232f3e" stroke-width="1.8"/>
+  <use href="#i-eks" x="238" y="332" width="26" height="26"/>
+  <text x="274" y="350" font-size="14" font-weight="600" fill="#16191f">EKS cluster &middot; Kubernetes 1.36</text>
+  <use href="#i-ec2" x="238" y="366" width="20" height="20"/>
+  <text x="266" y="381" font-size="11.5" fill="#6c757d">one t3.medium node &mdash; sized for the Helm install, not the capability</text>
+  <rect x="238" y="394" width="424" height="42" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="252" y="412" font-size="12.5" font-weight="600" fill="#16191f">namespace gitops-demo &mdash; podinfo, 2 replicas</text>
+  <text x="252" y="428" font-size="11.5" fill="#6c757d">both controllers deploy here, and that turns out to be a problem</text>
+</svg>
+
+    <h3>Why both, which looks like indecision and is not</h3>
+
+    <p>A comparison is only worth reading if the thing being compared is the only thing that differs. Same cluster, same repository, same application, same sync policy. What is left is the operating model &mdash; and the operating model decides things that have nothing to do with price.</p>
+  </div>
+
+  <div class="section" id="how">
+    <h2>How We Built It &mdash; Step by Step</h2>
+
+    <h3>Step 1 &mdash; Check the prerequisite that has no workaround</h3>
+
+    <p>The managed capability authenticates through <strong>IAM Identity Center and nothing else</strong>. AWS is explicit that local Argo CD users are not supported. There is no admin password sitting in a Kubernetes secret to fetch, which is how essentially every Argo CD walkthrough begins.</p>
+
+    <p>No Identity Center instance, no managed Argo CD. Worth confirming before writing any Terraform:</p>
+
+    <figure class="screenshot" data-prereq>
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-19-gitops-argocd/docs/blog/screenshots/01-identity-center-instance.png" alt="Output of aws sso-admin list-instances showing one ACTIVE Identity Center instance, and the Terraform data source that reads it">
+      <figcaption>This exists before any Terraform runs, which is why it is the one figure here that predates the deploy. Terraform reads the ARN through a data source rather than hardcoding it, so the configuration carries no account-specific identifier and a missing instance fails at plan time instead of at apply.</figcaption>
+    </figure>
+
+    <h3>Step 2 &mdash; Two modules, and one difference that is not cosmetic</h3>
+
+    <p>The managed side is a single resource. The trust policy is the part worth reading closely, because the principal is <strong>not</strong> the one EKS clusters use:</p>
+
+    <pre><code>resource "aws_eks_capability" "argocd" {
+  cluster_name = var.cluster_name
+  type         = "ARGOCD"
+  role_arn     = aws_iam_role.capability.arn
+
+  configuration {
+    argo_cd {
+      aws_idc { idc_instance_arn = var.idc_instance_arn }
+      namespace = var.namespace
+    }
+  }
+}
+
+# capabilities.eks.amazonaws.com, not eks.amazonaws.com.
+# The wrong principal fails with "Invalid IAM role".
+data "aws_iam_policy_document" "capability_assume" {
+  statement {
+    actions = ["sts:AssumeRole", "sts:TagSession"]
+    principals {
+      type        = "Service"
+      identifiers = ["capabilities.eks.amazonaws.com"]
+    }
+  }
+}</code></pre>
+
+    <p><strong>That role gets no permissions policy at all.</strong> AWS's guidance is that Argo CD needs none by default &mdash; IAM permissions come in only for reading Git credentials from Secrets Manager or using CodeConnections. This week deploys from a public repository, so the role holds nothing beyond the ability to be assumed. An empty role that works tells you what the service actually needs; a broad role that works tells you nothing.</p>
+
+    <p>The self-managed side is the Helm chart, pinned so a rebuild six months from now is the same experiment:</p>
+
+    <pre><code>resource "helm_release" "argocd" {
+  chart     = "argo-cd"
+  version   = "10.9.1"        # Argo CD 3.5.3
+  namespace = "argocd-self"
+}</code></pre>
+
+    <p>And the two <code>Application</code> manifests differ in exactly one field:</p>
+
+    <pre><code># self-managed                    # managed capability
+destination:                      destination:
+  server: https://kubernetes.default.svc
+                                    name: arn:aws:eks:us-east-1:...:cluster/week19-gitops</code></pre>
+
+    <p>Upstream Argo CD runs <em>inside</em> the cluster, so "this cluster" is an address it can reach. The capability runs <em>outside</em> it, where "this cluster" is not a network location at all &mdash; it is an AWS resource, and AWS resources are named by ARN. The capability accepts only EKS cluster ARNs, and does not auto-register the local cluster. Every Argo CD example online needs that one edit before it will run here.</p>
+
+    <h3>Step 3 &mdash; Deploy it</h3>
+
+    <p>One workspace, VCS-driven, OIDC credentials, no static keys. The first apply failed, and the reason is the most useful thing in this post &mdash; it gets its own section below.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-19-gitops-argocd/docs/blog/screenshots/02-hcp-run-applied.png" alt="HCP Terraform run list for week-19-dev showing three runs: the initial plan errored, the retry applied, and the teardown applied, with Resources now 0">
+      <figcaption>Three runs, in order: the first apply <strong>errored</strong> on the CRD collision, the retry <strong>applied</strong>, the teardown <strong>applied</strong>. Resources 0. The teardown's title is a stale default from my own tooling that describes a different week entirely &mdash; noted here rather than quietly cropped out, and since fixed.</figcaption>
+    </figure>
+
+    <p>With both installed, the difference is not subtle:</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-19-gitops-argocd/docs/blog/screenshots/04-managed-vs-selfmanaged.png" alt="kubectl showing no pods in the argocd namespace, seven pods in argocd-self, the three argoproj CRDs, and both Applications">
+      <figcaption><code>kubectl get pods -n argocd</code> returns <strong>No resources found</strong>. The same command against <code>argocd-self</code> lists <strong>seven</strong>. Same product, same version family, and one of them is not in your cluster at all. What the capability <em>does</em> install is the three CRDs &mdash; which is exactly what broke the first apply.</figcaption>
+    </figure>
+
+    <h3>Step 4 &mdash; Give the capability permission to do anything</h3>
+
+    <p>Creating the capability auto-creates an EKS access entry for its role, and it is reasonable to assume that is enough. It is not, and the way it fails is worth knowing:</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-19-gitops-argocd/docs/blog/screenshots/09-capability-rbac.png" alt="The capability's auto-attached access policies, the forbidden error on appprojects, the empty groups list on the access entry, and the Application moving from Unknown to OutOfSync after the group is added">
+      <figcaption>The auto-created entry grants <code>AmazonEKSArgoCDClusterPolicy</code> at cluster scope and <code>AmazonEKSArgoCDPolicy</code> scoped to the <code>argocd</code> namespace <em>only</em> &mdash; enough for Argo CD to manage its own custom resources, not enough to deploy anywhere.</figcaption>
+    </figure>
+
+    <p>The symptom is a genuinely confusing pair of statuses: <strong>Sync <code>Unknown</code>, Health <code>Healthy</code></strong>. Nothing is unhealthy because nothing was ever compared. <code>Unknown</code> here means <em>could not look</em>, not <em>looks wrong</em>.</p>
+
+    <h3>Verifying it actually works</h3>
+
+    <p>Both Applications reconciling, the workload running &mdash; and the two controllers disagreeing about who owns it:</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-19-gitops-argocd/docs/blog/screenshots/08-two-controllers-one-resource.png" alt="The tracking annotation showing the capability's namespace_appname format, and the two Applications reporting different resource statuses for the same objects">
+      <figcaption>The deployment carries <code>argocd.argoproj.io/tracking-id: argocd_podinfo:...</code> &mdash; the capability's <code>namespace_appname</code> format. It reports all three resources Synced. The Helm install reports the same three OutOfSync. Neither is malfunctioning; both are correct about a cluster that has two owners.</figcaption>
+    </figure>
+
+    <p>Then the part the week was really for &mdash; four kinds of drift, to find where "the cluster converges on Git" stops being true:</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-19-gitops-argocd/docs/blog/screenshots/07-drift-results.png" alt="The drift experiment output: eleven checks passed, none failed, none unmeasurable, across four kinds of drift">
+      <figcaption>Eleven checks, nothing failed, and &mdash; after two rounds of fixing the test rather than the finding &mdash; nothing unmeasurable. The results are the same shape as "a namespace is not a boundary": the guarantee is real, and narrower than the slogan.</figcaption>
+    </figure>
+
+    <p>In plain terms:</p>
+
+    <ul>
+      <li><strong>A field Git specifies</strong> &mdash; reverted, in under three seconds.</li>
+      <li><strong>A field Git never mentions</strong> &mdash; survives. Self-heal has no target to converge it to.</li>
+      <li><strong>A resource created by hand</strong> &mdash; never pruned. It carries no tracking annotation, so it is not drift; it is furniture.</li>
+      <li><strong>A resource Git declares, deleted</strong> &mdash; recreated, as a genuinely new object.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="challenges">
+    <h2>Challenges &mdash; What Actually Went Wrong</h2>
+
+    <h3>1. The two Argo CDs cannot both own the CRDs</h3>
+
+    <p>The first apply built the VPC, the cluster, the node group and the capability, then failed on the Helm release:</p>
+
+    <pre><code>Unable to continue with install: CustomResourceDefinition
+"applications.argoproj.io" in namespace "" exists and cannot be
+imported into the current release: invalid ownership metadata;
+label validation error: missing key "app.kubernetes.io/managed-by"</code></pre>
+
+    <p>Note <code>in namespace ""</code>. That is Kubernetes saying the object has no namespace, <strong>because it cannot have one</strong>. CRDs are cluster-scoped. Putting the two Argo CDs in separate namespaces isolates their Deployments, their Services and their configuration, and isolates nothing whatsoever about the type definitions they share.</p>
+
+    <p>AWS documents that creating the capability installs the CRDs. It is one sentence in a list of five, and I read straight past it.</p>
+
+    <p><strong>Helm's refusal is correct, and worth understanding rather than working around.</strong> Adopting an object it did not create would mean a later <code>helm uninstall</code> deletes a CRD it does not own &mdash; and deleting a CRD deletes every custom resource of that kind, cluster-wide. In this cluster, uninstalling the Helm release would have silently taken the managed capability's Applications with it.</p>
+
+    <p>The fix is one line, and the meaning is larger than the line: <code>crds.install = false</code>. <strong>The second one in has to defer.</strong></p>
+
+    <h3>2. The documented RBAC fix binds to a group that does not exist</h3>
+
+    <p>With the capability unable to read cluster state, AWS's documentation is clear about the remedy: bind a <code>ClusterRole</code> to the group <code>eks-access-entry:PRINCIPAL_ARN</code>. I did exactly that. Nothing changed.</p>
+
+    <pre><code>$ aws eks describe-access-entry --principal-arn .../week19-gitops-argocd-capability
+{
+    "groups": [],
+    "username": "arn:aws:sts::ACCOUNT:assumed-role/week19-gitops-argocd-capability/{{SessionName}}"
+}</code></pre>
+
+    <p><strong>The auto-created access entry has no Kubernetes groups at all.</strong> The documented group name therefore matches nothing and the binding is inert. The group has to be added first:</p>
+
+    <pre><code>aws eks update-access-entry --cluster-name week19-gitops \
+  --principal-arn .../week19-gitops-argocd-capability \
+  --kubernetes-groups argocd-capability</code></pre>
+
+    <p>After that the Application moved from <code>Unknown</code> to <code>OutOfSync</code> &mdash; from "cannot look" to "looked, and here is the difference". AWS's quick alternative is <code>AmazonEKSClusterAdminPolicy</code>, which is <code>system:masters</code>; their own docs say not to use it in production, so this build used cluster-wide read plus namespace-scoped write instead.</p>
+
+    <h3>3. My test was slower than the thing it was measuring</h3>
+
+    <p>The drift script scaled the deployment from 2 replicas to 4, waited three seconds, and read the value back. It saw 2, and reported that the drift had never landed.</p>
+
+    <p>It had landed. <strong>Argo CD reverted it in under three seconds.</strong> The test was racing a controller whose entire job is to undo exactly that change, and losing.</p>
+
+    <p>The two obvious readings are both wrong and both comfortable: <em>"the change didn't apply"</em>, or worse, <em>"nothing happened, pass"</em>. The fix is to stop trying to catch a transient state and measure a fact that cannot be undone. <code>metadata.generation</code> increments on every write to <code>spec</code> and never decreases &mdash; it went 5 to 7, proving two writes, the scale and the revert. <code>metadata.uid</code> changes only when an object is genuinely destroyed and recreated, which is how the delete case is now proven rather than guessed at.</p>
+
+    <h3>4. Two runs of the same test disagreed, and I nearly published the wrong explanation</h3>
+
+    <p>One run said an out-of-band annotation survived. The next said it was removed. Same command, same cluster.</p>
+
+    <p>I had a tidy mechanism ready: <em>Argo CD leaves unknown fields alone until something unrelated triggers a sync, and then the re-apply takes them with it.</em> It is plausible, it makes a good paragraph, and a controlled experiment showed it was <strong>wrong</strong> &mdash; the annotation survived both when idle and across a sync that definitely fired.</p>
+
+    <p>The real cause was my own test. The previous run had ended by deleting the deployment; Argo CD's recreate landed while the next run was already measuring, so the annotation had been written to an object that no longer existed. <strong>A test that starts while the previous test's repair is still in flight is measuring the previous test.</strong> The script now refuses to begin until the object stops changing.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security &mdash; Controls at Every Layer</h2>
+
+    <ul>
+      <li><strong>No static AWS credentials anywhere.</strong> HCP Terraform authenticates by OIDC; the capability role is assumed by <code>capabilities.eks.amazonaws.com</code>.</li>
+      <li><strong>The capability role holds no permissions policy.</strong> It needs none for a public repository, and an empty role that works is evidence about what the service actually requires.</li>
+      <li><strong>Least privilege over the documented shortcut.</strong> Cluster-wide read so Argo CD can discover and health-check; write scoped to the single namespace it deploys into &mdash; not <code>system:masters</code>.</li>
+      <li><strong>Identity Center, not local users.</strong> No shared admin password in a Kubernetes secret. Deploy authority is tied to identity you already govern, and revoking a person revokes their deploy access.</li>
+      <li><strong>Know who holds cluster admin before you need it.</strong> Whoever runs the automation becomes the cluster's creator-admin &mdash; and when that is a build runner, it is not you. Access entries are declared in Terraform for exactly that reason.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost</h2>
+
+    <p>Prices as of September 2026 &mdash; verify at the <a href="https://aws.amazon.com/eks/pricing/" target="_blank" rel="noopener">EKS pricing page</a>.</p>
+
+    <table class="tbl">
+      <thead><tr><th>Item</th><th>Rate</th><th>Note</th></tr></thead>
+      <tbody>
+        <tr><td>EKS control plane</td><td><strong>$0.10 / hr</strong></td><td>from creation, no free tier</td></tr>
+        <tr><td>NAT gateway</td><td>$0.045 / hr + $0.045 / GB</td><td>one, not one per AZ</td></tr>
+        <tr><td>t3.medium node</td><td>~$0.0416 / hr</td><td><strong>twice a t3.small</strong> &mdash; sized for the Helm install</td></tr>
+        <tr><td>Argo CD capability</td><td><strong>$0.03 / hr</strong> + $0.0015 / Application-hr</td><td>no node footprint at all</td></tr>
+        <tr><td>Extended support</td><td>$0.60 / hr</td><td>if you fall off a supported version</td></tr>
+        <tr><td><strong>Ran for</strong></td><td>~$0.22 / hr</td><td><strong>5 h 19 m</strong>, created 13:02 UTC, destroyed 18:21 UTC</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout">
+      <p><strong>No total yet, deliberately.</strong> At publication AWS had not posted the charges for 18 September &mdash; billing runs roughly a day behind. The arithmetic is easy and I could print it, but a calculation is not a measurement. This series published $1.40 for Week 13 against a bill of $4.93, and Week 18's rate line came out 6% under the real figure because it omitted an Elastic IP and an EBS volume. <strong>This section will be updated with the billed number.</strong></p>
+    </div>
+
+    <h3>The comparison that changes the decision</h3>
+
+    <p>The managed capability costs <strong>$0.03/hr</strong>. Upstream Argo CD is free software &mdash; and it needs somewhere to run. Seven pods do not fit beside <code>kube-system</code> on a t3.small's 2 GB, so the node goes to a t3.medium: <strong>+$0.0208/hr</strong>.</p>
+
+    <p>Those two numbers are close enough that <strong>cost is not the deciding factor</strong> &mdash; the opposite of what "managed AWS service versus free open source" usually implies. The decision gets made on the feature list instead, and the managed capability genuinely does less: no Config Management Plugins, no Notifications controller, no SSO provider other than Identity Center, no UI extensions, and a sync timeout fixed at 120 seconds that you cannot change.</p>
+  </div>
+
+  <div class="section" id="cleanup">
+    <h2>Cleanup</h2>
+
+    <pre><code>./scripts/cleanup.sh</code></pre>
+
+    <p>Eleven checks, all clear. Two are worth calling out, because they are the ones that quietly survive a careless teardown:</p>
+
+    <ul>
+      <li><strong>The EKS Capability is an AWS resource, not a Kubernetes object.</strong> It bills hourly and is invisible to <code>kubectl</code>. A cluster that looks empty can still be charging.</li>
+      <li><strong>A deleted NAT gateway keeps its tags.</strong> A tag sweep finds it long after it stops billing, so the script resolves its state before reporting &mdash; a cleanup check that cries wolf is one people stop reading.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>References</h2>
+
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/argocd-comparison.html" target="_blank" rel="noopener">Comparing EKS Capability for Argo CD to self-managed Argo CD</a> &mdash; the unsupported-feature list, verbatim</li>
+      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/capability-role.html" target="_blank" rel="noopener">Amazon EKS capability IAM role</a> &mdash; trust policy, and why no permissions are needed</li>
+      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/argocd-register-clusters.html" target="_blank" rel="noopener">Register target clusters</a> &mdash; ARNs not API server URLs, and the RBAC section</li>
+      <li><a href="https://aws.amazon.com/eks/pricing/" target="_blank" rel="noopener">Amazon EKS pricing</a></li>
+      <li><a href="https://endoflife.date/argo-cd" target="_blank" rel="noopener">Argo CD release support</a></li>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/week-19-gitops-argocd" target="_blank" rel="noopener">This week's Terraform, manifests and scripts</a></li>
+    </ul>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key Takeaways</h2>
+
+    <p><strong>Namespaces do not separate CRDs.</strong> Two installations of the same operator in different namespaces still contend for one set of cluster-scoped type definitions. The second one in has to defer &mdash; and Helm is right to refuse rather than adopt.</p>
+
+    <p><strong>"Unknown" is not "unhealthy".</strong> An Argo CD Application reporting Sync <code>Unknown</code> and Health <code>Healthy</code> has not found a problem; it has failed to look. Two very different situations wearing similar words.</p>
+
+    <p><strong>Self-heal converges what it knows about.</strong> It reverts fields Git specifies and restores resources Git declares. It leaves alone any field Git never mentions, and it never prunes a resource it never tracked. "The cluster matches Git" does not mean "the cluster contains only what Git declares" &mdash; and that gap is where an out-of-band change hides indefinitely.</p>
+
+    <p><strong>Two GitOps controllers pointed at the same resources will fight.</strong> The last writer takes the tracking annotation and reports Synced; the other reports OutOfSync forever, correctly.</p>
+
+    <p><strong>Cost was not the deciding factor, and I expected it to be.</strong> $0.03/hr managed, against +$0.0208/hr of extra node to run free software. The real decision is the unsupported-feature list.</p>
+
+    <h3>What I'd do differently in production</h3>
+
+    <ul>
+      <li><strong>Do not run both.</strong> This week ran two deliberately, to compare them. Pointing both at one namespace produced a permanent ownership conflict &mdash; pick one, or give them genuinely separate target clusters.</li>
+      <li><strong>Separate the hub from the workloads.</strong> The capability is designed for a hub cluster driving remote clusters through access entries, which sidesteps local-cluster registration entirely.</li>
+      <li><strong>Treat the 120-second sync timeout as a selection criterion.</strong> It is fixed and unchangeable. If a sync legitimately takes longer, the managed capability is not a candidate, and no amount of configuration will change that.</li>
+      <li><strong>Make drift tests prove their own preconditions.</strong> Anything else measures whatever the last test left behind.</li>
+    </ul>
+  </div>
+
+</div>

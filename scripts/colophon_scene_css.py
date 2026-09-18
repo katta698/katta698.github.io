@@ -272,6 +272,54 @@ SCENE_CSS = """
     .cf-arch-svg .aa, .cf-arch-svg .aw { animation: none; }
   }
 
+  /* ---- the stage: picture, caption, and the expanded view ---------------
+     Expanding does not MOVE the picture in the document. The stage keeps its
+     own height while the scene inside it goes position:fixed, so the words
+     below never jump up to fill a gap and then jump back down again -- which
+     is what moving the node into an overlay would have done. */
+  .cf-stage { position: relative; }
+  .cf-cap { margin: .5rem 0 0; max-width: 30rem; font-size: .9rem;
+            line-height: 1.55; color: var(--tx, var(--text, #EDEBE6));
+            background: color-mix(in srgb,
+                        var(--tx, var(--text, #EDEBE6)) 6%, transparent);
+            border-radius: 8px; padding: .55rem .7rem; }
+  .cf-cap[hidden] { display: none; }
+  .cf-btn[aria-pressed="true"] { color: var(--acc-ink, var(--acc, #C4A484));
+                                 border-color: var(--acc-ink, #C4A484); }
+  .cf-ico { font-size: .95rem; line-height: 1; padding: .2rem .55rem; }
+  .cf-close { position: fixed; top: 16px; right: 16px; z-index: 2010;
+              font: inherit; font-size: .8rem; cursor: pointer;
+              padding: .35rem .8rem; border-radius: 999px;
+              background: var(--bg, var(--surface, #1F1D1B));
+              color: var(--tx, var(--text, #EDEBE6));
+              border: 1px solid var(--bd, var(--border, #33302C)); }
+  .cf-close[hidden] { display: none; }
+
+  body.cf-zoomed { overflow: hidden; }
+  .cf-backdrop { position: fixed; inset: 0; z-index: 2000;
+                 background: var(--bg, var(--surface, #1F1D1B)); }
+  .cf-stage.is-zoomed .cf-scene {
+    position: fixed; z-index: 2001; left: 50%; top: 50%;
+    transform: translate(-50%, -58%);
+    width: min(92vw, 1100px); max-width: none; margin: 0; }
+  /* The controls come with it.
+     Without this they stay in the page at z-index auto, behind a backdrop at
+     2000: present in the DOM, invisible on screen, and unclickable. Expanding
+     the walkthrough to sit back and listen is exactly when pause and the step
+     buttons matter most, so they travel to the bottom of the expanded view. */
+  body.cf-zoomed .cf-ctl {
+    position: fixed; z-index: 2003; left: 50%; bottom: 4vh;
+    transform: translateX(-50%); margin: 0;
+    flex-wrap: wrap; justify-content: center; max-width: 92vw;
+    background: color-mix(in srgb,
+                var(--bg, var(--surface, #1F1D1B)) 88%, transparent);
+    padding: .5rem .6rem; border-radius: 999px; }
+
+  .cf-stage.is-zoomed .cf-cap {
+    position: fixed; z-index: 2002; left: 50%; transform: translateX(-50%);
+    bottom: 12vh; width: min(92vw, 1100px); max-width: none;
+    font-size: 1.05rem; text-align: center; }
+
   /* Asked for less movement: every scene sits in its finished state. */
   @media (prefers-reduced-motion: reduce) {
     .sc *, .sc.is-on * { animation: none !important; }
