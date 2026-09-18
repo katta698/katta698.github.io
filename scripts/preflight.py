@@ -64,7 +64,7 @@ BROWSER = {
     "check_map_devices", "check_map_alignment", "check_map_search",
     "check_news_reserve", "check_feedback", "check_region_suggest",
     "check_filter_state", "check_theme_strip", "check_instrument_glyphs",
-    "check_shell_parts",
+    "check_shell_parts", "check_reachable",
 }
 
 # Not run here. Each needs the network or an API and fails on a train.
