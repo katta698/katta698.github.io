@@ -294,7 +294,9 @@ def cmd_compare(args):
         print("     CHANGED  %-56s %+d lines" % (f[:56], d))
 
     beh_diffs = []
+    measured_behaviour = False
     if not args.code_only and os.path.exists(BEHAVIOUR):
+        measured_behaviour = True
         oldb = json.load(io.open(BEHAVIOUR, encoding="utf-8"))["pages"]
         newb = record_behaviour()
         print("\n  BEHAVIOUR")
@@ -319,17 +321,36 @@ def cmd_compare(args):
     nbin = sum(1 for f in now.values() if f.get("binary"))
     scope = ("%d files (%d text, %d binary) and %d lines"
              % (len(now), len(now) - nbin, nbin, total_lines))
+    # Say which half was actually measured.
+    #
+    # --code-only skips the browser entirely, and this still printed "0
+    # behavioural difference(s)" and "behaves as it did" underneath it. That
+    # is the tool built to stop unmeasured claims making one: zero differences
+    # found and zero differences looked for read identically, and the second
+    # is worth nothing. (CHECKLIST rule 5, and rule 6 -- a zero result is not
+    # a fact.)
     if not (added or removed or changed) and not beh_diffs:
-        print("  Of %s, NOTHING changed and no page behaves differently."
-              % scope)
+        if measured_behaviour:
+            print("  Of %s, NOTHING changed and no page behaves differently."
+                  % scope)
+        else:
+            print("  Of %s, NOTHING changed. Behaviour was NOT measured on "
+                  "this run." % scope)
     else:
         print("  Of %s:" % scope)
         print("    %d file(s) added, %d deleted, %d changed."
               % (len(added), len(removed), len(changed)))
-        print("    %d behavioural difference(s) across %d page(s)."
-              % (len(beh_diffs), len({d[0] for d in beh_diffs})))
-        print("  Everything else is byte-for-byte identical and behaves as "
-              "it did.")
+        if measured_behaviour:
+            print("    %d behavioural difference(s) across %d page(s)."
+                  % (len(beh_diffs), len({d[0] for d in beh_diffs})))
+            print("  Everything else is byte-for-byte identical and behaves "
+                  "as it did.")
+        else:
+            print("    behaviour NOT measured on this run%s."
+                  % (" (--code-only)" if args.code_only
+                     else " (no behaviour in the gold copy)"))
+            print("  Everything else is byte-for-byte identical. What those "
+                  "files DO has not been re-checked.")
     print("  " + "-" * 66)
     return 0
 
