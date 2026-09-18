@@ -276,6 +276,8 @@ RULES = [
     ("do not state a limitation you have not measured", ""),
     ("an empty field is a claim; a zero result is not a fact",
      "reconcile against the source -- 'is anything missing?' is a different question from 'is this right?'"),
+    ("snapshot before, report after -- gold.py",
+     "a code diff catches what you EDITED, never what you AFFECTED"),
 ]
 
 

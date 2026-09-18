@@ -110,6 +110,43 @@ finding is about to be written into a comment, it is load-bearing -- check it
 the way a claim gets checked, or write down which probe produced it and what
 that probe could not see.
 
+## 7. Snapshot before, report after. Behaviour, not only code.
+
+    python scripts/gold.py snapshot      # before touching anything
+    python scripts/gold.py compare       # after -- what actually moved
+
+Asked for after a filter stayed broken for three days without anyone knowing:
+"give me a final statement that out of 5,000 or 10,000 lines only this
+specific area has been altered and the rest is intact."
+
+Right instinct, with one correction that is the whole point of gold.py having
+two halves. A code diff would NOT have caught the bug that prompted it.
+
+The blog's year filter broke on 14 September, and blog.js -- the file with the
+broken line in it -- was not edited that day. sync_blog.py was: it began
+rendering the year row into the server HTML, so a query in blog.js that had
+never matched those pills suddenly did. Every year lit at once, for three
+days. A file-by-file diff would have reported, accurately and uselessly,
+"only sync_blog.py changed".
+
+**Code diffs catch what you EDITED. They cannot catch what you AFFECTED.**
+
+So the snapshot records both: every tracked file hashed, AND what each page
+DOES -- counts, nav measurements, and the result of clicking the real controls
+in a real browser. Reintroducing that exact bug now prints:
+
+    CODE       blog/assets/blog.js   +0 lines
+    BEHAVIOUR  blog
+                 interact.years.2025.lit    ['2025'] -> ['all','2026','2025','2023']
+                 interact.years.2025.shown  0 -> 24
+
+The code line says a one-line edit happened and nothing about what it did. The
+behaviour lines say precisely what a reader lost.
+
+What it does not cover, and should be said rather than assumed: six pages, not
+248 posts; the interactions recorded in the probe, not every one; and nothing
+about how anything LOOKS. It is a regression net, not a proof of correctness.
+
 ---
 
 ## The shape of every bug above
