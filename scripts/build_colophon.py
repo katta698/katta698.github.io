@@ -545,6 +545,15 @@ def build():
              'value="0" step="1" aria-label="Position in the walkthrough">'
              % (len(STOPS) - 1))
     b.append('<span class="cf-count" data-count>1 / %d</span>' % len(STOPS))
+    # CC, where every player puts it: on the right, next to the sound.
+    #
+    # It was dropped in the simplification pass and asked for straight back:
+    # "why doesn't it have a subtitles option -- at least to disable and
+    # enable, like YouTube." Subtitles carry the whole script here, so they
+    # are ON unless somebody says otherwise, and the choice is remembered.
+    b.append('<button type="button" class="cf-icon cf-cc" data-journey-cc '
+             'aria-pressed="true" aria-label="Turn subtitles off" '
+             'title="Subtitles">CC</button>')
     b.append('<button type="button" class="cf-icon" data-journey-mute '
              'aria-pressed="false" aria-label="Mute">&#128266;</button>')
     b.append('<button type="button" class="cf-icon" data-journey-replay '

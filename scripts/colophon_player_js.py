@@ -45,6 +45,7 @@ PLAYER_JS = """
   var muteBt  = stage.querySelector('[data-journey-mute]');
   var againBt = stage.querySelector('[data-journey-replay]');
   var zoomBt  = stage.querySelector('[data-journey-zoom]');
+  var ccBt    = stage.querySelector('[data-journey-cc]');
   var bigBt   = stage.querySelector('[data-journey-big]');
   if (!scenes.length) return;
 
@@ -64,13 +65,18 @@ PLAYER_JS = """
   var READ_MS = 5200;
 
   try { muted = localStorage.getItem('jk-mute') === '1'; } catch (e) {}
+  // Subtitles carry the whole script, so they are on unless a reader has
+  // said otherwise. Only an explicit '0' turns them off -- an empty value
+  // means they have never touched it.
+  var cc = true;
+  try { cc = localStorage.getItem('jk-cc') !== '0'; } catch (e) {}
 
   function paint() {
     scenes.forEach(function (g, n) { g.classList.toggle('is-on', n === at); });
     // Wrapped in a span so the dark box hugs the words rather than drawing
     // a full-width bar across the picture on a short line.
     if (capEl) {
-      var line = script[at] || '';
+      var line = cc ? (script[at] || '') : '';
       capEl.innerHTML = line ? '<span>' + line.replace(/&/g, '&amp;')
                                              .replace(/</g, '&lt;') + '</span>'
                              : '';
@@ -244,6 +250,22 @@ PLAYER_JS = """
         bedOn(true);
         run();
       }
+    });
+  }
+
+  function paintCC() {
+    if (!ccBt) return;
+    ccBt.setAttribute('aria-pressed', String(cc));
+    ccBt.setAttribute('aria-label',
+      cc ? 'Turn subtitles off' : 'Turn subtitles on');
+  }
+  if (ccBt) {
+    paintCC();
+    ccBt.addEventListener('click', function () {
+      cc = !cc;
+      try { localStorage.setItem('jk-cc', cc ? '1' : '0'); } catch (e) {}
+      paintCC();
+      paint();
     });
   }
 

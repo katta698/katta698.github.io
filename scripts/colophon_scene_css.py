@@ -341,6 +341,16 @@ SCENE_CSS = """
                    color: var(--acc-ink, #C4A484); }
   .cf-count { font-family: 'DM Mono', ui-monospace, monospace;
               font-size: .66rem; flex: 0 0 auto; color: #D8D4CC; }
+  /* CC reads as a label, not a glyph, so it is wider and set in mono --
+     and the OFF state has to be visibly off at a glance, which a pressed
+     state alone is not. */
+  .cf-cc { width: auto; padding: 0 .42rem;
+           font-family: 'DM Mono', ui-monospace, monospace;
+           font-size: .62rem; letter-spacing: .06em; }
+  .cf-cc[aria-pressed="true"] { color: #1F1D1B;
+                                background: var(--acc-ink, #C4A484);
+                                border-color: var(--acc-ink, #C4A484); }
+  .cf-cc[aria-pressed="false"] { opacity: .62; }
 
   .cf-seek { flex: 1 1 auto; -webkit-appearance: none; appearance: none;
              height: 4px; border-radius: 4px; cursor: pointer; margin: 0;
