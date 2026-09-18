@@ -45,6 +45,7 @@ PLAYER_JS = """
   var muteBt  = stage.querySelector('[data-journey-mute]');
   var againBt = stage.querySelector('[data-journey-replay]');
   var zoomBt  = stage.querySelector('[data-journey-zoom]');
+  var bigBt   = stage.querySelector('[data-journey-big]');
   if (!scenes.length) return;
 
   var script = [];
@@ -66,7 +67,14 @@ PLAYER_JS = """
 
   function paint() {
     scenes.forEach(function (g, n) { g.classList.toggle('is-on', n === at); });
-    if (capEl) capEl.textContent = script[at] || '';
+    // Wrapped in a span so the dark box hugs the words rather than drawing
+    // a full-width bar across the picture on a short line.
+    if (capEl) {
+      var line = script[at] || '';
+      capEl.innerHTML = line ? '<span>' + line.replace(/&/g, '&amp;')
+                                             .replace(/</g, '&lt;') + '</span>'
+                             : '';
+    }
     if (seek && String(seek.value) !== String(at)) { seek.value = at; }
     if (seek) {
       var pct = scenes.length < 2 ? 0 : (at / (scenes.length - 1)) * 100;
@@ -173,6 +181,10 @@ PLAYER_JS = """
   function play() {
     if (playing) return;
     playing = true;
+    // is-started stays on once pressed: it is what reveals the subtitle and
+    // retires the big centre button. is-playing is what lets the drawing
+    // animate, so a page nobody has pressed play on holds perfectly still.
+    stage.classList.add('is-started', 'is-playing');
     setPlayIcon();
     siteAudio(true);
     bedOn(true);
@@ -181,6 +193,7 @@ PLAYER_JS = """
 
   function stop() {
     playing = false;
+    stage.classList.remove('is-playing');
     setPlayIcon();
     clearTimer();
     try { if (synth) synth.cancel(); } catch (e) {}
@@ -192,6 +205,9 @@ PLAYER_JS = """
     playBt.addEventListener('click', function () {
       if (playing) { stop(); } else { play(); }
     });
+  }
+  if (bigBt) {
+    bigBt.addEventListener('click', function () { play(); });
   }
 
   // Dragging moves the picture WHILE dragging, so it behaves like a scrubber
@@ -273,7 +289,10 @@ PLAYER_JS = """
   // into view is the rudest thing on the internet.
   paint();
   setPlayIcon();
-  if (still) { scenes.forEach(function (g) { g.classList.add('is-on'); }); }
+  // prefers-reduced-motion: the scenes never animate (the CSS stops every
+  // keyframe), the subtitles still carry the whole script, and the reader
+  // steps through with the bar. Nothing is lost and nothing moves.
+  if (still && capEl) { capEl.style.opacity = '1'; }
 
   document.addEventListener('visibilitychange', function () {
     if (document.hidden && playing) { stop(); }

@@ -273,83 +273,102 @@ SCENE_CSS = """
   }
 
   /* ---- the player -------------------------------------------------------
-     Shaped like a video player because that is what it is: picture, caption,
-     then the controls, in that order and touching. They used to sit after
-     the whole list of steps, which is the one place a reader would not think
-     to look.
+     Everything inside the frame, nothing after it.
 
-     Expanding does not MOVE the picture in the document -- the player keeps
-     its own height while the scene inside goes position:fixed -- so the words
-     below never jump up to fill a gap and back down again. */
-  .cf-player { position: relative; max-width: 30rem; margin: 1.2rem 0 0; }
+     "Just have the video, have all those options within the video. Why do we
+     have that line underneath? When users check subtitles it has all the
+     information." So the subtitle and the controls are overlaid on the
+     picture, and the frame is the whole component -- no caption paragraph
+     below it, no button row after it, nothing to read in two places.
+
+     Nothing moves until it is played, either. .sc animations are paused
+     until the player carries .is-playing, so a reader who scrolls past sees
+     a still picture and a play button, not a page that started without
+     being asked. */
+  .cf-player { position: relative; max-width: 34rem; margin: 1.2rem 0 0; }
   .cf-player .cf-scene { position: relative; margin: 0; }
 
-  /* Expand lives on the picture, not in a row of words. */
-  .cf-corner { position: absolute; right: 8px; bottom: 8px; z-index: 3;
-               width: 30px; height: 30px; display: grid; place-items: center;
-               font-size: .92rem; line-height: 1; cursor: pointer;
-               border-radius: 8px;
-               color: var(--tx, var(--text, #EDEBE6));
-               background: color-mix(in srgb,
-                           var(--bg, var(--surface, #1F1D1B)) 72%, transparent);
-               border: 1px solid var(--bd, var(--border, #33302C)); }
-  .cf-corner:hover { color: var(--acc-ink, var(--acc, #C4A484)); }
+  .sc * { animation-play-state: paused; }
+  .cf-player.is-playing .sc.is-on * { animation-play-state: running; }
 
-  /* Always present, so muting the sound costs a reader nothing. */
-  .cf-cap { margin: .6rem 0 .1rem; min-height: 3.2rem; font-size: .92rem;
-            line-height: 1.6; color: var(--tx, var(--text, #EDEBE6)); }
+  /* The big one, over the middle, until the first play. */
+  .cf-big { position: absolute; left: 50%; top: 50%; z-index: 4;
+            transform: translate(-50%, -50%);
+            width: 62px; height: 62px; border-radius: 50%;
+            display: grid; place-items: center; cursor: pointer;
+            font-size: 1.3rem; padding-left: 4px; border: none;
+            color: var(--bg, var(--surface, #1F1D1B));
+            background: color-mix(in srgb,
+                        var(--acc-ink, #C4A484) 92%, transparent);
+            transition: opacity .25s ease; }
+  .cf-player.is-playing .cf-big,
+  .cf-player.is-started .cf-big { opacity: 0; pointer-events: none; }
 
-  .cf-bar { display: flex; align-items: center; gap: .6rem;
-            padding: .4rem 0 0; }
-  .cf-play { width: 34px; height: 34px; flex: 0 0 auto; cursor: pointer;
-             display: grid; place-items: center; font-size: .8rem;
-             border-radius: 50%;
-             color: var(--bg, var(--surface, #1F1D1B));
-             background: var(--acc-ink, var(--acc, #C4A484));
-             border: none; }
-  .cf-icon { width: 30px; height: 30px; flex: 0 0 auto; cursor: pointer;
-             display: grid; place-items: center; font-size: .82rem;
-             border-radius: 8px; background: transparent;
-             color: var(--mut, var(--text-muted, #9C9A94));
-             border: 1px solid var(--bd, var(--border, #33302C)); }
-  .cf-icon:hover { color: var(--tx, var(--text, #EDEBE6)); }
+  /* Subtitle, on the picture, above the controls. */
+  /* Subtitles sit ON the drawing, so they need something behind them.
+     A text-shadow alone was not enough: the sentence ran straight through
+     the figure and the laptop, and light strokes under light text is exactly
+     where reading breaks down. A box behind the words -- and behind only the
+     words, via box-decoration-break, so a short line does not draw a
+     full-width bar -- is what every captioned video does, for this reason. */
+  .cf-cap { position: absolute; left: 0; right: 0; bottom: 52px; z-index: 3;
+            margin: 0; padding: 0 1rem; text-align: center;
+            font-size: .92rem; line-height: 1.7; opacity: 0;
+            transition: opacity .25s ease; color: #F4F1EC; }
+  .cf-cap span {
+    background: rgba(12, 11, 10, .74);
+    padding: .18em .5em; border-radius: 4px;
+    -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+  .cf-player.is-started .cf-cap { opacity: 1; }
+
+  /* The control row, on the picture, over a scrim so it stays readable
+     whatever the drawing is doing underneath it. */
+  .cf-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
+            display: flex; align-items: center; gap: .55rem;
+            padding: .5rem .7rem .55rem;
+            background: linear-gradient(to top,
+              rgba(0,0,0,.72), rgba(0,0,0,.42) 60%, rgba(0,0,0,0));
+            border-radius: 0 0 11px 11px; }
+  .cf-play { width: 28px; height: 28px; flex: 0 0 auto; cursor: pointer;
+             display: grid; place-items: center; font-size: .72rem;
+             border-radius: 50%; border: none; color: #1F1D1B;
+             background: var(--acc-ink, #C4A484); }
+  .cf-icon { width: 26px; height: 26px; flex: 0 0 auto; cursor: pointer;
+             display: grid; place-items: center; font-size: .76rem;
+             border-radius: 6px; background: transparent; color: #EDEBE6;
+             border: 1px solid rgba(237,235,230,.28); }
+  .cf-icon:hover { border-color: var(--acc-ink, #C4A484);
+                   color: var(--acc-ink, #C4A484); }
   .cf-count { font-family: 'DM Mono', ui-monospace, monospace;
-              font-size: .7rem; flex: 0 0 auto;
-              color: var(--mut, var(--text-muted, #9C9A94)); }
+              font-size: .66rem; flex: 0 0 auto; color: #D8D4CC; }
 
-  /* The scrubber. Track filled to --cf-pct behind the thumb, which is what
-     makes a range input read as progress rather than as a slider. */
   .cf-seek { flex: 1 1 auto; -webkit-appearance: none; appearance: none;
              height: 4px; border-radius: 4px; cursor: pointer; margin: 0;
              background: linear-gradient(to right,
                var(--acc-ink, #C4A484) 0 var(--cf-pct, 0%),
-               var(--bd, var(--border, #33302C)) var(--cf-pct, 0%) 100%); }
+               rgba(237,235,230,.30) var(--cf-pct, 0%) 100%); }
   .cf-seek::-webkit-slider-thumb { -webkit-appearance: none; appearance: none;
-             width: 13px; height: 13px; border-radius: 50%; border: none;
-             background: var(--acc-ink, var(--acc, #C4A484)); }
-  .cf-seek::-moz-range-thumb { width: 13px; height: 13px; border: none;
-             border-radius: 50%;
-             background: var(--acc-ink, var(--acc, #C4A484)); }
+             width: 12px; height: 12px; border-radius: 50%; border: none;
+             background: var(--acc-ink, #C4A484); }
+  .cf-seek::-moz-range-thumb { width: 12px; height: 12px; border: none;
+             border-radius: 50%; background: var(--acc-ink, #C4A484); }
   .cf-seek:focus-visible { outline: 2px solid var(--acc-ink, #C4A484);
-                           outline-offset: 4px; }
+                           outline-offset: 3px; }
 
   body.cf-zoomed { overflow: hidden; }
   .cf-backdrop { position: fixed; inset: 0; z-index: 2000;
                  background: var(--bg, var(--surface, #1F1D1B)); }
-  .cf-player.is-zoomed { z-index: 2001; }
   .cf-player.is-zoomed .cf-scene {
-    position: fixed; z-index: 2001; left: 50%; top: 46%;
+    position: fixed; z-index: 2001; left: 50%; top: 50%;
     transform: translate(-50%, -50%);
-    width: min(92vw, 1100px); margin: 0; }
-  .cf-player.is-zoomed .cf-cap,
-  .cf-player.is-zoomed .cf-bar {
-    position: fixed; z-index: 2002; left: 50%; transform: translateX(-50%);
-    width: min(92vw, 1100px); max-width: none; }
-  .cf-player.is-zoomed .cf-cap { bottom: 13vh; text-align: center;
-                                 font-size: 1.05rem; }
-  .cf-player.is-zoomed .cf-bar { bottom: 5vh; }
+    width: min(94vw, 1180px); margin: 0; }
+  .cf-player.is-zoomed .cf-cap { bottom: 62px; font-size: 1.1rem; }
 
-  @media (max-width: 560px) { .cf-player { max-width: 100%; } }
+  @media (max-width: 560px) {
+    .cf-player { max-width: 100%; }
+    .cf-cap { font-size: .8rem; bottom: 48px; padding: 0 .6rem; }
+    .cf-count { display: none; }
+  }
 
 
   /* Asked for less movement: every scene sits in its finished state. */

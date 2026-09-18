@@ -525,14 +525,19 @@ def build():
     b.append('<svg viewBox="%s" preserveAspectRatio="xMidYMid meet" '
              'aria-hidden="true" focusable="false">%s</svg>'
              % (VIEWBOX, "".join(SCENES[i] for i in sorted(SCENES))))
-    b.append('<button type="button" class="cf-corner" data-journey-zoom '
-             'aria-label="Expand" title="Expand">&#9974;</button>')
-    b.append("</div>")
 
-    # Under the picture, where a caption belongs, and always present so that
-    # turning the sound off costs nothing.
+    # Everything lives INSIDE the frame, the way a video does.
+    #
+    # "Just have the video, have all those options within the video. Why do we
+    # have that line underneath? When users check subtitles it has all the
+    # information, so why do we need something below it."
+    #
+    # Right. A caption under the picture is a second thing to read; a caption
+    # ON the picture is the picture talking. So the subtitle and the controls
+    # are overlaid, and nothing at all follows the frame.
+    b.append('<button type="button" class="cf-big" data-journey-big '
+             'aria-label="Play">&#9654;</button>')
     b.append('<p class="cf-cap" data-caption></p>')
-
     b.append('<div class="cf-bar">')
     b.append('<button type="button" class="cf-play" data-journey-play '
              'aria-label="Play">&#9654;</button>')
@@ -544,6 +549,9 @@ def build():
              'aria-pressed="false" aria-label="Mute">&#128266;</button>')
     b.append('<button type="button" class="cf-icon" data-journey-replay '
              'aria-label="Start again" title="Start again">&#8635;</button>')
+    b.append('<button type="button" class="cf-icon" data-journey-zoom '
+             'aria-label="Expand" title="Expand">&#9974;</button>')
+    b.append("</div>")
     b.append("</div>")
     b.append('<script type="application/json" data-narration>%s</script>'
              % json.dumps(NARRATION))
