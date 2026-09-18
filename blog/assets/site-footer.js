@@ -224,7 +224,15 @@
     // 117px. This way only 390px gains one, 82px to 100px, and that is the
     // footer alone, below everything else on the page.
     footer.innerHTML =
-      '<p>&copy; <span data-current-year></span> Jayanth Katta &mdash; ' +
+      // The name is in its own span so the narrowest phones can drop it.
+      //
+      // At 360px -- Pixel, most Samsungs -- only 201px is free between the
+      // scroll-to-top button and the ask launcher, and this line needs 225.
+      // No amount of padding trimming closes that: the space simply is not
+      // there. So below 380px the line becomes "(c) 2026 jayanthkatta.com",
+      // which says the same thing, because the domain IS the name.
+      '<p>&copy; <span data-current-year></span>' +
+      '<span class="foot-name"> Jayanth Katta &mdash;</span> ' +
       '<a href="https://jayanthkatta.com/">jayanthkatta.com</a>' +
       // The footer used to end with "-- feeds: blog, incidents". It was
       // the only way to find them from four of the five pages, which is why
