@@ -1829,7 +1829,7 @@ def html_head(title, description, canonical, extra="", og_type="website",
      frame is already the right colour instead of the wrong one; the real
      stylesheet then refines it to the day's palette, which is a shade,
      not a flash. -->
-<script>(function(){{var d=document.documentElement;d.className+=' ck-js';try{{d.style.backgroundColor=localStorage.getItem('theme')==='light'?'#F7F4EF':'#1F1D1B';}}catch(e){{}}var I=['🎻','🎸','🪕','🪈','🪘','🥁','🎺','🪗','🎷','🎹'],n=Math.floor((Date.now()-new Date().getTimezoneOffset()*60000)/86400000);d.style.setProperty('--jk-ins',"'"+I[((n%10)+10)%10]+"'");}})();</script>
+<script>(function(){{var d=document.documentElement;d.className+=' ck-js';try{{d.style.backgroundColor=localStorage.getItem('theme')==='light'?'#F7F4EF':'#1F1D1B';}}catch(e){{}}var I=['🎻','🎸','🥁','🎺','🎷','🎹'],n=Math.floor((Date.now()-new Date().getTimezoneOffset()*60000)/86400000);d.style.setProperty('--jk-ins',"'"+I[((n%6)+6)%6]+"'");}})();</script>
 <!-- A click on the audio control before its script exists must not vanish.
      The button carries onclick="toggleBlogAudio()" and that function is
      defined at the very bottom of the page, ~400ms in. Until then a click

@@ -2415,3 +2415,56 @@
   document.addEventListener('touchend', release, { passive: true });
   document.addEventListener('touchcancel', reset, { passive: true });
 })();
+
+/* Keep <html>'s background matching the page's, whatever changes the theme.
+ *
+ * Reported as: "resume page looks different -- when you shift between dark and
+ * light mode somehow things are off", with a screenshot showing a cream strip
+ * across the top of a dark page.
+ *
+ * That strip is <html>. Every page sets its background in an inline <head>
+ * script, from localStorage, so the first frame is already the right colour
+ * instead of flashing white -- and nothing has ever updated it again. The
+ * theme toggles all change `body.light` and stop there. Measured after one
+ * toggle, on the portfolio, the resume, and the blog alike:
+ *
+ *     html  rgb(31, 29, 27)      <- still dark, set at load
+ *     body  rgb(250, 242, 242)   <- light, as asked
+ *
+ * A reload fixed it, which is exactly why it survived: it is invisible the
+ * moment you go looking properly, and only a reader who toggles and then
+ * scrolls past the end of the page ever sees it. On a phone that is the
+ * overscroll area at the top, which is where it was reported from.
+ *
+ * Even in agreement the two were never the same colour -- the head script
+ * uses #F7F4EF/#1F1D1B while the pages paint #FAF2F2/#211C1C -- so there was
+ * a faint band at the top of every page, in both themes, always.
+ *
+ * Copying the body's COMPUTED background rather than re-deciding the colour
+ * here: there are four separate toggleTheme() implementations on this site
+ * and a fifth would not know to update a hard-coded pair. Whatever the page
+ * paints, html gets. A transparent body is left alone -- overwriting it with
+ * rgba(0,0,0,0) would produce the white flash all of this exists to avoid.
+ */
+(function () {
+  var root = document.documentElement;
+  function sync() {
+    var bg = window.getComputedStyle(document.body).backgroundColor;
+    if (!bg || bg === 'transparent' || bg.indexOf('rgba(0, 0, 0, 0)') === 0) {
+      return;
+    }
+    if (root.style.backgroundColor !== bg) root.style.backgroundColor = bg;
+  }
+  function start() {
+    sync();
+    // The class is what every toggle on this site changes, so watching it
+    // covers all of them without any of them knowing this exists.
+    new MutationObserver(sync).observe(document.body,
+      { attributes: true, attributeFilter: ['class'] });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
