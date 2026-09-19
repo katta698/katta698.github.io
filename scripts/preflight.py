@@ -65,7 +65,7 @@ BROWSER = {
     "check_news_reserve", "check_feedback", "check_region_suggest",
     "check_filter_state", "check_theme_strip", "check_instrument_glyphs",
     "check_shell_parts", "check_reachable",
-    "check_player_overlays",
+    "check_player_overlays", "check_no_orphan_music",
 }
 
 # Not run here. Each needs the network or an API and fails on a train.

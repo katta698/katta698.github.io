@@ -146,8 +146,38 @@ PLAYER_JS = """
    * 0.22 open and 0.11 ducked is -13 and -19: present in the gaps, clearly
    * behind the voice while it speaks, and audible on a phone.
    */
-  var BED_OPEN = 0.22;      // the intro, and the tail after the last line
-  var BED_DUCK = 0.11;      // while the voice is speaking
+  var BED_OPEN = 0.14;      // the moment between pressing play and the
+                            // first word, and nothing else
+  var BED_UNDER = 0.09;     // while the voice is actually sounding
+
+  /* The music is allowed to sound only while the VOICE is sounding.
+   *
+   * Reported four times, in the same words every time: "the voiceover
+   * stops, but the music in the background still continues." I kept fixing
+   * the end of the track, which was the one place this was NOT happening.
+   *
+   * The real fault was structural: the bed played whenever the PLAYER
+   * thought it was playing, and the player thought so in three situations
+   * where there is no voice at all --
+   *
+   *   voice.onerror       set voice = null and carried on with a timer
+   *   play() rejected     same silent timer, same music
+   *   a stall mid-track   no handler at all; the clock stops, the pictures
+   *                       freeze, and the bed -- a separate, smaller, fully
+   *                       buffered file on loop -- keeps going
+   *
+   * All three sound identical from the outside, and all three are what he
+   * heard. So the bed no longer has a life of its own: its level is derived
+   * from whether the narration clock has moved recently, checked four times
+   * a second. No progress for 1.2s and the music is gone, whatever the
+   * reason -- stall, error, refusal, end of file. It comes back by itself
+   * when the voice does.
+   */
+  var STALL_MS = 1200;
+  var lastProgress = 0;     // when the narration clock last moved
+  var voiceStarted = false; // has a first word ever been spoken
+  var bedWatch = null;
+  var lastMs = -1;        // the clock reading at the previous tick
   // Measured: the gap between scenes is 380ms and the lift ramps over 500,
   // so in practice the bed never climbs much above BED_DUCK once the
   // narration starts -- it reached 0.028 at the one transition sampled. That
@@ -155,6 +185,33 @@ PLAYER_JS = """
   // effectively a constant floor under the speech, and BED_OPEN only really
   // shapes the first second and the last.
   var bedRamp = null;
+
+  function bedLevel() {
+    if (!playing || muted) return 0;
+    if (Date.now() - lastProgress > STALL_MS) return 0;
+    return voiceStarted ? BED_UNDER : BED_OPEN;
+  }
+
+  // The single place the bed's volume is decided. Everything else just
+  // calls this and lets it work the answer out.
+  function syncBed() {
+    var want = bedLevel();
+    if (!bed) return;
+    if (want <= 0) {
+      if (bed.volume > 0.001 || !bed.paused) {
+        rampBed(0, 260);
+        window.setTimeout(function () {
+          if (bed && bedLevel() <= 0) { try { bed.pause(); } catch (e) {} }
+        }, 300);
+      }
+      return;
+    }
+    if (bed.paused) {
+      var r = bed.play();
+      if (r && r.catch) { r.catch(function () {}); }
+    }
+    if (Math.abs(bed.volume - want) > 0.005) { rampBed(want, 360); }
+  }
 
   function rampBed(target, ms) {
     if (!bed) return;
@@ -178,14 +235,14 @@ PLAYER_JS = """
         bed.loop = true;
         bed.volume = 0;
       }
-      var b = bed.play();
-      if (b && b.catch) { b.catch(function () {}); }
-      rampBed(BED_OPEN, 900);
+      syncBed();
+      if (!bedWatch) { bedWatch = window.setInterval(syncBed, 250); }
     } else if (bed) {
+      if (bedWatch) { window.clearInterval(bedWatch); bedWatch = null; }
       rampBed(0, 300);
       window.setTimeout(function () {
-        if (bed && bed.volume <= 0.01) { try { bed.pause(); } catch (e) {} }
-      }, 360);
+        try { bed.pause(); } catch (e) {}
+      }, 340);
     }
   }
 
@@ -230,6 +287,10 @@ PLAYER_JS = """
     voice.preload = 'auto';
     voice.ontimeupdate = function () {
       var ms = Math.round(voice.currentTime * 1000);
+      // Proof the narration is really sounding, not merely un-paused. The
+      // music's level is derived from this and nothing else.
+      if (ms !== lastMs) { lastMs = ms; lastProgress = Date.now();
+                           voiceStarted = true; syncBed(); }
       captionAt(ms);
       // The scene follows the audio, not a timer: whatever the clock says
       // is being spoken is what is on screen.
@@ -262,7 +323,17 @@ PLAYER_JS = """
     voice.onended = function () { stop(); };
     voice.onerror = function () {
       voice = null;
+      // Whatever happens to the pictures, the music goes with the voice.
+      lastProgress = 0;
+      syncBed();
       if (playing) { clearTimer(); timer = window.setTimeout(advance, READ_MS); }
+    };
+    // Buffering, stalled, or paused by the platform: silence the bed now
+    // rather than waiting out the watchdog, so there is no second of music
+    // alone. onplaying does not lift it -- only the clock moving does.
+    voice.onwaiting = voice.onstalled = voice.onpause = function () {
+      lastProgress = 0;
+      syncBed();
     };
     return voice;
   }
@@ -288,7 +359,7 @@ PLAYER_JS = """
         }
       });
     }
-    rampBed(BED_DUCK, 400);
+    syncBed();
     return true;
   }
 
@@ -309,6 +380,11 @@ PLAYER_JS = """
   function play() {
     if (playing) return;
     playing = true;
+    // The grace window: BED_OPEN is allowed for STALL_MS after the press,
+    // and then only if a word has actually been spoken. If the narration
+    // never starts, the music stops on its own rather than playing alone.
+    lastProgress = Date.now();
+    lastMs = -1;
     stage.classList.add('is-started', 'is-playing');
     setPlayIcon();
     siteAudio(true);
@@ -318,6 +394,8 @@ PLAYER_JS = """
 
   function stop() {
     playing = false;
+    lastProgress = 0;
+    voiceStarted = false;
     stage.classList.remove('is-playing');
     setPlayIcon();
     clearTimer();
