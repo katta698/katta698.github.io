@@ -36,6 +36,12 @@ PLAYER_JS = """
   var bigBt   = stage.querySelector('[data-journey-big]');
   var seek    = stage.querySelector('[data-seek]');
   var timeEl  = stage.querySelector('[data-time]');
+  var chapEl  = stage.querySelector('[data-chap]');
+  var CHAPTERS = [];
+  try {
+    var chb = document.querySelector('[data-chapters]');
+    if (chb) CHAPTERS = JSON.parse(chb.textContent) || [];
+  } catch (e) { CHAPTERS = []; }
   var muteBt  = stage.querySelector('[data-journey-mute]');
   var ccBt    = stage.querySelector('[data-journey-cc]');
   var againBt = stage.querySelector('[data-journey-replay]');
@@ -139,6 +145,16 @@ PLAYER_JS = """
     cue = -1;
     var list = cuesFor(at);
     setCaption(list[0] ? list[0].text : '');
+    if (CHAPTERS[at]) {
+      if (chapEl) { chapEl.textContent = CHAPTERS[at]; }
+      // Named on the control itself, so it is there on hover and for a
+      // screen reader even at the width where the label cannot be shown.
+      if (seek) {
+        seek.title = (at + 1) + '/' + CHAPTERS.length + '  ' + CHAPTERS[at];
+        seek.setAttribute('aria-label',
+          'Position in the walkthrough -- ' + CHAPTERS[at]);
+      }
+    }
     paintBar(atMs());
   }
 

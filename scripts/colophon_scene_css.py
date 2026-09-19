@@ -421,14 +421,17 @@ SCENE_CSS = """
      selector in the list is one it does not recognise, and ::-moz-range-track
      is unknown to Chrome. Listed together, the light track silently did
      nothing -- which is exactly what the first attempt did. */
+  body.light .cf-player .cf-scene { --cf-notch: #F2EFE9; }
   body.light .cf-seek::-webkit-slider-runnable-track {
-    background: linear-gradient(to right,
-      var(--acc-ink, #8A6A4B) 0 var(--cf-pct, 0%),
-      rgba(31,29,27,.22) var(--cf-pct, 0%) 100%); }
+    background-image: var(--cf-ticks, none),
+      linear-gradient(to right,
+        var(--acc-ink, #8A6A4B) 0 var(--cf-pct, 0%),
+        rgba(31,29,27,.22) var(--cf-pct, 0%) 100%); }
   body.light .cf-seek::-moz-range-track {
-    background: linear-gradient(to right,
-      var(--acc-ink, #8A6A4B) 0 var(--cf-pct, 0%),
-      rgba(31,29,27,.22) var(--cf-pct, 0%) 100%); }
+    background-image: var(--cf-ticks, none),
+      linear-gradient(to right,
+        var(--acc-ink, #8A6A4B) 0 var(--cf-pct, 0%),
+        rgba(31,29,27,.22) var(--cf-pct, 0%) 100%); }
   .cf-play { width: 28px; height: 28px; flex: 0 0 auto; cursor: pointer;
              display: grid; place-items: center; font-size: .72rem;
              border-radius: 50%; border: none; color: #1F1D1B;
@@ -457,6 +460,27 @@ SCENE_CSS = """
              font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
   body.light .cf-time { color: #3B3733; }
   .cf-time .cf-of { opacity: .62; }
+
+  /* The chapter you are in, named. Hidden on a phone, where the row has
+     about 116px for the scrub bar and a title would take most of it -- the
+     notches still show the shape of the journey there, and the caption is
+     already saying what this part is about. */
+  /* The chapter name only where there is room for it, which is expanded.
+     The frame is capped at 30rem, and that row already carries the play
+     button, the scrub bar, a clock and four icons. Giving a title a fixed
+     9.5rem of it left the scrub bar 38 PIXELS wide -- measured, after the
+     variable-width version had been rejected for resizing the bar under the
+     thumb. A control that has to shrink the main control to fit does not
+     belong in that row.
+     Expanded, the frame is the window, and the name earns its place. The
+     notches carry the same information everywhere else: eight marks, so
+     eight parts, and the caption is already naming what this one is. */
+  .cf-chap { display: none; font-size: .68rem; letter-spacing: .04em;
+             color: #D8D4CC; opacity: .8;
+             flex: 0 0 11rem; width: 11rem; text-align: right;
+             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  body.light .cf-chap { color: #3B3733; }
+  .cf-player.is-zoomed .cf-chap { display: block; }
   /* CC reads as a label, not a glyph, so it is wider and set in mono --
      and the OFF state has to be visibly off at a glance, which a pressed
      state alone is not. */
@@ -493,16 +517,24 @@ SCENE_CSS = """
   .cf-seek { flex: 1 1 auto; min-width: 0; -webkit-appearance: none;
              appearance: none; height: 22px; cursor: pointer; margin: 0;
              background: transparent; }
+  /* Two layers: the chapter notches on top, the progress underneath.
+     The notch colour is the bar's own background, so a mark reads as a gap
+     cut through the track -- equally visible on the played side, which is
+     the accent, and the unplayed side, which is grey. A line drawn ON the
+     track needs one colour that contrasts with both, and there isn't one. */
+  .cf-player .cf-scene { --cf-notch: #1A1817; }
   .cf-seek::-webkit-slider-runnable-track {
              height: 4px; border-radius: 4px;
-             background: linear-gradient(to right,
-               var(--acc-ink, #C4A484) 0 var(--cf-pct, 0%),
-               rgba(237,235,230,.30) var(--cf-pct, 0%) 100%); }
+             background-image: var(--cf-ticks, none),
+               linear-gradient(to right,
+                 var(--acc-ink, #C4A484) 0 var(--cf-pct, 0%),
+                 rgba(237,235,230,.30) var(--cf-pct, 0%) 100%); }
   .cf-seek::-moz-range-track {
              height: 4px; border-radius: 4px;
-             background: linear-gradient(to right,
-               var(--acc-ink, #C4A484) 0 var(--cf-pct, 0%),
-               rgba(237,235,230,.30) var(--cf-pct, 0%) 100%); }
+             background-image: var(--cf-ticks, none),
+               linear-gradient(to right,
+                 var(--acc-ink, #C4A484) 0 var(--cf-pct, 0%),
+                 rgba(237,235,230,.30) var(--cf-pct, 0%) 100%); }
   .cf-seek::-webkit-slider-thumb { -webkit-appearance: none; appearance: none;
              width: 12px; height: 12px; border-radius: 50%; border: none;
              margin-top: -4px;  /* centre the thumb on the 4px track */

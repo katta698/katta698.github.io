@@ -344,7 +344,22 @@ IC_EXPAND = _svg('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>')
 IC_SHRINK = _svg('<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>')
 
 
-STOPS = [
+# The eight stops of the journey, with their figures measured.
+#
+# These read as prose and were typed as prose, so they went stale the way
+# prose does: "255 posts -> 279 pages" when it was 268 -> 295, "50 checks"
+# when the gate ran 59, "Seven jobs" when thirteen were on a clock. Every one
+# of them was true on the afternoon it was written.
+#
+# The audio is BANDED because re-recording is expensive. A page is not: it is
+# regenerated on every build, so it can afford to be exact, and exact is more
+# convincing than approximate when the whole point of the page is that the
+# numbers are real. check_narration_true refuses any figure here that is not
+# one the repository just measured.
+def stops(f=None):
+    f = f or counted()
+    jobs = len(schedules()) or f["flows"]
+    return [
     ("a deck chair, usually", "The idea",
      "It starts away from the desk. Somewhere quiet, a laptop, a coffee, and "
      "something worth writing down before it goes.",
@@ -363,31 +378,36 @@ STOPS = [
      "tag and year data, the RSS feed, the sitemap and the service worker "
      "&mdash; each stamped with a hash of the shared CSS and JavaScript so "
      "nobody is served last week&rsquo;s stylesheet.",
-     "255 posts → 279 pages"),
+     "%d posts &rarr; %d pages" % (f["posts"], f["pages"])),
     ("preflight.py", "Open it in a browser",
-     "50 checks drive a real browser: does the header hold still, does the "
-     "music button actually play, does a filter filter, is every link alive. "
-     "If one fails the push is refused &mdash; the change never leaves this "
-     "machine.",
-     "50 checks, ~12 minutes"),
+     "%d checks run before anything is published and %d of them drive a real "
+     "browser: does the header hold still, does the music button actually "
+     "play, does a filter filter, is every link alive. If one fails the push "
+     "is refused &mdash; the change never leaves this machine."
+     % (f["gate"], f["browser"]),
+     "%d checks, %d in a browser" % (f["gate"], f["browser"])),
     ("git push", "Ship it",
      "GitHub Pages serves the files directly. No server to deploy, no "
      "container to restart, nothing to fall over at 2am.",
      "static files, straight out"),
     (".github/workflows", "Then it runs without me",
-     "This is the part that buys the time back. Seven jobs on a clock read "
-     "the clouds&rsquo; own status, release feeds and event directories, "
-     "rebuild the pages and commit them &mdash; so What&rsquo;s new, Live "
-     "status, Cloud events and the Intelligence hub are current whether or "
-     "not I open a laptop.",
-     "7 jobs, 4 pages, 0 hands"),
+     "This is the part that buys the time back. %d jobs on a clock read the "
+     "clouds&rsquo; own status, release feeds and event directories, rebuild "
+     "the pages and commit them &mdash; so What&rsquo;s new, Live status, "
+     "Cloud events and the Intelligence hub are current whether or not I "
+     "open a laptop." % jobs,
+     "%d jobs, 4 pages, 0 hands" % jobs),
     ("the ask terminal", "Ask it anything",
      "And the archive answers for itself. A question is matched against what "
      "is actually written in these posts and the answer cites the post it "
      "came from &mdash; retrieval first, so it can say &ldquo;nothing here "
      "covers that&rdquo; instead of inventing something.",
-     "grounded in 255 posts"),
+     "grounded in %d posts" % f["posts"]),
 ]
+
+
+STOPS = stops()
+
 
 
 # The walkthrough's script.
@@ -661,13 +681,42 @@ def build():
                     or 0)
     except Exception:
         total = 0
+    # Chapter marks, cut into the track at the real scene boundaries.
+    #
+    # A two-minute explainer with eight parts should show that it has eight
+    # parts. The marks are notches the colour of the bar behind them rather
+    # than lines drawn on top, so they read the same over the played side of
+    # the track and the unplayed side without needing a colour that fights
+    # both.
+    #
+    # Positions come from the rendered audio, so a re-recording moves them.
+    ticks = ""
+    try:
+        _lines = json.load(io.open(_cp, encoding="utf-8")).get("lines") or []
+        stops_pct = [100.0 * (ln.get("start") or 0) / total
+                     for ln in _lines[1:] if total]
+        parts, at = [], 0.0
+        for pct in stops_pct:
+            parts.append("transparent %.3f%% %.3f%%" % (at, pct))
+            parts.append("var(--cf-notch) %.3f%% %.3f%%" % (pct, pct + 0.45))
+            at = pct + 0.45
+        parts.append("transparent %.3f%% 100%%" % at)
+        ticks = "linear-gradient(to right, %s)" % ", ".join(parts)
+    except Exception:
+        ticks = ""
     b.append('<input type="range" class="cf-seek" data-seek min="0" max="%d" '
-             'value="0" step="200" aria-label="Position in the walkthrough">'
-             % (total or (len(STOPS) - 1)))
+             'value="0" step="200" style="--cf-ticks: %s" '
+             'aria-label="Position in the walkthrough">'
+             % (total or (len(STOPS) - 1), ticks or "none"))
     # And the clock he asked for: "I don't see any sort of timer -- how long
     # has it been running, when does it end."
     b.append('<span class="cf-time" data-time>0:00<span class="cf-of"> / '
              '%d:%02d</span></span>' % (total // 60000, (total // 1000) % 60))
+    # The chapter you are in, named. The same titles as the written stops
+    # below the player, so the two never describe the journey differently.
+    b.append('<span class="cf-chap" data-chap>%s</span>' % esc(STOPS[0][1]))
+    b.append('<script type="application/json" data-chapters>%s</script>'
+             % json.dumps([st[1] for st in STOPS], ensure_ascii=False))
     # CC, where every player puts it: on the right, next to the sound.
     #
     # It was dropped in the simplification pass and asked for straight back:
