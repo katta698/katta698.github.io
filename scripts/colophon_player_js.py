@@ -233,12 +233,31 @@ PLAYER_JS = """
       captionAt(ms);
       // The scene follows the audio, not a timer: whatever the clock says
       // is being spoken is what is on screen.
-      var t = TRACKS[at];
-      if (playing && t && ms >= t.end - 40) {
-        if (at >= scenes.length - 1) { return; }
-        at += 1;
-        paint();
+      // The picture is wherever the AUDIO is -- derived, never assumed.
+      //
+      // Reported as: "the video is done, the audio keeps continuing." The
+      // scrub bar was at the end, the last caption was on screen, and the
+      // narration was still talking from somewhere near the beginning.
+      //
+      // Scrubbing used to set the scene directly and then ask the audio to
+      // follow. When the audio did not -- a seek past what is buffered, a
+      // slow connection, a platform declining it -- nothing ever corrected
+      // it. The old rule here only stepped FORWARD one scene at a time, and
+      // only at a scene boundary, so a picture that was wrong stayed wrong
+      // for good. Measured on a server without range support, which is
+      // exactly what a failed seek looks like:
+      //
+      //     after jumping to the end:  scene 8 / 8,  voice at 1.2s, playing
+      //
+      // Now the index is computed from the clock on every tick, so a seek
+      // that does not land is corrected within about 250ms and the pictures
+      // cannot claim to be finished while the voice is still reading.
+      if (!playing || voice.seeking) { return; }
+      var want = 0;
+      for (var i = TRACKS.length - 1; i >= 0; i--) {
+        if (ms >= TRACKS[i].start - 40) { want = i; break; }
       }
+      if (want !== at) { at = want; paint(); }
     };
     voice.onended = function () { stop(); };
     voice.onerror = function () {

@@ -391,6 +391,32 @@ SCENE_CSS = """
             background: linear-gradient(to top,
               rgba(0,0,0,.72), rgba(0,0,0,.42) 60%, rgba(0,0,0,0));
             border-radius: 0 0 11px 11px; }
+  /* The scrim follows the theme.
+     Sent a light-mode screenshot: a black band across the bottom of a pale
+     card, with the icons -- which take their colour from the page text, so
+     dark in light mode -- sitting on top of it. Dark on dark. The scrim was
+     hard-coded rgba(0,0,0,.72) and had never been looked at outside the
+     dark theme it was designed in. */
+  body.light .cf-bar {
+    background: linear-gradient(to top,
+      rgba(247,244,239,.94), rgba(247,244,239,.72) 60%, rgba(247,244,239,0)); }
+  /* And the groove the thumb runs in. rgba(237,235,230,.30) is a pale line
+     for a dark frame; on a light one it is the same colour as the frame, so
+     the bar looked like it stopped at the thumb and there was nothing left
+     to drag along.
+
+     Two rules, not one selector list: a browser drops an ENTIRE rule if any
+     selector in the list is one it does not recognise, and ::-moz-range-track
+     is unknown to Chrome. Listed together, the light track silently did
+     nothing -- which is exactly what the first attempt did. */
+  body.light .cf-seek::-webkit-slider-runnable-track {
+    background: linear-gradient(to right,
+      var(--acc-ink, #8A6A4B) 0 var(--cf-pct, 0%),
+      rgba(31,29,27,.22) var(--cf-pct, 0%) 100%); }
+  body.light .cf-seek::-moz-range-track {
+    background: linear-gradient(to right,
+      var(--acc-ink, #8A6A4B) 0 var(--cf-pct, 0%),
+      rgba(31,29,27,.22) var(--cf-pct, 0%) 100%); }
   .cf-play { width: 28px; height: 28px; flex: 0 0 auto; cursor: pointer;
              display: grid; place-items: center; font-size: .72rem;
              border-radius: 50%; border: none; color: #1F1D1B;
