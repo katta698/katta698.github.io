@@ -127,8 +127,30 @@ def counted():
                 except OSError:
                     pass
 
+    # What the GATE actually runs, asked of the gate rather than counted by
+    # eye. preflight discovers its own checks, so a hardcoded number here
+    # would be a second opinion about a fact preflight already owns -- and
+    # the two would part company the first time one was skipped.
+    gate, browser = checks, 0
+    try:
+        sys.path.insert(0, SCRIPTS)
+        import preflight as _pf
+        names = _pf.discover(fast=False)
+        gate = len(names)
+        for n in names:
+            try:
+                with io.open(os.path.join(SCRIPTS, n + ".py"),
+                             encoding="utf-8", errors="replace") as fh:
+                    if "playwright" in fh.read():
+                        browser += 1
+            except OSError:
+                pass
+    except Exception:
+        pass
+
     return {"pages": pages, "checks": checks, "scripts": scripts,
-            "flows": flows, "posts": posts, "loc": loc}
+            "flows": flows, "posts": posts, "loc": loc,
+            "gate": gate, "browser": browser}
 
 
 def commits():
@@ -203,44 +225,92 @@ def when(expr):
 # be rebuilt from the repository without re-synthesising audio. The one number
 # kept is fifty checks, because that is the claim the section is making and it
 # is checked by check_instrument_glyphs' sibling, preflight itself.
-NARRATION = [
-    "This site has no database, no content management system and no server. "
-    "It starts here: an idea, away from the desk.",
+# The spoken script, generated from what the repository measures about
+# itself -- not typed out and then left behind.
+#
+# Asked for as: "make it standard, so that even when we make changes down
+# the road we don't have to come here and revisit all the time."
+#
+# The failure it fixes was live: the narration said "fifty checks drive a
+# real browser". By then there were 58 checks and 34 of them drove a
+# browser. Nobody had lied; the sentence was true the week it was written
+# and had quietly stopped being true since, in a recording, where being
+# wrong is least visible and most expensive.
+#
+# Two rules make this hold on its own:
+#
+#   MEASURED, NOT TYPED. Every number comes from counted(), which asks
+#   preflight how many checks it runs rather than counting files by eye.
+#   One source for a fact the gate already owns.
+#
+#   BANDED, NOT EXACT. "More than fifty" rather than "fifty-eight", so the
+#   words change when the figure meaningfully does and not on the day a
+#   fifty-ninth check is added. Adding one check should not re-record a
+#   voiceover; crossing sixty is worth saying out loud.
+#
+# check_narration_true holds both ends: every spoken number is compared
+# against the live repository, and the audio is compared against the words,
+# so neither can drift without the push being refused.
+_TENS = {2: "twenty", 3: "thirty", 4: "forty", 5: "fifty", 6: "sixty",
+         7: "seventy", 8: "eighty", 9: "ninety"}
 
-    "A post is one hand-written file. It is the only thing on this site that "
-    "is not generated, and everything you see is built from it.",
 
-    "Before anything is built, the draft is checked. Are the claims "
-    "supported, do the links resolve, does the page have the structure its "
-    "series expects. A post with a dead citation does not get to become a "
-    "page.",
+def roughly(n):
+    """A spoken figure that stays true while the real one grows."""
+    n = int(n or 0)
+    if n < 20:
+        return str(n)
+    if n >= 100:
+        return "more than %s hundred" % ("a" if n < 200 else _TENS.get(
+            n // 100 * 10 // 10, str(n // 100)))
+    return "more than %s" % _TENS[n // 10]
 
-    "Then one file becomes the whole site. Every post page, the index, the "
-    "paged archive, the tag and year data, the feed, the sitemap and the "
-    "offline worker. Each page is stamped with a fingerprint of the shared "
-    "stylesheet and script, so you can never be served last "
-    "week's design with this week's words.",
 
-    "Nothing ships on trust. Fifty checks drive a real browser over the real "
-    "pages: does the header hold still, does the music button actually play, "
-    "does a filter filter, is every link alive. If one fails, the push is "
-    "refused and the change never leaves this machine.",
+def narration(f=None):
+    f = f or counted()
+    return [
+        "This site has no database, no content management system and no "
+        "server. It starts here: an idea, away from the desk.",
 
-    "What ships is only files. They are served straight from GitHub Pages, so "
-    "there is no server to deploy, nothing to restart, and nothing to fall "
-    "over in the middle of the night.",
+        "A post is one hand-written file. It is the only thing on this site "
+        "that is not generated, and everything you see is built from it.",
 
-    "This is the part that buys the time back. Jobs on a clock read the three "
-    "clouds' own status feeds, release feeds and event directories, rebuild "
-    "What's New, Live Status, Cloud Events and the Intelligence hub, and "
-    "commit them by themselves. The pages stay current whether or not I open "
-    "a laptop.",
+        "Before anything is built, the draft is checked. Are the claims "
+        "supported, do the links resolve, does the page have the structure "
+        "its series expects. A post with a dead citation does not get to "
+        "become a page.",
 
-    "And the archive answers for itself. A question is matched against what "
-    "is actually written in these posts, and the answer cites the post it "
-    "came from, so it can say that nothing here covers it instead of "
-    "inventing something that sounds right.",
-]
+        "Then one file becomes the whole site. Every post page, the index, "
+        "the paged archive, the tag and year data, the feed, the sitemap "
+        "and the offline worker. Each page is stamped with a fingerprint of "
+        "the shared stylesheet and script, so you can never be served last "
+        "week's design with this week's words.",
+
+        "Nothing ships on trust. %s checks run before anything is "
+        "published, %s of them driving a real browser over the real pages: "
+        "does the header hold still, does the music button actually play, "
+        "does a filter filter, is every link alive. If one fails, the push "
+        "is refused and the change never leaves this machine."
+        % (roughly(f["gate"]).capitalize(), roughly(f["browser"])),
+
+        "What ships is only files. They are served straight from GitHub "
+        "Pages, so there is no server to deploy, nothing to restart, and "
+        "nothing to fall over in the middle of the night.",
+
+        "This is the part that buys the time back. Jobs on a clock read the "
+        "three clouds' own status feeds, release feeds and event "
+        "directories, rebuild What's New, Live Status, Cloud Events and the "
+        "Intelligence hub, and commit them by themselves. The pages stay "
+        "current whether or not I open a laptop.",
+
+        "And the archive answers for itself. A question is matched against "
+        "what is actually written in these posts, and the answer cites the "
+        "post it came from, so it can say that nothing here covers it "
+        "instead of inventing something that sounds right.",
+    ]
+
+
+NARRATION = narration()
 
 
 # Icons as SVG, not as characters.
