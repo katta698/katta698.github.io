@@ -40,6 +40,37 @@ SCENE_CSS = """
      Nothing looked wrong; the buttons simply did nothing. */
   .cf-scene > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 
+  /* The drawing stops where the controls start.
+     Reported with a screenshot: the "Intelligence" box in scene 7 sitting
+     behind the CC and mute buttons. It was not one label and not one scene
+     -- the artwork filled the whole frame and the bar is an overlay across
+     the bottom of it, so on EVERY scene the lowest band of the picture was
+     underneath the controls. Measured against the bar's own rectangle:
+
+         412px   37px of artwork covered
+         390px   37px
+        1180px   39px, including the words "one file, by hand"
+
+     YouTube gets away with an overlay because its bar fades out. This one
+     is always there, so the picture gets the space above it and nothing
+     else. preserveAspectRatio="xMidYMid meet" does the rest: the art scales
+     down and stays centred rather than being cropped.
+
+     The height is stated, not left to `bottom`. An <svg> is a REPLACED
+     element: with height:auto it takes its own intrinsic ratio from the
+     viewBox and `bottom` is ignored as over-constrained. Measured after
+     trying exactly that -- computed bottom 40px, and the box still ran the
+     full 208px to the floor of the frame, 370 x 180/320 to the pixel. So
+     the height says what it means. */
+  .cf-player .cf-scene { --cf-bar-h: 44px; --cf-cap-h: 0px; }
+  /* 58px, not 46: a two-line caption at .92rem/1.7 plus its own padding
+     is 56px, and 46 left scene 1 with 9px of the horizon drawn under it.
+     Measured rather than guessed, with subtitles on AND off, because with
+     them off this reserve is zero and the drawing takes the whole frame. */
+  .cf-player.cc-on .cf-scene { --cf-cap-h: 58px; }
+  .cf-player .cf-scene > svg {
+    height: calc(100% - var(--cf-bar-h) - var(--cf-cap-h)); }
+
   .sc { opacity: 0; transition: opacity .45s ease; }
   .sc.is-on { opacity: 1; }
   /* Paused unless on screen and current. */
@@ -463,6 +494,8 @@ SCENE_CSS = """
        the controls out from under it rather than moving a site-wide control
        for one page. */
     .cf-bar { gap: .4rem; padding: .4rem .5rem .45rem; }
+    .cf-player .cf-scene { --cf-bar-h: 40px; }
+    .cf-player.cc-on .cf-scene { --cf-cap-h: 40px; }
     .cf-icon { width: 24px; height: 24px; }
   }
 

@@ -343,6 +343,9 @@ PLAYER_JS = """
     ccBt.setAttribute('aria-pressed', String(cc));
     ccBt.setAttribute('aria-label',
       cc ? 'Turn subtitles off' : 'Turn subtitles on');
+    // The picture gives up a strip for the caption, but only while there
+    // IS a caption. With subtitles off the drawing gets the whole frame.
+    stage.classList.toggle('cc-on', !!cc);
   }
   if (ccBt) {
     paintCC();
