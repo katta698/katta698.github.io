@@ -160,6 +160,53 @@ TOPIC_RULES = {
          "discusses the free tier but cites no pricing or free-tier page -- a "
          "product page carries capability, never the allowance that limits it"),
     ],
+    "daily": [
+        # This series had no rule at all until now, across 36 posts publishing
+        # daily -- the largest uncovered surface on the site, and the same
+        # shape of hole that let Azure #31 out: a clean result meaning nothing
+        # was tested.
+        #
+        # Its Mode A is specific and measurable. A Daily post is written from
+        # an AWS announcement, and an announcement says what shipped. It does
+        # not carry the quotas, the regional limits, the IAM requirements, or
+        # the fact that the service was later closed to new customers. Those
+        # live on the docs page, and a post that cites only the announcement
+        # has read the press release and not the manual.
+        #
+        # What this rule does NOT catch, stated plainly because the standard
+        # here is that a rule passing the case it was written for is worse than
+        # no rule. daily-020 inferred a whole pricing model from the What's New
+        # page saying nothing about pricing -- and it cites both an
+        # announcement and docs, so this rule passes it.
+        #
+        # A second rule was written for that shape and rejected on measurement.
+        # "asserts a price while citing no pricing page" fires on 31 of 36
+        # daily posts at the loose end and still 31 across the corpus when
+        # tightened to definite assertions only, because "no additional charge"
+        # is a phrase AWS puts in the announcement itself -- so the
+        # announcement IS the governing source for it, and the rule would be
+        # wrong in premise as well as loud. Inference from an absence is not
+        # detectable by asking which pages were cited. That one needs a reader,
+        # like the prose-against-claim drift recorded in VALIDATION.md.
+        #
+        # The trigger is the citation pattern rather than the prose, so the
+        # topic slot is unconditional: any post whose sources include an
+        # announcement is asked whether it also read documentation. That is
+        # why it is a callable returning True rather than a word list -- there
+        # is no phrase that reliably marks "this sentence needs the manual",
+        # and guessing one would both miss and cry wolf.
+        #
+        # Measured across the corpus: 2 of 36 daily posts, and nothing in any
+        # other series. Security bulletins are deliberately not caught --
+        # daily-026 cites four of them for a CVE, and for a CVE the bulletin
+        # IS the governing page.
+        (lambda prose: True,
+         re.compile(r'docs\.aws\.amazon\.com', re.I),
+         re.compile(r'aws\.amazon\.com/about-aws/whats-new', re.I),
+         "is written from an AWS announcement and cites no docs.aws.amazon.com "
+         "page -- a What's New entry carries what shipped, never the quotas, "
+         "the regional limits or the withdrawal notice that scope it"),
+    ],
 }
 
 
@@ -167,7 +214,19 @@ TOPIC_RULES = {
 # standalone piece, and splitting its filename on the first hyphen invents
 # series called "ansible" and "why" -- which made the coverage note below
 # unreadable, and an unreadable warning is an ignored one.
-SERIES_PREFIXES = ("gcpweekly", "arch", "azw", "az", "gcp", "weekly", "week")
+#
+# "daily" was missing from this tuple, so series_of() returned '' for all 36
+# AWS Daily Intelligence posts. No topic rule could ever fire on them, and the
+# coverage note below -- which exists precisely to name the series nothing is
+# checking -- could not name this one either, because it lists what series_of()
+# found. The largest uncovered series on the site was invisible to the warning
+# written to report uncovered series.
+#
+# Found while adding the first daily rule: the rule measured zero findings on
+# posts it should have flagged. A rule that cannot be reached looks exactly
+# like a corpus with nothing wrong in it.
+SERIES_PREFIXES = ("gcpweekly", "arch", "azw", "az", "gcp", "weekly", "week",
+                   "daily")
 
 
 def series_of(path):
@@ -190,10 +249,16 @@ def check_topics(path):
         return []
     text = io.open(path, encoding="utf-8").read()
     urls = " ".join(urls_in(text))
+    # The pages the post's CLAIMS cite, as distinct from every URL in the file.
+    # A link in a reference list is not evidence that the page was read -- that
+    # is the exact wording of what went wrong in GCP #30, where "the workflow
+    # that produced the error read excerpts, and the reference list carried the
+    # unread page as a link". A source: on a claim is evidence; a link is not.
+    claim_urls = " ".join(re.findall(r'^\s*source:\s*(\S+)', text, re.M))
     prose = re.sub(r'<[^>]+>', ' ', text)
     out = []
     for topic, required, context, message in rules:
-        if not context.search(urls):
+        if not context.search(claim_urls):
             continue
         # `topic` is normally a compiled pattern, but a rule whose trigger is
         # "more than one of these appears" cannot be written as one search.
@@ -202,7 +267,7 @@ def check_topics(path):
         hit = topic(prose) if callable(topic) else bool(topic.search(prose))
         if not hit:
             continue
-        if required.search(urls):
+        if required.search(claim_urls):
             continue
         out.append(message)
     return out
@@ -313,9 +378,20 @@ def selftest():
     # The callable path in check_topics must actually be exercised.
     if not callable(TOPIC_RULES["arch"][0][0]):
         bad.append("the arch plan-types rule is no longer a callable")
-    for key in ("az", "gcp"):
+    for key in ("az", "gcp", "daily"):
         if not TOPIC_RULES.get(key):
             bad.append("topic rules for %s have gone missing" % key)
+
+    # series_of() has to reach every series that owns a rule. "daily" was
+    # absent from SERIES_PREFIXES, so its rule was unreachable and measured
+    # zero findings on posts it should have flagged -- which looks exactly
+    # like a clean corpus.
+    for key in TOPIC_RULES:
+        if key not in SERIES_PREFIXES:
+            bad.append("%s has topic rules but series_of() cannot return it"
+                       % key)
+    if series_of("posts/daily-001-x.html") != "daily":
+        bad.append("series_of no longer recognises the daily series")
     return bad
 
 
