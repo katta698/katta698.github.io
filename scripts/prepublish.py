@@ -165,6 +165,19 @@ CHECKS = [
 
     ("check_index_complete.py", True,  False, False, False),
     ("fix_series_nav.py",       True,  False, False, False),
+    # Is anything MISSING? Every other check here inspects what is on the page,
+    # so a hand-written structural element that gets dropped is invisible to
+    # all of them: gcpweekly-006 shipped with no "On this page" block and all
+    # 41 checks passed. This one derives each series' skeleton from the series
+    # itself -- the classes present in >=90% of the OTHER posts -- so it catches
+    # the next omission too, not just the one that prompted it.
+    #
+    # Advisory, deliberately. A first run found 59 departures across 10 series,
+    # nearly all of them pre-existing and in series this window does not own.
+    # Making it blocking would stop every window's push for somebody else's
+    # backlog, which is how a useful check gets deleted. Read it, fix your own
+    # series, and promote it to blocking once the count is near zero.
+    ("check_series_skeleton.py", False, False, False, False),
     # The announcement store behind /intelligence/whats-new/. Nothing else in
     # this list reads it, and every way it breaks is silent: a stalled ingest,
     # a dead feed or a tagging regression all look exactly like a quiet week.

@@ -167,6 +167,12 @@ SERIES = {
         'slug_glob': 'gcp-weekly-intelligence-*',
         'labels': ['GCP', 'GCP Weekly Intelligence'],
         'externally_built': False,
+        # #6 shipped without the "On this page" block that #1-#5 all carry, and
+        # every check passed: the ToC is hand-written prose, so nothing compared
+        # it against the rest of the series. A roundup is the one format a reader
+        # navigates rather than reads start to finish, which is why it has a ToC
+        # and why the absence is easy to miss -- the page still looks complete.
+        'requires_toc': True,
         'ref_heading': 'Official Google Cloud references',
         'first_section': 'id="the-week"',
         'vendor': 'Google Cloud',
@@ -658,6 +664,17 @@ def check_page(slug, spec):
                   '<img> the standard for this series, and nothing else notices '
                   'an absent one -- the other diagram checks only validate a '
                   'diagram that is already there')
+
+    # 7b. Roundups need their "On this page" block.
+    #
+    # The counterpart to the diagram check above, for the series that has no
+    # diagram. Every section in a weekly has an id precisely so the ToC can link
+    # to it, so an anchor-rich page with no ToC is the signature of the block
+    # being dropped rather than deliberately omitted.
+    if spec.get("requires_toc") and 'class="toc"' not in html:
+        err(slug, 'no "On this page" block. Every other post in this series '
+                  'carries one immediately after <div class="container">, and '
+                  'a roundup is navigated rather than read straight through')
 
     # 8. Images need alt text, and a diagram's alt text has to say something.
     #
