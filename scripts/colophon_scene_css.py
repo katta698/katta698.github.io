@@ -450,9 +450,14 @@ SCENE_CSS = """
   /* CC reads as a label, not a glyph, so it is wider and set in mono --
      and the OFF state has to be visibly off at a glance, which a pressed
      state alone is not. */
+  /* text-indent cancels the tracking's trailing space.
+     letter-spacing puts a gap after EVERY letter including the last, so the
+     ink sits half a pixel left of centre in a box that is otherwise exact.
+     Indenting by the same amount puts it back. */
   .cf-cc { width: auto; padding: 0 .42rem;
            font-family: 'DM Mono', ui-monospace, monospace;
-           font-size: .62rem; letter-spacing: .06em; }
+           font-size: .62rem; letter-spacing: .06em;
+           text-indent: .06em; }
   .cf-cc[aria-pressed="true"] { color: #1F1D1B;
                                 background: var(--acc-ink, #C4A484);
                                 border-color: var(--acc-ink, #C4A484); }
@@ -559,6 +564,15 @@ SCENE_CSS = """
     .cf-player .cf-scene { --cf-bar-h: 40px; }
     .cf-player.cc-on .cf-scene { --cf-cap-h: 40px; }
     .cf-icon { width: 24px; height: 24px; }
+    /* CC is a LABEL and has to keep sizing itself.
+       This query sets every .cf-icon to a fixed 24px, and CC is one -- so it
+       lost its width:auto and became a 24px box holding 13.1px of text
+       inside 13.4px of its own padding. Overflowing, and therefore
+       start-aligned: measured 7.7px of space on the left and 3.2 on the
+       right, while the same button on a laptop, where it is 29px and fits,
+       was a perfect 7.7/7.7. Asked as "is CC alignment right?" -- it was
+       not, and only on phones. */
+    .cf-cc { width: auto; min-width: 24px; padding: 0 .3rem; }
   }
 
 
