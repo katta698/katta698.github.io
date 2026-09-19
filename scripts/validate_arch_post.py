@@ -198,6 +198,12 @@ SERIES = {
         'slug_glob': 'azure-weekly-intelligence-*',
         'labels': ['Azure', 'Azure Weekly Intelligence'],
         'externally_built': False,
+        # Added preventively, not in response to a failure: all six azw- posts
+        # already carry a ToC and an inventory, so this costs nothing today and
+        # stops this series drifting the way the AWS and GCP weeklies both did.
+        # If it ever blocks an Azure post, the post is missing the block rather
+        # than the flag being wrong.
+        'requires_toc': True,
         'ref_heading': 'Official Azure references',
         'first_section': 'id="week"',
         'vendor': 'Microsoft',
@@ -255,13 +261,25 @@ SERIES = {
         'vendor': 'AWS',
         'doc_hosts': ('docs.aws.amazon.com', 'aws.amazon.com'),
         'shell_hosts': ('docs.aws.amazon.com',),
-        # Deliberately only the structural sections. The domain groupings
-        # ("Storage and backup", "AI and agents") vary with what AWS actually
-        # shipped that week, and a quiet week is allowed to be short -- see the
-        # never-repeat rules in CLAUDE.md.
+        # The same drift the gcpweekly spec already documents, repeated here
+        # because the flag was added there and never applied to this series.
+        # AWS weekly #6 and #7 both shipped without the "On this page" block
+        # that #1-#5 carry, and #7 also lost the inventory -- each was written
+        # by copying the previous post, so one omission propagated and then
+        # compounded. Every check passed both times, because neither the ToC
+        # nor the inventory was ever expressed as a requirement.
+        'requires_toc': True,
+        # Deliberately only the structural sections, PLUS the inventory. The
+        # domain groupings ("Storage and backup", "AI and agents") vary with
+        # what AWS actually shipped that week, and a quiet week is allowed to
+        # be short -- see the never-repeat rules in CLAUDE.md. The inventory is
+        # not a domain grouping: it is the complete list the roundup exists to
+        # provide, and the heading carries a count that varies, so it is
+        # matched by prefix rather than exactly.
         'headings': [
             ('The week in one paragraph', r'^The week in one paragraph$'),
             ('What I would act on',       r'^What I would act on$'),
+            ('Complete inventory',        r'^Complete inventory'),
             ('Official AWS references',   r'^Official AWS references$'),
         ],
     },
