@@ -149,3 +149,20 @@ Every track is mono, 96 kb/s, up to 2:30, loudness-normalised to about
   well as rain; it is a rain ambience and made no sense under boho footage,
   so boho now carries only the sitar and bansu pieces.
 - Pixabay audio requires no attribution.
+
+## Walkthrough narration
+
+`blog/assets/audio/walkthrough/*.mp3` is the spoken narration on
+[/how-this-was-made/](https://jayanthkatta.com/how-this-was-made/). It is not
+a recording of anybody: it is synthesised from the script in
+`scripts/build_colophon.py` by `scripts/build_narration_audio.py`, using the
+neural voice **en-US-AvaNeural** through `edge-tts` — the same voices Microsoft
+Edge uses for Read Aloud, free and without an account.
+
+It is generated rather than spoken live in the browser because the browser's
+own speechSynthesis sounds like a machine, which is precisely what it was
+asked not to sound like. Re-rendering only happens when the words change; the
+script hashes each line and skips the rest.
+
+`cues.json` beside them holds the sentence timings the service returns, which
+is what keeps the subtitles on the sentence actually being spoken.

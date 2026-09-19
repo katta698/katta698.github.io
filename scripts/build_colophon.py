@@ -592,7 +592,6 @@ def build():
     b.append('<button type="button" class="cf-icon" data-journey-zoom '
              'aria-label="Expand" title="Expand">%s</button>' % IC_EXPAND)
     b.append("</div>")          # .cf-bar
-    b.append("</div>")          # .cf-scene
     # The caption is a SIBLING of the picture, not a child of it.
     #
     # .cf-scene clips its overflow -- it has a border radius, and the drawing
@@ -602,8 +601,22 @@ def build():
     # sit over the picture when the player is inline and under it when the
     # player is expanded, which is the whole point.
     b.append('<p class="cf-cap" data-caption></p>')
-    b.append('<script type="application/json" data-narration>%s</script>'
-             % json.dumps(NARRATION))
+    b.append("</div>")          # .cf-scene
+    # The cue list: what is said, and when, per scene.
+    #
+    # Written by build_narration_audio.py from the service's own sentence
+    # boundaries. Inlined rather than fetched -- it is about 4KB and a second
+    # request to show a subtitle is a second thing that can fail.
+    cues_path = os.path.join(ROOT, "blog", "assets", "audio",
+                             "walkthrough", "cues.json")
+    cues = {"lines": []}
+    if os.path.exists(cues_path):
+        try:
+            cues = json.load(io.open(cues_path, encoding="utf-8"))
+        except ValueError:
+            cues = {"lines": []}
+    b.append('<script type="application/json" data-cues>%s</script>'
+             % json.dumps(cues, ensure_ascii=False, separators=(",", ":")))
     b.append('<script type="application/json" data-icons>%s</script>'
              % json.dumps({"play": IC_PLAY, "pause": IC_PAUSE,
                            "sound": IC_SOUND, "muted": IC_MUTED,

@@ -412,7 +412,11 @@ SCENE_CSS = """
      on it, in the space that was going to waste. --cf-cap-top is measured
      from the scene when it opens, because the frame's height depends on the
      viewport and a guess would be wrong on every device but one. */
-  .cf-player.is-zoomed .cf-cap {
+  /* Expanded: the caption STAYS on the picture, at the bottom, the way a
+     video player does it. It was moved underneath for a while, which put it
+     in the middle of empty black and looked like a separate paragraph. Two
+     short lines over the foot of the frame is what a subtitle is. */
+  .cf-player.is-zoomed .cf-cap-unused {
     /* z-index 2002: above the backdrop at 2000 and the picture at 2001.
        Without it the caption was positioned perfectly and painted behind a
        full-screen sheet -- measurably on screen, and invisible. */

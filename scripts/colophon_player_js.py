@@ -2,34 +2,27 @@
 # -*- coding: utf-8 -*-
 """The walkthrough player for /how-this-was-made/.
 
-Asked for: "just show something like a YouTube video -- pause, a scrolling
-option, start again, and an expand symbol in the corner of the video. As soon
-as we play it has to narrate by default; a user can mute it. Don't overkill
-it."
+It plays eight pre-rendered MP3s and keeps the picture and the subtitle in
+step with them.
 
-So the controls are the ones a reader already knows, in the order they expect,
-directly under the picture: play/pause, a seek bar, a position count, mute,
-replay -- and expand as an icon on the picture itself.
+The voice used to come from the browser's speechSynthesis, and after three
+rounds of picking better voices the verdict was still: "it's like a machine
+reading, a robot reading, it's not natural at all." That was correct, and not
+fixable from here -- on a phone that API is a 2010-era synthesiser, and
+choosing between its voices only chooses between robots. The narration is
+rendered once by build_narration_audio.py with a neural voice and shipped as
+files, so everybody hears the same thing and it sounds like a person.
 
-What was taken out, and why:
+Which also fixes the subtitles, for a reason worth writing down: the service
+returns sentence boundaries with real timings, so the caption can show THE
+SENTENCE BEING SPOKEN rather than the whole paragraph. Reported as "the whole
+lines appear in the video" -- 300 characters of caption is four lines on a
+phone, and no type size rescues that. The cue list is on the page and the
+caption follows the audio's own clock.
 
-    the list of eight steps   Its words ARE the subtitles now. The same
-                              sentences printed twice, once as a list and once
-                              as a caption, is one thought in two places -- and
-                              the architecture diagram below is the map, so
-                              nothing is lost by dropping the list.
-    previous / next buttons   A seek bar says where you are and where you can
-                              go. Two step buttons say neither.
-    "Play with narration"     The voice is the point, so it is simply on when
-                              you press play. Mute is where anyone looks to
-                              stop a sound.
-    the "Expand" text button  A corner icon, the way video players have done
-                              it for fifteen years.
-
-The voice drives the timing: a scene lasts exactly as long as its sentence
-takes to say, so the picture and the words cannot drift apart. Muted, or on a
-device with no speech at all, a timer takes over at a readable pace -- the
-subtitles are the whole content then, so they are given time to be read.
+Everything else behaves the way a video player does: play/pause, a scrubber,
+CC, mute, replay and expand, all inside the frame, none of it running until
+somebody presses play.
 """
 
 PLAYER_JS = """
@@ -38,61 +31,69 @@ PLAYER_JS = """
   var stage = document.querySelector('[data-stage]');
   if (!stage) return;
   var scenes  = [].slice.call(stage.querySelectorAll('.sc'));
-  var capEl   = stage.querySelector('[data-caption]');
+  var capEl   = document.querySelector('[data-caption]');
   var playBt  = stage.querySelector('[data-journey-play]');
+  var bigBt   = stage.querySelector('[data-journey-big]');
   var seek    = stage.querySelector('[data-seek]');
   var countEl = stage.querySelector('[data-count]');
   var muteBt  = stage.querySelector('[data-journey-mute]');
+  var ccBt    = stage.querySelector('[data-journey-cc]');
   var againBt = stage.querySelector('[data-journey-replay]');
   var zoomBt  = stage.querySelector('[data-journey-zoom]');
-  var ccBt    = stage.querySelector('[data-journey-cc]');
+  if (!scenes.length) return;
+
   var ICON = {};
   try {
     var ib = document.querySelector('[data-icons]');
     if (ib) ICON = JSON.parse(ib.textContent);
   } catch (e) { ICON = {}; }
-  var bigBt   = stage.querySelector('[data-journey-big]');
-  if (!scenes.length) return;
 
-  var script = [];
+  var TRACKS = [];
   try {
-    var raw = document.querySelector('[data-narration]');
-    if (raw) script = JSON.parse(raw.textContent);
-  } catch (e) { script = []; }
+    var cb = document.querySelector('[data-cues]');
+    if (cb) TRACKS = (JSON.parse(cb.textContent) || {}).lines || [];
+  } catch (e) { TRACKS = []; }
 
-  var synth = window.speechSynthesis;
-  var canSpeak = !!(synth && window.SpeechSynthesisUtterance && script.length);
-  var still = window.matchMedia &&
-              window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var BASE = '/blog/assets/audio/walkthrough/';
 
-  var at = 0, playing = false, muted = false, timer = null, bed = null;
+  var at = 0, playing = false, muted = false, cc = true;
+  var voice = null, bed = null, timer = null, cue = -1;
   var zoomed = false, backdrop = null, resumeAudio = false;
-  var READ_MS = 5200;
+  var READ_MS = 5200;                  // per scene when there is no audio
 
   try { muted = localStorage.getItem('jk-mute') === '1'; } catch (e) {}
-  // Subtitles carry the whole script, so they are on unless a reader has
-  // said otherwise. Only an explicit '0' turns them off -- an empty value
-  // means they have never touched it.
-  // Subtitles OFF unless asked for.
-  //
-  // They were on by default and, on a phone, three lines of caption covered
-  // the entire drawing -- the picture was a background for a wall of text.
-  // "Subtitles has to be optional, users have to click subtitles if needed."
-  // Correct: a caption over a 16:9 frame on a 390px screen is most of the
-  // frame, and nobody asked for it.
-  var cc = false;
-  try { cc = localStorage.getItem('jk-cc') === '1'; } catch (e) {}
+  try { cc = localStorage.getItem('jk-cc') !== '0'; } catch (e) {}
+
+  function cuesFor(i) {
+    var t = TRACKS[i];
+    return (t && t.cues) || [];
+  }
+
+  function setCaption(text) {
+    if (!capEl) return;
+    var line = cc ? (text || '') : '';
+    capEl.innerHTML = line
+      ? '<span>' + line.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</span>'
+      : '';
+  }
+
+  // The caption is whichever cue has started and not yet been replaced.
+  function captionAt(ms) {
+    var list = cuesFor(at), pick = -1;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].t <= ms) { pick = i; } else { break; }
+    }
+    if (pick !== cue) {
+      cue = pick;
+      setCaption(pick >= 0 ? list[pick].text : (list[0] ? list[0].text : ''));
+    }
+  }
 
   function paint() {
     scenes.forEach(function (g, n) { g.classList.toggle('is-on', n === at); });
-    // Wrapped in a span so the dark box hugs the words rather than drawing
-    // a full-width bar across the picture on a short line.
-    if (capEl) {
-      var line = cc ? (script[at] || '') : '';
-      capEl.innerHTML = line ? '<span>' + line.replace(/&/g, '&amp;')
-                                             .replace(/</g, '&lt;') + '</span>'
-                             : '';
-    }
+    cue = -1;
+    var list = cuesFor(at);
+    setCaption(list[0] ? list[0].text : '');
     if (seek && String(seek.value) !== String(at)) { seek.value = at; }
     if (seek) {
       var pct = scenes.length < 2 ? 0 : (at / (scenes.length - 1)) * 100;
@@ -110,21 +111,12 @@ PLAYER_JS = """
   function bedOn(on) {
     if (on && !muted) {
       if (!bed) {
-        // mountains-1: bansuri flute over a tarana rhythm.
-        //
-        // The first bed was sunset-1, a soft clavier piece, and the note was
-        // "I want something more creative, funny, festive instead of soft
-        // music." This one has a rhythm section and a melody going somewhere,
-        // it matches the instruments the music button already rotates through
-        // -- tabla, nadaswaram, harmonium -- and at 150 seconds against a
-        // ~75 second narration a single pass never reaches the loop point,
-        // so it never audibly restarts.
-        //
-        // Already in the repository and already credited: no new file, no new
-        // licence, nothing extra to download beyond this one.
+        // mountains-1: bansuri over a tarana rhythm. Already in the repo and
+        // already credited; 150s against a ~75s narration, so a single pass
+        // never reaches the loop point.
         bed = new Audio('/blog/assets/audio/mountains-1.mp3');
         bed.loop = true;
-        bed.volume = 0.14;
+        bed.volume = 0.10;
       }
       var b = bed.play();
       if (b && b.catch) { b.catch(function () {}); }
@@ -150,48 +142,43 @@ PLAYER_JS = """
     if (timer) { window.clearTimeout(timer); timer = null; }
   }
 
-  function pickVoice() {
-    var vs = (synth && synth.getVoices()) || [];
-    var want = ['aria', 'jenny', 'michelle', 'ava',
-                'google us english', 'google uk english female',
-                'samantha', 'siri', 'karen', 'moira', 'tessa', 'fiona',
-                'serena', 'sonia', 'libby', 'female', 'zira'];
-    var en = vs.filter(function (v) { return /^en/i.test(v.lang || ''); });
-    for (var i = 0; i < want.length; i++) {
-      for (var j = 0; j < en.length; j++) {
-        if ((en[j].name || '').toLowerCase().indexOf(want[i]) !== -1) {
-          return en[j];
-        }
-      }
-    }
-    for (var k = 0; k < en.length; k++) {
-      if (en[k].localService === false) { return en[k]; }
-    }
-    return en[0] || null;
-  }
-  if (synth && synth.onvoiceschanged !== undefined) {
-    synth.onvoiceschanged = function () { pickVoice(); };
+  function stopVoice() {
+    if (!voice) return;
+    try { voice.pause(); } catch (e) {}
+    voice.onended = null;
+    voice.ontimeupdate = null;
+    voice.onerror = null;
+    voice = null;
   }
 
-  function speakCurrent() {
-    if (!canSpeak || muted) { return false; }
-    var u = new SpeechSynthesisUtterance(script[at]);
-    try {
-      var v = pickVoice();
-      if (v) { u.voice = v; u.lang = v.lang || 'en-US'; }
-    } catch (e) {}
-    u.rate = 0.92;
-    u.pitch = 1.04;
-    u.onend = function () {
-      if (!playing) return;
-      window.setTimeout(advance, 420);
+  function speak() {
+    var track = TRACKS[at];
+    if (muted || !track || !track.file) { return false; }
+    stopVoice();
+    voice = new Audio(BASE + track.file);
+    voice.ontimeupdate = function () {
+      captionAt(Math.round(voice.currentTime * 1000));
     };
-    u.onerror = function () {
+    voice.onended = function () {
       if (!playing) return;
-      clearTimer();
-      timer = window.setTimeout(advance, READ_MS);
+      window.setTimeout(advance, 380);
     };
-    try { synth.cancel(); synth.speak(u); } catch (e) { return false; }
+    // A missing or blocked file must not strand the walkthrough on one
+    // picture with no explanation. Fall back to the timer.
+    voice.onerror = function () {
+      stopVoice();
+      if (playing) { clearTimer(); timer = window.setTimeout(advance, READ_MS); }
+    };
+    var p = voice.play();
+    if (p && p.catch) {
+      p.catch(function () {
+        stopVoice();
+        if (playing) {
+          clearTimer();
+          timer = window.setTimeout(advance, READ_MS);
+        }
+      });
+    }
     return true;
   }
 
@@ -205,15 +192,12 @@ PLAYER_JS = """
 
   function run() {
     clearTimer();
-    if (!speakCurrent()) { timer = window.setTimeout(advance, READ_MS); }
+    if (!speak()) { timer = window.setTimeout(advance, READ_MS); }
   }
 
   function play() {
     if (playing) return;
     playing = true;
-    // is-started stays on once pressed: it is what reveals the subtitle and
-    // retires the big centre button. is-playing is what lets the drawing
-    // animate, so a page nobody has pressed play on holds perfectly still.
     stage.classList.add('is-started', 'is-playing');
     setPlayIcon();
     siteAudio(true);
@@ -226,7 +210,7 @@ PLAYER_JS = """
     stage.classList.remove('is-playing');
     setPlayIcon();
     clearTimer();
-    try { if (synth) synth.cancel(); } catch (e) {}
+    stopVoice();
     bedOn(false);
     siteAudio(false);
   }
@@ -240,8 +224,6 @@ PLAYER_JS = """
     bigBt.addEventListener('click', function () { play(); });
   }
 
-  // Dragging moves the picture WHILE dragging, so it behaves like a scrubber
-  // rather than like a form control you submit.
   if (seek) {
     seek.addEventListener('input', function () {
       var v = parseInt(seek.value, 10) || 0;
@@ -264,8 +246,10 @@ PLAYER_JS = """
       try { localStorage.setItem('jk-mute', muted ? '1' : '0'); } catch (e) {}
       paintMute();
       if (muted) {
-        try { if (synth) synth.cancel(); } catch (e) {}
+        stopVoice();
         bedOn(false);
+        // Muted, the captions are the whole content, so they take their own
+        // pace rather than the voice's.
         if (playing) {
           clearTimer();
           timer = window.setTimeout(advance, READ_MS);
@@ -289,7 +273,9 @@ PLAYER_JS = """
       cc = !cc;
       try { localStorage.setItem('jk-cc', cc ? '1' : '0'); } catch (e) {}
       paintCC();
-      paint();
+      var list = cuesFor(at);
+      setCaption(cue >= 0 && list[cue] ? list[cue].text
+                                       : (list[0] ? list[0].text : ''));
     });
   }
 
@@ -301,48 +287,9 @@ PLAYER_JS = """
     });
   }
 
-  // Where the caption goes when the picture is expanded.
-  //
-  // Under it, not on it -- and the frame's height depends on the viewport,
-  // so it is measured rather than guessed. Re-measured on resize and on
-  // rotation, which is when a guess would be most obviously wrong.
-  function placeCaption() {
-    if (!zoomed) { stage.style.removeProperty('--cf-cap-top'); return; }
-    // Two frames, not one. The scene goes position:fixed with a translate
-    // when the class lands, and a single rAF still measured the old box --
-    // the caption came out 250px below the picture instead of 20px, in the
-    // middle of nowhere. The second frame is after the new layout exists.
-    window.requestAnimationFrame(function () {
-      window.requestAnimationFrame(function () {
-        var sc = stage.querySelector('.cf-scene');
-        if (!sc) return;
-        // The scene's HEIGHT, not its bottom in the viewport.
-        //
-        // The caption is position:fixed and lives inside .cf-scene, which
-        // carries a translate when expanded -- and a transformed ancestor
-        // becomes the containing block for fixed children. So `top` is
-        // measured from the scene's own box, not from the window. Feeding it
-        // a viewport coordinate put the caption 320px too low, off the
-        // bottom of the screen: 319 (scene top) + 543 = 863 on an 844px
-        // phone. Offset from the scene, and it lands 18px under it.
-        // Viewport coordinates again, now that the caption is a sibling of
-        // the scene rather than a child of it: .cf-player carries no
-        // transform, so a fixed child resolves against the window the way
-        // the spec says it should.
-        var r = sc.getBoundingClientRect();
-        stage.style.setProperty('--cf-cap-top',
-                                Math.round(r.bottom + 18) + 'px');
-      });
-    });
-  }
-  window.addEventListener('resize', placeCaption);
-  window.addEventListener('orientationchange', placeCaption);
-
   function zoom(on) {
     zoomed = on;
     if (on) {
-      // Hold the height while the picture leaves the flow, so the paragraphs
-      // below do not jump up and then back down again.
       stage.style.minHeight = stage.getBoundingClientRect().height + 'px';
       backdrop = document.createElement('div');
       backdrop.className = 'cf-backdrop';
@@ -360,7 +307,6 @@ PLAYER_JS = """
       zoomBt.innerHTML = on ? (ICON.shrink || '') : (ICON.expand || '');
       zoomBt.setAttribute('aria-label', on ? 'Minimise' : 'Expand');
     }
-    placeCaption();
   }
   if (zoomBt) {
     zoomBt.addEventListener('click', function () { zoom(!zoomed); });
@@ -369,14 +315,11 @@ PLAYER_JS = """
     if (e.key === 'Escape' && zoomed) { zoom(false); }
   });
 
-  // Nothing starts on its own. A page that begins talking because it scrolled
-  // into view is the rudest thing on the internet.
+  // Nothing starts on its own, and nothing is fetched until it does: the
+  // narration is 698KB that somebody who never presses play should never pay
+  // for.
   paint();
   setPlayIcon();
-  // prefers-reduced-motion: the scenes never animate (the CSS stops every
-  // keyframe), the subtitles still carry the whole script, and the reader
-  // steps through with the bar. Nothing is lost and nothing moves.
-  if (still && capEl) { capEl.style.opacity = '1'; }
 
   document.addEventListener('visibilitychange', function () {
     if (document.hidden && playing) { stop(); }
