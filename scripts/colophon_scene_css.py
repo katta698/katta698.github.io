@@ -374,14 +374,33 @@ SCENE_CSS = """
      sat on top of each other -- Playwright caught it as the Expand button
      intercepting taps meant for CC. A reader would have called it "the
      subtitles button does nothing". */
+  /* The element is 22px tall; the LINE inside it is 4px.
+     Reported as: "I can't forward it, I really can't do anything."
+     The bar was 4px tall and that 4px was the whole hit area -- a range
+     input only accepts a pointer inside its own box, so the 12px thumb
+     drawn overflowing it was decoration. Measured: a real drag at 390px
+     landed, a real drag at 1180px missed by two pixels and the video sat
+     there. A finger is about 9mm; it was being asked for 4 device pixels.
+     So the box grows to 22px (Apple's minimum is 44 for a button, and this
+     is a drag, not a tap) and the visible 4px line moves to the TRACK
+     pseudo-element, which is paint only and has no bearing on hit testing.
+     Nothing about the look changes. Everything about grabbing it does. */
   .cf-seek { flex: 1 1 auto; min-width: 0; -webkit-appearance: none;
-             appearance: none;
-             height: 4px; border-radius: 4px; cursor: pointer; margin: 0;
+             appearance: none; height: 22px; cursor: pointer; margin: 0;
+             background: transparent; }
+  .cf-seek::-webkit-slider-runnable-track {
+             height: 4px; border-radius: 4px;
+             background: linear-gradient(to right,
+               var(--acc-ink, #C4A484) 0 var(--cf-pct, 0%),
+               rgba(237,235,230,.30) var(--cf-pct, 0%) 100%); }
+  .cf-seek::-moz-range-track {
+             height: 4px; border-radius: 4px;
              background: linear-gradient(to right,
                var(--acc-ink, #C4A484) 0 var(--cf-pct, 0%),
                rgba(237,235,230,.30) var(--cf-pct, 0%) 100%); }
   .cf-seek::-webkit-slider-thumb { -webkit-appearance: none; appearance: none;
              width: 12px; height: 12px; border-radius: 50%; border: none;
+             margin-top: -4px;  /* centre the thumb on the 4px track */
              background: var(--acc-ink, #C4A484); }
   .cf-seek::-moz-range-thumb { width: 12px; height: 12px; border: none;
              border-radius: 50%; background: var(--acc-ink, #C4A484); }
