@@ -329,6 +329,21 @@ SCENE_CSS = """
   .sc * { animation-play-state: paused; }
   .cf-player.is-playing .sc.is-on * { animation-play-state: running; }
 
+  /* Pause has to stop the PICTURE, not just the sound.
+     Reported as: "I paused the video, the sound stops, but the video still
+     continues at the back end."
+
+     Exactly right, and it was a specificity defeat. The rule further up --
+     `.sc.is-on *` -- says `running` with no condition attached, and it is
+     two classes. The gated rule above it is `.cf-player.is-playing .sc.is-on
+     *`, which only ever ADDS running; nothing said paused with enough weight
+     to win when is-playing went away. So the scrim went quiet and the
+     drawing carried on animating underneath it.
+
+     Four classes, so it beats the ungated rule, and it says the thing that
+     actually needs saying: not playing means not moving. */
+  .cf-player:not(.is-playing) .sc.is-on * { animation-play-state: paused; }
+
   /* The big one, over the middle, until the first play. */
   .cf-big { position: absolute; left: 50%; top: 50%; z-index: 4;
             transform: translate(-50%, -50%);

@@ -131,8 +131,23 @@ PLAYER_JS = """
    * MOVEMENT. And faded up from silence on play, so it arrives rather than
    * starts.
    */
-  var BED_OPEN = 0.05;      // the intro, and the tail after the last line
-  var BED_DUCK = 0.025;     // while the voice is speaking
+  /* Reported from an Android phone: "I don't hear background music."
+   *
+   * Not a playback fault -- the element was playing, at the level it was
+   * told to. The level was the fault. Measured mid-playback:
+   *
+   *     mountains-1.mp3  vol 0.025   narration.mp3  vol 1.0
+   *
+   * 0.025 against 1.0 is about -32dB. That is not subtle, it is gone: below
+   * the noise floor of a phone speaker in a room. I had taken "reduce the
+   * background to subtle" and kept halving until there was nothing left.
+   *
+   * Broadcast practice for music under speech is 15 to 20dB down, not 32.
+   * 0.22 open and 0.11 ducked is -13 and -19: present in the gaps, clearly
+   * behind the voice while it speaks, and audible on a phone.
+   */
+  var BED_OPEN = 0.22;      // the intro, and the tail after the last line
+  var BED_DUCK = 0.11;      // while the voice is speaking
   // Measured: the gap between scenes is 380ms and the lift ramps over 500,
   // so in practice the bed never climbs much above BED_DUCK once the
   // narration starts -- it reached 0.028 at the one transition sampled. That
