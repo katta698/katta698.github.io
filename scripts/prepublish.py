@@ -220,6 +220,13 @@ CHECKS = [
     # the five top-level tabs; the 248 post pages were compared to nothing.
     # Advisory while one page is still outstanding.
     ("check_post_shell.py",     False, False, False, False),
+    # The third consistency question. check_post_shell compares the served
+    # SHELL across posts; this compares the POST -- its front matter and its
+    # structure -- against the rest of its own series. Asked for directly:
+    # "certain posts are missing a few things and I don't have time to look at
+    # each and every post." Advisory: a post shorter than its neighbours, or
+    # without a table, is an editorial choice far more often than a defect.
+    ("check_series_pattern.py", False, False, True,  False),
 ]
 
 
