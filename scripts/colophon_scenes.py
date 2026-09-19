@@ -205,7 +205,7 @@ SCENES = {
       <rect class="bk b3" x="58" y="82" width="12" height="44" rx="2"/>
       <rect class="bk b4" x="74" y="68" width="12" height="58" rx="2"/>
       <path class="ln" d="M22 128 h70"/>
-      <text class="cap" x="57" y="148" text-anchor="middle">255 posts</text>
+      <text class="cap" x="57" y="148" text-anchor="middle">{{POSTS}} posts</text>
     </g>
     <path class="pull q1" d="M96 94 q28 -14 52 -16"/>
     <path class="pull q2" d="M96 100 q28 8 52 12"/>

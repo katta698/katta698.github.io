@@ -91,7 +91,7 @@ ARCHITECTURE = """
   <g class="ab job">
     <rect x="16" y="382" width="140" height="48" rx="6"/>
     <text class="at" x="30" y="403">.github/workflows</text>
-    <text class="as" x="30" y="418">7 jobs on a clock</text>
+    <text class="as" x="30" y="418">{{JOBS}} jobs on a clock</text>
   </g>
 
   <path class="aw up1" d="M86 300 V254"/>
@@ -138,7 +138,7 @@ ARCHITECTURE = """
   <g class="ab gate">
     <rect x="236" y="300" width="176" height="62" rx="6"/>
     <text class="at" x="250" y="322">preflight.py</text>
-    <text class="as" x="250" y="337">50 checks, a real browser</text>
+    <text class="as" x="250" y="337">{{GATE}} checks, a real browser</text>
     <text class="as" x="250" y="351">a failure refuses the push</text>
   </g>
   <path class="aw down" d="M324 284 V300"/>
@@ -150,7 +150,7 @@ ARCHITECTURE = """
   </g>
   <g class="ab page">
     <rect x="492" y="80" width="180" height="30" rx="6"/>
-    <text class="at" x="506" y="99">Blog · 255 posts</text>
+    <text class="at" x="506" y="99">Blog · {{POSTS}} posts</text>
   </g>
   <g class="ab page">
     <rect x="492" y="116" width="180" height="30" rx="6"/>
@@ -189,7 +189,7 @@ ARCHITECTURE = """
     <rect x="492" y="382" width="252" height="62" rx="6"/>
     <text class="at" x="506" y="403">site-footer.css · site-footer.js</text>
     <text class="as" x="506" y="418">one bar, one theme, one menu</text>
-    <text class="as" x="506" y="432">on all 278 pages</text>
+    <text class="as" x="506" y="432">on all {{PAGES}} pages</text>
   </g>
   <path class="aw shellup" d="M582 382 V362"/>
 

@@ -137,6 +137,51 @@ def main():
     print("  %d of %d named things exist"
           % (len(NAMED) - len(missing), len(NAMED)))
 
+    # ---- 4. and the page agrees with itself ---------------------------
+    #
+    # The narration and the written stops were both fixed, and the page
+    # still said "255 posts" and "50 checks" -- because those figures are
+    # <text> labels inside the scene artwork and the architecture diagram,
+    # not prose. Then a fourth source turned up in a paragraph and the page
+    # carried 58 and 59 checks at the same time.
+    #
+    # So this stops chasing sources and reads the OUTPUT. Every figure on
+    # the built page that sits next to a noun this repository can count has
+    # to equal what it counts today. It does not matter how many places
+    # produce them or which file they live in.
+    page = os.path.join(ROOT, "how-this-was-made", "index.html")
+    NOUNS = {"posts": facts["posts"], "pages": facts["pages"],
+             "jobs": len(__import__("build_colophon").schedules())
+                     or facts["flows"]}
+    if os.path.exists(page):
+        html = io.open(page, encoding="utf-8", errors="replace").read()
+        seen = 0
+        for noun, truth in NOUNS.items():
+            for m in re.finditer(r"(\d[\d,]*)\s+" + noun + r"\b", html):
+                seen += 1
+                got = int(m.group(1).replace(",", ""))
+                if got != truth:
+                    around = html[max(0, m.start() - 40):m.end() + 20]
+                    around = re.sub(r"<[^>]*>", "", around).strip()
+                    problems.append(
+                        "the page says %d %s and this repository has %d. "
+                        "Near: ...%s..." % (got, noun, truth, around[:70]))
+        # "checks" is stated two ways -- what the gate runs, and how many of
+        # those open a browser -- so any figure beside it must be one of the
+        # two rather than a single expected value.
+        for m in re.finditer(r"(\d+)\s+checks\b", html):
+            seen += 1
+            got = int(m.group(1))
+            if got not in (facts["gate"], facts["browser"], facts["checks"]):
+                problems.append(
+                    "the page says %d checks; the gate runs %d, of which %d "
+                    "open a browser" % (got, facts["gate"], facts["browser"]))
+        print("  %d figure(s) on the built page checked against the repo"
+              % seen)
+        if "{{" in html:
+            problems.append("the built page still contains an unfilled "
+                            "token -- a measurement that never arrived")
+
     print()
     if problems:
         print("  %d PROBLEM(S)" % len(problems))

@@ -409,6 +409,27 @@ def stops(f=None):
 STOPS = stops()
 
 
+# The figures inside the DRAWINGS, filled from the same measurements.
+#
+# The stops and the narration were fixed first, and the page still said
+# "255 posts" and "50 checks" -- because those numbers are not prose, they
+# are <text> labels inside the scene artwork and the architecture diagram.
+# Three places holding the same fact, and fixing two of them is how a page
+# ends up disagreeing with itself in public.
+#
+# A token rather than a format string: this is SVG, and one stray brace in
+# a path would take the whole build down with it.
+def fill(svg, f=None):
+    f = f or counted()
+    for token, value in (("{{POSTS}}", f["posts"]),
+                         ("{{PAGES}}", f["pages"]),
+                         ("{{GATE}}", f["gate"]),
+                         ("{{BROWSER}}", f["browser"]),
+                         ("{{JOBS}}", len(schedules()) or f["flows"])):
+        svg = svg.replace(token, str(value))
+    return svg
+
+
 
 # The walkthrough's script.
 #
@@ -645,7 +666,7 @@ def build():
     b.append('<div class="cf-scene">')
     b.append('<svg viewBox="%s" preserveAspectRatio="xMidYMid meet" '
              'aria-hidden="true" focusable="false">%s</svg>'
-             % (VIEWBOX, "".join(SCENES[i] for i in sorted(SCENES))))
+             % (VIEWBOX, fill("".join(SCENES[i] for i in sorted(SCENES)))))
 
     # Everything lives INSIDE the frame, the way a video does.
     #
@@ -778,7 +799,7 @@ def build():
         'and what a reader finally opens. Every box names a real file in the '
         'repository &mdash; a check refuses this page if one of them stops '
         'existing.</p>')
-    b.append('<div class="cf-arch">%s</div>' % ARCHITECTURE)
+    b.append('<div class="cf-arch">%s</div>' % fill(ARCHITECTURE))
     b.append('<p class="cf-arch-hint">scroll the diagram sideways &rarr;</p>')
 
     jobs = schedules()
@@ -813,13 +834,18 @@ def build():
 
     b.append("<h2>What runs before anything ships</h2>")
     b.append(
-        '<p class="cf-note">%d checks, in a real browser, on every push. They '
-        'do not read the code &mdash; they open the pages and look: does the '
-        'header hold still, does the music button actually play, does a '
-        'filter filter, does every link still resolve, is each page asking '
-        'for the current stylesheet. If one fails, the push is refused. It '
-        'costs about twelve minutes, which is the price of not finding out '
-        'from a reader.</p>' % n["checks"])
+        # n["checks"] counts check_*.py files. The GATE runs those plus the
+        # validate_* family, and only some of them open a browser -- so this
+        # sentence managed to be wrong twice at once: it said 58 where the
+        # gate runs 59, and it said all of them drove a browser when 34 do.
+        # Both numbers come from preflight itself now.
+        '<p class="cf-note">%d checks on every push, %d of them in a real '
+        'browser. They do not read the code &mdash; they open the pages and '
+        'look: does the header hold still, does the music button actually '
+        'play, does a filter filter, does every link still resolve, is each '
+        'page asking for the current stylesheet. If one fails, the push is '
+        'refused. It costs about twelve minutes, which is the price of not '
+        'finding out from a reader.</p>' % (n["gate"], n["browser"]))
 
     b.append("<h2>Ask it anything</h2>")
     b.append(
