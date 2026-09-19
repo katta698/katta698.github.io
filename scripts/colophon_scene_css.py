@@ -354,8 +354,18 @@ SCENE_CSS = """
             background: color-mix(in srgb,
                         var(--acc-ink, #C4A484) 92%, transparent);
             transition: opacity .25s ease; }
-  .cf-player.is-playing .cf-big,
-  .cf-player.is-started .cf-big { opacity: 0; pointer-events: none; }
+  /* Hidden while PLAYING, not once started.
+     It used to hide itself permanently on the first press, which left the
+     picture with no visible state at all: paused and playing looked the
+     same. Now the big symbol in the middle means paused, whether that is
+     before the first press or halfway through -- which also answers "as
+     soon as I refresh it shows the play button in the centre, is that
+     deliberate?" It is: it is the poster state, and it is the press that
+     lets a phone play sound at all. */
+  .cf-player.is-playing .cf-big { opacity: 0; pointer-events: none; }
+  /* The frame is a control. */
+  .cf-player .cf-scene { cursor: pointer; }
+  .cf-player .cf-bar { cursor: default; }
 
   /* Subtitle, on the picture, above the controls. */
   /* Subtitles sit ON the drawing, so they need something behind them.

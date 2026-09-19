@@ -442,9 +442,36 @@ PLAYER_JS = """
       if (playing) { stop(); } else { play(); }
     });
   }
-  if (bigBt) {
-    bigBt.addEventListener('click', function () { play(); });
+  /* Click the picture to pause, the way every video player works.
+   *
+   * Asked for as: "I should be able to pause by clicking on the video
+   * instead of going to the pause button. There has to be two ways --
+   * obviously I was able to PLAY by clicking on the screen."
+   *
+   * Exactly the inconsistency: the big button in the middle started it, and
+   * then hid itself for good, so the picture was live and inert at the same
+   * time. Now the frame and the caption strip both toggle, and the big
+   * button comes back whenever it is paused -- so a play symbol in the
+   * middle always means the same thing, on first load and halfway through.
+   *
+   * The control bar is excluded. A tap on CC is a tap on CC, not a tap on
+   * the picture behind it, and the bar sits inside the frame.
+   */
+  function toggle(e) {
+    if (e && e.target && e.target.closest && e.target.closest('.cf-bar')) {
+      return;
+    }
+    if (playing) { stop(); } else { play(); }
   }
+
+  // ONE listener, on the frame. The caption and the big button both live
+  // inside it, so their clicks bubble here already -- and a second listener
+  // on either of them toggles twice and lands back where it started, which
+  // is what a listener on the caption did: click it while playing and
+  // nothing happened at all. The big button stays a real <button> for the
+  // keyboard, where Enter fires a click that bubbles to the same place.
+  var sceneBox = stage.querySelector('.cf-scene');
+  if (sceneBox) { sceneBox.addEventListener('click', toggle); }
 
   if (seek) {
     seek.addEventListener('input', function () {
