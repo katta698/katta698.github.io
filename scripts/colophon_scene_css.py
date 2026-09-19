@@ -397,6 +397,8 @@ SCENE_CSS = """
      dark in light mode -- sitting on top of it. Dark on dark. The scrim was
      hard-coded rgba(0,0,0,.72) and had never been looked at outside the
      dark theme it was designed in. */
+  @media (max-width: 380px) { .cf-time .cf-of { display: none; } }
+
   body.light .cf-bar {
     background: linear-gradient(to top,
       rgba(247,244,239,.94), rgba(247,244,239,.72) 60%, rgba(247,244,239,0)); }
@@ -421,14 +423,30 @@ SCENE_CSS = """
              display: grid; place-items: center; font-size: .72rem;
              border-radius: 50%; border: none; color: #1F1D1B;
              background: var(--acc-ink, #C4A484); }
+  /* padding: 0 is load-bearing.
+     Reported as: "the mute icon and the CC icon are not in the middle of
+     that box, they are kind of towards the right."
+
+     Measured, and it was 4px: the glyph sat 7px from the left edge and 3px
+     from the right. The buttons inherit `padding: 1px 6px`, and at 24px
+     border-box that leaves a content box 10px wide for a 14px icon. A grid
+     item WIDER than its track is not centred -- the browser falls back to
+     start alignment, on purpose, so that overflow cuts off the end rather
+     than both sides. So place-items:center was being quietly ignored, and
+     only on the small buttons: .cf-play is 28px, which leaves exactly 14,
+     and it was perfectly centred. */
   .cf-icon { width: 26px; height: 26px; flex: 0 0 auto; cursor: pointer;
              display: grid; place-items: center; font-size: .76rem;
+             padding: 0;
              border-radius: 6px; background: transparent; color: #EDEBE6;
              border: 1px solid rgba(237,235,230,.28); }
   .cf-icon:hover { border-color: var(--acc-ink, #C4A484);
                    color: var(--acc-ink, #C4A484); }
-  .cf-count { font-family: 'DM Mono', ui-monospace, monospace;
-              font-size: .66rem; flex: 0 0 auto; color: #D8D4CC; }
+  .cf-time { font-family: 'DM Mono', ui-monospace, monospace;
+             font-size: .66rem; flex: 0 0 auto; color: #D8D4CC;
+             font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  body.light .cf-time { color: #3B3733; }
+  .cf-time .cf-of { opacity: .62; }
   /* CC reads as a label, not a glyph, so it is wider and set in mono --
      and the OFF state has to be visibly off at a glance, which a pressed
      state alone is not. */
@@ -526,7 +544,10 @@ SCENE_CSS = """
     .cf-cap { font-size: .72rem; line-height: 1.5; bottom: 44px;
               padding: 0 .5rem; }
     .cf-cap span { padding: .14em .38em; }
-    .cf-count { display: none; }
+    /* The clock stays on a phone -- it is the answer to "how long has
+       this been running and when does it end". Only the total folds away,
+       and only under 380px, where the row genuinely runs out of room. */
+    .cf-time { font-size: .6rem; }
     /* Clear of the feedback star.
        .fb-btn is fixed at right:14px, top:50% -- so on a phone it floats in
        the same column as the last control in this bar, and hit-testing

@@ -571,10 +571,33 @@ def build():
     b.append('<div class="cf-bar">')
     b.append('<button type="button" class="cf-play" data-journey-play '
              'aria-label="Play">%s</button>' % IC_PLAY)
+    # A TIME scrubber, not eight scene stops.
+    #
+    # Reported as: "the video came at the end, but the animation and the
+    # audio were still in progress... the scrolling has literally stopped."
+    #
+    # Exactly what it did. The bar had one position per scene, and the last
+    # scene begins at 104.7s of 119.2s -- so the thumb reached the far right
+    # with 14.5 seconds still to play and sat there, finished, while the
+    # voice carried on. Every scene did this to a smaller degree; the last
+    # one just did it for a quarter of a minute.
+    #
+    # In milliseconds, stepped at 200 so a drag feels continuous.
+    total = 0
+    try:
+        _cp = os.path.join(ROOT, "blog", "assets", "audio", "walkthrough",
+                           "cues.json")
+        total = int(json.load(io.open(_cp, encoding="utf-8")).get("duration")
+                    or 0)
+    except Exception:
+        total = 0
     b.append('<input type="range" class="cf-seek" data-seek min="0" max="%d" '
-             'value="0" step="1" aria-label="Position in the walkthrough">'
-             % (len(STOPS) - 1))
-    b.append('<span class="cf-count" data-count>1 / %d</span>' % len(STOPS))
+             'value="0" step="200" aria-label="Position in the walkthrough">'
+             % (total or (len(STOPS) - 1)))
+    # And the clock he asked for: "I don't see any sort of timer -- how long
+    # has it been running, when does it end."
+    b.append('<span class="cf-time" data-time>0:00<span class="cf-of"> / '
+             '%d:%02d</span></span>' % (total // 60000, (total // 1000) % 60))
     # CC, where every player puts it: on the right, next to the sound.
     #
     # It was dropped in the simplification pass and asked for straight back:

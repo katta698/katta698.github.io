@@ -35,7 +35,7 @@ PLAYER_JS = """
   var playBt  = stage.querySelector('[data-journey-play]');
   var bigBt   = stage.querySelector('[data-journey-big]');
   var seek    = stage.querySelector('[data-seek]');
-  var countEl = stage.querySelector('[data-count]');
+  var timeEl  = stage.querySelector('[data-time]');
   var muteBt  = stage.querySelector('[data-journey-mute]');
   var ccBt    = stage.querySelector('[data-journey-cc]');
   var againBt = stage.querySelector('[data-journey-replay]');
@@ -94,17 +94,52 @@ PLAYER_JS = """
     }
   }
 
+  // Which scene a given moment belongs to. One definition, used by the
+  // scrubber, the clock and the tick that follows the audio -- they cannot
+  // disagree about where we are if they all ask the same question.
+  function sceneFor(ms) {
+    for (var i = TRACKS.length - 1; i >= 0; i--) {
+      if (ms >= (TRACKS[i].start || 0) - 40) { return i; }
+    }
+    return 0;
+  }
+
+  function atMs() {
+    if (voice && !isNaN(voice.currentTime)) { return voice.currentTime * 1000; }
+    var t = TRACKS[at];
+    return t ? (t.start || 0) : 0;
+  }
+
+  function mmss(ms) {
+    var s = Math.max(0, Math.round(ms / 1000));
+    return Math.floor(s / 60) + ':' + (s % 60 < 10 ? '0' : '') + (s % 60);
+  }
+
+  // The bar and the clock, from a moment in the audio rather than from a
+  // scene number. Called on every tick, so the thumb moves the way a video
+  // player's does instead of jumping once per scene.
+  function paintBar(ms) {
+    if (seek && document.activeElement !== seek) {
+      var v = String(Math.round(ms));
+      if (seek.value !== v) { seek.value = v; }
+    }
+    if (seek) {
+      var pct = TOTAL > 0 ? Math.max(0, Math.min(100, (ms / TOTAL) * 100)) : 0;
+      seek.style.setProperty('--cf-pct', pct + '%');
+    }
+    if (timeEl) {
+      var of = timeEl.querySelector('.cf-of');
+      timeEl.textContent = mmss(ms);
+      if (of) { timeEl.appendChild(of); }
+    }
+  }
+
   function paint() {
     scenes.forEach(function (g, n) { g.classList.toggle('is-on', n === at); });
     cue = -1;
     var list = cuesFor(at);
     setCaption(list[0] ? list[0].text : '');
-    if (seek && String(seek.value) !== String(at)) { seek.value = at; }
-    if (seek) {
-      var pct = scenes.length < 2 ? 0 : (at / (scenes.length - 1)) * 100;
-      seek.style.setProperty('--cf-pct', pct + '%');
-    }
-    if (countEl) countEl.textContent = (at + 1) + ' / ' + scenes.length;
+    paintBar(atMs());
   }
 
   function setPlayIcon() {
@@ -314,10 +349,8 @@ PLAYER_JS = """
       // that does not land is corrected within about 250ms and the pictures
       // cannot claim to be finished while the voice is still reading.
       if (!playing || voice.seeking) { return; }
-      var want = 0;
-      for (var i = TRACKS.length - 1; i >= 0; i--) {
-        if (ms >= TRACKS[i].start - 40) { want = i; break; }
-      }
+      paintBar(ms);
+      var want = sceneFor(ms);
       if (want !== at) { at = want; paint(); }
     };
     voice.onended = function () { stop(); };
@@ -415,9 +448,13 @@ PLAYER_JS = """
 
   if (seek) {
     seek.addEventListener('input', function () {
-      var v = parseInt(seek.value, 10) || 0;
-      at = Math.max(0, Math.min(scenes.length - 1, v));
+      var ms = Math.max(0, Math.min(TOTAL, parseInt(seek.value, 10) || 0));
+      at = sceneFor(ms);
+      // Move the audio first, so paint() reads the position it is going to
+      // and the bar does not flick back to where the voice used to be.
+      if (voice) { try { voice.currentTime = ms / 1000; } catch (e) {} }
       paint();
+      paintBar(ms);
       if (playing) { run(); }
     });
   }
