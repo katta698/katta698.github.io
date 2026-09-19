@@ -1,0 +1,214 @@
+---
+title: 'AWS Daily Intelligence #36 - Four times the payload, a fraction of the fan-out'
+date: '2026-09-19T10:00:00'
+slug: aws-daily-intelligence-sns-1mib-payloads
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-09-19'
+verified_claims:
+  - claim: "Amazon SNS now supports message payloads up to 1 MiB, a 4x increase from the previous 256 KiB limit, posted on September 18, 2026"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-sns-1mib-support
+  - claim: "Topics with MaximumMessageSize set above 256 KiB support Amazon SQS, Amazon Data Firehose, and AWS Lambda subscriptions, with up to 100 total subscriptions per topic"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-sns-1mib-support
+  - claim: "The larger payload support applies to both SNS Standard and SNS FIFO topics, and is enabled by setting the new MaximumMessageSize topic attribute"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-sns-1mib-support
+  - claim: "Amazon SNS 1 MiB support is available today in all AWS Regions where Amazon SNS is available"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-sns-1mib-support
+  - claim: "The default Amazon SNS subscriptions quota is 12,500,000 per topic for Standard topics and 100 per topic for FIFO topics"
+    source: https://docs.aws.amazon.com/general/latest/gr/sns.html
+  - claim: "The Amazon SNS maximum message size is 262,144 bytes, which is 256 KiB"
+    source: https://docs.aws.amazon.com/general/latest/gr/sns.html
+  - claim: "To publish messages larger than 256 KiB you can use the Amazon SNS Extended Client Libraries, and the maximum payload size is 2 GB"
+    source: https://docs.aws.amazon.com/general/latest/gr/sns.html
+  - claim: "The default Amazon SNS topics quota is 100,000 per account for Standard topics and 1,000 per account for FIFO topics"
+    source: https://docs.aws.amazon.com/general/latest/gr/sns.html
+  - claim: "For Firehose delivery streams the Amazon SNS subscriptions quota is 5 per topic, per subscription owner"
+    source: https://docs.aws.amazon.com/general/latest/gr/sns.html
+  - claim: "The Amazon SNS maximum header size is 16,384 bytes, which is 16 KiB"
+    source: https://docs.aws.amazon.com/general/latest/gr/sns.html
+  - claim: "Amazon SNS subscription filter policy quotas are 200 filter policies per topic and 10,000 filter policies per AWS account"
+    source: https://docs.aws.amazon.com/general/latest/gr/sns.html
+  - claim: "The maximum number of messages in a PublishBatchRequest is 10 PublishBatchRequestEntries"
+    source: https://docs.aws.amazon.com/general/latest/gr/sns.html
+problem: "SNS messages have been capped at 256 KiB since forever, and the standard workaround — store the payload in S3 and publish a pointer — adds a round trip and a lifecycle problem to every consumer. A 4x raise removes that for a lot of workloads."
+builds: "A reading of what the new MaximumMessageSize attribute actually costs: the protocols a topic can still deliver to once it is set, the subscription ceiling that comes with it, and where the existing 2 GB Extended Client Library path still wins."
+catch: "Raising the attribute above 256 KiB restricts the topic to SQS, Firehose and Lambda subscriptions, capped at 100 total. A standard topic's normal subscription quota is 12,500,000. The same setting that quadruples the payload converts a broadcast hub into a narrow pipe, and nothing about the attribute name says so."
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      Amazon SNS now supports <strong>&ldquo;message payloads up to 1 MiB, a 4x increase from the previous 256 KiB limit.&rdquo;</strong> It applies to both Standard and FIFO topics, is available in every Region where SNS runs, and is opt-in through a new <code class="inline">MaximumMessageSize</code> topic attribute.
+    </p>
+    <p>
+      For anyone who has built the S3-pointer pattern &mdash; write the payload to a bucket, publish a reference, make every consumer fetch it and eventually expire it &mdash; this removes a class of plumbing outright.
+    </p>
+    <p>
+      There is a cost, and it is stated in one sentence that is easy to read past: <em>&ldquo;Topics with <code class="inline">MaximumMessageSize</code> set above 256 KiB support Amazon SQS, Amazon Data Firehose, and AWS Lambda subscriptions, <strong>with up to 100 total subscriptions per topic</strong>.&rdquo;</em>
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>
+      <strong>The ceiling moved, for topics that ask.</strong> 256 KiB to 1 MiB, on an attribute you set per topic. Nothing changes for existing topics unless you change it, which is the right default for a limit that other things depend on.
+    </p>
+    <p>
+      <strong>Two constraints arrive with it.</strong> A topic above 256 KiB supports three subscription types &mdash; SQS, Data Firehose and Lambda &mdash; and no more than <strong>100</strong> subscriptions in total.
+    </p>
+    <p>
+      Both halves matter. The protocol list excludes HTTP/S, email, SMS and mobile push, which is most of what SNS is used for outside service-to-service messaging. And 100 is a very different number from the standard topic default, which is <strong>12,500,000 subscriptions per topic</strong>.
+    </p>
+    <p>
+      So this is not simply a bigger version of the topic you already have. It is a different kind of topic, selected by a size attribute.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The clearest way to see the change is to line the two topic shapes up against each other.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-036-sns-1mib-payloads.svg" alt="Diagram: what setting the Amazon SNS MaximumMessageSize attribute above 256 KiB changes about a topic. On the left, a default SNS standard topic: message size is capped at 262,144 bytes, which is 256 KiB, but the topic can fan out to every delivery protocol SNS supports, including SQS, Lambda, Firehose, HTTP and HTTPS endpoints, email, SMS and mobile push, and the default subscriptions quota is 12,500,000 per topic. On the right, the same topic once MaximumMessageSize is raised above 256 KiB: payloads may reach 1 MiB, a fourfold increase, but the topic supports only Amazon SQS, Amazon Data Firehose and AWS Lambda subscriptions, and is capped at 100 total subscriptions. A panel in the middle records that this is a trade rather than an upgrade, since the same attribute that quadruples the payload reduces the subscription ceiling by a factor of one hundred and twenty-five thousand and removes every human-facing delivery protocol. A panel at the bottom records that the older path still exists and still goes further: the Amazon SNS Extended Client Libraries publish messages larger than 256 KiB by storing the payload in Amazon S3, with a maximum payload size of 2 GB, so the choice is between a native 1 MiB message on a restricted topic and a pointer-based message of up to 2 GB on an unrestricted one." />
+      <figcaption>Not a bigger topic &mdash; a different one. The attribute that raises the payload also removes the fan-out.</figcaption>
+    </figure>
+
+    <p>
+      A default standard topic carries up to <em>&ldquo;262,144 bytes (256 KiB)&rdquo;</em> and can fan out to every protocol SNS supports, with a subscription quota of 12.5 million. Raise the attribute and you get four times the payload, three protocols, and a hundred subscriptions.
+    </p>
+    <p>
+      That is a coherent design. Large payloads to HTTP endpoints, email and SMS do not make sense, and a topic that delivers megabyte messages to millions of subscribers is a different cost and reliability proposition entirely. But it does mean the decision is architectural rather than operational: you are choosing what the topic is <em>for</em>.
+    </p>
+    <p>
+      One further limit worth carrying if Firehose is in the plan: its subscription quota is <strong>5 per topic, per subscription owner</strong>, which binds well before the 100.
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      The value is deleting the S3-pointer pattern for the middle band of payload sizes &mdash; the messages between 256 KiB and 1 MiB that were just over the line.
+    </p>
+    <p>
+      That pattern is not expensive in dollars; it is expensive in obligations. Every consumer needs bucket permissions. Every payload needs a lifecycle rule. Every failure mode gains a variant where the message arrived and the object did not, or the object expired before a replay. Removing it removes all of that at once for workloads that fit.
+    </p>
+    <p>
+      The workloads that benefit are recognisable: a document or image processing event carrying metadata rather than a reference, a change event carrying the full new state instead of an ID, an audit or analytics record too detailed for 256 KiB. All of them are service-to-service, which is exactly the shape the protocol restriction permits.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      No permission model change is stated, and nothing about who can publish or subscribe moves.
+    </p>
+    <p>
+      The genuine security angle is a quiet improvement: the S3-pointer pattern requires every consumer to hold read access to a bucket that holds message payloads. That is a broader grant than &ldquo;may receive this message&rdquo;, and it is durable &mdash; a consumer removed from a topic keeps its bucket permission until somebody remembers. Carrying the payload in the message removes that second grant entirely.
+    </p>
+    <p>
+      In the other direction, larger payloads mean more data in the message body, where SNS data protection policies and any downstream logging will see it. A 1 MiB message with personal data in it is a bigger surface than a pointer was. Worth checking that subscription filter policies and data protection policies still do what you expect at the new size &mdash; and noting that filter policies are themselves quota'd at 200 per topic and 10,000 per account.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      The announcement makes no pricing statement, which is itself worth flagging rather than assuming. SNS has historically billed in 64 KB chunks for request accounting, so a 1 MiB message is not obviously priced the same as a 256 KiB one. The announcement does not say, and I am not going to guess at a number &mdash; check the pricing page before modelling a migration at volume.
+    </p>
+    <p>
+      The offsetting saving is real and easy to miss: the S3-pointer pattern costs a PUT, a GET per consumer, and storage until expiry. Fan out one message to six consumers and that is one PUT and six GETs that disappear. For a high-volume topic that is a meaningful line item, and it comes with the operational simplification rather than instead of it.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      <strong>Setting the attribute is a one-way door for your subscribers.</strong> The moment a topic goes above 256 KiB it supports three protocols. If anything is subscribed over HTTP/S or email today, find it before changing the attribute, not after.
+    </p>
+    <p>
+      <strong>The 100-subscription cap is the one that surprises later.</strong> A topic well under the limit today can grow past it, and the failure will arrive as a subscribe call that does not work, in whatever pipeline creates subscriptions automatically. Worth an alarm on subscription count for any topic running in this mode.
+    </p>
+    <p>
+      <strong>The Extended Client Library still exists and still goes further.</strong> AWS's documented answer for oversized messages remains: <em>&ldquo;To publish messages larger than 256 KiB, you can check the Amazon SNS Extended Client Libraries&hellip; The maximum payload size is <strong>2 GB</strong>.&rdquo;</em> Native 1 MiB is simpler; the library path is two thousand times larger and keeps full fan-out. They solve different problems and the new feature does not retire the old one.
+    </p>
+    <p>
+      <strong>Check the header budget separately.</strong> Message attributes are not free of limits &mdash; the maximum header size is <strong>16,384 bytes (16 KiB)</strong>, unchanged by this. A design that moves metadata into attributes to keep the body small is working against a different ceiling.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <p>
+      <strong>Payload size against fan-out breadth.</strong> Stated plainly by the announcement, and the right way to think about it: a topic is now either a broadcast hub or a large-message pipe. Most estates will want both, on different topics.
+    </p>
+    <p>
+      <strong>Native simplicity against the 2 GB ceiling.</strong> The Extended Client Library is more moving parts and vastly more headroom. Choosing native 1 MiB is choosing simplicity with a hard wall at 1 MiB &mdash; fine if your payloads are bounded, painful if they are user-supplied.
+    </p>
+    <p>
+      <strong>An attribute that reads as a tuning knob and behaves as an architecture choice.</strong> <code class="inline">MaximumMessageSize</code> sounds like something you adjust. It changes what can subscribe. That mismatch between name and consequence is the thing most likely to catch a team out.
+    </p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      <strong>Inventory subscriptions before touching the attribute.</strong> List subscriptions by protocol on any candidate topic. Anything that is not SQS, Firehose or Lambda has to move or stay behind.
+    </p>
+    <p>
+      <strong>Split the topic rather than converting it.</strong> If a topic serves both service consumers and HTTP or email subscribers, the clean answer is a second topic for the large-payload path. Converting in place forces every subscriber into the restricted set.
+    </p>
+    <p>
+      <strong>Decide by payload distribution, not by maximum.</strong> If the 99th percentile fits in 1 MiB but the maximum does not, native payloads will fail on the tail. Either keep the Extended Client Library path for overflow or cap at the producer, deliberately.
+    </p>
+    <p>
+      <strong>Alarm on subscription count.</strong> 100 is low enough that an automated subscriber-creation process can reach it. That failure is far easier to diagnose from an alarm than from a subscribe call failing in someone else's pipeline.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <p>
+      <strong>Name the topic for its mode.</strong> A topic restricted to three protocols and 100 subscriptions is a different contract from a broadcast topic. Encode that in the name so the next person does not try to attach an email subscription to it.
+    </p>
+    <p>
+      <strong>Keep payloads small where you can.</strong> A higher ceiling is not an invitation. Large messages cost more to move, more to log, and more to inspect, and they make filter policies and data protection policies work harder.
+    </p>
+    <p>
+      <strong>Record why the attribute is set.</strong> It is one number in a topic configuration with consequences nobody can infer from it. One line of comment in the infrastructure code is what stops it being raised or lowered by someone tidying up.
+    </p>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt this</h2>
+    <p>
+      Available now in all Regions where SNS runs, opt-in per topic, nothing changes unless you set the attribute.
+    </p>
+    <p>
+      Adopt it if you have service-to-service topics fanning out to SQS, Lambda or Firehose with payloads that outgrew 256 KiB, and you are currently paying the S3-pointer tax to work around it. Skip it if your topic serves HTTP, email, SMS or mobile push subscribers, if you need more than 100 subscriptions, or if your payloads can exceed 1 MiB &mdash; in which case the Extended Client Library remains the right answer.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>SNS payloads can now reach 1 MiB, a 4x increase from 256 KiB, on Standard and FIFO topics, in every SNS Region.</li>
+      <li>It is opt-in per topic via the new <code class="inline">MaximumMessageSize</code> attribute.</li>
+      <li>Above 256 KiB the topic supports only SQS, Data Firehose and Lambda subscriptions &mdash; no HTTP/S, email, SMS or mobile push.</li>
+      <li>And no more than 100 total subscriptions, against a standard-topic default of 12,500,000.</li>
+      <li>Firehose binds earlier still, at 5 subscriptions per topic per subscription owner.</li>
+      <li>The Extended Client Libraries remain the path for larger messages, up to 2 GB, with fan-out intact.</li>
+      <li>No pricing statement was made in the announcement. Check the pricing page before modelling at volume.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-sns-1mib-support" target="_blank" rel="noopener">Amazon SNS now supports message payloads up to 1 MiB</a></li>
+      <li><a href="https://docs.aws.amazon.com/general/latest/gr/sns.html" target="_blank" rel="noopener">Amazon SNS endpoints and quotas &#8212; subscription, topic, message size and header limits</a></li>
+      <li><a href="https://docs.aws.amazon.com/sns/latest/dg/large-message-payloads.html" target="_blank" rel="noopener">Publishing large messages with Amazon SNS &#8212; the Extended Client Libraries and the 2 GB path</a></li>
+    </ul>
+  </div>
+</div>

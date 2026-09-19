@@ -1,0 +1,358 @@
+---
+title: "AWS Architecture Series #57 — The open schema was the one that could not change"
+date: '2026-09-19T09:00:00'
+slug: aws-architecture-event-schema-evolution
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-19'
+verified_claims:
+  - claim: "There are 8 compatibility modes in the AWS Glue Schema Registry: NONE, DISABLED, BACKWARD, BACKWARD_ALL, FORWARD, FORWARD_ALL, FULL, FULL_ALL"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "Compatibility modes allow you to control how schemas can or cannot evolve over time, and these modes form the contract between applications producing and consuming data"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "BACKWARD is the recommended compatibility choice because it allows consumers to read both the current and the previous schema version, and is used to check compatibility when you delete fields or add optional fields"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "FORWARD allows consumers to read both the current and the subsequent schema versions but not necessarily later versions, and is used to check compatibility against the last schema version when you add fields or delete optional fields"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "FULL allows consumers to read data written by producers using the previous or next version of the schema, but not earlier or later versions, and is used when you add or remove optional fields"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "BACKWARD_ALL allows consumers to read both the current and all previous schema versions, and checks compatibility against all previous schema versions when you delete fields or add optional fields"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "NONE means no compatibility mode applies and any new version added will be accepted without undergoing a compatibility check, while DISABLED prevents versioning for a particular schema so no new versions can be added"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "In the JSON data format under BACKWARD compatibility, adding an optional property would successfully register as long as the original schema version does not allow any additional properties by setting the additionalProperties field to false"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "In the JSON data format under BACKWARD compatibility, adding an optional property would not successfully register when the original schema version sets the additionalProperties field to true, namely allowing any additional property, because consumers cannot read data with that property in a different type, for example string instead of number"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "In the Avro data format under BACKWARD compatibility, removing a required field would successfully register because the extra field from old messages is ignored, while adding a required field would not successfully register because consumers on the new version could not read old messages missing that field"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "In the Avro data format under FORWARD compatibility, adding a required field would successfully register, while deleting a required field would not successfully register"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "A schema version that is marked as a checkpoint is used to determine the compatibility of registering new versions of a schema, and when a schema first gets created the default checkpoint will be the first version"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "In the console, editing the schema definition or compatibility mode will change the checkpoint to the latest version by default"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "In the Avro data format an optional field is one in which the Type includes null, and required fields do not have null as the Type"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "In a gRPC use case adding a new RPC service or RPC method is a backward compatible change, while removing an RPC service or RPC method is a forward-compatible change"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "The Schema registry supports AVRO version 1.11.4, JSON Schema specifications Draft-04, Draft-06 and Draft-07, and Protocol Buffers versions proto2 and proto3 without support for extensions or groups"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "The AWS Glue Schema registry is serverless and free to use"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "You can have up to 100 registries per AWS Region for an account, and up to 10000 schema versions per AWS Region for an account"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "There is a size limit of 170KB for schema payloads, and you can have up to 10 key-value pairs per SchemaVersion per AWS Region"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+  - claim: "Using a schema as a data format contract between producers and consumers leads to improved data governance, higher quality data, and enables data consumers to be resilient to compatible upstream changes"
+    source: https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html
+problem: "A producer adds an optional field and a downstream consumer breaks. The reflex is to blame the producer, or to declare the schema permissive so that nothing can ever break again — and AWS's own compatibility rules say the permissive schema is the one that cannot be changed."
+builds: "A model of schema evolution as a contract with a direction: which compatibility mode encodes which deployment order, what the checkpoint silently does to the guarantee, and why the open JSON schema is harder to evolve than the closed one."
+catch: "Under BACKWARD compatibility, adding an optional JSON property registers only if the previous schema set additionalProperties to false. If the old schema allowed anything, the change is rejected — because old data may already carry that property name with a different type. Permissiveness at the schema level does not buy flexibility; it spends it."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #057 &middot; Application Patterns</div>
+  <h1 class="post-title">The open schema was the one that could not change</h1>
+  <p class="post-subtitle">Eight compatibility modes, each encoding a deployment order. The JSON schema that accepts anything turns out to be the hardest one to evolve &mdash; and AWS's own rules explain why.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Reliability &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The last five posts built an event pipeline: idempotent consumers, events that exist at all, polite
+      retries, a drain rate, tenant isolation. This one is about the thing that outlives all of it &mdash;
+      the shape of the message, which is a contract between two teams and usually the only artefact that
+      survives both of their rewrites.
+    </p>
+    <p>
+      A producer team adds an optional field. It is the most defensive change available: nothing removed,
+      nothing renamed, the new field ignorable. A consumer breaks in production that afternoon.
+    </p>
+    <p>
+      Three things are going on, and the third is the one nobody expects.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Compatibility has a direction, and you picked one</strong></div>
+      <div class="challenge-body">
+        <p>
+          &ldquo;Compatible&rdquo; is not a property of a change. It is a property of a change <em>relative
+          to a deployment order</em>, and the registry makes you choose which order you are promising.
+        </p>
+        <p>
+          <strong>BACKWARD</strong> &mdash; AWS's recommended default &mdash; <em>&ldquo;allows consumers to
+          read both the current and the previous schema version&rdquo;</em>, for when you
+          <em>&ldquo;delete fields or add optional fields.&rdquo;</em> It assumes consumers upgrade first.
+        </p>
+        <p>
+          <strong>FORWARD</strong> <em>&ldquo;allows consumers to read both the current and the subsequent
+          schema versions&rdquo;</em>, for when you <em>&ldquo;add fields or delete optional
+          fields.&rdquo;</em> It assumes producers upgrade first.
+        </p>
+        <p>
+          Note that adding a required field is <em>forward</em>-compatible and not backward-compatible.
+          Teams that assume &ldquo;adding is safe, removing is dangerous&rdquo; have it backwards half the
+          time, because which one is safe depends entirely on who deploys first.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Choose the mode from your deployment order, not from intuition about additions and removals.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The guarantee is against one version, not all of them</strong></div>
+      <div class="challenge-body">
+        <p>
+          BACKWARD checks the new version against the <em>previous</em> one. FULL covers
+          <em>&ldquo;the previous or next version of the schema, <strong>but not earlier or later
+          versions</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So a sequence of individually-compatible changes can leave version 6 unreadable by a consumer
+          still on version 2 &mdash; and every step passed its check. The <code class="inline">_ALL</code>
+          variants exist precisely for this: BACKWARD_ALL <em>&ldquo;allows consumers to read both the
+          current and all previous schema versions.&rdquo;</em>
+        </p>
+        <p>
+          If any consumer can lag more than one version &mdash; and a consumer reading a 24-hour stream
+          replay always can &mdash; the pairwise modes are not the guarantee you wanted.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Use an <code class="inline">_ALL</code> mode if consumers can be more than one version behind.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The permissive schema was the rigid one</strong></div>
+      <div class="challenge-body">
+        <p>
+          Here is the rule that inverts most people's instinct. In JSON under BACKWARD, adding an optional
+          property registers <em>&ldquo;as long as the original schema version does not allow any additional
+          properties by setting the <code class="inline">additionalProperties</code> field to
+          <strong>false</strong>.&rdquo;</em>
+        </p>
+        <p>
+          And it is <em>rejected</em> when the original schema <em>&ldquo;sets the
+          <code class="inline">additionalProperties</code> field to true, namely allowing any additional
+          property&hellip; as they cannot read data with phone number property in a different type, for
+          example string instead of number.&rdquo;</em>
+        </p>
+        <p>
+          The logic is sound once you see it. If the old schema accepted anything, then old messages may
+          already contain a field with that name and some other type. Declaring it now, with a type, is not
+          a compatible narrowing &mdash; it is a claim about data that already exists and may contradict it.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Close the schema. <code class="inline">additionalProperties: false</code> is what keeps it evolvable.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The registry is a small piece of machinery with one job: refuse a version that would break the
+      promise you selected. Understanding it is mostly understanding what the promise covers.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-057-event-schema-evolution.svg" alt="Diagram: how AWS Glue Schema Registry compatibility modes encode a deployment order, and what each one covers. The upper half sets out the direction each mode assumes. BACKWARD, the recommended choice, lets consumers read the current and the previous schema version and is used when deleting fields or adding optional fields, which assumes consumers upgrade before producers. FORWARD lets consumers read the current and the subsequent version and is used when adding fields or deleting optional fields, which assumes producers upgrade first. FULL covers the previous or next version but explicitly not earlier or later versions. The ALL variants — BACKWARD_ALL, FORWARD_ALL and FULL_ALL — check against all previous schema versions rather than only the adjacent one. NONE accepts any new version without a compatibility check, and DISABLED prevents new versions entirely. A middle panel records the consequence of pairwise checking: a run of individually compatible changes can leave a recent version unreadable by a consumer several versions behind, because each step only ever compared against its neighbour. The lower half records the counter-intuitive JSON rule: adding an optional property under BACKWARD registers only when the previous schema set additionalProperties to false, and is rejected when the previous schema set it to true, because old data may already carry that property name with a different type, so a permissive schema cannot later make a claim about a field it previously allowed to be anything. A closing note records that the checkpoint determines which version new versions are checked against, and that editing the schema definition or compatibility mode in the console moves the checkpoint to the latest version by default." />
+      <figcaption>Each mode is a promise about who deploys first. The <code class="inline">_ALL</code> variants are the only ones that promise anything about a consumer more than one version behind.</figcaption>
+    </figure>
+
+    <h3>The checkpoint decides what &ldquo;previous&rdquo; means</h3>
+    <p>
+      This is the mechanism most teams never look at, and it quietly determines what the check is actually
+      comparing against. <em>&ldquo;A schema version that is marked as a checkpoint is used to determine the
+      compatibility of registering new versions of a schema&rdquo;</em>, and on creation
+      <em>&ldquo;the default checkpoint will be the first version.&rdquo;</em>
+    </p>
+    <p>
+      Then the detail worth writing on a wall: <em>&ldquo;In the console, editing the schema definition or
+      compatibility mode will change the checkpoint to the latest version by default.&rdquo;</em>
+    </p>
+    <p>
+      So someone opening the console to adjust a setting can move the reference point of every future
+      compatibility check. Nothing failed, nothing warned, and subsequent versions are now validated against
+      a newer baseline than the one your oldest consumer is running. It is a governance control whose
+      baseline can be relocated by a UI visit.
+    </p>
+
+    <h3>Optional is a type, not an annotation</h3>
+    <p>
+      The modes talk constantly about optional and required fields, and in Avro the definition is mechanical:
+      <em>&ldquo;An optional field is one in which the <code class="inline">Type</code> includes null.
+      Required fields do not have null as the <code class="inline">Type</code>.&rdquo;</em>
+    </p>
+    <p>
+      That is worth stating because &ldquo;optional&rdquo; in most schema conversations means &ldquo;the
+      consumer can cope without it&rdquo;, which is a judgement. Here it is a union with null, present or
+      absent, and the registry will accept or reject your change on that basis regardless of what the team
+      meant.
+    </p>
+
+    <div class="callout amber">
+      <strong>The formats are specific, and so are their gaps</strong>
+      <p>Support is <em>&ldquo;AVRO (v1.11.4)&rdquo;</em>, JSON Schema <em>&ldquo;Draft-04, Draft-06, and Draft-07&rdquo;</em>, and <em>&ldquo;Protocol Buffers (Protobuf) versions proto2 and proto3 <strong>without support for <code class="inline">extensions</code> or <code class="inline">groups</code></strong>.&rdquo;</em> Three things follow. JSON Schema 2019-09 and 2020-12 are not on that list. A proto2 file using extensions is outside what the registry validates. And in proto3 all fields are optional, which changes which compatibility rules can ever fire &mdash; a proto3 schema cannot fail a check for adding a required field, because it cannot have one.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The registry encodes the argument teams would otherwise have</h3>
+    <p>
+      The genuine value is not validation. It is that <em>&ldquo;these modes form the contract between
+      applications producing and consuming data&rdquo;</em> &mdash; a single declared answer to &ldquo;who
+      has to deploy first?&rdquo;, stored next to the schema rather than in the memory of whoever set the
+      pipeline up.
+    </p>
+    <p>
+      AWS states the outcome as making <em>&ldquo;data consumers resilient to compatible upstream
+      changes&rdquo;</em>, and the word doing the work is <em>compatible</em>. The registry does not make
+      consumers resilient; it defines which changes they have already agreed to tolerate, and refuses the
+      rest at registration rather than at 3am.
+    </p>
+
+    <div class="callout red">
+      <strong>NONE and DISABLED are the two ways to lose the contract</strong>
+      <p>Both are legitimate and both are frequently chosen by accident. <em>NONE</em> means <em>&ldquo;any new version added will be accepted without undergoing a compatibility check&rdquo;</em> &mdash; AWS suggests it for development, and it is what a schema ends up on when somebody needs a change to go through today. <em>DISABLED</em> <em>&ldquo;prevents versioning for a particular schema. No new versions can be added&rdquo;</em>, which looks like maximum safety and is really a decision to do evolution somewhere else, usually by creating <code class="inline">OrderPlacedV2</code> and leaving the old topic to rot. Neither is wrong. Both should be deliberate, because both convert a checked contract into an unchecked convention.</p>
+    </div>
+
+    <h3>gRPC inverts the intuition again, in a useful way</h3>
+    <p>
+      The Protobuf rules include a case that makes the direction concrete: <em>&ldquo;adding new RPC service
+      or RPC method is a backward compatible change&rdquo;</em>, while <em>&ldquo;removing an RPC service or
+      RPC method is a forward-compatible change.&rdquo;</em>
+    </p>
+    <p>
+      Adding is backward-compatible; removing is forward-compatible. The same pairing as fields, and the
+      same trap &mdash; a team on FORWARD mode will find that adding a method is the change that gets
+      rejected, which is the opposite of what &ldquo;forward&rdquo; sounds like it should mean.
+    </p>
+
+    <h3>It is free, which removes the last excuse</h3>
+    <p>
+      <em>&ldquo;The Schema registry is serverless and free to use.&rdquo;</em> The quotas are generous
+      enough to disappear for most estates: <strong>100</strong> registries per Region, <strong>10,000</strong>
+      schema versions per Region, <strong>170KB</strong> per schema payload.
+    </p>
+    <p>
+      The one to notice is 10,000 versions per Region across the account, not per schema. A pipeline that
+      registers a version on every deployment &mdash; which is exactly what auto-registration does &mdash;
+      consumes that pool at the rate of your release cadence, not your schema-change cadence.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Default mode</td>
+        <td>BACKWARD</td>
+        <td>AWS's recommendation, and it matches the common order: upgrade consumers, then producers.</td>
+      </tr>
+      <tr>
+        <td>Lagging consumers</td>
+        <td>BACKWARD_ALL</td>
+        <td>Pairwise modes say nothing about a consumer two versions behind. Replays always are.</td>
+      </tr>
+      <tr>
+        <td>Producer-first rollouts</td>
+        <td>FORWARD</td>
+        <td>Adding a required field is forward-compatible, not backward-compatible.</td>
+      </tr>
+      <tr>
+        <td>JSON schemas</td>
+        <td><code class="inline">additionalProperties: false</code></td>
+        <td>An open schema cannot later declare a field, because old data may hold that name at another type.</td>
+      </tr>
+      <tr>
+        <td>Optionality</td>
+        <td>Union with null, explicitly</td>
+        <td>In Avro, optional means the type includes null. Intent is not what the check reads.</td>
+      </tr>
+      <tr>
+        <td>Console edits</td>
+        <td>Treat as a governance change</td>
+        <td>Editing the definition or mode in the console moves the checkpoint to the latest version.</td>
+      </tr>
+      <tr>
+        <td>NONE</td>
+        <td>Development only, with an expiry</td>
+        <td>It accepts every version unchecked. It is the mode a deadline selects.</td>
+      </tr>
+      <tr>
+        <td>Auto-registration</td>
+        <td>Watch the version count</td>
+        <td>10,000 versions is per Region per account, and consumption tracks release cadence.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The rule that makes all of this cheaper</h3>
+    <p>
+      Everything above is about what the registry will accept. The consumer still has to be written, and
+      there is one behaviour that survives every mode: <strong>ignore fields you do not recognise.</strong>
+      A consumer that deserialises strictly and fails on an unknown property has made every additive change
+      &mdash; the safest category there is &mdash; into a breaking one for itself, regardless of what the
+      contract permits.
+    </p>
+    <p>
+      That is the asymmetry worth internalising. The producer's obligation is to make compatible changes.
+      The consumer's obligation is to tolerate the ones the contract already allowed. Only the second is
+      free, and only the second scales to consumers you do not know about.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Schema evolution gets discussed as a serialisation topic, which makes it sound like a library choice.
+      It is a coordination problem wearing a format's clothing: two teams, two deployment schedules, and a
+      message that has to be readable across the gap between them.
+    </p>
+    <p>
+      The compatibility mode is where that gets written down, and it is genuinely a design decision rather
+      than a setting. BACKWARD says consumers go first. FORWARD says producers go first. The
+      <code class="inline">_ALL</code> variants say we do not know how far behind anyone is. Picking one
+      without knowing which you meant is how a defensive change breaks production on a Tuesday.
+    </p>
+    <p>
+      And the JSON rule is worth carrying beyond the registry, because it contradicts a habit. An open
+      schema feels generous and future-proof. What it actually does is forfeit your ability to say anything
+      definite later, because you have already promised that the field could be anything. Constraints are
+      not the opposite of flexibility here. They are the thing that preserves it.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Application patterns &mdash; the saga: why distributed transactions are not coming back, what a compensating action can and cannot undo, and why the hardest part of a saga is the step whose compensation is an apology rather than a rollback.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html" target="_blank" rel="noopener">AWS Glue Schema Registry &#8212; the eight compatibility modes, the checkpoint, and the JSON additionalProperties rule</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
