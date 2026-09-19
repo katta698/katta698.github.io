@@ -164,9 +164,13 @@ def main():
         # Re-render only what changed. The words are the input; if they have
         # not moved there is nothing to say differently, and every render is a
         # request to somebody else's service.
+        # Reuse needs the RELATIVE cues, which is why they are kept
+        # separately -- see the note above `rel` below. A manifest written
+        # before that split has no `rel` to reuse, so it re-renders once.
         if (not args.force and prev and prev.get("sha") == digest
-                and os.path.exists(path)):
-            manifest["lines"].append(prev)
+                and prev.get("rel") and os.path.exists(path)):
+            manifest["lines"].append({k: v for k, v in prev.items()
+                                      if k not in ("start", "end", "cues")})
             total += os.path.getsize(path)
             print("  %-8s unchanged" % name)
             continue
@@ -174,9 +178,22 @@ def main():
         cues = asyncio.run(render(line, path))
         size = os.path.getsize(path)
         total += size
+        # `rel` is milliseconds from the start of THIS clip, and it is the
+        # only cue time ever stored. The absolute times the player reads are
+        # derived from it at join time, every run, from scratch.
+        #
+        # They used to be the same field, and the caching above handed the
+        # previous run's ALREADY-ABSOLUTE times back to be offset a second
+        # time. Only the re-rendered lines were right, so the damage grew
+        # the further into the track you got: scene 3's captions were cued
+        # at 35.3s for a scene that plays 17.5-31.6s, and scene 8's were
+        # 99 seconds past the end of the audio. On screen that is a caption
+        # that appears once and then never changes again -- which is exactly
+        # how it looked, and it survived a full live playthrough because the
+        # VOICE was seamless. The words were right; only the subtitles lied.
         manifest["lines"].append({
             "file": name, "sha": digest, "bytes": size,
-            "cues": spread(cues),
+            "rel": spread(cues),
         })
         print("  %-8s %5dKB  %d cue(s)  %s"
               % (name, size // 1024, len(spread(cues)), line[:42] + "..."))
@@ -222,12 +239,33 @@ def main():
         length = float(dur or 0) * 1000
         entry["start"] = round(at_ms)
         entry["end"] = round(at_ms + length)
-        # Cue times become absolute, so the player needs no arithmetic.
-        for c in entry["cues"]:
-            c["t"] = round(c["t"] + at_ms)
+        # Built fresh from `rel` every run, so this can never compound.
+        entry["cues"] = [{"t": round(c["t"] + at_ms), "text": c["text"]}
+                         for c in entry["rel"]]
         at_ms += length
     manifest["file"] = "narration.mp3"
     manifest["duration"] = round(at_ms)
+
+    # A cue outside the scene it belongs to is a caption that cannot be
+    # right, and nothing downstream would notice: the player just shows the
+    # last one whose time has passed. Cheap to assert, and it is the exact
+    # fault that shipped.
+    strays = []
+    for i, entry in enumerate(manifest["lines"]):
+        for c in entry["cues"]:
+            if not (entry["start"] - 250 <= c["t"] <= entry["end"] + 250):
+                strays.append("scene %d plays %.1f-%.1fs but a caption is "
+                              "cued at %.1fs: %r"
+                              % (i + 1, entry["start"] / 1000.0,
+                                 entry["end"] / 1000.0, c["t"] / 1000.0,
+                                 c["text"][:40]))
+    if strays:
+        print()
+        print("  %d CAPTION(S) CUED OUTSIDE THEIR SCENE" % len(strays))
+        print()
+        for line in strays[:8]:
+            print("  - %s" % line)
+        return 1
 
     tmp = CUES + ".tmp"
     with io.open(tmp, "w", encoding="utf-8", newline="\n") as fh:
