@@ -1,0 +1,336 @@
+---
+title: 'Week 5 — The Expensive Thing Should Be the Disposable Thing'
+date: '2026-09-19T10:00:00'
+labels:
+- Azure
+- Terraform
+- Azure Weekly Lab
+slug: week-05-hub-network
+---
+<div id="jk-post">
+
+<div class="meta">
+  <span class="stack-badge">Azure Firewall</span>
+  <span class="stack-badge">Hub and Spoke</span>
+  <span class="stack-badge">Private DNS</span>
+  <span class="stack-badge">VNet Peering</span>
+  <span class="stack-badge">Firewall Policy</span>
+  <span class="stack-badge">Terraform</span>
+</div>
+
+<div class="post-eyebrow">Azure Platform Engineering Lab · Week 5 of 52</div>
+
+<h1>Week 5 — The Expensive Thing Should Be the Disposable Thing</h1>
+
+<p class="post-subtitle">Every week in this lab so far has been torn down
+completely. This one cannot be: six later weeks attach to it. So it is split in
+two — the layer that costs nothing and stays, and the layer that bills by the
+hour and goes.</p>
+
+<div class="post-meta">
+  <span>19 September 2026</span>
+  <span>Terraform · HCP Terraform, local execution</span>
+  <span>$0.405/hour while the firewall runs · ~$0/hour otherwise</span>
+</div>
+
+<div class="toc">
+  <h2>📋 In This Post</h2>
+  <ol>
+    <li><a href="#why">Why — The Problem This Solves</a></li>
+    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
+    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
+    <li><a href="#build">How We Built It — In Deployment Order</a></li>
+    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
+    <li><a href="#security">Security — Controls at Every Layer</a></li>
+    <li><a href="#cost">Cost — And What It Really Came To</a></li>
+    <li><a href="#cleanup">Cleanup</a></li>
+    <li><a href="#references">References</a></li>
+    <li><a href="#takeaways">Key Takeaways</a></li>
+  </ol>
+</div>
+
+<h2 id="why">Why — The Problem This Solves</h2>
+
+<p>Weeks 1 through 4 built governance and a vending pipeline. Every one of them
+was destroyed at the end of the day, and nothing was lost, because nothing
+depended on them.</p>
+
+<p>The hub network is different. Spokes peer into it. Private endpoints resolve
+through its DNS estate. Egress leaves through its firewall. Six later weeks
+assume it exists — so "tear it all down" stops being the responsible default and
+becomes the thing that breaks next week.</p>
+
+<p>But a hub with an Azure Firewall in it bills by the hour, permanently.
+Standard is roughly <strong>$967/month</strong> if left running. That is a real
+number for a lab, and "just remember to delete it" is not a design.</p>
+
+<div class="callout amber">
+  <p><strong>The resolution is to stop treating the week as one thing.</strong>
+  Almost everything a later week actually needs — the virtual networks, the
+  peerings, the route table, the private DNS zones — costs nothing at all. One
+  resource carries the entire hourly cost. Split those two apart and the week can
+  be both permanent and cheap, which it cannot be as a single unit.</p>
+</div>
+
+<h2 id="skills">What You Need to Know — Skills &amp; Tools</h2>
+
+<ul>
+  <li><strong>Hub and spoke topology</strong> — and that a peering is two
+  resources, one declared from each side.</li>
+  <li><strong>Azure Firewall SKUs</strong>, and specifically that Basic is not
+  simply a cheaper Standard — it has a structural requirement Standard does not.</li>
+  <li><strong>Firewall Policy hierarchy</strong> — a parent policy a landing zone
+  cannot edit, and a child it can.</li>
+  <li><strong>Private DNS zones for private endpoints</strong> — where they
+  should live, and why per-spoke zones fail silently.</li>
+  <li><strong>User-defined routes</strong> — the thing that makes a firewall
+  load-bearing rather than merely present.</li>
+  <li><strong>Terraform provider aliases</strong>, for a configuration spanning
+  two subscriptions.</li>
+</ul>
+
+<h2 id="architecture">Architecture — How It Fits Together</h2>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-05-hub-network/docs/blog/diagrams/week-05-architecture.svg" alt="Diagram: week 5 hub network split into a permanent free layer of hub VNet, spoke, peerings and private DNS estate, and a disposable billable layer of Azure Firewall Basic with its mandatory management NIC, with one variable separating them" style="width:100%;max-width:900px" /></p>
+
+<p>The hub lives in the connectivity subscription and the spoke in the landing
+zone subscription — two subscriptions, two provider aliases, one configuration.
+That is what the management group hierarchy built in the bootstrap is for, and
+this is the first week that proves the split earns its keep: the two halves can
+be owned by different teams, on different lifecycles.</p>
+
+<h2 id="build">How We Built It — In Deployment Order</h2>
+
+<h3>1. The hub, the spoke, and the peering between them</h3>
+
+<p>A peering is <strong>two resources, not one</strong>. Each side is declared
+independently, and traffic only crosses when both exist. One side alone sits in
+<code>Initiated</code> — a resource that exists, reports healthy in the portal,
+and moves no packets.</p>
+
+<p>That is why the check reads the <em>state</em> rather than the existence:</p>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-05-hub-network/docs/blog/screenshots/01-peering-connected.png" alt="Azure portal peerings blade for the hub virtual network showing peer-hub-to-spoke-lab-dev as Fully Synchronized and Connected" style="width:100%" /></p>
+
+<h3>2. The private DNS estate</h3>
+
+<p>Six <code>privatelink</code> zones, created in the hub and linked to
+<strong>both</strong> virtual networks. The names cannot be invented — each Azure
+service publishes the exact zone its private endpoints register into, and a zone
+one character off resolves nothing while looking entirely correct in the portal.</p>
+
+<p>They live in the hub because a private endpoint must resolve to the same
+record everywhere. Per-spoke zones are the classic mistake: resolution works in
+the spoke that owns the endpoint, and silently returns the <strong>public</strong>
+IP everywhere else. That failure surfaces much later, in some unrelated week, and
+looks exactly like a firewall problem.</p>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-05-hub-network/docs/blog/screenshots/02-private-dns-estate.png" alt="Azure portal resource group showing six privatelink private DNS zones and the hub virtual network" style="width:100%" /></p>
+
+<p>Everything to this point costs approximately nothing and is designed to stay
+up. The next step is where the meter starts.</p>
+
+<h3>3. The firewall — and what Basic quietly requires</h3>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-05-hub-network/docs/blog/screenshots/03-firewall-basic-deployed.png" alt="Azure portal Azure Firewall overview showing SKU Basic, AzureFirewallSubnet and AzureFirewallManagementSubnet, both public IPs, private IP 10.0.0.4, and a base policy with one inherited rule collection" style="width:100%" /></p>
+
+<p>Read that blade carefully, because it contains the week's first real finding.
+There is a <strong>Management subnet</strong> and a <strong>Management public
+IP</strong> alongside the ordinary ones. Those are not optional:</p>
+
+<blockquote><p>Firewall Basic has a mandatory requirement to be configured with a
+management NIC.</p></blockquote>
+
+<p>Basic requires a second subnet named <code>AzureFirewallManagementSubnet</code>
+and a second public IP, neither of which Standard needs. That is a
+<em>virtual network design decision</em>, not a pricing toggle — so this hub
+creates the management subnet <strong>unconditionally, at every tier</strong>.
+Changing SKU later is then a variable change, rather than re-addressing a hub
+that six weeks are already peered into. An empty /26 costs nothing.</p>
+
+<p>Basic's other limits are worth knowing before choosing it: <strong>no DNS
+proxy</strong> ("uses Azure DNS only"), no network-level FQDN filtering, no web
+categories, threat intelligence in alert mode only, and a 250 Mbps ceiling.
+Private endpoint resolution still works — the zones above are linked per-VNet and
+resolve through Azure DNS — but the firewall cannot be the central resolver for
+spokes, which is the pattern most reference architectures show.</p>
+
+<h3>4. The policy hierarchy</h3>
+
+<p>A parent policy holds what every landing zone gets and cannot remove. A child
+inherits it and adds its own. Child rule collection groups are evaluated
+<em>after</em> the parent's, so the parent always wins — which is the entire
+reason to run two rather than one.</p>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-05-hub-network/docs/blog/screenshots/04-policy-hierarchy.png" alt="Azure portal firewall policy overview showing the child policy with its parent policy named, policy tier Basic, and TLS inspection and IDPS listed as not supported with basic policy" style="width:100%" /></p>
+
+<p>Two details here. The policy tier must <strong>match</strong> the firewall
+tier — a Standard policy on a Basic firewall is refused. And the portal states
+the trade-off plainly: <code>TLS inspection (Premium): Not supported with basic
+policy</code>.</p>
+
+<p>The inheritance is easiest to verify from the firewall blade in step 3, which
+reports <code>1 rule in 1 collection</code> <em>and</em> <code>1 rule in 1
+collection (inherited from base policy)</code>. That second line is the hierarchy
+working, read from the deployed firewall rather than from the template that
+claimed it.</p>
+
+<h3>5. The route that makes it load-bearing</h3>
+
+<p>Without this step, the firewall exists, bills, and carries nothing. The
+spoke's default route has to point at it.</p>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-05-hub-network/docs/blog/screenshots/05-spoke-route-via-firewall.png" alt="Azure portal route table showing a route named udr-default-to-firewall for 0.0.0.0/0 with next hop type VirtualAppliance and next hop IP address 10.0.0.4" style="width:100%" /></p>
+
+<p><code>0.0.0.0/0 → VirtualAppliance → 10.0.0.4</code>. That address is the
+firewall's private IP from step 3 — worth comparing the two screenshots, because
+a route pointing at the wrong address is indistinguishable from a correct one
+until traffic stops.</p>
+
+<p>The route is gated on the same variable as the firewall, deliberately. A
+<code>0.0.0.0/0</code> route whose next hop no longer exists does not fail
+loudly; it blackholes the subnet.</p>
+
+<p>Validation with everything up: <strong>5 passed, 0 failed</strong>. Without
+the firewall, the same script reports 4 passed and skips the route check — the
+absence of that route is the correct state, not a gap.</p>
+
+<h2 id="challenges">Challenges — What Actually Went Wrong</h2>
+
+<h3>The teardown failed, and the script reported success</h3>
+
+<p>This is the one worth the whole post. Cleanup died with:</p>
+
+<pre><code>FirewallPolicyUpdateFailed - Put on Firewall Policy afwp-lz-dev...
+Failed with 1 faulted referenced firewalls</code></pre>
+
+<p>Terraform tried to update the child policy while the firewall still referenced
+it. The destroy aborted. The firewall stayed up and kept billing — and the script
+<strong>still exited 0</strong>, so nothing signalled a problem.</p>
+
+<h3>And the safety check could not run at all</h3>
+
+<p>The script was supposed to catch exactly that. It verified with
+<code>az network firewall list</code> — which requires the
+<code>azure-firewall</code> extension and, in a non-interactive shell, dies on
+the dynamic-install prompt:</p>
+
+<pre><code>EOFError: EOF when reading a line</code></pre>
+
+<p>So the check whose entire purpose was to detect a surviving firewall was
+itself incapable of running. Two independent failures lined up: an apply that
+failed silently, and a verification that could not execute. Either alone would
+have been caught by the other.</p>
+
+<p>Recovery was <code>az resource delete --ids &lt;firewall&gt;</code> — which
+needs no extension — followed by a re-apply. Eight minutes. The script now checks
+the apply's exit code explicitly and verifies with <code>az resource list</code>.</p>
+
+<h3>A query that returned null instead of failing</h3>
+
+<p><code>az network vnet subnet show --query addressPrefix</code> now returns
+<strong>null</strong>: the value moved to <code>addressPrefixes[]</code>. The old
+field is still in the response, so the query succeeds and returns empty — which
+is indistinguishable from "the subnet does not exist". Both firewall subnets
+reported as missing when they existed and were correctly sized.</p>
+
+<h3>An azurerm 5.x schema change</h3>
+
+<p><code>azurerm_private_dns_zone_virtual_network_link</code> takes
+<code>private_dns_zone_id</code> in 5.x. In 4.x it took
+<code>resource_group_name</code> plus <code>private_dns_zone_name</code>, so
+copying a link block from almost any published example fails validate on both
+arguments at once.</p>
+
+<h2 id="security">Security — Controls at Every Layer</h2>
+
+<ul>
+  <li><strong>Egress is forced through the firewall</strong> by the spoke's
+  default route, not left to per-resource configuration. A workload cannot opt
+  out of it.</li>
+  <li><strong>The parent policy cannot be edited by the landing zone.</strong>
+  Platform rules are inherited and evaluated first; a landing zone team can add
+  rules and cannot remove the baseline.</li>
+  <li><strong>Private DNS zones live in the hub</strong>, so private endpoint
+  resolution is consistent across every spoke rather than per-team and
+  divergent.</li>
+  <li><strong>Auto-registration is off</strong> on every zone link. These zones
+  exist for private endpoints, which create their own records; auto-registration
+  would additionally register every VM NIC in the linked network into a
+  privatelink zone.</li>
+  <li><strong>Basic's threat intelligence is alert-only</strong> — it cannot deny.
+  Worth stating explicitly, because "threat intelligence is enabled" reads as
+  protection and on this tier it is telemetry.</li>
+</ul>
+
+<h2 id="cost">Cost — And What It Really Came To</h2>
+
+<p>Prices read from the Azure retail price API for South Central US on the day:</p>
+
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr><th>Layer</th><th>Per hour</th><th>Per month if left up</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Permanent — VNets, peerings, route table, 6 DNS zones</td><td>~$0.000</td><td>~$0</td></tr>
+    <tr><td>Firewall Basic + 2 public IPs</td><td><strong>$0.405</strong></td><td><strong>$296</strong></td></tr>
+    <tr><td>Firewall Standard + 1 public IP (for comparison)</td><td>$1.325</td><td>$967</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The plan was to run the firewall for about an hour — roughly $0.41. It
+actually ran <strong>1 hour 47 minutes, about $0.72</strong>.</p>
+
+<p>Nothing about Azure caused the overrun. The firewall finished deploying, the
+screenshots were taken, and then it sat there while attention was elsewhere. The
+hourly rate was never the risk. <em>An absence of a deadline</em> was — which is
+precisely the failure mode the two-layer split exists to contain, arriving in the
+one window where the split does not protect you.</p>
+
+<h2 id="cleanup">Cleanup</h2>
+
+<p>Cleanup removes the firewall, both public IPs and both policies by re-applying
+with the flag off — not by <code>destroy -target</code>, which would leave the
+route pointing at an address that no longer answers. Both are gated on the same
+variable, so they go together in dependency order.</p>
+
+<p>The public IPs matter more than they look. A standard static IP left behind is
+$0.005/hour: trivial per hour, permanent if nobody checks. The script now
+verifies that zero firewalls <strong>and</strong> zero public IPs remain before it
+reports clean.</p>
+
+<p>The hub, the spoke, the peerings and the DNS estate stay up. That is the
+point.</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li><a href="https://learn.microsoft.com/en-us/azure/firewall/features-by-sku" target="_blank" rel="noopener">Azure Firewall features by SKU</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/firewall/deploy-firewall-basic-portal-policy" target="_blank" rel="noopener">Deploy and configure Azure Firewall Basic</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/private-link/private-endpoint-dns" target="_blank" rel="noopener">Private endpoint DNS configuration</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/architecture/reference-architectures/hybrid-networking/hub-spoke" target="_blank" rel="noopener">Hub-spoke network topology in Azure</a></li>
+  <li><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-05-hub-network" target="_blank" rel="noopener">Week 5 code in the lab repository</a></li>
+</ul>
+
+<h2 id="takeaways">Key Takeaways</h2>
+
+<ul>
+  <li><strong>Split a week by what it costs, not by what it does.</strong> When
+  one resource carries the entire hourly bill and everything else is free, those
+  are two different lifecycles wearing one name.</li>
+  <li><strong>Basic is not a cheaper Standard.</strong> It mandates a management
+  subnet and a second public IP, and it has no DNS proxy. Decide the tier before
+  addressing the hub, not after.</li>
+  <li><strong>A peering is two resources.</strong> One side alone exists, reports
+  healthy, and carries nothing — so check the state, not the existence.</li>
+  <li><strong>Put private DNS zones in the hub.</strong> Per-spoke zones resolve
+  correctly where the endpoint lives and return the public IP everywhere else.</li>
+  <li><strong>A cleanup script that cannot fail loudly is not a cleanup
+  script.</strong> Mine exited 0 while the firewall kept billing, and its safety
+  check could not run in the shell it ran in. Check exit codes, and make sure the
+  verification command actually works where it executes.</li>
+</ul>
+
+</div>
