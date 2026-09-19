@@ -58,6 +58,11 @@ PLAYER_JS = """
 
   var at = 0, playing = false, muted = false, cc = true;
   var voice = null, bed = null, timer = null, cue = -1;
+  var TOTAL = 0;
+  try {
+    var cbb = document.querySelector('[data-cues]');
+    if (cbb) TOTAL = (JSON.parse(cbb.textContent) || {}).duration || 0;
+  } catch (e) { TOTAL = 0; }
   var zoomed = false, backdrop = null, resumeAudio = false;
   var READ_MS = 5200;                  // per scene when there is no audio
 
@@ -189,45 +194,71 @@ PLAYER_JS = """
   function stopVoice() {
     if (!voice) return;
     try { voice.pause(); } catch (e) {}
-    voice.onended = null;
-    voice.ontimeupdate = null;
-    voice.onerror = null;
-    voice = null;
+  }
+
+  /* One element for the whole narration.
+   *
+   * It is created on the first press -- inside the gesture, which is what
+   * iOS requires -- and never replaced. Scenes are offsets into it, so
+   * changing scene is a seek, not a download: there is nothing to buffer
+   * mid-sentence and nothing for the platform to refuse.
+   *
+   * Reported as: "in the middle of the video the music just continues,
+   * there's no voice, and maybe after a minute the voice continues." That
+   * was eight separate files, each fetched when its scene began, and on iOS
+   * some of them silently declined to play because they had been created
+   * long after the tap.
+   */
+  function ensureVoice() {
+    if (voice || !TRACKS.length) return voice;
+    voice = new Audio(BASE + 'narration.mp3');
+    voice.preload = 'auto';
+    voice.ontimeupdate = function () {
+      var ms = Math.round(voice.currentTime * 1000);
+      captionAt(ms);
+      // The scene follows the audio, not a timer: whatever the clock says
+      // is being spoken is what is on screen.
+      var t = TRACKS[at];
+      if (playing && t && ms >= t.end - 40) {
+        if (at >= scenes.length - 1) { return; }
+        at += 1;
+        paint();
+      }
+    };
+    voice.onended = function () { stop(); };
+    voice.onerror = function () {
+      voice = null;
+      if (playing) { clearTimer(); timer = window.setTimeout(advance, READ_MS); }
+    };
+    return voice;
   }
 
   function speak() {
-    var track = TRACKS[at];
-    if (muted || !track || !track.file) { return false; }
-    stopVoice();
-    voice = new Audio(BASE + track.file);
-    voice.ontimeupdate = function () {
-      captionAt(Math.round(voice.currentTime * 1000));
-    };
-    voice.onplaying = function () { rampBed(BED_DUCK, 400); };
-    voice.onended = function () {
-      if (!playing) return;
-      rampBed(BED_OPEN, 500);          // it comes back in the gap
-      window.setTimeout(advance, 380);
-    };
-    // A missing or blocked file must not strand the walkthrough on one
-    // picture with no explanation. Fall back to the timer.
-    voice.onerror = function () {
-      stopVoice();
-      if (playing) { clearTimer(); timer = window.setTimeout(advance, READ_MS); }
-    };
-    var p = voice.play();
+    if (muted || !TRACKS.length) { return false; }
+    var a = ensureVoice();
+    if (!a) return false;
+    var t = TRACKS[at];
+    var want = (t && t.start ? t.start : 0) / 1000;
+    // Only seek when the clock is not already inside this scene, so playing
+    // straight through never interrupts itself.
+    var now = a.currentTime;
+    if (!t || now < (t.start / 1000) - 0.25 || now > (t.end / 1000)) {
+      try { a.currentTime = want; } catch (e) {}
+    }
+    var p = a.play();
     if (p && p.catch) {
       p.catch(function () {
-        stopVoice();
         if (playing) {
           clearTimer();
           timer = window.setTimeout(advance, READ_MS);
         }
       });
     }
+    rampBed(BED_DUCK, 400);
     return true;
   }
 
+  // Only used when there is no audio -- muted, or the file would not play.
   function advance() {
     if (!playing) return;
     if (at >= scenes.length - 1) { stop(); return; }

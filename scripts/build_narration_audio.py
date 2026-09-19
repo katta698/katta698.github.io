@@ -181,10 +181,60 @@ def main():
         print("  %-8s %5dKB  %d cue(s)  %s"
               % (name, size // 1024, len(spread(cues)), line[:42] + "..."))
 
+    # ---- one file, not eight ---------------------------------------------
+    #
+    # Reported as: "in the middle of the video the music just continues,
+    # there's no voice, and maybe after a minute the voice continues."
+    #
+    # Eight separate clips meant eight separate downloads, each beginning only
+    # when its scene did -- so on a phone every scene change was a gap while
+    # the next 120KB arrived. And on iOS an <audio> element created AFTER the
+    # tap that began playback frequently will not play at all, so some scenes
+    # fell through to a silent timer while the music carried on underneath.
+    # Both faults sound identical from the outside: the voice stops and the
+    # music does not.
+    #
+    # Joined into one track the narration cannot gap. It is a single element
+    # playing continuously, unlocked by the first tap, and the scenes are
+    # offsets into it. Seeking is instant and the captions key off the same
+    # clock.
+    import subprocess
+
+    joined = os.path.join(OUT_DIR, "narration.mp3")
+    listing = os.path.join(OUT_DIR, "_join.txt")
+    with io.open(listing, "w", encoding="utf-8", newline="\n") as fh:
+        for entry in manifest["lines"]:
+            fh.write("file '%s'\n" % entry["file"])
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "concat", "-safe", "0", "-i", "_join.txt",
+                    "-c:a", "libmp3lame", "-b:a", "64k", "narration.mp3"],
+                   cwd=OUT_DIR, check=True)
+    os.remove(listing)
+
+    # Where each scene starts in the joined file, measured from the parts
+    # rather than assumed: concatenation is not always sample-exact.
+    at_ms = 0.0
+    for entry in manifest["lines"]:
+        dur = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", os.path.join(OUT_DIR, entry["file"])],
+            capture_output=True, text=True).stdout.strip()
+        length = float(dur or 0) * 1000
+        entry["start"] = round(at_ms)
+        entry["end"] = round(at_ms + length)
+        # Cue times become absolute, so the player needs no arithmetic.
+        for c in entry["cues"]:
+            c["t"] = round(c["t"] + at_ms)
+        at_ms += length
+    manifest["file"] = "narration.mp3"
+    manifest["duration"] = round(at_ms)
+
     tmp = CUES + ".tmp"
     with io.open(tmp, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(manifest, fh, ensure_ascii=False, separators=(",", ":"))
     os.replace(tmp, CUES)
+    print("  joined -> narration.mp3  %.1fs  %dKB"
+          % (at_ms / 1000, os.path.getsize(joined) // 1024))
 
     print()
     print("  %d line(s), %dKB of audio, voice %s"

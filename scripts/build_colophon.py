@@ -208,7 +208,7 @@ NARRATION = [
     "It starts here: an idea, away from the desk.",
 
     "A post is one hand-written file. It is the only thing on this site that "
-    "is not generated, and everything you sees is built from it.",
+    "is not generated, and everything you see is built from it.",
 
     "Before anything is built, the draft is checked. Are the claims "
     "supported, do the links resolve, does the page have the structure its "
