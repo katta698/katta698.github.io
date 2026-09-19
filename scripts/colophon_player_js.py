@@ -181,9 +181,18 @@ PLAYER_JS = """
    * 0.22 open and 0.11 ducked is -13 and -19: present in the gaps, clearly
    * behind the voice while it speaks, and audible on a phone.
    */
-  var BED_OPEN = 0.14;      // the moment between pressing play and the
+  /* "It's dominating the voice. It has to be subtle."
+   *
+   * Third adjustment, and the useful history is the range: 0.025 was
+   * inaudible on an Android speaker, 0.11 and 0.09 both read as too loud
+   * against speech. 0.06 is about -24dB under the voice -- present in the
+   * gaps, and under a sentence it is texture rather than a second thing to
+   * listen to. The floor to stay above is roughly 0.04; below that it
+   * disappears on a phone entirely, which is where this started.
+   */
+  var BED_OPEN = 0.10;      // the moment between pressing play and the
                             // first word, and nothing else
-  var BED_UNDER = 0.09;     // while the voice is actually sounding
+  var BED_UNDER = 0.06;     // while the voice is actually sounding
 
   /* The music is allowed to sound only while the VOICE is sounding.
    *
@@ -457,10 +466,45 @@ PLAYER_JS = """
    * The control bar is excluded. A tap on CC is a tap on CC, not a tap on
    * the picture behind it, and the bar sits inside the frame.
    */
-  function toggle(e) {
-    if (e && e.target && e.target.closest && e.target.closest('.cf-bar')) {
-      return;
+  /* Was the click on the control bar? Asked of the event's PATH, not of
+   * the element it landed on.
+   *
+   * Reported as: "the little pause button at the bottom doesn't work -- the
+   * on-screen pause works, but the small one really doesn't."
+   *
+   * It worked perfectly and then undid itself. The button pauses, and
+   * pausing repaints its icon -- setPlayIcon() replaces the button's
+   * innerHTML, which DETACHES the very <svg> that was clicked. The event
+   * then carries on bubbling to the frame, where target.closest('.cf-bar')
+   * runs on a node that no longer has any parents, finds nothing, and
+   * concludes the click was on the picture. So the frame toggled it back on
+   * and the player never moved:
+   *
+   *     click the small button   target svg   still playing, clock running
+   *
+   * composedPath() is captured when the event is dispatched, so it still
+   * describes where the click actually happened even after the DOM beneath
+   * it has been rebuilt. closest() remains as a fallback for anything
+   * without it.
+   *
+   * This was never only the play button: mute, replay and expand all repaint
+   * their icons the same way.
+   */
+  function inBar(e) {
+    var path = (e && e.composedPath) ? e.composedPath() : null;
+    if (path && path.length) {
+      for (var i = 0; i < path.length; i++) {
+        var n = path[i];
+        if (n && n.classList && n.classList.contains('cf-bar')) { return true; }
+      }
+      return false;
     }
+    return !!(e && e.target && e.target.closest
+              && e.target.closest('.cf-bar'));
+  }
+
+  function toggle(e) {
+    if (inBar(e)) { return; }
     if (playing) { stop(); } else { play(); }
   }
 
@@ -537,7 +581,17 @@ PLAYER_JS = """
 
   if (againBt) {
     againBt.addEventListener('click', function () {
+      // Rewind the AUDIO, explicitly.
+      //
+      // Setting the scene to 0 and letting speak() follow is not enough:
+      // speak() only seeks when the clock is OUTSIDE the scene it is meant
+      // to be in, so that playing straight through never interrupts itself.
+      // Scene 1 runs 0-9.2s, so pressing Start again during the first nine
+      // seconds asked for a seek to 0 from a position that was already
+      // inside scene 1 -- and nothing moved. Measured: 6.7s -> 8.5s, still
+      // running, while the button claimed to have started it again.
       at = 0;
+      if (voice) { try { voice.currentTime = 0; } catch (e) {} }
       paint();
       if (playing) { run(); } else { play(); }
     });
