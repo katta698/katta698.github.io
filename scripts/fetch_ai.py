@@ -268,6 +268,16 @@ def models():
                 v = float(price.get(key) or 0)
             except (TypeError, ValueError):
                 return None
+            # A NEGATIVE price is a sentinel, not a discount.
+            #
+            # OpenRouter answers "-1" for its routers -- Auto Router, Fusion,
+            # Pareto Code Router -- which charge whatever the model they pick
+            # charges. Multiplied by a million that became -$1,000,000 per
+            # million tokens, which would have plotted five points a very
+            # long way below the axis and printed a number no reader could
+            # take seriously. Unknown is unknown; the page prints a dash.
+            if v < 0:
+                return None
             # per token -> per million, which is how every vendor quotes it
             return round(v * 1_000_000, 4) if v else 0.0
 

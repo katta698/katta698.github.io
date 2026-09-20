@@ -40,6 +40,7 @@ a page that claims to.
 """
 import datetime as dt
 import io
+import math
 import json
 import os
 import re
@@ -164,6 +165,64 @@ STYLE = """
   .ai-q { width: 100%; max-width: 22rem; padding: .45rem .6rem;
           border-radius: 8px; border: 1px solid var(--bd,#33302C);
           background: transparent; color: inherit; font: inherit; }
+  .ai-field-wrap { margin: 0; }
+  .ai-field { width: 100%; height: auto; display: block;
+              border: 1px solid var(--bd,#33302C); border-radius: 12px;
+              background: color-mix(in srgb, var(--bg,#1F1D1B) 88%, #000); }
+  body.light .ai-field { background: color-mix(in srgb,
+                         var(--bg,#F7F4EF) 92%, #000); }
+  .ai-field .fg { stroke: currentColor; stroke-width: .5; opacity: .16; }
+  .ai-field .fl { fill: currentColor; opacity: .55;
+                  font: 10px 'DM Mono', ui-monospace, monospace; }
+  .ai-field .fa { fill: currentColor; opacity: .4; letter-spacing: .08em;
+                  font: 9px 'DM Mono', ui-monospace, monospace;
+                  text-transform: uppercase; }
+  .ai-field .ffree { stroke-dasharray: 3 4; opacity: .28; }
+  .ai-field .fd { opacity: .85; cursor: pointer;
+                  transition: opacity .15s ease, r .15s ease; }
+  .ai-field .fd:hover, .ai-field .fd.on { opacity: 1; r: 6.5; }
+  /* Bigger dots where there are fingers.
+     The chart keeps its 900-unit viewBox at every width, so on a 412px
+     phone it renders 380px wide and a 3-unit dot is 1.3 SCREEN PIXELS.
+     Measured, not guessed -- and 1.3px is not a target, it is a rumour.
+     At 5.5 units it lands near 2.3px drawn and a far more forgiving tap
+     area, because an SVG shape's hit region scales with it. */
+  @media (pointer: coarse) {
+    .ai-field .fd { r: 5.5; }
+    .ai-field .fnew { r: 7; }
+    .ai-field .fd:hover, .ai-field .fd.on { r: 9; }
+  }
+  /* The new ones breathe. Nothing else on the chart moves, so the eye goes
+     to what changed this month without anything being labelled "new". */
+  .ai-field .fnew { animation: aipulse 2.8s ease-in-out infinite; }
+  @keyframes aipulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+  .ai-field.dimmed .fd { opacity: .1; }
+  .ai-field.dimmed .fd.keep { opacity: 1; }
+  .ai-readout-row { display: flex; align-items: center; gap: .7rem;
+                    margin: .55rem 0 0; }
+  .ai-bot { flex: 0 0 auto; width: 42px; height: 47px; color: inherit;
+            opacity: .85; }
+  .ai-bot .bl { fill: none; stroke: currentColor; stroke-width: 2;
+                stroke-linecap: round; stroke-linejoin: round; opacity: .55; }
+  .ai-bot .bdot { fill: var(--acc-ink,#C4A484); stroke: none; opacity: .9;
+                  animation: aiblip 3.4s ease-in-out infinite; }
+  .ai-bot .bp { fill: var(--acc-ink,#C4A484); opacity: .9;
+                transition: transform .22s cubic-bezier(.2,.7,.3,1); }
+  /* The blink is a scale, not an opacity: an eye that fades looks broken,
+     an eye that squashes looks alive. 6.4s apart, because a blink every
+     couple of seconds reads as a nervous tic rather than a pause. */
+  .ai-bot .beyes { animation: aiblink 6.4s infinite; transform-origin: 32px 31px; }
+  @keyframes aiblink { 0%, 94%, 100% { transform: scaleY(1); }
+                       96.5% { transform: scaleY(.08); } }
+  @keyframes aiblip { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    .ai-bot .beyes, .ai-bot .bdot, .ai-field .fnew { animation: none; }
+  }
+  .ai-readout { min-height: 1.4rem; font-size: .82rem;
+                font-family: 'DM Mono', ui-monospace, monospace;
+                color: var(--muted,#A9A49C); }
+  .ai-readout b { color: inherit; }
+  .ai-readout .ph { opacity: .7; }
   .ai-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table.ai-models { width: 100%; border-collapse: collapse; font-size: .85rem; }
   table.ai-models th, table.ai-models td {
@@ -284,6 +343,76 @@ FILTER_JS = """
   }
   fromUrl();
   apply(false);
+
+  /* The field answers to the same pills, and to a finger.
+     A dot names itself on hover for a mouse and on tap for a phone, where
+     there is no hover at all -- a chart that only speaks to a pointer says
+     nothing on the device most people are holding. */
+  var field = document.querySelector('.ai-field');
+  var readout = document.getElementById('ai-readout');
+  if (field && readout) {
+    var dots = [].slice.call(field.querySelectorAll('.fd'));
+    var placeholder = readout.innerHTML;
+    var last = null;
+    // What it rests on: the newest model on the chart, which is the thing a
+    // reader arriving at an AI page most likely came to see.
+    var newest = dots.slice().sort(function (a, b) {
+      return (b.dataset.d || '').localeCompare(a.dataset.d || '');
+    })[0] || null;
+
+    /* Where the watcher is looking. The dot's x across the chart maps to a
+       small shift of the pupils, and its y to a smaller one -- a couple of
+       pixels is enough to read as a glance, and more looks like a fault. */
+    var eyes = document.querySelectorAll('.ai-bot .bp');
+    function gaze(el) {
+      if (!eyes.length) { return; }
+      var dx = 0, dy = 0;
+      if (el) {
+        var box = field.viewBox.baseVal;
+        dx = ((+el.getAttribute('cx') / box.width) - 0.5) * 4.4;
+        dy = ((+el.getAttribute('cy') / box.height) - 0.5) * 3.0;
+      }
+      eyes.forEach(function (e) {
+        e.style.transform = 'translate(' + dx.toFixed(2) + 'px,' +
+                            dy.toFixed(2) + 'px)';
+      });
+    }
+
+    function name(el) {
+      if (last) { last.classList.remove('on'); }
+      last = el;
+      gaze(el || newest);
+      if (!el) { readout.innerHTML = placeholder; return; }
+      el.classList.add('on');
+      readout.innerHTML = '<b>' + el.dataset.n + '</b> &middot; ' +
+        el.dataset.vendor + ' &middot; ' + el.dataset.c + ' context &middot; ' +
+        el.dataset.p + ' per million out &middot; ' + el.dataset.d;
+    }
+
+    dots.forEach(function (el) {
+      el.addEventListener('mouseenter', function () { name(el); });
+      el.addEventListener('click', function (e) { e.stopPropagation(); name(el); });
+    });
+    field.addEventListener('mouseleave', function () { name(null); });
+    gaze(newest);
+
+    /* Dimming, driven by the vendor already chosen above. The pills were
+       filtering two lists and leaving the picture alone, which made the
+       chart look like it belonged to a different page. */
+    var paintField = function () {
+      if (vendor === 'all') {
+        field.classList.remove('dimmed');
+        dots.forEach(function (d) { d.classList.remove('keep'); });
+        return;
+      }
+      field.classList.add('dimmed');
+      dots.forEach(function (d) {
+        d.classList.toggle('keep', d.dataset.vendor === vendor);
+      });
+    };
+    pills.forEach(function (b) { b.addEventListener('click', paintField); });
+    paintField();
+  }
 })();
 </script>
 """
@@ -307,6 +436,153 @@ def ctx(n):
     if n >= 1000:
         return "%dK" % (n // 1000)
     return str(n)
+
+
+
+
+# A watcher, drawn in the walkthrough's line style.
+#
+# Asked for as: "some sort of robot, like Optimus from Tesla -- since this is
+# an AI page I was wondering we could add something more creative."
+#
+# A robot that only stands there is a sticker. This one has a job: its eyes
+# follow the dot being pointed at, and when nothing is pointed at they rest
+# on the newest model in the field. So it is always looking at the thing the
+# page is actually about, and a reader can tell at a glance whether the
+# chart is idle or answering them.
+#
+# Line art rather than a render: it is 1.3KB of SVG that takes its colour
+# from the theme and needs no image, no font and no request. The same choice
+# the walkthrough made, and for the same reason -- a PNG of a robot would be
+# a 200KB decision about somebody else's taste in robots.
+WATCHER = """
+<svg class="ai-bot" viewBox="0 0 64 72" aria-hidden="true" focusable="false">
+  <path class="bl" d="M32 8 V16"/>
+  <circle class="bl bdot" cx="32" cy="6" r="2.4"/>
+  <rect class="bl" x="12" y="16" width="40" height="32" rx="9"/>
+  <g class="beyes">
+    <ellipse class="bp" cx="24" cy="31" rx="4.6" ry="5.2"/>
+    <ellipse class="bp" cx="40" cy="31" rx="4.6" ry="5.2"/>
+  </g>
+  <path class="bl bmouth" d="M25 41 q7 4 14 0"/>
+  <path class="bl" d="M12 30 H6 M52 30 H58"/>
+  <path class="bl" d="M20 48 V56 q0 6 6 6 h12 q6 0 6 -6 V48"/>
+</svg>
+"""
+
+# ---------------------------------------------------------------- the field
+#
+# Asked for as: "the globe blinks and it's interactive -- people can look for
+# regions and see incidents there. Is there anything creative like that for
+# this page? Something animated, or a robot like Optimus."
+#
+# The globe works because it is not decoration: every dot is an incident a
+# vendor published, in the place the vendor named. A robot would be a picture
+# of a robot. So this is the same idea with this page's own data -- every
+# model in the catalogue, placed where its numbers put it.
+#
+#     across   context window, 4K to 2M, logarithmic
+#     up       what a million output tokens costs, 3 cents to $600, logarithmic
+#     colour   the vendor
+#     pulsing  appeared in the last 30 days
+#
+# Both axes have to be logarithmic or the picture is a smear: contexts run
+# over three orders of magnitude and prices over four. Grid lines are labelled
+# at the powers so the scale is legible rather than implied.
+#
+# The five router models that quote no price are NOT plotted, and the count is
+# printed under the chart. Same rule the incident map follows for a region
+# with no published location: dropping it silently would make the picture
+# claim a completeness it does not have.
+VCOLOR = {
+    "OpenAI": "#7FB3A3", "Anthropic": "#C4A484", "Google": "#8FA8C8",
+    "xAI": "#B98C9A", "Meta": "#8A9A5B", "Microsoft": "#9A8FC8",
+    "Mistral": "#CFA06B", "DeepSeek": "#6FA8B8", "Qwen": "#B0A06B",
+}
+FIELD_W, FIELD_H = 900.0, 430.0
+PAD_L, PAD_R, PAD_T, PAD_B = 58.0, 18.0, 20.0, 40.0
+
+
+def _lx(ctx_tokens):
+    lo, hi = math.log10(4000.0), math.log10(2200000.0)
+    v = (math.log10(max(4000.0, float(ctx_tokens))) - lo) / (hi - lo)
+    return PAD_L + v * (FIELD_W - PAD_L - PAD_R)
+
+
+def _ly(price):
+    lo, hi = math.log10(0.02), math.log10(700.0)
+    v = (math.log10(max(0.02, float(price))) - lo) / (hi - lo)
+    return (FIELD_H - PAD_B) - v * (FIELD_H - PAD_T - PAD_B)
+
+
+def field_svg(models, today):
+    # Free is a price, not a missing one.
+    #
+    # The first version treated "0" as falsy and swept 29 free models in with
+    # the 5 routers that genuinely quote nothing, then told the reader all 34
+    # "quote no fixed price". Two different facts, one wrong sentence. Zero
+    # cannot sit on a logarithmic axis, so free models get a lane of their
+    # own along the floor, labelled -- and only the routers, which really do
+    # charge whatever they route to, are left off and counted.
+    plotted, freebies, skipped = [], [], []
+    for m in models:
+        if not m.get("context") or m.get("out_per_m") is None:
+            skipped.append(m)
+        elif m.get("out_per_m") == 0:
+            freebies.append(m)
+        else:
+            plotted.append(m)
+
+    g = ['<svg class="ai-field" viewBox="0 0 %d %d" '
+         'preserveAspectRatio="xMidYMid meet" role="img" '
+         'aria-label="Every model in the catalogue, placed by context window '
+         'across and price per million output tokens up. %d models are '
+         'plotted.">' % (FIELD_W, FIELD_H, len(plotted))]
+
+    for tokens, label in ((4000, "4K"), (32000, "32K"), (128000, "128K"),
+                          (1000000, "1M"), (2000000, "2M")):
+        x = _lx(tokens)
+        g.append('<line class="fg" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>'
+                 % (x, PAD_T, x, FIELD_H - PAD_B))
+        g.append('<text class="fl" x="%.1f" y="%.1f" text-anchor="middle">%s'
+                 "</text>" % (x, FIELD_H - PAD_B + 16, label))
+    for price, label in ((0.05, "$0.05"), (1, "$1"), (10, "$10"),
+                         (100, "$100"), (600, "$600")):
+        y = _ly(price)
+        g.append('<line class="fg" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>'
+                 % (PAD_L, y, FIELD_W - PAD_R, y))
+        g.append('<text class="fl" x="%.1f" y="%.1f" text-anchor="end">%s'
+                 "</text>" % (PAD_L - 8, y + 3, label))
+    free_y = FIELD_H - PAD_B + 4
+    g.append('<line class="fg ffree" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>'
+             % (PAD_L, free_y, FIELD_W - PAD_R, free_y))
+    g.append('<text class="fl" x="%.1f" y="%.1f" text-anchor="end">free</text>'
+             % (PAD_L - 8, free_y + 3))
+    g.append('<text class="fa" x="%.1f" y="%.1f">context window &#8594;</text>'
+             % (PAD_L, FIELD_H - 6))
+    g.append('<text class="fa" x="13" y="%.1f" transform="rotate(-90 13 %.1f)">'
+             "cost per million out</text>" % (FIELD_H - PAD_B, FIELD_H - PAD_B))
+
+    # Newest last, so a fresh model is drawn on top of the crowd it joins.
+    for m in sorted(plotted + freebies, key=lambda x: x.get("created") or ""):
+        created = m.get("created") or ""
+        new = False
+        try:
+            new = (today - dt.date.fromisoformat(created)).days <= 30
+        except ValueError:
+            pass
+        colour = VCOLOR.get(m["vendor"], "#8A857E")
+        g.append('<circle class="fd%s" cx="%.1f" cy="%.1f" r="%s" '
+                 'fill="%s" data-vendor="%s" data-n="%s" data-c="%s" '
+                 'data-p="%s" data-d="%s"/>'
+                 % (" fnew" if new else "", _lx(m["context"]),
+                    free_y if m["out_per_m"] == 0 else _ly(m["out_per_m"]),
+                    "4.2" if new else "3",
+                    colour, esc(m["vendor"]), esc(m.get("name", "")),
+                    ctx(m.get("context")), money(m.get("out_per_m")),
+                    esc(created)))
+    g.append("</svg>")
+    return chr(10).join(g), len(plotted) + len(freebies), skipped
 
 
 def build():
@@ -379,6 +655,34 @@ def build():
         b.append('<div class="ai-stat"><b>%s</b><span>%s</span></div>'
                  % (big, small))
     b.append("</div>")
+
+    # ---- the field ---------------------------------------------------
+    field, plotted, skipped = field_svg(models, today)
+    b.append('<section class="ai-sec ai-field-sec">')
+    b.append("<h2>The field, tonight</h2>")
+    b.append('<p class="ai-note">Every model in the catalogue, placed by what '
+             'it can hold and what it costs. Across: the context window, 4K '
+             'to 2M. Up: the price of a million output tokens, three cents '
+             'to six hundred dollars. Both scales are logarithmic or the '
+             'picture is a smear. The larger, pulsing dots appeared in the '
+             'last 30 days. Point at one.</p>')
+    b.append('<figure class="ai-field-wrap">')
+    b.append(field)
+    b.append('<figcaption class="ai-readout-row">%s'
+             '<span class="ai-readout" id="ai-readout">'
+             '<span class="ph">%d models plotted &mdash; hover or tap a dot '
+             'to name it</span></span></figcaption>' % (WATCHER, plotted))
+    b.append("</figure>")
+    if skipped:
+        b.append('<p class="ai-note">%d router%s quote no price at all '
+                 '&mdash; they charge whatever the model they pick charges '
+                 '&mdash; so they are the only things missing from the '
+                 'picture: %s. They are counted everywhere else on this page. '
+                 'Leaving them out quietly would let the chart claim a '
+                 'completeness it does not have.</p>'
+                 % (len(skipped), "" if len(skipped) == 1 else "s",
+                    ", ".join(esc(m.get("name", "")) for m in skipped[:6])))
+    b.append("</section>")
 
     # ---- filters -----------------------------------------------------
     b.append('<div class="ai-pills">')
