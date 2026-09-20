@@ -78,6 +78,14 @@ SCENE_CSS = """
   .sc.is-on * { animation-play-state: running; }
 
   .cf-scene svg { color: var(--tx, var(--text, #EDEBE6)); }
+  /* ...but not the icons in the control bar.
+     That rule sets a colour on EVERY svg inside the frame, and the bar sits
+     inside the frame, so the control icons -- which are stroke="currentColor"
+     -- resolved their colour against the SCENE's ink rather than their own
+     button's. Measured in light mode: the button computed to #3B3733 as
+     asked, and its glyph still drew at #2C2A29. Two rules disagreeing about
+     one icon, with the louder one winning by accident of nesting. */
+  .cf-bar svg { color: inherit; }
   .sc path, .sc circle, .sc rect, .sc line {
     fill: none; stroke: currentColor; stroke-width: 2;
     stroke-linecap: round; stroke-linejoin: round;
@@ -421,17 +429,52 @@ SCENE_CSS = """
      selector in the list is one it does not recognise, and ::-moz-range-track
      is unknown to Chrome. Listed together, the light track silently did
      nothing -- which is exactly what the first attempt did. */
+  /* One tan for the filled controls, in BOTH themes.
+     Asked as: "are these colours OK in light mode? Isn't it too dark."
+
+     They were, and the cause was an inversion rather than a bug. Everything
+     stayed legible -- the glyph never dropped below 6.5:1 -- but the
+     RELATIONSHIP flipped. Measured off the rendered pixels:
+
+         dark    plate #C4A484 on bar #121211   8.02:1   plate LIGHTER
+         light   plate #6E5236 on bar #F6F4EF   6.54:1   plate DARKER
+
+     In dark mode the primary control is a soft highlight; in light mode it
+     became the heaviest, darkest object on a pale card. `--acc-ink` is
+     #6E5236 in light mode because it is tuned for SMALL TEXT on pale, where
+     4.5:1 is the floor -- and a colour chosen to be legible at 12px is far
+     too much weight as a 28px filled disc.
+
+     So the light theme borrows the dark theme's plate. The same tan, the
+     same dark glyph, in both:
+
+         plate on bar   2.13:1   present as a tinted chip, not a black disc
+         ink on plate   5.05:1   comfortably above the 4.5:1 floor
+
+     And the outline icons come down from #2C2A29 to the page's own text
+     colour. At 12.88:1 they were darker than the prose around them, which
+     is backwards for a control that should sit quietly until wanted. */
+  body.light .cf-player { --cf-chip: #C4A484; }
+  body.light .cf-play { background: var(--cf-chip); color: #1F1D1B; }
+  body.light .cf-cc[aria-pressed="true"] { background: var(--cf-chip);
+                                           border-color: var(--cf-chip);
+                                           color: #1F1D1B; }
+  body.light .cf-icon { color: #3B3733; border-color: rgba(59,55,51,.30); }
+  body.light .cf-icon:hover { color: #6E5236; border-color: #6E5236; }
+
   body.light .cf-player .cf-scene { --cf-notch: #F2EFE9; }
   body.light .cf-seek::-webkit-slider-runnable-track {
     background-image: var(--cf-ticks, none),
       linear-gradient(to right,
-        var(--acc-ink, #8A6A4B) 0 var(--cf-pct, 0%),
-        rgba(31,29,27,.22) var(--cf-pct, 0%) 100%); }
+        var(--cf-chip, #C4A484) 0 var(--cf-pct, 0%),
+        rgba(31,29,27,.20) var(--cf-pct, 0%) 100%); }
+  body.light .cf-seek::-webkit-slider-thumb { background: var(--cf-chip); }
+  body.light .cf-seek::-moz-range-thumb { background: var(--cf-chip); }
   body.light .cf-seek::-moz-range-track {
     background-image: var(--cf-ticks, none),
       linear-gradient(to right,
-        var(--acc-ink, #8A6A4B) 0 var(--cf-pct, 0%),
-        rgba(31,29,27,.22) var(--cf-pct, 0%) 100%); }
+        var(--cf-chip, #C4A484) 0 var(--cf-pct, 0%),
+        rgba(31,29,27,.20) var(--cf-pct, 0%) 100%); }
   .cf-play { width: 28px; height: 28px; flex: 0 0 auto; cursor: pointer;
              display: grid; place-items: center; font-size: .72rem;
              border-radius: 50%; border: none; color: #1F1D1B;
