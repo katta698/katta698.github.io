@@ -151,7 +151,20 @@ STYLE = """
   .ai-stat b { display: block; font-size: 1.15rem; }
   .ai-stat span { font-size: .68rem; letter-spacing: .06em;
                   text-transform: uppercase; color: var(--muted,#A9A49C); }
-  .ai-sec { margin-top: 2.2rem; }
+  .ai-jump { display: flex; flex-wrap: wrap; gap: .4rem; margin: .2rem 0 1rem; }
+  .ai-jump a { border: 1px solid var(--bd,#33302C); border-radius: 999px;
+               padding: .3rem .72rem; font-size: .74rem; text-decoration: none;
+               color: inherit; opacity: .85; }
+  .ai-jump a:hover, .ai-jump a:focus-visible {
+      border-color: var(--acc-ink,#C4A484); color: var(--acc-ink,#C4A484);
+      opacity: 1; }
+  /* scroll-margin-top, or the heading lands under the sticky header.
+     The bar is 64px and sticks at the top, so an anchor jump puts the
+     target's first line behind it -- the page moves, the heading is not
+     there, and it reads as a link that went to the wrong place. */
+  .ai-sec { margin-top: 2.2rem; scroll-margin-top: 82px; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
   .ai-sec h2 { font-size: 1.15rem; margin: 0 0 .3rem; }
   .ai-note { color: var(--muted,#A9A49C); font-size: .84rem;
              line-height: 1.6; max-width: 70ch; margin: 0 0 .9rem; }
@@ -262,6 +275,17 @@ STYLE = """
   table.ai-models th { font-size: .7rem; letter-spacing: .06em;
                        text-transform: uppercase; color: var(--muted,#A9A49C); }
   table.ai-models td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  /* [hidden] has to win, and here it did not.
+     `.ai-rel li { display: flex }` is more specific than the browser's own
+     `[hidden] { display: none }`, so every row the filter "hid" was still
+     laid out and still on screen. Measured: 341 of 401 rows carried the
+     attribute, 0 were actually display:none, and the page ran to 37,949px
+     -- 42 screens -- which is what made scrolling to the sources table feel
+     endless. The cap and the filters had been drawing a chart of their own
+     intentions.
+     Scoped to this page rather than global, and !important because the rule
+     it has to beat is the one being set two lines below. */
+  .ai-wrap [hidden] { display: none !important; }
   .ai-rel { list-style: none; margin: 0; padding: 0; }
   .ai-rel li { padding: .6rem 0; border-bottom: 1px solid var(--bd,#33302C);
                display: flex; gap: .7rem; align-items: baseline; }
@@ -830,9 +854,27 @@ def build():
                  % (big, small))
     b.append("</div>")
 
+    # Four ways in, at the top.
+    #
+    # Asked for as: "if I have to see where this comes from, I have to
+    # scroll down completely. Up is fine -- I can press the up arrow -- but
+    # going down I have to scroll all the way."
+    #
+    # Fair: the page is one screen of chart followed by 401 announcements,
+    # and the sources table is behind all of them. The back-to-top button
+    # solved one direction and nothing solved the other.
+    #
+    # Real anchors rather than a script, so they work with JavaScript off,
+    # can be opened in a new tab, and survive being shared.
+    b.append('<nav class="ai-jump" aria-label="Sections on this page">'
+             '<a href="#field">The field</a>'
+             '<a href="#models">New models</a>'
+             '<a href="#shipped">What shipped</a>'
+             '<a href="#sources">Where this comes from</a></nav>')
+
     # ---- the field ---------------------------------------------------
     field, plotted, skipped = field_svg(models, today)
-    b.append('<section class="ai-sec ai-field-sec">')
+    b.append('<section class="ai-sec ai-field-sec" id="field">')
     b.append("<h2>The field, tonight</h2>")
     # Define the words where they are FIRST met, not in a legend further
     # down the page.
@@ -906,7 +948,7 @@ def build():
              'placeholder="Search models and announcements"></p>')
 
     # ---- what runs ---------------------------------------------------
-    b.append('<section class="ai-sec">')
+    b.append('<section class="ai-sec" id="models">')
     b.append("<h2>New models, last %d days</h2>" % NEW_DAYS)
     b.append('<p class="ai-note">Dated by when the model first appeared in '
              'the catalogue, not by when it was announced &mdash; an '
@@ -962,7 +1004,7 @@ def build():
     b.append("</section>")
 
     # ---- what shipped ------------------------------------------------
-    b.append('<section class="ai-sec">')
+    b.append('<section class="ai-sec" id="shipped">')
     b.append("<h2>What shipped</h2>")
     b.append('<p class="ai-note">Every headline links to the vendor&rsquo;s '
              'own page. Entries marked <span class="badge">sitemap</span> '
@@ -994,7 +1036,7 @@ def build():
     b.append("</section>")
 
     # ---- where it comes from ----------------------------------------
-    b.append('<section class="ai-sec">')
+    b.append('<section class="ai-sec" id="sources">')
     b.append("<h2>Where this comes from</h2>")
     # The timestamp says which clock it is on, and then says it again in
     # the reader's own.
