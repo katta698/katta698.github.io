@@ -157,16 +157,47 @@ STYLE = """
   .ai-sub { margin: 0 0 .8rem; font-size: .92rem; letter-spacing: .02em;
             color: var(--ai-muted); }
   .ai-lede { color: var(--ai-muted); max-width: 62ch; line-height: 1.65; }
-  .ai-stats { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1.1rem 0; }
+  /* A GRID, so four things never break three-and-one.
+     Flex-wrap put three stat cards on one line and left "77 new in 60
+     days" orphaned underneath, then did the same to the four jump chips
+     directly below it -- two ragged rows, differently ragged, reading as
+     two unrelated blocks rather than one header. Four items want two
+     columns on a phone and four on a laptop, and a grid says so once. */
+  .ai-stats { display: grid; gap: .5rem; margin: 1.1rem 0;
+              grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  @media (min-width: 640px) {
+    .ai-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
   .ai-stat { border: 1px solid var(--border,#33302C); border-radius: 10px;
-             padding: .5rem .75rem; min-width: 7rem; }
+             padding: .5rem .75rem; }
   .ai-stat b { display: block; font-size: 1.15rem; }
   .ai-stat span { font-size: .68rem; letter-spacing: .06em;
                   text-transform: uppercase; color: var(--ai-muted); }
-  .ai-jump { display: flex; flex-wrap: wrap; gap: .4rem; margin: .2rem 0 1rem; }
-  .ai-jump a { border: 1px solid var(--border,#33302C); border-radius: 999px;
-               padding: .3rem .72rem; font-size: .74rem; text-decoration: none;
-               color: inherit; opacity: .85; }
+  /* Undo the site's own <nav>.
+     This is a <nav> because that is what it is, and the header's nav
+     styling applied to it on sight: a max-width, centring, its own padding
+     and a border-bottom. The chips came out 170px wide against 186px cards
+     directly above them, inset from the same left edge, with a stray rule
+     drawn through the second row. It looked careless, and it was -- an
+     element chosen for meaning, dressed by a rule written for a different
+     one. */
+  .ai-jump { display: grid; gap: .5rem; margin: 0 0 1.4rem;
+             grid-template-columns: repeat(2, minmax(0, 1fr));
+             max-width: none; width: auto; padding: 0; border: 0;
+             background: none; position: static; }
+  @media (min-width: 640px) {
+    .ai-jump { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
+  /* The same box as the stat cards above them -- same radius, same border,
+     same padding -- because they sit directly underneath and four rounded
+     pills under four rounded rectangles looked like a different component
+     had been dropped in. They are the header's second row, not a pill row;
+     the vendor pills further down are the pill row. */
+  .ai-jump a { border: 1px solid var(--border,#33302C); border-radius: 10px;
+               padding: .5rem .6rem; font-size: .76rem; text-decoration: none;
+               color: inherit; opacity: .9; text-align: center;
+               display: flex; align-items: center; justify-content: center;
+               min-height: 2.4rem; line-height: 1.25; }
   .ai-jump a:hover, .ai-jump a:focus-visible {
       border-color: var(--acc-ink,var(--accent,#C4A484)); color: var(--acc-ink,var(--accent,#C4A484));
       opacity: 1; }
@@ -285,6 +316,15 @@ STYLE = """
   .ai-legend { color: var(--ai-muted); font-size: .78rem;
                line-height: 1.6; max-width: 72ch; margin: 0 0 .7rem; }
   .ai-legend b { color: inherit; opacity: .95; }
+  /* The feedback star, out of the header block's column -- this page only.
+     It is fixed at right:14px, top:50%, and at the top of the page that is
+     exactly where the second jump chip ends. Hit-tested at 412px: the
+     centre of "New models" was reachable and its right edge answered
+     .fb-btn instead. A control that is 80% clickable is a control somebody
+     will blame themselves for missing.
+     Scoped with :has() as on the walkthrough, so no other page's star moves
+     and nothing site-wide is changed to suit one layout. */
+  body:has(.ai-wrap) .fb-btn { top: 70%; }
   .ai-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table.ai-models { width: 100%; border-collapse: collapse; font-size: .85rem; }
   table.ai-models th, table.ai-models td {
@@ -305,12 +345,14 @@ STYLE = """
      it has to beat is the one being set two lines below. */
   .ai-wrap [hidden] { display: none !important; }
   .ai-rel { list-style: none; margin: 0; padding: 0; }
-  .ai-rel li { padding: .6rem 0; border-bottom: 1px solid var(--border,#33302C);
-               display: flex; gap: .7rem; align-items: baseline; }
+  .ai-rel li { border-bottom: 1px solid var(--border,#33302C); }
+  .ai-rel .rel-row { display: flex; gap: .7rem; align-items: baseline;
+                     padding: .62rem 0; color: inherit; text-decoration: none; }
+  .ai-rel .rel-row:hover .t, .ai-rel .rel-row:focus-visible .t {
+      text-decoration: underline; }
   .ai-rel time { flex: 0 0 5.5rem; font-size: .76rem; color: var(--ai-muted);
                  font-variant-numeric: tabular-nums; }
   .ai-rel .v { flex: 0 0 8.5rem; font-size: .74rem; color: var(--acc-ink,var(--accent,#C4A484)); }
-  .ai-rel a { color: inherit; }
   .ai-rel .badge { font-size: .62rem; letter-spacing: .05em;
                    text-transform: uppercase; border: 1px solid var(--border,#33302C);
                    border-radius: 4px; padding: .05rem .3rem; margin-left: .4rem;
@@ -320,14 +362,27 @@ STYLE = """
                     color: inherit; border-radius: 8px; padding: .45rem .9rem;
                     font: inherit; cursor: pointer; }
   table.ai-src { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  /* The source links were 17px tall -- the last small target on the page
+     after the release rows were fixed. A table cell can carry the padding
+     instead of the link, so the row grows and the text does not. */
+  table.ai-src a { display: inline-block; padding: .32rem 0; color: inherit; }
   table.ai-src th, table.ai-src td { text-align: left; padding: .4rem .5rem;
       border-bottom: 1px solid var(--border,#33302C); vertical-align: top; }
   table.ai-src th { font-size: .68rem; letter-spacing: .06em;
                     text-transform: uppercase; color: var(--ai-muted); }
+  /* On a phone the row STACKS: date and vendor on a meta line, the
+     headline underneath at full width.
+     Side by side, the vendor column is as wide as its longest word on that
+     row -- "AWS" on one, "Hugging Face" on the next -- so every headline
+     started at a different x and the list read as ragged. That is the
+     "doesn't it look off" in the report, and it is also what makes a list
+     slow to scan: the eye has no column to run down. Stacking fixes both
+     and gives long AWS titles the whole width instead of 150px. */
   @media (max-width: 620px) {
-    .ai-rel li { flex-wrap: wrap; }
-    .ai-rel time { flex: 0 0 5rem; }
-    .ai-rel .v { flex: 0 0 auto; }
+    .ai-rel .rel-row { flex-wrap: wrap; gap: .1rem .55rem; }
+    .ai-rel time { flex: 0 0 auto; order: 1; }
+    .ai-rel .v { flex: 0 0 auto; order: 2; }
+    .ai-rel .t { order: 3; flex: 1 0 100%; margin-top: .12rem; }
   }
 </style>
 """
@@ -856,11 +911,14 @@ def build():
              '<span class="ai">AI</span></h1>')
     b.append('<p class="ai-sub">AI releases and models &mdash; what the '
              'vendors shipped, and what is running</p>')
-    b.append('<p class="ai-lede">What OpenAI, Anthropic, Google, xAI, Meta, '
-             'Microsoft, Mistral and DeepSeek have announced, taken from '
-             'their own feeds &mdash; and the models that are actually '
-             'running, with context windows, prices and the date each one '
-             'appeared. Nothing here is written by hand.</p>')
+    # The subtitle already says "what the vendors shipped, and what is
+    # running". This paragraph said it again in longer words directly
+    # underneath, which is how a page starts sounding like it is filling
+    # space. It keeps only what the subtitle cannot: who is watched, and
+    # where it comes from.
+    b.append('<p class="ai-lede">OpenAI, Anthropic, Google, xAI, Meta, '
+             'Microsoft, Mistral and DeepSeek &mdash; read from their own '
+             'feeds every day, and nothing here written by hand.</p>')
     b.append("</div>")
 
     b.append('<div class="ai-stats">')
@@ -1040,12 +1098,21 @@ def build():
                + (r.get("summary") or "")[:120]).lower()
         badge = ('<span class="badge">sitemap</span>'
                  if r.get("via") == "sitemap" else "")
+        # The WHOLE ROW is the link, not the headline inside it.
+        #
+        # Measured in my own pass over the page: the headline anchors were
+        # 21px tall. Apple asks for 44 and nothing here was near it, so on a
+        # phone every one of these was a small target in a dense list --
+        # the kind of thing a reader blames themselves for missing.
+        # Wrapping the row means the date and the vendor are part of the
+        # target too, which takes it to the full 45px of the row.
         b.append('<li data-kind="release" data-vendor="%s" data-search="%s">'
+                 '<a class="rel-row" href="%s" rel="noopener">'
                  '<time>%s</time><span class="v">%s</span>'
-                 '<span><a href="%s" rel="noopener">%s</a>%s</span></li>'
+                 '<span class="t">%s%s</span></a></li>'
                  % (esc(r.get("vendor", "")), esc(hay),
-                    esc(r.get("date") or ""), esc(r.get("vendor", "")),
-                    esc(r.get("url", "")), esc(r.get("title", "")), badge))
+                    esc(r.get("url", "")), esc(r.get("date") or ""),
+                    esc(r.get("vendor", "")), esc(r.get("title", "")), badge))
     b.append("</ul>")
     b.append('<p id="ai-none" hidden class="ai-note">Nothing matches those '
              'filters.</p>')
