@@ -223,6 +223,13 @@ STYLE = """
                 color: var(--muted,#A9A49C); }
   .ai-readout b { color: inherit; }
   .ai-readout .ph { opacity: .7; }
+  .ai-hint { display: none; margin: .4rem 0 0; font-size: .68rem;
+             letter-spacing: .08em; text-transform: uppercase;
+             color: var(--muted,#A9A49C); opacity: .75; }
+  @media (max-width: 760px) { .ai-hint { display: block; } }
+  .ai-legend { color: var(--muted,#A9A49C); font-size: .78rem;
+               line-height: 1.6; max-width: 72ch; margin: 0 0 .7rem; }
+  .ai-legend b { color: inherit; opacity: .95; }
   .ai-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table.ai-models { width: 100%; border-collapse: collapse; font-size: .85rem; }
   table.ai-models th, table.ai-models td {
@@ -317,6 +324,13 @@ FILTER_JS = """
     });
     var n = matched;
     if (none) none.hidden = n > 0;
+    var noModels = document.getElementById('ai-nomodels');
+    if (noModels) {
+      var anyModel = rows.some(function (el) {
+        return el.dataset.kind === 'model' && !el.hidden;
+      });
+      noModels.hidden = anyModel;
+    }
     if (more) {
       more.hidden = hidden === 0;
       var b = more.querySelector('button');
@@ -740,9 +754,22 @@ def build():
              'million tokens, in and out, as OpenRouter charges them; a '
              'vendor&rsquo;s direct rate can differ.</p>')
     b.append('<div class="ai-table-wrap"><table class="ai-models">')
+    # Headers a reader does not have to decode.
+    #
+    # Asked as: "what do these headers mean? Appeared, model, etc." Fair --
+    # "In" and "Out" are jargon for the two halves of a token bill, and
+    # "Context" and "Cutoff" mean nothing unless you already know. The
+    # column names carry their unit now, and the line below says what each
+    # one is in a sentence.
+    b.append('<p class="ai-legend"><b>Appeared</b> when the model first '
+             'showed up in the catalogue &middot; <b>Context</b> how much '
+             'text it can read at once, in tokens &middot; <b>In</b> and '
+             '<b>Out</b> what a million tokens cost &mdash; what you send, '
+             'and what it writes back &middot; <b>Cutoff</b> how recent its '
+             'training data is.</p>')
     b.append("<thead><tr><th>Appeared</th><th>Model</th><th>Vendor</th>"
-             "<th>Context</th><th>In</th><th>Out</th><th>Cutoff</th>"
-             "</tr></thead><tbody>")
+             "<th>Context</th><th>In $/M</th><th>Out $/M</th>"
+             "<th>Data cutoff</th></tr></thead><tbody>")
     for m in fresh:
         hay = (m.get("name", "") + " " + m.get("id", "") + " " +
                m.get("vendor", "")).lower()
@@ -755,6 +782,23 @@ def build():
                     ctx(m.get("context")), money(m.get("in_per_m")),
                     money(m.get("out_per_m")), esc(m.get("cutoff") or "—")))
     b.append("</tbody></table></div>")
+    # The same hint the architecture diagram carries, for the same reason:
+    # at 412px only two of the seven columns fit, and a table that scrolls
+    # sideways with nothing saying so is a table whose other columns do not
+    # exist as far as a reader is concerned.
+    b.append('<p class="ai-hint">scroll the table sideways &rarr;</p>')
+    # Five vendors publish announcements here and have no models in the
+    # catalogue at all -- AWS, Google DeepMind, Hugging Face, Microsoft and
+    # Microsoft Azure ship services and research rather than models you can
+    # call by name. Filtering to one of them emptied this table to a row of
+    # bare headers with nothing underneath and no explanation, which reads
+    # as a broken page rather than an honest absence.
+    b.append('<p id="ai-nomodels" hidden class="ai-note">No model from this '
+             'vendor appeared in the last %d days. Some of the vendors here '
+             '&mdash; AWS, Google DeepMind, Hugging Face and Microsoft '
+             '&mdash; publish research and services rather than models the '
+             'catalogue lists, so they show up under What shipped and not in '
+             'this table.</p>' % NEW_DAYS)
     b.append("</section>")
 
     # ---- what shipped ------------------------------------------------
