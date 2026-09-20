@@ -344,6 +344,37 @@ FILTER_JS = """
   fromUrl();
   apply(false);
 
+  /* The refresh time, restated in the reader's own zone.
+     Server-rendered it is UTC and says so; a browser knows better and can
+     name the zone it is in. The "ago" is the part that answers the real
+     question, which is not what time it was but whether it is stale. */
+  var when = document.querySelector('[data-when]');
+  if (when && when.dateTime) {
+    var d = new Date(when.dateTime);
+    if (!isNaN(d)) {
+      var mins = Math.round((Date.now() - d.getTime()) / 60000);
+      var ago = mins < 2 ? 'just now'
+        : mins < 60 ? mins + ' minutes ago'
+        : mins < 120 ? 'an hour ago'
+        : mins < 1440 ? Math.round(mins / 60) + ' hours ago'
+        : Math.round(mins / 1440) + ' days ago';
+      var zone = '';
+      try {
+        zone = new Intl.DateTimeFormat(undefined, {timeZoneName: 'short'})
+          .formatToParts(d).filter(function (p) {
+            return p.type === 'timeZoneName';
+          })[0].value;
+      } catch (e) { zone = ''; }
+      var local = d.toLocaleString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit'
+      });
+      when.innerHTML = '<b>' + local + (zone ? ' ' + zone : '') + '</b> (' +
+                       ago + ')';
+      when.title = when.dateTime;
+    }
+  }
+
   /* The field answers to the same pills, and to a finger.
      A dot names itself on hover for a mouse and on tap for a phone, where
      there is no hover at all -- a chart that only speaks to a pointer says
@@ -761,12 +792,26 @@ def build():
     # ---- where it comes from ----------------------------------------
     b.append('<section class="ai-sec">')
     b.append("<h2>Where this comes from</h2>")
+    # The timestamp says which clock it is on, and then says it again in
+    # the reader's own.
+    #
+    # Asked as: "why is it 8:44 -- what time zone is it?" It was UTC, on a
+    # page being read at 5pm Central, so it looked like a time in the
+    # future. A bare wall-clock time is only unambiguous to whoever wrote
+    # it. The site's own convention is an explicit UTC suffix, which the
+    # status page has carried all along, so that is the server-rendered
+    # text -- and a <time> element lets the browser restate it in the
+    # reader's zone, with how long ago it was, which is the thing a refresh
+    # stamp is actually asked.
     b.append('<p class="ai-note">A job on a clock reads these once a day and '
              'commits what it finds, so the page is current whether or not I '
-             'open a laptop. Last refreshed <b>%s</b>. The store only grows: '
-             'Google&rsquo;s AI feed holds 20 items and Microsoft&rsquo;s '
-             '10, so anything not written down within a fortnight would be '
-             'gone for good.</p>' % esc((fetched or "")[:16].replace("T", " ")))
+             'open a laptop. Last refreshed '
+             '<time class="ai-when" data-when datetime="%s"><b>%s UTC</b>'
+             '</time>. The store only grows: Google&rsquo;s AI feed holds 20 '
+             'items and Microsoft&rsquo;s 10, so anything not written down '
+             'within a fortnight would be gone for good.</p>'
+             % (esc(fetched or ""),
+                esc((fetched or "")[:16].replace("T", " "))))
     b.append('<div class="ai-table-wrap"><table class="ai-src">')
     b.append("<thead><tr><th>Vendor</th><th>How</th><th>Source</th></tr>"
              "</thead><tbody>")
