@@ -43,13 +43,15 @@ CLAIMS = {
     "news.json": "intelligence/news.json",
     "status.json": "intelligence/status.json",
     "events.json": "intelligence/events.json",
+    "ai.json": "intelligence/ai.json",
+    "build_ai_page.py": "scripts/build_ai_page.py",
     ".github/workflows": ".github/workflows",
 }
 
 ARCHITECTURE = """
 <svg viewBox="%s" preserveAspectRatio="xMidYMid meet" class="cf-arch-svg"
      role="img" aria-label="How the site fits together: hand-written posts and
-     three JSON data stores feed six Python builders; the builders write every
+     four JSON data stores feed seven Python builders; the builders write every
      published page; all pages share one stylesheet and one script; a
      pre-push gate of fifty browser checks stands between the builders and
      GitHub Pages; and seven scheduled jobs re-read the clouds' own feeds to
@@ -79,6 +81,10 @@ ARCHITECTURE = """
   <g class="ab store">
     <rect x="16" y="212" width="140" height="34" rx="6"/>
     <text class="at" x="30" y="233">events.json</text>
+  </g>
+  <g class="ab store">
+    <rect x="16" y="254" width="140" height="34" rx="6"/>
+    <text class="at" x="30" y="275">ai.json</text>
   </g>
 
   <!-- the clouds, and the jobs that read them -->
@@ -121,12 +127,17 @@ ARCHITECTURE = """
     <rect x="236" y="212" width="176" height="34" rx="6"/>
     <text class="at" x="250" y="233">build_events_page.py</text>
   </g>
+  <g class="ab bld">
+    <rect x="236" y="254" width="176" height="34" rx="6"/>
+    <text class="at" x="250" y="275">build_ai_page.py</text>
+  </g>
 
   <path class="aa a1" d="M156 65 H236"/>
   <path class="aa a1b" d="M156 75 V105 H236"/>
   <path class="aa a2" d="M156 145 H236"/>
   <path class="aa a3" d="M156 187 H236"/>
   <path class="aa a4" d="M156 229 H236"/>
+  <path class="aa a5" d="M156 271 H236"/>
 
   <g class="ab bld">
     <rect x="236" y="254" width="176" height="30" rx="6"/>
@@ -168,11 +179,16 @@ ARCHITECTURE = """
     <rect x="492" y="224" width="180" height="30" rx="6"/>
     <text class="at" x="506" y="243">Cloud events</text>
   </g>
+  <g class="ab page">
+    <rect x="492" y="260" width="180" height="30" rx="6"/>
+    <text class="at" x="506" y="279">j.AI</text>
+  </g>
 
   <path class="aa b1" d="M412 65 H492"/>
   <path class="aa b2" d="M412 145 H470 V161 H492"/>
   <path class="aa b3" d="M412 187 H470 V203 H492"/>
   <path class="aa b4" d="M412 229 H470 V239 H492"/>
+  <path class="aa b5" d="M412 271 H470 V275 H492"/>
 
   <!-- ================= shipping ================= -->
   <g class="ab ship">
