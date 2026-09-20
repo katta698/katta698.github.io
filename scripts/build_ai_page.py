@@ -169,8 +169,18 @@ STYLE = """
   .ai-field { width: 100%; height: auto; display: block;
               border: 1px solid var(--bd,#33302C); border-radius: 12px;
               background: color-mix(in srgb, var(--bg,#1F1D1B) 88%, #000); }
+  /* Light mode gets a WARM panel, not a darkened one.
+     color-mix(cream, black) is grey, and a grey slab in the middle of a
+     warm cream page is the "clumsy" in the report -- it reads as a
+     different site's component dropped in. Mixed toward the accent instead,
+     it sits in the palette. The dots also need help: a pastel tuned for a
+     dark background is washed out on a pale one, so they are deepened
+     rather than recoloured, which keeps one vendor one colour in both
+     themes. */
   body.light .ai-field { background: color-mix(in srgb,
-                         var(--bg,#F7F4EF) 92%, #000); }
+                         var(--bg,#F7F4EF) 94%, #C4A484); }
+  body.light .ai-field .fd { filter: saturate(1.5) brightness(.68); }
+  body.light .ai-field .fold { filter: saturate(.2) brightness(1.15); }
   .ai-field .fg { stroke: currentColor; stroke-width: .5; opacity: .16; }
   .ai-field .fl { fill: currentColor; opacity: .55;
                   font: 10px 'DM Mono', ui-monospace, monospace; }
@@ -178,6 +188,13 @@ STYLE = """
                   font: 9px 'DM Mono', ui-monospace, monospace;
                   text-transform: uppercase; }
   .ai-field .ffree { stroke-dasharray: 3 4; opacity: .28; }
+  /* Old models are background, not data you are meant to read. */
+  .ai-field .fold { opacity: .3; }
+  .ai-field .fm { stroke: var(--acc-ink,#C4A484); stroke-width: 1;
+                  stroke-dasharray: 2 4; opacity: .5; }
+  .ai-field .fmold { opacity: .3; }
+  .ai-field .fml { fill: currentColor; opacity: .5; letter-spacing: .04em;
+                   font: 9px 'DM Mono', ui-monospace, monospace; }
   .ai-field .fd { opacity: .85; cursor: pointer;
                   transition: opacity .15s ease, r .15s ease; }
   .ai-field .fd:hover, .ai-field .fd.on { opacity: 1; r: 6.5; }
@@ -603,6 +620,20 @@ def field_svg(models, today):
              % (PAD_L, free_y, FIELD_W - PAD_R, free_y))
     g.append('<text class="fl" x="%.1f" y="%.1f" text-anchor="end">free</text>'
              % (PAD_L - 8, free_y + 3))
+    # The two medians, drawn, because a number in prose under a chart is a
+    # number nobody maps back onto it.
+    st = field_story(models, today) or {}
+    for tokens, label, cls in (
+            (st.get("from_ctx") or 131072,
+             "median " + (st.get("from_q") or ""), "fmold"),
+            (st.get("to_ctx") or 1048576,
+             "median " + (st.get("to_q") or "now"), "fmnow")):
+        x = _lx(tokens)
+        g.append('<line class="fm %s" x1="%.1f" y1="%.1f" x2="%.1f" '
+                 'y2="%.1f"/>' % (cls, x, PAD_T + 6, x, FIELD_H - PAD_B))
+        g.append('<text class="fml %s" x="%.1f" y="%.1f" text-anchor="%s">%s'
+                 "</text>" % (cls, x + (5 if cls == "fmold" else -5), PAD_T + 14,
+                              "start" if cls == "fmold" else "end", label))
     g.append('<text class="fa" x="%.1f" y="%.1f">context window &#8594;</text>'
              % (PAD_L, FIELD_H - 6))
     g.append('<text class="fa" x="13" y="%.1f" transform="rotate(-90 13 %.1f)">'
@@ -616,11 +647,25 @@ def field_svg(models, today):
             new = (today - dt.date.fromisoformat(created)).days <= 30
         except ValueError:
             pass
-        colour = VCOLOR.get(m["vendor"], "#8A857E")
-        g.append('<circle class="fd%s" cx="%.1f" cy="%.1f" r="%s" '
+        # A model older than a year is drawn as grey background.
+        #
+        # 441 dots of equal weight hid the one thing this chart knows:
+        # measured from the same data, the median context window went from
+        # 131,072 in late 2024 to 1,048,576 now, while the median price only
+        # doubled. The field MOVED, and a flat scatter cannot show movement.
+        # Fading what is old leaves the recent models standing in colour on
+        # the right of a grey crowd, which is the shift, drawn.
+        old = False
+        try:
+            old = (today - dt.date.fromisoformat(created)).days > 365
+        except ValueError:
+            pass
+        colour = "#7C766E" if old else VCOLOR.get(m["vendor"], "#8A857E")
+        g.append('<circle class="fd%s%s" cx="%.1f" cy="%.1f" r="%s" '
                  'fill="%s" data-vendor="%s" data-n="%s" data-c="%s" '
                  'data-p="%s" data-d="%s"/>'
-                 % (" fnew" if new else "", _lx(m["context"]),
+                 % (" fnew" if new else "", " fold" if old else "",
+                    _lx(m["context"]),
                     free_y if m["out_per_m"] == 0 else _ly(m["out_per_m"]),
                     "4.2" if new else "3",
                     colour, esc(m["vendor"]), esc(m.get("name", "")),
@@ -628,6 +673,51 @@ def field_svg(models, today):
                     esc(created)))
     g.append("</svg>")
     return chr(10).join(g), len(plotted) + len(freebies), skipped
+
+
+
+def field_story(models, today):
+    """The shift, measured, every build.
+
+    The first version of the sentence under the chart carried the numbers I
+    had just measured by hand -- 131,072 to 1,048,576, $0.82 to $2.20. True
+    that evening, and the same mistake the narration made: a figure typed
+    into prose is a figure that goes stale while the page keeps rendering.
+    The colophon has a check for exactly this, and this page would have
+    walked into it from the other side.
+
+    So both ends are computed. The old end is the earliest quarter that has
+    at least eight models in it -- fewer than that and a median is an
+    anecdote -- and the new end is the most recent quarter with the same
+    floor.
+    """
+    import statistics
+    rows = [m for m in models
+            if m.get("context") and m.get("out_per_m") and m.get("created")]
+    buckets = {}
+    for m in rows:
+        y, mo, _ = m["created"].split("-")
+        buckets.setdefault("%s-Q%d" % (y, (int(mo) - 1) // 3 + 1), []).append(m)
+    full = sorted(k for k, v in buckets.items() if len(v) >= 8)
+    if len(full) < 2:
+        return None
+    first, last = buckets[full[0]], buckets[full[-1]]
+
+    def med(group, key):
+        return statistics.median(x[key] for x in group)
+
+    big = [m for m in rows if m["context"] >= 1000000]
+    cheap = min(big, key=lambda m: m["out_per_m"]) if big else None
+    return {
+        "from_q": full[0], "to_q": full[-1],
+        "from_ctx": int(med(first, "context")),
+        "to_ctx": int(med(last, "context")),
+        "from_price": med(first, "out_per_m"),
+        "to_price": med(last, "out_per_m"),
+        "big": len(big),
+        "cheap_price": cheap["out_per_m"] if cheap else None,
+        "cheap_name": cheap["name"] if cheap else "",
+    }
 
 
 def build():
@@ -705,12 +795,26 @@ def build():
     field, plotted, skipped = field_svg(models, today)
     b.append('<section class="ai-sec ai-field-sec">')
     b.append("<h2>The field, tonight</h2>")
-    b.append('<p class="ai-note">Every model in the catalogue, placed by what '
-             'it can hold and what it costs. Across: the context window, 4K '
-             'to 2M. Up: the price of a million output tokens, three cents '
-             'to six hundred dollars. Both scales are logarithmic or the '
-             'picture is a smear. The larger, pulsing dots appeared in the '
-             'last 30 days. Point at one.</p>')
+    b.append('<p class="ai-note">Every model in the catalogue, placed by '
+             'what it can hold (across, 4K to 2M) and what a million output '
+             'tokens cost (up, three cents to six hundred dollars). Both '
+             'scales are logarithmic or the picture is a smear. Models older '
+             'than a year are grey; the pulsing ones arrived in the last 30 '
+             'days. Point at any of them.</p>')
+    story = field_story(models, today)
+    if story:
+        b.append('<p class="ai-note"><b>What it shows:</b> the field has '
+                 'moved right. A model published in %s had a median context '
+                 'window of %s tokens; one published in %s has %s &mdash; '
+                 '%.1f times larger, while the median price of a million '
+                 'output tokens went from $%.2f to $%.2f. %d models now hold '
+                 'a million tokens or more, the cheapest at $%.2f per '
+                 'million out (%s).</p>'
+                 % (story["from_q"], "{:,}".format(story["from_ctx"]),
+                    story["to_q"], "{:,}".format(story["to_ctx"]),
+                    story["to_ctx"] / float(story["from_ctx"] or 1),
+                    story["from_price"], story["to_price"], story["big"],
+                    story["cheap_price"] or 0, esc(story["cheap_name"])))
     b.append('<figure class="ai-field-wrap">')
     b.append(field)
     b.append('<figcaption class="ai-readout-row">%s'
