@@ -490,6 +490,51 @@ FILTER_JS = """
   fromUrl();
   apply(false);
 
+  /* Back at the top means back at the top, including in the URL.
+   *
+   * Reported as: "I go down to the sources, press the up arrow, refresh,
+   * and it goes back down by default." Reproduced exactly:
+   *
+   *     tap Sources      y=9134   hash #sources
+   *     press up arrow   y=3      hash #sources   <- left behind
+   *     refresh          y=9262   back down again
+   *
+   * The jump links are real anchors, which is why they work with
+   * JavaScript off -- and an anchor writes #sources into the URL. The
+   * back-to-top button scrolls the page and has no idea the URL still
+   * says otherwise, so a reload obeys the URL rather than the screen.
+   *
+   * Dropping the hash once the reader is at the top costs nothing, keeps
+   * the anchor shareable while they are down there, and works for a
+   * manual scroll as well as the button. replaceState rather than
+   * pushState: undoing this should not cost a press of Back.
+   */
+  /* And the button says so directly, rather than being inferred from
+     where the page ends up. */
+  var toTop = document.querySelector('.back-top, [class*="back-top"]');
+  if (toTop) {
+    toTop.addEventListener('click', function () {
+      if (location.hash) {
+        history.replaceState(null, '', location.pathname + location.search);
+      }
+    });
+  }
+
+  var hashTidy = null;
+  window.addEventListener('scroll', function () {
+    if (hashTidy) { return; }
+    hashTidy = window.setTimeout(function () {
+      hashTidy = null;
+      /* 40px, not 8. The back-to-top button lands at y=10, not 0 --
+         measured -- so a threshold of 8 watched the fix fail by two
+         pixels. 40 is still unambiguously "at the top" and survives a
+         smooth scroll stopping a little short. */
+      if (window.scrollY < 40 && location.hash) {
+        history.replaceState(null, '', location.pathname + location.search);
+      }
+    }, 150);
+  }, { passive: true });
+
   /* The refresh time, restated in the reader's own zone.
      Server-rendered it is UTC and says so; a browser knows better and can
      name the zone it is in. The "ago" is the part that answers the real
