@@ -67,6 +67,7 @@ BROWSER = {
     "check_shell_parts", "check_reachable",
     "check_player_overlays", "check_no_orphan_music",
     "check_narration_true", "check_colophon_built",
+    "check_ai_fresh",
 }
 
 # Not run here. Each needs the network or an API and fails on a train.

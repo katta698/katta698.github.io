@@ -1,0 +1,73 @@
+# Keep the AI page current without anyone remembering to run it.
+#
+# The same argument as ingest-news.yml, with shorter feeds. Google's AI blog
+# holds 20 items and Microsoft's 10 -- measured, not assumed -- so a fortnight
+# unread is a fortnight permanently missing. fetch_ai.py merges into a store
+# that only grows, which makes the page's claim "everything since we started
+# watching" rather than "whatever the feed still remembers".
+#
+# It commits its own output, like refresh-aws-services.yml and ingest-news.yml.
+# The objection recorded in 111570f was to a workflow committing in response to
+# a PUSH, racing the person who made it. This is a cron on paths no human
+# edits: intelligence/ai.json and the page built from it.
+name: Refresh AI releases and models
+
+on:
+  schedule:
+    # 05:40 UTC daily -- half an hour after the cloud ingest, so the two are
+    # never rebasing over each other, and still before anybody is awake in
+    # CDT. Daily because the model catalogue moves daily: 77 models appeared
+    # in the 60 days before this was written.
+    - cron: "40 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-ai
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Probe every source first and fail loudly if one has gone dead.
+      # A vendor that quietly stops answering looks exactly like a vendor
+      # that has not shipped anything, and the page would carry on looking
+      # healthy while tracking nothing.
+      - name: Audit the sources
+        run: python scripts/fetch_ai.py --audit
+
+      - name: Fetch
+        run: python scripts/fetch_ai.py
+
+      - name: Build the page
+        run: python scripts/build_ai_page.py
+
+      - name: Commit if anything changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add intelligence/ai.json intelligence/ai/index.html
+          if git diff --cached --quiet; then
+            echo "nothing new"
+            exit 0
+          fi
+          n=$(python - <<'PY'
+          import json, io
+          d = json.load(io.open("intelligence/ai.json", encoding="utf-8"))
+          print(len(d.get("releases") or []))
+          PY
+          )
+          git commit -m "AI: $n announcements tracked"
+          for i in 1 2 3 4 5; do
+            git pull --rebase --autostash origin main && git push origin HEAD:main && break
+            sleep $((i * 10))
+          done

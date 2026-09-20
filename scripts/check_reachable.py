@@ -45,7 +45,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Where a reader starts. One of each kind: the hub, a deep page, a post.
-FROM = ["/", "/blog/", "/intelligence/", "/intelligence/whats-new/",
+FROM = ["/", "/blog/", "/intelligence/", "/intelligence/ai/",
+        "/intelligence/whats-new/",
         "/how-this-was-made/"]
 
 # Everywhere the site says it has. Taken from the sheet menu, which is the
@@ -68,7 +69,13 @@ DESTINATIONS = ["/", "/blog/", "/intelligence/", "/intelligence/whats-new/",
 # still get there from the right place" is the actual requirement and is worth
 # failing on. Deleting the destination would have made the check quietly
 # weaker, which is the failure mode this whole family of checks exists for.
-FROM_SOMEWHERE = {"/how-this-was-made/": "/"}
+FROM_SOMEWHERE = {"/how-this-was-made/": "/",
+                  # The AI page hangs off the Intelligence hub, where a
+                  # reader looking for "what's happening" already is. The
+                  # nav bar has 11px of slack and this needs 24, so a link
+                  # up there would push the row into a second line -- the
+                  # thing the header checks exist to prevent.
+                  "/intelligence/ai/": "/intelligence/"}
 
 WIDTHS = [(1440, "desktop"), (390, "phone")]
 
