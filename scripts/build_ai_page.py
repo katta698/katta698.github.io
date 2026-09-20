@@ -102,8 +102,8 @@ def head_html(jsv):
     import build_news_page as bnp
     head = bnp.PAGE[:bnp.PAGE.index("</head>")]
     head = re.sub(r"<title>.*?</title>",
-                  "<title>AI releases and models &mdash; OpenAI, Anthropic, "
-                  "Google, xAI | Jayanth Katta</title>",
+                  "<title>j.AI &mdash; AI releases and models from OpenAI, "
+                  "Anthropic, Google and xAI | Jayanth Katta</title>",
                   head, count=1, flags=re.S)
     head = re.sub(r'<meta name="description" content=".*?">',
                   '<meta name="description" content="What the AI vendors '
@@ -132,7 +132,17 @@ def tail_html(jsv):
 STYLE = """
 <style>
   .ai-wrap { max-width: 1120px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
-  .ai-head h1 { margin: .2rem 0 .4rem; font-size: clamp(1.5rem,4vw,2.1rem); }
+  /* line-height 1.12, not 1: the "j" is italic and its tail drops well
+     below the baseline, so at a flat 1 it grazed the line beneath. */
+  .ai-mark { margin: .2rem 0 .3rem; line-height: 1.12;
+             font-size: clamp(2.6rem,8vw,3.6rem); letter-spacing: -.015em; }
+  .ai-mark .jm { font-size: .46em; color: var(--acc-ink,#C4A484);
+                 font-style: italic; }
+  .ai-mark .dot { font-size: .38em; color: var(--muted,#A9A49C);
+                  margin: 0 .04em; }
+  .ai-mark .ai { letter-spacing: .01em; }
+  .ai-sub { margin: 0 0 .8rem; font-size: .92rem; letter-spacing: .02em;
+            color: var(--muted,#A9A49C); }
   .ai-lede { color: var(--muted,#A9A49C); max-width: 62ch; line-height: 1.65; }
   .ai-stats { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1.1rem 0; }
   .ai-stat { border: 1px solid var(--bd,#33302C); border-radius: 10px;
@@ -338,7 +348,22 @@ def build():
     b = []
     b.append('<main class="ai-wrap">')
     b.append('<div class="ai-head">')
-    b.append("<h1>AI, from the vendors&rsquo; own pages</h1>")
+    # j.AI -- a small quiet "j", the AI carrying the weight.
+    #
+    # Asked for as: "since my name is Jay, I like my AI page as jAI, or j in
+    # small highlighting AI -- something like j.AI."
+    #
+    # The dot is what makes it a mark rather than a typo: "jAI" reads as the
+    # name Jai and loses the AI entirely, where "j.AI" reads as a namespace
+    # and puts the emphasis exactly where it was asked to go. The <h1> is
+    # the mark, and the sentence under it carries the words a search engine
+    # and a screen reader need -- an aria-label on the mark says "j dot A I"
+    # so it is not read as a word.
+    b.append('<h1 class="ai-mark" aria-label="j dot A I">'
+             '<span class="jm">j</span><span class="dot">.</span>'
+             '<span class="ai">AI</span></h1>')
+    b.append('<p class="ai-sub">AI releases and models &mdash; what the '
+             'vendors shipped, and what is running</p>')
     b.append('<p class="ai-lede">What OpenAI, Anthropic, Google, xAI, Meta, '
              'Microsoft, Mistral and DeepSeek have announced, taken from '
              'their own feeds &mdash; and the models that are actually '
