@@ -402,7 +402,21 @@ SCENE_CSS = """
      to dodge an overlap that only happens at one scroll position. Sitting
      above it instead keeps the row balanced and keeps every tap landing on
      the button it was aimed at. */
-  .cf-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 901;
+  /* z-index 3, inside the player -- not 901, which outranked the site.
+     Reported as: "when I scroll down and the video goes up, I see this" --
+     the control bar painting on top of the sticky header, over the logo and
+     PORTFOLIO. Measured:
+
+         nav          position: sticky    z-index 100
+         control bar  position: absolute  z-index 901
+
+     901 was chosen to beat the feedback star at 900, which was covering the
+     Expand button. That fixed one overlap by starting a bigger one: a page
+     control has no business outranking the site's own chrome.
+
+     The star is moved on this page instead, below, so the bar does not need
+     to outrank anything. */
+  .cf-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
             display: flex; align-items: center; gap: .55rem;
             max-width: 100%; box-sizing: border-box;
             padding: .5rem .7rem .55rem;
@@ -523,7 +537,15 @@ SCENE_CSS = """
              flex: 0 0 11rem; width: 11rem; text-align: right;
              white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   body.light .cf-chap { color: #3B3733; }
-  .cf-player.is-zoomed .cf-chap { display: block; }
+  /* ...and only when the bar is genuinely wide.
+     "Expanded" was taken as proof there was room, and on a phone expanded
+     is still 94vw: the 11rem label took 176px of a 385px bar and left the
+     SCRUB BAR 0 PIXELS WIDE, with the expand button pushed to x=406 on a
+     412px screen. The label is worth having on a laptop and never worth
+     the scrubber. */
+  @media (min-width: 700px) {
+    .cf-player.is-zoomed .cf-chap { display: block; }
+  }
   /* CC reads as a label, not a glyph, so it is wider and set in mono --
      and the OFF state has to be visibly off at a glance, which a pressed
      state alone is not. */
@@ -557,7 +579,10 @@ SCENE_CSS = """
      is a drag, not a tap) and the visible 4px line moves to the TRACK
      pseudo-element, which is paint only and has no bearing on hit testing.
      Nothing about the look changes. Everything about grabbing it does. */
-  .cf-seek { flex: 1 1 auto; min-width: 0; -webkit-appearance: none;
+  /* min-width 72px, not 0. 0 let the bar solve its overflow by deleting
+     the main control -- measured at 0px wide and 14px wide in the two
+     expanded layouts. Anything that has to shrink now shrinks around it. */
+  .cf-seek { flex: 1 1 auto; min-width: 72px; -webkit-appearance: none;
              appearance: none; height: 22px; cursor: pointer; margin: 0;
              background: transparent; }
   /* Two layers: the chapter notches on top, the progress underneath.
@@ -590,9 +615,23 @@ SCENE_CSS = """
   body.cf-zoomed { overflow: hidden; }
   .cf-backdrop { position: fixed; inset: 0; z-index: 2000;
                  background: var(--bg, var(--surface, #1F1D1B)); }
+  /* max-width: none is the whole fix.
+     Reported as: "something is wrong with the expand tool -- when I expand
+     I see this, and it doesn't make any sense."
+
+     Expanding set a width of min(94vw, 1180px) and the base rule's
+     `max-width: 30rem` quietly capped it at 480px, so the frame came out
+     the size it already was. Measured while expanded:
+
+         desktop   frame 480x270   -- identical to unexpanded
+         phone     frame 387x218   -- 94vw, so no gain either
+
+     A width that loses to a max-width is not a bug you can see in the
+     stylesheet; it looks exactly like a rule that is working. */
   .cf-player.is-zoomed .cf-scene {
     position: fixed; z-index: 2001; left: 50%; top: 50%;
     transform: translate(-50%, -50%);
+    max-width: none;
     width: min(94vw, 1180px); margin: 0; }
   /* Expanded: the caption comes OFF the picture.
      -----------------------------------------------------------------------
@@ -669,6 +708,14 @@ SCENE_CSS = """
     .sc .out, .sc .chk { opacity: .85; }
     .sc .steam { opacity: .5; }
   }
+
+  /* The feedback star, out of the control bar's column -- on this page only.
+     It is fixed at right:14px, top:50%, so on a phone it floats exactly
+     where the player's last button sits, which is why the bar was given
+     z-index 901 in the first place. Moving it is page-scoped through
+     :has(), so no other page's star moves and no site-wide z-index has to
+     be raised to accommodate one page. */
+  body:has(.cf-player) .fb-btn { top: 72%; }
 
   @media (max-width: 560px) {
     .cf-scene { max-width: 100%; }
