@@ -411,7 +411,18 @@ FILTER_JS = """
   }
   function fromUrl() {
     var p = new URLSearchParams(location.search);
+    /* A vendor nobody offers is not a filter, it is a typo.
+       Found by my own test using ?v= as a cache-buster: the page filtered
+       to a vendor called "123456", hid all 401 announcements and all 77
+       models, and said "Nothing matches those filters" -- which is true,
+       and looks exactly like a broken page. A shared link with a tracking
+       parameter, or a stale bookmark, does the same thing. An unknown
+       value falls back to everything. */
     vendor = p.get('v') || 'all';
+    if (vendor !== 'all' && !pills.some(function (b) {
+          return b.dataset.v === vendor; })) {
+      vendor = 'all';
+    }
     text = p.get('q') || '';
     if (q) q.value = text;
     pills.forEach(function (b) {
