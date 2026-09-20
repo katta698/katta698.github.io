@@ -145,6 +145,21 @@ def main():
         print("  %d announcements, every one with a readable title"
               % len(releases))
 
+    # An entity that never decoded is a typo nobody typed.
+    #
+    # "&#x27;" rendered on the page as those six characters, because the
+    # decoder knew six entities by hand and the vendors between them used
+    # four different spellings of an apostrophe. Cheap to assert, and it
+    # fails on the next spelling as well as this one.
+    entity = re.compile(r"&(#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]{1,10});")
+    raw = [r for r in releases if entity.search(r.get("title") or "")]
+    if raw:
+        problems.append(
+            "%d title(s) still carry an undecoded HTML entity, which a "
+            "reader sees literally: %s"
+            % (len(raw), "; ".join((r.get("title") or "")[:52]
+                                   for r in raw[:3])))
+
     # ---- 3. the numbers are numbers -----------------------------------
     if not models:
         problems.append("the model catalogue is empty")

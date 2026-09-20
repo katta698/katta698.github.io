@@ -58,6 +58,7 @@ feed still remembers".
 """
 import argparse
 import concurrent.futures as futures
+import html
 import io
 import json
 import os
@@ -177,8 +178,20 @@ def strip_tags(s):
     # source is reachable, the items are found, and none survive.
     s = re.sub(r"<!\[CDATA\[(.*?)\]\]>", lambda m: m.group(1), s or "", flags=re.S)
     s = re.sub(r"<[^>]+>", " ", s or "")
-    s = (s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-          .replace("&quot;", '"').replace("&#39;", "'").replace("&nbsp;", " "))
+    # html.unescape, not six replacements by hand.
+    #
+    # The hand-rolled version knew &amp; &lt; &gt; &quot; &#39; and &nbsp;
+    # and nothing else, so an apostrophe written any of the other three
+    # common ways survived it and was then re-escaped on the way out:
+    #
+    #     How Claude&#x27;s values vary by model and language
+    #     Granite 4.2 LLMs: How They&apos;re Built
+    #     How Microsoft&#8217;s Physical Security Engineering Team...
+    #
+    # Five titles across three vendors, each using a different form of the
+    # same character. A list of entities is a list that is always missing
+    # one; the standard library has all of them.
+    s = html.unescape(s)
     return re.sub(r"\s+", " ", s).strip()
 
 
@@ -421,6 +434,18 @@ def main():
             i["title"] = title_of(i["url"]) or i["url"].rstrip("/").split("/")[-1].replace("-", " ").title()
             seen[i["url"]] = i
             added += 1
+
+    # Repair what is already in the store.
+    #
+    # The merge deliberately never revisits a URL it has seen -- that is
+    # what makes it a store rather than a snapshot -- so a parser fix does
+    # not reach the rows it was written for. Re-running strip_tags over the
+    # stored text is idempotent and costs nothing, and it means a decoding
+    # fix repairs the archive instead of only helping tomorrow's items.
+    for row in seen.values():
+        for field in ("title", "summary"):
+            if row.get(field):
+                row[field] = strip_tags(row[field])
 
     releases = sorted(seen.values(),
                       key=lambda r: (r.get("date") or "0000-00-00"),
