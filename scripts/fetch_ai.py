@@ -175,7 +175,7 @@ def strip_tags(s):
     # parse_feed then drops the item for having no title, and a 1,210-item
     # feed yields nothing at all. It fails silently and completely: the
     # source is reachable, the items are found, and none survive.
-    s = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"", s or "", flags=re.S)
+    s = re.sub(r"<!\[CDATA\[(.*?)\]\]>", lambda m: m.group(1), s or "", flags=re.S)
     s = re.sub(r"<[^>]+>", " ", s or "")
     s = (s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
           .replace("&quot;", '"').replace("&#39;", "'").replace("&nbsp;", " "))

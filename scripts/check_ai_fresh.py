@@ -120,6 +120,31 @@ def main():
                 "may be a parser matching nothing; the page cannot tell the "
                 "difference and neither can a reader" % (v, days))
 
+    # ---- 2b. every headline is a headline -----------------------------
+    #
+    # Reported as: "in what is being shipped I just see OpenAI and no news
+    # associated to those." Every OpenAI title in the store was the single
+    # byte 0x01 -- the CDATA unwrapper's replacement had been written as
+    # "" rather than r"", so it substituted the SOH control character
+    # for the headline. 207 links with nothing to click on, a store that
+    # counted 401 items, and a page that rendered without an error.
+    #
+    # An empty string would have been caught by the parser's own guard. A
+    # control character is a non-empty string, which is exactly why it got
+    # through.
+    broken = [r for r in releases
+              if not "".join(ch for ch in (r.get("title") or "")
+                             if ch.isprintable()).strip()]
+    if broken:
+        problems.append(
+            "%d announcement(s) have a title that is empty or unprintable, "
+            "so the page renders a link with nothing to click: %s"
+            % (len(broken), ", ".join(r.get("url", "")[:48]
+                                      for r in broken[:3])))
+    else:
+        print("  %d announcements, every one with a readable title"
+              % len(releases))
+
     # ---- 3. the numbers are numbers -----------------------------------
     if not models:
         problems.append("the model catalogue is empty")

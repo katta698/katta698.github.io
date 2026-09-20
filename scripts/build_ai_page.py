@@ -736,8 +736,13 @@ def build():
              'itself.</p>')
     b.append('<ul class="ai-rel">')
     for r in releases:
-        hay = ((r.get("title") or "") + " " + (r.get("summary") or "") + " "
-               + (r.get("vendor") or "")).lower()
+        # The haystack is the headline, the vendor and the first line of
+        # the summary -- not the whole summary. Carrying all of it put the
+        # page at 342KB, most of it duplicated prose nobody reads, in an
+        # attribute. 120 characters keeps a search for "agentcore" or
+        # "context window" working and gives back a fifth of the page.
+        hay = ((r.get("title") or "") + " " + (r.get("vendor") or "") + " "
+               + (r.get("summary") or "")[:120]).lower()
         badge = ('<span class="badge">sitemap</span>'
                  if r.get("via") == "sitemap" else "")
         b.append('<li data-kind="release" data-vendor="%s" data-search="%s">'
