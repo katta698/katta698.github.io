@@ -582,7 +582,21 @@ SCENE_CSS = """
   /* min-width 72px, not 0. 0 let the bar solve its overflow by deleting
      the main control -- measured at 0px wide and 14px wide in the two
      expanded layouts. Anything that has to shrink now shrinks around it. */
+  /* touch-action: pan-y is why a finger can drag this at all.
+     Reported as: "to forward I have to click instead of scroll -- can't it
+     be seamless." It could not: at the default `auto` the browser claims a
+     horizontal drag that starts on the slider for panning the page, so the
+     control never receives the gesture. Measured on the same path:
+
+         mouse drag   22000 -> 121200   tracks the pointer
+         touch drag   ends at 2200      never moved at all
+
+     pan-y rather than none, so a finger that starts on the bar and moves
+     DOWN still scrolls the page -- the bar spans most of the frame's width
+     and swallowing every vertical swipe that begins on it would trade one
+     stuck gesture for another. */
   .cf-seek { flex: 1 1 auto; min-width: 72px; -webkit-appearance: none;
+             touch-action: pan-y;
              appearance: none; height: 22px; cursor: pointer; margin: 0;
              background: transparent; }
   /* Two layers: the chapter notches on top, the progress underneath.

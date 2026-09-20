@@ -63,6 +63,7 @@ PLAYER_JS = """
   var BASE = '/blog/assets/audio/walkthrough/';
 
   var at = 0, playing = false, muted = false, cc = true;
+  var scrubbing = false;      // a finger or pointer is on the scrub bar
   var voice = null, bed = null, timer = null, cue = -1;
   var TOTAL = 0;
   try {
@@ -125,7 +126,17 @@ PLAYER_JS = """
   // scene number. Called on every tick, so the thumb moves the way a video
   // player's does instead of jumping once per scene.
   function paintBar(ms) {
-    if (seek && document.activeElement !== seek) {
+    /* Never while a finger is on it.
+     *
+     * The guard used to be `activeElement !== seek`, which holds for a mouse
+     * -- dragging focuses the control -- and does not hold for touch, where
+     * focus stays on the body. So every tick, four times a second, the
+     * thumb was put back where the AUDIO was while the finger was somewhere
+     * else. Measured mid-drag: the finger at 25% and 62% of the bar, the
+     * thumb reading 2200 and 2800, which is the narration's position to the
+     * millisecond. It looked like the drag "breaking" and snapping back.
+     */
+    if (seek && !scrubbing && document.activeElement !== seek) {
       var v = String(Math.round(ms));
       if (seek.value !== v) { seek.value = v; }
     }
@@ -347,6 +358,12 @@ PLAYER_JS = """
     voice.preload = 'auto';
     voice.ontimeupdate = function () {
       var ms = Math.round(voice.currentTime * 1000);
+      // While a finger is on the bar, the tick says nothing at all. It is
+      // not only the thumb that gets overwritten: the clock is repainted
+      // from the same call, so mid-drag it flickered between the position
+      // being chosen and the position still playing -- measured at 119200
+      // on the bar and 0:03 on the clock in the same frame.
+      if (scrubbing) { return; }
       // Proof the narration is really sounding, not merely un-paused. The
       // music's level is derived from this and nothing else.
       if (ms !== lastMs) { lastMs = ms; lastProgress = Date.now();
@@ -534,15 +551,53 @@ PLAYER_JS = """
   if (sceneBox) { sceneBox.addEventListener('click', toggle); }
 
   if (seek) {
-    seek.addEventListener('input', function () {
-      var ms = Math.max(0, Math.min(TOTAL, parseInt(seek.value, 10) || 0));
+    /* Dragging moves the PICTURE; the audio is moved once, on release.
+     *
+     * A drag fires `input` on every pixel of travel. Seeking a media element
+     * that often makes a phone stutter -- each seek abandons a decode and
+     * starts another -- which is the other half of "it is not seamless".
+     * So while a finger or a pointer is down, the scene, the clock and the
+     * caption follow the slider, and the narration is moved once when it
+     * lets go. A tap on the track fires input and change together, so it
+     * still seeks immediately.
+     */
+    function preview(ms) {
       at = sceneFor(ms);
-      // Move the audio first, so paint() reads the position it is going to
-      // and the bar does not flick back to where the voice used to be.
-      if (voice) { try { voice.currentTime = ms / 1000; } catch (e) {} }
       paint();
       paintBar(ms);
+    }
+
+    function commit(ms) {
+      if (voice) { try { voice.currentTime = ms / 1000; } catch (e) {} }
+      preview(ms);
       if (playing) { run(); }
+    }
+
+    function valueMs() {
+      return Math.max(0, Math.min(TOTAL, parseInt(seek.value, 10) || 0));
+    }
+
+    seek.addEventListener('pointerdown', function () { scrubbing = true; });
+    seek.addEventListener('touchstart', function () { scrubbing = true; },
+                          { passive: true });
+    seek.addEventListener('touchend', function () {
+      if (scrubbing) { scrubbing = false; commit(valueMs()); }
+    });
+    seek.addEventListener('input', function () {
+      if (scrubbing) { preview(valueMs()); } else { commit(valueMs()); }
+    });
+    seek.addEventListener('change', function () {
+      scrubbing = false;
+      commit(valueMs());
+    });
+    // A pointer released outside the control still ends the drag: without
+    // this, a finger that slides off the end of the bar leaves the player
+    // previewing for ever and the audio never moves.
+    window.addEventListener('pointerup', function () {
+      if (scrubbing) { scrubbing = false; commit(valueMs()); }
+    });
+    window.addEventListener('pointercancel', function () {
+      if (scrubbing) { scrubbing = false; commit(valueMs()); }
     });
   }
 
