@@ -429,6 +429,19 @@ SCENE_CSS = """
      dark in light mode -- sitting on top of it. Dark on dark. The scrim was
      hard-coded rgba(0,0,0,.72) and had never been looked at outside the
      dark theme it was designed in. */
+  /* The total stays; it is the half that answers "when does this end".
+     It folds away only under 380px, where the row genuinely runs out.
+
+     OLD NOTE, kept because the measurement is the point: 
+     "I have a hard time scrolling it forward and rewind." Measured, that
+     is precision rather than smoothness: on a phone the bar is ~116px for a
+     123-second track, so ONE PIXEL of finger travel is a whole second, and
+     a fingertip covers about thirty of them. The elapsed time answers
+     "where am I"; the total is printed twice over anyway, once here and
+     once at the end of the bar itself. Giving its 39px to the scrubber is
+     the cheapest width on the row -- but it was the wrong 39px to take.
+     The slash's two spaces gave back 16 of them for nothing. */
+  .cf-time .cf-of { margin-left: .1em; }
   @media (max-width: 380px) { .cf-time .cf-of { display: none; } }
 
   body.light .cf-bar {
@@ -626,6 +639,19 @@ SCENE_CSS = """
   .cf-seek:focus-visible { outline: 2px solid var(--acc-ink, #C4A484);
                            outline-offset: 3px; }
 
+  /* A bigger grip where there are fingers rather than a pointer.
+     22px of height and a 12px thumb are comfortable under a mouse and mean
+     and fiddly under a thumb -- and this control is dragged, not clicked,
+     so it has to be held for the length of the gesture. pointer: coarse
+     asks the device rather than guessing from width: a phone gets this, a
+     laptop with a narrow window does not. */
+  @media (pointer: coarse) {
+    .cf-seek { height: 30px; }
+    .cf-seek::-webkit-slider-thumb { width: 17px; height: 17px;
+                                     margin-top: -6.5px; }
+    .cf-seek::-moz-range-thumb { width: 17px; height: 17px; }
+  }
+
   body.cf-zoomed { overflow: hidden; }
   .cf-backdrop { position: fixed; inset: 0; z-index: 2000;
                  background: var(--bg, var(--surface, #1F1D1B)); }
@@ -698,8 +724,14 @@ SCENE_CSS = """
        enabled, and a tap went to the star instead. Extra right padding moves
        the controls out from under it rather than moving a site-wide control
        for one page. */
-    .cf-bar { gap: .4rem; padding: .4rem .5rem .45rem; }
-    .cf-player .cf-scene { --cf-bar-h: 40px; }
+    /* Tighter gaps and edges on a phone, because every pixel taken from
+       the row's whitespace is a pixel the scrub bar gets, and the scrub bar
+       is the control that was hard to use. The icons keep their size --
+       they are already at 24px, which is below Apple's 44px guidance, and
+       shrinking a tap target to widen a drag target trades one complaint
+       for another. */
+    .cf-bar { gap: .3rem; padding: .4rem .4rem .45rem; }
+    .cf-player .cf-scene { --cf-bar-h: 48px; }
     .cf-player.cc-on .cf-scene { --cf-cap-h: 40px; }
     .cf-icon { width: 24px; height: 24px; }
     /* CC is a LABEL and has to keep sizing itself.

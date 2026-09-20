@@ -731,7 +731,12 @@ def build():
              % (total or (len(STOPS) - 1), ticks or "none"))
     # And the clock he asked for: "I don't see any sort of timer -- how long
     # has it been running, when does it end."
-    b.append('<span class="cf-time" data-time>0:00<span class="cf-of"> / '
+    # "0:00/2:03", not "0:00 / 2:03". The spaces either side of the slash
+    # cost 16px of a row where the scrub bar is the thing that needed them,
+    # and the total was nearly deleted on phones to find that width -- which
+    # would have taken away the half of the clock that answers "when does
+    # this end", asked for in the first place.
+    b.append('<span class="cf-time" data-time>0:00<span class="cf-of">/'
              '%d:%02d</span></span>' % (total // 60000, (total // 1000) % 60))
     # The chapter you are in, named. The same titles as the written stops
     # below the player, so the two never describe the journey differently.
