@@ -1,0 +1,375 @@
+---
+title: "AWS Architecture Series #58 — The compensation step was handed the error, not the order"
+date: '2026-09-20T09:00:00'
+slug: aws-architecture-saga-compensation
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-20'
+verified_claims:
+  - claim: "When a state reports an error, Step Functions defaults to failing the entire state machine execution"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html
+  - claim: "Step Functions catchers are available for Task, Parallel and Map states, but not for top-level state machine execution failures"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html
+  - claim: "For JSONPath workflows, if you don't specify the ResultPath field, it defaults to $, which selects and overwrites the entire input"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html
+  - claim: "ResultPath is a path that determines what input the catcher sends to the state specified in the Next field"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html
+  - claim: "A States.Runtime error isn't retriable, and will always cause the execution to fail, and a retry or catch on States.ALL won't catch States.Runtime errors"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html
+  - claim: "The States.ALL error type must appear alone in a Catcher and cannot catch the States.DataLimitExceeded terminal error or Runtime error types"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html
+  - claim: "When used in a retry or catch, States.TaskFailed acts as a wildcard that matches any known error name except for States.Timeout"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html
+  - claim: "When a state has both Retry and Catch fields, Step Functions uses any appropriate retriers first, and if the retry policy fails to resolve the error Step Functions applies the matching catcher transition"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html
+  - claim: "IntervalSeconds is a positive integer that represents the number of seconds before the first retry attempt, 1 by default"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html
+  - claim: "MaxAttempts is a positive integer that represents the maximum number of retry attempts, 3 by default, and a value of 0 specifies that the error is never retried"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html
+  - claim: "In AWS's worked example with IntervalSeconds of 3, MaxAttempts of 3 and BackoffRate of 2, the first retry takes place three seconds after the error, the second six seconds after the first, and the third 12 seconds after the second"
+    derive: "3 * 2 * 2"
+    expect: "12"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html
+  - claim: "JitterStrategy accepts FULL or NONE as its values and the default value is NONE"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html
+  - claim: "Retries are treated as state transitions"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html
+  - claim: "Standard Workflows follow an exactly-once model, where your tasks and states are never run more than once, unless you have specified Retry behavior in ASL, which makes Standard Workflows suited to orchestrating non-idempotent actions such as starting an Amazon EMR cluster or processing payments"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/choosing-workflow-type.html
+  - claim: "Express Workflows use an at-least-once model so an execution could potentially run more than once, which makes Express Workflows better suited for orchestrating idempotent actions"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/choosing-workflow-type.html
+  - claim: "Standard Workflows are ideal for long-running workflows of up to one year and you can retrieve the full execution history using the Step Functions API for up to 90 days after your execution completes, while Express Workflows can run for up to five minutes"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/choosing-workflow-type.html
+  - claim: "Express Workflows do not support Job-run .sync or Callback .waitForTaskToken service integration patterns, and Distributed Map and Activities are not supported"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/choosing-workflow-type.html
+  - claim: "For Standard Workflows execution state internally persists between state transitions, while for Express Workflows execution state doesn't persist between state transitions"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/choosing-workflow-type.html
+  - claim: "Standard Workflows automatically return an idempotent response on starting an execution with the same name as a currently-running workflow, while for Asynchronous Express Workflows idempotency is not automatically managed and starting multiple workflows with the same name results in concurrent executions"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/choosing-workflow-type.html
+  - claim: "The workflow type can not be updated after you create a state machine"
+    source: https://docs.aws.amazon.com/step-functions/latest/dg/choosing-workflow-type.html
+problem: "A saga replaces a transaction it cannot have with a sequence of steps and a compensating action for each one. The orchestration is the easy half; the failures are in what the compensating step is given to work with, what the wildcard does not catch, and the steps whose compensation is not a rollback at all."
+builds: "A model of the saga as Step Functions actually implements it: where Retry ends and Catch begins, what the catcher receives by default, which errors no catcher sees, and how the workflow type decides whether a compensation can be trusted to run once."
+catch: "A catcher's ResultPath defaults to $, which overwrites the entire input with the error output. The compensation step is reached correctly and arrives holding a Cause string where the order id, payment id and reservation id used to be — so it knows something failed and no longer knows what to undo."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #058 &middot; Application Patterns</div>
+  <h1 class="post-title">The compensation step was handed the error, not the order</h1>
+  <p class="post-subtitle">A saga trades a transaction for a sequence of undoable steps. Step Functions will run the undo &mdash; and by default it passes the error output where the order data used to be.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Reliability &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Six posts of application patterns have assumed a step can fail and be retried. This one is about
+      what happens when it cannot &mdash; when the work already succeeded, the next step failed, and the
+      only way back is forward.
+    </p>
+    <p>
+      An order reserves stock, charges a card, books a courier slot. Three services, three datastores, no
+      transaction spanning them. The courier booking fails. Stock is reserved and the card is charged, and
+      nothing will roll that back because there was never anything to roll back <em>to</em>.
+    </p>
+    <p>
+      The saga is the accepted answer: each step gets a compensating action, and on failure you walk
+      backwards running them. The pattern is sound. Three things about implementing it on AWS are not
+      obvious, and the first one is the reason compensations fail in production.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The compensation is given the error, not the order</strong></div>
+      <div class="challenge-body">
+        <p>
+          A catcher's <code class="inline">ResultPath</code> <em>&ldquo;determines what input the catcher
+          sends to the state specified in the <code class="inline">Next</code> field.&rdquo;</em> Leave it
+          out and Step Functions is explicit about what happens: <em>&ldquo;if you don't specify the
+          <code class="inline">ResultPath</code> field, it defaults to <code class="inline">$</code>, which
+          selects and overwrites the <strong>entire input</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So the compensation state is reached exactly as designed, and arrives holding an error object
+          with a <code class="inline">Cause</code> string. The order id, the payment id, the reservation id
+          &mdash; everything it needs to undo anything &mdash; has been replaced by a description of what
+          went wrong.
+        </p>
+        <p>
+          It fails in the most expensive way available: the workflow looks correct, the transition happens,
+          and the undo runs against nothing.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Set <code class="inline">ResultPath</code> on every catcher, always. <code class="inline">"$.error"</code> adds the error and keeps the input.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong><code class="inline">States.ALL</code> does not mean all</strong></div>
+      <div class="challenge-body">
+        <p>
+          The wildcard reads like total coverage and is not. <em>&ldquo;The
+          <code class="inline">States.ALL</code> error type must appear alone in a
+          <code class="inline">Catcher</code> and cannot catch the
+          <code class="inline">States.DataLimitExceeded</code> terminal error or
+          <code class="inline">Runtime</code> error types.&rdquo;</em>
+        </p>
+        <p>
+          And on the one that bites hardest: <em>&ldquo;A
+          <code class="inline">States.Runtime</code> error isn't retriable, and will always cause the
+          execution to fail. A retry or catch on <code class="inline">States.ALL</code> won't catch
+          <code class="inline">States.Runtime</code> errors.&rdquo;</em>
+        </p>
+        <p>
+          Those come from things like applying a path to a null payload &mdash; ordinary data-shape bugs.
+          A saga whose entire safety net is one <code class="inline">States.ALL</code> catcher has no net
+          under the failures most likely to occur while it is being built.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Name the errors you expect explicitly, and treat <code class="inline">States.ALL</code> as the last of several, not the only one.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The workflow's own failure has no catcher</strong></div>
+      <div class="challenge-body">
+        <p>
+          Catchers are per-state. AWS says so directly: they are <em>&ldquo;available for
+          <strong>Task</strong>, <strong>Parallel</strong> and <strong>Map</strong> states, but not for
+          top-level state machine execution failures.&rdquo;</em>
+        </p>
+        <p>
+          A saga that times out as a whole, or hits an uncatchable runtime error, does not run its
+          compensations. It stops, holding reserved stock and a charged card, and nothing inside the
+          workflow will do anything about it.
+        </p>
+        <p>
+          AWS names the ways out: let the caller handle it, nest the work in a child workflow so the parent
+          can catch it, or <em>&ldquo;listen for <code class="inline">TIMED_OUT</code> events from Standard
+          workflows with an EventBridge bus and invoke an action to handle the failed execution.&rdquo;</em>
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Put the saga in a child workflow, or wire <code class="inline">TIMED_OUT</code> to something that compensates. Do not leave it unhandled.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The useful frame is that Step Functions gives you two different mechanisms and they answer two
+      different questions: <code class="inline">Retry</code> asks <em>will this work if I try again?</em>,
+      and <code class="inline">Catch</code> asks <em>what do I do now that it will not?</em>
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-058-saga-compensation.svg" alt="Diagram: how a saga's compensation path works in AWS Step Functions and where it fails. A forward path runs three steps — reserve stock, charge card, book courier — each with its own compensating action. When a step reports an error, Step Functions applies any matching retrier first, and only if the retry policy fails to resolve the error does it transition to the matching catcher. The retrier defaults are shown: IntervalSeconds of 1, MaxAttempts of 3, and a BackoffRate that increases by 2.0, with JitterStrategy defaulting to NONE, and a note that retries are treated as state transitions and therefore billed. The centre of the diagram records the defect that breaks compensation: a catcher's ResultPath determines what input is passed to the compensating state, and if it is not specified it defaults to dollar-sign, which overwrites the entire input, so the compensation arrives holding an error Cause string where the order, payment and reservation identifiers used to be. Setting ResultPath to dollar-sign dot error instead adds the error and preserves the input. A lower panel records two gaps in coverage: States.ALL must appear alone in a catcher and cannot catch States.DataLimitExceeded or Runtime errors, and a States.Runtime error is never retriable and always fails the execution, while States.TaskFailed matches any known error except States.Timeout. A final panel records that catchers exist for Task, Parallel and Map states but not for top-level state machine execution failures, so a saga that times out as a whole runs no compensation at all unless the work is nested in a child workflow or a TIMED_OUT event is wired to an external handler." />
+      <figcaption>Retry asks whether it will work next time. Catch asks what to do now that it will not &mdash; and what it hands the compensation is a setting most people never write.</figcaption>
+    </figure>
+
+    <h3>Retry first, then catch &mdash; and the defaults are generous</h3>
+    <p>
+      The ordering is fixed and worth knowing: <em>&ldquo;When a state has both
+      <code class="inline">Retry</code> and <code class="inline">Catch</code> fields, Step Functions uses
+      any appropriate retriers first. If the retry policy fails to resolve the error, Step Functions applies
+      the matching catcher transition.&rdquo;</em>
+    </p>
+    <p>
+      The retrier defaults are <code class="inline">IntervalSeconds</code> of <strong>1</strong>,
+      <code class="inline">MaxAttempts</code> of <strong>3</strong>, and a
+      <code class="inline">BackoffRate</code> that <em>&ldquo;increases by <strong>2.0</strong>&rdquo;</em>.
+      AWS's own worked example makes the shape concrete: with an interval of 3 and a backoff of 2, the
+      retries land at three seconds, six seconds, and <strong>12 seconds</strong>.
+    </p>
+    <p>
+      Two details matter for a saga specifically. <code class="inline">JitterStrategy</code> defaults to
+      <strong><code class="inline">NONE</code></strong> &mdash; the previous post on retries was about what
+      that costs a fleet, and it is off here unless you set <code class="inline">FULL</code>. And
+      <em>&ldquo;retries are treated as state transitions&rdquo;</em>, which on a Standard workflow is the
+      billing unit. A generous retry policy on a step that is reliably broken is a bill as well as a delay.
+    </p>
+
+    <div class="callout amber">
+      <strong>Preserve the input, on every catcher, without exception</strong>
+      <p>This is the one line to take away. A catcher with <code class="inline">"ResultPath": "$.error"</code> <em>&ldquo;adds the error output to the input&rdquo;</em> and passes the whole thing onward; a catcher without it replaces the input entirely. The first is a compensation that knows which order to undo. The second is a compensation that knows only that something failed. Nothing in the console warns you which one you built, and both look identical on the workflow graph.</p>
+    </div>
+
+    <h3>The workflow type decides whether a compensation runs once</h3>
+    <p>
+      Compensations are side effects, usually irreversible ones, so how many times they run is not an
+      academic question. The two workflow types answer it differently, and
+      <em>&ldquo;the workflow type can <strong>not</strong> be updated after you create a state
+      machine&rdquo;</em> &mdash; so this is decided once, at creation.
+    </p>
+    <p>
+      <strong>Standard</strong> follows <em>&ldquo;an exactly-once model, where your tasks and states are
+      never run more than once, unless you have specified <code class="inline">Retry</code> behavior&rdquo;</em>,
+      which AWS says suits <em>&ldquo;orchestrating <strong>non-idempotent</strong> actions, such as
+      starting an Amazon EMR cluster or processing payments.&rdquo;</em> That is a saga's description of
+      itself.
+    </p>
+    <p>
+      <strong>Express</strong> uses <em>&ldquo;an at-least-once model, so an execution could potentially run
+      more than once&rdquo;</em>, suited to <em>&ldquo;idempotent actions&rdquo;</em>. Run a saga on
+      asynchronous Express and the refund may be issued twice &mdash; which is the same at-least-once
+      contract post #52 was about, one layer up.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The state has to live somewhere, and only one type keeps it</h3>
+    <p>
+      A saga is a sequence with memory: to compensate step three you must know steps one and two ran. Step
+      Functions states the difference plainly &mdash; for Standard, <em>&ldquo;execution state internally
+      persists between state transitions&rdquo;</em>; for Express, <em>&ldquo;execution state doesn't
+      persist between state transitions.&rdquo;</em>
+    </p>
+    <p>
+      That is the architectural reason a saga belongs on Standard, ahead of duration or cost. The same
+      asymmetry shows up in naming: Standard <em>&ldquo;automatically returns an idempotent response on
+      starting an execution with the same name as a currently-running workflow&rdquo;</em>, while for
+      asynchronous Express <em>&ldquo;idempotency is not automatically managed. Starting multiple workflows
+      with the same name results in concurrent executions.&rdquo;</em> Two concurrent sagas for one order is
+      a compensation running against a step the other saga is still performing.
+    </p>
+
+    <div class="callout red">
+      <strong>The waiting patterns a saga needs are Standard-only</strong>
+      <p>Real sagas wait. A fraud review needs a human; a fulfilment step needs a job to finish. Both are service integration patterns, and AWS is explicit that <em>&ldquo;Express Workflows do not support Job-run (<code class="inline">.sync</code>) or Callback (<code class="inline">.waitForTaskToken</code>) service integration patterns&rdquo;</em> &mdash; nor Distributed Map, nor Activities. Combined with the five-minute ceiling, a saga with any human in it cannot be Express. And since the type is immutable, discovering that later means building a new state machine rather than changing a setting.</p>
+    </div>
+
+    <h3>Compensation is not rollback, and some steps cannot be compensated</h3>
+    <p>
+      Everything above is mechanical. The part that is not mechanical is that a compensating action is a
+      <em>new</em> forward action that approximates an undo, and the approximation is not always available.
+    </p>
+    <p>
+      Releasing a stock reservation is a genuine inverse &mdash; the system returns to its prior state.
+      Refunding a payment is not: the charge and the refund both exist, the customer sees both, and a
+      statement now shows activity that the original transaction model would never have produced. Sending
+      the confirmation email has no inverse at all. The compensation for a sent email is a second email
+      apologising for the first, which is not a rollback; it is customer service implemented in a state
+      machine.
+    </p>
+    <p>
+      This is why step ordering is a design decision rather than an implementation detail. Put the steps
+      with real inverses first and the irreversible ones last, so that the further a saga gets, the less
+      likely it is to need an undo it cannot perform. A saga that emails the customer before charging the
+      card has ordered itself so that the most common failure produces the least reversible mess.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Catcher input</td>
+        <td><code class="inline">ResultPath</code> on every catcher</td>
+        <td>The default is <code class="inline">$</code>, which overwrites the whole input with the error output.</td>
+      </tr>
+      <tr>
+        <td>Error matching</td>
+        <td>Named errors, then <code class="inline">States.ALL</code> last</td>
+        <td>The wildcard catches neither <code class="inline">States.Runtime</code> nor <code class="inline">States.DataLimitExceeded</code>.</td>
+      </tr>
+      <tr>
+        <td>Workflow-level failure</td>
+        <td>Child workflow, or <code class="inline">TIMED_OUT</code> on EventBridge</td>
+        <td>Catchers do not exist for top-level execution failures. Otherwise nothing compensates.</td>
+      </tr>
+      <tr>
+        <td>Workflow type</td>
+        <td>Standard</td>
+        <td>Exactly-once, state persists between transitions, and it is the type AWS names for non-idempotent actions.</td>
+      </tr>
+      <tr>
+        <td>Compensation handlers</td>
+        <td>Idempotent anyway</td>
+        <td>A redrive resets retry counts, and a compensation may be reached more than once.</td>
+      </tr>
+      <tr>
+        <td>Retry policy</td>
+        <td>Explicit, with <code class="inline">JitterStrategy: FULL</code></td>
+        <td>Jitter defaults to <code class="inline">NONE</code>, and retries bill as state transitions.</td>
+      </tr>
+      <tr>
+        <td>Step ordering</td>
+        <td>Reversible first, irreversible last</td>
+        <td>The later a saga fails, the more likely its compensations are approximations rather than inverses.</td>
+      </tr>
+      <tr>
+        <td>Human-in-the-loop steps</td>
+        <td>Standard, decided up front</td>
+        <td><code class="inline">.waitForTaskToken</code> is unsupported on Express, and the type is immutable.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>Two error names worth knowing precisely</h3>
+    <p>
+      <code class="inline">States.TaskFailed</code> is nearly a wildcard: it <em>&ldquo;acts as a wildcard
+      that matches any known error name <strong>except for</strong>
+      <code class="inline">States.Timeout</code>.&rdquo;</em> A catcher built on it silently excludes the
+      timeout case, which for a saga is among the most likely failures &mdash; a downstream service that
+      hangs rather than erroring.
+    </p>
+    <p>
+      And <code class="inline">States.Timeout</code> changes identity across a boundary: if a nested state
+      machine throws it, the parent receives <code class="inline">States.TaskFailed</code> instead. A
+      parent catching only <code class="inline">States.Timeout</code> to handle a child's timeout will not
+      match it.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Two-phase commit is not coming back, and the saga is what replaces it &mdash; not as an equivalent,
+      but as an admission. A transaction offers atomicity: nothing partially happened. A saga offers
+      something weaker and honest: everything happened, and then some of it was undone as well as it could
+      be.
+    </p>
+    <p>
+      Step Functions implements the orchestration well, and the orchestration was never the hard part. The
+      hard parts are a default that hands your compensation an error where the order used to be, a wildcard
+      that is not a wildcard, a workflow-level failure with no handler inside the workflow, and steps whose
+      compensation is a second email rather than a reversal.
+    </p>
+    <p>
+      None of those are visible on the workflow graph. The graph of a saga with
+      <code class="inline">ResultPath</code> set and a saga without it are the same picture, and only one of
+      them can undo anything. That is worth remembering the next time a state machine diagram is offered as
+      evidence that a design is sound.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Application patterns &mdash; CQRS, and the commoner case where it is overkill: what separating reads from writes actually buys, why the read model's staleness is the whole design rather than a defect in it, and the far more frequent situation where one model and a well-chosen index would have been the answer.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html" target="_blank" rel="noopener">Handling errors in Step Functions workflows &#8212; Retry and Catch, the ResultPath default, and what States.ALL does not cover</a></li>
+      <li><a href="https://docs.aws.amazon.com/step-functions/latest/dg/choosing-workflow-type.html" target="_blank" rel="noopener">Choosing workflow type in Step Functions &#8212; exactly-once versus at-least-once, state persistence, and the unsupported integration patterns</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

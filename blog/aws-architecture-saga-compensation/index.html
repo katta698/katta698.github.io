@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #58 — The compensation step was handed the error, not the order | Jayanth Katta Blog</title>
+<meta name="description" content="A saga replaces a transaction it cannot have with a sequence of steps and a compensating action for each one. The orchestration is the easy half; the failures are in what the compensating step is given to work with, what the wildcard does not catch, and the steps whose compensation is not a rollback at all."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="The compensation step was handed the error, not the order"/>
+<meta property="og:description" content="A saga replaces a transaction it cannot have with a sequence of steps and a compensating action for each one. The orchestration is the easy half; the failures are in what the compensating step is given to work with, what the wildcard does not catch, and the steps whose compensation is not a rollback at all."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-saga-compensation/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="The compensation step was handed the error, not the order"/>
+<meta name="twitter:description" content="A saga replaces a transaction it cannot have with a sequence of steps and a compensating action for each one. The orchestration is the easy half; the failures are in what the compensating step is given to work with, what the wildcard does not catch, and the steps whose compensation is not a rollback at all."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-saga-compensation/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=f612e7fb"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=9c896dce" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=9c896dce">
+<script src="/blog/assets/site-footer.js?v=9c896dce" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #58 — The compensation step was handed the error, not the order…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #58 — The compensation step was handed the error, not the order</h1>
+      <p class="post-description">A saga replaces a transaction it cannot have with a sequence of steps and a compensating action for each one. The orchestration is the easy half; the failures are in what the compensating step is given to work with, what the wildcard does not catch, and the steps whose compensation is not a rollback at all.</p>
+      <div class="post-info">
+        <span>Sep 20, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>10 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 20 September 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-saga-compensation" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Six posts of application patterns have assumed a step can fail and be retried. This one is about
+      what happens when it cannot &mdash; when the work already succeeded, the next step failed, and the
+      only way back is forward.
+    </p>
+    <p>
+      An order reserves stock, charges a card, books a courier slot. Three services, three datastores, no
+      transaction spanning them. The courier booking fails. Stock is reserved and the card is charged, and
+      nothing will roll that back because there was never anything to roll back <em>to</em>.
+    </p>
+    <p>
+      The saga is the accepted answer: each step gets a compensating action, and on failure you walk
+      backwards running them. The pattern is sound. Three things about implementing it on AWS are not
+      obvious, and the first one is the reason compensations fail in production.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The compensation is given the error, not the order</strong></div>
+      <div class="challenge-body">
+        <p>
+          A catcher's <code class="inline">ResultPath</code> <em>&ldquo;determines what input the catcher
+          sends to the state specified in the <code class="inline">Next</code> field.&rdquo;</em> Leave it
+          out and Step Functions is explicit about what happens: <em>&ldquo;if you don't specify the
+          <code class="inline">ResultPath</code> field, it defaults to <code class="inline">$</code>, which
+          selects and overwrites the <strong>entire input</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So the compensation state is reached exactly as designed, and arrives holding an error object
+          with a <code class="inline">Cause</code> string. The order id, the payment id, the reservation id
+          &mdash; everything it needs to undo anything &mdash; has been replaced by a description of what
+          went wrong.
+        </p>
+        <p>
+          It fails in the most expensive way available: the workflow looks correct, the transition happens,
+          and the undo runs against nothing.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Set <code class="inline">ResultPath</code> on every catcher, always. <code class="inline">"$.error"</code> adds the error and keeps the input.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong><code class="inline">States.ALL</code> does not mean all</strong></div>
+      <div class="challenge-body">
+        <p>
+          The wildcard reads like total coverage and is not. <em>&ldquo;The
+          <code class="inline">States.ALL</code> error type must appear alone in a
+          <code class="inline">Catcher</code> and cannot catch the
+          <code class="inline">States.DataLimitExceeded</code> terminal error or
+          <code class="inline">Runtime</code> error types.&rdquo;</em>
+        </p>
+        <p>
+          And on the one that bites hardest: <em>&ldquo;A
+          <code class="inline">States.Runtime</code> error isn't retriable, and will always cause the
+          execution to fail. A retry or catch on <code class="inline">States.ALL</code> won't catch
+          <code class="inline">States.Runtime</code> errors.&rdquo;</em>
+        </p>
+        <p>
+          Those come from things like applying a path to a null payload &mdash; ordinary data-shape bugs.
+          A saga whose entire safety net is one <code class="inline">States.ALL</code> catcher has no net
+          under the failures most likely to occur while it is being built.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Name the errors you expect explicitly, and treat <code class="inline">States.ALL</code> as the last of several, not the only one.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The workflow's own failure has no catcher</strong></div>
+      <div class="challenge-body">
+        <p>
+          Catchers are per-state. AWS says so directly: they are <em>&ldquo;available for
+          <strong>Task</strong>, <strong>Parallel</strong> and <strong>Map</strong> states, but not for
+          top-level state machine execution failures.&rdquo;</em>
+        </p>
+        <p>
+          A saga that times out as a whole, or hits an uncatchable runtime error, does not run its
+          compensations. It stops, holding reserved stock and a charged card, and nothing inside the
+          workflow will do anything about it.
+        </p>
+        <p>
+          AWS names the ways out: let the caller handle it, nest the work in a child workflow so the parent
+          can catch it, or <em>&ldquo;listen for <code class="inline">TIMED_OUT</code> events from Standard
+          workflows with an EventBridge bus and invoke an action to handle the failed execution.&rdquo;</em>
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Put the saga in a child workflow, or wire <code class="inline">TIMED_OUT</code> to something that compensates. Do not leave it unhandled.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The useful frame is that Step Functions gives you two different mechanisms and they answer two
+      different questions: <code class="inline">Retry</code> asks <em>will this work if I try again?</em>,
+      and <code class="inline">Catch</code> asks <em>what do I do now that it will not?</em>
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-058-saga-compensation.svg" alt="Diagram: how a saga's compensation path works in AWS Step Functions and where it fails. A forward path runs three steps — reserve stock, charge card, book courier — each with its own compensating action. When a step reports an error, Step Functions applies any matching retrier first, and only if the retry policy fails to resolve the error does it transition to the matching catcher. The retrier defaults are shown: IntervalSeconds of 1, MaxAttempts of 3, and a BackoffRate that increases by 2.0, with JitterStrategy defaulting to NONE, and a note that retries are treated as state transitions and therefore billed. The centre of the diagram records the defect that breaks compensation: a catcher's ResultPath determines what input is passed to the compensating state, and if it is not specified it defaults to dollar-sign, which overwrites the entire input, so the compensation arrives holding an error Cause string where the order, payment and reservation identifiers used to be. Setting ResultPath to dollar-sign dot error instead adds the error and preserves the input. A lower panel records two gaps in coverage: States.ALL must appear alone in a catcher and cannot catch States.DataLimitExceeded or Runtime errors, and a States.Runtime error is never retriable and always fails the execution, while States.TaskFailed matches any known error except States.Timeout. A final panel records that catchers exist for Task, Parallel and Map states but not for top-level state machine execution failures, so a saga that times out as a whole runs no compensation at all unless the work is nested in a child workflow or a TIMED_OUT event is wired to an external handler." />
+      <figcaption>Retry asks whether it will work next time. Catch asks what to do now that it will not &mdash; and what it hands the compensation is a setting most people never write.</figcaption>
+    </figure>
+
+    <h3>Retry first, then catch &mdash; and the defaults are generous</h3>
+    <p>
+      The ordering is fixed and worth knowing: <em>&ldquo;When a state has both
+      <code class="inline">Retry</code> and <code class="inline">Catch</code> fields, Step Functions uses
+      any appropriate retriers first. If the retry policy fails to resolve the error, Step Functions applies
+      the matching catcher transition.&rdquo;</em>
+    </p>
+    <p>
+      The retrier defaults are <code class="inline">IntervalSeconds</code> of <strong>1</strong>,
+      <code class="inline">MaxAttempts</code> of <strong>3</strong>, and a
+      <code class="inline">BackoffRate</code> that <em>&ldquo;increases by <strong>2.0</strong>&rdquo;</em>.
+      AWS's own worked example makes the shape concrete: with an interval of 3 and a backoff of 2, the
+      retries land at three seconds, six seconds, and <strong>12 seconds</strong>.
+    </p>
+    <p>
+      Two details matter for a saga specifically. <code class="inline">JitterStrategy</code> defaults to
+      <strong><code class="inline">NONE</code></strong> &mdash; the previous post on retries was about what
+      that costs a fleet, and it is off here unless you set <code class="inline">FULL</code>. And
+      <em>&ldquo;retries are treated as state transitions&rdquo;</em>, which on a Standard workflow is the
+      billing unit. A generous retry policy on a step that is reliably broken is a bill as well as a delay.
+    </p>
+
+    <div class="callout amber">
+      <strong>Preserve the input, on every catcher, without exception</strong>
+      <p>This is the one line to take away. A catcher with <code class="inline">"ResultPath": "$.error"</code> <em>&ldquo;adds the error output to the input&rdquo;</em> and passes the whole thing onward; a catcher without it replaces the input entirely. The first is a compensation that knows which order to undo. The second is a compensation that knows only that something failed. Nothing in the console warns you which one you built, and both look identical on the workflow graph.</p>
+    </div>
+
+    <h3>The workflow type decides whether a compensation runs once</h3>
+    <p>
+      Compensations are side effects, usually irreversible ones, so how many times they run is not an
+      academic question. The two workflow types answer it differently, and
+      <em>&ldquo;the workflow type can <strong>not</strong> be updated after you create a state
+      machine&rdquo;</em> &mdash; so this is decided once, at creation.
+    </p>
+    <p>
+      <strong>Standard</strong> follows <em>&ldquo;an exactly-once model, where your tasks and states are
+      never run more than once, unless you have specified <code class="inline">Retry</code> behavior&rdquo;</em>,
+      which AWS says suits <em>&ldquo;orchestrating <strong>non-idempotent</strong> actions, such as
+      starting an Amazon EMR cluster or processing payments.&rdquo;</em> That is a saga's description of
+      itself.
+    </p>
+    <p>
+      <strong>Express</strong> uses <em>&ldquo;an at-least-once model, so an execution could potentially run
+      more than once&rdquo;</em>, suited to <em>&ldquo;idempotent actions&rdquo;</em>. Run a saga on
+      asynchronous Express and the refund may be issued twice &mdash; which is the same at-least-once
+      contract post #52 was about, one layer up.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>The state has to live somewhere, and only one type keeps it</h3>
+    <p>
+      A saga is a sequence with memory: to compensate step three you must know steps one and two ran. Step
+      Functions states the difference plainly &mdash; for Standard, <em>&ldquo;execution state internally
+      persists between state transitions&rdquo;</em>; for Express, <em>&ldquo;execution state doesn't
+      persist between state transitions.&rdquo;</em>
+    </p>
+    <p>
+      That is the architectural reason a saga belongs on Standard, ahead of duration or cost. The same
+      asymmetry shows up in naming: Standard <em>&ldquo;automatically returns an idempotent response on
+      starting an execution with the same name as a currently-running workflow&rdquo;</em>, while for
+      asynchronous Express <em>&ldquo;idempotency is not automatically managed. Starting multiple workflows
+      with the same name results in concurrent executions.&rdquo;</em> Two concurrent sagas for one order is
+      a compensation running against a step the other saga is still performing.
+    </p>
+
+    <div class="callout red">
+      <strong>The waiting patterns a saga needs are Standard-only</strong>
+      <p>Real sagas wait. A fraud review needs a human; a fulfilment step needs a job to finish. Both are service integration patterns, and AWS is explicit that <em>&ldquo;Express Workflows do not support Job-run (<code class="inline">.sync</code>) or Callback (<code class="inline">.waitForTaskToken</code>) service integration patterns&rdquo;</em> &mdash; nor Distributed Map, nor Activities. Combined with the five-minute ceiling, a saga with any human in it cannot be Express. And since the type is immutable, discovering that later means building a new state machine rather than changing a setting.</p>
+    </div>
+
+    <h3>Compensation is not rollback, and some steps cannot be compensated</h3>
+    <p>
+      Everything above is mechanical. The part that is not mechanical is that a compensating action is a
+      <em>new</em> forward action that approximates an undo, and the approximation is not always available.
+    </p>
+    <p>
+      Releasing a stock reservation is a genuine inverse &mdash; the system returns to its prior state.
+      Refunding a payment is not: the charge and the refund both exist, the customer sees both, and a
+      statement now shows activity that the original transaction model would never have produced. Sending
+      the confirmation email has no inverse at all. The compensation for a sent email is a second email
+      apologising for the first, which is not a rollback; it is customer service implemented in a state
+      machine.
+    </p>
+    <p>
+      This is why step ordering is a design decision rather than an implementation detail. Put the steps
+      with real inverses first and the irreversible ones last, so that the further a saga gets, the less
+      likely it is to need an undo it cannot perform. A saga that emails the customer before charging the
+      card has ordered itself so that the most common failure produces the least reversible mess.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Catcher input</td>
+        <td><code class="inline">ResultPath</code> on every catcher</td>
+        <td>The default is <code class="inline">$</code>, which overwrites the whole input with the error output.</td>
+      </tr>
+      <tr>
+        <td>Error matching</td>
+        <td>Named errors, then <code class="inline">States.ALL</code> last</td>
+        <td>The wildcard catches neither <code class="inline">States.Runtime</code> nor <code class="inline">States.DataLimitExceeded</code>.</td>
+      </tr>
+      <tr>
+        <td>Workflow-level failure</td>
+        <td>Child workflow, or <code class="inline">TIMED_OUT</code> on EventBridge</td>
+        <td>Catchers do not exist for top-level execution failures. Otherwise nothing compensates.</td>
+      </tr>
+      <tr>
+        <td>Workflow type</td>
+        <td>Standard</td>
+        <td>Exactly-once, state persists between transitions, and it is the type AWS names for non-idempotent actions.</td>
+      </tr>
+      <tr>
+        <td>Compensation handlers</td>
+        <td>Idempotent anyway</td>
+        <td>A redrive resets retry counts, and a compensation may be reached more than once.</td>
+      </tr>
+      <tr>
+        <td>Retry policy</td>
+        <td>Explicit, with <code class="inline">JitterStrategy: FULL</code></td>
+        <td>Jitter defaults to <code class="inline">NONE</code>, and retries bill as state transitions.</td>
+      </tr>
+      <tr>
+        <td>Step ordering</td>
+        <td>Reversible first, irreversible last</td>
+        <td>The later a saga fails, the more likely its compensations are approximations rather than inverses.</td>
+      </tr>
+      <tr>
+        <td>Human-in-the-loop steps</td>
+        <td>Standard, decided up front</td>
+        <td><code class="inline">.waitForTaskToken</code> is unsupported on Express, and the type is immutable.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>Two error names worth knowing precisely</h3>
+    <p>
+      <code class="inline">States.TaskFailed</code> is nearly a wildcard: it <em>&ldquo;acts as a wildcard
+      that matches any known error name <strong>except for</strong>
+      <code class="inline">States.Timeout</code>.&rdquo;</em> A catcher built on it silently excludes the
+      timeout case, which for a saga is among the most likely failures &mdash; a downstream service that
+      hangs rather than erroring.
+    </p>
+    <p>
+      And <code class="inline">States.Timeout</code> changes identity across a boundary: if a nested state
+      machine throws it, the parent receives <code class="inline">States.TaskFailed</code> instead. A
+      parent catching only <code class="inline">States.Timeout</code> to handle a child's timeout will not
+      match it.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Two-phase commit is not coming back, and the saga is what replaces it &mdash; not as an equivalent,
+      but as an admission. A transaction offers atomicity: nothing partially happened. A saga offers
+      something weaker and honest: everything happened, and then some of it was undone as well as it could
+      be.
+    </p>
+    <p>
+      Step Functions implements the orchestration well, and the orchestration was never the hard part. The
+      hard parts are a default that hands your compensation an error where the order used to be, a wildcard
+      that is not a wildcard, a workflow-level failure with no handler inside the workflow, and steps whose
+      compensation is a second email rather than a reversal.
+    </p>
+    <p>
+      None of those are visible on the workflow graph. The graph of a saga with
+      <code class="inline">ResultPath</code> set and a saga without it are the same picture, and only one of
+      them can undo anything. That is worth remembering the next time a state machine diagram is offered as
+      evidence that a design is sound.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Application patterns &mdash; CQRS, and the commoner case where it is overkill: what separating reads from writes actually buys, why the read model's staleness is the whole design rather than a defect in it, and the far more frequent situation where one model and a well-chosen index would have been the answer.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html" target="_blank" rel="noopener">Handling errors in Step Functions workflows &#8212; Retry and Catch, the ResultPath default, and what States.ALL does not cover</a></li>
+      <li><a href="https://docs.aws.amazon.com/step-functions/latest/dg/choosing-workflow-type.html" target="_blank" rel="noopener">Choosing workflow type in Step Functions &#8212; exactly-once versus at-least-once, state persistence, and the unsupported integration patterns</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-weekly-intelligence-14-18-september-2026/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Weekly Intelligence #7 - 14-18 September 2026</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-saga-compensation/';
+      this.page.identifier = 'aws-architecture-saga-compensation';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=9c896dce"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
