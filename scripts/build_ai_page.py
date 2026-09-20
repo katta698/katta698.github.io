@@ -132,31 +132,43 @@ def tail_html(jsv):
 
 STYLE = """
 <style>
+  /* --ai-muted, because there is no --muted on this page.
+     Measured after a light-mode screenshot read as washed out: the shell
+     defines --bg, --text, --border, --accent and nothing else, so every
+     var(--muted,#A9A49C) and var(--bd,#33302C) in here was using its
+     DARK-MODE fallback in both themes. Body copy came out at 2.30:1 on
+     cream -- below the 4.5:1 floor and exactly the "very light" in the
+     report -- and the pill borders were a dark-theme charcoal on a pale
+     page.
+     Derived from --text rather than picked, so it cannot drift from the
+     theme it belongs to. */
+  .ai-wrap { --ai-muted: color-mix(in srgb, var(--text,#EDEBE6) 66%,
+                                   transparent); }
   .ai-wrap { max-width: 1120px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
   /* line-height 1.12, not 1: the "j" is italic and its tail drops well
      below the baseline, so at a flat 1 it grazed the line beneath. */
   .ai-mark { margin: .2rem 0 .3rem; line-height: 1.12;
              font-size: clamp(2.6rem,8vw,3.6rem); letter-spacing: -.015em; }
-  .ai-mark .jm { font-size: .46em; color: var(--acc-ink,#C4A484);
+  .ai-mark .jm { font-size: .46em; color: var(--acc-ink,var(--accent,#C4A484));
                  font-style: italic; }
-  .ai-mark .dot { font-size: .38em; color: var(--muted,#A9A49C);
+  .ai-mark .dot { font-size: .38em; color: var(--ai-muted);
                   margin: 0 .04em; }
   .ai-mark .ai { letter-spacing: .01em; }
   .ai-sub { margin: 0 0 .8rem; font-size: .92rem; letter-spacing: .02em;
-            color: var(--muted,#A9A49C); }
-  .ai-lede { color: var(--muted,#A9A49C); max-width: 62ch; line-height: 1.65; }
+            color: var(--ai-muted); }
+  .ai-lede { color: var(--ai-muted); max-width: 62ch; line-height: 1.65; }
   .ai-stats { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1.1rem 0; }
-  .ai-stat { border: 1px solid var(--bd,#33302C); border-radius: 10px;
+  .ai-stat { border: 1px solid var(--border,#33302C); border-radius: 10px;
              padding: .5rem .75rem; min-width: 7rem; }
   .ai-stat b { display: block; font-size: 1.15rem; }
   .ai-stat span { font-size: .68rem; letter-spacing: .06em;
-                  text-transform: uppercase; color: var(--muted,#A9A49C); }
+                  text-transform: uppercase; color: var(--ai-muted); }
   .ai-jump { display: flex; flex-wrap: wrap; gap: .4rem; margin: .2rem 0 1rem; }
-  .ai-jump a { border: 1px solid var(--bd,#33302C); border-radius: 999px;
+  .ai-jump a { border: 1px solid var(--border,#33302C); border-radius: 999px;
                padding: .3rem .72rem; font-size: .74rem; text-decoration: none;
                color: inherit; opacity: .85; }
   .ai-jump a:hover, .ai-jump a:focus-visible {
-      border-color: var(--acc-ink,#C4A484); color: var(--acc-ink,#C4A484);
+      border-color: var(--acc-ink,var(--accent,#C4A484)); color: var(--acc-ink,var(--accent,#C4A484));
       opacity: 1; }
   /* scroll-margin-top, or the heading lands under the sticky header.
      The bar is 64px and sticks at the top, so an anchor jump puts the
@@ -166,22 +178,28 @@ STYLE = """
   html { scroll-behavior: smooth; }
   @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
   .ai-sec h2 { font-size: 1.15rem; margin: 0 0 .3rem; }
-  .ai-note { color: var(--muted,#A9A49C); font-size: .84rem;
+  .ai-note { color: var(--ai-muted); font-size: .84rem;
              line-height: 1.6; max-width: 70ch; margin: 0 0 .9rem; }
   .ai-pills { display: flex; flex-wrap: wrap; gap: .4rem; margin: .8rem 0; }
-  .ai-pill { border: 1px solid var(--bd,#33302C); background: transparent;
+  .ai-pill { border: 1px solid var(--border,#33302C); background: transparent;
              color: inherit; border-radius: 999px; padding: .28rem .7rem;
              font-size: .76rem; cursor: pointer; }
-  .ai-pill[aria-pressed="true"] { background: var(--acc-ink,#C4A484);
-                                  border-color: var(--acc-ink,#C4A484);
+  /* The chosen pill uses --accent, not --acc-ink.
+     --acc-ink is #6E5236 in light mode, a colour tuned for small TEXT on
+     pale, and as a filled pill it gave #1F1D1B on #6E5236 = 2.34:1. The
+     same inversion the play button had on the walkthrough: a text colour
+     doing a fill's job. --accent is #C4A484 in both themes, so the pill
+     looks like itself either way and the label sits at 5.05:1. */
+  .ai-pill[aria-pressed="true"] { background: var(--accent,#C4A484);
+                                  border-color: var(--accent,#C4A484);
                                   color: #1F1D1B; }
   .ai-q { width: 100%; max-width: 22rem; padding: .45rem .6rem;
-          border-radius: 8px; border: 1px solid var(--bd,#33302C);
+          border-radius: 8px; border: 1px solid var(--border,#33302C);
           background: transparent; color: inherit; font: inherit; }
   .ai-field-wrap { margin: 0; }
   .ai-field { width: 100%; height: auto; display: block;
-              border: 1px solid var(--bd,#33302C); border-radius: 12px;
-              background: color-mix(in srgb, var(--bg,#1F1D1B) 88%, #000); }
+              border: 1px solid var(--border,#33302C); border-radius: 12px;
+              background: color-mix(in srgb, var(--bg,#1D1E1B) 88%, #000); }
   /* Light mode gets a WARM panel, not a darkened one.
      color-mix(cream, black) is grey, and a grey slab in the middle of a
      warm cream page is the "clumsy" in the report -- it reads as a
@@ -191,7 +209,7 @@ STYLE = """
      rather than recoloured, which keeps one vendor one colour in both
      themes. */
   body.light .ai-field { background: color-mix(in srgb,
-                         var(--bg,#F7F4EF) 94%, #C4A484); }
+                         var(--bg,#F5F7F2) 94%, #C4A484); }
   body.light .ai-field .fd { filter: saturate(1.5) brightness(.68); }
   body.light .ai-field .fold { filter: saturate(.2) brightness(1.15); }
   .ai-field .fg { stroke: currentColor; stroke-width: .5; opacity: .16; }
@@ -203,7 +221,7 @@ STYLE = """
   .ai-field .ffree { stroke-dasharray: 3 4; opacity: .28; }
   /* Old models are background, not data you are meant to read. */
   .ai-field .fold { opacity: .3; }
-  .ai-field .fm { stroke: var(--acc-ink,#C4A484); stroke-width: 1;
+  .ai-field .fm { stroke: var(--acc-ink,var(--accent,#C4A484)); stroke-width: 1;
                   stroke-dasharray: 2 4; opacity: .5; }
   .ai-field .fmold { opacity: .3; }
   .ai-field .fml { fill: currentColor; opacity: .5; letter-spacing: .04em;
@@ -241,9 +259,9 @@ STYLE = """
             opacity: .85; }
   .ai-bot .bl { fill: none; stroke: currentColor; stroke-width: 2;
                 stroke-linecap: round; stroke-linejoin: round; opacity: .55; }
-  .ai-bot .bdot { fill: var(--acc-ink,#C4A484); stroke: none; opacity: .9;
+  .ai-bot .bdot { fill: var(--acc-ink,var(--accent,#C4A484)); stroke: none; opacity: .9;
                   animation: aiblip 3.4s ease-in-out infinite; }
-  .ai-bot .bp { fill: var(--acc-ink,#C4A484); opacity: .9;
+  .ai-bot .bp { fill: var(--acc-ink,var(--accent,#C4A484)); opacity: .9;
                 transition: transform .22s cubic-bezier(.2,.7,.3,1); }
   /* The blink is a scale, not an opacity: an eye that fades looks broken,
      an eye that squashes looks alive. 6.4s apart, because a blink every
@@ -257,23 +275,23 @@ STYLE = """
   }
   .ai-readout { min-height: 1.4rem; font-size: .82rem;
                 font-family: 'DM Mono', ui-monospace, monospace;
-                color: var(--muted,#A9A49C); }
+                color: var(--ai-muted); }
   .ai-readout b { color: inherit; }
   .ai-readout .ph { opacity: .7; }
   .ai-hint { display: none; margin: .4rem 0 0; font-size: .68rem;
              letter-spacing: .08em; text-transform: uppercase;
-             color: var(--muted,#A9A49C); opacity: .75; }
+             color: var(--ai-muted); opacity: .75; }
   @media (max-width: 760px) { .ai-hint { display: block; } }
-  .ai-legend { color: var(--muted,#A9A49C); font-size: .78rem;
+  .ai-legend { color: var(--ai-muted); font-size: .78rem;
                line-height: 1.6; max-width: 72ch; margin: 0 0 .7rem; }
   .ai-legend b { color: inherit; opacity: .95; }
   .ai-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table.ai-models { width: 100%; border-collapse: collapse; font-size: .85rem; }
   table.ai-models th, table.ai-models td {
       text-align: left; padding: .45rem .55rem; white-space: nowrap;
-      border-bottom: 1px solid var(--bd,#33302C); }
+      border-bottom: 1px solid var(--border,#33302C); }
   table.ai-models th { font-size: .7rem; letter-spacing: .06em;
-                       text-transform: uppercase; color: var(--muted,#A9A49C); }
+                       text-transform: uppercase; color: var(--ai-muted); }
   table.ai-models td.num { text-align: right; font-variant-numeric: tabular-nums; }
   /* [hidden] has to win, and here it did not.
      `.ai-rel li { display: flex }` is more specific than the browser's own
@@ -287,25 +305,25 @@ STYLE = """
      it has to beat is the one being set two lines below. */
   .ai-wrap [hidden] { display: none !important; }
   .ai-rel { list-style: none; margin: 0; padding: 0; }
-  .ai-rel li { padding: .6rem 0; border-bottom: 1px solid var(--bd,#33302C);
+  .ai-rel li { padding: .6rem 0; border-bottom: 1px solid var(--border,#33302C);
                display: flex; gap: .7rem; align-items: baseline; }
-  .ai-rel time { flex: 0 0 5.5rem; font-size: .76rem; color: var(--muted,#A9A49C);
+  .ai-rel time { flex: 0 0 5.5rem; font-size: .76rem; color: var(--ai-muted);
                  font-variant-numeric: tabular-nums; }
-  .ai-rel .v { flex: 0 0 8.5rem; font-size: .74rem; color: var(--acc-ink,#C4A484); }
+  .ai-rel .v { flex: 0 0 8.5rem; font-size: .74rem; color: var(--acc-ink,var(--accent,#C4A484)); }
   .ai-rel a { color: inherit; }
   .ai-rel .badge { font-size: .62rem; letter-spacing: .05em;
-                   text-transform: uppercase; border: 1px solid var(--bd,#33302C);
+                   text-transform: uppercase; border: 1px solid var(--border,#33302C);
                    border-radius: 4px; padding: .05rem .3rem; margin-left: .4rem;
-                   color: var(--muted,#A9A49C); }
+                   color: var(--ai-muted); }
   .ai-more { margin: 1rem 0 0; }
-  .ai-more button { border: 1px solid var(--bd,#33302C); background: transparent;
+  .ai-more button { border: 1px solid var(--border,#33302C); background: transparent;
                     color: inherit; border-radius: 8px; padding: .45rem .9rem;
                     font: inherit; cursor: pointer; }
   table.ai-src { width: 100%; border-collapse: collapse; font-size: .8rem; }
   table.ai-src th, table.ai-src td { text-align: left; padding: .4rem .5rem;
-      border-bottom: 1px solid var(--bd,#33302C); vertical-align: top; }
+      border-bottom: 1px solid var(--border,#33302C); vertical-align: top; }
   table.ai-src th { font-size: .68rem; letter-spacing: .06em;
-                    text-transform: uppercase; color: var(--muted,#A9A49C); }
+                    text-transform: uppercase; color: var(--ai-muted); }
   @media (max-width: 620px) {
     .ai-rel li { flex-wrap: wrap; }
     .ai-rel time { flex: 0 0 5rem; }
@@ -1080,7 +1098,29 @@ def build():
     b.append("</section>")
     b.append("</main>")
 
-    html = (head_html(jsv) + STYLE + "</head>\n<body>\n" + nav_html()
+    # The theme is set on the FIRST line of the body, not the last.
+    #
+    # Reported as: "if I refresh j.AI it keeps changing -- first it was dark
+    # and then it became light." Not a persistence bug: the preference is
+    # stored correctly and read correctly. It was read too late.
+    #
+    # applyTheme lives at the foot of the page, which is fine on a 40KB page
+    # and not on a 345KB one over a phone connection -- the browser paints
+    # the header, the chart and the first screen of text long before the
+    # parser reaches the bottom. Measured on a throttled connection, 400kbps
+    # with 400ms latency:
+    #
+    #     content painted while body class was '' and the background was
+    #     rgb(29,30,27) -- dark, for as long as the rest took to arrive
+    #
+    # Four lines at the top of the body cost nothing and the page is the
+    # right colour from its first paint. The call at the foot stays; it also
+    # sets the icon and the label, which is work that can wait.
+    theme_first = ("<script>try{if(localStorage.getItem('theme')==='light')"
+                   "document.body.classList.add('light')}catch(e){}"
+                   "</script>")
+    html = (head_html(jsv) + STYLE + "</head>\n<body>\n" + theme_first
+            + nav_html()
             + "\n" + "\n".join(b) + tail_html(jsv) + FILTER_JS)
 
     if not os.path.isdir(OUT_DIR):
