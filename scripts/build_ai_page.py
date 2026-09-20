@@ -446,9 +446,14 @@ FILTER_JS = """
       gaze(el || newest);
       if (!el) { readout.innerHTML = placeholder; return; }
       el.classList.add('on');
+      /* Spelled out, not abbreviated. This is the first line most people
+         read on the page, and "1.0M context - $0.40 per million out" is
+         legible only to somebody who already knows both terms. */
       readout.innerHTML = '<b>' + el.dataset.n + '</b> &middot; ' +
-        el.dataset.vendor + ' &middot; ' + el.dataset.c + ' context &middot; ' +
-        el.dataset.p + ' per million out &middot; ' + el.dataset.d;
+        el.dataset.vendor + ' &middot; holds ' + el.dataset.c + ' tokens' +
+        (el.dataset.w ? ' (about ' + el.dataset.w + ' words)' : '') +
+        ' &middot; ' + el.dataset.p +
+        ' per million tokens it writes &middot; appeared ' + el.dataset.d;
     }
 
     dots.forEach(function (el) {
@@ -488,6 +493,23 @@ def money(v):
     if v < 1:
         return "$%.2f" % v
     return "$%.2f" % v
+
+
+def words(tokens):
+    """A token is about three quarters of a word in English.
+
+    Rounded hard, because the ratio is a rule of thumb: "about 195,000
+    words" invites a precision the conversion does not have, and the number
+    exists to give a reader something to picture rather than to be added up.
+    """
+    if not tokens:
+        return ""
+    w = int(tokens) * 0.75
+    if w >= 1000000:
+        return "%.1f million" % (w / 1000000.0)
+    if w >= 1000:
+        return "%d,000" % round(w / 1000.0)
+    return str(int(w))
 
 
 def ctx(n):
@@ -663,14 +685,14 @@ def field_svg(models, today):
         colour = "#7C766E" if old else VCOLOR.get(m["vendor"], "#8A857E")
         g.append('<circle class="fd%s%s" cx="%.1f" cy="%.1f" r="%s" '
                  'fill="%s" data-vendor="%s" data-n="%s" data-c="%s" '
-                 'data-p="%s" data-d="%s"/>'
+                 'data-p="%s" data-d="%s" data-w="%s"/>'
                  % (" fnew" if new else "", " fold" if old else "",
                     _lx(m["context"]),
                     free_y if m["out_per_m"] == 0 else _ly(m["out_per_m"]),
                     "4.2" if new else "3",
                     colour, esc(m["vendor"]), esc(m.get("name", "")),
                     ctx(m.get("context")), money(m.get("out_per_m")),
-                    esc(created)))
+                    esc(created), words(m.get("context"))))
     g.append("</svg>")
     return chr(10).join(g), len(plotted) + len(freebies), skipped
 
@@ -795,12 +817,29 @@ def build():
     field, plotted, skipped = field_svg(models, today)
     b.append('<section class="ai-sec ai-field-sec">')
     b.append("<h2>The field, tonight</h2>")
-    b.append('<p class="ai-note">Every model in the catalogue, placed by '
-             'what it can hold (across, 4K to 2M) and what a million output '
-             'tokens cost (up, three cents to six hundred dollars). Both '
-             'scales are logarithmic or the picture is a smear. Models older '
-             'than a year are grey; the pulsing ones arrived in the last 30 '
-             'days. Point at any of them.</p>')
+    # Define the words where they are FIRST met, not in a legend further
+    # down the page.
+    #
+    # Asked as: "what is context and million out? I didn't understand." The
+    # legend was written above the TABLE, and the chart -- whose readout
+    # speaks both terms -- comes before it. Explaining a word after its
+    # third use is not explaining it.
+    #
+    # A token is the unit under both, so it goes first, with a size a person
+    # can picture rather than a number they have to trust.
+    b.append('<p class="ai-note"><b>Two words first.</b> Models read and '
+             'write in <b>tokens</b> &mdash; roughly three quarters of a '
+             'word each. <b>Context</b> is how much it can hold in mind at '
+             'once: a 1M-token context is about 750,000 words, or War and '
+             'Peace twice over. <b>Per million out</b> is what you pay for a '
+             'million tokens it writes back &mdash; output usually costs '
+             'three to five times more than what you send in.</p>')
+    b.append('<p class="ai-note">So: every model in the catalogue, placed by '
+             'how much it can hold (across, 4K to 2M) and what its writing '
+             'costs (up, three cents to six hundred dollars per million). '
+             'Both scales are logarithmic or the picture is a smear. Models '
+             'older than a year are grey; the pulsing ones arrived in the '
+             'last 30 days. Point at any of them.</p>')
     story = field_story(models, today)
     if story:
         b.append('<p class="ai-note"><b>What it shows:</b> the field has '
