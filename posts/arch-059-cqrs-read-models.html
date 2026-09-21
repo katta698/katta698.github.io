@@ -1,0 +1,373 @@
+---
+title: "AWS Architecture Series #59 — The read side can throttle the write side"
+date: '2026-09-21T09:00:00'
+slug: aws-architecture-cqrs-read-models
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-21'
+verified_claims:
+  - claim: "When an application writes or deletes items in a table, any global secondary indexes on that table are updated asynchronously, using an eventually consistent model, and applications never write directly to an index"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "Changes to the table data are propagated to the global secondary indexes within a fraction of a second under normal conditions, however in some unlikely failure scenarios longer propagation delays might occur, so your applications need to anticipate and handle situations where a query on a global secondary index returns results that are not up to date"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "The provisioned throughput settings of a global secondary index are separate from those of its base table, and a Query operation on a global secondary index consumes read capacity units from the index, not the base table"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "If you perform heavy write activity on the table, but a global secondary index on that table has insufficient write capacity, the write activity on the table will be throttled"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "For a table write to succeed, the provisioned throughput settings for the table and all of its global secondary indexes must have enough write capacity to accommodate the write, otherwise the write to the table is throttled"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "To avoid potential throttling, the provisioned write capacity for a global secondary index should be equal or greater than the write capacity of the base table because new updates write to both the base table and global secondary index"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "A global secondary index only tracks data items where its key attributes actually exist, and if a table contains an item where an attribute defined as an index partition key or sort key is not defined, DynamoDB doesn't write any data for that item to the index"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "The GetItem and BatchGetItem operations can't be used on a global secondary index"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "Global secondary index queries cannot fetch attributes from the base table"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "DynamoDB provides three projection options: KEYS_ONLY, which results in the smallest possible secondary index, INCLUDE, which adds specified non-key attributes, and ALL, which results in the largest possible secondary index"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "Global secondary indexes support eventually consistent reads, each of which consume one half of a read capacity unit, which means that a single global secondary index query can retrieve up to 2 by 4 KB, which is 8 KB, per read capacity unit"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "In AWS's worked example, a global secondary index where each item contains 2,000 bytes of data and a query matching eight items gives a total size of 16,000 bytes, which rounded up to the nearest 4 KB boundary and halved for eventual consistency costs 2 read capacity units"
+    derive: "0.5 * (16 / 4)"
+    expect: "2"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "If an update to the table changes the value of an indexed key attribute from A to B, two writes are required, one to delete the previous item from the index and another write to put the new item into the index"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "If an update to the table changes only attributes that are neither index key attributes nor projected into the index, the index entry is unchanged so no write capacity is consumed for that index, and the base table is still charged for the write"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "The amount of space used by an index item is the sum of the size of the base table primary key, the index key attribute, the projected attributes, and 100 bytes of overhead per index item"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "A table with many global secondary indexes incurs higher costs for write activity than tables with fewer indexes"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "Global secondary indexes inherit the read/write capacity mode from the base table, and a global secondary index will always use the same table class as its base table"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "With multi-attribute keys you can create a partition key from up to four attributes and a sort key from up to four attributes, for a total of up to eight attributes per key schema"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "When you query a global secondary index with multi-attribute keys you must specify all partition key attributes using equality conditions, and you cannot skip sort key attributes in the middle"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+  - claim: "The maximum size of the results returned by a Query operation is 1 MB, including the sizes of all the attribute names and values across all of the items returned"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html
+problem: "CQRS is reached for as an architecture — a write model, a projector, a separate read store, and the plumbing between them. Most of the time the thing being described is a secondary index, which the database already maintains, and the difference between the two is a week of work and a component that can fail on its own."
+builds: "A reading of the global secondary index as what it actually is — a read model with its own key, its own capacity and its own staleness — and of where that stops being enough, so the decision to hand-build one is made against a baseline rather than from the pattern's reputation."
+catch: "The coupling CQRS promises to remove is present in the built-in version, in the direction nobody expects. AWS states it plainly: if a global secondary index has insufficient write capacity, the write activity on the table will be throttled. The read model does not merely lag when it cannot keep up — it stops the writes."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #059 &middot; Application Patterns</div>
+  <h1 class="post-title">The read side can throttle the write side</h1>
+  <p class="post-subtitle">A secondary index is a read model &mdash; a separate projection, shaped for a query, maintained asynchronously. It is CQRS you already have, and under-provisioning it stops your writes.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Performance Efficiency &middot; Reliability</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The last seven posts have been about making a distributed system correct. This one is about a pattern
+      that is usually correct and usually unnecessary, and about telling those two cases apart before the
+      week of work rather than after it.
+    </p>
+    <p>
+      A team cannot answer a query efficiently. The write model is keyed for writes, the question is shaped
+      differently, and the answer currently requires a scan. Somebody proposes CQRS: separate the read model
+      from the write model, project changes into a store shaped for the question, query that.
+    </p>
+    <p>
+      That proposal is correct in principle and, most of the time, describes something the database already
+      does. The gap between the two is worth seeing precisely.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The index already is the read model</strong></div>
+      <div class="challenge-body">
+        <p>
+          Read the definition of a global secondary index against the definition of a read model and they
+          do not diverge. It holds a selection of attributes, organised by a different key, and DynamoDB
+          maintains it: <em>&ldquo;any global secondary indexes on that table are updated
+          <strong>asynchronously, using an eventually consistent model</strong>. Applications never write
+          directly to an index.&rdquo;</em>
+        </p>
+        <p>
+          Asynchronous projection, separate shape, no direct writes, eventual consistency. That is the
+          pattern, implemented, with no projector to write, deploy, monitor or fix.
+        </p>
+        <p>
+          It even has the property teams usually cite as the reason for separating the two:
+          <em>&ldquo;The provisioned throughput settings of a global secondary index are separate from
+          those of its base table&rdquo;</em>, and a query against it consumes the index's capacity
+          <em>&ldquo;not the base table&rdquo;</em>.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Price the index first. Hand-build a read model only when a named requirement rules the index out.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Separate capacity is not isolation</strong></div>
+      <div class="challenge-body">
+        <p>
+          Here is the sentence that changes how you provision, and it runs opposite to the direction anyone
+          expects: <em>&ldquo;If you perform heavy write activity on the table, but a global secondary index
+          on that table has insufficient write capacity, <strong>the write activity on the table will be
+          throttled</strong>.&rdquo;</em>
+        </p>
+        <p>
+          And the general form: <em>&ldquo;For a table write to succeed, the provisioned throughput settings
+          for the table <strong>and all of its global secondary indexes</strong> must have enough write
+          capacity to accommodate the write. Otherwise, the write to the table is throttled.&rdquo;</em>
+        </p>
+        <p>
+          The read model is not merely allowed to lag. An under-provisioned one reaches back and stops the
+          writes &mdash; which is precisely the coupling CQRS is sold as removing, present in the version
+          you did not have to build.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Provision index write capacity at or above the base table's. AWS states this as the rule, not as advice.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The read model is missing rows you did not notice</strong></div>
+      <div class="challenge-body">
+        <p>
+          An index is sparse by construction: <em>&ldquo;A global secondary index only tracks data items
+          where its key attributes actually exist.&rdquo;</em> Write an item without the indexed attribute
+          and <em>&ldquo;DynamoDB doesn't write any data for that item to the index.&rdquo;</em>
+        </p>
+        <p>
+          That is a genuinely useful feature &mdash; it is how you index only open orders &mdash; and it is
+          a trap when nobody chose it. A count from the index and a count from the table legitimately
+          disagree, and the difference is every item missing the attribute. AWS's own example makes it
+          concrete: four items in the table, three in the index.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Decide whether sparseness is the design or an accident, and write down which.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The decision is not &ldquo;CQRS or not&rdquo;. It is how much of the pattern you need, and there are
+      three rungs, each with more capability and more to own.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-059-cqrs-read-models.svg" alt="Diagram: three levels of read-model separation on AWS and what each one costs. The first is a global secondary index, which is CQRS already built: the index holds a selection of attributes organised by a different key, DynamoDB updates it asynchronously using an eventually consistent model, applications never write directly to it, and its provisioned throughput settings are separate from the base table's. Its limits are listed: GetItem and BatchGetItem cannot be used on it, queries cannot fetch attributes from the base table so the projection is the contract, it only tracks items whose key attributes actually exist so it is sparse, and query results are capped at one megabyte. The second level is a hand-built read model fed by a change stream, which is needed when the query shape is one an index cannot serve, such as full text search or aggregation, and which costs a projector to write, deploy and monitor. A panel records the finding that matters most for provisioning: the coupling runs backwards from what people expect, because AWS states that if a global secondary index has insufficient write capacity the write activity on the table will be throttled, and that for a table write to succeed the table and all of its indexes must have enough write capacity or the write is throttled. The guidance is therefore to provision index write capacity equal to or greater than the base table's. A final panel records the write amplification rules: changing an indexed key attribute costs two writes, one to delete the old index entry and one to put the new one, while an update touching neither index keys nor projected attributes consumes no index capacity though the base table is still charged." />
+      <figcaption>Three rungs. The first is free and already running; the cost of the second is a component that can fail on its own.</figcaption>
+    </figure>
+
+    <h3>What the built-in read model cannot do</h3>
+    <p>
+      The index is the right answer often enough that the limits are worth knowing exactly, because they
+      are what legitimately forces the next rung.
+    </p>
+    <p>
+      <strong>It serves queries, not lookups.</strong> <em>&ldquo;The <code class="inline">GetItem</code>
+      and <code class="inline">BatchGetItem</code> operations can't be used on a global secondary
+      index.&rdquo;</em> <code class="inline">Query</code> and <code class="inline">Scan</code> only.
+    </p>
+    <p>
+      <strong>The projection is the contract.</strong> <em>&ldquo;Global secondary index queries cannot
+      fetch attributes from the base table.&rdquo;</em> An attribute you did not project is not one query
+      away &mdash; it is a second request against the table, per item.
+    </p>
+    <p>
+      <strong>Results are capped.</strong> <em>&ldquo;The maximum size of the results returned by a
+      <code class="inline">Query</code> operation is 1 MB.&rdquo;</em> A read model backing a report that
+      returns more than that is paginating, which is a different thing from answering.
+    </p>
+    <p>
+      Those three rule out full-text search, arbitrary aggregation, and joins across entities. Those are
+      real requirements and they are the honest reasons to build a projector into OpenSearch, Athena or a
+      relational store. &ldquo;The pattern is cleaner&rdquo; is not on that list.
+    </p>
+
+    <div class="callout amber">
+      <strong>The write amplification is per-attribute, not per-write</strong>
+      <p>Indexes are not uniformly expensive, and knowing which writes are costly changes the model. Changing an indexed key attribute <em>&ldquo;from A to B&rdquo;</em> costs <strong>two writes</strong> &mdash; <em>&ldquo;one to delete the previous item from the index and another write to put the new item into the index.&rdquo;</em> Meanwhile an update that touches <em>&ldquo;only attributes that are neither index key attributes nor projected into the index&rdquo;</em> consumes <strong>no</strong> index capacity at all, though the base table is still charged. So a status field used as an index key is the expensive one; a description field nobody indexed is free. Index the attributes that are queried, not the attributes that change.</p>
+    </div>
+
+    <h3>Staleness is the design, not a defect</h3>
+    <p>
+      Every read model is behind the write model. AWS is specific about the normal case and honest about the
+      tail: propagation happens <em>&ldquo;within a fraction of a second, under normal conditions&rdquo;</em>,
+      but <em>&ldquo;in some unlikely failure scenarios, longer propagation delays might occur.&rdquo;</em>
+    </p>
+    <p>
+      And then the obligation, stated as an application requirement rather than a caveat:
+      <em>&ldquo;your applications need to anticipate and handle situations where a query on a global
+      secondary index returns results that are not up to date.&rdquo;</em>
+    </p>
+    <p>
+      This is the part of CQRS that cannot be engineered away by choosing a different read store. A
+      hand-built projector has the same property and usually a longer lag. If the business rule is
+      &ldquo;this read must reflect that write&rdquo;, no read model satisfies it &mdash; the answer is to
+      read the write model, which for DynamoDB means a strongly consistent read on the table, something an
+      index does not offer at all.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The economics are decided by the projection, and they are visible</h3>
+    <p>
+      The three projection types are a straight cost dial. <code class="inline">KEYS_ONLY</code>
+      <em>&ldquo;results in the smallest possible secondary index&rdquo;</em>;
+      <code class="inline">ALL</code> <em>&ldquo;results in the largest possible&rdquo;</em>, with
+      <code class="inline">INCLUDE</code> between them. Storage is arithmetic you can do in advance: base
+      table key, plus index key, plus projected attributes, plus <em>&ldquo;<strong>100 bytes of
+      overhead</strong> per index item.&rdquo;</em>
+    </p>
+    <p>
+      Reads are cheaper than the table's, because they are eventually consistent by definition: an index
+      read consumes <em>&ldquo;one half of a read capacity unit&rdquo;</em>, so a query
+      <em>&ldquo;can retrieve up to 2 &times; 4 KB = <strong>8 KB</strong> per read capacity unit.&rdquo;</em>
+      AWS's worked example &mdash; eight items of 2,000 bytes, rounded to a 4 KB boundary and halved &mdash;
+      comes to <strong>2 read capacity units</strong>.
+    </p>
+    <p>
+      A hand-built read model has none of this legibility. Its cost is a Lambda, a destination store, a
+      dead-letter queue and an on-call rotation, and none of those appear in a capacity calculator.
+    </p>
+
+    <div class="callout red">
+      <strong>The failure mode that makes this worth provisioning carefully</strong>
+      <p>An under-provisioned index does not degrade gracefully into a slightly stale read model. It throttles writes to the base table &mdash; the whole table, not merely the indexed path. AWS flags this as affecting <em>&ldquo;all write operations, from indexing process to potentially disrupting your production workloads.&rdquo;</em> A read-side capacity mistake therefore presents as a write-side outage, which is the hardest kind of incident to attribute: the alarm fires on the table, the cause is on an index somebody added for a report.</p>
+    </div>
+
+    <h3>Multi-attribute keys remove the commonest reason people gave up on indexes</h3>
+    <p>
+      The historical objection to indexes as read models was that one index answers one question, and real
+      queries have several dimensions &mdash; which drove teams to synthetic concatenated keys like
+      <code class="inline">TOURNAMENT#WINTER2024#REGION#NA-EAST</code>, and from there to giving up and
+      building a search index.
+    </p>
+    <p>
+      That objection has weakened. Multi-attribute keys allow <em>&ldquo;a partition key from up to four
+      attributes and a sort key from up to four attributes, for a total of up to
+      <strong>eight attributes</strong> per key schema&rdquo;</em>, without concatenation.
+    </p>
+    <p>
+      The constraint to design around is the query grammar: you <em>&ldquo;must specify all partition key
+      attributes using equality conditions&rdquo;</em>, sort key attributes are matched left to right, and
+      you <em>&ldquo;cannot skip attributes in the middle.&rdquo;</em> That is a hierarchy, not a set of
+      independent filters &mdash; so the ordering of the sort key attributes decides which questions the
+      read model can answer, and it is chosen once.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Default read model</td>
+        <td>A global secondary index</td>
+        <td>Asynchronous, separately keyed, separately provisioned, and already maintained for you.</td>
+      </tr>
+      <tr>
+        <td>Index write capacity</td>
+        <td>At or above the base table's</td>
+        <td>An index short of write capacity throttles writes to the table, not just to itself.</td>
+      </tr>
+      <tr>
+        <td>Projection</td>
+        <td>The attributes the query returns</td>
+        <td>Queries cannot fetch from the base table, and <code class="inline">ALL</code> can double storage.</td>
+      </tr>
+      <tr>
+        <td>Indexed attributes</td>
+        <td>Queried, not frequently updated</td>
+        <td>Changing an indexed key attribute costs two index writes; changing an unprojected one costs none.</td>
+      </tr>
+      <tr>
+        <td>Sparseness</td>
+        <td>Deliberate, and documented</td>
+        <td>Items lacking the index key are absent entirely, so index and table counts legitimately differ.</td>
+      </tr>
+      <tr>
+        <td>Hand-built read model</td>
+        <td>Only for search, aggregation or joins</td>
+        <td>Those are what the 1 MB cap, the projection rule and Query-only access genuinely rule out.</td>
+      </tr>
+      <tr>
+        <td>Reads that must be current</td>
+        <td>Strongly consistent read on the table</td>
+        <td>No read model is current. An index offers no strongly consistent option at all.</td>
+      </tr>
+      <tr>
+        <td>Multi-dimensional queries</td>
+        <td>Multi-attribute keys, ordered deliberately</td>
+        <td>Up to eight attributes, but matched left to right with no gaps — the order fixes the questions.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>Where the pattern's reputation misleads</h3>
+    <p>
+      CQRS is discussed alongside event sourcing, and the two travel together often enough that adopting one
+      is taken to imply the other. They are separable: an index is a read model with no event log behind it,
+      and the write side remains a plain mutable table.
+    </p>
+    <p>
+      The second confusion is scale. CQRS is presented as a scaling pattern, and the scaling it buys is
+      read-side: a shape that answers a question cheaply. It does not reduce write cost &mdash; it raises it,
+      because <em>&ldquo;a table with many global secondary indexes incurs higher costs for write activity
+      than tables with fewer indexes.&rdquo;</em> Every read model is paid for on the write path, whether
+      the database maintains it or your projector does.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The useful question is not whether to separate reads from writes. On DynamoDB that separation is
+      available by adding an index, and most teams who describe themselves as considering CQRS are
+      describing an index with extra steps.
+    </p>
+    <p>
+      The useful question is what the separation is being asked to do. If it is &ldquo;answer this question
+      without a scan&rdquo;, the database does that already, with a projection you can price and a staleness
+      measured in a fraction of a second. If it is full-text search, or aggregation, or a join, the index
+      genuinely cannot &mdash; and those requirements are specific enough to name in a design document,
+      which is a better justification than the pattern's reputation.
+    </p>
+    <p>
+      And whichever rung you land on, provision the read side properly, because the coupling runs the wrong
+      way. A read model that cannot keep up does not quietly fall behind. On DynamoDB it throttles the
+      writes, and the incident arrives labelled as a problem with the table.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Data platform &mdash; Kinesis, MSK or Firehose: three services that all move a stream, why the decision is usually made on operational ownership rather than throughput, and the retention and replay differences that decide whether a consumer can ever be fixed after the fact.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html" target="_blank" rel="noopener">Using Global Secondary Indexes in DynamoDB &#8212; asynchronous maintenance, separate throughput, the write-throttling rule, projections and write amplification</a></li>
+      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html" target="_blank" rel="noopener">Change data capture for DynamoDB Streams &#8212; further reading for the hand-built read model path</a></li>
+      <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TroubleshootingThrottling.html" target="_blank" rel="noopener">Troubleshooting throttling in Amazon DynamoDB &#8212; further reading on diagnosing the write-side symptom</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
