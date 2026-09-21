@@ -43,7 +43,7 @@ sys.path.insert(0, SCRIPTS)
 
 from colophon_scenes import SCENES, VIEWBOX       # noqa: E402
 from colophon_scene_css import SCENE_CSS          # noqa: E402
-from colophon_architecture import ARCHITECTURE    # noqa: E402
+from colophon_architecture import ARCHITECTURE, CLAIMS  # noqa: E402
 from colophon_player_js import PLAYER_JS          # noqa: E402
 
 OUT_DIR = os.path.join(ROOT, "how-this-was-made")
@@ -59,6 +59,107 @@ def count(pattern_dir, *exts):
     if not os.path.isdir(d):
         return 0
     return sum(1 for f in os.listdir(d) if f.lower().endswith(exts))
+
+
+# The four routes a post can take, and the label that identifies each.
+#
+# Counted from the labels rather than from the filename, because the label is
+# what the blog itself counts by -- the filter pill a reader clicks. The two
+# disagree: posts/ holds 37 files named daily-*, and the prefix says nothing
+# about which series a file belongs to once a series is renamed.
+SERIES_FAMILIES = [
+    ("arch", ("AWS Architecture Series", "Azure Architecture Series",
+              "GCP Architecture Series")),
+    ("daily", ("AWS Daily Intelligence",)),
+    ("weekly", ("AWS Weekly Intelligence", "Azure Weekly Intelligence",
+                "GCP Weekly Intelligence")),
+    ("lab", ("AWS Weekly Lab", "Azure Weekly Lab", "GCP Weekly Lab")),
+]
+
+
+# What each box on the architecture diagram actually does.
+#
+# Asked for: "it's good to include what each script does when we hover over
+# a box -- what exactly it does at the back end. That way it gives good
+# information on not only the workflow but what each component does."
+#
+# For anything that is a Python file the sentence is READ OUT OF THE FILE --
+# the first line of its module docstring. That is deliberate and it is the
+# whole reason this is worth doing: a hand-written caption for twelve scripts
+# is twelve sentences that quietly stop being true, and nothing on the page
+# would ever say so. A docstring is edited by whoever changes the script,
+# because they are looking straight at it.
+#
+# The boxes that are not scripts -- the data stores, the clouds, the pages a
+# reader opens -- have no docstring to read, so they are written here. Each
+# says what the thing IS and who writes it, not what it is for.
+BOX_NOTES = {
+    "posts/": "One HTML file per post, front matter and body. This is the "
+              "source: every page, card, feed entry and search result is "
+              "derived from it, and nothing is derived from a served page.",
+    "news.json": "Every cloud announcement, ranked, with the day it was "
+                 "made. Written by the scheduled jobs, never by hand.",
+    "status.json": "The current health of AWS, Azure and GCP, as each "
+                   "vendor's own status feed reports it.",
+    "events.json": "Vendor conferences, launches and end-of-life dates, "
+                   "with the source each one came from.",
+    "ai.json": "What the AI vendors have shipped, and the model catalogue "
+               "behind the j.AI page &mdash; announcements, prices and "
+               "context windows.",
+    "AWS · Azure · GCP": "The vendors' own feeds. Nothing here is "
+                                   "summarised by a model: the raw RSS and "
+                                   "sitemaps are parsed, because a summary "
+                                   "silently drops items and a parser does "
+                                   "not.",
+    ".github/workflows": "The scheduled jobs. They fetch, rebuild and commit "
+                         "on GitHub's machines, so the data pages stay "
+                         "current whether or not I have opened a laptop.",
+    "sitemap.xml": "Every published URL with the date it last changed, plus "
+                   "robots.txt. Regenerated on every sync, so it cannot "
+                   "drift from what is actually published.",
+    "Portfolio": "The home page. Its figures &mdash; post count, latest "
+                 "posts, the service and domain widgets &mdash; are read "
+                 "from the same files the blog is built from.",
+    "Blog": "The index, the paged archive, the filter pills and the RSS "
+            "feed. All of it is regenerated from posts/ on every sync.",
+    "Intelligence": "The hub for the four data-driven pages below it.",
+    "What’s new": "Cloud announcements, ranked, from news.json.",
+    "Live status": "Current vendor health, from status.json.",
+    "Cloud events": "Conferences and end-of-life dates, from events.json.",
+    "j.AI": "The AI page: models, prices, context windows and what each "
+            "vendor shipped, from ai.json.",
+    "GitHub Pages": "Static hosting. There is no server and no database, so "
+                    "there is nothing to restart and nothing to patch.",
+    "site-footer.css": "One stylesheet and one script shared by every page "
+                       "on the site &mdash; the nav bar, the theme switch "
+                       "and the menu. A change here reaches all of them.",
+    "reader": "You. Everything to the left of this exists to put a correct "
+              "page in front of you without a human remembering a step.",
+}
+
+
+def box_note(label):
+    """One sentence for a box, read from the script where there is one."""
+    import ast
+    path = CLAIMS.get(label)
+    if path and path.endswith(".py"):
+        try:
+            src = io.open(os.path.join(ROOT, path), encoding="utf-8").read()
+            doc = (ast.get_docstring(ast.parse(src)) or "").strip()
+            first = doc.split(chr(10) + chr(10))[0].replace(chr(10), " ")
+            first = " ".join(first.split())
+            # One sentence. sync_blog.py's opening paragraph runs to three,
+            # and the second and third are about a migration that finished
+            # years ago -- true, and not what somebody hovering a box is
+            # asking. Source files write "--" where prose wants an em dash.
+            import re as _re
+            first = _re.split(r"(?<=[.]) (?=[A-Z(])", first)[0]
+            first = first.replace(" -- ", " — ")
+            if first:
+                return first
+        except (OSError, SyntaxError, ValueError):
+            pass
+    return BOX_NOTES.get(label, "")
 
 
 def counted():
@@ -146,15 +247,25 @@ def counted():
     # them -- and every other series' page comes out of sync_blog itself.
     # The pasted flow described the architecture path as if it were the
     # whole site; it is 135 of 274.
+    #
+    # Counted against the published total, not against posts/. Counting the
+    # directory gave 138 hand-built and 139 sync-built beside a stated total
+    # of 275 post pages -- a reader who adds them gets 277, because posts/
+    # holds drafts and a README and the blog does not. The two halves now
+    # come out of the same number they are printed next to.
     handbuilt = syncbuilt = diagrams = 0
+    arch_labels = set(SERIES_FAMILIES[0][1])
+    try:
+        cards = json.load(io.open(os.path.join(ROOT, "blog", "cards.json"),
+                                  encoding="utf-8"))
+        handbuilt = sum(1 for c in cards if c.get("tag1") in arch_labels)
+        syncbuilt = len(cards) - handbuilt
+    except (OSError, ValueError):
+        pass
     try:
         for f in os.listdir(os.path.join(ROOT, "posts")):
             if not f.endswith((".html", ".md")):
                 continue
-            if f.startswith(("arch-", "az-", "gcp-")):
-                handbuilt += 1
-            else:
-                syncbuilt += 1
             try:
                 with io.open(os.path.join(ROOT, "posts", f), encoding="utf-8",
                              errors="replace") as fh:
@@ -633,72 +744,160 @@ STYLE = """
 
 
 
-# The eight stops a post makes, and the two paths through them.
+# The journeys, one per kind of post -- because they are not the same one.
 #
-# Asked as: "if this is true, can we include it in the how-it-is-made page
-# in a creative way?" -- with a flow pasted in. Checked line by line before
-# anything was drawn, because a diagram is a claim:
+# Asked, after the first version shipped with a single list and two greyed
+# stops: "does everything follow the same process? If a lab or a weekly
+# intelligence post follows a different path, then obviously it requires
+# each tab and its own journey."
 #
-#     21 checks in prepublish        true, exactly 21
-#     ~20 shared files rewritten     19: eight named, plus the paged archive
-#     10-15 minutes at the gate      10.2 to 13.0 across the last five pushes
-#     arch-059 next                  true, 058 is the latest on disk
-#     275 posts                      272 live, 274 sources
+# It does, and the greying was hiding it. Measured across every post on the
+# site rather than reasoned from the architecture series:
 #
-# And the correction that matters, asked for straight after: "validate the
-# same across all posts, not just arch -- daily intel, weekly intel, weekly
-# labs too." The pasted flow is the ARCHITECTURE path. Two of its eight
-# stops do not happen for most of the site:
+#     Architecture   138 posts   100% carry a diagram   page by build_arch_post
+#     Daily intel     37 posts   100% carry a diagram   page by sync_blog
+#     Weekly intel    13 posts     0% carry a diagram   page by sync_blog
+#     Weekly lab      29 posts     0% carry a diagram   page by sync_blog
 #
-#     a diagram        every architecture post and every daily intelligence
-#                      post has one; the weekly roundups and the labs have
-#                      none
-#     build_arch_post  only arch-, az- and gcp- pages are externally_built.
-#                      The other 139 pages come out of sync_blog itself
+# And the difference is not only what is MISSING. Two paths have steps the
+# architecture path has never had: a weekly roundup fetches a week of feeds
+# and builds an inventory from them before a word is written, and a daily
+# post ranks every announcement from the day before. Those are real scripts
+# -- fetch_week.py, fetch_week_gcp.py, build_weekly_inventory.py, news.py --
+# and a greyed-out list cannot show a step that only exists somewhere else.
 #
-# So the strip has two paths and says which stops belong to which. A single
-# path would have been a tidier picture and a false one.
-def trip(f=None):
-    f = f or counted()
-    jobs = len(schedules()) or f["flows"]
+# So four journeys, each ending in the same five stops, because from sync
+# onwards every post on this site is treated identically.
+
+
+def series_counts():
+    """How many posts each route has, and how many of them show a diagram.
+
+    Counted from blog/cards.json and the served pages, not from posts/. Those
+    two disagree -- posts/ holds 37 files named daily-* and the blog shows 36
+    -- because a draft is a file and is not a post. The number printed here is
+    beside a sentence a reader can check by clicking the filter pill, so it
+    has to be the number the filter pill gives.
+    """
+    out = {}
+    for key, _labels in SERIES_FAMILIES:
+        out[key] = {"posts": 0, "diagrams": 0}
+    by_label = {}
+    for key, labels in SERIES_FAMILIES:
+        for label in labels:
+            by_label[label] = key
+    try:
+        cards = json.load(io.open(os.path.join(ROOT, "blog", "cards.json"),
+                                  encoding="utf-8"))
+    except (OSError, ValueError):
+        return out
+    for card in cards:
+        key = by_label.get(card.get("tag1") or "")
+        if not key:
+            continue
+        out[key]["posts"] += 1
+        page = os.path.join(ROOT, "blog", card.get("slug") or "",
+                            "index.html")
+        try:
+            html = io.open(page, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        if "assets/diagrams/" in html:
+            out[key]["diagrams"] += 1
+    return out
+
+
+def _next(prefix, width=3):
+    import re as _re
+    try:
+        ns = [int(m.group(1)) for f in os.listdir(os.path.join(ROOT, "posts"))
+              for m in [_re.match(_re.escape(prefix) + r"(\d+)", f)] if m]
+        return "%0*d" % (width, max(ns) + 1) if ns else "001"
+    except OSError:
+        return "001"
+
+
+def tail_stops(f, jobs):
+    """The five stops every post shares, whatever it is."""
     return [
-        ("hand", "Write", "posts/arch-%03d-….html" % (next_arch() or 59),
-         "one hand-written file, the only thing here that is not generated",
-         "both"),
-        ("hand", "Draw", "blog/assets/diagrams/*.svg",
-         "raw SVG, no tool &mdash; %d of %d posts carry one"
-         % (f["diagrams"], f["posts"]), "arch"),
-        ("machine", "Build the page", "build_arch_post.py",
-         "%d post pages are built this way and never regenerated; the "
-         "other %d come from sync_blog"
-         % (f["handbuilt"], f["syncbuilt"]), "arch"),
         ("machine", "Sync the site", "publish.py &rarr; sync_blog.py",
          "rewrites %d shared files: the index, the paged archive, the feed, "
-         "the sitemap, the offline worker" % f["shared"], "both"),
+         "the sitemap, the offline worker" % f["shared"]),
         ("machine", "Check the post", "prepublish.py",
          "%d checks on what was just written, then it prints Ready"
-         % f["prepub"], "both"),
+         % f["prepub"]),
         ("hand", "Commit", "local, reversible",
-         "nothing is public yet and nothing is claimed", "both"),
+         "nothing is public yet and nothing is claimed"),
         ("machine", "Push, and wait", "preflight.py",
          "%d checks over all %d posts, %d of them driving a real browser. "
          "Ten to thirteen minutes, measured. A failure refuses the push"
-         % (f["gate"], f["posts"], f["browser"]), "both"),
+         % (f["gate"], f["posts"], f["browser"])),
         ("machine", "Live", "GitHub Pages, then the search index",
          "%d jobs on a clock keep the rest of the site current afterwards"
-         % jobs, "both"),
+         % jobs),
     ]
 
 
-def next_arch():
-    """The number the next architecture post would take."""
-    try:
-        import re as _re
-        ns = [int(m.group(1)) for f in os.listdir(os.path.join(ROOT, "posts"))
-              for m in [_re.match(r"arch-(\d+)", f)] if m]
-        return max(ns) + 1 if ns else None
-    except OSError:
-        return None
+def journeys(f=None):
+    f = f or counted()
+    jobs = len(schedules()) or f["flows"]
+    tail = tail_stops(f, jobs)
+    sc = series_counts()
+    n_arch, d_arch = sc["arch"]["posts"], sc["arch"]["diagrams"]
+    n_daily, d_daily = sc["daily"]["posts"], sc["daily"]["diagrams"]
+    n_weekly, n_lab = sc["weekly"]["posts"], sc["lab"]["posts"]
+    return [
+        ("arch", "An architecture post", "%d posts" % n_arch, [
+            ("hand", "Write", "posts/arch-%s-….html" % _next("arch-"),
+             "one hand-written file, with the vendor&rsquo;s own docs quoted "
+             "and every figure carrying a source"),
+            ("hand", "Draw", "blog/assets/diagrams/arch-%s-….svg"
+             % _next("arch-"),
+             "raw SVG, no tool &mdash; all %d of the %d architecture posts carry one" % (d_arch, n_arch)),
+            ("machine", "Build the page", "build_arch_post.py",
+             "%d post pages are built from the template and never "
+             "regenerated; the other %d come from sync_blog"
+             % (f["handbuilt"], f["syncbuilt"])),
+        ] + tail),
+        ("daily", "A daily intelligence post", "%d posts" % n_daily, [
+            ("machine", "Rank yesterday", "news.py &rarr; DAILY-BACKLOG.md",
+             "every announcement from the day before is ranked and written "
+             "down, not just the one that becomes a post &mdash; the feed "
+             "only holds about a week"),
+            ("hand", "Write", "posts/daily-%s-….html" % _next("daily-"),
+             "one item, in depth, with what the announcement left out"),
+            ("hand", "Draw", "blog/assets/diagrams/daily-….svg",
+             "all %d carry one, like the architecture series" % d_daily),
+            ("machine", "Build the page", "sync_blog.py",
+             "no per-post builder here: the page comes out of the sync with "
+             "the other %d" % f["syncbuilt"]),
+        ] + tail),
+        ("weekly", "A weekly roundup", "%d posts" % n_weekly, [
+            ("machine", "Fetch the week", "fetch_week.py &middot; "
+             "fetch_week_gcp.py &middot; fetch_azure_week.py",
+             "raw RSS from every feed, parsed rather than summarised. A "
+             "model reading the feed missed 24 of 66 announcements once"),
+            ("machine", "Build the inventory", "build_weekly_inventory.py",
+             "one row per announcement, in the vendor&rsquo;s own words, "
+             "every link fetched &mdash; it exits non-zero if one fails"),
+            ("hand", "Write", "posts/weekly-%s-….html" % _next("weekly-"),
+             "the week in a paragraph, then what is worth acting on"),
+            ("machine", "Build the page", "sync_blog.py",
+             "no diagram and no per-post builder: none of the %d roundups "
+             "carries either" % n_weekly),
+        ] + tail),
+        ("lab", "A weekly lab", "%d posts" % n_lab, [
+            ("hand", "Run it, for real", "a console, and a bill",
+             "a lab post&rsquo;s whole claim is that the thing runs, so it "
+             "goes out when it runs &mdash; these have no fixed publish day"),
+            ("hand", "Write", "posts/week-%s-….html" % _next("week-", 2),
+             "what was built, what it cost, and what broke"),
+            ("machine", "Build the page", "sync_blog.py",
+             "no diagram and no per-post builder, the same path the "
+             "roundups take"),
+        ] + tail),
+    ]
+
 
 
 def build():
@@ -957,46 +1156,229 @@ def build():
         print("  Two labels drawn at one place is what a reader "
               "photographs.")
         raise SystemExit(1)
-    b.append('<div class="cf-arch">%s</div>' % arch)
+
+    # And the two failures a rect-versus-rect check cannot see.
+    #
+    # Reported from a photograph of the live page: "look at those boxes, why
+    # is the text coming out of the box", and "from ai.json there is a
+    # pointer to build_ai_page.py, from there it is pointing to
+    # build_sitemap.py and then preflight.py -- does the whole workflow make
+    # sense?"
+    #
+    # Neither is a collision. The first was a caption sitting at x=424, in
+    # the gap between two columns, belonging to no box. The second was one
+    # straight line from a builder's bottom edge down to the gate, drawn
+    # across the box that happened to lie between them -- so the picture
+    # read as a three-step chain that has never existed. A line that passes
+    # through a box IS an arrow into that box, as far as a reader is
+    # concerned, and this is a page about being checkable.
+    #
+    # Widths are estimated from the font sizes in colophon_scene_css.py.
+    # SVG <text> does not wrap and reports no error when it overruns, so an
+    # estimate that is slightly generous is the whole defence.
+    from html import unescape as html_unescape
+    PER_CHAR = {"at": 7.1, "as": 5.4, "ah": 6.4, "ar": 6.6}
+    FREE = ("WRITTEN BY HAND", "BUILT BY PYTHON", "WHAT A READER OPENS",
+            "DATA STORES", "re-read, rebuilt,", "committed", "passes",
+            "everything the builders wrote")
+    loose = []
+    for m in re.finditer(r'<text class="([a-z ]+)"[^>]*x="(\d+)"[^>]*'
+                         r'y="(\d+)"[^>]*>([^<]*)</text>', arch):
+        cls, tx, ty, label = m.group(1), int(m.group(2)), int(m.group(3)),             m.group(4).strip()
+        if label in FREE:
+            continue
+        key = "ar" if "ar" in cls.split() else cls.split()[0]
+        width = len(html_unescape(label)) * PER_CHAR.get(key, 7.0)
+        if "text-anchor=\"middle\"" in m.group(0):
+            x0, x1 = tx - width / 2, tx + width / 2
+        else:
+            x0, x1 = tx, tx + width
+        inside = any(bx <= x0 and x1 <= bx + bw + 1
+                     and by <= ty <= by + bh
+                     for bx, by, bw, bh in boxes)
+        if not inside:
+            loose.append("%r at (%d,%d), about %dpx wide" % (label, tx, ty,
+                                                             width))
+    if loose:
+        print("  %d label(s) in the architecture diagram run outside every "
+              "box:" % len(loose))
+        for c in loose[:5]:
+            print("    %s" % c)
+        print("  A caption that belongs to no box belongs to whichever box "
+              "the reader is nearest.")
+        raise SystemExit(1)
+
+    crossings = []
+    for m in re.finditer(r'<path class="[^"]*" d="M (\d+) (\d+)([^"]*)"',
+                         arch):
+        x, y = int(m.group(1)), int(m.group(2))
+        pts = [(x, y)]
+        for seg in re.finditer(r'([HV]) ?(\d+)', m.group(3)):
+            if seg.group(1) == "H":
+                x = int(seg.group(2))
+            else:
+                y = int(seg.group(2))
+            pts.append((x, y))
+        for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+            for cx, cy, cw, ch in boxes:
+                # A segment may touch the box it starts or ends against.
+                # Overlap-of-areas is the wrong test here and was wrong
+                # in the first version of this check: a connector is a
+                # zero-thickness line, so its "width" is 0 and an
+                # area-overlap test can never fire on the vertical arrow
+                # that caused the report. Ask instead whether any point of
+                # the segment lands INSIDE the box, with a 2px margin so a
+                # line that merely ends against an edge is not a crossing.
+                ox0, ox1 = min(ax, bx), max(ax, bx)
+                oy0, oy1 = min(ay, by), max(ay, by)
+                if (max(ox0, cx + 2) <= min(ox1, cx + cw - 2)
+                        and max(oy0, cy + 2) <= min(oy1, cy + ch - 2)):
+                    crossings.append("(%d,%d)->(%d,%d) through "
+                                     "(%d,%d %dx%d)"
+                                     % (ax, ay, bx, by, cx, cy, cw, ch))
+    if crossings:
+        print("  %d connector(s) in the architecture diagram pass through a "
+              "box:" % len(crossings))
+        for c in crossings[:5]:
+            print("    %s" % c)
+        print("  A line crossing a box is an arrow into that box, to "
+              "everyone who did not draw it.")
+        raise SystemExit(1)
+    # Every box carries the sentence that says what it does, so hovering
+    # or tabbing to it answers "what does this one actually do at the back
+    # end" without leaving the picture. The <details> list under it carries
+    # the same sentences for anyone who cannot hover: a phone, a keyboard,
+    # a screen reader, a printout.
+    parts = []
+    missing = []
+
+    def _note(m):
+        head, body = m.group(1), m.group(2)
+        label = re.search(r'<text class="at[^"]*"[^>]*>([^<]*)</text>', body)
+        from html import unescape as _un
+        label = _un(label.group(1).strip() if label else "")
+        note = box_note(label) or box_note(label.split(" · ")[0])
+        if not note:
+            missing.append(label)
+            return m.group(0)
+        parts.append((label, note))
+        plain = re.sub(r"&mdash;", "—", note)
+        plain = re.sub(r"<[^>]+>", "", plain)
+        return ('<g%s tabindex="0" data-note="%s">%s</g>'
+                % (head, esc(plain), body))
+
+    arch = re.sub(r'<g class="ab([^"]*)">(.*?)</g>', _note, arch,
+                  flags=re.S).replace('<g class="ab', '<g class="ab')
+    arch = arch.replace('<g class="ab', '<g class="ab')
+    if missing:
+        print("  %d box(es) on the architecture diagram have no note: %s"
+              % (len(missing), ", ".join(repr(x) for x in missing)))
+        print("  A diagram that explains six of its eighteen boxes is a "
+              "diagram a reader gives up on.")
+        raise SystemExit(1)
+    b.append('<div class="cf-arch">%s<div class="cf-tip" role="status" '
+             'aria-live="polite" hidden></div></div>' % arch)
+    b.append('<details class="cf-parts"><summary>What each part does'
+             '</summary><dl>')
+    for label, note in parts:
+        b.append("<dt>%s</dt><dd>%s</dd>" % (esc(label), note))
+    b.append("</dl></details>")
+    b.append('<script>(function(){'
+             'var wrap=document.querySelector(".cf-arch");'
+             'if(!wrap)return;'
+             'var tip=wrap.querySelector(".cf-tip");'
+             'function hide(){tip.hidden=true;}'
+             'function show(g){'
+             'var note=g.getAttribute("data-note");if(!note)return;'
+             'tip.textContent=note;tip.hidden=false;'
+             'var b=g.getBoundingClientRect(),w=wrap.getBoundingClientRect();'
+             'var t=tip.getBoundingClientRect();'
+             'var x=b.left-w.left+b.width/2-t.width/2;'
+             'x=Math.max(8,Math.min(x,w.width-t.width-8));'
+             'var y=b.top-w.top-t.height-10;'
+             'if(y<4)y=b.bottom-w.top+10;'
+             'tip.style.left=x+"px";tip.style.top=y+"px";}'
+             'wrap.addEventListener("pointerover",function(e){'
+             'var g=e.target.closest("[data-note]");if(g)show(g);});'
+             'wrap.addEventListener("pointerleave",hide);'
+             'wrap.addEventListener("focusin",function(e){'
+             'var g=e.target.closest("[data-note]");if(g)show(g);});'
+             'wrap.addEventListener("focusout",hide);'
+             'document.addEventListener("keydown",function(e){'
+             'if(e.key==="Escape")hide();});'
+             '})();</script>')
 
     # ---- the trip, stop by stop ---------------------------------------
     n = counted()
     b.append('<h2 id="the-trip">The trip, stop by stop</h2>')
-    b.append('<p class="cf-note">The same journey as a list rather than a '
-             'picture, with what each stop actually costs. Two of the eight '
-             'only happen for the architecture series &mdash; most of the '
-             'site skips them &mdash; so the path is a switch rather than a '
-             'footnote.</p>')
-    b.append('<div class="cf-trip-paths" role="group" '
-             'aria-label="Which kind of post">'
-             '<button type="button" class="cf-path" data-path="arch" '
-             'aria-pressed="true">An architecture post</button>'
-             '<button type="button" class="cf-path" data-path="both" '
-             'aria-pressed="false">A lab or roundup</button></div>')
-    b.append('<ol class="cf-trip">')
-    for i, (kind, title, where, note, path) in enumerate(trip(n), 1):
-        b.append('<li class="cf-stop cf-%s" data-path="%s">'
-                 '<span class="cf-num">%d</span>'
-                 '<span class="cf-by" aria-hidden="true">%s</span>'
-                 '<span class="cf-what"><b>%s</b>'
-                 '<code>%s</code><span class="cf-why">%s</span></span></li>'
-                 % (kind, path, i, "hand" if kind == "hand" else "machine",
-                    esc(title), where, note))
-    b.append("</ol>")
+    b.append('<p class="cf-note">Four kinds of post, and they do not take the '
+             'same route. Three of them do work before a word is written '
+             'that the architecture series never does &mdash; a roundup '
+             'fetches a week of feeds and builds an inventory from them, a '
+             'daily post ranks everything the cloud announced yesterday, and '
+             'a lab post has to actually run the thing it is about. Two of '
+             'them draw a diagram and two never do. From the sync onwards '
+             'every post is treated identically, which is the last five '
+             'stops on all four.</p>')
+    b.append('<div class="cf-trip-paths" role="tablist" '
+             'aria-label="Kind of post">')
+    for i, (key, label, count, _stops) in enumerate(journeys(n)):
+        b.append('<button type="button" class="cf-path" role="tab" '
+                 'id="tab-%s" aria-controls="trip-%s" data-path="%s" '
+                 'aria-selected="%s">%s <span class="cf-path-n">%s</span>'
+                 "</button>"
+                 % (key, key, key, "true" if i == 0 else "false",
+                    esc(label), esc(count)))
+    b.append("</div>")
+    for i, (key, label, count, stops) in enumerate(journeys(n)):
+        b.append('<ol class="cf-trip" id="trip-%s" role="tabpanel" '
+                 'aria-labelledby="tab-%s"%s>'
+                 % (key, key, "" if i == 0 else " hidden"))
+        for num, (kind, title, where, note) in enumerate(stops, 1):
+            b.append('<li class="cf-stop cf-%s">'
+                     '<span class="cf-num">%d</span>'
+                     '<span class="cf-by" aria-hidden="true">%s</span>'
+                     '<span class="cf-what"><b>%s</b>'
+                     '<code>%s</code><span class="cf-why">%s</span>'
+                     "</span></li>"
+                     % (kind, num, "hand" if kind == "hand" else "machine",
+                        esc(title), where, note))
+        b.append("</ol>")
+    # role="tablist" is a promise that the arrow keys move between tabs and
+    # that only the selected one is in the tab order. A tablist that does
+    # neither is worse than four plain buttons would have been, because a
+    # screen reader announces "tab, 1 of 4" and then the arrow keys do
+    # nothing.
     b.append('<script>(function(){'
-             'var ol=document.querySelector(".cf-trip");'
-             'var bs=[].slice.call(document.querySelectorAll(".cf-path"));'
-             'if(!ol||!bs.length)return;'
-             'bs.forEach(function(b){b.addEventListener("click",function(){'
-             'bs.forEach(function(o){o.setAttribute("aria-pressed",'
-             'String(o===b));});'
-             'ol.classList.toggle("only-both",b.dataset.path==="both");'
+             'var tabs=[].slice.call(document.querySelectorAll(".cf-path"));'
+             'if(!tabs.length)return;'
+             'function show(t,focus){'
+             'tabs.forEach(function(o){'
+             'var on=(o===t);'
+             'o.setAttribute("aria-selected",String(on));'
+             'o.tabIndex=on?0:-1;'
+             'var panel=document.getElementById("trip-"+o.dataset.path);'
+             'if(panel) panel.hidden=!on;'
+             '});'
+             'if(focus) t.focus();}'
+             'tabs.forEach(function(t,i){'
+             't.tabIndex=t.getAttribute("aria-selected")==="true"?0:-1;'
+             't.addEventListener("click",function(){show(t,false);});'
+             't.addEventListener("keydown",function(e){'
+             'var k=e.key,n=null;'
+             'if(k==="ArrowRight"||k==="ArrowDown")n=tabs[(i+1)%tabs.length];'
+             'else if(k==="ArrowLeft"||k==="ArrowUp")'
+             'n=tabs[(i-1+tabs.length)%tabs.length];'
+             'else if(k==="Home")n=tabs[0];'
+             'else if(k==="End")n=tabs[tabs.length-1];'
+             'if(n){e.preventDefault();show(n,true);}'
              '});});'
              '})();</script>')
-    b.append('<p class="cf-note cf-trip-foot">Greyed stops do not happen for '
-             'that kind of post. A weekly lab has no diagram and no builder '
-             'of its own: its page comes out of sync_blog with the other '
-             '%d.</p>' % n["syncbuilt"])
+    b.append('<p class="cf-note cf-trip-foot">The last five stops are the '
+             'same on every path. %d of the %d post pages are built by '
+             'sync_blog rather than by a builder of their own; only the '
+             'three architecture series have one.</p>'
+             % (n["syncbuilt"], n["posts"]))
     b.append('<p class="cf-arch-hint">scroll the diagram sideways &rarr;</p>')
 
     jobs = schedules()

@@ -23,7 +23,7 @@ decoration restating nearby text -- it is information, and a reader who cannot
 see it should be told what it says.
 """
 
-VIEWBOX = "0 0 760 514"
+VIEWBOX = "0 0 760 526"
 
 # Every box that names a real thing, so a check can verify them.
 #
@@ -46,15 +46,17 @@ CLAIMS = {
     "ai.json": "intelligence/ai.json",
     "build_ai_page.py": "scripts/build_ai_page.py",
     ".github/workflows": ".github/workflows",
+    "sitemap.xml": "sitemap.xml",
+    "robots.txt": "robots.txt",
 }
 
 ARCHITECTURE = """
 <svg viewBox="%s" preserveAspectRatio="xMidYMid meet" class="cf-arch-svg"
      role="img" aria-label="How the site fits together: hand-written posts and
      four JSON data stores feed seven Python builders; the builders write every
-     published page; all pages share one stylesheet and one script; a
-     pre-push gate of fifty browser checks stands between the builders and
-     GitHub Pages; and seven scheduled jobs re-read the clouds' own feeds to
+     published page and the sitemap; all pages share one stylesheet and one script; a
+     pre-push gate of {{GATE}} browser checks stands between the builders and
+     GitHub Pages; and {{JOBS}} scheduled jobs re-read the clouds' own feeds to
      keep the data stores current.">
 
   <!-- ================= column headings ================= -->
@@ -89,27 +91,35 @@ ARCHITECTURE = """
 
   <!-- the clouds, and the jobs that read them -->
   <g class="ab vendor">
-    <rect x="16" y="344" width="140" height="58" rx="6"/>
-    <text class="at" x="30" y="366">AWS · Azure · GCP</text>
-    <text class="as" x="30" y="381">their own feeds</text>
-    <text class="as" x="30" y="394">status · releases · events</text>
+    <rect x="16" y="348" width="140" height="66" rx="6"/>
+    <text class="at" x="30" y="370">AWS · Azure · GCP</text>
+    <text class="as" x="30" y="385">their own feeds:</text>
+    <text class="as" x="30" y="398">status, releases,</text>
+    <text class="as" x="30" y="410">and events</text>
   </g>
   <g class="ab job">
-    <rect x="16" y="426" width="140" height="48" rx="6"/>
-    <text class="at" x="30" y="447">.github/workflows</text>
-    <text class="as" x="30" y="462">{{JOBS}} jobs on a clock</text>
+    <rect x="16" y="438" width="140" height="48" rx="6"/>
+    <text class="at" x="30" y="459">.github/workflows</text>
+    <text class="as" x="30" y="474">{{JOBS}} jobs on a clock</text>
   </g>
 
-  <path class="aw up1" d="M 86 344V 254"/>
-  <path class="aw up2" d="M 86 426V 406"/>
-  <text class="as" x="94" y="318">re-read, rebuilt,</text>
-  <text class="as" x="94" y="330">committed</text>
+  <!-- The jobs refresh all four stores, so the line reaches all four --
+       up the outside of the column, with a stub into each. It used to be
+       one straight line from the vendors to the top of the column, which
+       meant it was drawn straight through ai.json on its way past. -->
+  <path class="aw up1" d="M 86 348V 338H 8V 145H 16"/>
+  <path class="aw up1b" d="M 8 187H 16"/>
+  <path class="aw up1c" d="M 8 229H 16"/>
+  <path class="aw up1d" d="M 8 271H 16"/>
+  <path class="aw up2" d="M 86 438V 414"/>
+  <text class="as" x="20" y="316">re-read, rebuilt,</text>
+  <text class="as" x="20" y="328">committed</text>
 
   <!-- ================= builders ================= -->
   <g class="ab bld">
     <rect x="236" y="44" width="176" height="42" rx="6"/>
     <text class="at" x="250" y="66">sync_blog.py</text>
-    <text class="as" x="250" y="79">posts, index, feed, sitemap</text>
+    <text class="as" x="250" y="79">posts, index, feed, archive</text>
   </g>
   <g class="ab bld">
     <rect x="236" y="90" width="176" height="30" rx="6"/>
@@ -140,19 +150,28 @@ ARCHITECTURE = """
   <path class="aa a5" d="M 156 271H 236"/>
 
   <g class="ab bld">
-    <rect x="236" y="298" width="176" height="30" rx="6"/>
-    <text class="at" x="250" y="318">build_sitemap.py</text>
+    <rect x="236" y="298" width="176" height="46" rx="6"/>
+    <text class="at" x="250" y="316">build_sitemap.py</text>
+    <text class="as" x="250" y="329">run by sync_blog.py,</text>
+    <text class="as" x="250" y="340">walks the built site</text>
   </g>
-  <text class="as" x="424" y="318">sitemap.xml &#183; robots.txt</text>
+  <g class="ab page crawl">
+    <rect x="492" y="298" width="180" height="34" rx="6"/>
+    <text class="at" x="506" y="313">sitemap.xml</text>
+    <text class="as" x="506" y="326">robots.txt, for crawlers</text>
+  </g>
+  <path class="aa b6" d="M 412 315H 492"/>
 
   <!-- ================= the gate ================= -->
   <g class="ab gate">
-    <rect x="236" y="344" width="176" height="62" rx="6"/>
-    <text class="at" x="250" y="366">preflight.py</text>
-    <text class="as" x="250" y="381">{{GATE}} checks, a real browser</text>
-    <text class="as" x="250" y="395">a failure refuses the push</text>
+    <rect x="236" y="364" width="176" height="74" rx="6"/>
+    <text class="at" x="250" y="384">preflight.py</text>
+    <text class="as" x="250" y="399">on everything just built:</text>
+    <text class="as" x="250" y="412">{{GATE}} checks, a real browser</text>
+    <text class="as" x="250" y="425">a failure refuses the push</text>
   </g>
-  <path class="aw down" d="M 324 284V 344"/>
+  <path class="aw rail" d="M 240 352H 408"/>
+  <path class="aw down" d="M 324 352V 364"/>
 
   <!-- ================= pages ================= -->
   <g class="ab page">
@@ -192,22 +211,22 @@ ARCHITECTURE = """
 
   <!-- ================= shipping ================= -->
   <g class="ab ship">
-    <rect x="492" y="344" width="180" height="62" rx="6"/>
-    <text class="at" x="506" y="366">GitHub Pages</text>
-    <text class="as" x="506" y="381">static files, no server</text>
-    <text class="as" x="506" y="395">nothing to restart</text>
+    <rect x="492" y="356" width="180" height="62" rx="6"/>
+    <text class="at" x="506" y="378">GitHub Pages</text>
+    <text class="as" x="506" y="393">static files, no server</text>
+    <text class="as" x="506" y="407">nothing to restart</text>
   </g>
-  <path class="aw pass" d="M 412 375H 492"/>
-  <text class="as" x="424" y="368">passes</text>
+  <path class="aw pass" d="M 412 387H 492"/>
+  <text class="as" x="424" y="380">passes</text>
 
   <!-- ================= the shared shell ================= -->
   <g class="ab shell">
-    <rect x="492" y="426" width="252" height="62" rx="6"/>
-    <text class="at" x="506" y="447">site-footer.css · site-footer.js</text>
-    <text class="as" x="506" y="462">one bar, one theme, one menu</text>
-    <text class="as" x="506" y="476">on all {{PAGES}} pages</text>
+    <rect x="492" y="438" width="252" height="62" rx="6"/>
+    <text class="at" x="506" y="459">site-footer.css · site-footer.js</text>
+    <text class="as" x="506" y="474">one bar, one theme, one menu</text>
+    <text class="as" x="506" y="488">on all {{PAGES}} pages</text>
   </g>
-  <path class="aw shellup" d="M 582 426V 406"/>
+  <path class="aw shellup" d="M 582 438V 418"/>
 
   <!-- ================= the reader ================= -->
   <g class="ab reader">

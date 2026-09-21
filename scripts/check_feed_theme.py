@@ -35,8 +35,11 @@ anything useful about it. That is a gap in the check, not a claim about the
 browser, and it is written down rather than left implied.
 """
 import argparse
+import datetime as dt
 import http.server
+import io
 import os
+import re
 import socketserver
 import sys
 import threading
@@ -51,8 +54,52 @@ FEEDS = ["/intelligence/status/feed.xml", "/intelligence/status/feed-aws.xml",
 # (saved value, expected body class, expected to be the light ground)
 CASES = [("light", "light", True), ("dark", "", False), (None, "", False)]
 
-LIGHT_BG = "rgb(247, 244, 239)"
-DARK_BG = "rgb(31, 29, 27)"
+# The ground colour is not a constant. Every page on this site, the feeds
+# included, shifts its background with the DAY OF THE WEEK, taken from the
+# reader's own clock -- seven dark values and six light ones, in
+# status.css and blog.css.
+#
+# This check was written with two of them hard-coded, so it asserted a
+# Tuesday. It passed on the Tuesday it was written and has been reporting
+# five feeds x three cases wrong on the other six days ever since, with a
+# message about the site contradicting itself that was describing the
+# check.
+#
+# So the expected colour is read out of the stylesheet that defines it,
+# for whichever day it is now. That keeps every failure this check was
+# built for -- a feed that ignores the saved theme, or whose stylesheet
+# never ran -- and drops the one it invented.
+_CSS = os.path.join(ROOT, "intelligence", "status", "status.css")
+# JavaScript's getDay() is Sunday=0, which is what the feed's own script
+# indexes with; Python's weekday() is Monday=0.
+_DAY = ["sun", "mon", "tue", "wed", "thu", "fri",
+        "sat"][dt.date.today().isoweekday() % 7]
+
+
+def _rgb(hexcolour):
+    h = hexcolour.lstrip("#")
+    return "rgb(%d, %d, %d)" % tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _ground(day, light):
+    """The --bg the stylesheet gives this day, or the base when it has none.
+
+    Six of the seven days override the light ground and all seven override
+    the dark one, so a missing entry is normal and means the base value.
+    """
+    css = io.open(_CSS, encoding="utf-8", errors="replace").read()
+    pat = (r'html\[data-palette="%s"\]%s\{--bg:(#[0-9A-Fa-f]{6})'
+           % (day, r" body\.light" if light else ""))
+    m = re.search(pat, css)
+    if m:
+        return _rgb(m.group(1))
+    base = re.search(r"body\.light\{--bg:(#[0-9A-Fa-f]{6})" if light
+                     else r"^:root\{--bg:(#[0-9A-Fa-f]{6})", css, re.M)
+    return _rgb(base.group(1)) if base else "(no value in status.css)"
+
+
+LIGHT_BG = _ground(_DAY, True)
+DARK_BG = _ground(_DAY, False)
 
 STATE = """() => ({
   transformed: !!document.querySelector('h1'),

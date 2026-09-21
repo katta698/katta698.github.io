@@ -153,10 +153,27 @@ def main():
                 pg = ctx.new_page()
                 pg.goto(base + path, wait_until="load", timeout=90000)
                 pg.wait_for_timeout(2200)
+                # Stamp the document and see whether the stamp survives.
+                #
+                # This used to compare pg.url before and after, and reported
+                # /blog/ as never reloading. /blog/ reloads perfectly well:
+                # the pull adds a ?r=<timestamp> cache-buster, and blog.js
+                # then rewrites the URL from its own filter state on load,
+                # which strips it. Same URL, so the instrument saw nothing --
+                # while the reader got exactly what they pulled for.
+                #
+                # A reload wipes the window, so a property set on it is a
+                # direct measurement of the thing being asserted, and it does
+                # not care what any page does to its own address bar.
+                pg.evaluate("window.__pullStamp = 'before'")
                 before = pg.url
                 r = pg.evaluate(PULL, 110)
                 pg.wait_for_timeout(1200)
                 after = pg.url
+                try:
+                    survived = pg.evaluate("window.__pullStamp === 'before'")
+                except Exception:                             # noqa: BLE001
+                    survived = False    # navigating away is a reload too
                 ctx.close()
 
                 if not r["exists"]:
@@ -168,9 +185,10 @@ def main():
                                     "indicator never armed (%s)"
                                     % (name, r["moved"] or "no transform"))
                     print("     FAIL %-11s never armed" % name)
-                elif after == before:
+                elif survived:
                     problems.append("%s: released past the threshold and the "
-                                    "page did not reload" % name)
+                                    "page did not reload (url %s -> %s)"
+                                    % (name, before, after))
                     print("     FAIL %-11s no reload" % name)
                 else:
                     print("     ok   %-11s armed, released, reloaded" % name)

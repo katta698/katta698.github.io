@@ -281,6 +281,46 @@ SCENE_CSS = """
 
   .cf-arch-svg .ab rect { fill: none; stroke: currentColor; stroke-width: 1.4;
                           opacity: .45; vector-effect: non-scaling-stroke; }
+  /* Hovering a box says what that component does. The sentence for a
+     script is its own docstring, so the two cannot drift apart.
+
+     Hover alone would leave out every phone, every keyboard and every
+     screen reader, so the boxes are focusable, the panel is a live region,
+     and the same sentences are listed in full underneath. */
+  .cf-arch { position: relative; }
+  .cf-tip { position: absolute; z-index: 4; max-width: 340px;
+            padding: 9px 12px; border-radius: 8px;
+            background: var(--card, #23211F);
+            border: 1px solid var(--line, rgba(255,255,255,.14));
+            box-shadow: 0 10px 28px rgba(0,0,0,.38);
+            font-size: .82rem; line-height: 1.45;
+            color: var(--text, #E8E6E1); pointer-events: none; }
+  .cf-arch-svg [data-note] { cursor: help; }
+  .cf-arch-svg [data-note]:hover rect,
+  .cf-arch-svg [data-note]:focus-visible rect {
+      stroke-width: 2; opacity: 1; }
+  .cf-arch-svg [data-note]:focus { outline: none; }
+  .cf-arch-svg [data-note]:focus-visible rect {
+      stroke: var(--acc, #C4A484); }
+
+  .cf-parts { margin: 14px 0 6px; }
+  .cf-parts summary { cursor: pointer; font-size: .86rem;
+                      color: var(--mut, var(--text-muted, #9C9A94));
+                      letter-spacing: .02em; }
+  .cf-parts dl { margin: 12px 0 0; display: grid; gap: 10px 18px;
+                 grid-template-columns: minmax(9rem, 13rem) 1fr; }
+  .cf-parts dt { font-family: 'DM Mono', ui-monospace, monospace;
+                 font-size: .8rem; color: var(--acc-ink, var(--acc, #C4A484));
+                 overflow-wrap: anywhere; }
+  .cf-parts dd { margin: 0; font-size: .86rem; line-height: 1.5;
+                 color: var(--mut, var(--text-muted, #9C9A94)); }
+  @media (max-width: 640px) {
+      /* Two columns at 9rem leaves the description four words a line. */
+      .cf-parts dl { grid-template-columns: 1fr; gap: 3px; }
+      .cf-parts dd { margin: 0 0 10px; }
+      .cf-tip { max-width: calc(100vw - 48px); }
+  }
+
   .cf-arch-svg .at { fill: currentColor; font-family: 'DM Sans', system-ui,
                      sans-serif; font-size: 13px; font-weight: 500; }
   .cf-arch-svg .as { fill: var(--mut, var(--text-muted, #9C9A94));
@@ -790,18 +830,21 @@ SCENE_CSS = """
             opacity: .72; }
   /* A stop that does not apply is dimmed, not deleted: the shape of the
      journey is the same and the reader can see what is being skipped. */
-  .cf-trip.only-both .cf-stop[data-path="arch"] { opacity: .32; }
-  .cf-trip.only-both .cf-stop[data-path="arch"] .cf-what b {
-      text-decoration: line-through; }
+  /* Four panels, one shown. The greying is gone: a path that has steps
+     the others do not cannot be drawn by dimming a shared list. */
+  .cf-trip[hidden] { display: none; }
+  .cf-path-n { display: block; font-size: .64rem; opacity: .6;
+               letter-spacing: .04em; }
+  .cf-path[aria-selected="true"] { background: var(--accent, #C4A484);
+                                   border-color: var(--accent, #C4A484);
+                                   color: #1F1D1B; }
+  .cf-path[aria-selected="true"] .cf-path-n { opacity: .75; }
   .cf-trip-paths { display: flex; flex-wrap: wrap; gap: .4rem;
                    margin: .8rem 0 .2rem; }
   .cf-path { border: 1px solid var(--bd, var(--border, #33302C));
              background: transparent; color: inherit; border-radius: 999px;
              padding: .3rem .8rem; font: inherit; font-size: .78rem;
              cursor: pointer; }
-  .cf-path[aria-pressed="true"] { background: var(--accent, #C4A484);
-                                  border-color: var(--accent, #C4A484);
-                                  color: #1F1D1B; }
   /* On a phone the number and the HAND/MACHINE label share one meta line
      and the rest sits under them.
      The first version gave each of the three its own grid cell, which on a

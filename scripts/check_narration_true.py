@@ -66,6 +66,20 @@ NAMED = [
 ]
 
 
+_PAGE_CACHE = {}
+
+
+def html_of(path):
+    if path not in _PAGE_CACHE:
+        try:
+            _PAGE_CACHE[path] = io.open(path, encoding="utf-8",
+                                        errors="replace").read()
+        except OSError:
+            _PAGE_CACHE[path] = ""
+    return _PAGE_CACHE[path]
+
+
+
 def main():
     from build_colophon import NARRATION, counted, roughly
 
@@ -150,9 +164,34 @@ def main():
     # to equal what it counts today. It does not matter how many places
     # produce them or which file they live in.
     page = os.path.join(ROOT, "how-this-was-made", "index.html")
-    NOUNS = {"posts": facts["posts"], "pages": facts["pages"],
-             "jobs": len(__import__("build_colophon").schedules())
-                     or facts["flows"]}
+    _bc = __import__("build_colophon")
+    NOUNS = {"pages": facts["pages"],
+             "jobs": len(_bc.schedules()) or facts["flows"]}
+
+    # "N posts" now means one of five things on this page, because the trip
+    # got a tab per route: the whole site, or the size of one of the four
+    # routes. Each of the five is measured -- the site total from the built
+    # index, the four from blog/cards.json, which is what the filter pills
+    # a reader can click are counted from.
+    #
+    # Listing them rather than dropping the noun is the point. A figure
+    # beside "posts" that is none of the five is still a number nobody
+    # measured, and that is the only thing this check has ever been for.
+    POST_COUNTS = {facts["posts"]}
+    for _k, _v in _bc.series_counts().items():
+        POST_COUNTS.add(_v["posts"])
+    for m in re.finditer(r"(\d[\d,]*)\s+posts\b", html_of(page)):
+        got = int(m.group(1).replace(",", ""))
+        if got not in POST_COUNTS:
+            around = re.sub(r"<[^>]*>", " ",
+                            html_of(page)[max(0, m.start() - 40):
+                                          m.end() + 20]).strip()
+            problems.append(
+                "the page says %d posts. The site has %d, and the four "
+                "routes have %s -- this is none of them. Near: ...%s..."
+                % (got, facts["posts"],
+                   ", ".join(str(n) for n in sorted(POST_COUNTS)
+                             if n != facts["posts"]), around[:70]))
     if os.path.exists(page):
         html = io.open(page, encoding="utf-8", errors="replace").read()
         seen = 0
