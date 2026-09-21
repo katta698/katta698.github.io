@@ -922,7 +922,42 @@ def build():
         'and what a reader finally opens. Every box names a real file in the '
         'repository &mdash; a check refuses this page if one of them stops '
         'existing.</p>')
-    b.append('<div class="cf-arch">%s</div>' % fill(ARCHITECTURE))
+    # The diagram is checked for collisions as it is written, not after.
+    #
+    # Twice now the architecture picture has shipped with two labels drawn
+    # at the same coordinates -- once when the AI row was added into a slot
+    # build_sitemap.py already owned, and again when a window with an older
+    # checkout rebuilt this page and committed the pre-fix layout over the
+    # top. The second time it reached a reader, who photographed
+    # "build_aitemagp.py" -- two names on one line.
+    #
+    # A build that cannot produce a broken diagram is worth more than a
+    # check that catches it afterwards, because the rebuild is done by
+    # whichever window happens to publish next.
+    arch = fill(ARCHITECTURE)
+    boxes = []
+    for m in re.finditer(r'<rect x="(\d+)" y="(\d+)" width="(\d+)" '
+                         r'height="(\d+)"', arch):
+        x, y, w, h = (int(g) for g in m.groups())
+        boxes.append((x, y, w, h))
+    clashes = []
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            ax, ay, aw, ah = boxes[i]
+            bx, by, bw, bh = boxes[j]
+            if (min(ax + aw, bx + bw) - max(ax, bx) > 1
+                    and min(ay + ah, by + bh) - max(ay, by) > 1):
+                clashes.append("(%d,%d %dx%d) over (%d,%d %dx%d)"
+                               % (ax, ay, aw, ah, bx, by, bw, bh))
+    if clashes:
+        print("  the architecture diagram has %d overlapping box(es):"
+              % len(clashes))
+        for c in clashes[:4]:
+            print("    %s" % c)
+        print("  Two labels drawn at one place is what a reader "
+              "photographs.")
+        raise SystemExit(1)
+    b.append('<div class="cf-arch">%s</div>' % arch)
 
     # ---- the trip, stop by stop ---------------------------------------
     n = counted()
