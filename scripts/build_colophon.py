@@ -127,6 +127,53 @@ def counted():
                 except OSError:
                     pass
 
+    # What runs BEFORE the gate: prepublish's own list, read from the file
+    # that owns it. Two different numbers with two different jobs -- 21
+    # checks on the post you just wrote, then the gate's checks on the whole
+    # site -- and a page that prints one as the other is describing a
+    # pipeline nobody runs.
+    prepub = 0
+    try:
+        src = io.open(os.path.join(SCRIPTS, "prepublish.py"),
+                      encoding="utf-8").read()
+        block = src[src.index("CHECKS ="):]
+        prepub = len(re.findall(r'"([a-z_]+\.py)"', block[:block.index("]")]))
+    except Exception:
+        prepub = 0
+
+    # Which pages are built by hand and which by sync. The three
+    # architecture series are externally_built -- sync never regenerates
+    # them -- and every other series' page comes out of sync_blog itself.
+    # The pasted flow described the architecture path as if it were the
+    # whole site; it is 135 of 274.
+    handbuilt = syncbuilt = diagrams = 0
+    try:
+        for f in os.listdir(os.path.join(ROOT, "posts")):
+            if not f.endswith((".html", ".md")):
+                continue
+            if f.startswith(("arch-", "az-", "gcp-")):
+                handbuilt += 1
+            else:
+                syncbuilt += 1
+            try:
+                with io.open(os.path.join(ROOT, "posts", f), encoding="utf-8",
+                             errors="replace") as fh:
+                    if "/blog/assets/diagrams/" in fh.read():
+                        diagrams += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+    # The shared files one sync rewrites: the eight named ones plus however
+    # many pages the archive currently runs to.
+    shared = 8
+    try:
+        shared += len([d for d in os.listdir(os.path.join(ROOT, "blog", "page"))
+                       if os.path.isdir(os.path.join(ROOT, "blog", "page", d))])
+    except OSError:
+        pass
+
     # What the GATE actually runs, asked of the gate rather than counted by
     # eye. preflight discovers its own checks, so a hardcoded number here
     # would be a second opinion about a fact preflight already owns -- and
@@ -150,7 +197,9 @@ def counted():
 
     return {"pages": pages, "checks": checks, "scripts": scripts,
             "flows": flows, "posts": posts, "loc": loc,
-            "gate": gate, "browser": browser}
+            "gate": gate, "browser": browser,
+            "prepub": prepub, "handbuilt": handbuilt, "syncbuilt": syncbuilt,
+            "diagrams": diagrams, "shared": shared}
 
 
 def commits():
@@ -583,6 +632,75 @@ STYLE = """
 """
 
 
+
+# The eight stops a post makes, and the two paths through them.
+#
+# Asked as: "if this is true, can we include it in the how-it-is-made page
+# in a creative way?" -- with a flow pasted in. Checked line by line before
+# anything was drawn, because a diagram is a claim:
+#
+#     21 checks in prepublish        true, exactly 21
+#     ~20 shared files rewritten     19: eight named, plus the paged archive
+#     10-15 minutes at the gate      10.2 to 13.0 across the last five pushes
+#     arch-059 next                  true, 058 is the latest on disk
+#     275 posts                      272 live, 274 sources
+#
+# And the correction that matters, asked for straight after: "validate the
+# same across all posts, not just arch -- daily intel, weekly intel, weekly
+# labs too." The pasted flow is the ARCHITECTURE path. Two of its eight
+# stops do not happen for most of the site:
+#
+#     a diagram        every architecture post and every daily intelligence
+#                      post has one; the weekly roundups and the labs have
+#                      none
+#     build_arch_post  only arch-, az- and gcp- pages are externally_built.
+#                      The other 139 pages come out of sync_blog itself
+#
+# So the strip has two paths and says which stops belong to which. A single
+# path would have been a tidier picture and a false one.
+def trip(f=None):
+    f = f or counted()
+    jobs = len(schedules()) or f["flows"]
+    return [
+        ("hand", "Write", "posts/arch-%03d-….html" % (next_arch() or 59),
+         "one hand-written file, the only thing here that is not generated",
+         "both"),
+        ("hand", "Draw", "blog/assets/diagrams/*.svg",
+         "raw SVG, no tool &mdash; %d of %d posts carry one"
+         % (f["diagrams"], f["posts"]), "arch"),
+        ("machine", "Build the page", "build_arch_post.py",
+         "%d post pages are built this way and never regenerated; the "
+         "other %d come from sync_blog"
+         % (f["handbuilt"], f["syncbuilt"]), "arch"),
+        ("machine", "Sync the site", "publish.py &rarr; sync_blog.py",
+         "rewrites %d shared files: the index, the paged archive, the feed, "
+         "the sitemap, the offline worker" % f["shared"], "both"),
+        ("machine", "Check the post", "prepublish.py",
+         "%d checks on what was just written, then it prints Ready"
+         % f["prepub"], "both"),
+        ("hand", "Commit", "local, reversible",
+         "nothing is public yet and nothing is claimed", "both"),
+        ("machine", "Push, and wait", "preflight.py",
+         "%d checks over all %d posts, %d of them driving a real browser. "
+         "Ten to thirteen minutes, measured. A failure refuses the push"
+         % (f["gate"], f["posts"], f["browser"]), "both"),
+        ("machine", "Live", "GitHub Pages, then the search index",
+         "%d jobs on a clock keep the rest of the site current afterwards"
+         % jobs, "both"),
+    ]
+
+
+def next_arch():
+    """The number the next architecture post would take."""
+    try:
+        import re as _re
+        ns = [int(m.group(1)) for f in os.listdir(os.path.join(ROOT, "posts"))
+              for m in [_re.match(r"arch-(\d+)", f)] if m]
+        return max(ns) + 1 if ns else None
+    except OSError:
+        return None
+
+
 def build():
     import build_events_page as bep
     from asset_version import JS_VERSION
@@ -805,6 +923,45 @@ def build():
         'repository &mdash; a check refuses this page if one of them stops '
         'existing.</p>')
     b.append('<div class="cf-arch">%s</div>' % fill(ARCHITECTURE))
+
+    # ---- the trip, stop by stop ---------------------------------------
+    n = counted()
+    b.append('<h2 id="the-trip">The trip, stop by stop</h2>')
+    b.append('<p class="cf-note">The same journey as a list rather than a '
+             'picture, with what each stop actually costs. Two of the eight '
+             'only happen for the architecture series &mdash; most of the '
+             'site skips them &mdash; so the path is a switch rather than a '
+             'footnote.</p>')
+    b.append('<div class="cf-trip-paths" role="group" '
+             'aria-label="Which kind of post">'
+             '<button type="button" class="cf-path" data-path="arch" '
+             'aria-pressed="true">An architecture post</button>'
+             '<button type="button" class="cf-path" data-path="both" '
+             'aria-pressed="false">A lab or roundup</button></div>')
+    b.append('<ol class="cf-trip">')
+    for i, (kind, title, where, note, path) in enumerate(trip(n), 1):
+        b.append('<li class="cf-stop cf-%s" data-path="%s">'
+                 '<span class="cf-num">%d</span>'
+                 '<span class="cf-by" aria-hidden="true">%s</span>'
+                 '<span class="cf-what"><b>%s</b>'
+                 '<code>%s</code><span class="cf-why">%s</span></span></li>'
+                 % (kind, path, i, "hand" if kind == "hand" else "machine",
+                    esc(title), where, note))
+    b.append("</ol>")
+    b.append('<script>(function(){'
+             'var ol=document.querySelector(".cf-trip");'
+             'var bs=[].slice.call(document.querySelectorAll(".cf-path"));'
+             'if(!ol||!bs.length)return;'
+             'bs.forEach(function(b){b.addEventListener("click",function(){'
+             'bs.forEach(function(o){o.setAttribute("aria-pressed",'
+             'String(o===b));});'
+             'ol.classList.toggle("only-both",b.dataset.path==="both");'
+             '});});'
+             '})();</script>')
+    b.append('<p class="cf-note cf-trip-foot">Greyed stops do not happen for '
+             'that kind of post. A weekly lab has no diagram and no builder '
+             'of its own: its page comes out of sync_blog with the other '
+             '%d.</p>' % n["syncbuilt"])
     b.append('<p class="cf-arch-hint">scroll the diagram sideways &rarr;</p>')
 
     jobs = schedules()

@@ -23,7 +23,7 @@ decoration restating nearby text -- it is information, and a reader who cannot
 see it should be told what it says.
 """
 
-VIEWBOX = "0 0 760 470"
+VIEWBOX = "0 0 760 514"
 
 # Every box that names a real thing, so a check can verify them.
 #
@@ -89,21 +89,21 @@ ARCHITECTURE = """
 
   <!-- the clouds, and the jobs that read them -->
   <g class="ab vendor">
-    <rect x="16" y="300" width="140" height="58" rx="6"/>
-    <text class="at" x="30" y="322">AWS · Azure · GCP</text>
-    <text class="as" x="30" y="337">their own feeds</text>
-    <text class="as" x="30" y="350">status · releases · events</text>
+    <rect x="16" y="344" width="140" height="58" rx="6"/>
+    <text class="at" x="30" y="366">AWS · Azure · GCP</text>
+    <text class="as" x="30" y="381">their own feeds</text>
+    <text class="as" x="30" y="394">status · releases · events</text>
   </g>
   <g class="ab job">
-    <rect x="16" y="382" width="140" height="48" rx="6"/>
-    <text class="at" x="30" y="403">.github/workflows</text>
-    <text class="as" x="30" y="418">{{JOBS}} jobs on a clock</text>
+    <rect x="16" y="426" width="140" height="48" rx="6"/>
+    <text class="at" x="30" y="447">.github/workflows</text>
+    <text class="as" x="30" y="462">{{JOBS}} jobs on a clock</text>
   </g>
 
-  <path class="aw up1" d="M86 300 V254"/>
-  <path class="aw up2" d="M86 382 V362"/>
-  <text class="as" x="94" y="278">re-read, rebuilt,</text>
-  <text class="as" x="94" y="290">committed</text>
+  <path class="aw up1" d="M 86 344V 254"/>
+  <path class="aw up2" d="M 86 426V 406"/>
+  <text class="as" x="94" y="318">re-read, rebuilt,</text>
+  <text class="as" x="94" y="330">committed</text>
 
   <!-- ================= builders ================= -->
   <g class="ab bld">
@@ -132,27 +132,27 @@ ARCHITECTURE = """
     <text class="at" x="250" y="275">build_ai_page.py</text>
   </g>
 
-  <path class="aa a1" d="M156 65 H236"/>
-  <path class="aa a1b" d="M156 75 V105 H236"/>
-  <path class="aa a2" d="M156 145 H236"/>
-  <path class="aa a3" d="M156 187 H236"/>
-  <path class="aa a4" d="M156 229 H236"/>
-  <path class="aa a5" d="M156 271 H236"/>
+  <path class="aa a1" d="M 156 65H 236"/>
+  <path class="aa a1b" d="M 156 75V 105H 236"/>
+  <path class="aa a2" d="M 156 145H 236"/>
+  <path class="aa a3" d="M 156 187H 236"/>
+  <path class="aa a4" d="M 156 229H 236"/>
+  <path class="aa a5" d="M 156 271H 236"/>
 
   <g class="ab bld">
-    <rect x="236" y="254" width="176" height="30" rx="6"/>
-    <text class="at" x="250" y="274">build_sitemap.py</text>
+    <rect x="236" y="298" width="176" height="30" rx="6"/>
+    <text class="at" x="250" y="318">build_sitemap.py</text>
   </g>
-  <text class="as" x="424" y="274">sitemap.xml &#183; robots.txt</text>
+  <text class="as" x="424" y="318">sitemap.xml &#183; robots.txt</text>
 
   <!-- ================= the gate ================= -->
   <g class="ab gate">
-    <rect x="236" y="300" width="176" height="62" rx="6"/>
-    <text class="at" x="250" y="322">preflight.py</text>
-    <text class="as" x="250" y="337">{{GATE}} checks, a real browser</text>
-    <text class="as" x="250" y="351">a failure refuses the push</text>
+    <rect x="236" y="344" width="176" height="62" rx="6"/>
+    <text class="at" x="250" y="366">preflight.py</text>
+    <text class="as" x="250" y="381">{{GATE}} checks, a real browser</text>
+    <text class="as" x="250" y="395">a failure refuses the push</text>
   </g>
-  <path class="aw down" d="M324 284 V300"/>
+  <path class="aw down" d="M 324 284V 344"/>
 
   <!-- ================= pages ================= -->
   <g class="ab page">
@@ -184,36 +184,36 @@ ARCHITECTURE = """
     <text class="at" x="506" y="279">j.AI</text>
   </g>
 
-  <path class="aa b1" d="M412 65 H492"/>
-  <path class="aa b2" d="M412 145 H470 V161 H492"/>
-  <path class="aa b3" d="M412 187 H470 V203 H492"/>
-  <path class="aa b4" d="M412 229 H470 V239 H492"/>
-  <path class="aa b5" d="M412 271 H470 V275 H492"/>
+  <path class="aa b1" d="M 412 65H 492"/>
+  <path class="aa b2" d="M 412 145H 470V 161H 492"/>
+  <path class="aa b3" d="M 412 187H 470V 203H 492"/>
+  <path class="aa b4" d="M 412 229H 470V 239H 492"/>
+  <path class="aa b5" d="M 412 271H 470V 275H 492"/>
 
   <!-- ================= shipping ================= -->
   <g class="ab ship">
-    <rect x="492" y="300" width="180" height="62" rx="6"/>
-    <text class="at" x="506" y="322">GitHub Pages</text>
-    <text class="as" x="506" y="337">static files, no server</text>
-    <text class="as" x="506" y="351">nothing to restart</text>
+    <rect x="492" y="344" width="180" height="62" rx="6"/>
+    <text class="at" x="506" y="366">GitHub Pages</text>
+    <text class="as" x="506" y="381">static files, no server</text>
+    <text class="as" x="506" y="395">nothing to restart</text>
   </g>
-  <path class="aw pass" d="M412 331 H492"/>
-  <text class="as" x="424" y="324">passes</text>
+  <path class="aw pass" d="M 412 375H 492"/>
+  <text class="as" x="424" y="368">passes</text>
 
   <!-- ================= the shared shell ================= -->
   <g class="ab shell">
-    <rect x="492" y="382" width="252" height="62" rx="6"/>
-    <text class="at" x="506" y="403">site-footer.css · site-footer.js</text>
-    <text class="as" x="506" y="418">one bar, one theme, one menu</text>
-    <text class="as" x="506" y="432">on all {{PAGES}} pages</text>
+    <rect x="492" y="426" width="252" height="62" rx="6"/>
+    <text class="at" x="506" y="447">site-footer.css · site-footer.js</text>
+    <text class="as" x="506" y="462">one bar, one theme, one menu</text>
+    <text class="as" x="506" y="476">on all {{PAGES}} pages</text>
   </g>
-  <path class="aw shellup" d="M582 382 V362"/>
+  <path class="aw shellup" d="M 582 426V 406"/>
 
   <!-- ================= the reader ================= -->
   <g class="ab reader">
     <rect x="692" y="128" width="52" height="126" rx="6"/>
     <text class="at ar" x="718" y="196" text-anchor="middle">reader</text>
   </g>
-  <path class="aa r1" d="M672 191 H692"/>
+  <path class="aa r1" d="M 672 191H 692"/>
 </svg>
 """ % VIEWBOX

@@ -763,6 +763,59 @@ SCENE_CSS = """
      be raised to accommodate one page. */
   body:has(.cf-player) .fb-btn { top: 72%; }
 
+  /* The trip, stop by stop.
+     A numbered strip rather than a second diagram: the picture above says
+     what connects to what, and this says what each step costs and who does
+     it. Hand steps carry the accent; machine steps stay in the page's own
+     ink, so the eye can see at a glance how little of this is hand work --
+     three stops of eight, and one of those is pressing commit. */
+  .cf-trip { list-style: none; margin: 1rem 0 .4rem; padding: 0;
+             counter-reset: none; }
+  .cf-stop { display: grid; grid-template-columns: 2rem 4.4rem 1fr;
+             gap: .7rem; align-items: start; padding: .7rem 0;
+             border-top: 1px solid var(--bd, var(--border, #33302C)); }
+  .cf-stop:last-child { border-bottom: 1px solid
+                        var(--bd, var(--border, #33302C)); }
+  .cf-num { font-family: 'DM Mono', ui-monospace, monospace; font-size: .8rem;
+            opacity: .5; padding-top: .15rem; }
+  .cf-by { font-family: 'DM Mono', ui-monospace, monospace; font-size: .62rem;
+           letter-spacing: .08em; text-transform: uppercase;
+           padding-top: .25rem; }
+  .cf-hand .cf-by { color: var(--acc-ink, var(--accent, #C4A484)); }
+  .cf-machine .cf-by { opacity: .45; }
+  .cf-what b { display: block; font-size: .98rem; }
+  .cf-what code { display: block; font-size: .76rem; opacity: .8;
+                  margin: .1rem 0 .15rem; word-break: break-word; }
+  .cf-why { display: block; font-size: .82rem; line-height: 1.55;
+            opacity: .72; }
+  /* A stop that does not apply is dimmed, not deleted: the shape of the
+     journey is the same and the reader can see what is being skipped. */
+  .cf-trip.only-both .cf-stop[data-path="arch"] { opacity: .32; }
+  .cf-trip.only-both .cf-stop[data-path="arch"] .cf-what b {
+      text-decoration: line-through; }
+  .cf-trip-paths { display: flex; flex-wrap: wrap; gap: .4rem;
+                   margin: .8rem 0 .2rem; }
+  .cf-path { border: 1px solid var(--bd, var(--border, #33302C));
+             background: transparent; color: inherit; border-radius: 999px;
+             padding: .3rem .8rem; font: inherit; font-size: .78rem;
+             cursor: pointer; }
+  .cf-path[aria-pressed="true"] { background: var(--accent, #C4A484);
+                                  border-color: var(--accent, #C4A484);
+                                  color: #1F1D1B; }
+  /* On a phone the number and the HAND/MACHINE label share one meta line
+     and the rest sits under them.
+     The first version gave each of the three its own grid cell, which on a
+     narrow screen meant the title landed two rows below its own number with
+     a hole beside it -- airy, disconnected, and taller than the content. */
+  @media (max-width: 560px) {
+    .cf-stop { grid-template-columns: auto 1fr; gap: .35rem .5rem;
+               padding: .65rem 0; }
+    .cf-num { grid-column: 1; grid-row: 1; padding-top: 0; }
+    .cf-by { grid-column: 2; grid-row: 1; padding-top: .1rem; }
+    .cf-what { grid-column: 1 / -1; grid-row: 2; }
+    .cf-what b { font-size: .94rem; }
+  }
+
   @media (max-width: 560px) {
     .cf-scene { max-width: 100%; }
   }

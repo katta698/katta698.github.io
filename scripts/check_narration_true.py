@@ -172,10 +172,20 @@ def main():
         for m in re.finditer(r"(\d+)\s+checks\b", html):
             seen += 1
             got = int(m.group(1))
-            if got not in (facts["gate"], facts["browser"], facts["checks"]):
+            # Three different check counts are all true on this page, and
+            # they mean different things: what the GATE runs over the whole
+            # site, how many of those drive a browser, how many check
+            # scripts exist, and what PREPUBLISH runs over the one post you
+            # just wrote. The page names all of them, so all of them are
+            # allowed -- and anything else is still a number nobody measured.
+            allowed = (facts["gate"], facts["browser"], facts["checks"],
+                       facts.get("prepub"))
+            if got not in allowed:
                 problems.append(
-                    "the page says %d checks; the gate runs %d, of which %d "
-                    "open a browser" % (got, facts["gate"], facts["browser"]))
+                    "the page says %d checks; the gate runs %d (%d in a "
+                    "browser), there are %d check scripts, and prepublish "
+                    "runs %d" % (got, facts["gate"], facts["browser"],
+                                 facts["checks"], facts.get("prepub") or 0))
         print("  %d figure(s) on the built page checked against the repo"
               % seen)
         if "{{" in html:
