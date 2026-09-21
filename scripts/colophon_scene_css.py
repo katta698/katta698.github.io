@@ -281,28 +281,10 @@ SCENE_CSS = """
 
   .cf-arch-svg .ab rect { fill: none; stroke: currentColor; stroke-width: 1.4;
                           opacity: .45; vector-effect: non-scaling-stroke; }
-  /* Hovering a box says what that component does. The sentence for a
-     script is its own docstring, so the two cannot drift apart.
-
-     Hover alone would leave out every phone, every keyboard and every
-     screen reader, so the boxes are focusable, the panel is a live region,
-     and the same sentences are listed in full underneath. */
-  .cf-arch { position: relative; }
-  .cf-tip { position: absolute; z-index: 4; max-width: 340px;
-            padding: 9px 12px; border-radius: 8px;
-            background: var(--card, #23211F);
-            border: 1px solid var(--line, rgba(255,255,255,.14));
-            box-shadow: 0 10px 28px rgba(0,0,0,.38);
-            font-size: .82rem; line-height: 1.45;
-            color: var(--text, #E8E6E1); pointer-events: none; }
-  .cf-arch-svg [data-note] { cursor: help; }
-  .cf-arch-svg [data-note]:hover rect,
-  .cf-arch-svg [data-note]:focus-visible rect {
-      stroke-width: 2; opacity: 1; }
-  .cf-arch-svg [data-note]:focus { outline: none; }
-  .cf-arch-svg [data-note]:focus-visible rect {
-      stroke: var(--acc, #C4A484); }
-
+  /* The sentences that say what each component does are listed under the
+     diagram, not attached to it. There was a hover panel too and it has
+     been removed: the same sentence in two places is one place too many,
+     and the hover half only ever worked for a reader with a mouse. */
   .cf-parts { margin: 14px 0 6px; }
   .cf-parts summary { cursor: pointer; font-size: .86rem;
                       color: var(--mut, var(--text-muted, #9C9A94));
@@ -318,7 +300,6 @@ SCENE_CSS = """
       /* Two columns at 9rem leaves the description four words a line. */
       .cf-parts dl { grid-template-columns: 1fr; gap: 3px; }
       .cf-parts dd { margin: 0 0 10px; }
-      .cf-tip { max-width: calc(100vw - 48px); }
   }
 
   .cf-arch-svg .at { fill: currentColor; font-family: 'DM Sans', system-ui,
@@ -795,13 +776,16 @@ SCENE_CSS = """
     .sc .steam { opacity: .5; }
   }
 
-  /* The feedback star, out of the control bar's column -- on this page only.
-     It is fixed at right:14px, top:50%, so on a phone it floats exactly
-     where the player's last button sits, which is why the bar was given
-     z-index 901 in the first place. Moving it is page-scoped through
-     :has(), so no other page's star moves and no site-wide z-index has to
-     be raised to accommodate one page. */
-  body:has(.cf-player) .fb-btn { top: 72%; }
+  /* The feedback star is NOT moved on this page.
+     It used to be pushed to top:72% here, to get it out of the column the
+     player's last control sits in. The extra right padding the phone query
+     already gives .cf-bar does that on its own -- measured at 1280 and at
+     390, with the player scrolled to the middle of the viewport, the star
+     overlaps no control and wins no tap that belongs to one, at 50% or at
+     72%. So the override bought nothing and cost the thing a reader
+     actually notices: "the give feedback star is in the lower end, it's
+     not in sync with the other web pages". A control that is in the same
+     place on every page is the point of having one control. */
 
   /* The trip, stop by stop.
      A numbered strip rather than a second diagram: the picture above says
@@ -816,8 +800,16 @@ SCENE_CSS = """
              border-top: 1px solid var(--bd, var(--border, #33302C)); }
   .cf-stop:last-child { border-bottom: 1px solid
                         var(--bd, var(--border, #33302C)); }
-  .cf-num { font-family: 'DM Mono', ui-monospace, monospace; font-size: .8rem;
-            opacity: .5; padding-top: .15rem; }
+  /* .cf-stop-n, not .cf-num.
+     The seven stat cards at the top of this page are .cf-num inside
+     .cf-nums, and these rules were landing on all of them: opacity .5, and
+     -- in the 560px query below -- grid-column 1, grid-row 1, which put
+     every card in the same cell. Photographed on a phone as one box with
+     seven numbers printed over each other and every label overlapping.
+     Two unrelated components shared a class name across two files, so
+     neither file looked wrong when read on its own. */
+  .cf-stop-n { font-family: 'DM Mono', ui-monospace, monospace;
+               font-size: .8rem; opacity: .5; padding-top: .15rem; }
   .cf-by { font-family: 'DM Mono', ui-monospace, monospace; font-size: .62rem;
            letter-spacing: .08em; text-transform: uppercase;
            padding-top: .25rem; }
@@ -853,7 +845,7 @@ SCENE_CSS = """
   @media (max-width: 560px) {
     .cf-stop { grid-template-columns: auto 1fr; gap: .35rem .5rem;
                padding: .65rem 0; }
-    .cf-num { grid-column: 1; grid-row: 1; padding-top: 0; }
+    .cf-stop-n { grid-column: 1; grid-row: 1; padding-top: 0; }
     .cf-by { grid-column: 2; grid-row: 1; padding-top: .1rem; }
     .cf-what { grid-column: 1 / -1; grid-row: 2; }
     .cf-what b { font-size: .94rem; }

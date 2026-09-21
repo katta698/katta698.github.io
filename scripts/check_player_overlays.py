@@ -100,6 +100,49 @@ class _Threaded(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
 
 
+# The page's own blocks, laid out beside each other rather than on top.
+#
+# Reported from a phone: one stat card showing seven numbers printed over
+# each other and every label overlapping. The cause was a class name used
+# by two unrelated components in two different files -- .cf-num is a stat
+# card here and was also the trip's step number, so a 560px rule written
+# for the step number put all seven cards in grid cell 1/1.
+#
+# Neither file looked wrong when read on its own, both components existed,
+# every element was "visible", and the markup was valid. Only the geometry
+# says anything. This is the same question the scene probe above asks, put
+# to the page instead of to the artwork: are two things that should sit
+# beside each other occupying the same place?
+STACKED = """(sel) => {
+  const out = [];
+  document.querySelectorAll(sel).forEach(parent => {
+    const kids = [...parent.children].filter(k => {
+      const r = k.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    });
+    const seen = new Map();
+    kids.forEach(k => {
+      const r = k.getBoundingClientRect();
+      const key = Math.round(r.left) + ',' + Math.round(r.top);
+      if (seen.has(key)) {
+        const label = (k.textContent || '').trim().replace(/\s+/g, ' ');
+        out.push((parent.className || parent.tagName) + ': '
+                 + label.slice(0, 30) + ' is drawn on top of '
+                 + (seen.get(key) || '').slice(0, 30));
+      } else {
+        seen.set(key, (k.textContent || '').trim()
+                        .replace(/\s+/g, ' '));
+      }
+    });
+  });
+  return out; }"""
+
+# Containers whose children are meant to sit side by side or stacked in a
+# list -- never in the same place. The scenes are deliberately layered and
+# are covered by the probe above, so they are not in this list.
+ROWS = ".cf-nums, .cf-trip-paths, .cf-trip, .cf-flow, .cf-parts dl"
+
+
 def serve():
     class H(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *a):
@@ -168,6 +211,13 @@ def main():
                         hit = pg.evaluate(PROBE, TOLERANCE)
                         if hit:
                             bad.append("scene %d: %s" % (i + 1, hit))
+
+                    stacked = pg.evaluate(STACKED, ROWS)
+                    if stacked:
+                        bad.append("%d block(s) stacked: %s"
+                                   % (len(stacked), stacked[0]))
+                        for hit in stacked:
+                            problems.append("%dpx: %s" % (width, hit))
 
                     print("  %-8s %4dpx  CC %-3s  %s"
                           % (wname, width, "on" if cc_on else "off",

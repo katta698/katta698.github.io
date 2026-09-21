@@ -1244,69 +1244,42 @@ def build():
         print("  A line crossing a box is an arrow into that box, to "
               "everyone who did not draw it.")
         raise SystemExit(1)
-    # Every box carries the sentence that says what it does, so hovering
-    # or tabbing to it answers "what does this one actually do at the back
-    # end" without leaving the picture. The <details> list under it carries
-    # the same sentences for anyone who cannot hover: a phone, a keyboard,
-    # a screen reader, a printout.
+    # What each box does, listed under the picture.
+    #
+    # This was a hover tooltip as well, and the tooltip is gone: "we anyway
+    # have the what each part does section". Two places carrying the same
+    # sentence is two places to read and one of them only works for a
+    # reader with a mouse. The list works on a phone, on a keyboard, in a
+    # screen reader and on a printout, so it is the one that stays.
+    #
+    # The sentence for a script is the first line of its own docstring,
+    # read at build time -- a hand-written caption for twelve scripts is
+    # twelve sentences that quietly stop being true, and a docstring is
+    # edited by whoever changes the script.
     parts = []
     missing = []
-
-    def _note(m):
-        head, body = m.group(1), m.group(2)
-        label = re.search(r'<text class="at[^"]*"[^>]*>([^<]*)</text>', body)
+    for m in re.finditer(r'<g class="ab[^"]*">(.*?)</g>', arch, flags=re.S):
+        label = re.search(r'<text class="at[^"]*"[^>]*>([^<]*)</text>',
+                          m.group(1))
         from html import unescape as _un
         label = _un(label.group(1).strip() if label else "")
         note = box_note(label) or box_note(label.split(" · ")[0])
         if not note:
             missing.append(label)
-            return m.group(0)
+            continue
         parts.append((label, note))
-        plain = re.sub(r"&mdash;", "—", note)
-        plain = re.sub(r"<[^>]+>", "", plain)
-        return ('<g%s tabindex="0" data-note="%s">%s</g>'
-                % (head, esc(plain), body))
-
-    arch = re.sub(r'<g class="ab([^"]*)">(.*?)</g>', _note, arch,
-                  flags=re.S).replace('<g class="ab', '<g class="ab')
-    arch = arch.replace('<g class="ab', '<g class="ab')
     if missing:
         print("  %d box(es) on the architecture diagram have no note: %s"
               % (len(missing), ", ".join(repr(x) for x in missing)))
         print("  A diagram that explains six of its eighteen boxes is a "
               "diagram a reader gives up on.")
         raise SystemExit(1)
-    b.append('<div class="cf-arch">%s<div class="cf-tip" role="status" '
-             'aria-live="polite" hidden></div></div>' % arch)
+    b.append('<div class="cf-arch">%s</div>' % arch)
     b.append('<details class="cf-parts"><summary>What each part does'
              '</summary><dl>')
     for label, note in parts:
         b.append("<dt>%s</dt><dd>%s</dd>" % (esc(label), note))
     b.append("</dl></details>")
-    b.append('<script>(function(){'
-             'var wrap=document.querySelector(".cf-arch");'
-             'if(!wrap)return;'
-             'var tip=wrap.querySelector(".cf-tip");'
-             'function hide(){tip.hidden=true;}'
-             'function show(g){'
-             'var note=g.getAttribute("data-note");if(!note)return;'
-             'tip.textContent=note;tip.hidden=false;'
-             'var b=g.getBoundingClientRect(),w=wrap.getBoundingClientRect();'
-             'var t=tip.getBoundingClientRect();'
-             'var x=b.left-w.left+b.width/2-t.width/2;'
-             'x=Math.max(8,Math.min(x,w.width-t.width-8));'
-             'var y=b.top-w.top-t.height-10;'
-             'if(y<4)y=b.bottom-w.top+10;'
-             'tip.style.left=x+"px";tip.style.top=y+"px";}'
-             'wrap.addEventListener("pointerover",function(e){'
-             'var g=e.target.closest("[data-note]");if(g)show(g);});'
-             'wrap.addEventListener("pointerleave",hide);'
-             'wrap.addEventListener("focusin",function(e){'
-             'var g=e.target.closest("[data-note]");if(g)show(g);});'
-             'wrap.addEventListener("focusout",hide);'
-             'document.addEventListener("keydown",function(e){'
-             'if(e.key==="Escape")hide();});'
-             '})();</script>')
 
     # ---- the trip, stop by stop ---------------------------------------
     n = counted()
@@ -1336,7 +1309,7 @@ def build():
                  % (key, key, "" if i == 0 else " hidden"))
         for num, (kind, title, where, note) in enumerate(stops, 1):
             b.append('<li class="cf-stop cf-%s">'
-                     '<span class="cf-num">%d</span>'
+                     '<span class="cf-stop-n">%d</span>'
                      '<span class="cf-by" aria-hidden="true">%s</span>'
                      '<span class="cf-what"><b>%s</b>'
                      '<code>%s</code><span class="cf-why">%s</span>'
