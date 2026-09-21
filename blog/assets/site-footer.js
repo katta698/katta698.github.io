@@ -667,7 +667,7 @@
     return '<div class="pal-menu-head">' +
              '<strong>' + cap(GROUND[k].name) + '</strong> — ' + GROUND[k].note +
              '<span class="pal-mean">' + GROUND[k].mean + '</span>' +
-             '<span class="pal-mark-line">' + m + ' ' + (MARK_MEAN[m] || '') + '</span>' +
+             '<span class="pal-mark-line"><span class="pal-mark-glyph" aria-hidden="true">' + m + '</span> ' + (MARK_MEAN[m] || '') + '</span>' +
            '</div>' +
            DAYS.map(function (d) {
       var mk = markFor(d);
@@ -1043,12 +1043,13 @@
     { href: '/blog/',                     label: 'Blog' },
     { href: '/intelligence/',             label: 'Intelligence' },
     { href: '/intelligence/whats-new/',   label: '’s new', pre: 'What' },
-    { href: '/intelligence/status/',      label: 'Live status' }
+    { href: '/intelligence/status/',      label: 'Live status' },
+    { href: '/connect/',                  label: 'Connect' }
   ];
 
   function text(p) { return (p.pre || '') + p.label; }
 
-  // Which of the five we are on. Longest matching path wins, so
+  // Which of the pages we are on. Longest matching path wins, so
   // /intelligence/status/ is not mistaken for /intelligence/.
   function current() {
     var path = location.pathname.replace(/index\.html$/, '');
