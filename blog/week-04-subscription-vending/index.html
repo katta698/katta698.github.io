@@ -171,7 +171,7 @@ asymmetry is the part worth designing for.</p>
       <div class="post-info">
         <span>Sep 12, 2026</span>
         <span class="post-info-dot"></span>
-        <span>10 min read</span>
+        <span>12 min read</span>
       </div>
     </header>
     
@@ -403,6 +403,58 @@ and that answer cannot be "destroy it".</p>
 </tbody>
 </table>
 </div>
+<p>All four, in code. The alias call carries a 60-minute timeout because the
+provider default is shorter than Azure sometimes is:</p>
+<pre><code>resource "azurerm_subscription" "vended" {
+  count = var.vend_new_subscription ? 1 : 0
+
+  alias             = var.landing_zone_name
+  subscription_name = var.landing_zone_name
+  billing_scope_id  = local.billing_scope
+  workload          = var.subscription_workload   # "Production" - see below
+
+  timeouts { create = "60m" }
+}
+
+# A SEPARATE resource, because placement is a separate API call.
+resource "azurerm_management_group_subscription_association" "vended" {
+  count = var.vend_new_subscription ? 1 : 0
+
+  management_group_id = "/providers/Microsoft.Management/managementGroups/${var.target_management_group_id}"
+
+  # The SUBSCRIPTION id, not the resource's own id. azurerm_subscription.id is
+  # the ALIAS resource id, and passing it here fails with
+  # "the segment at position 0 didn't match".
+  subscription_id = "/subscriptions/${azurerm_subscription.vended[0].subscription_id}"
+}</code></pre>
+<p>The budget and the grant are declared once and applied to every target, so
+"what does a landing zone get" has one answer that cannot drift between the
+rehearsal and the real thing:</p>
+<pre><code>resource "azurerm_consumption_budget_subscription" "vended" {
+  for_each        = local.vend_targets        # keys static, values may be unknown
+  subscription_id = "/subscriptions/${each.value}"
+  amount          = var.budget_amount
+
+  notification {                      # arrives when 80% is already spent
+    threshold = 80
+    threshold_type = "Actual"
+    operator = "GreaterThan"
+    contact_emails = var.budget_alert_emails
+  }
+  notification {                      # arrives while the month can still change
+    threshold = 100
+    threshold_type = "Forecasted"
+    operator = "GreaterThan"
+    contact_emails = var.budget_alert_emails
+  }
+}
+
+resource "azurerm_role_assignment" "landing_zone_owner" {
+  for_each             = local.vend_targets
+  scope                = "/subscriptions/${each.value}"
+  role_definition_name = var.role_assignment_definition   # "Reader", deliberately
+  principal_id         = var.role_assignment_principal_id
+}</code></pre>
 <h3>Step 2 is the one that gets skipped, and its absence is invisible</h3>
 <p>A subscription created but never placed is billed correctly, reports healthy,
 and appears in every list you would look at. It also inherits no policy and no
@@ -416,6 +468,20 @@ group as its parent. One query answering correctly is not the same as the
 association existing.</p>
 <p><img alt="Azure portal management group tree showing the vended subscription lz-vend-demo under Landing Zones - Dev" src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-04-subscription-vending/docs/blog/screenshots/01-vended-subscription-placed.png"/></p>
 <h2 id="build">How We Built It — Step by Step</h2>
+<h3>0. How any of this gets deployed</h3>
+<p>All of it is Terraform. State lives in HCP Terraform, the apply runs locally
+against whatever <code>az login</code> session is on the machine — HCP defaults a
+new workspace to <em>remote</em> execution, which fails here because there are no
+Azure credentials stored in the workspace.</p>
+<pre><code>terraform {
+  cloud {
+    organization = "Katta"
+    workspaces {
+      name    = "azure-week-04-dev"
+      project = "Azure Platform Lab"
+    }
+  }
+}</code></pre>
 <p><strong>Two stages, one payload.</strong></p>
 <pre><code>./scripts/deploy.sh config    # vend onto an existing subscription — repeatable
 ./scripts/deploy.sh vend      # create a subscription too — one-way</code></pre>
@@ -453,6 +519,17 @@ to a consumer; this week opened by <em>being</em> that consumer.</p>
 refuses it:</p>
 <pre><code>Code="NotAllowed" Message="Can't create DevTest Azure plans for individual
 billing account. Please contact Azure Support."   code: "InvalidSku"</code></pre>
+<p>The fix is one argument, and it is now a validated variable rather than a
+literal buried in the resource:</p>
+<pre><code>variable "subscription_workload" {
+  type    = string
+  default = "Production"    # DevTest is refused on an MCA Individual account
+
+  validation {
+    condition     = contains(["Production", "DevTest"], var.subscription_workload)
+    error_message = "subscription_workload must be Production or DevTest."
+  }
+}</code></pre>
 <p>Nothing in that message names the offending field. The only hint is the word
 <em>Sku</em> in the error code, and the outer error is <code>StatusCode=0</code>
 — the same signature as the client-side timeout this lab saw during bootstrap, so

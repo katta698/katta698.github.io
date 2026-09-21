@@ -171,7 +171,7 @@ the two breaking changes in this week&#x27;s 2.0.0 produces no error at all.</p>
       <div class="post-info">
         <span>Sep 4, 2026</span>
         <span class="post-info-dot"></span>
-        <span>10 min read</span>
+        <span>12 min read</span>
       </div>
     </header>
     
@@ -404,6 +404,22 @@ not a contrived arrangement, it is the permanent condition of any platform team
 that owns a module and has no authority to make everyone upgrade on the same
 day.</p>
 <h3>The wrapper pins AVM exactly, and that is deliberate asymmetry</h3>
+<pre><code>module "storage_account" {
+  source  = "Azure/avm-res-storage-storageaccount/azurerm"
+  version = "0.10.0"          # EXACT, not ~&gt; 0.10
+
+  location  = var.location
+  name      = local.account_name
+  parent_id = var.resource_group_id    # AVM takes the full RG id, not a name
+
+  https_traffic_only_enabled      = true
+  min_tls_version                 = "TLS1_2"
+  allow_nested_items_to_be_public = false
+  shared_access_key_enabled       = var.shared_access_key_enabled
+
+  diagnostic_settings_storage_account = local.account_diagnostics
+  diagnostic_settings_blob            = local.blob_diagnostics
+}</code></pre>
 <p>The wrapper pins <code>Azure/avm-res-storage-storageaccount/azurerm</code> at
 exactly <code>0.10.0</code> — not <code>~&gt; 0.10</code>. That is a different
 decision from the one a consumer of the wrapper makes, and the reason is that a
@@ -421,6 +437,19 @@ is the sort of thing discovered during an incident rather than during a deploy.
 The wrapper takes one workspace ID and creates both settings, so no caller has
 to know that.</p>
 <h2 id="build">How We Built It — Step by Step</h2>
+<h3>0. How any of this gets deployed</h3>
+<p>Terraform throughout. State lives in HCP Terraform and the apply runs locally
+— HCP defaults a new workspace to <em>remote</em> execution, which fails here
+because no Azure credentials are stored in the workspace.</p>
+<pre><code>terraform {
+  cloud {
+    organization = "Katta"
+    workspaces {
+      name    = "azure-week-03-dev"
+      project = "Azure Platform Lab"
+    }
+  }
+}</code></pre>
 <p><strong>1. The module, published from a tag.</strong>
 <code>publish.sh</code> builds the tarball with
 <code>git archive &lt;tag&gt;:&lt;path&gt;</code> — never from the working tree.
@@ -443,6 +472,30 @@ carries exactly two differences from 1.0.0, chosen to be opposites:</p>
 <p><strong>3. Two consumers, deployed in stages.</strong> Stage one creates
 <code>app_a</code> on 1.0.0. Stage two adds <code>app_b</code> on 2.0.0 beside
 it and never touches the first block again.</p>
+<pre><code># Pinned to 1.0.0 and never touched again. Passes no workspace, because
+# 1.0.0 allowed that - this block is the evidence of what the defaults were
+# on the day it was written.
+module "app_a" {
+  source  = "app.terraform.io/Katta/storage-baseline/azurerm"
+  version = "1.0.0"
+
+  workload          = "appa"
+  resource_group_id = azurerm_resource_group.week.id
+  cost_center       = "platform-lab"
+}
+
+# Added later, alongside it. An exact pin, not ~&gt; 2.0: a range is a standing
+# agreement to skip reading the diff, and the diff is the safety mechanism.
+module "app_b" {
+  source  = "app.terraform.io/Katta/storage-baseline/azurerm"
+  version = "2.0.0"
+  count   = var.enable_v2_consumer ? 1 : 0
+
+  workload                   = "appb"
+  resource_group_id          = azurerm_resource_group.week.id
+  cost_center                = "platform-lab"
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.diagnostics.id
+}</code></pre>
 <p><img alt="Azure portal resource group blade showing two storage accounts and a Log Analytics workspace" src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-03-module-factory/docs/blog/screenshots/01-both-accounts-deployed.png"/></p>
 <p>The plan for stage two is the evidence, and it is a claim about a plan rather
 than about a deployment — so the script saves the plan, reports on it, and only
@@ -457,6 +510,17 @@ module.app_a changes in this plan: 0</code></pre>
 landed in the same state file and the consumer pinned to the old one did not
 move. That is what the pin buys.</p>
 <h2 id="challenges">Challenges — What Actually Went Wrong</h2>
+<p>Both breaking changes are two lines of the module's own variables:</p>
+<pre><code># 1.0.0                          # 2.0.0
+variable "log_analytics_workspace_id" {
+  type    = string               type = string
+  default = null                 # no default - now REQUIRED  (the LOUD break)
+}
+
+variable "shared_access_key_enabled" {
+  type    = bool                 type = bool
+  default = true                 default = false            (the SILENT break)
+}</code></pre>
 <h3>The silent break is only visible on deployed resources</h3>
 <p>Both accounts came from the same module, through the same code path, and
 neither call site mentions <code>shared_access_key_enabled</code> at all. Here is
