@@ -1,0 +1,351 @@
+---
+title: "AWS Architecture Series #60 — The one you cannot re-read"
+date: '2026-09-22T09:00:00'
+slug: aws-architecture-kinesis-msk-firehose
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-22'
+verified_claims:
+  - claim: "The minimum value of a Kinesis data stream's retention period is 24 hours"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "The maximum value of a Kinesis stream's retention period is 8760 hours, which is 365 days"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "In Kinesis provisioned mode each shard can support up to 1 MB/sec or 1,000 records/sec write throughput or up to 2 MB/sec or 2,000 records/sec read throughput"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "By default, new Kinesis data streams created with the on-demand capacity mode have 4 MB/s of write and 8 MB/s of read throughput"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "In US East (N. Virginia), US West (Oregon), and Europe (Ireland), data streams with the on-demand capacity mode scale up to 10 GB/s of write and 20 GB/s read throughput, and for other Regions they scale up to 200 MB/s of write and 400 MB/s read throughput"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "GetRecords can retrieve up to 10 MB of data per call from a single shard, and up to 10,000 records per call, and each shard can support up to five read transactions per second"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "Each Kinesis shard can support up to a maximum total data read rate of 2 MB per second via GetRecords, and if a call to GetRecords returns 10 MB, subsequent calls made within the next 5 seconds throw an exception"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "With Kinesis On-demand Advantage mode you can create up to 50 registered consumers using Enhanced Fan-out, and with On-Demand Standard and Provisioned modes you can create up to 20 registered consumers for each data stream"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "For each Kinesis data stream in your AWS account, you can switch between the on-demand and provisioned capacity modes twice within 24 hours"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "The maximum size of the data payload of a Kinesis record before base64-encoding is up to 10 MiB"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "A Kinesis shard iterator expires 5 minutes after it is returned to the requester"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "The default Kinesis shard quota is 20,000 shards per AWS account for US East (N. Virginia), US West (Oregon) and Europe (Ireland), and for all other Regions the default shard quota is 1,000 or 6,000 shards per AWS account"
+    source: https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html
+  - claim: "Amazon Data Firehose buffers incoming streaming data to a certain size or for a certain period of time before delivering it to destinations, where Buffer Size is in MBs and Buffer Interval is in seconds"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/what-is-this-service.html
+  - claim: "A Firehose record can be as large as 1,000 KB"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/what-is-this-service.html
+  - claim: "For data delivery to Amazon S3, Firehose concatenates multiple incoming records based on the buffering configuration of your Firehose stream, and by default Firehose concatenates data without any delimiters"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/basic-deliver.html
+  - claim: "Amazon Data Firehose uses at-least-once semantics for data delivery, and delivery retries might introduce duplicates if the original data-delivery request eventually goes through"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/basic-deliver.html
+  - claim: "The at-least-once duplicate behaviour applies to all destination types that Amazon Data Firehose supports, except for Amazon S3 destinations, Apache Iceberg Tables, and Snowflake destinations"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/basic-deliver.html
+  - claim: "For data delivery to Snowflake, Amazon Data Firehose internally buffers data for one second and by default records are flushed and committed to the Snowflake table every second"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/basic-deliver.html
+  - claim: "Amazon MSK provides the control-plane operations such as creating, updating and deleting clusters, lets you use Apache Kafka data-plane operations such as producing and consuming data, and runs open-source versions of Apache Kafka"
+    source: https://docs.aws.amazon.com/msk/latest/developerguide/what-is-msk.html
+  - claim: "When creating an Amazon MSK cluster you specify how many broker nodes you want Amazon MSK to create in each Availability Zone, and the minimum is one broker per Availability Zone"
+    source: https://docs.aws.amazon.com/msk/latest/developerguide/what-is-msk.html
+  - claim: "In MSK Serverless, MSK manages the broker nodes used to handle your traffic and you only provision your Kafka server resources at a cluster level"
+    source: https://docs.aws.amazon.com/msk/latest/developerguide/what-is-msk.html
+  - claim: "KRaft controllers are included at no additional cost and require no additional setup or management from you"
+    source: https://docs.aws.amazon.com/msk/latest/developerguide/what-is-msk.html
+problem: "Three services move a stream, and the comparison is usually run on throughput — which is the axis on which they differ least. The question that decides the architecture is whether the data is still there tomorrow when you discover the consumer was wrong."
+builds: "A comparison on the axis that actually separates them: what each one retains and for how long, what that makes possible after a mistake, and how much operational surface comes with each."
+catch: "Firehose buffers only to batch. It has no retention and nothing to re-read, so a bad transform is discovered after the data has already landed in the destination in the wrong shape. And for S3 it concatenates records with no delimiters by default — one object, no line breaks, unless somebody turned that on."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #060 &middot; Data Platform</div>
+  <h1 class="post-title">The one you cannot re-read</h1>
+  <p class="post-subtitle">Kinesis, MSK and Firehose all move a stream. Two of them let you fix a broken consumer afterwards. The third is the one most often reached for first.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Reliability &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The application-patterns block is finished. This one opens the data platform section with the
+      decision that gets made first and revisited least: which service carries the stream.
+    </p>
+    <p>
+      It is normally decided on throughput. Every one of the three will carry what a typical workload
+      produces, so the comparison resolves to a shrug and whichever is most familiar.
+    </p>
+    <p>
+      The question that actually separates them arrives three weeks later, when somebody notices the
+      consumer has been writing the wrong field since Tuesday. Whether that is a redeploy or an incident
+      depends on a property nobody compared.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Only two of the three keep the data</strong></div>
+      <div class="challenge-body">
+        <p>
+          <strong>Kinesis Data Streams</strong> is a buffer you can re-read. Retention runs from a minimum
+          of <strong>24 hours</strong> to a maximum of <em>&ldquo;8760 hours (365 days)&rdquo;</em>. Fix the
+          consumer, rewind, reprocess.
+        </p>
+        <p>
+          <strong>MSK</strong> is Apache Kafka, so retention is a topic setting you own, along with
+          everything else.
+        </p>
+        <p>
+          <strong>Firehose</strong> is neither. It buffers <em>&ldquo;to a certain size or for a certain
+          period of time before delivering it to destinations&rdquo;</em> &mdash; which is batching, not
+          retention. Once delivered, there is nothing to go back to.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Pick on replay, not throughput. It is the property that differs most and gets compared least.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The transform runs before the only copy</strong></div>
+      <div class="challenge-body">
+        <p>
+          Firehose can transform records in flight, and that is most of its appeal &mdash; no consumer to
+          write. But the transform runs <em>on the way to the destination</em>, and the destination is the
+          only copy.
+        </p>
+        <p>
+          A wrong transform is therefore not a bug you redeploy past. It is a backfill, from whatever source
+          the producer still has, if it has one. Firehose does offer to
+          <em>&ldquo;back up source data to another Amazon S3 bucket&rdquo;</em> when transformation is
+          enabled &mdash; which is the feature that makes the mistake survivable, and it is off unless
+          somebody turned it on.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>If Firehose transforms, enable source backup. It is the difference between a redeploy and a data-loss conversation.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The default output is not what you would expect</strong></div>
+      <div class="challenge-body">
+        <p>
+          This one costs an afternoon the first time. For S3, Firehose
+          <em>&ldquo;concatenates multiple incoming records based on the buffering configuration&rdquo;</em>,
+          and then: <em>&ldquo;By default, Firehose concatenates data <strong>without any
+          delimiters</strong>.&rdquo;</em>
+        </p>
+        <p>
+          A thousand JSON records arrive as one object with no line breaks between them &mdash; which Athena,
+          Glue and most line-oriented tooling cannot read. Newline delimiters are available as a setting, and
+          the setting is off by default.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Enable the newline delimiter when you create the stream, not when the first query fails.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The three are not three sizes of the same thing. They are a buffer, a broker, and a pipe, and the
+      operational surface differs as much as the retention does.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-060-kinesis-msk-firehose.svg" alt="Diagram: comparing Kinesis Data Streams, Amazon MSK and Amazon Data Firehose on the axis that separates them, which is retention and replay rather than throughput. Kinesis Data Streams is a buffer that can be re-read, with a retention period running from a minimum of 24 hours to a maximum of 8,760 hours or 365 days, so a consumer found to be wrong can be fixed and the stream reprocessed from an earlier point. Its provisioned shards each support one megabyte per second or a thousand records per second of writes and two megabytes per second or two thousand records per second of reads, while on-demand streams begin at four megabytes per second of write throughput and scale far higher in three Regions than elsewhere. Amazon MSK is open-source Apache Kafka, where AWS provides the control plane for creating, updating and deleting clusters while the customer uses Kafka data-plane operations and owns topic configuration including retention, with a minimum of one broker per Availability Zone. Amazon Data Firehose is a pipe rather than a buffer: it buffers incoming data only to a size or a time interval before delivering it, so there is no retention and nothing to re-read, and a transform applied in flight runs on the way to what becomes the only copy of the data. A panel records two Firehose defaults that surprise people: for Amazon S3 delivery it concatenates records without any delimiters unless newline delimiters are enabled, and it uses at-least-once semantics so retries may introduce duplicates for every destination type except Amazon S3, Apache Iceberg Tables and Snowflake." />
+      <figcaption>A buffer, a broker and a pipe. The throughput numbers rarely decide it; the retention column always does.</figcaption>
+    </figure>
+
+    <h3>Kinesis: the buffer, with a shard as the unit of everything</h3>
+    <p>
+      In provisioned mode the shard is the unit of capacity, and the numbers are worth holding: each shard
+      supports <em>&ldquo;up to 1 MB/sec or 1,000 records/sec write throughput or up to 2 MB/sec or 2,000
+      records/sec read throughput.&rdquo;</em> Reads and writes are not symmetrical, and the read side is
+      shared across consumers unless you register them.
+    </p>
+    <p>
+      On-demand removes the arithmetic and starts small: <em>&ldquo;4 MB/s of write and 8 MB/s of read
+      throughput&rdquo;</em>, scaling to <strong>10 GB/s write and 20 GB/s read</strong> in N. Virginia,
+      Oregon and Ireland &mdash; and to <strong>200 MB/s and 400 MB/s</strong> everywhere else. That is a
+      fifty-fold regional difference in the same capacity mode, and it is the kind of thing that turns a
+      working design into a support ticket when a workload moves Region.
+    </p>
+    <p>
+      Fan-out has a ceiling too: <strong>20</strong> registered consumers per stream, or <strong>50</strong>
+      with On-demand Advantage. And switching capacity modes is rationed &mdash; <em>&ldquo;twice within 24
+      hours&rdquo;</em> &mdash; so it is not a dial to turn during an incident.
+    </p>
+
+    <div class="callout amber">
+      <strong>The read path has its own back-pressure, and it is easy to trip</strong>
+      <p>A shard allows <em>&ldquo;five read transactions per second&rdquo;</em> and <em>&ldquo;a maximum total data read rate of 2 MB per second&rdquo;</em>. Ask for too much at once and you are throttled by design: <em>&ldquo;If a call to <code class="inline">GetRecords</code> returns 10 MB, subsequent calls made within the next 5 seconds throw an exception.&rdquo;</em> A replay &mdash; catching up on a day of retained data &mdash; is exactly the workload that hits this, so the recovery path is rate-limited precisely when you are in a hurry. Worth knowing before the incident rather than during it.</p>
+    </div>
+
+    <h3>MSK: Kafka, with the control plane taken care of</h3>
+    <p>
+      The division is stated plainly: MSK <em>&ldquo;provides the control-plane operations, such as those
+      for creating, updating, and deleting clusters&rdquo;</em> and <em>&ldquo;lets you use Apache Kafka
+      data-plane operations, such as those for producing and consuming data.&rdquo;</em> Crucially it
+      <em>&ldquo;runs open-source versions of Apache Kafka&rdquo;</em>, so existing tooling works unchanged.
+    </p>
+    <p>
+      That last property is the real reason to choose it, and it is an organisational one rather than a
+      technical one: a team that already runs Kafka keeps its consumers, its libraries, its mental model and
+      its runbooks. A team that does not is adopting Kafka's operational surface in exchange for
+      configurability it may never use.
+    </p>
+    <p>
+      The surface is genuinely smaller than self-managed &mdash; KRaft controllers are
+      <em>&ldquo;included at no additional cost&hellip; and require no additional setup or management&rdquo;</em>,
+      and MSK Serverless goes further, managing brokers so <em>&ldquo;you only provision your Kafka server
+      resources at a cluster level.&rdquo;</em> But topics, partitions, retention and consumer groups remain
+      yours, and that is the point of choosing it.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Firehose is the right answer more often than its limitations suggest</h3>
+    <p>
+      Everything above reads as an argument against Firehose, and it should not. For the case it was built
+      for &mdash; get this data into S3 or OpenSearch, reliably, with nothing to operate &mdash; there is no
+      consumer to write, no shards to size and no cluster to patch. That is a real reduction in surface, and
+      most log and telemetry pipelines want exactly it.
+    </p>
+    <p>
+      The mistake is reaching for it when the requirement is <em>processing</em> rather than
+      <em>delivery</em>. Delivery is idempotent in its useful sense: getting the same bytes to the same
+      bucket twice is recoverable. Processing is not, and a pipe with no retention gives you nowhere to
+      stand when the processing was wrong.
+    </p>
+
+    <div class="callout red">
+      <strong>The duplicate semantics have a specific exception list</strong>
+      <p>Firehose <em>&ldquo;uses at-least-once semantics for data delivery&rdquo;</em>, and retries <em>&ldquo;might introduce duplicates if the original data-delivery request eventually goes through.&rdquo;</em> The exceptions are named: this applies to every destination <em>&ldquo;except for Amazon S3 destinations, Apache Iceberg Tables, and Snowflake destinations.&rdquo;</em> So a Firehose stream into OpenSearch or an HTTP endpoint needs an idempotent consumer on the far side &mdash; the same requirement post #52 established for SQS, arriving here from a service that looks like it has no consumer at all.</p>
+    </div>
+
+    <h3>The decision is about who operates it, not what it can carry</h3>
+    <p>
+      Line the three up by operational surface and the choice usually makes itself.
+    </p>
+    <p>
+      <strong>Firehose</strong> has none: no capacity to provision, no consumer to run. <strong>Kinesis</strong>
+      has some: a shard count or a capacity mode, a consumer application, and a set of read-path limits to
+      design around. <strong>MSK</strong> has the most: topics, partitions, replication factors, consumer
+      groups, broker sizing &mdash; the full Kafka model, minus the control plane.
+    </p>
+    <p>
+      Each step up buys capability that the step below cannot provide, and the capability is almost always
+      about time. Firehose gives you now. Kinesis gives you the last day to the last year. MSK gives you
+      whatever you configure, plus the ecosystem that assumes you have it.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Deciding axis</td>
+        <td>Replay, not throughput</td>
+        <td>All three carry a typical workload. Only two let you reprocess after finding a bug.</td>
+      </tr>
+      <tr>
+        <td>Delivery only, no processing</td>
+        <td>Firehose</td>
+        <td>No capacity to size, no consumer to operate. The surface really is close to zero.</td>
+      </tr>
+      <tr>
+        <td>Processing, or replay needed</td>
+        <td>Kinesis Data Streams</td>
+        <td>Retention from 24 hours to 365 days is the thing that makes a wrong consumer survivable.</td>
+      </tr>
+      <tr>
+        <td>Existing Kafka estate</td>
+        <td>MSK</td>
+        <td>It runs open-source Kafka, so tooling and consumers carry over unchanged.</td>
+      </tr>
+      <tr>
+        <td>Firehose with a transform</td>
+        <td>Enable source backup to S3</td>
+        <td>The transform runs on the way to the only copy. Backup is what makes an error recoverable.</td>
+      </tr>
+      <tr>
+        <td>Firehose to S3</td>
+        <td>Turn on newline delimiters</td>
+        <td>The default concatenates records with no delimiter, which most query tooling cannot read.</td>
+      </tr>
+      <tr>
+        <td>Kinesis capacity mode</td>
+        <td>Decided deliberately</td>
+        <td>You may switch only twice in 24 hours, and on-demand ceilings differ 50-fold by Region.</td>
+      </tr>
+      <tr>
+        <td>Non-S3 Firehose destinations</td>
+        <td>Idempotent consumer</td>
+        <td>At-least-once applies everywhere except S3, Iceberg Tables and Snowflake.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>Two numbers that shape a design more than they look</h3>
+    <p>
+      <strong>Record size differs by an order of magnitude.</strong> A Kinesis record payload may be
+      <em>&ldquo;up to 10 MiB&rdquo;</em>; a Firehose record <em>&ldquo;can be as large as 1,000 KB.&rdquo;</em>
+      A payload that fits comfortably in one will be rejected by the other, which is the sort of thing
+      discovered during a migration rather than during a comparison.
+    </p>
+    <p>
+      <strong>A shard iterator expires in five minutes.</strong> A consumer that fetches an iterator, does
+      slow work, and comes back to use it finds it invalid. That is a design constraint on the consumer
+      loop, not a tuning parameter, and it is the most common first bug against Kinesis.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Streaming comparisons are usually written as capability matrices, and a matrix flatters the service
+      with the most rows. MSK wins that format and is the wrong answer for most teams reading it, because
+      the rows it wins are configuration options somebody has to own.
+    </p>
+    <p>
+      The useful question is narrower. Not &ldquo;which can carry this?&rdquo; &mdash; all of them can
+      &mdash; but &ldquo;what happens on the day we find out the consumer was wrong?&rdquo; With Kinesis you
+      rewind. With MSK you rewind, having configured how far back that goes. With Firehose there is nothing
+      to rewind to, and the answer is a backfill from whatever the producer still holds.
+    </p>
+    <p>
+      That is not an argument against Firehose. It is an argument for noticing which of the three you are
+      choosing, because the decision is normally made on throughput, and throughput is the axis on which
+      they differ least.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Data platform &mdash; the Glue Data Catalog and schema drift: why a table has more than one schema at any moment, what a crawler changes when it runs, and why the partition that queries fine today fails tomorrow without anyone deploying anything.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html" target="_blank" rel="noopener">Kinesis Data Streams quotas and limits &#8212; retention bounds, shard throughput, read-path limits and capacity modes</a></li>
+      <li><a href="https://docs.aws.amazon.com/firehose/latest/dev/what-is-this-service.html" target="_blank" rel="noopener">What is Amazon Data Firehose? &#8212; buffering concepts, record size and the data-flow paths</a></li>
+      <li><a href="https://docs.aws.amazon.com/firehose/latest/dev/basic-deliver.html" target="_blank" rel="noopener">Understand data delivery in Amazon Data Firehose &#8212; the no-delimiter default and at-least-once semantics</a></li>
+      <li><a href="https://docs.aws.amazon.com/msk/latest/developerguide/what-is-msk.html" target="_blank" rel="noopener">Welcome to the Amazon MSK Developer Guide &#8212; the control-plane and data-plane split, brokers and Serverless</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
