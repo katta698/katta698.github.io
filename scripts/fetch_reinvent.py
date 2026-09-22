@@ -47,6 +47,23 @@ on conference wifi.
 `room` is kept in full ("Caesars Palace | Promenade Level | Roman I")
 because the part before the first pipe is the property, and the gap between
 two properties is the thing the official catalog will not compute for you.
+
+A REFRESH MUST NOT BE ABLE TO MAKE THE PAGE WORSE. This runs unattended on
+a schedule, so the dangerous case is not a crash -- a crash is loud and
+commits nothing. The dangerous case is a run that succeeds and writes a
+thinner, staler or emptier catalog over a good one, because that publishes
+silently and looks exactly like a normal day.
+
+So a refresh that would shrink the catalog by more than MAX_SHRINK is
+refused rather than written. AWS does cancel sessions, and the catalog does
+grow and shrink a little; what it does not do is lose a fifth of itself
+overnight. A drop that large means a partial fetch or a changed response
+shape, and the right response is to keep yesterday's good data and say so
+loudly. --force exists for the day the drop is real.
+
+Every run also reports what changed -- added, removed, retimed, moved --
+because "the job ran" is not the same claim as "the data is current", and
+only the second one matters to somebody planning a week around it.
 """
 import argparse
 import io
@@ -83,6 +100,12 @@ FACET_KEY = {
 SINGULAR = ("Type", "Level")
 
 PAGE = 50            # the app's own page size; larger is not honoured
+
+# A refresh may not shrink the catalog by more than this without --force.
+# Set from the shape of the thing being measured: sessions get cancelled in
+# ones and twos, not in hundreds, so anything past a fifth is a fetch fault
+# rather than news about the conference.
+MAX_SHRINK = 0.20
 EVENT_DAYS = ("2026-11-30", "2026-12-01", "2026-12-02",
               "2026-12-03", "2026-12-04")
 
@@ -285,6 +308,95 @@ def slim(sessions):
     }
 
 
+# --------------------------------------------------- what changed, and is it sane
+
+def previous():
+    """The store as it stands, or None on the very first run."""
+    if not os.path.exists(OUT):
+        return None
+    try:
+        return json.load(io.open(OUT, encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+
+def slot_key(store, w):
+    """A slot as a reader would recognise it: when, and where."""
+    return (w["d"], w["b"], w["e"], store["venues"][w["v"]],
+            store["rooms"][w["r"]])
+
+
+def compare(old, new):
+    """What a person planning a week would notice between two captures.
+
+    Counts, not just a diff, because the question this answers is "is the
+    page still telling the truth", and the answers that matter are: did
+    sessions vanish, and did any of them move. A session that moved room
+    or time is the one that quietly invalidates somebody's plan.
+    """
+    if not old:
+        return None
+    was = {s["c"]: s for s in old["sessions"]}
+    now = {s["c"]: s for s in new["sessions"]}
+
+    added = sorted(set(now) - set(was))
+    removed = sorted(set(was) - set(now))
+    moved, retimed = [], []
+    for code in sorted(set(was) & set(now)):
+        a = [slot_key(old, w) for w in was[code]["when"]]
+        b = [slot_key(new, w) for w in now[code]["when"]]
+        if a == b:
+            continue
+        old_where = {k[3] for k in a}
+        new_where = {k[3] for k in b}
+        (moved if old_where != new_where else retimed).append(code)
+    return {"added": added, "removed": removed,
+            "moved": moved, "retimed": retimed}
+
+
+def report_change(delta):
+    if delta is None:
+        print("  first capture -- nothing to compare against")
+        return
+    if not any(delta.values()):
+        print("  no change since the last capture")
+        return
+    print("  since the last capture: %d added, %d removed, %d moved venue, "
+          "%d retimed" % (len(delta["added"]), len(delta["removed"]),
+                          len(delta["moved"]), len(delta["retimed"])))
+    for label in ("removed", "moved", "retimed"):
+        if delta[label]:
+            shown = ", ".join(delta[label][:10])
+            more = "" if len(delta[label]) <= 10 else ", ..."
+            print("    %-8s %s%s" % (label, shown, more))
+
+
+def refuse_if_shrunk(old, new, force):
+    """Keep good data rather than overwrite it with a suspicious fetch."""
+    if not old:
+        return
+    before, after = len(old["sessions"]), len(new["sessions"])
+    if before == 0 or after >= before * (1 - MAX_SHRINK):
+        return
+    lost = before - after
+    if force:
+        print("  --force: writing anyway, though the catalog lost %d of %d "
+              "session(s)" % (lost, before))
+        return
+    raise SystemExit(
+        "\n".join((
+            "  REFUSING TO WRITE. The catalog held %d session(s) and this "
+            "fetch returned %d -- %d fewer, a %.0f%% drop."
+            % (before, after, lost, 100.0 * lost / before),
+            "  Sessions get cancelled in ones and twos, not in hundreds, so "
+            "this is far more likely a partial fetch or a",
+            "  changed response shape than news about the conference. The "
+            "existing store is left untouched, and the page",
+            "  keeps serving data that was known good.",
+            "  Re-run to see whether it was transient. If the drop is real, "
+            "pass --force.")))
+
+
 # -------------------------------------------------------------------- audit
 
 def audit(sessions):
@@ -332,6 +444,8 @@ def main():
                     help="re-slim a previously saved raw payload")
     ap.add_argument("--save-raw", metavar="FILE",
                     help="also write the unslimmed payload here")
+    ap.add_argument("--force", action="store_true",
+                    help="write even if the catalog shrank past the guard")
     args = ap.parse_args()
 
     if args.raw:
@@ -353,17 +467,28 @@ def main():
         return 0
 
     payload = dict(data)
-    payload["captured"] = time.strftime("%Y-%m-%d")
+    # Date and full timestamp both. The date is what the page shows a
+    # reader; the timestamp is what a freshness check measures, and a
+    # date alone cannot distinguish this morning from this time last week.
+    payload["captured"] = time.strftime("%Y-%m-%d", time.gmtime())
+    payload["captured_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                            time.gmtime())
     payload["source"] = CATALOG
     payload["catalog_total"] = total
+
+    old = previous()
+    refuse_if_shrunk(old, payload, args.force)
+    delta = compare(old, payload)
+    print()
+    report_change(delta)
 
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with io.open(OUT, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, separators=(",", ":"))
     print()
-    print("  wrote %s  (%.2f MB, %d sessions)"
+    print("  wrote %s  (%.2f MB, %d sessions, captured %s)"
           % (os.path.relpath(OUT, ROOT), os.path.getsize(OUT) / 1e6,
-             len(payload["sessions"])))
+             len(payload["sessions"]), payload["captured_utc"]))
     return 0
 
 

@@ -37,6 +37,7 @@ the situation it was written for is worse than no rule.
      reported three failures that did not exist. Serve it properly or the
      result means nothing.
 """
+import datetime
 import io
 import json
 import os
@@ -52,6 +53,10 @@ DATA = os.path.join(ROOT, "intelligence", "reinvent2026.json")
 
 EVENT_DAYS = ("2026-11-30", "2026-12-01", "2026-12-02",
               "2026-12-03", "2026-12-04")
+
+# Matches STALE_DAYS in the page's own freshness banner. Kept the same so
+# the check and the reader are working to one definition of "old".
+STALE_DAYS = 21
 
 
 def need_for(a, b, travel):
@@ -186,6 +191,61 @@ def main():
         print("  hop rule fires on real data: %s -> %s on %s, %d min gap "
               "against a %d min estimate (%s, %s)"
               % (va, vb, day, gap, need, ca, cb))
+
+    # ---- 5. the page and the store agree about when this was captured ----
+    #
+    # The visible freshness line is computed in the reader's browser from
+    # the store, so it cannot drift. The About section carries a build-time
+    # date, and that one can: fetch without rebuilding and the page prints
+    # a capture date the data it serves does not have. Same class of bug as
+    # a stale tab count -- it looks like a fact, so nobody re-checks it.
+    captured = data.get("captured") or ""
+    on_page = re.search(r'<time datetime="([^"]+)">', html)
+    if not captured:
+        problems.append(
+            "the store carries no capture date, so neither the page nor "
+            "this check can say how old the catalog is")
+    elif on_page and on_page.group(1) != captured:
+        problems.append(
+            "the page says it was captured %s and the store says %s. The "
+            "catalog was refetched without rebuilding the page"
+            % (on_page.group(1), captured))
+    else:
+        print("  page and store agree the catalog was captured %s" % captured)
+
+    # ---- 6. how old is it ------------------------------------------------
+    #
+    # Reported, and deliberately NOT blocking on age alone. A freshness
+    # rule that fails a push because a cron did not run would stop an
+    # unrelated blog post from publishing, and a gate that is red on
+    # arrival is a gate that gets uninstalled -- which is written down in
+    # preflight.py about three other checks. The reader-facing protection
+    # is the page stating its own age in the browser; this is the nudge.
+    #
+    # A capture date in the FUTURE does fail, because that is not staleness,
+    # it is a corrupt or hand-edited store, and every age the page computes
+    # from it would be wrong in the reassuring direction.
+    if captured:
+        try:
+            when = datetime.date(*[int(x) for x in captured.split("-")])
+        except (TypeError, ValueError):
+            problems.append("the capture date %r is not a date" % captured)
+        else:
+            age = (datetime.date.today() - when).days
+            if age < 0:
+                problems.append(
+                    "the store says it was captured %s, which is %d day(s) "
+                    "in the future. Every age the page computes from that is "
+                    "wrong, and wrong in the direction that looks current"
+                    % (captured, -age))
+            elif age >= STALE_DAYS:
+                print("  NOTE: the catalog is %d days old. The page tells "
+                      "readers so, but a refresh is overdue -- run "
+                      "scripts/fetch_reinvent.py, or check the "
+                      "refresh-reinvent workflow." % age)
+            else:
+                print("  the catalog is %d day(s) old, inside the %d-day "
+                      "window the page treats as current" % (age, STALE_DAYS))
 
     # ---- canaries --------------------------------------------------------
     t = {"same": 10, "near": 30, "far": 45, "outlier": "MGM Grand"}

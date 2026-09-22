@@ -1,0 +1,157 @@
+# Keep the re:Invent catalog current without anyone remembering to run it.
+#
+# Asked for directly: "let's make sure the data is reliable, trustworthy,
+# always refreshed. I don't want the page to be misleading."
+#
+# The page is going to be shared with a team who will plan a week around it,
+# so the failure that matters is not a crash. A crash is loud and commits
+# nothing. The failure that matters is the page quietly serving a catalog
+# captured in September to somebody standing in a corridor in December.
+# Until this existed, the only thing keeping it current was someone choosing
+# to run a script, and the honest claim would have been "a snapshot from
+# whenever I last bothered".
+#
+# Three things stop a bad refresh reaching the page:
+#
+#   fetch_reinvent.py refuses to write a catalog that shrank by more than a
+#   fifth, so a partial fetch or a changed response shape leaves yesterday's
+#   good data in place instead of overwriting it.
+#
+#   check_reinvent.py runs before the commit, not after, so a store whose
+#   facet indexes no longer resolve -- or whose venue rule has stopped firing
+#   on any real pair -- never becomes a commit.
+#
+#   The page states its own age in the reader's browser, computed from the
+#   capture timestamp rather than baked in at build time. So even if this
+#   job stops running entirely, the page says how old it is rather than
+#   implying it is current. That is the backstop that does not depend on
+#   any of this working.
+#
+# It commits its own output, like refresh-ai.yml and ingest-news.yml. The
+# objection recorded in 111570f was to a workflow committing in response to
+# a PUSH, racing the person who made it. This is a cron on a path no human
+# edits.
+name: Refresh re:Invent catalog
+
+on:
+  schedule:
+    # 05:55 UTC daily, after the other refresh jobs (05:10 news, 05:40 AI)
+    # so three crons are not contending for the same runner minutes and the
+    # same rebase. Daily rather than weekly because sessions get added,
+    # retimed and moved right up to the event, and a week-old room number
+    # is exactly the kind of thing that sends somebody to the wrong hotel.
+    - cron: "55 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-reinvent
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The catalog will not answer without two headers it mints into the
+      # page at load, so there is no way to do this without a browser.
+      - name: Install Playwright and Chromium
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Stop once the event is over
+        # A cron nobody turns off outlives its reason to exist. After the
+        # event the catalog stops changing and this would run every day
+        # forever, re-fetching a dead conference.
+        run: |
+          if [ "$(date -u +%Y-%m-%d)" \> "2026-12-06" ]; then
+            echo "re:Invent 2026 has finished; nothing left to refresh."
+            echo "done=yes" >> "$GITHUB_ENV"
+          fi
+
+      - name: Fetch the catalog
+        if: env.done != 'yes'
+        # Exits non-zero, writing nothing, if the catalog came back
+        # suspiciously smaller than the one already stored.
+        run: python scripts/fetch_reinvent.py
+
+      - name: Rebuild the page
+        if: env.done != 'yes'
+        run: python scripts/build_reinvent_page.py
+
+      - name: Verify before committing anything
+        if: env.done != 'yes'
+        # Before the commit, deliberately. A store that fails this must not
+        # reach the page, and afterwards is too late to be a gate.
+        run: python scripts/check_reinvent.py
+
+      - name: Commit and push
+        if: env.done != 'yes'
+        run: |
+          if git diff --quiet -- intelligence/reinvent2026.json reinvent-2026/; then
+            echo "Catalog unchanged."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # The subject line carries what actually changed rather than the
+          # date, so the history answers "when did that session move?"
+          # without anyone diffing a 1.3 MB JSON file by hand.
+          summary=$(python - <<'PY'
+          import json, io, subprocess, sys
+          sys.path.insert(0, "scripts")
+          from fetch_reinvent import compare
+          new = json.load(io.open("intelligence/reinvent2026.json",
+                                  encoding="utf-8"))
+
+          # Decoded explicitly rather than with text=True, which uses the
+          # locale codec and dies on this file's non-ASCII session titles.
+          # And the two failure modes are kept apart on purpose: a non-zero
+          # git exit means the file genuinely is not in HEAD, which is a
+          # real first capture. Anything else is a fault, and it must stop
+          # the job rather than fall through to "first capture" -- a broad
+          # except here labelled an ordinary refresh as the very first one,
+          # which is a commit message that lies about what changed.
+          got = subprocess.run(
+              ["git", "show", "HEAD:intelligence/reinvent2026.json"],
+              capture_output=True)
+          old = None
+          if got.returncode == 0:
+              old = json.loads(got.stdout.decode("utf-8"))
+          d = compare(old, new)
+          if not d:
+              print("re:Invent: first capture, %d sessions"
+                    % len(new["sessions"]))
+          else:
+              bits = [("%d added" % len(d["added"])) if d["added"] else "",
+                      ("%d removed" % len(d["removed"])) if d["removed"] else "",
+                      ("%d moved venue" % len(d["moved"])) if d["moved"] else "",
+                      ("%d retimed" % len(d["retimed"])) if d["retimed"] else ""]
+              bits = [b for b in bits if b]
+              print("re:Invent: %s (%d sessions)"
+                    % (", ".join(bits) if bits else "refreshed",
+                       len(new["sessions"])))
+          PY
+          )
+
+          git add intelligence/reinvent2026.json reinvent-2026/
+          git commit -m "$summary"
+
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && \
+              git push origin HEAD:main && break
+            sleep $((i * 5))
+          done

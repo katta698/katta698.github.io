@@ -4,6 +4,8 @@
   var CFG = window.RI_CONFIG, DATA = null;
   var PAGE_SIZE = 60, shown = PAGE_SIZE;
   var PLAN_KEY = "ri2026.plan", TUNE_KEY = "ri2026.travel";
+  var CATALOG_URL = "https://registration.awsevents.com/flow/awsevents/"
+                  + "reinvent2026/eventcatalog/page/eventcatalog";
 
   var state = { lane: "all", q: "", day: "", type: "", level: "",
                 venue: "", service: "" };
@@ -103,7 +105,16 @@
     c.dataset.code = s.c;
 
     var top = el("div", "top");
-    top.appendChild(el("span", "code", s.c));
+    /* The code is the link. ?search=<code> was verified against a control:
+       the /sessionDetails?sessionId= form silently falls back to the full
+       catalog list, which looks like it worked. This one resolves, and the
+       code is stable and human-readable where the internal id is neither. */
+    var code = el("a", "code", s.c);
+    code.href = CATALOG_URL + "?search=" + encodeURIComponent(s.c);
+    code.target = "_blank";
+    code.rel = "noopener";
+    code.title = "Open " + s.c + " in the official AWS catalog";
+    top.appendChild(code);
     if (typeName(s)) top.appendChild(el("span", "tag", typeName(s)));
     if (levelName(s)) top.appendChild(el("span", "tag lvl", levelName(s)));
     if (slot && slot.e != null) {
@@ -215,6 +226,74 @@
     }
   }
 
+  /* ---- how old is this, really ---------------------------------------
+     Computed here rather than written in at build time, because the
+     honest number is the one the reader is looking at now. A page built
+     in September and opened in November has not got fresher, and a
+     baked-in "captured 22 Sep" invites it to be read as if it had. */
+  var AGING_DAYS = 10, STALE_DAYS = 21;
+
+  function daysSince(iso) {
+    if (!iso) return null;
+    var then = new Date(iso);
+    if (isNaN(then.getTime())) return null;
+    return Math.floor((Date.now() - then.getTime()) / 86400000);
+  }
+
+  function renderFreshness() {
+    var box = $("#fresh");
+    var age = daysSince(DATA.captured_utc || DATA.captured);
+    var when = DATA.captured || "an unrecorded date";
+    box.textContent = "";
+
+    if (age === null) {
+      box.className = "fresh stale";
+      box.appendChild(el("span", null,
+        "This copy of the catalog carries no capture date, so there is no "
+        + "way to tell how old it is. Treat every time and room here as "
+        + "unconfirmed and check the official catalog."));
+      addCatalogLink(box);
+      return;
+    }
+
+    var howLong = age === 0 ? "earlier today"
+                : age === 1 ? "yesterday"
+                : age + " days ago";
+    var b = el("b", null, "Catalog checked " + howLong);
+    box.appendChild(b);
+
+    if (age >= STALE_DAYS) {
+      box.className = "fresh stale";
+      box.appendChild(el("span", null,
+        " (" + when + "). That is old enough that sessions have probably "
+        + "been added, moved or cancelled since. Confirm anything you are "
+        + "relying on — every card links to its entry in the "));
+      addCatalogLink(box);
+    } else if (age >= AGING_DAYS) {
+      box.className = "fresh aging";
+      box.appendChild(el("span", null,
+        " (" + when + "). Sessions move as the event gets closer, so check "
+        + "anything you are relying on against the "));
+      addCatalogLink(box);
+    } else {
+      box.className = "fresh good";
+      box.appendChild(el("span", null,
+        " (" + when + "), against " + DATA.sessions.length.toLocaleString()
+        + " sessions. Seat reservations and last-minute changes still live "
+        + "in the "));
+      addCatalogLink(box);
+    }
+  }
+
+  function addCatalogLink(box) {
+    var a = el("a", null, "official catalog");
+    a.href = CATALOG_URL;
+    a.target = "_blank";
+    a.rel = "noopener";
+    box.appendChild(a);
+    box.appendChild(document.createTextNode("."));
+  }
+
   function laneName(id) {
     for (var i = 0; i < CFG.lanes.length; i++)
       if (CFG.lanes[i].id === id) return CFG.lanes[i].name;
@@ -246,7 +325,14 @@
     DATA.sessions.forEach(function (s) { by[s.c] = s; });
     plan.forEach(function (code) {
       var s = by[code];
-      if (!s) return;
+      if (!s) {
+        /* The session is starred and is no longer in the catalog. Dropping
+           it silently was the worst thing this page could do: the plan
+           would simply be one session shorter than the person built, with
+           nothing to say a talk they were counting on has gone. */
+        rows.push({ gone: code, d: "zzzz" });
+        return;
+      }
       if (!s.when.length) { rows.push({ s: s, w: null, d: "zzz" }); return; }
       s.when.forEach(function (w) { rows.push({ s: s, w: w, d: w.d }); });
     });
@@ -275,13 +361,41 @@
         group = r.d; prev = null;
         host = el("section", "daygroup");
         host.appendChild(el("h2", "dayhead",
-          r.w ? dayLabel(r.d) : "Not yet scheduled"));
+          r.gone ? "No longer in the catalog"
+                 : r.w ? dayLabel(r.d) : "Not yet scheduled"));
         box.appendChild(host);
       }
+      if (r.gone) { host.appendChild(goneCard(r.gone)); prev = null; return; }
       if (prev && prev.w && r.w) host.appendChild(gapRow(prev, r));
       host.appendChild(card(r.s, r.w));
       prev = r;
     });
+  }
+
+  function goneCard(code) {
+    var c = el("article", "card gone");
+    c.dataset.code = code;
+    var top = el("div", "top");
+    top.appendChild(el("span", "code", code));
+    top.appendChild(el("span", "tag", "withdrawn or renamed"));
+    c.appendChild(top);
+    c.appendChild(el("h3", null, "This session is no longer in the catalog"));
+    var where = el("div", "where");
+    where.appendChild(document.createTextNode(
+      "You starred it, and the capture of " + (DATA.captured || "the catalog")
+      + " does not contain it. AWS may have withdrawn, merged or renumbered "
+      + "it. Check "));
+    var a = el("a", null, code + " in the official catalog");
+    a.href = CATALOG_URL + "?search=" + encodeURIComponent(code);
+    a.target = "_blank"; a.rel = "noopener";
+    where.appendChild(a);
+    where.appendChild(document.createTextNode("."));
+    c.appendChild(where);
+    var drop = el("button", "star", "×");
+    drop.title = "Remove it from my plan";
+    drop.addEventListener("click", function () { toggle(code); });
+    c.appendChild(drop);
+    return c;
   }
 
   function gapRow(a, b) {
@@ -510,7 +624,7 @@
       });
       var all = document.querySelector('[data-count="all"]');
       if (all) all.textContent = DATA.sessions.length.toLocaleString();
-      buildFilters(); wire(); render();
+      buildFilters(); wire(); renderFreshness(); render();
       if (shared) view("plan");
     })
     .catch(function (err) {
