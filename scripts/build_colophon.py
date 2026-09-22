@@ -106,6 +106,11 @@ BOX_NOTES = {
     "ai.json": "What the AI vendors have shipped, and the model catalogue "
                "behind the j.AI page &mdash; announcements, prices and "
                "context windows.",
+    "reinvent2026.json": "All 1,582 AWS re:Invent 2026 sessions, with the "
+                         "room and the start and end time of each. Fetched "
+                         "from the official catalog by hand rather than on a "
+                         "clock, because the catalog needs a browser to hand "
+                         "out its API credentials.",
     "AWS · Azure · GCP": "The vendors' own feeds. Nothing here is "
                                    "summarised by a model: the raw RSS and "
                                    "sitemaps are parsed, because a summary "
@@ -128,6 +133,12 @@ BOX_NOTES = {
     "Cloud events": "Conferences and end-of-life dates, from events.json.",
     "j.AI": "The AI page: models, prices, context windows and what each "
             "vendor shipped, from ai.json.",
+    "re:Invent 2026": "A planner for the conference: every session "
+                      "searchable by service, grouped into connectivity, "
+                      "platform and compute lanes, and &mdash; the part the "
+                      "official catalog will not do &mdash; a check on "
+                      "whether two sessions you picked are far enough apart "
+                      "in time to actually get between the venues.",
     "GitHub Pages": "Static hosting. There is no server and no database, so "
                     "there is nothing to restart and nothing to patch.",
     "site-footer.css": "One stylesheet and one script shared by every page "
