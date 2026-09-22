@@ -292,6 +292,11 @@ def parse_aws(raw):
             "region": i.get("region_name", ""),
             "region_code": code,
             "begin": str(i.get("date", "")),
+            # When the vendor last spoke. The archive parser has always kept
+            # this as "end"; the live parser threw it away, so a [RESOLVED]
+            # event reaching the page had nothing to stop its clock with and
+            # the card counted upward for ever.
+            "last_update": str(log[-1].get("timestamp", "")) if log else "",
             "update": prefer_english(flat(log[-1].get("message") if log else "", 4000))[:900],
             "updates": len(log),
             # No first_update: AWS's "date" IS its first announcement, so the

@@ -921,13 +921,56 @@ def postmortems(cssv="1"):
             % (chips, cchips, note, dialog, e(cssv)))
 
 
+def resolved_at(i):
+    """When the vendor closed this incident, or None if it is still open.
+
+    Reported from the live page: a card titled "[RESOLVED] Increased Error
+    Rates" carrying an ONGOING badge and an "open for" counter that had
+    reached 12h 43m and was still climbing. Both were wrong in the same way
+    -- nothing here ever asked whether an incident had ended.
+
+    AWS keeps a resolved event on its dashboard for a while after it closes
+    and marks it by prefixing the summary with [RESOLVED]; that prefix is
+    the only signal its live feed carries. Azure and Google publish an end
+    timestamp instead. So both are read, and an explicit end wins, because
+    it is a time rather than an inference.
+    """
+    end = (i.get("end") or "").strip()
+    if end:
+        got = t(end) or aws_begin(end)
+        if got:
+            return got
+    last = (i.get("last_update") or "").strip()
+    title = (i.get("title") or "").lstrip()
+    if title.upper().startswith("[RESOLVED]"):
+        # last_update is written by the fetcher; records stored before it
+        # existed have only the title, and a resolved incident with no known
+        # end is still resolved.
+        return (t(last) or aws_begin(last)) if last else True
+    return None
+
+
+def is_open(i):
+    return resolved_at(i) is None
+
+
 def cloud_card(cloud, incidents, source):
     if not source.get("ok"):
         state, cls, note = "Could not check", "err", e(source.get("error", "")[:60])
-    elif incidents:
-        n = len(incidents)
+    elif [i for i in incidents if is_open(i)]:
+        live = [i for i in incidents if is_open(i)]
+        n = len(live)
         state, cls = "%d incident%s" % (n, "" if n == 1 else "s"), "bad"
-        note = "as reported by the vendor"
+        done = len(incidents) - n
+        note = ("as reported by the vendor" if not done else
+                "as reported by the vendor &middot; %d resolved" % done)
+    elif incidents:
+        # Everything the vendor still lists has been closed. That is not the
+        # same as "no incidents" -- the reader can see the cards -- and it is
+        # certainly not a red light.
+        n = len(incidents)
+        state, cls = "%d resolved" % n, "ok"
+        note = "closed by the vendor, still listed"
     else:
         state, cls, note = "No active incidents", "ok", "vendor reports none"
     # Which vendor is carried by the card's left edge, the same way the
@@ -997,9 +1040,16 @@ def incident_card(cloud, i):
                  # places.
                  ("Region", region_label(i))]
         if b:
-            hrs = (datetime.datetime.now(datetime.timezone.utc) - b).total_seconds() / 3600
-            rows += [("Announced", b.strftime("%d %b %Y %H:%M") + " UTC"),
-                     ("Open for", dur(hrs))]
+            closed = resolved_at(i)
+            stop = closed if isinstance(closed, datetime.datetime) else                 (None if closed else datetime.datetime.now(datetime.timezone.utc))
+            rows += [("Announced", b.strftime("%d %b %Y %H:%M") + " UTC")]
+            if stop:
+                rows.append((("Open for" if not closed else "Lasted"),
+                             dur((stop - b).total_seconds() / 3600)))
+            else:
+                # Resolved, but the vendor never said when. A counter that
+                # keeps climbing would be the wrong answer stated precisely.
+                rows.append(("Status", "Resolved &middot; end time not published"))
     else:
         if i.get("products"):
             rows.append(("Products", '<div class="tags">%s</div>'
@@ -1013,9 +1063,16 @@ def incident_card(cloud, i):
             rows.append(("Impact", e(i["impact"].replace("_", " ").title())))
         b = t(i.get("begin"))
         if b:
-            hrs = (datetime.datetime.now(datetime.timezone.utc) - b).total_seconds() / 3600
-            rows += [("Started", b.strftime("%d %b %Y %H:%M") + " UTC"),
-                     ("Open for", dur(hrs))]
+            closed = resolved_at(i)
+            stop = closed if isinstance(closed, datetime.datetime) else                 (None if closed else datetime.datetime.now(datetime.timezone.utc))
+            rows += [("Started", b.strftime("%d %b %Y %H:%M") + " UTC")]
+            if stop:
+                rows.append((("Open for" if not closed else "Lasted"),
+                             dur((stop - b).total_seconds() / 3600)))
+            else:
+                # Resolved, but the vendor never said when. A counter that
+                # keeps climbing would be the wrong answer stated precisely.
+                rows.append(("Status", "Resolved &middot; end time not published"))
 
     kind, where, level = blast(i, cloud)
     if level:
@@ -1027,7 +1084,9 @@ def incident_card(cloud, i):
     chips = '<span class="chip %s">%s</span>' % (cloud, e(LABEL[cloud]))
     if i.get("severity"):
         chips += '<span class="chip sev">%s</span>' % e(i["severity"])
-    chips += '<span class="chip sev">Ongoing</span>'
+    done = resolved_at(i)
+    chips += ('<span class="chip done">Resolved</span>' if done
+              else '<span class="chip sev">Ongoing</span>')
 
     meta = "".join('<div class="k">%s</div><div>%s</div>' % (k, v) for k, v in rows)
     upd = ('<div class="upd"><span class="lab">Latest update, in the vendor’s '
@@ -1203,9 +1262,15 @@ document.documentElement.setAttribute("data-palette",p);})();
       var src = document.getElementById('inc-' + cloud);
       if (!src) return false;
       lastFocus = document.activeElement;
-      var n = src.querySelectorAll('.inc').length;
-      body.innerHTML = '<h3 id="inc-title">' + label + ' · ' + n +
-        ' ongoing incident' + (n === 1 ? '' : 's') + '</h3>';
+      /* Count what is still open. The heading said "3 ongoing incidents"
+         over a list whose first card was badged RESOLVED -- the same fault
+         as the badge itself, one level up. */
+      var all = src.querySelectorAll('.inc').length;
+      var shut = src.querySelectorAll('.chip.done').length;
+      var n = all - shut;
+      var head = n ? (n + ' ongoing incident' + (n === 1 ? '' : 's')) : 'all clear';
+      if (shut) head += (n ? ' · ' : ' · ') + shut + ' resolved';
+      body.innerHTML = '<h3 id="inc-title">' + label + ' · ' + head + '</h3>';
       /* A copy, not a move: the originals stay in the document so the page is
          still whole for a reader without JavaScript, for find-in-page, and for
          anything that reads the markup rather than running it. */
@@ -1554,9 +1619,12 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     io.open(os.path.join(OUT_DIR, "index.html"), "w",
             encoding="utf-8", newline="\n").write(page)
-    n = sum(len(v) for v in clouds.values())
-    print("  %d active incident(s), %d in history -> intelligence/status/index.html"
-          % (n, len(hist)))
+    n = sum(len([i for i in v if is_open(i)]) for v in clouds.values())
+    shut = sum(len(v) for v in clouds.values()) - n
+    print("  " + str(n) + " active incident(s)"
+          + ("" if not shut else " + " + str(shut) + " resolved")
+          + ", " + str(len(hist)) + " in history -> "
+            "intelligence/status/index.html")
     print("  data age %.0f min%s" % (age, "   STALE" if stale else ""))
     return 0
 
