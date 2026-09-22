@@ -124,6 +124,51 @@ def judge(card, closed):
     return bad
 
 
+def understood_the_feed(store):
+    """Did we make sense of what each vendor actually sent?
+
+    ok=true with nothing parsed is this page's most dangerous state,
+    because nothing parsed is also the right answer on a quiet day. A calm
+    Tuesday and a parser that has stopped understanding the feed render
+    byte-for-byte the same page -- and the second one reports a cloud as
+    healthy through an outage.
+
+    Demonstrated rather than assumed: feeding the live parser a real EC2
+    outage with one field renamed from "summary" to "title" returns HTTP
+    200, raises nothing, leaves ok true, and yields zero incidents. The
+    page then prints "No active incidents - vendor reports none."
+
+    What separates the two cases is the payload itself. AWS's data.json
+    carries only the events it currently has, so a genuinely quiet AWS is
+    an EMPTY list -- measured at the time of writing: aws 3 records and 3
+    parsed, gcp 6 and 6, azure 0 and 0 on a quiet feed. A shape change is
+    the opposite shape: records present, none of them understood.
+
+    So the invariant is simply that those two numbers agree about whether
+    there was anything there. No thresholds, no history, and it holds on a
+    quiet day, which is when this page spends most of its life.
+    """
+    out = []
+    for cloud, src in sorted((store.get("sources") or {}).items()):
+        if cloud.endswith("_history") or not src.get("ok"):
+            continue
+        rec, parsed = src.get("records"), src.get("parsed")
+        if rec is None or parsed is None:
+            print("  %-5s records not recorded yet (the fetcher writes them "
+                  "from its next run)" % cloud)
+            continue
+        print("  %-5s payload held %s record(s), parser understood %s"
+              % (cloud, rec, parsed))
+        if rec > 0 and parsed == 0:
+            out.append(
+                "%s answered %d and its payload held %d record(s), and the "
+                "parser understood none of them. That is not a quiet day -- "
+                "a quiet feed is an empty payload. The page would be saying "
+                "this cloud is healthy on evidence it could not read"
+                % (cloud, src.get("http") or 0, rec))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--require-incidents", action="store_true",
@@ -200,6 +245,9 @@ def main():
         problems.append("no incident was open anywhere, so none of the label "
                         "rules were exercised, and --require-incidents was set")
 
+    # ---- did we understand the feed at all --------------------------------
+    problems += understood_the_feed(store)
+
     # ---- the canary -------------------------------------------------------
     #
     # Rebuild the state that shipped and make sure these rules reject it. If
@@ -212,6 +260,16 @@ def main():
               "</div></article>")
     caught = judge(broken, resolved_by_vendor(
         {"title": "[RESOLVED] Increased Error Rates"}))
+    blind = understood_the_feed(
+        {"sources": {"aws": {"ok": True, "http": 200,
+                             "records": 3, "parsed": 0}}})
+    if not blind:
+        problems.append(
+            "THE SECOND CANARY PASSED. A source that returned three records "
+            "and yielded no incidents is the silent-parser failure, and this "
+            "run accepted it as a quiet day")
+    else:
+        print("  canary: a feed we stopped understanding is still caught")
     if len(caught) < 2:
         problems.append(
             "THE CANARY PASSED. A resolved incident wearing an Ongoing badge "

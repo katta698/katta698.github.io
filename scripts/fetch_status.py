@@ -640,6 +640,43 @@ def record_run(sources):
     os.replace(tmp, RUNS)
 
 
+def raw_records(cloud, raw):
+    """How many entries the payload contains, before we interpret any of them.
+
+    This is the other half of "did the fetch work". ok=true and a parsed
+    count of zero is the page's most dangerous state, because zero is also
+    the right answer on a quiet day: a calm Tuesday and a parser that has
+    stopped understanding the feed render byte-for-byte the same page, and
+    the second one says a cloud is healthy during an outage.
+
+    Counting the records first separates them. A quiet day is an empty
+    payload -- AWS's data.json carries only the events it currently has, so
+    no incidents means no entries. A shape change is the opposite: entries
+    present, none of them understood.
+
+    Deliberately shallow. It counts containers and reads no field our
+    parsers depend on, because a counter sharing their assumptions would
+    fail in the same direction at the same moment and agree with them.
+    """
+    try:
+        if cloud == "azure":
+            return len(re.findall(r"<item[ >]", raw.decode("utf-8", "replace")))
+        body = raw
+        if body[:2] == b"\x1f\x8b":
+            body = gzip.decompress(body)
+        enc = "utf-16" if body[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8"
+        data = json.loads(body.decode(enc, "replace"))
+        if isinstance(data, list):
+            return len(data)
+        if isinstance(data, dict):
+            return sum(len(v or []) for v in data.values()
+                       if isinstance(v, list)) or len(data)
+    except Exception:                                           # noqa: BLE001
+        # Unparseable is a different fault and the caller already reports it.
+        return None
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stdout", action="store_true")
@@ -661,6 +698,9 @@ def main():
                 "name": label, "url": url, "ok": True, "http": code,
                 "fetched": stamp(), "ms": int((now() - started).total_seconds() * 1000),
                 "bytes": len(raw),
+                # What the payload held, against what we made of it.
+                "records": raw_records(cloud, raw),
+                "parsed": len(live) + len(resolved),
             }
         except Exception as exc:                                # noqa: BLE001
             # Keep whatever was last known rather than dropping to empty. An
