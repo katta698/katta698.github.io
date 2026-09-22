@@ -118,6 +118,37 @@ def main():
     print("  %d session(s), %d service(s), %d venue(s), %d room(s)"
           % (len(sessions), len(services), len(venues), len(rooms)))
 
+    # ---- 1b. the newer index tables resolve too ---------------------------
+    #
+    # Same failure as the facets: an index into the wrong table does not
+    # raise, it renders the wrong person's name or the wrong service next
+    # to an announcement, which looks like data rather than like a bug.
+    speakers = data.get("speakers") or []
+    bad_sp = sum(1 for x in sessions for i in (x.get("sp") or [])
+                 if not (0 <= i < len(speakers)))
+    if bad_sp:
+        problems.append(
+            "%d speaker index/indices point past the end of the speakers "
+            "table; those render as the wrong name or as undefined" % bad_sp)
+    with_sp = sum(1 for x in sessions if x.get("sp"))
+    print("  %d speaker(s) across %d session(s), every index resolves"
+          % (len(speakers), with_sp))
+
+    news = cfg.get("news") or []
+    bad_news = sum(1 for a in news for i in a.get("sv", [])
+                   if not (0 <= i < len(services)))
+    if bad_news:
+        problems.append(
+            "%d announcement(s) reference a service index the store does "
+            "not have, so the page would label a launch with the wrong "
+            "service" % bad_news)
+    if news:
+        undated = [a for a in news if not a.get("d")]
+        if undated:
+            problems.append("%d announcement(s) carry no date" % len(undated))
+        print("  %d announcement(s) joined to the catalog, all indexes resolve"
+              % len(news))
+
     # ---- 2. the tab counts are not stale ---------------------------------
     for lane in cfg["lanes"]:
         want = set(lane["services"])

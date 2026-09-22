@@ -263,9 +263,29 @@ class Table(object):
         return self.seen[value]
 
 
+def speakers_of(session):
+    """[(name, company, title)] for a session, in the order AWS lists them."""
+    out = []
+    for p in (session.get("participants") or []):
+        name = (p.get("fullName")
+                or ((p.get("firstName") or "") + " "
+                    + (p.get("lastName") or ""))).strip()
+        if not name:
+            continue
+        out.append((name,
+                    (p.get("companyName") or "").strip(),
+                    (p.get("jobTitle") or "").strip()))
+    return out
+
+
 def slim(sessions):
     facet_tables = {name: Table() for name in KEEP_FACETS}
     venues, rooms = Table(), Table()
+    # 2,007 distinct people across 1,154 sessions, so the same principal
+    # engineer appears on several. Interned like the facets, and stored as
+    # one joined string rather than three fields: the page searches it and
+    # prints it, and never needs the parts separately.
+    people = Table()
     out, unscheduled = [], 0
     no_end = [0]
 
@@ -309,6 +329,8 @@ def slim(sessions):
             "a": re.sub(r"\s+", " ", s.get("abstract") or "").strip(),
             "len": int(s["length"]) if s.get("length") else None,
             "when": slots,
+            "sp": [people(" · ".join(x for x in who if x))
+                   for who in speakers_of(s)],
         }
         for name in KEEP_FACETS:
             idx = [facet_tables[name](v) for v in (f.get(name) or [])]
@@ -324,6 +346,7 @@ def slim(sessions):
         "facet_keys": dict(FACET_KEY),
         "venues": venues.list,
         "rooms": rooms.list,
+        "speakers": people.list,
         "unscheduled": unscheduled,
         "no_end": no_end[0],
     }
@@ -444,6 +467,9 @@ def audit(sessions):
     for name in KEEP_FACETS:
         print("  %-18s %d distinct value(s)"
               % (name, len(data["facets"][name])))
+    print("  %-18s %d distinct, on %d session(s)"
+          % ("Speakers", len(data["speakers"]),
+             sum(1 for x in S if x["sp"])))
     print()
     counts = {}
     for s in S:

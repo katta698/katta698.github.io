@@ -51,9 +51,11 @@ connectivity, platform and compute land at a size a person can actually read
 through. They are a starting point, not a cage -- every lane is one tap away
 from the full catalog.
 """
+import datetime
 import io
 import json
 import os
+import re
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -211,6 +213,76 @@ def travel_model(venues):
     return out
 
 
+# ------------------------------------------------------- announcements
+
+NEWS = os.path.join(ROOT, "intelligence", "news.json")
+NEWS_DAYS = 45          # how far back to carry announcements
+NEWS_MAX = 120          # and a ceiling, so the page stays small
+
+
+def _norm_service(name):
+    """Fold a service name to something the two sources can agree on.
+
+    The catalog writes "Amazon Elastic Compute Cloud (Amazon EC2)"; the
+    announcement feed writes "Amazon EC2". Dropping the parenthetical and
+    the vendor prefix makes 61% of AWS announcements line up with a service
+    the catalog also lists -- measured across 219 of them.
+    """
+    x = name.lower()
+    x = re.sub(r"\(.*?\)", "", x)
+    x = re.sub(r"^(amazon|aws)\s+", "", x).strip()
+    return re.sub(r"[^a-z0-9 ]", "", x)
+
+
+def announcements(store):
+    """Recent AWS announcements, each tied to catalog service indexes.
+
+    Why this is here: re:Invent week is when AWS ships, and the thing a
+    team actually wants on the Tuesday is "they announced this at the
+    keynote -- who is covering it?". The announcement store already exists
+    and is refreshed daily by ingest-news.yml, so this is a join rather
+    than a new pipeline.
+
+    Absent or unreadable news is not an error. The page simply does not
+    show the tab -- a missing join is worth nothing, and a half-built one
+    that invents matches is worth less than nothing.
+    """
+    if not os.path.exists(NEWS):
+        return []
+    try:
+        items = json.load(io.open(NEWS, encoding="utf-8")).get("items") or []
+    except (ValueError, OSError):
+        return []
+
+    lookup = {}
+    for i, name in enumerate(store["facets"]["Services"]):
+        lookup.setdefault(_norm_service(name), i)
+
+    cutoff = (datetime.date.today()
+              - datetime.timedelta(days=NEWS_DAYS)).isoformat()
+    out = []
+    for r in items:
+        if (r.get("c") or "").lower() != "aws":
+            continue
+        if (r.get("d") or "") < cutoff:
+            continue
+        idx = []
+        for name in (r.get("s") or []):
+            j = lookup.get(_norm_service(name))
+            if j is not None and j not in idx:
+                idx.append(j)
+        if not idx:
+            continue                      # nothing to point at; drop it
+        out.append({
+            "d": r.get("d") or "",
+            "t": (r.get("t") or "").strip()[:240],
+            "u": r.get("u") or "",
+            "sv": idx,
+        })
+    out.sort(key=lambda r: r["d"], reverse=True)
+    return out[:NEWS_MAX]
+
+
 def read_store():
     if not os.path.exists(STORE):
         raise SystemExit(
@@ -268,6 +340,7 @@ def build():
     counts = lane_counts(store, lanes)
     sessions = store["sessions"]
 
+    news = announcements(store)
     days = sorted({w["d"] for s in sessions for w in s["when"]})
     scheduled = sum(1 for s in sessions if s["when"])
 
@@ -291,6 +364,7 @@ def build():
             "points": {v: VENUE_POINTS[v] for v in store["venues"]},
         },
         "map": venue_xy(store["venues"]),
+        "news": news,
         "days": days,
         "event": EVENT,
     }
@@ -323,6 +397,9 @@ def build():
     for lane in LANES:
         print("    %-18s %4d session(s) across %d service(s)"
               % (lane["name"], counts[lane["id"]], len(lanes[lane["id"]])))
+    print("    %-18s %4d AWS announcement(s) in the last %d days tie to a "
+          "service the catalog lists" % ("announcements", len(news),
+                                         NEWS_DAYS))
     for name in ("index.html", "page.css", "app.js"):
         p = os.path.join(OUTDIR, name)
         print("    %-12s %7.1f KB" % (name, os.path.getsize(p) / 1024.0))
@@ -404,7 +481,7 @@ PAGE = """<!DOCTYPE html>
  <section class="controls" aria-label="Search and filters">
   <div class="searchrow">
    <input id="q" type="search" autocomplete="off"
-    placeholder="Search title, abstract, session code, or one of __SERVICES__ services">
+    placeholder="Search title, abstract, code, speaker, or one of __SERVICES__ services">
    <button id="clear" class="ghost" hidden>Clear</button>
   </div>
   <div id="filters" class="filters"></div>
@@ -418,6 +495,9 @@ PAGE = """<!DOCTYPE html>
    <button id="tab-plan" class="vt" role="tab" aria-selected="false">
     My plan <span id="planN" class="badge">0</span></button>
    <button id="tab-map" class="vt" role="tab" aria-selected="false">Map</button>
+   <button id="tab-now" class="vt" role="tab" aria-selected="false">Now</button>
+   <button id="tab-team" class="vt" role="tab" aria-selected="false">Team</button>
+   <button id="tab-news" class="vt" role="tab" aria-selected="false">Just announced</button>
   </div>
  </section>
 
@@ -427,8 +507,41 @@ PAGE = """<!DOCTYPE html>
   <div id="planbody"></div>
   <div class="planfoot">
    <button id="share" class="ghost">Copy a link to this plan</button>
+   <button id="verify" class="ghost">Re-check against AWS</button>
+   <button id="ics" class="ghost">Add to calendar (.ics)</button>
+   <button id="md" class="ghost">Export notes as Markdown</button>
    <button id="wipe" class="ghost danger">Clear plan</button>
   </div>
+ </section>
+
+ <section id="news" class="newswrap" hidden>
+  <p class="maplede">What AWS has shipped recently, matched to the sessions
+   covering the same service. The match is by <b>service</b>, not by topic:
+   it says these are about the same thing, not that the session covers the
+   launch. During the event that is the overlap worth chasing &mdash; they
+   announce it in the keynote, and someone is running a chalk talk on it
+   that afternoon.</p>
+  <div id="newsbody"></div>
+ </section>
+
+ <section id="team" class="teamwrap" hidden>
+  <p class="maplede">Six people against 1,582 sessions only helps if you are
+   not all in the same room. Everyone copies their plan link from
+   <b>My plan</b> and pastes it here, one per line, optionally with a name.
+   Nothing is uploaded &mdash; the plans travel in the links themselves.</p>
+  <textarea id="teamin" rows="4"
+   placeholder="Asha: https://jayanthkatta.com/reinvent-2026/#plan=NET301,CMP202&#10;Ravi: NET305, SEC309"></textarea>
+  <div id="teambody"></div>
+ </section>
+
+ <section id="now" class="nowwrap" hidden>
+  <p id="nownote" class="nownote">&nbsp;</p>
+  <div id="nowpick" class="maprow">
+   <label>I am at <select id="now-at"></select></label>
+   <label>day <select id="now-day"></select></label>
+   <label>time <input id="now-time" type="time" step="300"></label>
+  </div>
+  <div id="nowbody"></div>
  </section>
 
  <section id="map" class="mapwrap" hidden>
@@ -581,6 +694,49 @@ svg.rimap{width:100%; height:auto; display:block}
 .rimap .hoplab.bad{fill:var(--bad)}
 .rimap .scalebar{stroke:var(--faint); stroke-width:2}
 .rimap .scaletxt{fill:var(--faint); font:500 11px "DM Sans",sans-serif}
+#teamin{
+  width:100%; font:inherit; font-size:13.5px; color:var(--ink);
+  background:var(--panel); border:1px solid var(--line);
+  border-radius:var(--r); padding:10px 12px; resize:vertical; margin:0 0 16px;
+}
+#teamin:focus{outline:2px solid var(--accent); outline-offset:1px;
+  border-color:transparent}
+#teamin::placeholder{color:var(--faint)}
+.newsitem{
+  background:var(--panel); border:1px solid var(--line);
+  border-radius:var(--r); padding:12px 15px; margin:0 0 9px;
+}
+.newsitem .top{display:flex; flex-wrap:wrap; gap:7px; align-items:center;
+  font-size:12.5px; margin-bottom:5px}
+.newstitle{margin:0 0 6px; font-size:14.5px; line-height:1.45; color:var(--ink)}
+.newsitem .where{margin-bottom:6px}
+.newsitem a.code{cursor:pointer}
+.teamsec{margin:0 0 22px}
+.teamsec h3{margin:0 0 8px; font-size:13px; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--accent2)}
+.teamhint{margin:0 0 10px; font-size:13px; color:var(--faint); max-width:70ch}
+.teamrow{display:flex; gap:12px; flex-wrap:wrap; align-items:baseline;
+  padding:8px 12px; margin:0 0 6px; border-radius:var(--r);
+  border:1px solid var(--line); background:var(--panel); font-size:13.5px}
+.teamrow.dup{border-color:#5c4626; background:#221b12}
+.tcode{font-family:"DM Mono",monospace; color:var(--accent); flex:none}
+.tday{font-weight:600; color:var(--ink); min-width:9em; flex:none}
+.ttitle{flex:1; min-width:0; color:var(--dim)}
+.twho{color:var(--warn); flex:none}
+.nownote{margin:0 0 12px; font-size:14px; color:var(--faint)}
+.nownote.live{color:var(--accent2); font-weight:500}
+.nowwrap .maprow{display:flex; flex-wrap:wrap; gap:14px; align-items:center}
+.nowwrap input[type=time]{
+  font:inherit; font-size:14px; color:var(--ink); background:var(--panel);
+  border:1px solid var(--line); border-radius:10px; padding:6px 10px;
+}
+.card.unreachable{opacity:.55}
+.vrow{grid-column:1/-1; margin-top:8px; padding:7px 11px; border-radius:10px;
+  border:1px solid var(--line); background:var(--bg); font-size:13px;
+  color:var(--dim)}
+.vrow.ok{border-color:#2f4436; color:#9ccf8f}
+.vrow.warn{border-color:#5c4626; color:#f0d2a6}
+.vrow.bad{border-color:#5e332a; color:#f2c3b4}
 .hops{margin:12px 0 0}
 .hoprow{display:flex; gap:10px; align-items:center; flex-wrap:wrap;
   padding:8px 12px; margin:0 0 7px; border-radius:var(--r);
@@ -696,6 +852,9 @@ svg.rimap{width:100%; height:auto; display:block}
 a.code:hover{border-bottom-color:var(--accent)}
 .tag{border:1px solid var(--line); border-radius:999px; padding:1px 8px; color:var(--dim); font-size:11.5px}
 .tag.lvl{color:var(--accent2); border-color:#31463f}
+.seat{border-radius:999px; padding:1px 8px; font-size:11.5px; border:1px solid}
+.seat.small{color:var(--warn); border-color:#5c4626}
+.seat.tight{color:var(--bad); border-color:#5e332a; font-weight:600}
 .card h3{grid-column:1; margin:2px 0 3px; font-size:16px; line-height:1.35; font-weight:600}
 .card .where{grid-column:1; font-size:13px; color:var(--faint)}
 .card .where b{color:var(--dim); font-weight:500}
@@ -734,6 +893,15 @@ a.code:hover{border-bottom-color:var(--accent)}
 .gap .ic{font-size:14px}
 .gap b{color:inherit}
 .planfoot{display:flex; gap:8px; flex-wrap:wrap; margin-top:12px}
+.notewrap{grid-column:1/-1; margin-top:9px}
+textarea.note{
+  width:100%; font:inherit; font-size:13.5px; color:var(--ink);
+  background:var(--bg); border:1px solid var(--line);
+  border-radius:10px; padding:8px 10px; resize:vertical; min-height:44px;
+}
+textarea.note:focus{outline:2px solid var(--accent); outline-offset:1px;
+  border-color:transparent}
+textarea.note::placeholder{color:var(--faint)}
 
 /* ---- about ---- */
 .about{
@@ -874,6 +1042,28 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
   function svcNames(s) {
     return s.sv.map(function (i) { return DATA.facets.Services[i]; });
   }
+  function speakerNames(s) {
+    if (!s.sp || !DATA.speakers) return [];
+    return s.sp.map(function (i) { return DATA.speakers[i]; });
+  }
+
+  /* How hard is a seat, from the capacity AWS publishes. Measured across
+     the catalog: Builders' sessions are 50 seats, every one of them; chalk
+     talks run 70-98; breakouts 100-1000. So a small room is a real
+     constraint rather than a guess -- but it is only half the story,
+     because demand is published nowhere. The wording therefore says what
+     is known (the room is small) and not what is not (that it will fill). */
+  var TIGHT = 60, SMALL = 100;
+
+  function seatNote(slot) {
+    if (!slot || !slot.cap) return null;
+    if (slot.cap <= TIGHT)
+      return { cls: "seat tight", txt: slot.cap + " seats \u2014 reserve early" };
+    if (slot.cap <= SMALL)
+      return { cls: "seat small", txt: slot.cap + " seats" };
+    return null;
+  }
+
   function typeName(s) {
     return s.ty == null ? "" : DATA.facets.Type[s.ty];
   }
@@ -911,7 +1101,8 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
     }
     if (state.q) {
       var hay = (s.c + " " + s.t + " " + s.a + " " +
-                 svcNames(s).join(" ")).toLowerCase();
+                 svcNames(s).join(" ") + " " +
+                 speakerNames(s).join(" ")).toLowerCase();
       var terms = state.q.toLowerCase().split(/\s+/);
       for (var k = 0; k < terms.length; k++)
         if (terms[k] && hay.indexOf(terms[k]) === -1) return false;
@@ -967,6 +1158,9 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
     }
     c.appendChild(where);
 
+    var note = seatNote(slot);
+    if (note) top.appendChild(el("span", note.cls, note.txt));
+
     var star = el("button", "star", inPlan(s.c) ? "★" : "☆");
     star.setAttribute("aria-pressed", inPlan(s.c) ? "true" : "false");
     star.title = inPlan(s.c) ? "Remove from my plan" : "Add to my plan";
@@ -979,6 +1173,9 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
       if (svcNames(s).length)
         abs.appendChild(el("span", null, "\n\nServices: " +
           svcNames(s).join(", ")));
+      if (speakerNames(s).length)
+        abs.appendChild(el("span", null, "\n\nSpeakers: " +
+          speakerNames(s).join("; ")));
       more.addEventListener("click", function () {
         c.classList.toggle("open");
         more.textContent = c.classList.contains("open")
@@ -1640,7 +1837,11 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
       }
       if (r.gone) { host.appendChild(goneCard(r.gone)); prev = null; return; }
       if (prev && prev.w && r.w) host.appendChild(gapRow(prev, r));
-      host.appendChild(card(r.s, r.w));
+      var c = card(r.s, r.w);
+      var vr = verdictRow(r.s.c);
+      if (vr) c.appendChild(vr);
+      c.appendChild(noteBox(r.s.c));
+      host.appendChild(c);
       prev = r;
     });
   }
@@ -1716,6 +1917,669 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
     }
     row.appendChild(el("span", null, msg));
     return row;
+  }
+
+
+  /* ---- taking it with you --------------------------------------------
+     Two exports, because a plan that only exists on this page is a plan
+     nobody looks at on the day.
+
+     TIMEZONE. Every event is emitted in UTC, which needs no VTIMEZONE
+     block and cannot be misread by a client. The conversion is exact
+     rather than assumed: all 1,555 scheduled slots in the catalog were
+     checked against their own utcEndTime, and every one came back at
+     UTC = local + 8h. That is Pacific Standard Time, and re:Invent 2026
+     sits wholly after the November DST change, so there is no transition
+     inside the event for a fixed offset to get wrong. */
+  var VEGAS_OFFSET_H = 8;
+
+  function icsStamp(day, minutes) {
+    var d = new Date(day + "T00:00:00Z");
+    d.setUTCMinutes(d.getUTCMinutes() + minutes + VEGAS_OFFSET_H * 60);
+    return d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  }
+
+  /* iCalendar escaping, then folding at 75 octets with CRLF + space.
+     Clients genuinely do break on an unfolded 300-character DESCRIPTION,
+     and the failure looks like a corrupt file rather than a long line. */
+  function icsText(v) {
+    return String(v || "").replace(/\\/g, "\\\\").replace(/;/g, "\\;")
+      .replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+  }
+
+  /* RFC 5545 folds at 75 OCTETS, not characters, and a continuation line
+     spends one of them on its leading space. Counting characters passed a
+     em dash and a middot straight through: 15 lines went out over the
+     limit while still looking 74 long. Split on a code point boundary too,
+     or a folded line can end mid-character and the client sees mojibake. */
+  function icsFold(line) {
+    var enc = new TextEncoder();
+    if (enc.encode(line).length <= 75) return line;
+    var out = [], cur = "", curBytes = 0;
+    for (var i = 0; i < line.length; ) {
+      var cp = String.fromCodePoint(line.codePointAt(i));
+      i += cp.length;
+      var b = enc.encode(cp).length;
+      var cap = out.length ? 74 : 75;      // continuations carry a space
+      if (curBytes + b > cap) {
+        out.push(cur);
+        cur = ""; curBytes = 0;
+      }
+      cur += cp; curBytes += b;
+    }
+    if (cur) out.push(cur);
+    return out.map(function (seg, i) {
+      return (i ? " " : "") + seg;
+    }).join("\r\n");
+  }
+
+  function buildICS() {
+    var now = new Date().toISOString().replace(/[-:]/g, "")
+                .replace(/\.\d{3}/, "");
+    var lines = ["BEGIN:VCALENDAR", "VERSION:2.0",
+                 "PRODID:-//jayanthkatta.com//re:Invent 2026 planner//EN",
+                 "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
+                 "X-WR-CALNAME:AWS re:Invent 2026"];
+    var count = 0;
+    planRows().forEach(function (r) {
+      if (r.gone || !r.w) return;
+      var s = r.s, w = r.w;
+      // The eleven sessions AWS publishes with no duration get an hour,
+      // and the description says so rather than pretending otherwise.
+      var unknownEnd = (w.e == null);
+      var end = unknownEnd ? w.b + 60 : w.e;
+      var desc = [];
+      if (unknownEnd)
+        desc.push("AWS has not published a length for this session; one "
+                + "hour is assumed here.");
+      if (speakerNames(s).length)
+        desc.push("Speakers: " + speakerNames(s).join("; "));
+      if (svcNames(s).length)
+        desc.push("Services: " + svcNames(s).join(", "));
+      if (w.cap) desc.push("Room capacity: " + w.cap);
+      desc.push("Confirm in the official catalog: "
+              + CATALOG_URL + "?search=" + encodeURIComponent(s.c));
+      if (s.a) desc.push("", s.a);
+
+      lines.push("BEGIN:VEVENT");
+      lines.push(icsFold("UID:" + s.c + "-" + w.d
+                         + "@reinvent2026.jayanthkatta.com"));
+      lines.push("DTSTAMP:" + now);
+      lines.push("DTSTART:" + icsStamp(w.d, w.b));
+      lines.push("DTEND:" + icsStamp(w.d, end));
+      lines.push(icsFold("SUMMARY:" + icsText(s.c + " — " + s.t)));
+      lines.push(icsFold("LOCATION:" + icsText(roomName(w))));
+      lines.push(icsFold("DESCRIPTION:" + icsText(desc.join("\n"))));
+      lines.push(icsFold("URL:" + CATALOG_URL + "?search="
+                         + encodeURIComponent(s.c)));
+      lines.push("END:VEVENT");
+      count += 1;
+    });
+    lines.push("END:VCALENDAR");
+    return { text: lines.join("\r\n"), count: count };
+  }
+
+  function download(name, text, mime) {
+    var blob = new Blob([text], { type: mime + ";charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  /* ---- notes, and the trip report they become ------------------------
+     You come back from five days having sat in thirty sessions with
+     nothing written down. A note per session, kept in this browser, and
+     an export that is already the shape of something you would send to
+     the team. */
+  var NOTE_KEY = "ri2026.notes";
+  var notes = load(NOTE_KEY, {}) || {};
+
+  function noteFor(code) { return notes[code] || ""; }
+
+  function setNote(code, text) {
+    if (text) notes[code] = text; else delete notes[code];
+    save(NOTE_KEY, notes);
+  }
+
+  function noteBox(code) {
+    var wrap = el("div", "notewrap");
+    var ta = document.createElement("textarea");
+    ta.className = "note";
+    ta.rows = 2;
+    ta.placeholder = "What did you take away? (kept on this device)";
+    ta.value = noteFor(code);
+    ta.addEventListener("input", function () { setNote(code, ta.value); });
+    wrap.appendChild(ta);
+    return wrap;
+  }
+
+  function buildMarkdown() {
+    var out = ["# AWS re:Invent 2026 — session notes", ""];
+    var seen = 0, group = null;
+    planRows().forEach(function (r) {
+      if (r.gone) {
+        out.push("- ~~" + r.gone + "~~ (no longer in the catalog)");
+        return;
+      }
+      if (r.d !== group) {
+        group = r.d;
+        out.push("", "## " + (r.w ? dayLabel(r.d) : "Not yet scheduled"), "");
+      }
+      var s = r.s, w = r.w;
+      var when = w ? hhmm(w.b) + (w.e == null ? "" : "–" + hhmm(w.e)) : "";
+      out.push("### " + s.c + " — " + s.t);
+      var meta = [];
+      if (when) meta.push(when);
+      if (w) meta.push(roomName(w));
+      if (typeName(s)) meta.push(typeName(s));
+      if (levelName(s)) meta.push(levelName(s));
+      out.push("*" + meta.join(" · ") + "*");
+      if (speakerNames(s).length)
+        out.push("", "Speakers: " + speakerNames(s).join("; "));
+      var note = noteFor(s.c);
+      out.push("", note ? note : "_No notes._");
+      out.push("", "[Official catalog entry](" + CATALOG_URL + "?search="
+               + encodeURIComponent(s.c) + ")", "");
+      seen += 1;
+    });
+    out.push("", "---", "",
+             "Generated from jayanthkatta.com/reinvent-2026/ · "
+             + seen + " session(s) · catalog captured "
+             + (DATA.captured || "unknown"));
+    return out.join("\n");
+  }
+
+
+  /* ---- verifying the plan against AWS --------------------------------
+     The load-time live check compares session COUNTS, which catches an
+     addition or a cancellation and misses a move. Six sessions were
+     re-roomed in two hours on 2026-09-22 without the count changing at
+     all, so the count check would have said "same" while a plan quietly
+     pointed at the wrong building.
+
+     This closes that, on the only sessions it matters for: the ones you
+     starred. Measured first -- the API honours search=<code> and returns
+     exactly one row -- so a plan costs one small request per session
+     rather than a full catalog pull. Paced, because the catalog throttles
+     a burst; that was found the hard way when a burst returned 100
+     sessions and the page displayed them as live data. */
+  var verified = {};      // code -> {state, was, now}
+
+  function slotSig(d, b, e, room) {
+    return [d, b, e == null ? "?" : e, room].join("|");
+  }
+
+  function verifyPlan() {
+    var btn = $("#verify");
+    var codes = plan.slice();
+    if (!codes.length || !DATA.api) return;
+    var done = 0;
+
+    function setLabel(t) { if (btn) btn.textContent = t; }
+    if (btn) btn.disabled = true;
+
+    function step(i) {
+      if (i >= codes.length) {
+        setLabel("Re-check against AWS");
+        if (btn) btn.disabled = false;
+        renderPlan();
+        return;
+      }
+      var code = codes[i];
+      setLabel("Checking " + (i + 1) + " of " + codes.length + "…");
+      liveFetch({ search: code }).then(function (d) {
+        var items = d.items && d.items.length ? d.items
+                  : ((d.sectionList || [{}])[0].items || []);
+        var hit = null;
+        items.forEach(function (it) { if (it.code === code) hit = it; });
+        var mine = null;
+        DATA.sessions.forEach(function (x) { if (x.c === code) mine = x; });
+
+        if (!hit) {
+          verified[code] = { state: "gone" };
+        } else {
+          var t = (hit.times || [])[0];
+          if (!t || t.startTimeMin == null) {
+            verified[code] = { state: "unscheduled" };
+          } else {
+            var liveEnd = (t.endTimeMin != null
+                           && t.endTimeMin > t.startTimeMin)
+                        ? (t.endTimeMin | 0) : null;
+            var liveSig = slotSig(t.date, t.startTimeMin | 0, liveEnd,
+                                  t.room || "");
+            var w = mine && mine.when.length ? mine.when[0] : null;
+            var mineSig = w ? slotSig(w.d, w.b, w.e, roomName(w)) : "none";
+            verified[code] = (liveSig === mineSig)
+              ? { state: "ok" }
+              : { state: "changed",
+                  now: { d: t.date, b: t.startTimeMin | 0, e: liveEnd,
+                         room: t.room || "" } };
+          }
+        }
+        done += 1;
+        setTimeout(function () { step(i + 1); }, 220);
+      }).catch(function () {
+        verified[code] = { state: "unchecked" };
+        setTimeout(function () { step(i + 1); }, 220);
+      });
+    }
+    step(0);
+  }
+
+  function verdictRow(code) {
+    var v = verified[code];
+    if (!v) return null;
+    var row = el("div", "vrow");
+    if (v.state === "ok") {
+      row.className = "vrow ok";
+      row.textContent = "✓ Confirmed against AWS just now.";
+    } else if (v.state === "changed") {
+      row.className = "vrow bad";
+      row.textContent = "⚠ AWS now has this at "
+        + hhmm(v.now.b) + (v.now.e == null ? "" : "–" + hhmm(v.now.e))
+        + " on " + v.now.d + ", " + v.now.room
+        + ". The card above is the stored copy.";
+    } else if (v.state === "gone") {
+      row.className = "vrow bad";
+      row.textContent = "⚠ AWS no longer returns this session code.";
+    } else if (v.state === "unscheduled") {
+      row.className = "vrow warn";
+      row.textContent = "AWS currently lists this with no time.";
+    } else {
+      row.className = "vrow";
+      row.textContent = "Could not reach AWS to check this one.";
+    }
+    return row;
+  }
+
+  /* ---- what is on now, near me ---------------------------------------
+     The catalog is least usable at exactly the moment you need it most:
+     237 sessions start at 13:00. This answers the standing-in-a-corridor
+     question -- what starts soon, here, and what can I still reach.
+
+     Outside the event it has no "now" worth showing, so it says so and
+     lets you preview a day and time rather than rendering an empty panel
+     and looking broken. */
+  var NOW_KEY = "ri2026.where";
+  var nowState = load(NOW_KEY, null) || { at: "", day: "", time: 540 };
+  var WINDOW_MIN = 90;
+
+  function eventNow() {
+    var d = new Date();
+    var iso = d.getFullYear() + "-"
+            + String(d.getMonth() + 1).padStart(2, "0") + "-"
+            + String(d.getDate()).padStart(2, "0");
+    if (CFG.days.indexOf(iso) === -1) return null;
+    return { day: iso, min: d.getHours() * 60 + d.getMinutes() };
+  }
+
+  function renderNow() {
+    var host = $("#nowbody");
+    if (!host) return;
+    host.textContent = "";
+
+    var real = eventNow();
+    var live_ = real || { day: nowState.day || CFG.days[0],
+                          min: nowState.time };
+    var note = $("#nownote");
+    if (note) {
+      note.textContent = real
+        ? "Live: it is " + hhmm(live_.min) + " on " + dayLabel(live_.day) + "."
+        : "re:Invent has not started, so this is a preview — pick a day "
+          + "and time. During the event it uses the real clock.";
+      note.className = real ? "nownote live" : "nownote";
+    }
+    var picker = $("#nowpick");
+    if (picker) picker.hidden = !!real;
+
+    var here = nowState.at;
+    var rows = [];
+    DATA.sessions.forEach(function (sn) {
+      sn.when.forEach(function (w) {
+        if (w.d !== live_.day) return;
+        var mins = w.b - live_.min;
+        if (mins < -5 || mins > WINDOW_MIN) return;
+        var v = venueName(w);
+        var need = here ? needFor(here, v) : 0;
+        rows.push({ s: sn, w: w, in: mins, venue: v,
+                    reach: !here || mins >= need, need: need });
+      });
+    });
+    rows.sort(function (a, b) {
+      if (a.reach !== b.reach) return a.reach ? -1 : 1;
+      return a.in - b.in;
+    });
+
+    var can = rows.filter(function (r) { return r.reach; });
+    var cant = rows.filter(function (r) { return !r.reach; });
+
+    var head = el("p", "count");
+    head.innerHTML = "<b>" + can.length + "</b> session"
+      + (can.length === 1 ? "" : "s") + " you can still get to in the next "
+      + WINDOW_MIN + " minutes"
+      + (here ? ", starting from " + here : "")
+      + (cant.length ? "  ·  " + cant.length + " you could not reach in time"
+                     : "");
+    host.appendChild(head);
+
+    if (!rows.length) {
+      host.appendChild(el("p", "empty",
+        "Nothing starts in the next " + WINDOW_MIN + " minutes on this day."));
+      return;
+    }
+
+    function block(title, list, cls) {
+      if (!list.length) return;
+      var sec = el("section", "daygroup");
+      sec.appendChild(el("h2", "dayhead", title));
+      list.slice(0, 40).forEach(function (r) {
+        var c = card(r.s, r.w);
+        if (cls) c.classList.add(cls);
+        var when = el("div", "where");
+        when.textContent = (r.in <= 0 ? "started " + (-r.in) + " min ago"
+                                      : "starts in " + r.in + " min")
+          + (here && r.venue !== here
+             ? "  ·  " + km(metresBetween(here, r.venue)) + " away, allow "
+               + r.need + " min"
+             : here ? "  ·  you are here" : "");
+        c.insertBefore(when, c.querySelector(".more") || null);
+        sec.appendChild(c);
+      });
+      host.appendChild(sec);
+    }
+    block("Reachable", can, null);
+    block("Too far to make it", cant, "unreachable");
+  }
+
+  function fillNowControls() {
+    var at = $("#now-at"), day = $("#now-day"), time = $("#now-time");
+    if (!at) return;
+    if (!at.options.length) {
+      at.appendChild(new Option("— pick where you are —", ""));
+      Object.keys(CFG.travel.matrix).sort().forEach(function (v) {
+        at.appendChild(new Option(v, v));
+      });
+      CFG.days.forEach(function (d) {
+        day.appendChild(new Option(dayLabel(d), d));
+      });
+    }
+    at.value = nowState.at || "";
+    day.value = nowState.day || CFG.days[0];
+    time.value = hhmm(nowState.time || 540);
+    at.onchange = function () {
+      nowState.at = at.value; save(NOW_KEY, nowState); renderNow();
+    };
+    day.onchange = function () {
+      nowState.day = day.value; save(NOW_KEY, nowState); renderNow();
+    };
+    time.onchange = function () {
+      var p = /^(\d{1,2}):(\d{2})$/.exec(time.value);
+      if (p) {
+        nowState.time = (+p[1]) * 60 + (+p[2]);
+        save(NOW_KEY, nowState); renderNow();
+      }
+    };
+  }
+
+
+  /* ---- team coverage --------------------------------------------------
+     The point of sending six people to 1,582 sessions is that they do not
+     all sit in the same room. Nothing in the official catalog knows a team
+     exists, so this merges plans: everyone shares their plan link, they go
+     in here, and it says who is doubled up and which hours nobody is
+     covering.
+
+     No backend and no accounts. A plan already travels in its own URL, so
+     the merge is pasting text. Nothing is uploaded anywhere. */
+  var TEAM_KEY = "ri2026.team";
+
+  function parseTeam(text) {
+    var people = [];
+    (text || "").split(/\r?\n/).forEach(function (line) {
+      line = line.trim();
+      if (!line) return;
+      var name = "", rest = line;
+      var colon = line.indexOf(":");
+      // "Asha: <link>" -- but not the colon in "https://"
+      if (colon > 0 && !/^https?$/i.test(line.slice(0, colon))) {
+        name = line.slice(0, colon).trim();
+        rest = line.slice(colon + 1).trim();
+      }
+      var m = /[#&]plan=([^&\s]*)/.exec(rest);
+      var codes = (m ? decodeURIComponent(m[1]) : rest)
+        .split(/[,\s]+/).map(function (c) { return c.trim().toUpperCase(); })
+        .filter(Boolean);
+      if (!codes.length) return;
+      people.push({ name: name || ("Person " + (people.length + 1)),
+                    codes: codes });
+    });
+    return people;
+  }
+
+  function renderTeam() {
+    var host = $("#teambody");
+    if (!host) return;
+    host.textContent = "";
+
+    var people = parseTeam($("#teamin") ? $("#teamin").value : "");
+    if (plan.length) people.unshift({ name: "You", codes: plan.slice() });
+    if (!people.length) {
+      host.appendChild(el("p", "empty",
+        "Paste one plan link per line. Everyone gets their own link from "
+        + "My plan → Copy a link to this plan."));
+      return;
+    }
+
+    var by = {};
+    DATA.sessions.forEach(function (x) { by[x.c] = x; });
+
+    // who is going to what
+    var who = {}, unknown = [];
+    people.forEach(function (p) {
+      p.codes.forEach(function (c) {
+        if (!by[c]) { if (unknown.indexOf(c) === -1) unknown.push(c); return; }
+        (who[c] = who[c] || []).push(p.name);
+      });
+    });
+
+    var codes = Object.keys(who);
+    var head = el("p", "count");
+    head.innerHTML = "<b>" + people.length + "</b> "
+      + (people.length === 1 ? "person" : "people") + " · <b>"
+      + codes.length + "</b> distinct session"
+      + (codes.length === 1 ? "" : "s") + " covered";
+    host.appendChild(head);
+
+    // doubled up
+    var dup = codes.filter(function (c) { return who[c].length > 1; });
+    var sec = el("section", "teamsec");
+    sec.appendChild(el("h3", null, dup.length
+      ? dup.length + " session(s) more than one of you is in"
+      : "Nobody is doubled up"));
+    if (dup.length) {
+      sec.appendChild(el("p", "teamhint",
+        "Worth a look: two people in one room is one room nobody else is "
+        + "in. Sometimes that is deliberate."));
+      dup.forEach(function (c) {
+        var r = el("div", "teamrow dup");
+        r.appendChild(el("span", "tcode", c));
+        r.appendChild(el("span", "ttitle", by[c].t));
+        r.appendChild(el("span", "twho", who[c].join(", ")));
+        sec.appendChild(r);
+      });
+    }
+    host.appendChild(sec);
+
+    // hours nobody is in anything
+    var gaps = el("section", "teamsec");
+    gaps.appendChild(el("h3", null, "Hours nobody has anything booked"));
+    var busy = {};
+    codes.forEach(function (c) {
+      (by[c].when || []).forEach(function (w) {
+        var end = w.e == null ? w.b + 60 : w.e;
+        for (var m = w.b; m < end; m += 30)
+          busy[w.d + "|" + (Math.floor(m / 30) * 30)] = true;
+      });
+    });
+    var any = false;
+    CFG.days.forEach(function (d) {
+      var free = [];
+      for (var m = 8 * 60; m < 18 * 60; m += 30)
+        if (!busy[d + "|" + m]) free.push(m);
+      if (!free.length) return;
+      // collapse consecutive half-hours into ranges
+      var runs = [], start = null, prev = null;
+      free.forEach(function (m) {
+        if (start === null) { start = m; prev = m; return; }
+        if (m === prev + 30) { prev = m; return; }
+        runs.push([start, prev + 30]); start = m; prev = m;
+      });
+      if (start !== null) runs.push([start, prev + 30]);
+      var r = el("div", "teamrow");
+      r.appendChild(el("span", "tday", dayLabel(d)));
+      r.appendChild(el("span", "ttitle", runs.map(function (x) {
+        return hhmm(x[0]) + "–" + hhmm(x[1]); }).join(",  ")));
+      gaps.appendChild(r);
+      any = true;
+    });
+    if (!any) gaps.appendChild(el("p", "teamhint",
+      "Every half-hour between 08:00 and 18:00 has somebody in something."));
+    host.appendChild(gaps);
+
+    // per person
+    var per = el("section", "teamsec");
+    per.appendChild(el("h3", null, "Who is doing what"));
+    people.forEach(function (p) {
+      var r = el("div", "teamrow");
+      r.appendChild(el("span", "tday", p.name));
+      var known = p.codes.filter(function (c) { return by[c]; });
+      r.appendChild(el("span", "ttitle",
+        known.length + " session(s): " + known.join(", ")));
+      per.appendChild(r);
+    });
+    host.appendChild(per);
+
+    if (unknown.length) {
+      var u = el("section", "teamsec");
+      u.appendChild(el("h3", null, "Codes not in this catalog"));
+      u.appendChild(el("p", "teamhint", unknown.join(", ")
+        + " — either a typo, or sessions AWS has since withdrawn."));
+      host.appendChild(u);
+    }
+  }
+
+
+  /* ---- what AWS just shipped, and who is covering it -------------------
+     re:Invent week is when AWS ships everything, and the question on the
+     Tuesday is not "what sessions exist" but "they announced that at the
+     keynote -- is anyone covering it?". The announcement store already
+     exists on this site and is refreshed daily, so this is a join, not a
+     new pipeline.
+
+     The join is by SERVICE, which is honest but coarse: it says "this
+     announcement and these sessions are about the same service", not
+     "this session covers this announcement". The wording says so, because
+     a session scheduled in September cannot be about a launch made in
+     December -- and during the event, that is exactly the overlap worth
+     looking at anyway. */
+  function renderNews() {
+    var host = $("#newsbody");
+    if (!host) return;
+    host.textContent = "";
+    var items = CFG.news || [];
+    if (!items.length) {
+      host.appendChild(el("p", "empty",
+        "No recent AWS announcements line up with a service in this "
+        + "catalog."));
+      return;
+    }
+
+    var byService = {};
+    DATA.sessions.forEach(function (sn) {
+      sn.sv.forEach(function (i) {
+        (byService[i] = byService[i] || []).push(sn);
+      });
+    });
+
+    var head = el("p", "count");
+    head.innerHTML = "<b>" + items.length + "</b> AWS announcement"
+      + (items.length === 1 ? "" : "s") + " from the last few weeks that "
+      + "name a service this catalog also covers";
+    host.appendChild(head);
+
+    items.forEach(function (a) {
+      var box = el("article", "newsitem");
+      var top = el("div", "top");
+      top.appendChild(el("span", "code", a.d));
+      a.sv.forEach(function (i) {
+        top.appendChild(el("span", "tag", DATA.facets.Services[i]));
+      });
+      box.appendChild(top);
+
+      var t = el("p", "newstitle", a.t);
+      box.appendChild(t);
+
+      var hits = [];
+      a.sv.forEach(function (i) {
+        (byService[i] || []).forEach(function (sn) {
+          if (hits.indexOf(sn) === -1) hits.push(sn);
+        });
+      });
+      var line = el("div", "where");
+      /* A service with hundreds of sessions cannot be pointed at. Bedrock
+         has 322, so "322 sessions on the same service" followed by eight
+         arbitrary codes is noise wearing the shape of a recommendation.
+         Say the service is too broad and send them to the filter instead. */
+      var TOO_BROAD = 40;
+      if (!hits.length) {
+        line.textContent = "No sessions on that service.";
+      } else if (hits.length > TOO_BROAD) {
+        line.textContent = hits.length + " sessions carry that service — "
+          + "too many to single any out. ";
+        var jump = el("a", "hoplink", "Filter to it in Browse →");
+        jump.href = "#";
+        jump.addEventListener("click", function (ev) {
+          ev.preventDefault();
+          state.service = String(a.sv[0]);
+          state.lane = "all"; state.q = ""; shown = PAGE_SIZE;
+          $("#q").value = "";
+          buildFilters(); view("browse"); render();
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        });
+        line.appendChild(jump);
+      } else {
+        line.textContent = hits.length + " session"
+          + (hits.length === 1 ? "" : "s") + " on the same service: ";
+        hits.slice(0, 8).forEach(function (sn, i) {
+          if (i) line.appendChild(document.createTextNode(", "));
+          var lk = el("a", "code", sn.c);
+          lk.href = "#";
+          lk.title = sn.t;
+          lk.addEventListener("click", function (ev) {
+            ev.preventDefault();
+            state.q = sn.c; state.lane = "all"; shown = PAGE_SIZE;
+            $("#q").value = sn.c;
+            view("browse"); render();
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          });
+          line.appendChild(lk);
+        });
+        if (hits.length > 8)
+          line.appendChild(document.createTextNode(
+            " and " + (hits.length - 8) + " more"));
+      }
+      box.appendChild(line);
+
+      if (a.u) {
+        var src = el("a", "hoplink", "the announcement ↗");
+        src.href = a.u; src.target = "_blank"; src.rel = "noopener";
+        box.appendChild(src);
+      }
+      host.appendChild(box);
+    });
   }
 
   /* ---- filters ------------------------------------------------------- */
@@ -1829,6 +2693,18 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
     $("#tab-browse").addEventListener("click", function () { view("browse"); });
     $("#tab-plan").addEventListener("click", function () { view("plan"); });
     $("#tab-map").addEventListener("click", function () { view("map"); });
+    $("#tab-now").addEventListener("click", function () { view("now"); });
+    $("#tab-team").addEventListener("click", function () { view("team"); });
+    $("#tab-news").addEventListener("click", function () { view("news"); });
+
+    var teamTimer = null;
+    $("#teamin").addEventListener("input", function () {
+      clearTimeout(teamTimer);
+      teamTimer = setTimeout(function () {
+        save(TEAM_KEY, $("#teamin").value);
+        renderTeam();
+      }, 250);
+    });
 
     $("#share").addEventListener("click", function () {
       var url = location.origin + location.pathname +
@@ -1838,6 +2714,19 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
           $("#share").textContent = "Copy a link to this plan"; }, 1800); };
       if (navigator.clipboard) navigator.clipboard.writeText(url).then(done, done);
       else { prompt("Copy this link", url); }
+    });
+
+    $("#verify").addEventListener("click", verifyPlan);
+
+    $("#ics").addEventListener("click", function () {
+      var cal = buildICS();
+      if (!cal.count) { alert("Star some sessions first."); return; }
+      download("reinvent-2026.ics", cal.text, "text/calendar");
+    });
+
+    $("#md").addEventListener("click", function () {
+      if (!plan.length) { alert("Star some sessions first."); return; }
+      download("reinvent-2026-notes.md", buildMarkdown(), "text/markdown");
     });
 
     $("#wipe").addEventListener("click", function () {
@@ -1864,19 +2753,31 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
     $("#browse").hidden = which !== "browse";
     $("#plan").hidden = which !== "plan";
     $("#map").hidden = which !== "map";
+    $("#now").hidden = which !== "now";
+    $("#team").hidden = which !== "team";
+    $("#news").hidden = which !== "news";
     /* Search, filters and lanes drive Browse AND the map's heat, so they
        stay up for both. In the plan they are dead controls that push the
        plan below the fold -- on a phone, past it entirely. */
-    var showControls = which !== "plan";
+    var showControls = (which === "browse" || which === "map");
     $(".controls").hidden = !showControls;
     document.querySelector(".lanes").hidden = !showControls;
-    [["#tab-browse", "browse"], ["#tab-plan", "plan"], ["#tab-map", "map"]]
+    [["#tab-browse", "browse"], ["#tab-plan", "plan"], ["#tab-map", "map"],
+     ["#tab-now", "now"], ["#tab-team", "team"],
+     ["#tab-news", "news"]]
       .forEach(function (p) {
         $(p[0]).setAttribute("aria-selected",
                              which === p[1] ? "true" : "false");
       });
     if (which === "plan") renderPlan();
     if (which === "map") { fillMapDays(); renderMap(); }
+    if (which === "now") { fillNowControls(); renderNow(); }
+    if (which === "team") {
+      var ta = $("#teamin");
+      if (ta && !ta.value) ta.value = load(TEAM_KEY, "") || "";
+      renderTeam();
+    }
+    if (which === "news") renderNews();
   }
 
   function adoptSharedPlan() {
@@ -1890,6 +2791,25 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
   }
 
   /* ---- boot ---------------------------------------------------------- */
+  /* ---- offline ---------------------------------------------------------
+     The site already has a service worker at /sw.js with scope "/", and its
+     strategies happen to be exactly right for this page: navigations and
+     CSS/JS are stale-while-revalidate, and everything else -- which is where
+     the catalog JSON lands -- is network-first with a cache fallback. So a
+     page that has been opened once keeps working when the wifi dies in a
+     keynote hall, which it will.
+
+     What was missing is the registration. site-footer.js does it for the
+     rest of the site and this page is self-contained, so a teammate handed
+     only this link would never have registered anything and would have got
+     no offline at all. One line, guarded, and failure is silent: offline is
+     a bonus, not a dependency. */
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("/sw.js").catch(function () {});
+    });
+  }
+
   fetch("/intelligence/reinvent2026.json")
     .then(function (r) {
       if (!r.ok) throw new Error("HTTP " + r.status);
