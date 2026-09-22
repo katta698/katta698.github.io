@@ -106,6 +106,13 @@ PAGE = 50            # the app's own page size; larger is not honoured
 # ones and twos, not in hundreds, so anything past a fifth is a fetch fault
 # rather than news about the conference.
 MAX_SHRINK = 0.20
+
+# The kinds of change a refresh can produce, in the order a reader cares
+# about them: things that break a plan first, things that enable one last.
+ORDER = ("removed", "unscheduled", "moved", "retimed", "scheduled", "added")
+LABEL = {"added": "added", "removed": "removed", "moved": "moved venue",
+         "retimed": "retimed", "scheduled": "newly scheduled",
+         "unscheduled": "lost their slot"}
 EVENT_DAYS = ("2026-11-30", "2026-12-01", "2026-12-02",
               "2026-12-03", "2026-12-04")
 
@@ -178,7 +185,21 @@ def items_of(payload):
 
 
 def fetch_all():
-    """Every session, reconciled against the API's own total."""
+    """Every session, reconciled against the API's own total.
+
+    Returns the credentials it minted as well, so the store can carry them
+    and the page can make its own live call. Measured 2026-09-22: they are
+    identical across independent browser sessions, and the catalog reflects
+    any Origin back in Access-Control-Allow-Origin -- so a browser on
+    jayanthkatta.com can call it directly, and a real one did, returning all
+    1,582 sessions.
+
+    These are NOT secrets. AWS hands the same two strings to every browser
+    that loads the public catalog page; they identify the widget, not a
+    user, and nothing here authenticates as anybody. They are recorded so
+    the daily job keeps them current on its own: if AWS rotates them, the
+    next run picks up the new pair and the page keeps working.
+    """
     head = credentials()
     first = post(head)
     total = int(first.get("totalSearchItems") or 0)
@@ -202,7 +223,7 @@ def fetch_all():
     if total and len(out) < total:
         print("  SHORT by %d -- the store will be incomplete"
               % (total - len(out)))
-    return out, total
+    return out, total, head
 
 
 # ------------------------------------------------------------------ slimming
@@ -341,17 +362,27 @@ def compare(old, new):
 
     added = sorted(set(now) - set(was))
     removed = sorted(set(was) - set(now))
-    moved, retimed = [], []
+    scheduled, pulled, moved, retimed = [], [], [], []
     for code in sorted(set(was) & set(now)):
         a = [slot_key(old, w) for w in was[code]["when"]]
         b = [slot_key(new, w) for w in now[code]["when"]]
         if a == b:
             continue
-        old_where = {k[3] for k in a}
-        new_where = {k[3] for k in b}
-        (moved if old_where != new_where else retimed).append(code)
-    return {"added": added, "removed": removed,
-            "moved": moved, "retimed": retimed}
+        # Getting a room for the first time is not the same event as being
+        # moved, and calling it one is a small lie in a commit message that
+        # is supposed to be the trustworthy part. Measured on 2026-09-22:
+        # six SNR sessions went from no time at all to the Venetian Theatre
+        # inside two hours, and were reported as "moved venue".
+        if not a:
+            scheduled.append(code)
+        elif not b:
+            pulled.append(code)
+        elif {k[3] for k in a} != {k[3] for k in b}:
+            moved.append(code)
+        else:
+            retimed.append(code)
+    return {"added": added, "removed": removed, "scheduled": scheduled,
+            "unscheduled": pulled, "moved": moved, "retimed": retimed}
 
 
 def report_change(delta):
@@ -361,10 +392,10 @@ def report_change(delta):
     if not any(delta.values()):
         print("  no change since the last capture")
         return
-    print("  since the last capture: %d added, %d removed, %d moved venue, "
-          "%d retimed" % (len(delta["added"]), len(delta["removed"]),
-                          len(delta["moved"]), len(delta["retimed"])))
-    for label in ("removed", "moved", "retimed"):
+    print("  since the last capture: %s"
+          % ", ".join("%d %s" % (len(delta[k]), LABEL[k])
+                      for k in ORDER if delta[k]))
+    for label in ("removed", "unscheduled", "moved", "retimed", "scheduled"):
         if delta[label]:
             shown = ", ".join(delta[label][:10])
             more = "" if len(delta[label]) <= 10 else ", ..."
@@ -452,9 +483,10 @@ def main():
         blob = json.load(io.open(args.raw, encoding="utf-8"))
         sessions = blob["sessions"] if isinstance(blob, dict) else blob
         total = len(sessions)
+        head = None
         print("  re-slimming %d session(s) from %s" % (total, args.raw))
     else:
-        sessions, total = fetch_all()
+        sessions, total, head = fetch_all()
         if args.save_raw:
             with io.open(args.save_raw, "w", encoding="utf-8") as fh:
                 json.dump({"sessions": sessions}, fh, ensure_ascii=False)
@@ -477,6 +509,13 @@ def main():
     payload["catalog_total"] = total
 
     old = previous()
+    # The page uses this to ask the catalog, on load, whether anything has
+    # changed since this capture. Carried forward on a --raw re-slim so
+    # re-processing an old payload does not strip the page's live check.
+    if head:
+        payload["api"] = {"url": CATALOG, "headers": head}
+    elif old and old.get("api"):
+        payload["api"] = old["api"]
     refuse_if_shrunk(old, payload, args.force)
     delta = compare(old, payload)
     print()

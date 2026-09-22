@@ -60,11 +60,19 @@ STALE_DAYS = 21
 
 
 def need_for(a, b, travel):
+    """The page's own cost for a hop, recomputed from the same inputs."""
     if a == b:
-        return travel["same"]
-    if travel["outlier"] in (a, b):
-        return travel["far"]
-    return travel["near"]
+        return travel["overhead"]
+    cell = (travel["matrix"].get(a) or {}).get(b)
+    if not cell:
+        return travel["overhead"]
+    return travel["overhead"] + int(round(
+        cell["m"] * travel["detour"] / travel["pace"]))
+
+
+def metres_between(a, b, travel):
+    cell = (travel["matrix"].get(a) or {}).get(b)
+    return cell["m"] if cell else 0
 
 
 def config_of(html):
@@ -247,24 +255,65 @@ def main():
                 print("  the catalog is %d day(s) old, inside the %d-day "
                       "window the page treats as current" % (age, STALE_DAYS))
 
-    # ---- canaries --------------------------------------------------------
-    t = {"same": 10, "near": 30, "far": 45, "outlier": "MGM Grand"}
-    if need_for("MGM Grand", "Venetian", t) <= need_for("Venetian",
-                                                        "Caesars Forum", t):
-        problems.append(
-            "CANARY: crossing to MGM Grand is not costed higher than a hop "
-            "inside the northern run, so the one venue that actually sits "
-            "apart is treated as if it does not")
+    # ---- the travel model is monotonic in distance -----------------------
+    #
+    # The whole point of deriving the estimate from coordinates is that a
+    # longer hop can never be cheaper than a shorter one. The three-bucket
+    # version it replaced failed exactly here: Wynn/Encore to Caesars Palace
+    # is 1,443 m and was costed at 30 minutes, while Caesars Palace to MGM
+    # Grand -- 1,565 m, barely further -- was costed at 45.
+    pairs = []
+    for a in venues:
+        for b in venues:
+            if a != b:
+                pairs.append((metres_between(a, b, travel),
+                              need_for(a, b, travel), a, b))
+    pairs.sort()
+    for i in range(1, len(pairs)):
+        if pairs[i][1] < pairs[i - 1][1]:
+            problems.append(
+                "the travel model is not monotonic: %s->%s is %d m and costs "
+                "%d min, while the shorter %s->%s at %d m costs %d min"
+                % (pairs[i][2], pairs[i][3], pairs[i][0], pairs[i][1],
+                   pairs[i - 1][2], pairs[i - 1][3], pairs[i - 1][0],
+                   pairs[i - 1][1]))
+            break
     else:
-        print("  canary: the outlying venue still costs more than a near hop")
+        print("  travel cost rises with distance across all %d venue pair(s)"
+              % len(pairs))
 
-    if need_for("Venetian", "Venetian", t) >= need_for("Venetian",
-                                                        "Wynn/Encore", t):
+    # ---- canaries --------------------------------------------------------
+    same = need_for("Venetian", "Venetian", travel)
+    if any(need_for(a, b, travel) <= same
+           for a in venues for b in venues if a != b):
         problems.append(
-            "CANARY: changing rooms inside one property costs as much as "
-            "crossing to another, so every same-venue pair would warn")
+            "CANARY: some hop between two properties costs no more than "
+            "changing rooms inside one, so crossing the Strip would look "
+            "free")
     else:
         print("  canary: a same-property room change is still the cheapest hop")
+
+    # The regression this model exists to fix, pinned by name.
+    if ("Wynn/Encore" in venues and "Caesars Palace" in venues
+            and "MGM Grand" in venues):
+        near_far = need_for("Wynn/Encore", "Caesars Palace", travel)
+        real_far = need_for("Caesars Palace", "MGM Grand", travel)
+        if near_far <= 30:
+            problems.append(
+                "CANARY: Wynn/Encore to Caesars Palace is costed at %d min. "
+                "That is the 1,443 m hop the old flat model priced at 30 and "
+                "under-warned on; it must cost more than that now"
+                % near_far)
+        elif abs(near_far - real_far) > 15:
+            problems.append(
+                "CANARY: Wynn/Encore->Caesars Palace (%d min) and Caesars "
+                "Palace->MGM Grand (%d min) are 1,443 m and 1,565 m apart "
+                "respectively, so their costs should be close. They are not"
+                % (near_far, real_far))
+        else:
+            print("  canary: the two similar-length hops (1.4 km and 1.6 km) "
+                  "cost %d and %d min, within a quarter-hour of each other"
+                  % (near_far, real_far))
 
     # The store must never hand the page a zero-length slot dressed as a real
     # one. That is the shape the catalog actually ships for 11 sponsored

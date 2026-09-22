@@ -102,13 +102,110 @@ LANES = [
     },
 ]
 
-# Minutes to allow between two sessions. ESTIMATES -- see the module docstring;
-# AWS publishes none. Five venues sit in one walkable-or-short-shuttle run from
-# Encore down to Caesars Palace; MGM Grand is the outlier, south by Tropicana.
-SAME_VENUE = 10       # these properties are large; room to room is not free
-NEAR = 30             # within the northern cluster
-FAR = 45              # anything involving MGM Grand
-OUTLIER = "MGM Grand"
+# ---------------------------------------------------------------- geography
+#
+# The first version of this costed every hop with three numbers: 10 minutes
+# inside a property, 30 within the northern run, 45 to or from MGM Grand.
+# Measuring the actual distances showed that middle bucket was hiding a
+# factor of two and was wrong in the direction that under-warns:
+#
+#     Venetian       -> Caesars Forum     616 m     a walk
+#     Wynn/Encore    -> Caesars Palace   1443 m     nearly as far as...
+#     Caesars Palace -> MGM Grand        1565 m     ...the "far" bucket
+#
+# So Wynn/Encore to Caesars Palace was costed at 30 minutes while a hop
+# barely longer was costed at 45. Distance is a fact, and deriving the
+# estimate from it is both more honest and less work to defend.
+#
+# Public landmark coordinates for the centre of each property. They are
+# approximate -- these are large buildings -- and that is fine, because the
+# quantity being derived is a rounded number of minutes.
+VENUE_POINTS = {
+    "Venetian":       (36.1212, -115.1697),
+    "Wynn/Encore":    (36.1270, -115.1656),
+    "Caesars Forum":  (36.1163, -115.1665),
+    "Caesars Palace": (36.1162, -115.1745),
+    "MGM Grand":      (36.1026, -115.1700),
+}
+
+# The model, with every number stated so it can be argued with. A straight
+# line between two hotels is not a route, and walking the Strip is not
+# walking down a street: it is casino floors, escalators, pedestrian
+# bridges and crowds.
+DETOUR = 1.30          # straight line -> the path you actually walk
+PACE_M_PER_MIN = 60.0  # ~1 m/s, which is slow, because this is not a pavement
+OVERHEAD_MIN = 10      # out of one room and into the next, at either end
+
+OUTLIER = "MGM Grand"  # still named, for the page's plain-English wording
+
+
+def metres(a, b):
+    """Great-circle distance between two venue points."""
+    import math
+    lat1, lon1 = [math.radians(x) for x in a]
+    lat2, lon2 = [math.radians(x) for x in b]
+    h = (math.sin((lat2 - lat1) / 2) ** 2
+         + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2)
+    return 2 * 6371000.0 * math.asin(math.sqrt(h))
+
+
+def venue_xy(venues):
+    """Normalised 0..1 positions plus the true aspect of the bounding box.
+
+    An equirectangular projection is wrong for a continent and exact enough
+    for five buildings inside a square mile. Metres are computed on both
+    axes so the drawing keeps the real proportions: the Strip runs roughly
+    north-south, these venues span about 2.7 km that way and 0.8 km across,
+    and a map that quietly squared that off would make MGM Grand look like
+    a neighbour of the Venetian.
+    """
+    lats = [VENUE_POINTS[v][0] for v in venues]
+    lons = [VENUE_POINTS[v][1] for v in venues]
+    lo_la, hi_la = min(lats), max(lats)
+    lo_lo, hi_lo = min(lons), max(lons)
+    mid_la = (lo_la + hi_la) / 2.0
+
+    span_y = metres((lo_la, lo_lo), (hi_la, lo_lo))      # north-south
+    span_x = metres((mid_la, lo_lo), (mid_la, hi_lo))    # east-west
+
+    out = {}
+    for v in venues:
+        la, lo = VENUE_POINTS[v]
+        x = 0.5 if hi_lo == lo_lo else (lo - lo_lo) / (hi_lo - lo_lo)
+        # y inverted: north at the top, which is how a map is read.
+        y = 0.5 if hi_la == lo_la else 1.0 - (la - lo_la) / (hi_la - lo_la)
+        out[v] = [round(x, 4), round(y, 4)]
+    return {"pos": out, "span_x_m": int(round(span_x)),
+            "span_y_m": int(round(span_y))}
+
+
+def travel_model(venues):
+    """{venue: {venue: {min, m}}} for every pair the store actually uses.
+
+    Built here rather than in the browser so an unknown venue is a build
+    failure with a name in it, not a silently missing warning for a reader
+    standing in the wrong hotel.
+    """
+    unknown = [v for v in venues if v not in VENUE_POINTS]
+    if unknown:
+        raise SystemExit(
+            "  the catalog now uses venue(s) with no coordinates: %s\n"
+            "  Add them to VENUE_POINTS. Until then every hop involving one "
+            "would be costed as if it were\n  next door, which is the "
+            "failure that sends somebody to the wrong end of the Strip."
+            % ", ".join(sorted(unknown)))
+
+    out = {}
+    for a in venues:
+        out[a] = {}
+        for b in venues:
+            if a == b:
+                out[a][b] = {"min": OVERHEAD_MIN, "m": 0}
+                continue
+            d = metres(VENUE_POINTS[a], VENUE_POINTS[b])
+            mins = OVERHEAD_MIN + int(round(d * DETOUR / PACE_M_PER_MIN))
+            out[a][b] = {"min": mins, "m": int(round(d))}
+    return out
 
 
 def read_store():
@@ -182,8 +279,15 @@ def build():
         "lanes": [{"id": l["id"], "name": l["name"], "blurb": l["blurb"],
                    "services": lanes[l["id"]], "count": counts[l["id"]]}
                   for l in LANES],
-        "travel": {"same": SAME_VENUE, "near": NEAR, "far": FAR,
-                   "outlier": OUTLIER},
+        "travel": {
+            "matrix": travel_model(store["venues"]),
+            "outlier": OUTLIER,
+            "overhead": OVERHEAD_MIN,
+            "detour": DETOUR,
+            "pace": PACE_M_PER_MIN,
+            "points": {v: VENUE_POINTS[v] for v in store["venues"]},
+        },
+        "map": venue_xy(store["venues"]),
         "days": days,
         "event": EVENT,
     }
@@ -195,9 +299,9 @@ def build():
     html = html.replace("__VENUES__", esc(", ".join(sorted(store["venues"]))))
     html = html.replace("__SERVICES__", str(len(store["facets"]["Services"])))
     html = html.replace("__LANETABS__", lane_tabs(config))
-    html = html.replace("__FAR__", str(FAR))
-    html = html.replace("__NEAR__", str(NEAR))
-    html = html.replace("__SAME__", str(SAME_VENUE))
+    html = html.replace("__OVERHEAD__", str(OVERHEAD_MIN))
+    html = html.replace("__PACE__", str(int(PACE_M_PER_MIN)))
+    html = html.replace("__DETOUR__", "%.2f" % DETOUR)
     html = html.replace("__OUTLIER__", esc(OUTLIER))
 
     write(os.path.join(OUTDIR, "index.html"), html)
@@ -303,6 +407,7 @@ PAGE = """<!DOCTYPE html>
    <button id="tab-browse" class="vt" role="tab" aria-selected="true">Browse</button>
    <button id="tab-plan" class="vt" role="tab" aria-selected="false">
     My plan <span id="planN" class="badge">0</span></button>
+   <button id="tab-map" class="vt" role="tab" aria-selected="false">Map</button>
   </div>
  </section>
 
@@ -316,6 +421,20 @@ PAGE = """<!DOCTYPE html>
   </div>
  </section>
 
+ <section id="map" class="mapwrap" hidden>
+  <p class="maplede">Where the sessions actually are. Circle size is how many
+   of the <b id="map-n">&nbsp;</b> sessions currently matching your filters sit
+   at each property &mdash; so narrowing to a lane shows you where to base
+   yourself. Pick a day to draw your plan's route across it.</p>
+  <div class="maprow">
+   <label>Route for
+    <select id="map-day"><option value="">&mdash; no day selected &mdash;</option></select>
+   </label>
+  </div>
+  <div id="mapsvg"></div>
+  <div id="maphops" class="hops"></div>
+ </section>
+
  <details class="about">
   <summary>How the venue warnings work, and what is a fact versus an estimate</summary>
   <p><strong>The fact.</strong> Every session in the catalog carries its room
@@ -324,20 +443,33 @@ PAGE = """<!DOCTYPE html>
    properties, the gap between them is arithmetic on AWS's own published data.
    That number is what the warning states, and you can check it against the
    official catalog using the session code on every card.</p>
-  <p><strong>The estimate.</strong> How long the hop actually takes is not
-   published. AWS's FAQ says only to &ldquo;allow for additional travel time
+  <p><strong>The estimate.</strong> How long the hop takes is not published
+   &mdash; AWS's FAQ says only to &ldquo;allow for additional travel time
    between venues&rdquo; and that shuttles &ldquo;run continuously during
-   conference hours&rdquo; &mdash; no minutes. So this page assumes
-   <strong>__SAME__ min</strong> to change rooms inside one property,
-   <strong>__NEAR__ min</strong> between properties in the northern run, and
-   <strong>__FAR__ min</strong> for anything involving __OUTLIER__, which sits
-   on its own to the south. Those are estimates from the campus layout, not
-   AWS figures, and you can change them below.</p>
+   conference hours&rdquo;. So it is derived rather than guessed: the
+   straight-line distance between the two properties, multiplied by
+   <strong>__DETOUR__</strong> because a line between two hotels is not a
+   route, divided by a walking pace of <strong>__PACE__ m/min</strong>
+   &mdash; slow on purpose, because this is casino floors and pedestrian
+   bridges, not pavement &mdash; plus <strong>__OVERHEAD__ min</strong> to
+   get out of one room and into the next.</p>
+  <p>An earlier version used three flat numbers and was wrong in the
+   direction that under-warns: it costed Wynn/Encore to Caesars Palace
+   (1,443&nbsp;m) at 30 minutes while costing Caesars Palace to MGM Grand
+   (1,565&nbsp;m) at 45. Distance is a fact; only the pace below is an
+   assumption, and it is yours to set.</p>
   <p class="tune">Adjust:
-   <label>same property <input id="t-same" type="number" min="0" max="120" value="__SAME__"> min</label>
-   <label>northern run <input id="t-near" type="number" min="0" max="120" value="__NEAR__"> min</label>
-   <label>__OUTLIER__ <input id="t-far" type="number" min="0" max="120" value="__FAR__"> min</label>
+   <label>room to room <input id="t-overhead" type="number" min="0" max="60" value="__OVERHEAD__"> min</label>
+   <label>pace
+    <select id="t-pace">
+     <option value="80">brisk, moving early</option>
+     <option value="60">steady (default)</option>
+     <option value="45">slow, peak crowds</option>
+    </select>
+   </label>
   </p>
+  <details class="matrix"><summary>Every pair, as this page costs it</summary>
+   <div id="matrix"></div></details>
   <p><strong>The lanes</strong> are service clusters, not the catalog's Role
    facet. Role is too broad to filter on &mdash; &ldquo;Solution / Systems
    Architect&rdquo; alone returns hundreds of sessions. Each lane is a set of
@@ -410,6 +542,48 @@ h1{margin:.2em 0 .25em; font-size:clamp(30px,6vw,46px); line-height:1.05; letter
 .facts strong{font-weight:600; font-size:15px}
 .facts em{font-style:normal; color:var(--faint); font-weight:400}
 
+
+/* ---- map ---- */
+.mapwrap{margin:0 0 10px}
+.maplede{margin:0 0 12px; font-size:14px; color:var(--dim); max-width:74ch}
+.maplede b{color:var(--ink)}
+.maprow{margin:0 0 12px}
+.maprow label{font-size:13.5px; color:var(--faint)}
+.maprow select{
+  font:inherit; font-size:14px; color:var(--ink); background:var(--panel);
+  border:1px solid var(--line); border-radius:10px; padding:7px 10px; margin-left:6px;
+}
+#mapsvg{background:var(--panel); border:1px solid var(--line);
+  border-radius:var(--r); padding:8px}
+svg.rimap{width:100%; height:auto; display:block}
+.rimap .vdot{fill:rgba(196,164,132,.16); stroke:var(--accent); stroke-width:1.5}
+.rimap .vnum{fill:var(--ink); font:600 13px "DM Mono",monospace}
+.rimap .vname{fill:var(--dim); font:500 12.5px "DM Sans",sans-serif}
+.rimap .hop{stroke-width:3; stroke-linecap:round}
+.rimap .hop.ok{stroke:#7fb069}
+.rimap .hop.warn{stroke:var(--warn); stroke-dasharray:7 5}
+.rimap .hop.bad{stroke:var(--bad); stroke-dasharray:3 4}
+.rimap .hoplab{font:500 11.5px "DM Sans",sans-serif;
+  paint-order:stroke; stroke:var(--panel); stroke-width:4px; stroke-linejoin:round}
+.rimap .hoplab.ok{fill:#7fb069}
+.rimap .hoplab.warn{fill:var(--warn)}
+.rimap .hoplab.bad{fill:var(--bad)}
+.rimap .scalebar{stroke:var(--faint); stroke-width:2}
+.rimap .scaletxt{fill:var(--faint); font:500 11px "DM Sans",sans-serif}
+.hops{margin:12px 0 0}
+.hoprow{display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+  padding:8px 12px; margin:0 0 7px; border-radius:var(--r);
+  border:1px solid var(--line); background:var(--panel); font-size:13.5px}
+.hoprow.ok{border-color:#2f4436}
+.hoprow.warn{border-color:#5c4626; background:#221b12; color:#f0d2a6}
+.hoprow.bad{border-color:#5e332a; background:#231613; color:#f2c3b4}
+.hopn{display:inline-flex; align-items:center; justify-content:center;
+  width:22px; height:22px; border-radius:50%; background:var(--panel2);
+  color:var(--dim); font-size:12px; font-weight:600; flex:none}
+.hopt{flex:1; min-width:0}
+.hoplink{color:var(--accent); text-decoration:none; white-space:nowrap;
+  border-bottom:1px dotted var(--accent)}
+
 /* ---- freshness ---- */
 .fresh{
   margin:0 0 18px; padding:9px 13px; border-radius:var(--r);
@@ -421,6 +595,14 @@ h1{margin:.2em 0 .25em; font-size:clamp(30px,6vw,46px); line-height:1.05; letter
 .fresh.aging{border-color:#5c4626; background:#221b12; color:#f0d2a6}
 .fresh.stale{border-color:#5e332a; background:#231613; color:#f2c3b4}
 .fresh a{color:inherit; text-decoration:underline}
+.livenote{color:var(--faint)}
+.livebtn{
+  font:inherit; font-size:13px; cursor:pointer; color:var(--ink);
+  background:var(--panel2); border:1px solid var(--accent);
+  border-radius:999px; padding:4px 12px; margin-left:2px;
+}
+.livebtn:hover{background:var(--accent); color:#1b1410}
+.livebtn[disabled]{opacity:.6; cursor:default}
 
 /* ---- lanes ---- */
 .lanes{display:grid; gap:10px; margin:0 0 22px;
@@ -555,6 +737,14 @@ a.code:hover{border-bottom-color:var(--accent)}
   width:64px; font:inherit; font-size:13px; color:var(--ink);
   background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:4px 6px;
 }
+.about .matrix summary{cursor:pointer; font-size:13.5px; color:var(--dim); padding:6px 0}
+table.mx{border-collapse:collapse; font-size:12.5px; margin:8px 0 14px; width:100%}
+table.mx th{text-align:left; font-weight:600; color:var(--faint); padding:5px 8px;
+  border-bottom:1px solid var(--line); font-size:11.5px}
+table.mx td{padding:5px 8px; border-bottom:1px solid var(--line); white-space:nowrap}
+table.mx td.self{color:var(--faint)}
+.mn{display:block; color:var(--ink); font-family:"DM Mono",monospace}
+.md{display:block; color:var(--faint); font-size:11px}
 .about .src{font-size:13px; color:var(--faint); border-top:1px solid var(--line); padding-top:12px}
 
 .footer{margin-top:34px; padding-top:16px; border-top:1px solid var(--line);
@@ -601,7 +791,10 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
                 venue: "", service: "" };
   var plan = load(PLAN_KEY, []);
   var tune = load(TUNE_KEY, null) || {
-    same: CFG.travel.same, near: CFG.travel.near, far: CFG.travel.far };
+    overhead: CFG.travel.overhead, pace: CFG.travel.pace };
+  if (tune.pace == null || tune.overhead == null) {      // an old saved shape
+    tune = { overhead: CFG.travel.overhead, pace: CFG.travel.pace };
+  }
 
   function load(key, dflt) {
     try { var v = JSON.parse(localStorage.getItem(key)); return v || dflt; }
@@ -617,6 +810,10 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
     if (text != null) n.textContent = text;
     return n;
   }
+  function km(m) {
+    return m >= 1000 ? (m / 1000).toFixed(1) + " km" : m + " m";
+  }
+
   function hhmm(min) {
     var h = Math.floor(min / 60), m = min % 60;
     return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m;
@@ -628,13 +825,20 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
   }
 
   /* ---- the venue-hop rule -------------------------------------------
-     The gap is a fact from AWS's own times. `need` is this page's
-     estimate, and the two are reported separately in the wording. */
+     The gap is a fact from AWS's own times. The distance is a fact from
+     the venues' coordinates. Only the PACE is an assumption, and it is
+     the one thing exposed as a control -- so the estimate is arithmetic
+     on two facts and one number the reader owns. */
+  function metresBetween(a, b) {
+    var row = CFG.travel.matrix[a];
+    return row && row[b] ? row[b].m : 0;
+  }
+
   function needFor(fromVenue, toVenue) {
-    if (fromVenue === toVenue) return tune.same;
-    var outlier = CFG.travel.outlier;
-    if (fromVenue === outlier || toVenue === outlier) return tune.far;
-    return tune.near;
+    var m = metresBetween(fromVenue, toVenue);
+    if (!m) return tune.overhead;
+    return tune.overhead
+         + Math.round(m * CFG.travel.detour / tune.pace);
   }
 
   /* ---- data --------------------------------------------------------- */
@@ -816,6 +1020,177 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
     }
   }
 
+
+  /* ---- the live check -------------------------------------------------
+     The snapshot is what makes this page fast and usable on conference
+     wifi; it is not what makes it true. On load the page asks the catalog
+     itself -- one request -- how many sessions it currently has, and says
+     so if that disagrees with the copy being shown.
+
+     Measured 2026-09-22 before building this: the catalog reflects any
+     Origin back in Access-Control-Allow-Origin, its preflight names
+     rfApiProfileId and rfWidgetId in Access-Control-Allow-Headers, and a
+     real browser on another origin fetched all 1,582 sessions. So this
+     needs no proxy and no server.
+
+     Every failure path is silent and falls back to the snapshot, because
+     the snapshot is already correct and a red banner about a CORS error
+     helps nobody standing in a corridor. The only thing a failure costs
+     is the live confirmation, and the age line still tells the truth.
+
+     One request, not thirty-two: counting is cheap, and pulling the whole
+     catalog on every page view would be rude to AWS and slow for the
+     reader. The full pull happens only if they ask for it. */
+  var live = { state: "idle", total: null, checkedAt: null };
+
+  function liveHeaders() {
+    var api = DATA.api;
+    if (!api || !api.headers) return null;
+    var h = { "Content-Type":
+                "application/x-www-form-urlencoded; charset=UTF-8" };
+    for (var k in api.headers) if (api.headers.hasOwnProperty(k))
+      h[k] = api.headers[k];
+    return h;
+  }
+
+  function liveFetch(extra) {
+    var h = liveHeaders();
+    if (!h) return Promise.reject(new Error("no api details in the store"));
+    var body = new URLSearchParams({
+      type: "session", browserTimezone: "America/Chicago",
+      catalogDisplay: "list" });
+    for (var k in (extra || {})) body.set(k, extra[k]);
+    return fetch(DATA.api.url,
+                 { method: "POST", headers: h, body: body.toString() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      });
+  }
+
+  function checkLive() {
+    if (!DATA.api) return;
+    live.state = "checking";
+    liveFetch().then(function (d) {
+      var total = parseInt(d.totalSearchItems, 10);
+      if (isNaN(total)) throw new Error("no total in the response");
+      live.total = total;
+      live.checkedAt = Date.now();
+      live.state = (total === DATA.sessions.length) ? "same" : "drift";
+      renderFreshness();
+    }).catch(function () {
+      /* Silent on purpose. The snapshot stands, and the age line already
+         tells the reader how old it is. */
+      live.state = "unreachable";
+      renderFreshness();
+    });
+  }
+
+  function pullLive() {
+    var btn = $("#live-pull");
+    if (btn) { btn.disabled = true; btn.textContent = "Loading…"; }
+    var all = [], PAGE = 50;
+
+    function items(d) {
+      if (d.items && d.items.length) return d.items;
+      var sl = d.sectionList || [];
+      return sl.length ? (sl[0].items || []) : [];
+    }
+    var expected = 0;
+
+    /* Paced, because the catalog throttles a burst. Without the pause this
+       stopped dead after two pages and handed back 100 sessions -- and the
+       page then displayed those 100 as "live data", having thrown away a
+       complete snapshot for a partial pull. That is the same failure the
+       fetcher's shrink guard exists to prevent, so it gets the same
+       answer: reconcile against the catalog's own total, and if the pull
+       is short, keep the snapshot and say the pull failed. */
+    function page(from) {
+      return liveFetch(from ? { from: String(from) } : null)
+        .then(function (d) {
+          var got = items(d);
+          all = all.concat(got);
+          expected = parseInt(d.totalSearchItems, 10) || expected;
+          if (got.length && all.length < expected)
+            return new Promise(function (go) { setTimeout(go, 250); })
+              .then(function () { return page(from + PAGE); });
+          return all;
+        });
+    }
+    page(0).then(function (raw) {
+      if (!expected || raw.length < expected) {
+        throw new Error("short pull: " + raw.length + " of " + expected);
+      }
+      DATA = reslim(raw, DATA);
+      live.state = "live";
+      live.checkedAt = Date.now();
+      buildFilters();
+      renderFreshness();
+      render();
+      if (!$("#plan").hidden) renderPlan();
+      if (!$("#map").hidden) { fillMapDays(); renderMap(); }
+    }).catch(function () {
+      /* The snapshot is untouched and still on screen. */
+      live.state = "pullfailed";
+      renderFreshness();
+    });
+  }
+
+  /* The browser's own copy of the slimming the fetcher does, so live data
+     and stored data are exactly the same shape downstream. Facet tables are
+     rebuilt from scratch rather than reusing the snapshot's, because an
+     index into the wrong table renders as the wrong service name -- which
+     would look like data rather than like a bug. */
+  function reslim(raw, prev) {
+    var FACETS = ["Type", "Level", "Role", "Services", "Topic",
+                  "Area of Interest", "Industry"];
+    var KEY = { "Type": "ty", "Level": "lv", "Role": "ro", "Services": "sv",
+                "Topic": "tp", "Area of Interest": "ai", "Industry": "in" };
+    var SINGLE = { "Type": 1, "Level": 1 };
+    var tables = {}, venues = [], rooms = [];
+    FACETS.forEach(function (f) { tables[f] = []; });
+
+    function intern(list, v) {
+      var i = list.indexOf(v);
+      if (i === -1) { list.push(v); i = list.length - 1; }
+      return i;
+    }
+    var out = raw.map(function (s) {
+      var f = {};
+      (s.attributevalues || []).forEach(function (av) {
+        if (FACETS.indexOf(av.attribute) === -1 || !av.value) return;
+        (f[av.attribute] = f[av.attribute] || []);
+        if (f[av.attribute].indexOf(av.value) === -1)
+          f[av.attribute].push(av.value);
+      });
+      var when = [];
+      (s.times || []).forEach(function (t) {
+        if (t.startTimeMin == null || t.endTimeMin == null) return;
+        var b = t.startTimeMin | 0, e = t.endTimeMin | 0;
+        var room = t.room || "";
+        when.push({ d: t.date || "", b: b, e: e <= b ? null : e,
+                    v: intern(venues, room.split("|")[0].trim()),
+                    r: intern(rooms, room),
+                    cap: /^\d+$/.test(String(t.capacity)) ? +t.capacity : null });
+      });
+      var rec = { c: s.code || "", t: (s.title || "").trim(),
+                  a: (s.abstract || "").replace(/\s+/g, " ").trim(),
+                  len: s.length ? (s.length | 0) : null, when: when };
+      FACETS.forEach(function (name) {
+        var idx = (f[name] || []).map(function (v) {
+          return intern(tables[name], v); });
+        rec[KEY[name]] = SINGLE[name] ? (idx.length ? idx[0] : null) : idx;
+      });
+      return rec;
+    });
+
+    var facets = {};
+    FACETS.forEach(function (f) { facets[f] = tables[f]; });
+    return { sessions: out, facets: facets, venues: venues, rooms: rooms,
+             captured: prev.captured, captured_utc: prev.captured_utc,
+             api: prev.api, live: true };
+  }
+
   /* ---- how old is this, really ---------------------------------------
      Computed here rather than written in at build time, because the
      honest number is the one the reader is looking at now. A page built
@@ -835,6 +1210,19 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
     var age = daysSince(DATA.captured_utc || DATA.captured);
     var when = DATA.captured || "an unrecorded date";
     box.textContent = "";
+
+    /* Pulled live this session: the snapshot's age is no longer the
+       interesting number, so it stops being the headline. */
+    if (live.state === "live") {
+      box.className = "fresh good";
+      box.appendChild(el("b", null, "Showing live data"));
+      box.appendChild(el("span", null,
+        ", pulled from the AWS catalog a moment ago — "
+        + DATA.sessions.length.toLocaleString() + " sessions. Seat "
+        + "reservations still live in the "));
+      addCatalogLink(box);
+      return;
+    }
 
     if (age === null) {
       box.className = "fresh stale";
@@ -873,6 +1261,40 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
         + "in the "));
       addCatalogLink(box);
     }
+    appendLive(box);
+  }
+
+  /* What the one live request found, appended to whatever the age line
+     already said. Drift is the case worth shouting about: it means the
+     catalog has moved under this copy, and the reader can pull it now. */
+  function appendLive(box) {
+    if (live.state === "drift") {
+      box.className = "fresh aging";
+      box.appendChild(el("span", null,
+        " AWS is currently listing " + live.total.toLocaleString()
+        + " sessions against this copy's "
+        + DATA.sessions.length.toLocaleString() + ". "));
+      var btn = el("button", "livebtn", "Load the live catalog");
+      btn.id = "live-pull";
+      btn.addEventListener("click", pullLive);
+      box.appendChild(btn);
+    } else if (live.state === "same") {
+      box.appendChild(el("span", "livenote",
+        " Confirmed against AWS just now — same session count."));
+    } else if (live.state === "pullfailed") {
+      box.className = "fresh aging";
+      box.appendChild(el("span", null,
+        " The live catalog did not come back complete, so this is still "
+        + "the stored copy rather than a half-loaded one. "));
+      var again = el("button", "livebtn", "Try again");
+      again.id = "live-pull";
+      again.addEventListener("click", pullLive);
+      box.appendChild(again);
+    } else if (live.state === "unreachable") {
+      box.appendChild(el("span", "livenote",
+        " (Could not reach AWS to confirm just now; showing the stored "
+        + "copy.)"));
+    }
   }
 
   function addCatalogLink(box) {
@@ -882,6 +1304,238 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
     a.rel = "noopener";
     box.appendChild(a);
     box.appendChild(document.createTextNode("."));
+  }
+
+  /* The whole cost table, visible. A number a reader cannot inspect is a
+     number they have to take on faith, and this one changes their day. */
+  function renderMatrix() {
+    var host = $("#matrix");
+    if (!host) return;
+    var names = Object.keys(CFG.travel.matrix).sort();
+    var t = el("table", "mx");
+    var head = el("tr");
+    head.appendChild(el("th", null, ""));
+    names.forEach(function (n) { head.appendChild(el("th", null, n)); });
+    t.appendChild(head);
+    names.forEach(function (a) {
+      var tr = el("tr");
+      tr.appendChild(el("th", null, a));
+      names.forEach(function (b) {
+        var td = el("td");
+        if (a === b) {
+          td.textContent = tune.overhead + " min";
+          td.className = "self";
+        } else {
+          var m = CFG.travel.matrix[a][b].m;
+          td.appendChild(el("span", "mn", needFor(a, b) + " min"));
+          td.appendChild(el("span", "md", km(m)));
+        }
+        tr.appendChild(td);
+      });
+      t.appendChild(tr);
+    });
+    host.textContent = "";
+    host.appendChild(t);
+  }
+
+
+  /* ---- the map -------------------------------------------------------
+     Drawn from the venues' real coordinates, to scale, with a bar showing
+     what the scale is. It is rotated a quarter turn so the Strip runs
+     left to right instead of producing a column 3.4 times taller than it
+     is wide -- north is marked, because a map that silently reorients the
+     world is worse than no map.
+
+     No Google Maps embed, deliberately. A traffic layer here would be
+     showing CAR congestion on Las Vegas Boulevard, which is not how
+     anyone moves between these venues: it is walking, the conference
+     shuttle and the monorail. It would look authoritative and mean
+     nothing. Each hop instead links out to Google Maps for a real routed
+     walking time, which costs no API key and opens the app already on
+     the reader's phone. */
+  var MAP_W = 1000;
+
+  function mapH() {
+    return Math.round(MAP_W * CFG.map.span_x_m / CFG.map.span_y_m);
+  }
+
+  /* geo (x=east/west, y=north/south) -> screen, quarter-turned */
+  function project(v) {
+    var p = CFG.map.pos[v];
+    return { x: p[1] * MAP_W, y: p[0] * mapH() };
+  }
+
+  function svgEl(tag, attrs) {
+    var n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (var k in attrs) if (attrs.hasOwnProperty(k))
+      n.setAttribute(k, attrs[k]);
+    return n;
+  }
+
+  function mapsLink(a, b) {
+    var pa = CFG.travel.points[a], pb = CFG.travel.points[b];
+    return "https://www.google.com/maps/dir/?api=1"
+         + "&origin=" + pa[0] + "," + pa[1]
+         + "&destination=" + pb[0] + "," + pb[1]
+         + "&travelmode=walking";
+  }
+
+  /* Padding is derived, not guessed. The biggest circle can reach r=39 and
+     its label sits 18px below that, so a venue sitting on the edge of the
+     plot -- Wynn/Encore does, it is the northern end -- needs room for both
+     or it gets clipped off the corner. It was. */
+  var R_MAX = 39, LABEL_DROP = 22, SCALE_BAND = 34;
+
+  function renderMap() {
+    var host = $("#mapsvg");
+    if (!host) return;
+    var H = mapH();
+    var padX = 84, padT = 34 + R_MAX, padB = R_MAX + LABEL_DROP + SCALE_BAND;
+    var names = Object.keys(CFG.map.pos);
+
+    // How many of the CURRENTLY FILTERED sessions sit at each venue.
+    // This is the heat: narrow to a lane and the map shows where that
+    // lane actually lives.
+    var heat = {}, total = 0;
+    names.forEach(function (n) { heat[n] = 0; });
+    filtered().forEach(function (s) {
+      var seen = {};
+      s.when.forEach(function (w) {
+        var v = venueName(w);
+        if (state.day && w.d !== state.day) return;
+        if (seen[v]) return;
+        seen[v] = 1; heat[v] += 1; total += 1;
+      });
+    });
+    var peak = Math.max.apply(null, names.map(function (n) { return heat[n]; }));
+    var nEl = $("#map-n");
+    if (nEl) nEl.textContent = total.toLocaleString();
+
+    var svg = svgEl("svg", {
+      viewBox: "0 0 " + (MAP_W + padX * 2) + " " + (H + padT + padB),
+      class: "rimap", role: "img",
+      "aria-label": "The five re:Invent venues positioned to scale, "
+        + "sized by how many matching sessions each holds."
+    });
+    var g = svgEl("g", { transform: "translate(" + padX + "," + padT + ")" });
+    svg.appendChild(g);
+
+    // the route for the chosen day, drawn under the venues
+    var day = $("#map-day") ? $("#map-day").value : "";
+    var hops = day ? routeFor(day) : [];
+    hops.forEach(function (h, i) {
+      var a = project(h.from), b = project(h.to);
+      var line = svgEl("line", {
+        x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+        class: "hop " + h.verdict
+      });
+      g.appendChild(line);
+      var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      var lab = svgEl("text", { x: mx, y: my - 8, class: "hoplab " + h.verdict,
+                                "text-anchor": "middle" });
+      lab.textContent = (i + 1) + ". " + h.gapText;
+      g.appendChild(lab);
+    });
+
+    names.forEach(function (n) {
+      var p = project(n);
+      var frac = peak ? heat[n] / peak : 0;
+      var r = 9 + Math.round(Math.sqrt(frac) * 30);
+      var grp = svgEl("g", { class: "venue" });
+      grp.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: r,
+                                        class: "vdot" }));
+      var t1 = svgEl("text", { x: p.x, y: p.y + 4, class: "vnum",
+                               "text-anchor": "middle" });
+      t1.textContent = heat[n];
+      grp.appendChild(t1);
+      var t2 = svgEl("text", { x: p.x, y: p.y + r + 18, class: "vname",
+                               "text-anchor": "middle" });
+      t2.textContent = n;
+      grp.appendChild(t2);
+      g.appendChild(grp);
+    });
+
+    // scale bar: 500 m, so the distances are readable rather than implied
+    var perM = MAP_W / CFG.map.span_y_m;
+    var barLen = Math.round(500 * perM);
+    var by = H + R_MAX + LABEL_DROP + 14;
+    g.appendChild(svgEl("line", { x1: 0, y1: by, x2: barLen, y2: by,
+                                  class: "scalebar" }));
+    var st = svgEl("text", { x: 0, y: by - 6, class: "scaletxt" });
+    st.textContent = "500 m";
+    g.appendChild(st);
+
+    var nt = svgEl("text", { x: 0, y: -(R_MAX + 12), class: "scaletxt" });
+    nt.textContent = "← north (Wynn/Encore end)    south (MGM Grand) →";
+    g.appendChild(nt);
+
+    host.textContent = "";
+    host.appendChild(svg);
+    renderHops(hops);
+  }
+
+  /* The day's hops, reusing exactly the plan's own feasibility rule so the
+     map and the plan can never disagree with each other. */
+  function routeFor(day) {
+    var rows = planRows().filter(function (r) {
+      return r.d === day && r.w;
+    });
+    var out = [];
+    for (var i = 1; i < rows.length; i++) {
+      var a = rows[i - 1], b = rows[i];
+      var from = venueName(a.w), to = venueName(b.w);
+      if (a.w.e == null) {
+        out.push({ from: from, to: to, verdict: "warn", a: a, b: b,
+                   gapText: "end time not published" });
+        continue;
+      }
+      var gap = b.w.b - a.w.e, need = needFor(from, to);
+      var verdict = gap < 0 ? "bad" : gap < need ? "warn" : "ok";
+      out.push({ from: from, to: to, verdict: verdict, a: a, b: b,
+                 gap: gap, need: need,
+                 gapText: gap < 0 ? "overlap" : gap + " min / needs " + need });
+    }
+    return out;
+  }
+
+  function renderHops(hops) {
+    var host = $("#maphops");
+    if (!host) return;
+    host.textContent = "";
+    if (!hops.length) return;
+    hops.forEach(function (h, i) {
+      var row = el("div", "hoprow " + h.verdict);
+      row.appendChild(el("span", "hopn", String(i + 1)));
+      var txt = el("span", "hopt");
+      txt.textContent = h.from + " → " + h.to
+        + (h.from === h.to ? " (same property)"
+           : "  ·  " + km(metresBetween(h.from, h.to)) + "  ·  "
+             + h.gapText);
+      row.appendChild(txt);
+      if (h.from !== h.to) {
+        var a = el("a", "hoplink", "walking route ↗");
+        a.href = mapsLink(h.from, h.to);
+        a.target = "_blank"; a.rel = "noopener";
+        a.title = "Open this hop in Google Maps for a live routed time";
+        row.appendChild(a);
+      }
+      host.appendChild(row);
+    });
+  }
+
+  function fillMapDays() {
+    var sel = $("#map-day");
+    if (!sel) return;
+    var have = {};
+    planRows().forEach(function (r) { if (r.w) have[r.d] = 1; });
+    var keep = sel.value;
+    sel.textContent = "";
+    sel.appendChild(new Option("— no day selected —", ""));
+    CFG.days.forEach(function (d) {
+      if (have[d]) sel.appendChild(new Option(dayLabel(d), d));
+    });
+    sel.value = have[keep] ? keep : "";
+    sel.onchange = renderMap;
   }
 
   function laneName(id) {
@@ -897,6 +1551,7 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
     if (i === -1) plan.push(code); else plan.splice(i, 1);
     save(PLAN_KEY, plan);
     syncStars(); renderPlan();
+    if (!$("#map").hidden) { fillMapDays(); renderMap(); }
   }
   function syncStars() {
     $("#planN").textContent = plan.length;
@@ -1020,15 +1675,16 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
       row.appendChild(el("span", "ic", "●"));
       msg = gap + " min between them" +
         (from === to ? " inside " + from
-                     : ", and they are at different properties — " +
-                       from + " to " + to) +
+                     : ", and they are " + km(metresBetween(from, to))
+                       + " apart — " + from + " to " + to) +
         ". Allow about " + need + ". You would be late.";
     } else {
       row.className = "gap ok";
       row.appendChild(el("span", "ic", "○"));
       msg = gap + " min" +
         (from === to ? " to change rooms inside " + from
-                     : " to get from " + from + " to " + to) + ".";
+                     : " to cover the " + km(metresBetween(from, to))
+                       + " from " + from + " to " + to) + ".";
     }
     row.appendChild(el("span", null, msg));
     return row;
@@ -1116,6 +1772,7 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
   function render() {
     syncLaneTabs(); renderChips(); renderBrowse(); syncStars();
     $("#clear").hidden = !state.q;
+    if (!$("#map").hidden) renderMap();
   }
 
   /* ---- wiring -------------------------------------------------------- */
@@ -1143,6 +1800,7 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
 
     $("#tab-browse").addEventListener("click", function () { view("browse"); });
     $("#tab-plan").addEventListener("click", function () { view("plan"); });
+    $("#tab-map").addEventListener("click", function () { view("map"); });
 
     $("#share").addEventListener("click", function () {
       var url = location.origin + location.pathname +
@@ -1160,30 +1818,37 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
       plan = []; save(PLAN_KEY, plan); syncStars(); renderPlan();
     });
 
-    [["#t-same", "same"], ["#t-near", "near"], ["#t-far", "far"]]
-      .forEach(function (p) {
-        var input = $(p[0]);
-        input.value = tune[p[1]];
-        input.addEventListener("change", function () {
-          var v = parseInt(input.value, 10);
-          if (isNaN(v) || v < 0) { input.value = tune[p[1]]; return; }
-          tune[p[1]] = v; save(TUNE_KEY, tune); renderPlan();
-        });
-      });
+    var over = $("#t-overhead"), pace = $("#t-pace");
+    over.value = tune.overhead;
+    pace.value = String(tune.pace);
+    over.addEventListener("change", function () {
+      var v = parseInt(over.value, 10);
+      if (isNaN(v) || v < 0) { over.value = tune.overhead; return; }
+      tune.overhead = v; save(TUNE_KEY, tune); renderPlan(); renderMatrix();
+    });
+    pace.addEventListener("change", function () {
+      tune.pace = parseInt(pace.value, 10) || CFG.travel.pace;
+      save(TUNE_KEY, tune); renderPlan(); renderMatrix();
+    });
   }
 
   function view(which) {
-    var browsing = which === "browse";
-    $("#browse").hidden = !browsing;
-    $("#plan").hidden = browsing;
-    /* Search, filters and lanes only act on Browse. Left visible in the
-       plan they are dead controls that push the plan itself below the
-       fold -- on a phone, past it entirely. */
-    $(".controls").hidden = !browsing;
-    document.querySelector(".lanes").hidden = !browsing;
-    $("#tab-browse").setAttribute("aria-selected", browsing ? "true" : "false");
-    $("#tab-plan").setAttribute("aria-selected", browsing ? "false" : "true");
-    if (!browsing) renderPlan();
+    $("#browse").hidden = which !== "browse";
+    $("#plan").hidden = which !== "plan";
+    $("#map").hidden = which !== "map";
+    /* Search, filters and lanes drive Browse AND the map's heat, so they
+       stay up for both. In the plan they are dead controls that push the
+       plan below the fold -- on a phone, past it entirely. */
+    var showControls = which !== "plan";
+    $(".controls").hidden = !showControls;
+    document.querySelector(".lanes").hidden = !showControls;
+    [["#tab-browse", "browse"], ["#tab-plan", "plan"], ["#tab-map", "map"]]
+      .forEach(function (p) {
+        $(p[0]).setAttribute("aria-selected",
+                             which === p[1] ? "true" : "false");
+      });
+    if (which === "plan") renderPlan();
+    if (which === "map") { fillMapDays(); renderMap(); }
   }
 
   function adoptSharedPlan() {
@@ -1214,7 +1879,9 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
       });
       var all = document.querySelector('[data-count="all"]');
       if (all) all.textContent = DATA.sessions.length.toLocaleString();
-      buildFilters(); wire(); renderFreshness(); render();
+      buildFilters(); wire(); renderFreshness(); renderMatrix();
+      checkLive();
+      render();
       if (shared) view("plan");
     })
     .catch(function (err) {

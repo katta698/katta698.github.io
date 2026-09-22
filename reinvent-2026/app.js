@@ -11,7 +11,10 @@
                 venue: "", service: "" };
   var plan = load(PLAN_KEY, []);
   var tune = load(TUNE_KEY, null) || {
-    same: CFG.travel.same, near: CFG.travel.near, far: CFG.travel.far };
+    overhead: CFG.travel.overhead, pace: CFG.travel.pace };
+  if (tune.pace == null || tune.overhead == null) {      // an old saved shape
+    tune = { overhead: CFG.travel.overhead, pace: CFG.travel.pace };
+  }
 
   function load(key, dflt) {
     try { var v = JSON.parse(localStorage.getItem(key)); return v || dflt; }
@@ -27,6 +30,10 @@
     if (text != null) n.textContent = text;
     return n;
   }
+  function km(m) {
+    return m >= 1000 ? (m / 1000).toFixed(1) + " km" : m + " m";
+  }
+
   function hhmm(min) {
     var h = Math.floor(min / 60), m = min % 60;
     return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m;
@@ -38,13 +45,20 @@
   }
 
   /* ---- the venue-hop rule -------------------------------------------
-     The gap is a fact from AWS's own times. `need` is this page's
-     estimate, and the two are reported separately in the wording. */
+     The gap is a fact from AWS's own times. The distance is a fact from
+     the venues' coordinates. Only the PACE is an assumption, and it is
+     the one thing exposed as a control -- so the estimate is arithmetic
+     on two facts and one number the reader owns. */
+  function metresBetween(a, b) {
+    var row = CFG.travel.matrix[a];
+    return row && row[b] ? row[b].m : 0;
+  }
+
   function needFor(fromVenue, toVenue) {
-    if (fromVenue === toVenue) return tune.same;
-    var outlier = CFG.travel.outlier;
-    if (fromVenue === outlier || toVenue === outlier) return tune.far;
-    return tune.near;
+    var m = metresBetween(fromVenue, toVenue);
+    if (!m) return tune.overhead;
+    return tune.overhead
+         + Math.round(m * CFG.travel.detour / tune.pace);
   }
 
   /* ---- data --------------------------------------------------------- */
@@ -226,6 +240,177 @@
     }
   }
 
+
+  /* ---- the live check -------------------------------------------------
+     The snapshot is what makes this page fast and usable on conference
+     wifi; it is not what makes it true. On load the page asks the catalog
+     itself -- one request -- how many sessions it currently has, and says
+     so if that disagrees with the copy being shown.
+
+     Measured 2026-09-22 before building this: the catalog reflects any
+     Origin back in Access-Control-Allow-Origin, its preflight names
+     rfApiProfileId and rfWidgetId in Access-Control-Allow-Headers, and a
+     real browser on another origin fetched all 1,582 sessions. So this
+     needs no proxy and no server.
+
+     Every failure path is silent and falls back to the snapshot, because
+     the snapshot is already correct and a red banner about a CORS error
+     helps nobody standing in a corridor. The only thing a failure costs
+     is the live confirmation, and the age line still tells the truth.
+
+     One request, not thirty-two: counting is cheap, and pulling the whole
+     catalog on every page view would be rude to AWS and slow for the
+     reader. The full pull happens only if they ask for it. */
+  var live = { state: "idle", total: null, checkedAt: null };
+
+  function liveHeaders() {
+    var api = DATA.api;
+    if (!api || !api.headers) return null;
+    var h = { "Content-Type":
+                "application/x-www-form-urlencoded; charset=UTF-8" };
+    for (var k in api.headers) if (api.headers.hasOwnProperty(k))
+      h[k] = api.headers[k];
+    return h;
+  }
+
+  function liveFetch(extra) {
+    var h = liveHeaders();
+    if (!h) return Promise.reject(new Error("no api details in the store"));
+    var body = new URLSearchParams({
+      type: "session", browserTimezone: "America/Chicago",
+      catalogDisplay: "list" });
+    for (var k in (extra || {})) body.set(k, extra[k]);
+    return fetch(DATA.api.url,
+                 { method: "POST", headers: h, body: body.toString() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      });
+  }
+
+  function checkLive() {
+    if (!DATA.api) return;
+    live.state = "checking";
+    liveFetch().then(function (d) {
+      var total = parseInt(d.totalSearchItems, 10);
+      if (isNaN(total)) throw new Error("no total in the response");
+      live.total = total;
+      live.checkedAt = Date.now();
+      live.state = (total === DATA.sessions.length) ? "same" : "drift";
+      renderFreshness();
+    }).catch(function () {
+      /* Silent on purpose. The snapshot stands, and the age line already
+         tells the reader how old it is. */
+      live.state = "unreachable";
+      renderFreshness();
+    });
+  }
+
+  function pullLive() {
+    var btn = $("#live-pull");
+    if (btn) { btn.disabled = true; btn.textContent = "Loading…"; }
+    var all = [], PAGE = 50;
+
+    function items(d) {
+      if (d.items && d.items.length) return d.items;
+      var sl = d.sectionList || [];
+      return sl.length ? (sl[0].items || []) : [];
+    }
+    var expected = 0;
+
+    /* Paced, because the catalog throttles a burst. Without the pause this
+       stopped dead after two pages and handed back 100 sessions -- and the
+       page then displayed those 100 as "live data", having thrown away a
+       complete snapshot for a partial pull. That is the same failure the
+       fetcher's shrink guard exists to prevent, so it gets the same
+       answer: reconcile against the catalog's own total, and if the pull
+       is short, keep the snapshot and say the pull failed. */
+    function page(from) {
+      return liveFetch(from ? { from: String(from) } : null)
+        .then(function (d) {
+          var got = items(d);
+          all = all.concat(got);
+          expected = parseInt(d.totalSearchItems, 10) || expected;
+          if (got.length && all.length < expected)
+            return new Promise(function (go) { setTimeout(go, 250); })
+              .then(function () { return page(from + PAGE); });
+          return all;
+        });
+    }
+    page(0).then(function (raw) {
+      if (!expected || raw.length < expected) {
+        throw new Error("short pull: " + raw.length + " of " + expected);
+      }
+      DATA = reslim(raw, DATA);
+      live.state = "live";
+      live.checkedAt = Date.now();
+      buildFilters();
+      renderFreshness();
+      render();
+      if (!$("#plan").hidden) renderPlan();
+      if (!$("#map").hidden) { fillMapDays(); renderMap(); }
+    }).catch(function () {
+      /* The snapshot is untouched and still on screen. */
+      live.state = "pullfailed";
+      renderFreshness();
+    });
+  }
+
+  /* The browser's own copy of the slimming the fetcher does, so live data
+     and stored data are exactly the same shape downstream. Facet tables are
+     rebuilt from scratch rather than reusing the snapshot's, because an
+     index into the wrong table renders as the wrong service name -- which
+     would look like data rather than like a bug. */
+  function reslim(raw, prev) {
+    var FACETS = ["Type", "Level", "Role", "Services", "Topic",
+                  "Area of Interest", "Industry"];
+    var KEY = { "Type": "ty", "Level": "lv", "Role": "ro", "Services": "sv",
+                "Topic": "tp", "Area of Interest": "ai", "Industry": "in" };
+    var SINGLE = { "Type": 1, "Level": 1 };
+    var tables = {}, venues = [], rooms = [];
+    FACETS.forEach(function (f) { tables[f] = []; });
+
+    function intern(list, v) {
+      var i = list.indexOf(v);
+      if (i === -1) { list.push(v); i = list.length - 1; }
+      return i;
+    }
+    var out = raw.map(function (s) {
+      var f = {};
+      (s.attributevalues || []).forEach(function (av) {
+        if (FACETS.indexOf(av.attribute) === -1 || !av.value) return;
+        (f[av.attribute] = f[av.attribute] || []);
+        if (f[av.attribute].indexOf(av.value) === -1)
+          f[av.attribute].push(av.value);
+      });
+      var when = [];
+      (s.times || []).forEach(function (t) {
+        if (t.startTimeMin == null || t.endTimeMin == null) return;
+        var b = t.startTimeMin | 0, e = t.endTimeMin | 0;
+        var room = t.room || "";
+        when.push({ d: t.date || "", b: b, e: e <= b ? null : e,
+                    v: intern(venues, room.split("|")[0].trim()),
+                    r: intern(rooms, room),
+                    cap: /^\d+$/.test(String(t.capacity)) ? +t.capacity : null });
+      });
+      var rec = { c: s.code || "", t: (s.title || "").trim(),
+                  a: (s.abstract || "").replace(/\s+/g, " ").trim(),
+                  len: s.length ? (s.length | 0) : null, when: when };
+      FACETS.forEach(function (name) {
+        var idx = (f[name] || []).map(function (v) {
+          return intern(tables[name], v); });
+        rec[KEY[name]] = SINGLE[name] ? (idx.length ? idx[0] : null) : idx;
+      });
+      return rec;
+    });
+
+    var facets = {};
+    FACETS.forEach(function (f) { facets[f] = tables[f]; });
+    return { sessions: out, facets: facets, venues: venues, rooms: rooms,
+             captured: prev.captured, captured_utc: prev.captured_utc,
+             api: prev.api, live: true };
+  }
+
   /* ---- how old is this, really ---------------------------------------
      Computed here rather than written in at build time, because the
      honest number is the one the reader is looking at now. A page built
@@ -245,6 +430,19 @@
     var age = daysSince(DATA.captured_utc || DATA.captured);
     var when = DATA.captured || "an unrecorded date";
     box.textContent = "";
+
+    /* Pulled live this session: the snapshot's age is no longer the
+       interesting number, so it stops being the headline. */
+    if (live.state === "live") {
+      box.className = "fresh good";
+      box.appendChild(el("b", null, "Showing live data"));
+      box.appendChild(el("span", null,
+        ", pulled from the AWS catalog a moment ago — "
+        + DATA.sessions.length.toLocaleString() + " sessions. Seat "
+        + "reservations still live in the "));
+      addCatalogLink(box);
+      return;
+    }
 
     if (age === null) {
       box.className = "fresh stale";
@@ -283,6 +481,40 @@
         + "in the "));
       addCatalogLink(box);
     }
+    appendLive(box);
+  }
+
+  /* What the one live request found, appended to whatever the age line
+     already said. Drift is the case worth shouting about: it means the
+     catalog has moved under this copy, and the reader can pull it now. */
+  function appendLive(box) {
+    if (live.state === "drift") {
+      box.className = "fresh aging";
+      box.appendChild(el("span", null,
+        " AWS is currently listing " + live.total.toLocaleString()
+        + " sessions against this copy's "
+        + DATA.sessions.length.toLocaleString() + ". "));
+      var btn = el("button", "livebtn", "Load the live catalog");
+      btn.id = "live-pull";
+      btn.addEventListener("click", pullLive);
+      box.appendChild(btn);
+    } else if (live.state === "same") {
+      box.appendChild(el("span", "livenote",
+        " Confirmed against AWS just now — same session count."));
+    } else if (live.state === "pullfailed") {
+      box.className = "fresh aging";
+      box.appendChild(el("span", null,
+        " The live catalog did not come back complete, so this is still "
+        + "the stored copy rather than a half-loaded one. "));
+      var again = el("button", "livebtn", "Try again");
+      again.id = "live-pull";
+      again.addEventListener("click", pullLive);
+      box.appendChild(again);
+    } else if (live.state === "unreachable") {
+      box.appendChild(el("span", "livenote",
+        " (Could not reach AWS to confirm just now; showing the stored "
+        + "copy.)"));
+    }
   }
 
   function addCatalogLink(box) {
@@ -292,6 +524,238 @@
     a.rel = "noopener";
     box.appendChild(a);
     box.appendChild(document.createTextNode("."));
+  }
+
+  /* The whole cost table, visible. A number a reader cannot inspect is a
+     number they have to take on faith, and this one changes their day. */
+  function renderMatrix() {
+    var host = $("#matrix");
+    if (!host) return;
+    var names = Object.keys(CFG.travel.matrix).sort();
+    var t = el("table", "mx");
+    var head = el("tr");
+    head.appendChild(el("th", null, ""));
+    names.forEach(function (n) { head.appendChild(el("th", null, n)); });
+    t.appendChild(head);
+    names.forEach(function (a) {
+      var tr = el("tr");
+      tr.appendChild(el("th", null, a));
+      names.forEach(function (b) {
+        var td = el("td");
+        if (a === b) {
+          td.textContent = tune.overhead + " min";
+          td.className = "self";
+        } else {
+          var m = CFG.travel.matrix[a][b].m;
+          td.appendChild(el("span", "mn", needFor(a, b) + " min"));
+          td.appendChild(el("span", "md", km(m)));
+        }
+        tr.appendChild(td);
+      });
+      t.appendChild(tr);
+    });
+    host.textContent = "";
+    host.appendChild(t);
+  }
+
+
+  /* ---- the map -------------------------------------------------------
+     Drawn from the venues' real coordinates, to scale, with a bar showing
+     what the scale is. It is rotated a quarter turn so the Strip runs
+     left to right instead of producing a column 3.4 times taller than it
+     is wide -- north is marked, because a map that silently reorients the
+     world is worse than no map.
+
+     No Google Maps embed, deliberately. A traffic layer here would be
+     showing CAR congestion on Las Vegas Boulevard, which is not how
+     anyone moves between these venues: it is walking, the conference
+     shuttle and the monorail. It would look authoritative and mean
+     nothing. Each hop instead links out to Google Maps for a real routed
+     walking time, which costs no API key and opens the app already on
+     the reader's phone. */
+  var MAP_W = 1000;
+
+  function mapH() {
+    return Math.round(MAP_W * CFG.map.span_x_m / CFG.map.span_y_m);
+  }
+
+  /* geo (x=east/west, y=north/south) -> screen, quarter-turned */
+  function project(v) {
+    var p = CFG.map.pos[v];
+    return { x: p[1] * MAP_W, y: p[0] * mapH() };
+  }
+
+  function svgEl(tag, attrs) {
+    var n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (var k in attrs) if (attrs.hasOwnProperty(k))
+      n.setAttribute(k, attrs[k]);
+    return n;
+  }
+
+  function mapsLink(a, b) {
+    var pa = CFG.travel.points[a], pb = CFG.travel.points[b];
+    return "https://www.google.com/maps/dir/?api=1"
+         + "&origin=" + pa[0] + "," + pa[1]
+         + "&destination=" + pb[0] + "," + pb[1]
+         + "&travelmode=walking";
+  }
+
+  /* Padding is derived, not guessed. The biggest circle can reach r=39 and
+     its label sits 18px below that, so a venue sitting on the edge of the
+     plot -- Wynn/Encore does, it is the northern end -- needs room for both
+     or it gets clipped off the corner. It was. */
+  var R_MAX = 39, LABEL_DROP = 22, SCALE_BAND = 34;
+
+  function renderMap() {
+    var host = $("#mapsvg");
+    if (!host) return;
+    var H = mapH();
+    var padX = 84, padT = 34 + R_MAX, padB = R_MAX + LABEL_DROP + SCALE_BAND;
+    var names = Object.keys(CFG.map.pos);
+
+    // How many of the CURRENTLY FILTERED sessions sit at each venue.
+    // This is the heat: narrow to a lane and the map shows where that
+    // lane actually lives.
+    var heat = {}, total = 0;
+    names.forEach(function (n) { heat[n] = 0; });
+    filtered().forEach(function (s) {
+      var seen = {};
+      s.when.forEach(function (w) {
+        var v = venueName(w);
+        if (state.day && w.d !== state.day) return;
+        if (seen[v]) return;
+        seen[v] = 1; heat[v] += 1; total += 1;
+      });
+    });
+    var peak = Math.max.apply(null, names.map(function (n) { return heat[n]; }));
+    var nEl = $("#map-n");
+    if (nEl) nEl.textContent = total.toLocaleString();
+
+    var svg = svgEl("svg", {
+      viewBox: "0 0 " + (MAP_W + padX * 2) + " " + (H + padT + padB),
+      class: "rimap", role: "img",
+      "aria-label": "The five re:Invent venues positioned to scale, "
+        + "sized by how many matching sessions each holds."
+    });
+    var g = svgEl("g", { transform: "translate(" + padX + "," + padT + ")" });
+    svg.appendChild(g);
+
+    // the route for the chosen day, drawn under the venues
+    var day = $("#map-day") ? $("#map-day").value : "";
+    var hops = day ? routeFor(day) : [];
+    hops.forEach(function (h, i) {
+      var a = project(h.from), b = project(h.to);
+      var line = svgEl("line", {
+        x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+        class: "hop " + h.verdict
+      });
+      g.appendChild(line);
+      var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      var lab = svgEl("text", { x: mx, y: my - 8, class: "hoplab " + h.verdict,
+                                "text-anchor": "middle" });
+      lab.textContent = (i + 1) + ". " + h.gapText;
+      g.appendChild(lab);
+    });
+
+    names.forEach(function (n) {
+      var p = project(n);
+      var frac = peak ? heat[n] / peak : 0;
+      var r = 9 + Math.round(Math.sqrt(frac) * 30);
+      var grp = svgEl("g", { class: "venue" });
+      grp.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: r,
+                                        class: "vdot" }));
+      var t1 = svgEl("text", { x: p.x, y: p.y + 4, class: "vnum",
+                               "text-anchor": "middle" });
+      t1.textContent = heat[n];
+      grp.appendChild(t1);
+      var t2 = svgEl("text", { x: p.x, y: p.y + r + 18, class: "vname",
+                               "text-anchor": "middle" });
+      t2.textContent = n;
+      grp.appendChild(t2);
+      g.appendChild(grp);
+    });
+
+    // scale bar: 500 m, so the distances are readable rather than implied
+    var perM = MAP_W / CFG.map.span_y_m;
+    var barLen = Math.round(500 * perM);
+    var by = H + R_MAX + LABEL_DROP + 14;
+    g.appendChild(svgEl("line", { x1: 0, y1: by, x2: barLen, y2: by,
+                                  class: "scalebar" }));
+    var st = svgEl("text", { x: 0, y: by - 6, class: "scaletxt" });
+    st.textContent = "500 m";
+    g.appendChild(st);
+
+    var nt = svgEl("text", { x: 0, y: -(R_MAX + 12), class: "scaletxt" });
+    nt.textContent = "← north (Wynn/Encore end)    south (MGM Grand) →";
+    g.appendChild(nt);
+
+    host.textContent = "";
+    host.appendChild(svg);
+    renderHops(hops);
+  }
+
+  /* The day's hops, reusing exactly the plan's own feasibility rule so the
+     map and the plan can never disagree with each other. */
+  function routeFor(day) {
+    var rows = planRows().filter(function (r) {
+      return r.d === day && r.w;
+    });
+    var out = [];
+    for (var i = 1; i < rows.length; i++) {
+      var a = rows[i - 1], b = rows[i];
+      var from = venueName(a.w), to = venueName(b.w);
+      if (a.w.e == null) {
+        out.push({ from: from, to: to, verdict: "warn", a: a, b: b,
+                   gapText: "end time not published" });
+        continue;
+      }
+      var gap = b.w.b - a.w.e, need = needFor(from, to);
+      var verdict = gap < 0 ? "bad" : gap < need ? "warn" : "ok";
+      out.push({ from: from, to: to, verdict: verdict, a: a, b: b,
+                 gap: gap, need: need,
+                 gapText: gap < 0 ? "overlap" : gap + " min / needs " + need });
+    }
+    return out;
+  }
+
+  function renderHops(hops) {
+    var host = $("#maphops");
+    if (!host) return;
+    host.textContent = "";
+    if (!hops.length) return;
+    hops.forEach(function (h, i) {
+      var row = el("div", "hoprow " + h.verdict);
+      row.appendChild(el("span", "hopn", String(i + 1)));
+      var txt = el("span", "hopt");
+      txt.textContent = h.from + " → " + h.to
+        + (h.from === h.to ? " (same property)"
+           : "  ·  " + km(metresBetween(h.from, h.to)) + "  ·  "
+             + h.gapText);
+      row.appendChild(txt);
+      if (h.from !== h.to) {
+        var a = el("a", "hoplink", "walking route ↗");
+        a.href = mapsLink(h.from, h.to);
+        a.target = "_blank"; a.rel = "noopener";
+        a.title = "Open this hop in Google Maps for a live routed time";
+        row.appendChild(a);
+      }
+      host.appendChild(row);
+    });
+  }
+
+  function fillMapDays() {
+    var sel = $("#map-day");
+    if (!sel) return;
+    var have = {};
+    planRows().forEach(function (r) { if (r.w) have[r.d] = 1; });
+    var keep = sel.value;
+    sel.textContent = "";
+    sel.appendChild(new Option("— no day selected —", ""));
+    CFG.days.forEach(function (d) {
+      if (have[d]) sel.appendChild(new Option(dayLabel(d), d));
+    });
+    sel.value = have[keep] ? keep : "";
+    sel.onchange = renderMap;
   }
 
   function laneName(id) {
@@ -307,6 +771,7 @@
     if (i === -1) plan.push(code); else plan.splice(i, 1);
     save(PLAN_KEY, plan);
     syncStars(); renderPlan();
+    if (!$("#map").hidden) { fillMapDays(); renderMap(); }
   }
   function syncStars() {
     $("#planN").textContent = plan.length;
@@ -430,15 +895,16 @@
       row.appendChild(el("span", "ic", "●"));
       msg = gap + " min between them" +
         (from === to ? " inside " + from
-                     : ", and they are at different properties — " +
-                       from + " to " + to) +
+                     : ", and they are " + km(metresBetween(from, to))
+                       + " apart — " + from + " to " + to) +
         ". Allow about " + need + ". You would be late.";
     } else {
       row.className = "gap ok";
       row.appendChild(el("span", "ic", "○"));
       msg = gap + " min" +
         (from === to ? " to change rooms inside " + from
-                     : " to get from " + from + " to " + to) + ".";
+                     : " to cover the " + km(metresBetween(from, to))
+                       + " from " + from + " to " + to) + ".";
     }
     row.appendChild(el("span", null, msg));
     return row;
@@ -526,6 +992,7 @@
   function render() {
     syncLaneTabs(); renderChips(); renderBrowse(); syncStars();
     $("#clear").hidden = !state.q;
+    if (!$("#map").hidden) renderMap();
   }
 
   /* ---- wiring -------------------------------------------------------- */
@@ -553,6 +1020,7 @@
 
     $("#tab-browse").addEventListener("click", function () { view("browse"); });
     $("#tab-plan").addEventListener("click", function () { view("plan"); });
+    $("#tab-map").addEventListener("click", function () { view("map"); });
 
     $("#share").addEventListener("click", function () {
       var url = location.origin + location.pathname +
@@ -570,30 +1038,37 @@
       plan = []; save(PLAN_KEY, plan); syncStars(); renderPlan();
     });
 
-    [["#t-same", "same"], ["#t-near", "near"], ["#t-far", "far"]]
-      .forEach(function (p) {
-        var input = $(p[0]);
-        input.value = tune[p[1]];
-        input.addEventListener("change", function () {
-          var v = parseInt(input.value, 10);
-          if (isNaN(v) || v < 0) { input.value = tune[p[1]]; return; }
-          tune[p[1]] = v; save(TUNE_KEY, tune); renderPlan();
-        });
-      });
+    var over = $("#t-overhead"), pace = $("#t-pace");
+    over.value = tune.overhead;
+    pace.value = String(tune.pace);
+    over.addEventListener("change", function () {
+      var v = parseInt(over.value, 10);
+      if (isNaN(v) || v < 0) { over.value = tune.overhead; return; }
+      tune.overhead = v; save(TUNE_KEY, tune); renderPlan(); renderMatrix();
+    });
+    pace.addEventListener("change", function () {
+      tune.pace = parseInt(pace.value, 10) || CFG.travel.pace;
+      save(TUNE_KEY, tune); renderPlan(); renderMatrix();
+    });
   }
 
   function view(which) {
-    var browsing = which === "browse";
-    $("#browse").hidden = !browsing;
-    $("#plan").hidden = browsing;
-    /* Search, filters and lanes only act on Browse. Left visible in the
-       plan they are dead controls that push the plan itself below the
-       fold -- on a phone, past it entirely. */
-    $(".controls").hidden = !browsing;
-    document.querySelector(".lanes").hidden = !browsing;
-    $("#tab-browse").setAttribute("aria-selected", browsing ? "true" : "false");
-    $("#tab-plan").setAttribute("aria-selected", browsing ? "false" : "true");
-    if (!browsing) renderPlan();
+    $("#browse").hidden = which !== "browse";
+    $("#plan").hidden = which !== "plan";
+    $("#map").hidden = which !== "map";
+    /* Search, filters and lanes drive Browse AND the map's heat, so they
+       stay up for both. In the plan they are dead controls that push the
+       plan below the fold -- on a phone, past it entirely. */
+    var showControls = which !== "plan";
+    $(".controls").hidden = !showControls;
+    document.querySelector(".lanes").hidden = !showControls;
+    [["#tab-browse", "browse"], ["#tab-plan", "plan"], ["#tab-map", "map"]]
+      .forEach(function (p) {
+        $(p[0]).setAttribute("aria-selected",
+                             which === p[1] ? "true" : "false");
+      });
+    if (which === "plan") renderPlan();
+    if (which === "map") { fillMapDays(); renderMap(); }
   }
 
   function adoptSharedPlan() {
@@ -624,7 +1099,9 @@
       });
       var all = document.querySelector('[data-count="all"]');
       if (all) all.textContent = DATA.sessions.length.toLocaleString();
-      buildFilters(); wire(); renderFreshness(); render();
+      buildFilters(); wire(); renderFreshness(); renderMatrix();
+      checkLive();
+      render();
       if (shared) view("plan");
     })
     .catch(function (err) {
