@@ -58,6 +58,9 @@ import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from back_to_top import TOP_HTML, TOP_CSS, TOP_JS  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STORE = os.path.join(ROOT, "intelligence", "reinvent2026.json")
 OUTDIR = os.path.join(ROOT, "reinvent-2026")
@@ -303,9 +306,16 @@ def build():
     html = html.replace("__PACE__", str(int(PACE_M_PER_MIN)))
     html = html.replace("__DETOUR__", "%.2f" % DETOUR)
     html = html.replace("__OUTLIER__", esc(OUTLIER))
+    html = html.replace("__TOP__", TOP_HTML + TOP_JS)
 
     write(os.path.join(OUTDIR, "index.html"), html)
-    write(os.path.join(OUTDIR, "page.css"), CSS)
+    # The same control every other long page on the site carries, from the
+    # one module that defines it -- not a second implementation. Its CSS
+    # carries a literal on every var() because this page defines none of
+    # blog.css's tokens, and an undefined custom property invalidates the
+    # whole declaration rather than falling back: a transparent circle that
+    # happens to be clickable. That has happened five times in this repo.
+    write(os.path.join(OUTDIR, "page.css"), CSS + TOP_CSS + TOP_FIX)
     write(os.path.join(OUTDIR, "app.js"), APP)
 
     print("  reinvent-2026/  %d sessions, %d scheduled, %d day(s)"
@@ -499,6 +509,7 @@ PAGE = """<!DOCTYPE html>
   <p><a href="/">jayanthkatta.com</a></p>
  </footer>
 </main>
+__TOP__
 
 <script>window.RI_CONFIG = __CONFIG__;</script>
 <script src="./app.js" defer></script>
@@ -773,6 +784,23 @@ table.mx td.self{color:var(--faint)}
   .filters select{flex:1 1 44%; min-width:0}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+"""
+
+
+# The shared back-to-top resolves its arrow colour as var(--ink, #1D2322).
+# That literal is the right answer everywhere it was written for, because
+# blog.css defines --ink as a near-black. THIS page defines --ink as #e8efec
+# -- it is dark-themed, so its ink is light -- and the var is therefore
+# found rather than falling back. The result is a light arrow on the tan
+# button: measured 2.00:1, under even the 3:1 floor for a graphical
+# control, where the intended dark ink gives 6.83:1.
+#
+# A third variant of the same trap. The module's docstring warns about an
+# UNDEFINED token taking the declaration with it; this is a token that is
+# defined and means the opposite. Overridden explicitly rather than by
+# renaming this page's --ink, which the whole page is built on.
+TOP_FIX = """
+.back-top{color:#1D2322}
 """
 
 
