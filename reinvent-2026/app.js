@@ -2,7 +2,13 @@
 (function () {
   "use strict";
   var CFG = window.RI_CONFIG, DATA = null;
-  var PAGE_SIZE = 60, shown = PAGE_SIZE;
+  /* 60 cards is fifteen phone screens before the "show more" button.
+     Measured in a sweep of every view: nobody reported it, which is not
+     the same as nobody suffering it. A phone gets a shorter first page
+     and the same button. */
+  var PAGE_SIZE = (typeof window !== "undefined" && window.innerWidth < 700)
+                  ? 25 : 60;
+  var shown = PAGE_SIZE;
   var PLAN_KEY = "ri2026.plan", TUNE_KEY = "ri2026.travel";
   var CATALOG_URL = "https://registration.awsevents.com/flow/awsevents/"
                   + "reinvent2026/eventcatalog/page/eventcatalog";
@@ -1775,6 +1781,16 @@
     return { day: iso, min: d.getHours() * 60 + d.getMinutes() };
   }
 
+  /* "What can I get to" is a question you ask standing up, holding a
+     phone, with somewhere to be. It was answering with 62 cards and
+     nineteen screens. The reachable ones are the answer; the rest are
+     reference, so they fold away.
+
+     Declared out here, not inside renderNow: it was a `var` in the
+     function, so "show the other 20" set it and then the re-render
+     immediately reset it to 10 and nothing happened. */
+  var NOW_SHOW = 10;
+
   function renderNow() {
     var host = $("#nowbody");
     if (!host) return;
@@ -1841,11 +1857,27 @@
       return;
     }
 
-    function block(title, list, cls) {
+    function block(title, list, cls, fold) {
       if (!list.length) return;
       var sec = el("section", "daygroup");
+      if (fold) {
+        var d = document.createElement("details");
+        d.className = "nowfold";
+        var sm = document.createElement("summary");
+        sm.textContent = title + " (" + list.length + ")";
+        d.appendChild(sm);
+        sec.appendChild(d);
+        list.slice(0, 25).forEach(function (r) {
+          var c = card(r.s, r.w);
+          if (cls) c.classList.add(cls);
+          d.appendChild(c);
+        });
+        host.appendChild(sec);
+        return;
+      }
       sec.appendChild(el("h2", "dayhead", title));
-      list.slice(0, 40).forEach(function (r) {
+      var head = list.slice(0, NOW_SHOW);
+      head.forEach(function (r) {
         var c = card(r.s, r.w);
         if (cls) c.classList.add(cls);
         var when = el("div", "where");
@@ -1858,10 +1890,21 @@
         c.insertBefore(when, c.querySelector(".more") || null);
         sec.appendChild(c);
       });
+      if (list.length > head.length) {
+        var more = el("button", "ghost",
+          "Show the other " + (list.length - head.length));
+        more.addEventListener("click", function () {
+          NOW_SHOW = list.length;
+          renderNow();
+        });
+        var pager = el("div", "pager");
+        pager.appendChild(more);
+        sec.appendChild(pager);
+      }
       host.appendChild(sec);
     }
-    block("Reachable", can, null);
-    block("Too far to make it", cant, "unreachable");
+    block("You can get to these", can, null, false);
+    block("Too far to make it", cant, "unreachable", true);
   }
 
   function fillNowControls() {
@@ -1880,10 +1923,12 @@
     day.value = nowState.day || CFG.days[0];
     time.value = hhmm(nowState.time || 540);
     at.onchange = function () {
-      nowState.at = at.value; save(NOW_KEY, nowState); renderNow();
+      nowState.at = at.value; NOW_SHOW = 10;
+      save(NOW_KEY, nowState); renderNow();
     };
     day.onchange = function () {
-      nowState.day = day.value; save(NOW_KEY, nowState); renderNow();
+      nowState.day = day.value; NOW_SHOW = 10;
+      save(NOW_KEY, nowState); renderNow();
     };
     time.onchange = function () {
       var p = /^(\d{1,2}):(\d{2})$/.exec(time.value);
@@ -1908,6 +1953,8 @@
      a session scheduled in September cannot be about a launch made in
      December -- and during the event, that is exactly the overlap worth
      looking at anyway. */
+  var NEWS_PAGE = 20, newsShown = NEWS_PAGE;
+
   function renderNews() {
     var host = $("#newsbody");
     if (!host) return;
@@ -1933,7 +1980,10 @@
       + "name a service this catalog also covers";
     host.appendChild(head);
 
-    items.forEach(function (a) {
+    /* 120 announcements is thirty phone screens. Twenty at a time, with
+       the same button Browse uses. */
+    var slice = items.slice(0, newsShown);
+    slice.forEach(function (a) {
       var box = el("article", "newsitem");
       var top = el("div", "top");
       top.appendChild(el("span", "code", a.d));
@@ -2003,6 +2053,19 @@
       }
       host.appendChild(box);
     });
+
+    if (items.length > slice.length) {
+      var pager = el("div", "pager");
+      var more = el("button", "ghost", "Show "
+        + Math.min(NEWS_PAGE, items.length - slice.length) + " more of "
+        + (items.length - slice.length));
+      more.addEventListener("click", function () {
+        newsShown += NEWS_PAGE;
+        renderNews();
+      });
+      pager.appendChild(more);
+      host.appendChild(pager);
+    }
   }
 
 
