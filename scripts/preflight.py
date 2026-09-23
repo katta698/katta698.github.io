@@ -69,6 +69,7 @@ BROWSER = {
     "check_narration_true",
     "check_ai_fresh",
     "check_reinvent_fits", "check_reinvent_clock",
+    "check_reinvent_scroll",
 }
 
 # check_colophon_built was in BROWSER and drives no browser at all -- it
@@ -161,6 +162,8 @@ HOOK_BROWSER = {
                                  # too wide with a whole view unreachable
     "check_reinvent_clock",      # and still works on the days it is for:
                                  # the live-clock view had never been run
+    "check_reinvent_scroll",     # and does not fight you when you scroll,
+                                 # which took three goes to get right
 }
 
 PER_CHECK_TIMEOUT = 420

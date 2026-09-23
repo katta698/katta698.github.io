@@ -705,7 +705,14 @@
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
       })
-      .then(function (g) { GEO = g; geoState = "ready"; renderMap(); })
+      .then(function (g) {
+        GEO = g;
+        geoState = "ready";
+        renderMap();
+        // The SVG is thousands of pixels of new layout. Re-align once,
+        // and only if the reader has not started scrolling.
+        if (!userMoved && !$("#map").hidden) scrollToTabs();
+      })
       .catch(function () { geoState = "failed"; renderMap(); });
   }
 
@@ -2740,7 +2747,7 @@
         b.addEventListener("click", function () {
           state.lane = b.dataset.lane; shown = PAGE_SIZE; render();
           window.scrollTo({ top: $(".controls").offsetTop - 12,
-                            behavior: "smooth" });
+                            behavior: "auto" });
         });
       });
 
@@ -2880,17 +2887,37 @@
      choose: every switch puts the tab row at the top of the screen, and
      the new view starts immediately under it. Predictable beats
      accidental. */
-  var scrollFix = null;
+  var scrollFix = null, scrollExpect = 0, userMoved = false;
 
-  function scrollToTabs(smooth) {
+  /* Two different things can move the page after a view switch: the
+     reader, and the layout finishing. Position alone cannot tell them
+     apart -- the map's geometry arriving shifts scrollY exactly as a
+     finger would -- so deliberate input is tracked separately. */
+  ["wheel", "touchstart", "pointerdown", "keydown"].forEach(function (ev) {
+    window.addEventListener(ev, function () { userMoved = true; }, true);
+  });
+
+  function scrollToTabs() {
     var bar = document.querySelector(".resultbar");
     if (!bar) return;
     var y = bar.getBoundingClientRect().top + window.scrollY - 8;
-    var still = window.matchMedia
-             && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    window.scrollTo({ top: Math.max(0, y),
-                      behavior: (still || smooth === false)
-                                ? "auto" : "smooth" });
+
+    /* INSTANT, not smooth. A smooth scroll here animated for about a
+       second -- measured at 31 steps from 2200 down to 606 -- and the
+       browser keeps applying it while it runs. Flick upwards during that
+       second and the animation drags you back towards its target, which
+       is exactly what "I scroll up and it comes down" is. Cancelling the
+       correction did nothing about an animation already in flight.
+
+       There is nothing for an animation to preserve here anyway: the view
+       has just been swapped, the document height has changed by thousands
+       of pixels, and the browser has already clamped the position without
+       asking. An instant move is honest about that, and cannot be fought.
+       scrollTo with behavior auto also cancels any smooth scroll still
+       running, which is the second half of the fix. */
+    var target = Math.max(0, y);
+    window.scrollTo({ top: target, behavior: "auto" });
+    scrollExpect = Math.round(window.scrollY);
 
     /* Some views finish rendering after this runs -- the map fetches its
        geometry, and Now builds up to eighty cards -- so the position that
@@ -2903,23 +2930,19 @@
        dragged them back, which is the page overruling a deliberate act.
        Listening for scroll would not do: our own smooth scroll emits
        those. These are the events only a person produces. */
+    /* The correction only runs if NOTHING has moved the page since. That
+       is a better guard than listening for input events, which was the
+       first attempt: it missed anything that scrolls without a gesture,
+       and every view still yanked the reader back. Comparing the position
+       to where we left it catches a finger, a wheel, a keyboard, the
+       browser restoring a position, and anything else, without having to
+       enumerate them. */
     clearTimeout(scrollFix);
-    var give = ["wheel", "touchstart", "pointerdown", "keydown"];
-
-    function surrender() {
-      clearTimeout(scrollFix);
-      give.forEach(function (ev) {
-        window.removeEventListener(ev, surrender, true);
-      });
-    }
-    give.forEach(function (ev) {
-      window.addEventListener(ev, surrender, true);
-    });
-
     scrollFix = setTimeout(function () {
-      surrender();
+      if (userMoved) return;
+      if (Math.abs(Math.round(window.scrollY) - scrollExpect) > 4) return;
       var top = bar.getBoundingClientRect().top;
-      if (top < -4 || top > 40) scrollToTabs(false);
+      if (top < -4 || top > 40) scrollToTabs();
     }, 450);
   }
 
@@ -2948,7 +2971,7 @@
     if (which === "now") { fillNowControls(); renderNow(); }
     if (which === "news") renderNews();
     if (which === "plan2") { fillPlannerControls(); renderPlanner(); }
-    if (opts && opts.scroll) scrollToTabs();
+    if (opts && opts.scroll) { userMoved = false; scrollToTabs(); }
   }
 
   function adoptSharedPlan() {
