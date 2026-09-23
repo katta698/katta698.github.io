@@ -16,6 +16,29 @@
     tune = { overhead: CFG.travel.overhead, pace: CFG.travel.pace };
   }
 
+  /* Does this browser actually keep anything?
+     Reported: "it says saved, and when I close the browser and reopen, I
+     don't see it." Tested with a persistent profile: a star and a note do
+     survive a full close. What does not survive is a PRIVATE window --
+     Safari and Chrome both discard localStorage when the last private tab
+     closes, and the reporter's own screenshot showed "jayanthkatta.com --
+     Private" in the toolbar.
+
+     Sniffing for private mode is unreliable -- measured quota at 10 GB in
+     a normal profile and 3 GB in an ephemeral one, and Safari differs
+     again -- so this does not guess. It proves the one thing it can prove:
+     that a write survives a read. Anything beyond that is stated in words
+     rather than detected badly. */
+  var storageOK = (function () {
+    try {
+      var k = "ri2026.probe";
+      localStorage.setItem(k, "1");
+      var back = localStorage.getItem(k) === "1";
+      localStorage.removeItem(k);
+      return back;
+    } catch (e) { return false; }
+  })();
+
   function load(key, dflt) {
     try { var v = JSON.parse(localStorage.getItem(key)); return v || dflt; }
     catch (e) { return dflt; }
@@ -1576,10 +1599,16 @@
       setNote(code, ta.value);
       // Writing into a box that gives no feedback feels like writing into
       // nothing, which is why people retype notes elsewhere.
-      flag.textContent = "saved";
+      var now = new Date();
+      flag.textContent = storageOK
+        ? "saved " + hhmm(now.getHours() * 60 + now.getMinutes())
+        : "NOT saved";
+      flag.classList.toggle("warn", !storageOK);
       flag.classList.add("on");
       clearTimeout(t);
-      t = setTimeout(function () { flag.classList.remove("on"); }, 1400);
+      // Fades to a quiet standing label rather than vanishing, so the
+      // answer to "did that save?" is on screen when you look for it.
+      t = setTimeout(function () { flag.classList.add("dim"); }, 2000);
     });
     wrap.appendChild(ta);
     wrap.appendChild(flag);
@@ -2824,6 +2853,17 @@
       if (all) all.textContent = DATA.sessions.length.toLocaleString();
       buildFilters(); wire(); renderFreshness(); renderMatrix();
       showCta();
+      if (!storageOK) {
+        var wn = $("#storagewarn");
+        if (wn) {
+          wn.textContent = "This browser is refusing to store anything, so "
+            + "nothing you star or write here will survive the page being "
+            + "reloaded. That is usually a private window with storage "
+            + "blocked, or cookies disabled for this site. Use a normal "
+            + "window, or export as you go.";
+          wn.hidden = false;
+        }
+      }
       checkLive();
       render();
       if (shared) view("plan");
