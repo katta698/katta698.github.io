@@ -70,6 +70,7 @@ BROWSER = {
     "check_ai_fresh",
     "check_reinvent_fits", "check_reinvent_clock",
     "check_reinvent_scroll",
+    "check_tap_targets",
 }
 
 # check_colophon_built was in BROWSER and drives no browser at all -- it
@@ -164,6 +165,9 @@ HOOK_BROWSER = {
                                  # the live-clock view had never been run
     "check_reinvent_scroll",     # and does not fight you when you scroll,
                                  # which took three goes to get right
+    "check_tap_targets",         # and the mark and the way home are big
+                                 # enough to hit with a thumb, which every
+                                 # control beside them already was
 }
 
 PER_CHECK_TIMEOUT = 420
