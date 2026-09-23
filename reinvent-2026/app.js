@@ -2447,23 +2447,17 @@
     });
     foot.appendChild(add);
 
-    var reset = el("button", "ghost", "Reset this form");
-    reset.addEventListener("click", function () {
-      planner = { day: "", at: "", lane: "all", service: "",
-                  pace: "standard", sponsored: false };
-      save("ri2026.planner", planner);
-      rangeCache = {};
-      [["#pl-day", ""], ["#pl-at", ""], ["#pl-lane", "all"],
-       ["#pl-service", ""], ["#pl-pace", "standard"]].forEach(function (q) {
-        var e2 = $(q[0]);
-        if (e2) { e2.value = q[1]; e2.disabled = false; }
-      });
-      var sp2 = $("#pl-sponsored");
-      if (sp2) sp2.checked = false;
-      renderPlanner();
-    });
-    foot.appendChild(reset);
     host.appendChild(foot);
+  }
+
+  /* A control that would do nothing should not be sitting there looking
+     operable -- the same rule the map's day picker needed. */
+  function showReset() {
+    var rb = $("#pl-reset");
+    if (!rb) return;
+    rb.hidden = !(planner.day || planner.at || planner.service
+                  || (planner.lane && planner.lane !== "all")
+                  || planner.pace !== "standard" || planner.sponsored);
   }
 
   function fillPlannerControls() {
@@ -2504,6 +2498,7 @@
       planner.day = d.value; planner.at = a.value;
       planner.lane = l.value; planner.pace = pc.value;
       planner.service = sv.value; planner.sponsored = sp.checked;
+      showReset();
       // A named service is more specific than a lane, so it wins and the
       // lane is greyed rather than silently ignored.
       l.disabled = !!planner.service;
@@ -2511,6 +2506,22 @@
       renderPlanner();
     }
     [d, a, l, sv, pc, sp].forEach(function (x) { x.onchange = change; });
+
+    var rb = $("#pl-reset");
+    if (rb) {
+      rb.onclick = function () {
+        planner = { day: "", at: "", lane: "all", service: "",
+                    pace: "standard", sponsored: false };
+        save("ri2026.planner", planner);
+        rangeCache = {};
+        d.value = ""; a.value = ""; l.value = "all";
+        sv.value = ""; pc.value = "standard"; sp.checked = false;
+        l.disabled = false;
+        showReset();
+        renderPlanner();
+      };
+    }
+    showReset();
   }
 
   /* ---- filters ------------------------------------------------------- */
