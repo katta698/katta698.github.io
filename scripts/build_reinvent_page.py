@@ -125,13 +125,89 @@ LANES = [
 # Public landmark coordinates for the centre of each property. They are
 # approximate -- these are large buildings -- and that is fine, because the
 # quantity being derived is a rounded number of minutes.
-VENUE_POINTS = {
+# The building each venue's sessions are actually IN. A resort is not a
+# point: MGM Grand's conference centre is half a kilometre from the middle
+# of the hotel, and the Venetian Expo is a different building from the
+# Venetian tower.
+CONFERENCE_BUILDING = {
+    "Venetian":       "Venetian Expo",
+    "Wynn/Encore":    "Encore",
+    "Caesars Forum":  "Caesars Forum",
+    "Caesars Palace": "Caesars Palace",
+    "MGM Grand":      "MGM Grand Conference Center",
+}
+
+# Fallback only, and deliberately kept: if the OSM geometry is missing the
+# page still draws with something sane rather than dividing by nothing.
+# These are the hand-written values this started with, and measuring them
+# against the real footprints is how their error was found -- up to 508 m
+# at MGM Grand, which is a different end of the property from where the
+# sessions are. Anything derived from them was wrong by that much.
+VENUE_POINTS_FALLBACK = {
     "Venetian":       (36.1212, -115.1697),
     "Wynn/Encore":    (36.1270, -115.1656),
     "Caesars Forum":  (36.1163, -115.1665),
     "Caesars Palace": (36.1162, -115.1745),
     "MGM Grand":      (36.1026, -115.1700),
 }
+VENUE_POINTS = dict(VENUE_POINTS_FALLBACK)
+
+
+def polygon_centroid(pts):
+    """Area-weighted centroid. The mean of the vertices is not the centre
+    of a building -- it drifts towards whichever side OSM happened to map
+    in more detail."""
+    a = cx = cy = 0.0
+    for i in range(len(pts)):
+        y1, x1 = pts[i]
+        y2, x2 = pts[(i + 1) % len(pts)]
+        f = x1 * y2 - x2 * y1
+        a += f
+        cx += (x1 + x2) * f
+        cy += (y1 + y2) * f
+    if abs(a) < 1e-12:
+        return (sum(p[0] for p in pts) / len(pts),
+                sum(p[1] for p in pts) / len(pts))
+    a *= 0.5
+    return (cy / (6 * a), cx / (6 * a))
+
+
+def locate_venues():
+    """Replace the remembered coordinates with measured ones.
+
+    Every distance, every travel estimate and every warning on this page is
+    computed from these five points, so they are the last place a rounded
+    guess belongs. The OSM footprints are in the repo; the centroid of the
+    building the sessions are in is a fact, and it is free to compute.
+    """
+    path = os.path.join(ROOT, "intelligence", "vegas-map.json")
+    if not os.path.exists(path):
+        print("    no map geometry; venue points fall back to the "
+              "hand-written values")
+        return
+    try:
+        geo = json.load(io.open(path, encoding="utf-8"))
+    except (ValueError, OSError):
+        print("    map geometry unreadable; using the fallback points")
+        return
+
+    by_name = {}
+    for b in geo.get("buildings", []):
+        if b.get("n"):
+            by_name.setdefault(b["n"], b)
+
+    for venue, want in CONFERENCE_BUILDING.items():
+        b = by_name.get(want)
+        if not b:
+            print("    %s: no footprint named %r, keeping the fallback point"
+                  % (venue, want))
+            continue
+        here = polygon_centroid(b["p"])
+        moved = metres(VENUE_POINTS[venue], here)
+        VENUE_POINTS[venue] = here
+        if moved > 100:
+            print("    %-16s moved %3d m to the centre of %s"
+                  % (venue, round(moved), want))
 
 # The model, with every number stated so it can be argued with. A straight
 # line between two hotels is not a route, and walking the Strip is not
@@ -336,6 +412,7 @@ def pretty_date(iso):
 
 def build():
     store = read_store()
+    locate_venues()
     lanes = lane_indexes(store)
     counts = lane_counts(store, lanes)
     sessions = store["sessions"]
@@ -376,6 +453,14 @@ def build():
     html = html.replace("__VENUES__", esc(", ".join(sorted(store["venues"]))))
     html = html.replace("__SERVICES__", str(len(store["facets"]["Services"])))
     html = html.replace("__LANETABS__", lane_tabs(config))
+    # Written in from the measurement rather than typed, because the
+    # sentence it replaces cited two distances that silently stopped being
+    # true the moment the venue points were corrected.
+    worst_fix = 0
+    for venue, want in CONFERENCE_BUILDING.items():
+        moved = metres(VENUE_POINTS_FALLBACK[venue], VENUE_POINTS[venue])
+        worst_fix = max(worst_fix, int(round(moved)))
+    html = html.replace("__WORSTFIX__", str(worst_fix))
     html = html.replace("__OVERHEAD__", str(OVERHEAD_MIN))
     html = html.replace("__PACE__", str(int(PACE_M_PER_MIN)))
     html = html.replace("__DETOUR__", "%.2f" % DETOUR)
@@ -576,11 +661,15 @@ PAGE = """<!DOCTYPE html>
    &mdash; slow on purpose, because this is casino floors and pedestrian
    bridges, not pavement &mdash; plus <strong>__OVERHEAD__ min</strong> to
    get out of one room and into the next.</p>
-  <p>An earlier version used three flat numbers and was wrong in the
-   direction that under-warns: it costed Wynn/Encore to Caesars Palace
-   (1,443&nbsp;m) at 30 minutes while costing Caesars Palace to MGM Grand
-   (1,565&nbsp;m) at 45. Distance is a fact; only the pace below is an
-   assumption, and it is yours to set.</p>
+  <p>The distances are measured, not remembered. Each venue's position is
+   the centroid of the building its sessions are actually in &mdash; the
+   Venetian Expo rather than the Venetian tower, the MGM Grand Conference
+   Center rather than the middle of the resort &mdash; taken from the
+   OpenStreetMap footprints this page draws. The hand-written coordinates
+   that preceded them were out by up to __WORSTFIX__&nbsp;m, which is a
+   different end of the property from where you would be standing.
+   Distance is a fact; only the pace below is an assumption, and it is
+   yours to set.</p>
   <p class="tune">Adjust:
    <label>room to room <input id="t-overhead" type="number" min="0" max="60" value="__OVERHEAD__"> min</label>
    <label>pace
@@ -677,66 +766,45 @@ h1{margin:.2em 0 .25em; font-size:clamp(30px,6vw,46px); line-height:1.05; letter
   font:inherit; font-size:14px; color:var(--ink); background:var(--panel);
   border:1px solid var(--line); border-radius:10px; padding:7px 10px; margin-left:6px;
 }
-#mapsvg{background:var(--panel); border:1px solid var(--line);
-  border-radius:var(--r); padding:8px}
-svg.rimap{width:100%; height:auto; display:block}
-.rimap .vdot{fill:rgba(196,164,132,.16); stroke:var(--accent); stroke-width:1.5}
-.rimap .vnum{fill:var(--ink); font:600 13px "DM Mono",monospace}
-.rimap .vname{fill:var(--dim); font:500 12.5px "DM Sans",sans-serif}
-.rimap .hop{stroke-width:3; stroke-linecap:round}
+#mapsvg{background:#0f1413; border:1px solid var(--line);
+  border-radius:var(--r); padding:6px; overflow:hidden}
+/* Sized off HEIGHT, not width. The Strip is a 3km line, so north-up makes
+   a tall narrow picture; driving the size from the viewport height means
+   it fits a phone and a laptop without ever being cropped or absurd. */
+svg.rimap{display:block; margin:0 auto; height:min(74vh, 860px);
+  max-width:100%; width:auto}
+.rimap .ground{fill:#0f1413}
+.rimap .roadcase path{fill:none; stroke:#1b2422; stroke-linecap:round;
+  stroke-linejoin:round}
+.rimap .roadfill path{fill:none; stroke:#2c3a36; stroke-linecap:round;
+  stroke-linejoin:round}
+.rimap .bldg path{fill:#1d2726; stroke:#26332f; stroke-width:2}
+.rimap .bldg.venue path{fill:#4a3a2a; stroke:var(--accent); stroke-width:3}
+.rimap .pin{cursor:pointer}
+.rimap .halo{fill:rgba(196,164,132,.14); stroke:var(--accent);
+  stroke-width:3}
+.rimap .pin.on .halo{fill:rgba(196,164,132,.34)}
+.rimap .dot{fill:var(--accent)}
+.rimap .vnum{fill:var(--ink); font:600 34px "DM Mono",monospace;
+  paint-order:stroke; stroke:#0f1413; stroke-width:7px}
+.rimap .vname{fill:#d8e3df; font:500 30px "DM Sans",sans-serif;
+  paint-order:stroke; stroke:#0f1413; stroke-width:7px}
+.rimap .hop{stroke-width:11; stroke-linecap:round}
 .rimap .hop.ok{stroke:#7fb069}
-.rimap .hop.warn{stroke:var(--warn); stroke-dasharray:7 5}
-.rimap .hop.bad{stroke:var(--bad); stroke-dasharray:3 4}
-.rimap .hoplab{font:500 11.5px "DM Sans",sans-serif;
-  paint-order:stroke; stroke:var(--panel); stroke-width:4px; stroke-linejoin:round}
-.rimap .hoplab.ok{fill:#7fb069}
+.rimap .hop.warn{stroke:var(--warn); stroke-dasharray:26 18}
+.rimap .hop.bad{stroke:var(--bad); stroke-dasharray:12 14}
+.rimap .hoplab{font:600 28px "DM Sans",sans-serif; paint-order:stroke;
+  stroke:#0f1413; stroke-width:8px}
+.rimap .hoplab.ok{fill:#9ccf8f}
 .rimap .hoplab.warn{fill:var(--warn)}
 .rimap .hoplab.bad{fill:var(--bad)}
-.rimap .scalebar{stroke:var(--faint); stroke-width:2}
-.rimap .scaletxt{fill:var(--faint); font:500 11px "DM Sans",sans-serif}
-#teamin{
-  width:100%; font:inherit; font-size:13.5px; color:var(--ink);
-  background:var(--panel); border:1px solid var(--line);
-  border-radius:var(--r); padding:10px 12px; resize:vertical; margin:0 0 16px;
-}
-#teamin:focus{outline:2px solid var(--accent); outline-offset:1px;
-  border-color:transparent}
-#teamin::placeholder{color:var(--faint)}
-.newsitem{
-  background:var(--panel); border:1px solid var(--line);
-  border-radius:var(--r); padding:12px 15px; margin:0 0 9px;
-}
-.newsitem .top{display:flex; flex-wrap:wrap; gap:7px; align-items:center;
-  font-size:12.5px; margin-bottom:5px}
-.newstitle{margin:0 0 6px; font-size:14.5px; line-height:1.45; color:var(--ink)}
-.newsitem .where{margin-bottom:6px}
-.newsitem a.code{cursor:pointer}
-.teamsec{margin:0 0 22px}
-.teamsec h3{margin:0 0 8px; font-size:13px; letter-spacing:.09em;
-  text-transform:uppercase; color:var(--accent2)}
-.teamhint{margin:0 0 10px; font-size:13px; color:var(--faint); max-width:70ch}
-.teamrow{display:flex; gap:12px; flex-wrap:wrap; align-items:baseline;
-  padding:8px 12px; margin:0 0 6px; border-radius:var(--r);
-  border:1px solid var(--line); background:var(--panel); font-size:13.5px}
-.teamrow.dup{border-color:#5c4626; background:#221b12}
-.tcode{font-family:"DM Mono",monospace; color:var(--accent); flex:none}
-.tday{font-weight:600; color:var(--ink); min-width:9em; flex:none}
-.ttitle{flex:1; min-width:0; color:var(--dim)}
-.twho{color:var(--warn); flex:none}
-.nownote{margin:0 0 12px; font-size:14px; color:var(--faint)}
-.nownote.live{color:var(--accent2); font-weight:500}
-.nowwrap .maprow{display:flex; flex-wrap:wrap; gap:14px; align-items:center}
-.nowwrap input[type=time]{
-  font:inherit; font-size:14px; color:var(--ink); background:var(--panel);
-  border:1px solid var(--line); border-radius:10px; padding:6px 10px;
-}
-.card.unreachable{opacity:.55}
-.vrow{grid-column:1/-1; margin-top:8px; padding:7px 11px; border-radius:10px;
-  border:1px solid var(--line); background:var(--bg); font-size:13px;
-  color:var(--dim)}
-.vrow.ok{border-color:#2f4436; color:#9ccf8f}
-.vrow.warn{border-color:#5c4626; color:#f0d2a6}
-.vrow.bad{border-color:#5e332a; color:#f2c3b4}
+.rimap .compdisc{fill:rgba(15,20,19,.82); stroke:var(--line);
+  stroke-width:3}
+.rimap .needle{fill:var(--accent)}
+.rimap .complab{fill:#d8e3df; font:700 30px "DM Sans",sans-serif}
+.rimap .scalebar{stroke:#8fa39d; stroke-width:4}
+.rimap .scaletxt{fill:#8fa39d; font:500 26px "DM Sans",sans-serif}
+.rimap .attrib{fill:#5d6e69; font:400 22px "DM Sans",sans-serif}
 .hops{margin:12px 0 0}
 .hoprow{display:flex; gap:10px; align-items:center; flex-wrap:wrap;
   padding:8px 12px; margin:0 0 7px; border-radius:var(--r);
@@ -821,7 +889,13 @@ svg.rimap{width:100%; height:auto; display:block}
   border-top:1px solid var(--line)}
 .count{margin:0; color:var(--dim); font-size:14px}
 .count b{color:var(--ink)}
-.viewtabs{display:flex; gap:6px}
+/* Six pills do not fit a phone on one line. This was display:flex with no
+   wrap, so at 390px the row measured 449px and dragged the whole document
+   to 462 -- which is what turned on Chrome's font boosting and cut the
+   body text off mid-word. Worse, "Just announced" ended up outside the
+   viewport and could not be tapped at all: a whole view unreachable on
+   the device most likely to be used at the conference. */
+.viewtabs{display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end}
 .vt{
   font:inherit; font-size:14px; cursor:pointer; color:var(--dim);
   background:transparent; border:1px solid var(--line);
@@ -917,7 +991,13 @@ textarea.note::placeholder{color:var(--faint)}
   background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:4px 6px;
 }
 .about .matrix summary{cursor:pointer; font-size:13.5px; color:var(--dim); padding:6px 0}
-table.mx{border-collapse:collapse; font-size:12.5px; margin:8px 0 14px; width:100%}
+/* The cost table is six columns of nowrap figures: about 430px of content
+   that cannot be reflowed without making it unreadable. So it scrolls
+   inside its own box rather than widening the page -- the same answer the
+   rest of this site uses for wide tables. */
+#matrix{overflow-x:auto; -webkit-overflow-scrolling:touch}
+table.mx{border-collapse:collapse; font-size:12.5px; margin:8px 0 14px;
+  width:100%; min-width:430px}
 table.mx th{text-align:left; font-weight:600; color:var(--faint); padding:5px 8px;
   border-bottom:1px solid var(--line); font-size:11.5px}
 table.mx td{padding:5px 8px; border-bottom:1px solid var(--line); white-space:nowrap}
@@ -1578,16 +1658,40 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
      nothing. Each hop instead links out to Google Maps for a real routed
      walking time, which costs no API key and opens the app already on
      the reader's phone. */
-  var MAP_W = 1000;
+  /* ---- the map -------------------------------------------------------
+     Drawn from real OpenStreetMap geometry -- building footprints and the
+     actual street grid -- baked in at build time. The version this
+     replaces was five circles on an empty background, which had the
+     positions right and nothing else. Reported as: "what is this map? It
+     doesn't make any sense ... at least I need to see the buildings, and
+     the roads ... are we at the north side of the map or south?"
 
-  function mapH() {
-    return Math.round(MAP_W * CFG.map.span_x_m / CFG.map.span_y_m);
-  }
+     NORTH IS UP, because that is what every map a person has ever used
+     does, and the previous one's quarter turn was the reason that
+     question had to be asked at all. The Strip runs NNE to SSW, so the
+     result is tall and narrow -- which is the actual shape of the place,
+     and sizing is driven off height so it fits a phone and a laptop
+     without ever being cropped.
 
-  /* geo (x=east/west, y=north/south) -> screen, quarter-turned */
-  function project(v) {
-    var p = CFG.map.pos[v];
-    return { x: p[1] * MAP_W, y: p[0] * mapH() };
+     No embed, deliberately. No API key, nothing third-party running in
+     the reader's browser, and it still draws with the wifi down -- which
+     is exactly when somebody in a packed hall needs to know which way the
+     Venetian is. */
+  var GEO = null, geoState = "idle";
+
+  /* Equirectangular, which is exact enough across two kilometres and keeps
+     north pointing at the top of the screen. Metres, so the scale bar is
+     arithmetic rather than a guess. */
+  function projector(bbox) {
+    var south = bbox[0], west = bbox[1], north = bbox[2], east = bbox[3];
+    var mLat = 110540.0;
+    var mLon = 111320.0 * Math.cos((south + north) / 2 * Math.PI / 180);
+    var w = (east - west) * mLon, h = (north - south) * mLat;
+    return {
+      w: w, h: h,
+      x: function (lon) { return (lon - west) * mLon; },
+      y: function (lat) { return (north - lat) * mLat; }
+    };
   }
 
   function svgEl(tag, attrs) {
@@ -1605,98 +1709,208 @@ APP = r"""/* Generated by scripts/build_reinvent_page.py -- do not edit by hand.
          + "&travelmode=walking";
   }
 
-  /* Padding is derived, not guessed. The biggest circle can reach r=39 and
-     its label sits 18px below that, so a venue sitting on the edge of the
-     plot -- Wynn/Encore does, it is the northern end -- needs room for both
-     or it gets clipped off the corner. It was. */
-  var R_MAX = 39, LABEL_DROP = 22, SCALE_BAND = 34;
+  /* Road weights in METRES, so they scale with the map instead of needing
+     a stroke-width that means something different at every size. */
+  var ROAD_W = { motorway: 26, motorway_link: 14, trunk: 22, trunk_link: 12,
+                 primary: 20, primary_link: 11, secondary: 15,
+                 secondary_link: 9, tertiary: 12, residential: 8 };
+
+  function loadGeo() {
+    if (geoState === "loading" || geoState === "ready") return;
+    geoState = "loading";
+    fetch("/intelligence/vegas-map.json")
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (g) { GEO = g; geoState = "ready"; renderMap(); })
+      .catch(function () { geoState = "failed"; renderMap(); });
+  }
 
   function renderMap() {
     var host = $("#mapsvg");
     if (!host) return;
-    var H = mapH();
-    var padX = 84, padT = 34 + R_MAX, padB = R_MAX + LABEL_DROP + SCALE_BAND;
-    var names = Object.keys(CFG.map.pos);
 
-    // How many of the CURRENTLY FILTERED sessions sit at each venue.
-    // This is the heat: narrow to a lane and the map shows where that
-    // lane actually lives.
+    if (geoState === "idle") { loadGeo(); }
+    if (geoState === "loading" || geoState === "idle") {
+      host.textContent = "";
+      host.appendChild(el("p", "empty", "Drawing the map…"));
+      return;
+    }
+    if (geoState === "failed" || !GEO) {
+      host.textContent = "";
+      host.appendChild(el("p", "empty",
+        "The map geometry did not load. Everything else on this page still "
+        + "works, and the distances below are unaffected."));
+      renderHops(currentHops());
+      return;
+    }
+
+    var P = projector(GEO.bbox);
+    var pad = 30;
+    var svg = svgEl("svg", {
+      viewBox: (-pad) + " " + (-pad) + " " + (P.w + pad * 2) + " "
+               + (P.h + pad * 2),
+      preserveAspectRatio: "xMidYMid meet",
+      class: "rimap", role: "img",
+      "aria-label": "Map of the re:Invent venues on the Las Vegas Strip, "
+        + "north at the top, showing building footprints and streets."
+    });
+
+    svg.appendChild(svgEl("rect", {
+      x: -pad, y: -pad, width: P.w + pad * 2, height: P.h + pad * 2,
+      class: "ground" }));
+
+    function pathOf(pts, close) {
+      var d = "";
+      for (var i = 0; i < pts.length; i++)
+        d += (i ? "L" : "M") + P.x(pts[i][1]).toFixed(1) + ","
+             + P.y(pts[i][0]).toFixed(1);
+      return d + (close ? "Z" : "");
+    }
+
+    /* Roads twice: a dark casing, then a lighter fill on top. That is how
+       a street reads as a street rather than as a line. */
+    var casing = svgEl("g", { class: "roadcase" });
+    var fill = svgEl("g", { class: "roadfill" });
+    GEO.roads.forEach(function (r) {
+      var w = ROAD_W[r.c] || 8;
+      var d = pathOf(r.p, false);
+      casing.appendChild(svgEl("path", { d: d, "stroke-width": w + 6 }));
+      fill.appendChild(svgEl("path", { d: d, "stroke-width": w }));
+    });
+    svg.appendChild(casing);
+    svg.appendChild(fill);
+
+    /* Buildings. Everything in muted grey for context; the five venues in
+       the accent, because those are the only ones anyone is walking to. */
+    var others = svgEl("g", { class: "bldg" });
+    var ours = svgEl("g", { class: "bldg venue" });
+    GEO.buildings.forEach(function (b) {
+      var node = svgEl("path", { d: pathOf(b.p, true) });
+      if (b.n) node.appendChild(svgEl("title", {})).textContent = b.n;
+      (b.v ? ours : others).appendChild(node);
+    });
+    svg.appendChild(others);
+    svg.appendChild(ours);
+
+    /* The route for the chosen day, over the top of the streets. */
+    var hops = currentHops();
+    var routeG = svgEl("g", { class: "route" });
+    hops.forEach(function (h, i) {
+      var a = CFG.travel.points[h.from], b = CFG.travel.points[h.to];
+      if (!a || !b || h.from === h.to) return;
+      routeG.appendChild(svgEl("line", {
+        x1: P.x(a[1]), y1: P.y(a[0]), x2: P.x(b[1]), y2: P.y(b[0]),
+        class: "hop " + h.verdict }));
+      var mx = (P.x(a[1]) + P.x(b[1])) / 2;
+      var my = (P.y(a[0]) + P.y(b[0])) / 2;
+      var lab = svgEl("text", { x: mx, y: my - 22,
+                                class: "hoplab " + h.verdict,
+                                "text-anchor": "middle" });
+      lab.textContent = (i + 1) + ". " + h.gapText;
+      routeG.appendChild(lab);
+    });
+    svg.appendChild(routeG);
+
+    /* Venue pins, sized by how many of the filtered sessions are there.
+       Tapping one filters the catalogue to that property. */
     var heat = {}, total = 0;
-    names.forEach(function (n) { heat[n] = 0; });
-    filtered().forEach(function (s) {
+    Object.keys(CFG.travel.matrix).forEach(function (n) { heat[n] = 0; });
+    filtered().forEach(function (sn) {
       var seen = {};
-      s.when.forEach(function (w) {
+      sn.when.forEach(function (w) {
         var v = venueName(w);
         if (state.day && w.d !== state.day) return;
         if (seen[v]) return;
-        seen[v] = 1; heat[v] += 1; total += 1;
+        seen[v] = 1;
+        if (heat[v] === undefined) heat[v] = 0;
+        heat[v] += 1; total += 1;
       });
     });
-    var peak = Math.max.apply(null, names.map(function (n) { return heat[n]; }));
+    var peak = Math.max.apply(null, Object.keys(heat).map(
+      function (n) { return heat[n]; }).concat([1]));
     var nEl = $("#map-n");
     if (nEl) nEl.textContent = total.toLocaleString();
 
-    var svg = svgEl("svg", {
-      viewBox: "0 0 " + (MAP_W + padX * 2) + " " + (H + padT + padB),
-      class: "rimap", role: "img",
-      "aria-label": "The five re:Invent venues positioned to scale, "
-        + "sized by how many matching sessions each holds."
-    });
-    var g = svgEl("g", { transform: "translate(" + padX + "," + padT + ")" });
-    svg.appendChild(g);
-
-    // the route for the chosen day, drawn under the venues
-    var day = $("#map-day") ? $("#map-day").value : "";
-    var hops = day ? routeFor(day) : [];
-    hops.forEach(function (h, i) {
-      var a = project(h.from), b = project(h.to);
-      var line = svgEl("line", {
-        x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-        class: "hop " + h.verdict
-      });
-      g.appendChild(line);
-      var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      var lab = svgEl("text", { x: mx, y: my - 8, class: "hoplab " + h.verdict,
+    var pins = svgEl("g", { class: "pins" });
+    Object.keys(CFG.travel.points).forEach(function (name) {
+      var p = CFG.travel.points[name];
+      var cx = P.x(p[1]), cy = P.y(p[0]);
+      var r = 34 + Math.round(Math.sqrt(heat[name] / peak || 0) * 56);
+      var g = svgEl("g", { class: "pin" + (state.venue === name
+                                           ? " on" : "") });
+      g.appendChild(svgEl("circle", { cx: cx, cy: cy, r: r,
+                                      class: "halo" }));
+      g.appendChild(svgEl("circle", { cx: cx, cy: cy, r: 13,
+                                      class: "dot" }));
+      var num = svgEl("text", { x: cx, y: cy + r + 46, class: "vnum",
                                 "text-anchor": "middle" });
-      lab.textContent = (i + 1) + ". " + h.gapText;
-      g.appendChild(lab);
-    });
-
-    names.forEach(function (n) {
-      var p = project(n);
-      var frac = peak ? heat[n] / peak : 0;
-      var r = 9 + Math.round(Math.sqrt(frac) * 30);
-      var grp = svgEl("g", { class: "venue" });
-      grp.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: r,
-                                        class: "vdot" }));
-      var t1 = svgEl("text", { x: p.x, y: p.y + 4, class: "vnum",
+      num.textContent = heat[name];
+      var nm = svgEl("text", { x: cx, y: cy + r + 86, class: "vname",
                                "text-anchor": "middle" });
-      t1.textContent = heat[n];
-      grp.appendChild(t1);
-      var t2 = svgEl("text", { x: p.x, y: p.y + r + 18, class: "vname",
-                               "text-anchor": "middle" });
-      t2.textContent = n;
-      grp.appendChild(t2);
-      g.appendChild(grp);
+      nm.textContent = name;
+      g.appendChild(num);
+      g.appendChild(nm);
+      g.addEventListener("click", function () {
+        state.venue = (state.venue === name) ? "" : name;
+        shown = PAGE_SIZE;
+        buildFilters();
+        renderChips(); renderBrowse(); renderMap();
+      });
+      var t = svgEl("title", {});
+      t.textContent = name + " — " + heat[name] + " session(s) matching"
+                      + " your filters. Tap to show only these.";
+      g.appendChild(t);
+      pins.appendChild(g);
     });
+    svg.appendChild(pins);
 
-    // scale bar: 500 m, so the distances are readable rather than implied
-    var perM = MAP_W / CFG.map.span_y_m;
-    var barLen = Math.round(500 * perM);
-    var by = H + R_MAX + LABEL_DROP + 14;
-    g.appendChild(svgEl("line", { x1: 0, y1: by, x2: barLen, y2: by,
-                                  class: "scalebar" }));
-    var st = svgEl("text", { x: 0, y: by - 6, class: "scaletxt" });
+    /* Compass. The question was literally "are we at the north side of the
+       map or south", so this is not decoration. */
+    var cx = P.w - 80, cy = 80;
+    var comp = svgEl("g", { class: "compass" });
+    comp.appendChild(svgEl("circle", { cx: cx, cy: cy, r: 54,
+                                       class: "compdisc" }));
+    comp.appendChild(svgEl("path", {
+      d: "M" + cx + "," + (cy - 40) + "L" + (cx + 15) + "," + (cy + 12)
+         + "L" + cx + "," + (cy + 2) + "L" + (cx - 15) + "," + (cy + 12) + "Z",
+      class: "needle" }));
+    var nlab = svgEl("text", { x: cx, y: cy + 40, class: "complab",
+                               "text-anchor": "middle" });
+    nlab.textContent = "N";
+    comp.appendChild(nlab);
+    svg.appendChild(comp);
+
+    /* Scale bar, in metres, because the viewBox is already in metres. */
+    var barM = 500, bx = 40, by = P.h - 40;
+    var scale = svgEl("g", { class: "scale" });
+    scale.appendChild(svgEl("line", { x1: bx, y1: by, x2: bx + barM, y2: by,
+                                      class: "scalebar" }));
+    scale.appendChild(svgEl("line", { x1: bx, y1: by - 10, x2: bx,
+                                      y2: by + 10, class: "scalebar" }));
+    scale.appendChild(svgEl("line", { x1: bx + barM, y1: by - 10,
+                                      x2: bx + barM, y2: by + 10,
+                                      class: "scalebar" }));
+    var st = svgEl("text", { x: bx + barM / 2, y: by - 20,
+                             class: "scaletxt", "text-anchor": "middle" });
     st.textContent = "500 m";
-    g.appendChild(st);
+    scale.appendChild(st);
+    svg.appendChild(scale);
 
-    var nt = svgEl("text", { x: 0, y: -(R_MAX + 12), class: "scaletxt" });
-    nt.textContent = "← north (Wynn/Encore end)    south (MGM Grand) →";
-    g.appendChild(nt);
+    var attr = svgEl("text", { x: 10, y: P.h + 18, class: "attrib" });
+    attr.textContent = GEO.attribution;
+    svg.appendChild(attr);
 
     host.textContent = "";
     host.appendChild(svg);
     renderHops(hops);
+  }
+
+  function currentHops() {
+    var sel = $("#map-day");
+    var day = sel ? sel.value : "";
+    return day ? routeFor(day) : [];
   }
 
   /* The day's hops, reusing exactly the plan's own feasibility rule so the

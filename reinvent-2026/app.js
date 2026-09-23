@@ -602,16 +602,40 @@
      nothing. Each hop instead links out to Google Maps for a real routed
      walking time, which costs no API key and opens the app already on
      the reader's phone. */
-  var MAP_W = 1000;
+  /* ---- the map -------------------------------------------------------
+     Drawn from real OpenStreetMap geometry -- building footprints and the
+     actual street grid -- baked in at build time. The version this
+     replaces was five circles on an empty background, which had the
+     positions right and nothing else. Reported as: "what is this map? It
+     doesn't make any sense ... at least I need to see the buildings, and
+     the roads ... are we at the north side of the map or south?"
 
-  function mapH() {
-    return Math.round(MAP_W * CFG.map.span_x_m / CFG.map.span_y_m);
-  }
+     NORTH IS UP, because that is what every map a person has ever used
+     does, and the previous one's quarter turn was the reason that
+     question had to be asked at all. The Strip runs NNE to SSW, so the
+     result is tall and narrow -- which is the actual shape of the place,
+     and sizing is driven off height so it fits a phone and a laptop
+     without ever being cropped.
 
-  /* geo (x=east/west, y=north/south) -> screen, quarter-turned */
-  function project(v) {
-    var p = CFG.map.pos[v];
-    return { x: p[1] * MAP_W, y: p[0] * mapH() };
+     No embed, deliberately. No API key, nothing third-party running in
+     the reader's browser, and it still draws with the wifi down -- which
+     is exactly when somebody in a packed hall needs to know which way the
+     Venetian is. */
+  var GEO = null, geoState = "idle";
+
+  /* Equirectangular, which is exact enough across two kilometres and keeps
+     north pointing at the top of the screen. Metres, so the scale bar is
+     arithmetic rather than a guess. */
+  function projector(bbox) {
+    var south = bbox[0], west = bbox[1], north = bbox[2], east = bbox[3];
+    var mLat = 110540.0;
+    var mLon = 111320.0 * Math.cos((south + north) / 2 * Math.PI / 180);
+    var w = (east - west) * mLon, h = (north - south) * mLat;
+    return {
+      w: w, h: h,
+      x: function (lon) { return (lon - west) * mLon; },
+      y: function (lat) { return (north - lat) * mLat; }
+    };
   }
 
   function svgEl(tag, attrs) {
@@ -629,98 +653,208 @@
          + "&travelmode=walking";
   }
 
-  /* Padding is derived, not guessed. The biggest circle can reach r=39 and
-     its label sits 18px below that, so a venue sitting on the edge of the
-     plot -- Wynn/Encore does, it is the northern end -- needs room for both
-     or it gets clipped off the corner. It was. */
-  var R_MAX = 39, LABEL_DROP = 22, SCALE_BAND = 34;
+  /* Road weights in METRES, so they scale with the map instead of needing
+     a stroke-width that means something different at every size. */
+  var ROAD_W = { motorway: 26, motorway_link: 14, trunk: 22, trunk_link: 12,
+                 primary: 20, primary_link: 11, secondary: 15,
+                 secondary_link: 9, tertiary: 12, residential: 8 };
+
+  function loadGeo() {
+    if (geoState === "loading" || geoState === "ready") return;
+    geoState = "loading";
+    fetch("/intelligence/vegas-map.json")
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (g) { GEO = g; geoState = "ready"; renderMap(); })
+      .catch(function () { geoState = "failed"; renderMap(); });
+  }
 
   function renderMap() {
     var host = $("#mapsvg");
     if (!host) return;
-    var H = mapH();
-    var padX = 84, padT = 34 + R_MAX, padB = R_MAX + LABEL_DROP + SCALE_BAND;
-    var names = Object.keys(CFG.map.pos);
 
-    // How many of the CURRENTLY FILTERED sessions sit at each venue.
-    // This is the heat: narrow to a lane and the map shows where that
-    // lane actually lives.
+    if (geoState === "idle") { loadGeo(); }
+    if (geoState === "loading" || geoState === "idle") {
+      host.textContent = "";
+      host.appendChild(el("p", "empty", "Drawing the map…"));
+      return;
+    }
+    if (geoState === "failed" || !GEO) {
+      host.textContent = "";
+      host.appendChild(el("p", "empty",
+        "The map geometry did not load. Everything else on this page still "
+        + "works, and the distances below are unaffected."));
+      renderHops(currentHops());
+      return;
+    }
+
+    var P = projector(GEO.bbox);
+    var pad = 30;
+    var svg = svgEl("svg", {
+      viewBox: (-pad) + " " + (-pad) + " " + (P.w + pad * 2) + " "
+               + (P.h + pad * 2),
+      preserveAspectRatio: "xMidYMid meet",
+      class: "rimap", role: "img",
+      "aria-label": "Map of the re:Invent venues on the Las Vegas Strip, "
+        + "north at the top, showing building footprints and streets."
+    });
+
+    svg.appendChild(svgEl("rect", {
+      x: -pad, y: -pad, width: P.w + pad * 2, height: P.h + pad * 2,
+      class: "ground" }));
+
+    function pathOf(pts, close) {
+      var d = "";
+      for (var i = 0; i < pts.length; i++)
+        d += (i ? "L" : "M") + P.x(pts[i][1]).toFixed(1) + ","
+             + P.y(pts[i][0]).toFixed(1);
+      return d + (close ? "Z" : "");
+    }
+
+    /* Roads twice: a dark casing, then a lighter fill on top. That is how
+       a street reads as a street rather than as a line. */
+    var casing = svgEl("g", { class: "roadcase" });
+    var fill = svgEl("g", { class: "roadfill" });
+    GEO.roads.forEach(function (r) {
+      var w = ROAD_W[r.c] || 8;
+      var d = pathOf(r.p, false);
+      casing.appendChild(svgEl("path", { d: d, "stroke-width": w + 6 }));
+      fill.appendChild(svgEl("path", { d: d, "stroke-width": w }));
+    });
+    svg.appendChild(casing);
+    svg.appendChild(fill);
+
+    /* Buildings. Everything in muted grey for context; the five venues in
+       the accent, because those are the only ones anyone is walking to. */
+    var others = svgEl("g", { class: "bldg" });
+    var ours = svgEl("g", { class: "bldg venue" });
+    GEO.buildings.forEach(function (b) {
+      var node = svgEl("path", { d: pathOf(b.p, true) });
+      if (b.n) node.appendChild(svgEl("title", {})).textContent = b.n;
+      (b.v ? ours : others).appendChild(node);
+    });
+    svg.appendChild(others);
+    svg.appendChild(ours);
+
+    /* The route for the chosen day, over the top of the streets. */
+    var hops = currentHops();
+    var routeG = svgEl("g", { class: "route" });
+    hops.forEach(function (h, i) {
+      var a = CFG.travel.points[h.from], b = CFG.travel.points[h.to];
+      if (!a || !b || h.from === h.to) return;
+      routeG.appendChild(svgEl("line", {
+        x1: P.x(a[1]), y1: P.y(a[0]), x2: P.x(b[1]), y2: P.y(b[0]),
+        class: "hop " + h.verdict }));
+      var mx = (P.x(a[1]) + P.x(b[1])) / 2;
+      var my = (P.y(a[0]) + P.y(b[0])) / 2;
+      var lab = svgEl("text", { x: mx, y: my - 22,
+                                class: "hoplab " + h.verdict,
+                                "text-anchor": "middle" });
+      lab.textContent = (i + 1) + ". " + h.gapText;
+      routeG.appendChild(lab);
+    });
+    svg.appendChild(routeG);
+
+    /* Venue pins, sized by how many of the filtered sessions are there.
+       Tapping one filters the catalogue to that property. */
     var heat = {}, total = 0;
-    names.forEach(function (n) { heat[n] = 0; });
-    filtered().forEach(function (s) {
+    Object.keys(CFG.travel.matrix).forEach(function (n) { heat[n] = 0; });
+    filtered().forEach(function (sn) {
       var seen = {};
-      s.when.forEach(function (w) {
+      sn.when.forEach(function (w) {
         var v = venueName(w);
         if (state.day && w.d !== state.day) return;
         if (seen[v]) return;
-        seen[v] = 1; heat[v] += 1; total += 1;
+        seen[v] = 1;
+        if (heat[v] === undefined) heat[v] = 0;
+        heat[v] += 1; total += 1;
       });
     });
-    var peak = Math.max.apply(null, names.map(function (n) { return heat[n]; }));
+    var peak = Math.max.apply(null, Object.keys(heat).map(
+      function (n) { return heat[n]; }).concat([1]));
     var nEl = $("#map-n");
     if (nEl) nEl.textContent = total.toLocaleString();
 
-    var svg = svgEl("svg", {
-      viewBox: "0 0 " + (MAP_W + padX * 2) + " " + (H + padT + padB),
-      class: "rimap", role: "img",
-      "aria-label": "The five re:Invent venues positioned to scale, "
-        + "sized by how many matching sessions each holds."
-    });
-    var g = svgEl("g", { transform: "translate(" + padX + "," + padT + ")" });
-    svg.appendChild(g);
-
-    // the route for the chosen day, drawn under the venues
-    var day = $("#map-day") ? $("#map-day").value : "";
-    var hops = day ? routeFor(day) : [];
-    hops.forEach(function (h, i) {
-      var a = project(h.from), b = project(h.to);
-      var line = svgEl("line", {
-        x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-        class: "hop " + h.verdict
-      });
-      g.appendChild(line);
-      var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      var lab = svgEl("text", { x: mx, y: my - 8, class: "hoplab " + h.verdict,
+    var pins = svgEl("g", { class: "pins" });
+    Object.keys(CFG.travel.points).forEach(function (name) {
+      var p = CFG.travel.points[name];
+      var cx = P.x(p[1]), cy = P.y(p[0]);
+      var r = 34 + Math.round(Math.sqrt(heat[name] / peak || 0) * 56);
+      var g = svgEl("g", { class: "pin" + (state.venue === name
+                                           ? " on" : "") });
+      g.appendChild(svgEl("circle", { cx: cx, cy: cy, r: r,
+                                      class: "halo" }));
+      g.appendChild(svgEl("circle", { cx: cx, cy: cy, r: 13,
+                                      class: "dot" }));
+      var num = svgEl("text", { x: cx, y: cy + r + 46, class: "vnum",
                                 "text-anchor": "middle" });
-      lab.textContent = (i + 1) + ". " + h.gapText;
-      g.appendChild(lab);
-    });
-
-    names.forEach(function (n) {
-      var p = project(n);
-      var frac = peak ? heat[n] / peak : 0;
-      var r = 9 + Math.round(Math.sqrt(frac) * 30);
-      var grp = svgEl("g", { class: "venue" });
-      grp.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: r,
-                                        class: "vdot" }));
-      var t1 = svgEl("text", { x: p.x, y: p.y + 4, class: "vnum",
+      num.textContent = heat[name];
+      var nm = svgEl("text", { x: cx, y: cy + r + 86, class: "vname",
                                "text-anchor": "middle" });
-      t1.textContent = heat[n];
-      grp.appendChild(t1);
-      var t2 = svgEl("text", { x: p.x, y: p.y + r + 18, class: "vname",
-                               "text-anchor": "middle" });
-      t2.textContent = n;
-      grp.appendChild(t2);
-      g.appendChild(grp);
+      nm.textContent = name;
+      g.appendChild(num);
+      g.appendChild(nm);
+      g.addEventListener("click", function () {
+        state.venue = (state.venue === name) ? "" : name;
+        shown = PAGE_SIZE;
+        buildFilters();
+        renderChips(); renderBrowse(); renderMap();
+      });
+      var t = svgEl("title", {});
+      t.textContent = name + " — " + heat[name] + " session(s) matching"
+                      + " your filters. Tap to show only these.";
+      g.appendChild(t);
+      pins.appendChild(g);
     });
+    svg.appendChild(pins);
 
-    // scale bar: 500 m, so the distances are readable rather than implied
-    var perM = MAP_W / CFG.map.span_y_m;
-    var barLen = Math.round(500 * perM);
-    var by = H + R_MAX + LABEL_DROP + 14;
-    g.appendChild(svgEl("line", { x1: 0, y1: by, x2: barLen, y2: by,
-                                  class: "scalebar" }));
-    var st = svgEl("text", { x: 0, y: by - 6, class: "scaletxt" });
+    /* Compass. The question was literally "are we at the north side of the
+       map or south", so this is not decoration. */
+    var cx = P.w - 80, cy = 80;
+    var comp = svgEl("g", { class: "compass" });
+    comp.appendChild(svgEl("circle", { cx: cx, cy: cy, r: 54,
+                                       class: "compdisc" }));
+    comp.appendChild(svgEl("path", {
+      d: "M" + cx + "," + (cy - 40) + "L" + (cx + 15) + "," + (cy + 12)
+         + "L" + cx + "," + (cy + 2) + "L" + (cx - 15) + "," + (cy + 12) + "Z",
+      class: "needle" }));
+    var nlab = svgEl("text", { x: cx, y: cy + 40, class: "complab",
+                               "text-anchor": "middle" });
+    nlab.textContent = "N";
+    comp.appendChild(nlab);
+    svg.appendChild(comp);
+
+    /* Scale bar, in metres, because the viewBox is already in metres. */
+    var barM = 500, bx = 40, by = P.h - 40;
+    var scale = svgEl("g", { class: "scale" });
+    scale.appendChild(svgEl("line", { x1: bx, y1: by, x2: bx + barM, y2: by,
+                                      class: "scalebar" }));
+    scale.appendChild(svgEl("line", { x1: bx, y1: by - 10, x2: bx,
+                                      y2: by + 10, class: "scalebar" }));
+    scale.appendChild(svgEl("line", { x1: bx + barM, y1: by - 10,
+                                      x2: bx + barM, y2: by + 10,
+                                      class: "scalebar" }));
+    var st = svgEl("text", { x: bx + barM / 2, y: by - 20,
+                             class: "scaletxt", "text-anchor": "middle" });
     st.textContent = "500 m";
-    g.appendChild(st);
+    scale.appendChild(st);
+    svg.appendChild(scale);
 
-    var nt = svgEl("text", { x: 0, y: -(R_MAX + 12), class: "scaletxt" });
-    nt.textContent = "← north (Wynn/Encore end)    south (MGM Grand) →";
-    g.appendChild(nt);
+    var attr = svgEl("text", { x: 10, y: P.h + 18, class: "attrib" });
+    attr.textContent = GEO.attribution;
+    svg.appendChild(attr);
 
     host.textContent = "";
     host.appendChild(svg);
     renderHops(hops);
+  }
+
+  function currentHops() {
+    var sel = $("#map-day");
+    var day = sel ? sel.value : "";
+    return day ? routeFor(day) : [];
   }
 
   /* The day's hops, reusing exactly the plan's own feasibility rule so the

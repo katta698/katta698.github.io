@@ -68,6 +68,7 @@ BROWSER = {
     "check_player_overlays", "check_no_orphan_music",
     "check_narration_true", "check_colophon_built",
     "check_ai_fresh",
+    "check_reinvent_fits",
 }
 
 # Not run here. Each needs the network or an API and fails on a train.
@@ -144,6 +145,9 @@ HOOK_BROWSER = {
     "check_post_controls",       # ask, arrow and star not swallowed
     "check_page_settle",         # the page not rebuilding itself
     "check_sticky_clear",        # nothing hiding under the header
+    "check_reinvent_fits",       # the page fits the phone, and every tab
+                                 # can still be tapped -- it shipped 72px
+                                 # too wide with a whole view unreachable
 }
 
 PER_CHECK_TIMEOUT = 420
