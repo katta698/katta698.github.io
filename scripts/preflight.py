@@ -66,10 +66,21 @@ BROWSER = {
     "check_filter_state", "check_theme_strip", "check_instrument_glyphs",
     "check_shell_parts", "check_reachable",
     "check_player_overlays", "check_no_orphan_music",
-    "check_narration_true", "check_colophon_built",
+    "check_narration_true",
     "check_ai_fresh",
     "check_reinvent_fits", "check_reinvent_clock",
 }
+
+# check_colophon_built was in BROWSER and drives no browser at all -- it
+# runs the builder and diffs the file, in seven seconds. Being listed here
+# meant --fast skipped it AND the push hook skipped it, so nothing ever
+# asked whether the served colophon matched the repository.
+#
+# It went stale exactly as you would expect: sync_blog.py regenerates the
+# page on every publish, the documented `git add` line did not include
+# how-this-was-made/, so four windows rebuilt it and left it unstaged for
+# weeks. The live page said 279 posts while origin/main carried 281. Moved
+# out, so it now runs on every push from every window.
 
 # Not run here. Each needs the network or an API and fails on a train.
 SKIP = {"check_links", "check_query_shapes", "check_status_fresh",
