@@ -99,6 +99,27 @@ try:
                 if not stayed:
                     bad.append("%s/%s pulled you back %+d"
                                % (lab, tab, y2 - y1))
+            # The hero "Plan a day" button is the same action as the tab
+            # and must behave like it. It used to scroll the document to
+            # the top instead, which is upward, away from the planner --
+            # you press a button for a thing and the thing leaves.
+            pg.evaluate("document.getElementById('tab-browse').click()")
+            pg.wait_for_timeout(200)
+            pg.evaluate("window.scrollTo(0,0)")
+            pg.wait_for_timeout(200)
+            pg.evaluate("document.getElementById('cta-go').click()")
+            pg.wait_for_timeout(1200)
+            t = pg.evaluate("Math.round(document.querySelector"
+                            "('.resultbar').getBoundingClientRect().top)")
+            opened = pg.evaluate("!document.getElementById('plan2').hidden")
+            visible = -4 <= t < h - 40
+            print("   %-7s opens planner: %-5s | lands visible: %-5s (y=%d)"
+                  % ("cta", opened, visible, t))
+            if not opened:
+                bad.append("%s/cta did not open the planner" % lab)
+            if not visible:
+                bad.append("%s/cta left the planner off screen" % lab)
+
             print("   errors:", errs if errs else "none")
             if errs:
                 bad.append(lab + " errors")
