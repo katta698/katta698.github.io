@@ -1570,8 +1570,19 @@
     ta.rows = 2;
     ta.placeholder = "What did you take away? (kept on this device)";
     ta.value = noteFor(code);
-    ta.addEventListener("input", function () { setNote(code, ta.value); });
+    var flag = el("span", "saved", "");
+    var t = null;
+    ta.addEventListener("input", function () {
+      setNote(code, ta.value);
+      // Writing into a box that gives no feedback feels like writing into
+      // nothing, which is why people retype notes elsewhere.
+      flag.textContent = "saved";
+      flag.classList.add("on");
+      clearTimeout(t);
+      t = setTimeout(function () { flag.classList.remove("on"); }, 1400);
+    });
     wrap.appendChild(ta);
+    wrap.appendChild(flag);
     return wrap;
   }
 
@@ -1852,153 +1863,6 @@
         save(NOW_KEY, nowState); renderNow();
       }
     };
-  }
-
-
-  /* ---- team coverage --------------------------------------------------
-     The point of sending six people to 1,582 sessions is that they do not
-     all sit in the same room. Nothing in the official catalog knows a team
-     exists, so this merges plans: everyone shares their plan link, they go
-     in here, and it says who is doubled up and which hours nobody is
-     covering.
-
-     No backend and no accounts. A plan already travels in its own URL, so
-     the merge is pasting text. Nothing is uploaded anywhere. */
-  var TEAM_KEY = "ri2026.team";
-
-  function parseTeam(text) {
-    var people = [];
-    (text || "").split(/\r?\n/).forEach(function (line) {
-      line = line.trim();
-      if (!line) return;
-      var name = "", rest = line;
-      var colon = line.indexOf(":");
-      // "Asha: <link>" -- but not the colon in "https://"
-      if (colon > 0 && !/^https?$/i.test(line.slice(0, colon))) {
-        name = line.slice(0, colon).trim();
-        rest = line.slice(colon + 1).trim();
-      }
-      var m = /[#&]plan=([^&\s]*)/.exec(rest);
-      var codes = (m ? decodeURIComponent(m[1]) : rest)
-        .split(/[,\s]+/).map(function (c) { return c.trim().toUpperCase(); })
-        .filter(Boolean);
-      if (!codes.length) return;
-      people.push({ name: name || ("Person " + (people.length + 1)),
-                    codes: codes });
-    });
-    return people;
-  }
-
-  function renderTeam() {
-    var host = $("#teambody");
-    if (!host) return;
-    host.textContent = "";
-
-    var people = parseTeam($("#teamin") ? $("#teamin").value : "");
-    if (plan.length) people.unshift({ name: "You", codes: plan.slice() });
-    if (!people.length) {
-      host.appendChild(el("p", "empty",
-        "Paste one plan link per line. Everyone gets their own link from "
-        + "My plan → Copy a link to this plan."));
-      return;
-    }
-
-    var by = {};
-    DATA.sessions.forEach(function (x) { by[x.c] = x; });
-
-    // who is going to what
-    var who = {}, unknown = [];
-    people.forEach(function (p) {
-      p.codes.forEach(function (c) {
-        if (!by[c]) { if (unknown.indexOf(c) === -1) unknown.push(c); return; }
-        (who[c] = who[c] || []).push(p.name);
-      });
-    });
-
-    var codes = Object.keys(who);
-    var head = el("p", "count");
-    head.innerHTML = "<b>" + people.length + "</b> "
-      + (people.length === 1 ? "person" : "people") + " · <b>"
-      + codes.length + "</b> distinct session"
-      + (codes.length === 1 ? "" : "s") + " covered";
-    host.appendChild(head);
-
-    // doubled up
-    var dup = codes.filter(function (c) { return who[c].length > 1; });
-    var sec = el("section", "teamsec");
-    sec.appendChild(el("h3", null, dup.length
-      ? dup.length + " session(s) more than one of you is in"
-      : "Nobody is doubled up"));
-    if (dup.length) {
-      sec.appendChild(el("p", "teamhint",
-        "Worth a look: two people in one room is one room nobody else is "
-        + "in. Sometimes that is deliberate."));
-      dup.forEach(function (c) {
-        var r = el("div", "teamrow dup");
-        r.appendChild(el("span", "tcode", c));
-        r.appendChild(el("span", "ttitle", by[c].t));
-        r.appendChild(el("span", "twho", who[c].join(", ")));
-        sec.appendChild(r);
-      });
-    }
-    host.appendChild(sec);
-
-    // hours nobody is in anything
-    var gaps = el("section", "teamsec");
-    gaps.appendChild(el("h3", null, "Hours nobody has anything booked"));
-    var busy = {};
-    codes.forEach(function (c) {
-      (by[c].when || []).forEach(function (w) {
-        var end = w.e == null ? w.b + 60 : w.e;
-        for (var m = w.b; m < end; m += 30)
-          busy[w.d + "|" + (Math.floor(m / 30) * 30)] = true;
-      });
-    });
-    var any = false;
-    CFG.days.forEach(function (d) {
-      var free = [];
-      for (var m = 8 * 60; m < 18 * 60; m += 30)
-        if (!busy[d + "|" + m]) free.push(m);
-      if (!free.length) return;
-      // collapse consecutive half-hours into ranges
-      var runs = [], start = null, prev = null;
-      free.forEach(function (m) {
-        if (start === null) { start = m; prev = m; return; }
-        if (m === prev + 30) { prev = m; return; }
-        runs.push([start, prev + 30]); start = m; prev = m;
-      });
-      if (start !== null) runs.push([start, prev + 30]);
-      var r = el("div", "teamrow");
-      r.appendChild(el("span", "tday", dayLabel(d)));
-      r.appendChild(el("span", "ttitle", runs.map(function (x) {
-        return hhmm(x[0]) + "–" + hhmm(x[1]); }).join(",  ")));
-      gaps.appendChild(r);
-      any = true;
-    });
-    if (!any) gaps.appendChild(el("p", "teamhint",
-      "Every half-hour between 08:00 and 18:00 has somebody in something."));
-    host.appendChild(gaps);
-
-    // per person
-    var per = el("section", "teamsec");
-    per.appendChild(el("h3", null, "Who is doing what"));
-    people.forEach(function (p) {
-      var r = el("div", "teamrow");
-      r.appendChild(el("span", "tday", p.name));
-      var known = p.codes.filter(function (c) { return by[c]; });
-      r.appendChild(el("span", "ttitle",
-        known.length + " session(s): " + known.join(", ")));
-      per.appendChild(r);
-    });
-    host.appendChild(per);
-
-    if (unknown.length) {
-      var u = el("section", "teamsec");
-      u.appendChild(el("h3", null, "Codes not in this catalog"));
-      u.appendChild(el("p", "teamhint", unknown.join(", ")
-        + " — either a typo, or sessions AWS has since withdrawn."));
-      host.appendChild(u);
-    }
   }
 
 
@@ -2510,19 +2374,61 @@
     });
     host.appendChild(list);
 
+    /* Adding was one-way: nothing took it back, and nothing cleared the
+       form either. Reported as "once we select plan my day, how do we
+       undo it? how do we reset it? I don't see any option."
+
+       Undo removes exactly what THIS click added, not the whole plan --
+       which may well contain sessions starred by hand, and swallowing
+       those would be a worse bug than the one being fixed. */
     var foot = el("div", "planfoot");
     var add = el("button", "ghost", "Star all " + chain.length
                  + " into my plan");
     add.addEventListener("click", function () {
+      var added = [];
       chain.forEach(function (x) {
-        if (plan.indexOf(x.s.c) === -1) plan.push(x.s.c);
+        if (plan.indexOf(x.s.c) === -1) {
+          plan.push(x.s.c);
+          added.push(x.s.c);
+        }
       });
       save(PLAN_KEY, plan);
       syncStars(); renderPlan(); fillMapDays();
-      add.textContent = "Added — see My plan";
       add.disabled = true;
+      add.textContent = added.length
+        ? "Added " + added.length + " to my plan"
+        : "All of these were already starred";
+      if (!added.length) return;
+
+      var undo = el("button", "ghost", "Undo");
+      undo.addEventListener("click", function () {
+        plan = plan.filter(function (c) { return added.indexOf(c) === -1; });
+        save(PLAN_KEY, plan);
+        syncStars(); renderPlan(); fillMapDays();
+        undo.remove();
+        add.disabled = false;
+        add.textContent = "Star all " + chain.length + " into my plan";
+      });
+      foot.appendChild(undo);
     });
     foot.appendChild(add);
+
+    var reset = el("button", "ghost", "Reset this form");
+    reset.addEventListener("click", function () {
+      planner = { day: "", at: "", lane: "all", service: "",
+                  pace: "standard", sponsored: false };
+      save("ri2026.planner", planner);
+      rangeCache = {};
+      [["#pl-day", ""], ["#pl-at", ""], ["#pl-lane", "all"],
+       ["#pl-service", ""], ["#pl-pace", "standard"]].forEach(function (q) {
+        var e2 = $(q[0]);
+        if (e2) { e2.value = q[1]; e2.disabled = false; }
+      });
+      var sp2 = $("#pl-sponsored");
+      if (sp2) sp2.checked = false;
+      renderPlanner();
+    });
+    foot.appendChild(reset);
     host.appendChild(foot);
   }
 
@@ -2685,19 +2591,10 @@
     $("#tab-plan").addEventListener("click", function () { view("plan"); });
     $("#tab-map").addEventListener("click", function () { view("map"); });
     $("#tab-now").addEventListener("click", function () { view("now"); });
-    $("#tab-team").addEventListener("click", function () { view("team"); });
     $("#tab-news").addEventListener("click", function () { view("news"); });
     $("#tab-plan2").addEventListener("click",
                                      function () { view("plan2"); });
 
-    var teamTimer = null;
-    $("#teamin").addEventListener("input", function () {
-      clearTimeout(teamTimer);
-      teamTimer = setTimeout(function () {
-        save(TEAM_KEY, $("#teamin").value);
-        renderTeam();
-      }, 250);
-    });
 
     $("#share").addEventListener("click", function () {
       var url = location.origin + location.pathname +
@@ -2720,6 +2617,54 @@
     $("#md").addEventListener("click", function () {
       if (!plan.length) { alert("Star some sessions first."); return; }
       download("reinvent-2026-notes.md", buildMarkdown(), "text/markdown");
+    });
+
+    /* A backup that a person can actually move between devices. No
+       server, so this is the only honest answer to "how are my notes
+       saved" beyond "in this browser". */
+    $("#backup").addEventListener("click", function () {
+      var payload = {
+        kind: "reinvent-2026-notebook", version: 1,
+        saved: new Date().toISOString(),
+        plan: plan, notes: notes, planner: planner, travel: tune
+      };
+      download("reinvent-2026-notebook.json",
+               JSON.stringify(payload, null, 2), "application/json");
+    });
+
+    $("#restore").addEventListener("click", function () {
+      $("#restore-file").click();
+    });
+
+    $("#restore-file").addEventListener("change", function (e) {
+      var f = e.target.files && e.target.files[0];
+      if (!f) return;
+      var fr = new FileReader();
+      fr.onload = function () {
+        var d;
+        try { d = JSON.parse(fr.result); } catch (err) { d = null; }
+        if (!d || d.kind !== "reinvent-2026-notebook") {
+          alert("That does not look like a notebook file saved by this "
+                + "page.");
+          return;
+        }
+        var howMany = (d.plan || []).length;
+        var howManyNotes = Object.keys(d.notes || {}).length;
+        if (!confirm("Restore " + howMany + " starred session(s) and "
+                     + howManyNotes + " note(s)? This replaces what is in "
+                     + "this browser now.")) return;
+        plan = d.plan || [];
+        notes = d.notes || {};
+        if (d.planner) planner = d.planner;
+        if (d.travel) tune = d.travel;
+        save(PLAN_KEY, plan); save(NOTE_KEY, notes);
+        save("ri2026.planner", planner); save(TUNE_KEY, tune);
+        syncStars(); renderPlan(); fillMapDays();
+        alert("Restored " + howMany + " session(s) and " + howManyNotes
+              + " note(s).");
+      };
+      fr.readAsText(f);
+      e.target.value = "";
     });
 
     $("#wipe").addEventListener("click", function () {
@@ -2747,7 +2692,6 @@
     $("#plan").hidden = which !== "plan";
     $("#map").hidden = which !== "map";
     $("#now").hidden = which !== "now";
-    $("#team").hidden = which !== "team";
     $("#news").hidden = which !== "news";
     $("#plan2").hidden = which !== "plan2";
     /* Search, filters and lanes drive Browse AND the map's heat, so they
@@ -2757,8 +2701,8 @@
     $(".controls").hidden = !showControls;
     document.querySelector(".lanes").hidden = !showControls;
     [["#tab-browse", "browse"], ["#tab-plan", "plan"], ["#tab-map", "map"],
-     ["#tab-now", "now"], ["#tab-team", "team"],
-     ["#tab-news", "news"], ["#tab-plan2", "plan2"]]
+     ["#tab-now", "now"], ["#tab-news", "news"],
+     ["#tab-plan2", "plan2"]]
       .forEach(function (p) {
         $(p[0]).setAttribute("aria-selected",
                              which === p[1] ? "true" : "false");
@@ -2766,11 +2710,6 @@
     if (which === "plan") renderPlan();
     if (which === "map") { fillMapDays(); renderMap(); }
     if (which === "now") { fillNowControls(); renderNow(); }
-    if (which === "team") {
-      var ta = $("#teamin");
-      if (ta && !ta.value) ta.value = load(TEAM_KEY, "") || "";
-      renderTeam();
-    }
     if (which === "news") renderNews();
     if (which === "plan2") { fillPlannerControls(); renderPlanner(); }
   }

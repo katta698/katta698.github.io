@@ -30,10 +30,12 @@ that could not have shown up before December:
 Neither is exotic. Both are what happens when the only clock a check ever
 sees is the one on the machine running it.
 
-So this pins the browser to three moments -- mid-event, after it, and now
--- and drives the page from each. It also runs the team tab through the
-input a person actually pastes: blank lines, a bare link with no name,
-lower-case codes, and a typo.
+So this pins the browser to two moments the machine's own clock can never
+reach -- mid-event and after it -- and drives the page from each.
+
+(It used to exercise a Team view as well. That was removed: "everybody has
+their own schedule, we're not really worried about what each individual is
+doing". The page is a personal notebook, not a coordination tool.)
 """
 
 import sys, subprocess, time
@@ -131,33 +133,6 @@ try:
         check("no errors after the event", not e2, str(e2)[:80])
         ctx2.close()
 
-        # ---- 3. team tab, with messy real-world input ------------------
-        ctx3 = b.new_context(viewport={"width": 1200, "height": 900})
-        pg3 = ctx3.new_page()
-        e3 = []
-        pg3.on("pageerror", lambda e: e3.append(str(e)))
-        pg3.goto(BASE + "#plan=BIZ318,CMP202", wait_until="networkidle")
-        pg3.wait_for_selector(".card", state="attached", timeout=30000)
-        pg3.evaluate("document.getElementById('tab-team').click()")
-        pg3.wait_for_timeout(500)
-        pg3.fill("#teamin",
-                 "  \n"
-                 "Asha : https://jayanthkatta.com/reinvent-2026/#plan=CMP202,NET305\n"
-                 "https://jayanthkatta.com/reinvent-2026/#plan=CON303\n"
-                 "Ravi: cmp202 , net305\n"
-                 "Priya: NOTACODE\n")
-        pg3.wait_for_timeout(1200)
-        print("\n=== TEAM TAB with messy input")
-        print("  summary:", pg3.inner_text("#teambody .count"))
-        check("blank lines ignored, unnamed line still counted",
-              "4 people" in pg3.inner_text("#teambody .count")
-              or "5 people" in pg3.inner_text("#teambody .count"))
-        check("lower-case codes still match",
-              pg3.locator(".teamrow.dup").count() >= 1)
-        check("a bad code is reported, not silently dropped",
-              "NOTACODE" in pg3.inner_text("#teambody"))
-        check("no errors on the team tab", not e3, str(e3)[:80])
-        ctx3.close()
         b.close()
 finally:
     srv.terminate()

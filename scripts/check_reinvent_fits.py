@@ -54,7 +54,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WIDTHS = (390, 360)
-TABS = ("browse", "plan", "map", "now", "team", "news", "plan2")
+TABS = ("browse", "plan", "map", "now", "news", "plan2")
 
 OVERFLOW_JS = """
 () => {
