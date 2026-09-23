@@ -50,6 +50,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGEDIR = os.path.join(ROOT, "reinvent-2026")
 HTML = os.path.join(PAGEDIR, "index.html")
 DATA = os.path.join(ROOT, "intelligence", "reinvent2026.json")
+BUILDER = os.path.join(ROOT, "scripts", "build_reinvent_page.py")
 
 EVENT_DAYS = ("2026-11-30", "2026-12-01", "2026-12-02",
               "2026-12-03", "2026-12-04")
@@ -73,6 +74,11 @@ def need_for(a, b, travel):
 def metres_between(a, b, travel):
     cell = (travel["matrix"].get(a) or {}).get(b)
     return cell["m"] if cell else 0
+
+
+def scheduled_count(sessions):
+    """How many carry at least one real slot -- the page prints this too."""
+    return sum(1 for x in sessions if x.get("when"))
 
 
 def config_of(html):
@@ -117,6 +123,48 @@ def main():
             "render as \"undefined\" on the page and raise nothing" % bad_refs)
     print("  %d session(s), %d service(s), %d venue(s), %d room(s)"
           % (len(sessions), len(services), len(venues), len(rooms)))
+
+    # ---- 1a. every session count PRINTED on the page is the real one ------
+    #
+    # The header count comes from the store at build time. The callout above
+    # the planner did not -- it was typed, so it kept saying 1,582 on a day
+    # the catalog held 1,581, three lines above a header that said 1,581.
+    # Reported as "the sessions are 1581 or 1582?", which is the right
+    # question to ask of a page whose whole claim is that its numbers come
+    # from somewhere.
+    #
+    # Anything of the form "N sessions" in the served HTML has to agree with
+    # the store. A figure that disagrees is not a rounding difference; it is
+    # a number nothing is generating.
+    # Two numbers on the page are legitimately not this count and must not
+    # be flagged: the year in "re:Invent 2026 sessions", and AWS's own
+    # published plan ("will include more than 2,200 sessions"), which is a
+    # quotation and is generated from the builder's constant. That constant
+    # is read from the builder rather than repeated here, so the two cannot
+    # drift apart.
+    planned = re.search(r"^AWS_PLANNED\s*=\s*(\d+)",
+                        io.open(BUILDER, encoding="utf-8").read(), re.M)
+    allowed = {len(sessions), scheduled_count(sessions)}
+    if planned:
+        allowed.add(int(planned.group(1)))
+    printed = set()
+    for m in re.finditer(r"([\d,]{3,7})\s+sessions?\b", html):
+        if html[max(0, m.start() - 10):m.start()].endswith("re:Invent "):
+            continue
+        try:
+            printed.add(int(m.group(1).replace(",", "")))
+        except ValueError:
+            pass
+    wrong = sorted(n for n in printed if n not in allowed)
+    if wrong:
+        problems.append(
+            "the page prints %s where the store holds %d session(s). A count "
+            "that is typed rather than generated goes stale the first time "
+            "AWS adds or drops one"
+            % (", ".join("{:,}".format(n) for n in wrong), len(sessions)))
+    else:
+        print("  every session count printed on the page comes from the store "
+              "or from the builder")
 
     # ---- 1b. the newer index tables resolve too ---------------------------
     #

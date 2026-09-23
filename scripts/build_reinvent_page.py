@@ -573,7 +573,7 @@ PAGE = """<!DOCTYPE html>
       using it is nagging, not signposting. -->
  <section id="cta" class="cta" hidden>
   <div>
-   <strong>1,582 sessions is the problem, not the feature.</strong>
+   <strong>__TOTAL__ sessions is the problem, not the feature.</strong>
    <span>Tell <b>Plan a day</b> which day you are on and where you will be
     standing, and it builds an itinerary you can actually walk &mdash;
     travel between buildings counted, a real break in the middle, and the
