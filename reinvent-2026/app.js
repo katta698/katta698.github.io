@@ -2,6 +2,10 @@
 (function () {
   "use strict";
   var CFG = window.RI_CONFIG, DATA = null;
+  /* AWS's stated final size, written in from the builder's constant so
+     the percentage the page prints cannot drift from the one it was
+     built with. */
+  var AWS_PLANNED = 2200;
   /* 60 cards is fifteen phone screens before the "show more" button.
      Measured in a sweep of every view: nobody reported it, which is not
      the same as nobody suffering it. A phone gets a shorter first page
@@ -126,10 +130,82 @@
   function venueName(slot) { return DATA.venues[slot.v]; }
   function roomName(slot) { return DATA.rooms[slot.r]; }
 
+  /* Lanes are defined at build time as indices into the stored Services
+     table. A live pull rebuilds that table from the fresh payload, and a
+     table built from a different set of sessions does not number its
+     services the same way -- so the indices would go on matching, silently,
+     against whatever now sits at 37 and 103. The names are resolved once,
+     from the store the page booted with, and re-indexed against whatever
+     table is current. */
+  var LANE_NAMES = null, LANE_SV = {};
+
+  function indexLanes() {
+    var svs = (DATA.facets && DATA.facets.Services) || [];
+    if (!LANE_NAMES) {
+      LANE_NAMES = {};
+      CFG.lanes.forEach(function (l) {
+        /* The names the build resolved, not names read back out of
+           whatever store happens to have loaded first -- which on a live
+           pull is already the table that renumbered them. */
+        LANE_NAMES[l.id] = (l.sv || []).slice();
+      });
+    }
+    LANE_SV = {};
+    CFG.lanes.forEach(function (l) {
+      LANE_SV[l.id] = LANE_NAMES[l.id].map(function (n) {
+        return svs.indexOf(n);
+      }).filter(function (i) { return i >= 0; });
+    });
+  }
+
   function laneServices(id) {
+    if (LANE_SV[id]) return LANE_SV[id];
     for (var i = 0; i < CFG.lanes.length; i++)
       if (CFG.lanes[i].id === id) return CFG.lanes[i].services;
     return null;
+  }
+
+  /* Every session count the page prints, recomputed from whatever DATA now
+     holds. Asked directly: "when the live sessions are updated, why does
+     everything still show the previous numbers -- are they hard coded?"
+     They were: the header, the lane tabs, the callout and the paragraph
+     about how much of the programme exists were all written in at build
+     time, so a live pull refreshed the results underneath them and left
+     every figure around them describing the copy it had just replaced. */
+  function renderCounts() {
+    var n = DATA.sessions.length;
+    var scheduled = 0, i;
+    for (i = 0; i < DATA.sessions.length; i++)
+      if (DATA.sessions[i].when && DATA.sessions[i].when.length) scheduled++;
+    var put = function (id, text) {
+      var e = document.getElementById(id);
+      if (e) e.textContent = text;
+    };
+    put("n-total", n.toLocaleString());
+    put("n-scheduled", scheduled.toLocaleString());
+    put("n-cta", n.toLocaleString());
+    put("n-prose", n.toLocaleString());
+    put("n-pct", Math.round(100 * n / AWS_PLANNED) + "%");
+
+    var all = document.querySelector('[data-count="all"]');
+    if (all) all.textContent = n.toLocaleString();
+    CFG.lanes.forEach(function (l) {
+      var want = LANE_SV[l.id] || l.services || [], c = 0;
+      for (var k = 0; k < DATA.sessions.length; k++) {
+        var sv = DATA.sessions[k].sv || [];
+        for (var j = 0; j < sv.length; j++) {
+          if (want.indexOf(sv[j]) !== -1) { c++; break; }
+        }
+      }
+      var cell = document.querySelector('[data-count="' + l.id + '"]');
+      if (cell) cell.textContent = c.toLocaleString();
+    });
+
+    var q = document.getElementById("q");
+    if (q && DATA.facets && DATA.facets.Services) {
+      q.placeholder = "Search title, abstract, code, speaker, or one of "
+        + DATA.facets.Services.length + " services";
+    }
   }
 
   function matches(s) {
@@ -411,6 +487,7 @@
       DATA = reslim(raw, DATA);
       live.state = "live";
       live.checkedAt = Date.now();
+      indexLanes(); renderCounts();
       buildFilters();
       renderFreshness();
       render();
@@ -3022,8 +3099,7 @@
       window.addEventListener("hashchange", function () {
         if (adoptSharedPlan()) { syncStars(); renderPlan(); view("plan"); }
       });
-      var all = document.querySelector('[data-count="all"]');
-      if (all) all.textContent = DATA.sessions.length.toLocaleString();
+      indexLanes(); renderCounts();
       buildFilters(); wire(); renderFreshness(); renderMatrix();
       showCta();
       if (!storageOK) {

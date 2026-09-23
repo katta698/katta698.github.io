@@ -70,7 +70,7 @@ BROWSER = {
     "check_ai_fresh",
     "check_reinvent_fits", "check_reinvent_clock",
     "check_reinvent_scroll",
-    "check_tap_targets",
+    "check_tap_targets", "check_reinvent_counts",
 }
 
 # check_colophon_built was in BROWSER and drives no browser at all -- it
@@ -168,6 +168,9 @@ HOOK_BROWSER = {
     "check_tap_targets",         # and the mark and the way home are big
                                  # enough to hit with a thumb, which every
                                  # control beside them already was
+    "check_reinvent_counts",     # and every count on the re:Invent page
+                                 # follows the data it is showing rather
+                                 # than the day it was built
 }
 
 PER_CHECK_TIMEOUT = 420
