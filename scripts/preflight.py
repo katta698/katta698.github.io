@@ -71,7 +71,7 @@ BROWSER = {
     "check_reinvent_fits", "check_reinvent_clock",
     "check_reinvent_scroll",
     "check_tap_targets", "check_reinvent_counts",
-    "check_reinvent_countdown",
+    "check_reinvent_countdown", "check_reinvent_live",
 }
 
 # check_colophon_built was in BROWSER and drives no browser at all -- it
@@ -175,6 +175,9 @@ HOOK_BROWSER = {
     "check_reinvent_countdown",  # and the days-to-go is right on both
                                  # sides of the event, on the planner and
                                  # on the contact card, which agree
+    "check_reinvent_live",       # and a live pull survives coming back,
+                                 # while one the morning refresh has
+                                 # superseded does not
 }
 
 PER_CHECK_TIMEOUT = 420
