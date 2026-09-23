@@ -35,12 +35,20 @@ name: Refresh re:Invent catalog
 
 on:
   schedule:
-    # 05:55 UTC daily, after the other refresh jobs (05:10 news, 05:40 AI)
-    # so three crons are not contending for the same runner minutes and the
-    # same rebase. Daily rather than weekly because sessions get added,
-    # retimed and moved right up to the event, and a week-old room number
-    # is exactly the kind of thing that sends somebody to the wrong hotel.
-    - cron: "55 5 * * *"
+    # Every hour at :20, and the job itself decides which of those hours it
+    # actually works -- see "Decide whether this hour is due" below.
+    #
+    # It was once a day, at 05:55. That was answered by the catalog itself:
+    # on 23 September AWS dropped a session in the morning and then added
+    # 82 and removed 64 in the afternoon. A daily job means a reader can be
+    # looking at a page that is wrong by 82 sessions for most of a day, and
+    # the only remedy on offer was a button asking them to fix it
+    # themselves -- which is the wrong way round. The site should be
+    # current; the button is for the ten minutes between a change at AWS
+    # and the next run.
+    #
+    # :20 past, because the other refresh crons land at :10, :40 and :55.
+    - cron: "20 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -77,6 +85,45 @@ jobs:
         run: |
           if [ "$(date -u +%Y-%m-%d)" \> "2026-12-06" ]; then
             echo "re:Invent 2026 has finished; nothing left to refresh."
+            echo "done=yes" >> "$GITHUB_ENV"
+          fi
+
+      - name: Decide whether this hour is due
+        if: env.done != 'yes'
+        # Hourly all the way through would be about 1,600 runs for a
+        # catalog that changes a few times a day, and every run that
+        # changes nothing still costs a checkout, a Chromium install and
+        # four minutes of a runner. So the cadence follows how fast the
+        # thing being watched actually moves:
+        #
+        #   during the event   every hour. Rooms and times change on the
+        #                      day, and somebody is reading this in a
+        #                      corridor deciding where to walk.
+        #   the fortnight      every hour. This is when the catalog fills
+        #   before            out and when people build their week.
+        #   before that        every three hours, which bounds how wrong
+        #                      the page can be at nine to five.
+        #
+        # workflow_dispatch always runs: a person asking for it has a
+        # reason, and a manual run that silently no-ops is a trap.
+        run: |
+          hour=$(date -u +%-H)
+          today=$(date -u +%Y-%m-%d)
+          due=no
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            due=yes
+            why="asked for by hand"
+          elif [ "$today" \> "2026-11-15" ]; then
+            due=yes
+            why="inside the fortnight before the event: hourly"
+          elif [ $((hour % 3)) -eq 0 ]; then
+            due=yes
+            why="three-hourly slot"
+          else
+            why="not a due hour (every third hour until 16 November)"
+          fi
+          echo "$why"
+          if [ "$due" = "no" ]; then
             echo "done=yes" >> "$GITHUB_ENV"
           fi
 

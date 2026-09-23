@@ -545,7 +545,7 @@
      threw it away and the shipped snapshot came back -- the page looked
      like it had forgotten something it had just been told. This site is
      static: a visitor's browser cannot write to it, and the copy in the
-     repository is refreshed by a job every morning. What the browser CAN
+     repository is refreshed by a job every few hours. What the browser CAN
      do is keep the pull for itself, which is what this does.
 
      Kept beside the plan and the notes, in the same localStorage the rest
@@ -757,7 +757,12 @@
      honest number is the one the reader is looking at now. A page built
      in September and opened in November has not got fresher, and a
      baked-in "captured 22 Sep" invites it to be read as if it had. */
-  var AGING_DAYS = 10, STALE_DAYS = 21;
+  /* Two days and five, not ten and twenty-one. Those were the right
+     thresholds for a job that ran once a day and might miss a few; with a
+     refresh every three hours, a copy two days old does not mean the
+     catalog is quiet, it means the job has stopped -- and the whole point
+     of the line is to say so before a reader plans a week on it. */
+  var AGING_DAYS = 2, STALE_DAYS = 5;
 
   function daysSince(iso) {
     if (!iso) return null;
@@ -788,7 +793,9 @@
          anything anywhere, or for how long. Say it. */
       box.appendChild(el("span", "livenote", live.kept
         ? "Kept in this browser, so it is still here when you come back. "
-          + "The site's own copy refreshes every morning. "
+          + "The site's own copy refreshes every few hours by itself, "
+          + "so this is only for the gap between a change at AWS and the "
+          + "next run. "
         : "This browser would not store it, so a reload brings back the "
           + "site's saved copy. "));
       box.appendChild(el("span", null, "Seat reservations still live in the "));
@@ -855,7 +862,7 @@
       btn.id = "live-pull";
       btn.title = "Fetches the whole catalog from AWS in this browser and "
                 + "keeps it on this device. The site's own copy refreshes "
-                + "every morning.";
+                + "every few hours by itself.";
       btn.addEventListener("click", pullLive);
       box.appendChild(btn);
     } else if (live.state === "same") {

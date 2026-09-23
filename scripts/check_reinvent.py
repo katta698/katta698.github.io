@@ -57,7 +57,7 @@ EVENT_DAYS = ("2026-11-30", "2026-12-01", "2026-12-02",
 
 # Matches STALE_DAYS in the page's own freshness banner. Kept the same so
 # the check and the reader are working to one definition of "old".
-STALE_DAYS = 21
+STALE_DAYS = 5
 
 
 def need_for(a, b, travel):
