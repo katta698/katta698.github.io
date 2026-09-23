@@ -38,6 +38,7 @@ the situation it was written for is worse than no rule.
      result means nothing.
 """
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -165,6 +166,33 @@ def main():
     else:
         print("  every session count printed on the page comes from the store "
               "or from the builder")
+
+    # ---- 1c. the page's own assets are stamped by content ----------------
+    #
+    # "Still look at the same numbers" after a deploy, and the reason was
+    # here: page.css and app.js were referenced without a version, so a
+    # returning reader keeps whatever the browser and the service worker
+    # already hold -- yesterday's script driving today's catalog, with
+    # nothing on screen to say so. Every other asset on this site is
+    # busted by content hash; these two were the exception.
+    for tag, fname in (('href="./page.css', "page.css"),
+                       ('src="./app.js', "app.js")):
+        m = re.search(re.escape(tag) + r'\?v=([0-9a-f]{8})"', html)
+        if not m:
+            problems.append(
+                "%s is referenced without a ?v= content hash, so a reader "
+                "with it cached keeps the old one after a deploy" % fname)
+            continue
+        want = hashlib.md5(io.open(os.path.join(PAGEDIR, fname),
+                                   encoding="utf-8").read().encode("utf-8")
+                           ).hexdigest()[:8]
+        if m.group(1) != want:
+            problems.append(
+                "the page asks for %s?v=%s but the file on disk hashes to "
+                "%s -- the stamp was not rebuilt with the file"
+                % (fname, m.group(1), want))
+    if not [p_ for p_ in problems if "?v=" in p_]:
+        print("  page.css and app.js are stamped with their own content hash")
 
     # ---- 1b. the newer index tables resolve too ---------------------------
     #

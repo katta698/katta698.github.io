@@ -52,6 +52,7 @@ through. They are a starting point, not a cage -- every lane is one tap away
 from the full catalog.
 """
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -486,6 +487,20 @@ def build():
     html = html.replace("__OUTLIER__", esc(OUTLIER))
     html = html.replace("__TOP__", TOP_HTML + TOP_JS)
 
+    # The page's own stylesheet and script are cache-busted by content,
+    # exactly as the rest of the site's assets are. They were plain
+    # "./page.css" and "./app.js", so a returning reader could run
+    # yesterday's script against today's catalog -- and would have no way
+    # to tell, because the page would look right and behave like the copy
+    # it was built from. Reported as "still look at the same numbers".
+    css_text = CSS + TOP_CSS + TOP_FIX
+    js_text = APP.replace("__PLANNED__", str(AWS_PLANNED))
+    stamp = lambda t: hashlib.md5(t.encode("utf-8")).hexdigest()[:8]
+    html = html.replace('href="./page.css"',
+                        'href="./page.css?v=%s"' % stamp(css_text))
+    html = html.replace('src="./app.js"',
+                        'src="./app.js?v=%s"' % stamp(js_text))
+
     write(os.path.join(OUTDIR, "index.html"), html)
     # The same control every other long page on the site carries, from the
     # one module that defines it -- not a second implementation. Its CSS
@@ -493,13 +508,12 @@ def build():
     # blog.css's tokens, and an undefined custom property invalidates the
     # whole declaration rather than falling back: a transparent circle that
     # happens to be clickable. That has happened five times in this repo.
-    write(os.path.join(OUTDIR, "page.css"), CSS + TOP_CSS + TOP_FIX)
+    write(os.path.join(OUTDIR, "page.css"), css_text)
     # The one number the app needs that is not in the store: what AWS
     # says the finished programme will hold. Written in here from the
     # same constant the prose uses, so the page can recompute its own
     # percentage after a live pull without a second copy of the figure.
-    write(os.path.join(OUTDIR, "app.js"),
-          APP.replace("__PLANNED__", str(AWS_PLANNED)))
+    write(os.path.join(OUTDIR, "app.js"), js_text)
 
     print("  reinvent-2026/  %d sessions, %d scheduled, %d day(s)"
           % (len(sessions), scheduled, len(days)))
