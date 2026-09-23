@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""The two ways out of a page must be thumb-sized on a phone.
+"""The two ways out of a page must be thumb-sized on an iPhone.
 
 Reported as: "it's hard to select jayanthkatta.com from here in phone."
 
-Measured at 390px and 360px on a post page, before this check existed:
+Measured at 390px on a post page, before this check existed:
 
     brand mark        30x30      the smallest live thing in the bar
     breadcrumb Home   34x21      the only home link a post page shows
@@ -12,16 +12,31 @@ Measured at 390px and 360px on a post page, before this check existed:
     cairn button      44x44      already right
 
 Every control in that bar had been grown to 44px at some point except the
-two a reader actually reaches for when they want the site itself. Which is
-the failure mode: a rule applied to "the controls" is applied to whatever
-was thought of as a control that day, and the brand mark is a link, so it
-was nobody's control.
+two a reader reaches for when they want the site itself. Which is the
+failure mode: a rule written for "the controls" covers whatever was
+thought of as a control that day, and the brand mark is a link, so it was
+nobody's control.
 
-So this asserts the reach rather than the box. A mark 30px wide answers to
-a 44px hit area bought with an absolutely positioned pseudo-element -- the
-same trick the icons use -- and a box measurement cannot see that. The test
-pokes the four corners of the 44x44 square a thumb would cover and asks the
-document what it hit.
+Two things this asserts, because they are two different claims:
+
+  The reach, not the box. A 30px mark can answer to a 50px touch, and a
+  box measurement cannot see that. Each element is probed outward with
+  elementFromPoint until the document stops naming it -- which also stops
+  at the neighbour, so nothing passes here by stealing a tap that belongs
+  to the button beside it.
+
+  That a finger landing there actually goes somewhere. The first fix for
+  this bought the mark its width with an absolutely positioned
+  pseudo-element, the same trick the three icons use. It measured
+  perfectly and, on iPhone, did not work: WebKit reports the anchor as
+  the element under the point and synthesises no click for a tap that
+  lands on the pseudo. A mouse click followed the link, so it passed
+  everywhere except the device it was reported from. Real taps, on the
+  engine Safari is built on, are the only way that is visible.
+
+WebKit with Apple's own device metrics, not Chromium at a narrow width.
+44 is Apple's figure. The small phone is in the list because it is the
+one with no slack in the bar.
 """
 import os
 import subprocess
@@ -44,6 +59,15 @@ PAGES = [
     ("/intelligence/", "intelligence"),
 ]
 MIN = 44
+
+# The phone this was reported from is an iPhone, so the check is run on one
+# -- WebKit with Apple's own device metrics, not Chromium at a narrow width.
+# The two engines do not resolve a hit area identically: Chromium had already
+# called the mark reachable at a size Safari's hit testing disagreed about,
+# and 44 is Apple's own figure from the Human Interface Guidelines. The small
+# phone is in the list because it is the one with no slack in the bar; if a
+# hit area is going to be squeezed by a neighbour it happens at 375px.
+DEVICES = ["iPhone 17 Pro", "iPhone SE (3rd gen)"]
 
 # Measure the span the element actually OWNS, by asking the document what
 # is under each point -- not the width of its box. A 30px mark answers to a
@@ -80,28 +104,74 @@ time.sleep(2)
 bad = []
 try:
     with sync_playwright() as p:
-        b = p.chromium.launch()
-        for path, name in PAGES:
-            for w in (390, 360):
-                pg = b.new_page(viewport={"width": w, "height": 844})
+        b = p.webkit.launch()
+        for device in DEVICES:
+            kit = p.devices[device]
+            print("  %s  (%dx%d, WebKit)"
+                  % (device, kit["viewport"]["width"], kit["viewport"]["height"]))
+            ctx = b.new_context(**kit)
+            for path, name in PAGES:
+                pg = ctx.new_page()
                 pg.goto("http://127.0.0.1:%d%s" % (PORT, path),
-                        wait_until="networkidle")
-                pg.wait_for_timeout(1200)
+                        wait_until="domcontentloaded")
+                pg.wait_for_timeout(1800)
                 for sel, what in ((".nav-logo", "the brand mark"),
                                   (".post-breadcrumb a[href='/']", "Home")):
                     r = pg.evaluate(PROBE, sel)
                     if r is None:
                         continue          # not every page has a breadcrumb
                     ok = r["ownH"] >= MIN and r["ownW"] >= MIN_W
-                    print("   %-14s %-14s box %dx%-3d touches %dx%-3d  %s"
-                          % (name, what, r["w"], r["h"],
-                             r["ownW"], r["ownH"], "ok" if ok else "TOO SMALL"))
+                    print("     %-14s %-14s box %dx%-3d touches %dx%-3d  %s"
+                          % (name, what, r["w"], r["h"], r["ownW"], r["ownH"],
+                             "ok" if ok else "TOO SMALL"))
                     if not ok:
-                        bad.append("%s @%d: %s answers to only %dx%d, under "
+                        bad.append("%s, %s: %s answers to only %dx%d, under "
                                    "%dx%d"
-                                   % (name, w, what, r["ownW"], r["ownH"],
+                                   % (device, name, what, r["ownW"], r["ownH"],
                                       MIN_W, MIN))
                 pg.close()
+
+            # Measuring says the area is there. Tapping says a finger landing
+            # in it goes somewhere -- which is the thing that was reported,
+            # and the two are not the same claim. Each tap lands at the far
+            # edge of the reach, not on the glyph.
+            for path, sel, dx, dy, want, what in (
+                    (PAGES[0][0], ".nav-logo", -14, 0, "/blog/",
+                     "the mark, tapped at its left edge"),
+                    (PAGES[0][0], ".post-breadcrumb a[href='/']", 0, 14, "/",
+                     "Home, tapped below the text")):
+                pg = ctx.new_page()
+                pg.goto("http://127.0.0.1:%d%s" % (PORT, path),
+                        wait_until="domcontentloaded")
+                pg.wait_for_timeout(1800)
+                # Rounded, because a finger lands on a pixel. Half a pixel
+                # of y -- which is what a 9.5px bar offset produces -- is
+                # enough for WebKit to dispatch the tap and synthesise no
+                # click, and the check then reports a link that works as a
+                # link that does not.
+                box = pg.evaluate("""(s)=>{const r=document.querySelector(s)
+                    .getBoundingClientRect();
+                    return {x: Math.round(r.left + r.width / 2),
+                            y: Math.round(r.top + r.height / 2)};}""", sel)
+                pg.touchscreen.tap(box["x"] + dx, box["y"] + dy)
+                # Poll the URL rather than wait_for_url: its glob matched
+                # nothing here and reported a tap that had in fact navigated
+                # as a tap that went nowhere -- a check that fails on working
+                # code gets switched off, which is worse than not having it.
+                landed = False
+                for _ in range(30):
+                    if pg.url.endswith(want):
+                        landed = True
+                        break
+                    pg.wait_for_timeout(200)
+                print("     %-31s -> %-8s %s"
+                      % (what, want, "ok" if landed else "WENT NOWHERE"))
+                if not landed:
+                    bad.append("%s: %s did not follow the link (ended at %s)"
+                               % (device, what, pg.url))
+                pg.close()
+            ctx.close()
+            print()
         b.close()
 finally:
     srv.terminate()
@@ -112,4 +182,5 @@ if bad:
     for line in bad:
         print("   -", line)
     sys.exit(1)
-print("  The mark and the way home are both thumb-sized, at 390 and at 360.")
+print("  On both iPhones, the mark and the way home are thumb-sized, and a")
+print("  tap at the edge of each one follows the link.")
