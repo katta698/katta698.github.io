@@ -332,6 +332,14 @@ def stamp_static_pages():
     # subscribe block, which is a different list and still correct.)
     targets.append(BLOG_DIR / "digests" / "index.html")
     targets.append(BLOG_DIR / "simulator" / "index.html")
+    # /connect/ and its demos, for the same reason and found the same way:
+    # check_asset_stamps caught them pinned to e07ad2b7 while the shared
+    # assets had moved, and blocked a push that had nothing to do with them.
+    # They were last corrected by a one-off "re-stamp every page" commit,
+    # which is the shape of a chore that comes back. A glob rather than a
+    # list, so a new page in that folder is covered by existing.
+    targets += sorted((REPO_ROOT / "connect").glob("*.html"))
+    targets += sorted(REPO_ROOT.glob("connect-demo*.html"))
 
     # The subscribe block, into the hand-built posts only. Not index.html,
     # resume.html or now.html -- they have no comments section and are not
