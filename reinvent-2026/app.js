@@ -629,7 +629,7 @@
      the reader's browser, and it still draws with the wifi down -- which
      is exactly when somebody in a packed hall needs to know which way the
      Venetian is. */
-  var GEO = null, geoState = "idle";
+  var GEO = null, geoState = "idle", mapProj = null;
 
   /* Equirectangular, which is exact enough across two kilometres and keeps
      north pointing at the top of the screen. Metres, so the scale bar is
@@ -699,7 +699,19 @@
     }
 
     var P = projector(GEO.bbox);
-    var pad = 30;
+    mapProj = P;
+    var pad = padM;
+    /* The geographic extent. The frame around it is derived later, in
+       refit(), because the element has no height until the SVG is in the
+       document -- measuring first gave an aspect near zero and a fit view
+       27,474 metres wide, which is most of Nevada. */
+    geoExtent = { x: -pad, y: -pad, w: P.w + pad * 2, h: P.h + pad * 2 };
+    var fit = { x: geoExtent.x, y: geoExtent.y,
+                w: geoExtent.w, h: geoExtent.h };
+    var keep = (baseView && cam
+                && Math.abs(baseView.w - fit.w) < 1) ? cam : null;
+    baseView = fit;
+    cam = keep || { x: fit.x, y: fit.y, w: fit.w, h: fit.h };
     var svg = svgEl("svg", {
       viewBox: (-pad) + " " + (-pad) + " " + (P.w + pad * 2) + " "
                + (P.h + pad * 2),
@@ -805,10 +817,12 @@
       g.appendChild(num);
       g.appendChild(nm);
       g.addEventListener("click", function () {
-        state.venue = (state.venue === name) ? "" : name;
+        var turningOn = state.venue !== name;
+        state.venue = turningOn ? name : "";
         shown = PAGE_SIZE;
         buildFilters();
         renderChips(); renderBrowse(); renderMap();
+        if (turningOn) zoomToVenue(name);
       });
       var t = svgEl("title", {});
       t.textContent = name + " — " + heat[name] + " session(s) matching"
@@ -856,8 +870,236 @@
 
     host.textContent = "";
     host.appendChild(svg);
+    mapSvg = svg;
+    refit(true);
+    wireMapGestures(svg);
+    wireMapButtons();
     renderHops(hops);
   }
+
+
+  /* ---- pan and zoom ---------------------------------------------------
+     Asked for: "can it have some sort of zoom option or expand option ...
+     somehow it's kind of very plain".
+
+     The viewBox is the camera. Everything is already drawn in metres, so
+     zooming is arithmetic on four numbers and nothing has to be redrawn
+     -- which is why this stays smooth on a phone with 1,000 paths on
+     screen.
+
+     Labels are the exception. Text in an SVG scales with the viewBox, so
+     at 4x a room name would be four times the size of the screen. They
+     are scaled inversely by --k so they hold a constant size however far
+     in you are, which is what every real map does. */
+  /* Named cam, not view: there is already a view(which) function for
+     the tab switcher, and `var view` overwrote it -- the whole map
+     died with "view is not a function". */
+  var baseView = null, cam = null, mapSvg = null, geoExtent = null;
+  var MIN_SPAN_M = 180;          // about one hotel across
+  var padM = 30;
+
+  function applyView() {
+    if (!mapSvg || !cam) return;
+    mapSvg.setAttribute("viewBox", cam.x.toFixed(1) + " " + cam.y.toFixed(1)
+                        + " " + cam.w.toFixed(1) + " " + cam.h.toFixed(1));
+    /* Labels were scaled by --k, the zoom ratio, which held them at a
+       constant size but at the WRONG one: tuned against a 2,088px
+       screenshot, they came out 6px on a 449px-wide desktop element and
+       4.7px on a phone. Unreadable.
+
+       --upx is user units per CSS pixel, measured from the element that
+       is actually on screen. font-size: calc(13px * var(--upx)) is then
+       exactly 13 CSS pixels at any zoom on any device, rather than
+       whatever a ratio happens to produce. */
+    var box = mapSvg.getBoundingClientRect();
+    if (box.width && box.height) {
+      // Match the camera to the element's shape, about its own centre, so
+      // "meet" has nothing to letterbox.
+      var want = box.height / box.width;
+      if (Math.abs(cam.h / cam.w - want) > 0.001) {
+        var midY = cam.y + cam.h / 2;
+        cam.h = cam.w * want;
+        cam.y = midY - cam.h / 2;
+      }
+      mapSvg.style.setProperty("--upx", (cam.w / box.width).toFixed(4));
+    }
+    mapSvg.style.setProperty("--k", (cam.w / baseView.w).toFixed(4));
+    var fit = Math.abs(cam.w - baseView.w) < 1;
+    var btn = $("#z-fit");
+    if (btn) btn.disabled = fit;
+  }
+
+  /* Frame the whole campus inside a box shaped like the element, so the
+     picture fills the space without distorting and without dead bands. */
+  function refit(keepZoom) {
+    if (!mapSvg || !geoExtent) return;
+    var box = mapSvg.getBoundingClientRect();
+    if (!box.width || !box.height) return;
+    var aspect = box.height / box.width;
+    var fw = geoExtent.w, fh = geoExtent.w * aspect;
+    if (fh < geoExtent.h) { fh = geoExtent.h; fw = geoExtent.h / aspect; }
+    var next = { x: geoExtent.x - (fw - geoExtent.w) / 2,
+                 y: geoExtent.y - (fh - geoExtent.h) / 2, w: fw, h: fh };
+    var zoomed = keepZoom && baseView && cam
+                 && Math.abs(cam.w - baseView.w) > 1;
+    var ratio = zoomed ? cam.w / baseView.w : 1;
+    var midX = zoomed ? cam.x + cam.w / 2 : next.x + next.w / 2;
+    var midY = zoomed ? cam.y + cam.h / 2 : next.y + next.h / 2;
+    baseView = next;
+    var w = next.w * ratio, h = next.h * ratio;
+    cam = clampView({ x: midX - w / 2, y: midY - h / 2, w: w, h: h });
+    applyView();
+  }
+
+  function clampView(v) {
+    if (!baseView) return v;
+    var maxW = baseView.w, maxH = baseView.h;
+    if (v.w > maxW) { var f = maxW / v.w; v.w = maxW; v.h *= f; }
+    if (v.w < MIN_SPAN_M) {
+      var g = MIN_SPAN_M / v.w; v.w = MIN_SPAN_M; v.h *= g;
+    }
+    // Keep at least a corner of the map on screen rather than letting it
+    // be dragged into empty space and lost.
+    var slackX = v.w * 0.5, slackY = v.h * 0.5;
+    v.x = Math.max(baseView.x - slackX,
+                   Math.min(v.x, baseView.x + maxW - v.w + slackX));
+    v.y = Math.max(baseView.y - slackY,
+                   Math.min(v.y, baseView.y + maxH - v.h + slackY));
+    return v;
+  }
+
+  function zoomAt(factor, clientX, clientY) {
+    if (!mapSvg || !cam) return;
+    var r = mapSvg.getBoundingClientRect();
+    // Where the pointer is, in map coordinates -- so the thing under the
+    // finger stays under the finger.
+    var fx = (clientX - r.left) / r.width;
+    var fy = (clientY - r.top) / r.height;
+    var mx = cam.x + fx * cam.w, my = cam.y + fy * cam.h;
+    var nw = cam.w / factor, nh = cam.h / factor;
+    cam = clampView({ x: mx - fx * nw, y: my - fy * nh, w: nw, h: nh });
+    applyView();
+  }
+
+  function zoomToVenue(name) {
+    if (!baseView) return;
+    var p = CFG.travel.points[name];
+    if (!p || !mapProj) return;
+    var span = 520;
+    var cx = mapProj.x(p[1]), cy = mapProj.y(p[0]);
+    var h = span * (baseView.h / baseView.w);
+    cam = clampView({ x: cx - span / 2, y: cy - h / 2, w: span, h: h });
+    applyView();
+  }
+
+  function wireMapGestures(svg) {
+    var pointers = {}, lastMid = null, lastDist = 0, moved = false;
+
+    svg.addEventListener("wheel", function (e) {
+      e.preventDefault();
+      zoomAt(e.deltaY < 0 ? 1.18 : 1 / 1.18, e.clientX, e.clientY);
+    }, { passive: false });
+
+    svg.addEventListener("pointerdown", function (e) {
+      /* Capture is deliberately NOT taken here. Taking it on every press
+         retargets the following click at the <svg>, so a tap on a venue
+         pin never reached the pin's own handler -- the map panned fine
+         and nothing was clickable. It is taken below, once a press has
+         actually turned into a drag. */
+      pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+      moved = false;
+      lastMid = null; lastDist = 0;
+    });
+
+    svg.addEventListener("pointermove", function (e) {
+      if (!pointers[e.pointerId]) return;
+      /* Read where this pointer WAS before overwriting it. Updating first
+         made prev and current the same point, so every drag computed a
+         delta of zero and the map never moved. */
+      var was = pointers[e.pointerId];
+      pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+      var ids = Object.keys(pointers);
+      var r = svg.getBoundingClientRect();
+
+      if (ids.length === 1) {
+        var prev = was;
+        var dx = (e.clientX - prev.x) * (cam.w / r.width);
+        var dy = (e.clientY - prev.y) * (cam.h / r.height);
+        if (Math.abs(e.clientX - prev.x) + Math.abs(e.clientY - prev.y) > 2) {
+          if (!moved) {
+            moved = true;
+            // Now it is a drag: keep the pointer even if it leaves the svg.
+            try { svg.setPointerCapture(e.pointerId); } catch (err) {}
+          }
+        }
+        cam = clampView({ x: cam.x - dx, y: cam.y - dy,
+                           w: cam.w, h: cam.h });
+        applyView();
+      } else if (ids.length >= 2) {
+        var a = pointers[ids[0]], b2 = pointers[ids[1]];
+        var dist = Math.hypot(a.x - b2.x, a.y - b2.y);
+        var mid = { x: (a.x + b2.x) / 2, y: (a.y + b2.y) / 2 };
+        if (lastDist) {
+          zoomAt(dist / lastDist, mid.x, mid.y);
+          moved = true;
+        }
+        lastDist = dist;
+        lastMid = null;
+      }
+    });
+
+    function release(e) {
+      delete pointers[e.pointerId];
+      try { svg.releasePointerCapture(e.pointerId); } catch (err) {}
+      if (!Object.keys(pointers).length) { lastMid = null; lastDist = 0; }
+    }
+    svg.addEventListener("pointerup", release);
+    svg.addEventListener("pointercancel", release);
+    svg.addEventListener("pointerleave", release);
+
+    // A drag must not also count as a tap on whatever was underneath.
+    svg.addEventListener("click", function (e) {
+      if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; }
+    }, true);
+  }
+
+  function wireMapButtons() {
+    function mid() {
+      var r = mapSvg.getBoundingClientRect();
+      return [r.left + r.width / 2, r.top + r.height / 2];
+    }
+    $("#z-in").onclick = function () {
+      var m = mid(); zoomAt(1.5, m[0], m[1]); };
+    $("#z-out").onclick = function () {
+      var m = mid(); zoomAt(1 / 1.5, m[0], m[1]); };
+    $("#z-fit").onclick = function () {
+      cam = { x: baseView.x, y: baseView.y, w: baseView.w, h: baseView.h };
+      applyView();
+    };
+    var box = $("#mapwrap"), full = $("#z-full");
+    full.onclick = function () {
+      if (document.fullscreenElement) {
+        document.exitFullscreen();
+      } else if (box.requestFullscreen) {
+        box.requestFullscreen().catch(function () {});
+      } else {
+        // Safari on iOS has no element fullscreen; fall back to a class
+        // that fills the viewport, which is the part people actually want.
+        box.classList.toggle("faux-full");
+        full.textContent = box.classList.contains("faux-full")
+          ? "Close" : "Expand";
+      }
+    };
+    document.addEventListener("fullscreenchange", function () {
+      full.textContent = document.fullscreenElement ? "Close" : "Expand";
+    });
+  }
+
+  /* The element's width is part of the type scale, so a resize or an
+     orientation change has to recompute it. */
+  window.addEventListener("resize", function () {
+    if (mapSvg && cam) refit(true);
+  });
 
   function currentHops() {
     var sel = $("#map-day");
