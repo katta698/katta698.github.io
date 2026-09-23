@@ -68,7 +68,7 @@ BROWSER = {
     "check_player_overlays", "check_no_orphan_music",
     "check_narration_true", "check_colophon_built",
     "check_ai_fresh",
-    "check_reinvent_fits",
+    "check_reinvent_fits", "check_reinvent_clock",
 }
 
 # Not run here. Each needs the network or an API and fails on a train.
@@ -148,6 +148,8 @@ HOOK_BROWSER = {
     "check_reinvent_fits",       # the page fits the phone, and every tab
                                  # can still be tapped -- it shipped 72px
                                  # too wide with a whole view unreachable
+    "check_reinvent_clock",      # and still works on the days it is for:
+                                 # the live-clock view had never been run
 }
 
 PER_CHECK_TIMEOUT = 420

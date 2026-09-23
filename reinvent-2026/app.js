@@ -1384,10 +1384,21 @@
                           min: nowState.time };
     var note = $("#nownote");
     if (note) {
+      /* Three states, not two. "has not started" was being shown in
+         December as well, which is a small lie on a page whose whole
+         claim is that it does not tell them. */
+      var last = CFG.days[CFG.days.length - 1];
+      var today = new Date();
+      var iso = today.getFullYear() + "-"
+              + String(today.getMonth() + 1).padStart(2, "0") + "-"
+              + String(today.getDate()).padStart(2, "0");
       note.textContent = real
         ? "Live: it is " + hhmm(live_.min) + " on " + dayLabel(live_.day) + "."
-        : "re:Invent has not started, so this is a preview — pick a day "
-          + "and time. During the event it uses the real clock.";
+        : (iso > last
+           ? "re:Invent 2026 has finished. You can still look back over any "
+             + "day — pick one below."
+           : "re:Invent has not started, so this is a preview — pick a "
+             + "day and time. During the event it uses the real clock.");
       note.className = real ? "nownote live" : "nownote";
     }
     var picker = $("#nowpick");

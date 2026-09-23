@@ -270,7 +270,11 @@ def main():
         except (TypeError, ValueError):
             problems.append("the capture date %r is not a date" % captured)
         else:
-            age = (datetime.date.today() - when).days
+            # UTC on both sides. The fetcher stamps the capture with
+            # time.gmtime(); comparing that against a LOCAL today made this
+            # report a capture "1 day in the future" every evening after
+            # 19:00 in CDT, which is a check crying wolf on a clock offset.
+            age = (datetime.datetime.utcnow().date() - when).days
             if age < 0:
                 problems.append(
                     "the store says it was captured %s, which is %d day(s) "
@@ -312,6 +316,58 @@ def main():
     else:
         print("  travel cost rises with distance across all %d venue pair(s)"
               % len(pairs))
+
+    # ---- 7. every class the page applies has a rule behind it ------------
+    #
+    # A range-based edit to the stylesheet once deleted eleven blocks in one
+    # go -- the Team view, the Now view, the live verdict rows and the
+    # announcement cards -- because the two markers it cut between were not
+    # adjacent. The page kept working perfectly: every view rendered, every
+    # control responded, every existing check passed. It just looked like
+    # unstyled text, and it shipped that way.
+    #
+    # Nothing here asserted that a class the JavaScript applies has any CSS
+    # behind it, so this does. It is a cheap string check and it would have
+    # caught that instantly.
+    css_path = os.path.join(PAGEDIR, "page.css")
+    js_path = os.path.join(PAGEDIR, "app.js")
+    if os.path.exists(css_path) and os.path.exists(js_path):
+        css = io.open(css_path, encoding="utf-8").read()
+        js = io.open(js_path, encoding="utf-8").read()
+
+        # Classes handed to the el()/svgEl() helpers, plus class="..." in
+        # the served HTML. Only the first token of each, since the rest are
+        # state modifiers that ride on the base rule.
+        used = set()
+        for m in re.finditer(r'el\(\s*"[a-z0-9]+"\s*,\s*"([^"]+)"', js):
+            used.add(m.group(1).split()[0])
+        for m in re.finditer(r'class="([^"]+)"', html):
+            for tok in m.group(1).split():
+                used.add(tok)
+
+        # Classes that legitimately carry no rule: state flags the CSS
+        # matches only in combination, and hooks used purely by scripts.
+        # State modifiers the CSS only matches in combination, plus the
+        # structural wrappers that exist to be a hook for scripts and are
+        # not meant to carry any rule of their own.
+        NO_RULE_NEEDED = {
+            "show", "on", "open", "done", "live", "dup", "ok", "warn",
+            "bad", "self", "unreachable", "venue", "gone", "crawl",
+            "header", "results", "newswrap", "teamwrap",
+        }
+        missing = sorted(c for c in used
+                         if c not in NO_RULE_NEEDED
+                         and ("." + c) not in css
+                         and ("#" + c) not in css)
+        if missing:
+            problems.append(
+                "%d class(es) are applied by the page and have no rule in "
+                "page.css: %s. The page still works and renders as unstyled "
+                "text, which is how eleven style blocks once shipped deleted"
+                % (len(missing), ", ".join(missing[:10])))
+        else:
+            print("  every class the page applies has a rule in page.css "
+                  "(%d checked)" % len(used))
 
     # ---- canaries --------------------------------------------------------
     same = need_for("Venetian", "Venetian", travel)
