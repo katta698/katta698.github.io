@@ -1,0 +1,354 @@
+---
+title: "AWS Architecture Series #61 — The model never saw the answer"
+date: '2026-09-23T09:00:00'
+slug: aws-architecture-rag-retrieval
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-23'
+verified_claims:
+  - claim: "When ingesting your data, Amazon Bedrock first splits your documents or content into manageable chunks for efficient data retrieval, and the chunks are then converted to embeddings and written to a vector index while maintaining a mapping to the original document"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "Default chunking splits content into text chunks of approximately 300 tokens, and the chunking process honors sentence boundaries, ensuring that complete sentences are preserved within each chunk"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "With fixed-size chunking you can configure the desired chunk size by specifying the number of tokens per chunk and an overlap percentage between consecutive chunks"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "You can choose no chunking for your documents, in which case each document is treated as a single text chunk"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "If you choose no chunking for your documents, you cannot view page number in citation or filter by the x-amz-bedrock-kb-document-page-number metadata field"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "Hierarchical chunking organizes information into nested structures of child and parent chunks, and during retrieval the system initially retrieves child chunks but replaces them with broader parent chunks so as to provide the model with more comprehensive context"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "Small text embeddings are more precise, but retrieval aims for comprehensive context"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "Since child chunks get replaced by parent chunks during retrieval, the returned number of results might be less than the requested amount"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "Hierarchical chunking is not recommended when using an S3 vector bucket as your vector store, and when using a high number of tokens for chunking, over 8000 tokens combined, you may run into metadata size limitations"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "For semantic chunking, a buffer size of 1 results in 3 sentences, the current, previous and next sentence, being combined and embedded"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "The semantic chunking breakpoint percentile threshold is the percentile threshold of sentence distance or dissimilarity used to draw breakpoints between sentences, where a higher threshold results in fewer chunks and typically larger average chunk size"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "There are additional costs to using semantic chunking due to its use of a foundation model, and the cost depends on the amount of data you have"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "For parsed content, the chunker respects logical document boundaries such as pages or sections and does not merge content across these boundaries, even when increasing the maximum token size would otherwise allow for larger chunks"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "With Nova multimodal embeddings you can configure audio and video chunk duration from 1-30 seconds with a default of 5 seconds, and for video files only the video chunk duration applies even if the video contains audio"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "Text chunking strategies apply only to text documents, and for multimodal content such as audio, video and images, chunking occurs at the embedding model level rather than through text-based strategies"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html
+  - claim: "RAG is a technique that uses information from data sources to improve the relevancy and accuracy of generated responses, and when a query is made a knowledge base searches your data to find relevant information to answer the query"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html
+  - claim: "Amazon Bedrock Knowledge Bases offers two types of knowledge bases, Managed Knowledge Base where Amazon Bedrock manages the underlying data ingestion, indexing, storage and retrieval infrastructure, and Customer-managed Knowledge Base where you set up and manage your own RAG pipeline including the vector store"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html
+  - claim: "Customer-managed Knowledge Base vector stores include Amazon OpenSearch Serverless, Amazon Aurora, and Amazon Neptune"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html
+  - claim: "Several capabilities such as third-party connectors, document-level permissions and native AgentCore Gateway integration are only available for Managed Knowledge Bases"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html
+  - claim: "Knowledge bases can include citations in the generated response so the original data source can be referenced and accuracy can be checked"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html
+  - claim: "Agentic Retrieval supports multi-hop reasoning, decomposes complex queries into sub-queries, retrieves iteratively across multiple knowledge bases, and evaluates sufficiency of responses"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html
+problem: "A RAG system returns a confident, wrong answer. The investigation goes to the prompt and then to the model, because those are the parts that are visible. The cause is usually that the passage containing the answer was never retrieved — and no prompt and no model can recover from text they were not given."
+builds: "A reading of RAG as a retrieval problem: where the decisions actually are, what chunking does to what can be found, and why the setting that matters most is made once at ingestion and is invisible from then on."
+catch: "Default chunking is approximately 300 tokens honouring sentence boundaries — roughly a paragraph. An answer that spans two paragraphs exists in no single chunk, so no chunk scores well against the question, and the model is handed neighbours of the answer and asked to produce it. AWS states the trade in one sentence: small text embeddings are more precise, but retrieval aims for comprehensive context."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #061 &middot; AI &amp; ML</div>
+  <h1 class="post-title">The model never saw the answer</h1>
+  <p class="post-subtitle">RAG gets debugged as a prompt problem. The decision that dominates it is chunking &mdash; made once, at ingestion, and invisible from then on.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Performance Efficiency &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      This opens the AI and ML block, and it starts where the failures actually are rather than where the
+      attention is.
+    </p>
+    <p>
+      A retrieval-augmented system answers a question confidently and wrongly. The fix is looked for in the
+      prompt, then in the model, then in the temperature &mdash; the three things a developer can see and
+      change quickly.
+    </p>
+    <p>
+      None of them is usually the cause. The passage containing the answer was not retrieved, so the model
+      was asked to produce something it was never shown. That failure has a specific and unhelpful
+      signature: it looks exactly like a model that is not good enough.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The answer does not fit in a chunk</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;Default chunking: Splits content into text chunks of approximately
+          <strong>300 tokens</strong>. The chunking process honors sentence boundaries.&rdquo;</em>
+        </p>
+        <p>
+          Three hundred tokens is roughly a paragraph. If the answer to a question is established across two
+          paragraphs &mdash; a condition stated in one and its exception in the next &mdash; then no single
+          chunk contains it. Each chunk holds half, so each scores moderately, and the retriever returns
+          neighbours of the answer rather than the answer.
+        </p>
+        <p>
+          The model then does what it is asked: it produces a fluent response from adjacent material. There
+          is no error anywhere in the pipeline.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Size chunks against the shape of your answers, not against a default.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Precision and context pull in opposite directions</strong></div>
+      <div class="challenge-body">
+        <p>
+          The obvious response &mdash; make chunks bigger &mdash; degrades the other half. AWS puts the
+          whole trade in one sentence: <em>&ldquo;Small text embeddings are more precise, but retrieval aims
+          for comprehensive context.&rdquo;</em>
+        </p>
+        <p>
+          A large chunk embeds the average of everything in it, so its vector drifts away from any specific
+          question. A small chunk matches sharply and arrives without the surrounding material that makes it
+          mean anything.
+        </p>
+        <p>
+          This is not a tuning problem with a right answer. It is a genuine tension, which is why
+          <strong>hierarchical chunking</strong> exists: retrieve on the small chunk, return the large one.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Match on children, answer from parents. It is the only option that does not force the trade.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The decision is made once and then hidden</strong></div>
+      <div class="challenge-body">
+        <p>
+          Chunking happens at ingestion. By the time anyone is debugging a bad answer, the chunk boundaries
+          are historical &mdash; they are not in the request, not in the response, and not in the prompt.
+        </p>
+        <p>
+          Every other knob is live and adjustable: prompt, model, temperature, number of results. The one
+          that decides what is <em>findable</em> is fixed, and changing it means re-ingesting everything.
+        </p>
+        <p>
+          That asymmetry is why teams spend weeks on prompts. The prompt is what is in front of them.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Before touching the prompt, retrieve without generating and read what came back.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The pipeline is short and the failure is almost always in the first half of it.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-061-rag-retrieval.svg" alt="Diagram: where a retrieval-augmented generation pipeline actually fails on AWS. Ingestion runs left to right: a document is split into chunks, each chunk is converted to an embedding and written to a vector index while a mapping back to the original document is maintained. At query time the question is embedded and compared against that index, the top matches are placed into the prompt, and the model generates an answer. A panel marks the first half of the pipeline as the part that decides what can ever be found, and notes that by the time anyone debugs a wrong answer the chunk boundaries are historical and appear in no request or response. The chunking strategies are compared: default chunking splits content into approximately 300 tokens while honouring sentence boundaries, fixed-size chunking lets you set tokens per chunk and an overlap percentage, no chunking treats each document as a single chunk and removes page numbers from citations, semantic chunking uses a buffer size where a value of one embeds three sentences together and a breakpoint percentile threshold where a higher value produces fewer and larger chunks at additional foundation model cost, and hierarchical chunking retrieves small child chunks but returns their larger parents. A panel records AWS's own statement of the central tension, that small text embeddings are more precise but retrieval aims for comprehensive context, and notes that hierarchical chunking is the only strategy that does not force a choice between the two, at the cost that the number of returned results may be fewer than requested because children are replaced by parents." />
+      <figcaption>Everything before the arrow decides what can ever be found. Everything after it is what teams spend their time on.</figcaption>
+    </figure>
+
+    <p>
+      Ingestion is three steps, and AWS describes them precisely: Bedrock <em>&ldquo;splits your documents
+      or content into manageable chunks&rdquo;</em>, the chunks <em>&ldquo;are then converted to embeddings
+      and written to a vector index&hellip; while maintaining a mapping to the original document&rdquo;</em>,
+      and <em>&ldquo;the vector embeddings allow the texts to be quantitatively compared.&rdquo;</em>
+    </p>
+    <p>
+      That mapping back to the source is what makes citations possible &mdash; knowledge bases can
+      <em>&ldquo;include citations in the generated response so the original data source can be referenced
+      and accuracy can be checked&rdquo;</em> &mdash; and it is the single most useful feature for
+      diagnosing exactly the failure above. A citation tells you which chunk was retrieved, which tells you
+      whether the answer was ever in the context.
+    </p>
+
+    <h3>The four strategies, and what each one trades</h3>
+    <p>
+      <strong>Default</strong> is ~300 tokens on sentence boundaries. Sensible, and a paragraph.
+    </p>
+    <p>
+      <strong>Fixed-size</strong> lets you set tokens per chunk and <em>&ldquo;an overlap percentage between
+      consecutive chunks&rdquo;</em>. Overlap is the cheap mitigation for the split-answer problem: a
+      boundary that cuts an answer in half still leaves one chunk containing both halves, if the overlap is
+      wide enough.
+    </p>
+    <p>
+      <strong>No chunking</strong> treats <em>&ldquo;each document&hellip; as a single text chunk&rdquo;</em>,
+      and carries a consequence worth knowing before choosing it: <em>&ldquo;you cannot view page number in
+      citation or filter by the <code class="inline">x-amz-bedrock-kb-document-page-number</code> metadata
+      field.&rdquo;</em> The citation survives; the precision of it does not.
+    </p>
+    <p>
+      <strong>Semantic</strong> splits on meaning rather than length, using a buffer size where
+      <em>&ldquo;a buffer size of 1 results in 3 sentences (current, previous and next sentence) to be
+      combined and embedded&rdquo;</em>, and a breakpoint percentile threshold where <em>&ldquo;a higher
+      threshold results in fewer chunks and typically larger average chunk size.&rdquo;</em> It is the only
+      strategy that costs money to run: <em>&ldquo;There are additional costs to using semantic chunking due
+      to its use of a foundation model.&rdquo;</em>
+    </p>
+
+    <div class="callout amber">
+      <strong>Hierarchical is the one that refuses the trade &mdash; and it has a tell</strong>
+      <p><em>&ldquo;During retrieval, the system initially retrieves child chunks, but replaces them with broader parent chunks so as to provide the model with more comprehensive context.&rdquo;</em> Match precisely, answer broadly. The consequence is easy to misread as a bug: <em>&ldquo;Since child chunks get replaced by parent chunks during retrieval, the returned number of results might be less than the requested amount.&rdquo;</em> Ask for five results, receive three, because two children shared a parent. That is correct behaviour, and it will look like retrieval failing.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The vector store is the decision people over-think</h3>
+    <p>
+      Customer-managed knowledge bases support <em>&ldquo;Amazon OpenSearch Serverless, Amazon Aurora, and
+      Amazon Neptune&rdquo;</em>, and choosing between them absorbs a lot of design time.
+    </p>
+    <p>
+      It rarely changes answer quality. All three store vectors and return nearest neighbours; what differs
+      is operational shape and what else you can do with the data alongside &mdash; a graph in Neptune,
+      relational joins in Aurora, existing search infrastructure in OpenSearch. A bad chunking strategy
+      produces bad answers on all three equally.
+    </p>
+    <p>
+      The genuine architectural fork is earlier: managed or customer-managed. With Managed,
+      <em>&ldquo;Amazon Bedrock manages the underlying data ingestion, indexing, storage, and retrieval
+      infrastructure&rdquo;</em>. With customer-managed, <em>&ldquo;you set up and manage your own RAG
+      pipeline, including the vector store&hellip; and have full control.&rdquo;</em>
+    </p>
+
+    <div class="callout red">
+      <strong>And that fork is not symmetrical</strong>
+      <p>Choosing customer-managed for control costs capability, not just effort: <em>&ldquo;several capabilities such as third-party connectors, document-level permissions and native AgentCore Gateway integration are only available for Managed Knowledge Bases.&rdquo;</em> Document-level permissions is the one to notice. A RAG system over internal content usually needs retrieval to respect who is asking, and that is available on one side of the fork only. Deciding "we'll manage it ourselves for flexibility" can quietly decide that access control is now yours to build.</p>
+    </div>
+
+    <h3>Some constraints only appear in combination</h3>
+    <p>
+      Individually sensible choices can conflict, and AWS documents one pairing explicitly:
+      <em>&ldquo;Hierarchical chunking is not recommended when using S3 vector bucket as your vector
+      store,&rdquo;</em> because <em>&ldquo;when using high number of tokens for chunking (over 8000 tokens
+      combined), you may run into metadata size limitations.&rdquo;</em>
+    </p>
+    <p>
+      Hierarchical is the best answer to the precision-versus-context tension, and S3 vector buckets are the
+      cheapest place to keep vectors. Choosing both is reasonable in isolation and unsupported together.
+    </p>
+    <p>
+      There is a similar shape in multimodal. <em>&ldquo;Text chunking strategies apply only to text
+      documents&rdquo;</em> &mdash; for audio, video and images, <em>&ldquo;chunking occurs at the embedding
+      model level.&rdquo;</em> With Nova embeddings, duration is configurable <em>&ldquo;from 1-30 seconds
+      (default: 5 seconds)&rdquo;</em>, and <em>&ldquo;for video files, only the video chunk duration
+      applies, even if the video contains audio.&rdquo;</em> A carefully tuned text strategy does nothing to
+      a media corpus.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Where to debug first</td>
+        <td>Retrieval, before the prompt</td>
+        <td>A wrong answer from missing context is indistinguishable from a weak model.</td>
+      </tr>
+      <tr>
+        <td>Chunk size</td>
+        <td>From the shape of your answers</td>
+        <td>The 300-token default is a paragraph. An answer spanning two lives in no chunk.</td>
+      </tr>
+      <tr>
+        <td>Precision versus context</td>
+        <td>Hierarchical chunking</td>
+        <td>Retrieves on children, returns parents — the only strategy that does not force the trade.</td>
+      </tr>
+      <tr>
+        <td>Cheap mitigation</td>
+        <td>Overlap percentage</td>
+        <td>A wide enough overlap means a split answer still appears whole in one chunk.</td>
+      </tr>
+      <tr>
+        <td>Citations</td>
+        <td>Always on</td>
+        <td>They are the only view of which chunk was retrieved, which is the whole diagnosis.</td>
+      </tr>
+      <tr>
+        <td>Managed vs customer-managed</td>
+        <td>Managed unless a named requirement</td>
+        <td>Document-level permissions and connectors exist on one side of the fork only.</td>
+      </tr>
+      <tr>
+        <td>Vector store</td>
+        <td>Pick on operations, not accuracy</td>
+        <td>All three return nearest neighbours. Chunking decides the answers.</td>
+      </tr>
+      <tr>
+        <td>Semantic chunking</td>
+        <td>When boundaries matter more than cost</td>
+        <td>It invokes a foundation model at ingestion, so it is the only strategy with a running bill.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The one measurement worth building first</h3>
+    <p>
+      Before evaluating models, evaluate retrieval alone: take a set of real questions, record which chunks
+      come back, and check by hand whether the answer is present in them. That number &mdash; how often the
+      answer was retrievable at all &mdash; is the ceiling on everything downstream.
+    </p>
+    <p>
+      No prompt raises it. No model raises it. It is decided by chunking, and it can be measured without
+      generating a single response, which makes it both the most useful metric and the easiest one to
+      collect.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      RAG is named for what it does last. The retrieval is in the name, and the attention still goes to the
+      generation, because generation is what produces something visible to argue with.
+    </p>
+    <p>
+      The consequence is a characteristic pattern: weeks of prompt iteration against a corpus that was
+      chopped into paragraphs on day one by a default nobody revisited, and a conclusion that the model is
+      not good enough. Sometimes the model is not good enough. Far more often it was handed the two
+      paragraphs either side of the answer.
+    </p>
+    <p>
+      AWS's own sentence is the most useful thing in the documentation and the easiest to read past:
+      <em>small text embeddings are more precise, but retrieval aims for comprehensive context.</em> Those
+      two goals are in direct conflict, the resolution is a chunking decision, and it is made once, before
+      anybody has asked the system a question.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>AI &amp; ML &mdash; Bedrock model choice, provisioned throughput and cost: why on-demand and provisioned are different products rather than two prices, what a model unit commits you to, and the quota that decides whether a launch is possible in your Region at all.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking-parsing.html" target="_blank" rel="noopener">How content chunking works for knowledge bases &#8212; the four strategies, the 300-token default, and the precision-versus-context statement</a></li>
+      <li><a href="https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html" target="_blank" rel="noopener">Retrieve data and generate AI responses with Amazon Bedrock Knowledge Bases &#8212; managed versus customer-managed, vector stores and citations</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
