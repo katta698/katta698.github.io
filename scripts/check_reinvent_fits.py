@@ -84,6 +84,31 @@ OVERFLOW_JS = """
 }
 """
 
+# A <select> with nothing in it but a placeholder, still enabled. The map's
+# day picker was exactly this whenever the plan was empty: it looked like a
+# working control, opened to one dead entry, and explained nothing. Asked
+# about directly -- "so why it shows no days selected" -- which is the right
+# question and one the page should have answered itself.
+DEAD_CONTROL_JS = """
+() => {
+  const out = [];
+  document.querySelectorAll('select').forEach(sel => {
+    if (sel.disabled || !sel.offsetParent) return;
+    const real = Array.from(sel.options).filter(o => o.value !== '');
+    if (real.length === 0) {
+      out.push({ sel: 'select#' + (sel.id || '?'),
+                 why: 'no selectable option' });
+    }
+  });
+  document.querySelectorAll('button').forEach(b => {
+    if (b.disabled || !b.offsetParent) return;
+    if (!(b.textContent || '').trim() && !b.getAttribute('aria-label'))
+      out.push({ sel: 'button#' + (b.id || '?'), why: 'no label at all' });
+  });
+  return out;
+}
+"""
+
 TAPPABLE_JS = """
 (id) => {
   const el = document.getElementById(id);
@@ -173,6 +198,14 @@ def main():
                             "at %dpx the %s view is %dpx wide, %dpx past the "
                             "viewport. Widest: %s"
                             % (width, tab, r["docW"], over, names))
+
+                    dead = page.evaluate(DEAD_CONTROL_JS)
+                    for d in dead:
+                        problems.append(
+                            "at %dpx, in the %s view, %s is enabled and "
+                            "offers %s -- a control that looks operable and "
+                            "does nothing, with no reason given"
+                            % (width, tab, d["sel"], d["why"]))
 
                     for t in TABS:
                         got = page.evaluate(TAPPABLE_JS, "tab-" + t)

@@ -1156,19 +1156,64 @@
     });
   }
 
+  /* The route is drawn from YOUR PLAN, so the day list only holds days
+     you have starred something on. With an empty plan that left an
+     enabled dropdown offering exactly one entry -- "no day selected" --
+     and no hint as to why. Reported as "so why it shows no days
+     selected", which is the right question to ask of a control that
+     appears to work and does nothing.
+
+     A control with nothing to offer should say so and be unusable, not
+     sit there looking operable. */
   function fillMapDays() {
     var sel = $("#map-day");
     if (!sel) return;
     var have = {};
     planRows().forEach(function (r) { if (r.w) have[r.d] = 1; });
+    var days = CFG.days.filter(function (d) { return have[d]; });
     var keep = sel.value;
     sel.textContent = "";
+
+    if (!days.length) {
+      sel.appendChild(new Option(
+        plan.length ? "— nothing scheduled in your plan yet —"
+                    : "— star sessions first —", ""));
+      sel.disabled = true;
+      sel.onchange = null;
+      setMapHint(plan.length
+        ? "The sessions in your plan have no published times yet, so there "
+          + "is no route to draw."
+        : "Star a few sessions in Browse and their route across the Strip "
+          + "appears here, with the tight hops flagged.");
+      return;
+    }
+
+    sel.disabled = false;
     sel.appendChild(new Option("— no day selected —", ""));
-    CFG.days.forEach(function (d) {
-      if (have[d]) sel.appendChild(new Option(dayLabel(d), d));
+    days.forEach(function (d) {
+      sel.appendChild(new Option(dayLabel(d), d));
     });
     sel.value = have[keep] ? keep : "";
-    sel.onchange = renderMap;
+    sel.onchange = function () { renderMap(); dayPrompt(days.length); };
+    dayPrompt(days.length);
+  }
+
+  /* Cleared once a day is chosen: a prompt telling you to do the thing
+     you have just done is noise. It was not being cleared, because only
+     fillMapDays set it and the dropdown's own change never re-ran it. */
+  function dayPrompt(n) {
+    var sel = $("#map-day");
+    if (sel && sel.value) { setMapHint(""); return; }
+    setMapHint(n === 1
+      ? "Pick the day above to draw the route."
+      : "Pick one of your " + n + " days above to draw the route.");
+  }
+
+  function setMapHint(text) {
+    var el_ = $("#mapday-hint");
+    if (!el_) return;
+    el_.textContent = text || "";
+    el_.hidden = !text;
   }
 
   function laneName(id) {
