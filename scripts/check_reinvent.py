@@ -353,7 +353,7 @@ def main():
         NO_RULE_NEEDED = {
             "show", "on", "open", "done", "live", "dup", "ok", "warn",
             "bad", "self", "unreachable", "venue", "gone", "crawl",
-            "header", "results", "newswrap", "teamwrap",
+            "header", "results", "newswrap", "teamwrap", "planwrap",
         }
         missing = sorted(c for c in used
                          if c not in NO_RULE_NEEDED
