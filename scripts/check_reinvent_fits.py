@@ -65,10 +65,17 @@ OVERFLOW_JS = """
     if (!r.width && !r.height) return;
     const st = getComputedStyle(el);
     if (st.display === 'none' || st.visibility === 'hidden') return;
-    // An element that scrolls its own overflow is doing the right thing.
-    const par = el.parentElement;
-    if (par && ['auto', 'scroll'].indexOf(
-          getComputedStyle(par).overflowX) !== -1) return;
+    // An element inside something that scrolls its own overflow is doing
+    // the right thing. Walk the whole chain, not just the parent: the
+    // cost table's rows sit two levels below its scroll box and were
+    // being reported as overflow.
+    let anc = el.parentElement, scrolls = false;
+    while (anc && anc !== document.body) {
+      const ox = getComputedStyle(anc).overflowX;
+      if (ox === 'auto' || ox === 'scroll') { scrolls = true; break; }
+      anc = anc.parentElement;
+    }
+    if (scrolls) return;
     if (r.right > vw + 1) {
       const cls = (el.className && el.className.baseVal !== undefined
                    ? el.className.baseVal : el.className || '').toString();

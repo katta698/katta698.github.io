@@ -1264,13 +1264,17 @@
       if (state.day) planner.day = state.day;
       if (state.venue) planner.at = state.venue;
       if (state.lane && state.lane !== "all") planner.lane = state.lane;
+      if (state.service !== "") planner.service = state.service;
       save("ri2026.planner", planner);
       view("plan2");
       fillPlannerControls();
-      var d = $("#pl-day"), at = $("#pl-at"), l = $("#pl-lane");
+      var d = $("#pl-day"), at = $("#pl-at"), l = $("#pl-lane"),
+          sv2 = $("#pl-service");
       if (d) d.value = planner.day;
       if (at) at.value = planner.at;
       if (l) l.value = planner.lane || "all";
+      if (sv2) sv2.value = planner.service || "";
+      if (l) l.disabled = !!planner.service;
       renderPlanner();
       window.scrollTo({ top: 0, behavior: "smooth" });
     });
@@ -2142,18 +2146,49 @@
   var PACE = { relaxed: 25, standard: 15, packed: 5 };
 
   var planner = load("ri2026.planner", null) || {
-    day: "", at: "", lane: "", pace: "standard", sponsored: false };
+    day: "", at: "", lane: "", service: "", pace: "standard",
+    sponsored: false };
+  if (planner.service === undefined) planner.service = "";
 
+  /* A chosen service is a strong PREFERENCE, never a hard filter, and
+     that is a measurement rather than a nicety: 102 of the 169 services
+     have five or fewer sessions in the entire week. AWS Transit Gateway
+     has four; AWS Cloud WAN has five. Filtering hard on one of those
+     returns an empty day, which looks like the page is broken rather than
+     like the catalog being thin.
+
+     So a matching session is worth far more and a non-matching one still
+     counts for something -- the day fills with the best of what is left,
+     and the tips say plainly how much of it actually covers the service
+     you asked for. */
   function sessionValue(sn, ty) {
     var v = SESSION_VALUE[ty];
     if (v == null) v = 2;
     if (/-S$/.test(sn.c)) v *= 0.45;          // sponsored
-    if (planner.lane && planner.lane !== "all") {
+    if (planner.service !== "" && planner.service != null) {
+      var want1 = +planner.service;
+      v *= (sn.sv.indexOf(want1) !== -1) ? 3.0 : 0.22;
+    } else if (planner.lane && planner.lane !== "all") {
       var want = laneServices(planner.lane) || [];
       var hit = sn.sv.some(function (i) { return want.indexOf(i) !== -1; });
       v *= hit ? 1.8 : 0.35;
     }
     return v;
+  }
+
+  function serviceName(i) { return DATA.facets.Services[+i]; }
+
+  /* Every slot on this day carrying the chosen service, whether or not it
+     made the plan -- so the advice can say "there are only two". */
+  function serviceSlotsOn(day, idx) {
+    var c = 0;
+    DATA.sessions.forEach(function (sn) {
+      if (sn.sv.indexOf(+idx) === -1) return;
+      sn.when.forEach(function (w) {
+        if (w.d === day && w.e != null) c += 1;
+      });
+    });
+    return c;
   }
 
   function daySlots(day) {
@@ -2231,7 +2266,7 @@
   var rangeCache = {};
 
   function feasibleRange(day) {
-    var key = [day, planner.pace, planner.lane,
+    var key = [day, planner.pace, planner.lane, planner.service,
                planner.sponsored ? 1 : 0].join("|");
     if (rangeCache[key]) return rangeCache[key];
     var lo = null, hi = null;
@@ -2281,6 +2316,40 @@
        + "buildings and a break in the middle are honoured. Packing in "
        + "more means 20-minute talks in one room with no gap at all, "
        + "which is not a day anybody finishes." });
+
+    // how much of the day is actually the thing you asked for
+    if (planner.service !== "" && planner.service != null) {
+      var svcIdx = +planner.service;
+      var nm = serviceName(svcIdx);
+      var got = chain.filter(function (x) {
+        return x.s.sv.indexOf(svcIdx) !== -1; }).length;
+      var avail = serviceSlotsOn(day, svcIdx);
+      if (avail === 0) {
+        tips.push({ k: "warn", t: "No " + nm + " sessions on this day",
+          d: "The catalog has none scheduled for " + dayLabel(day)
+             + ". What follows is the best day available ignoring that "
+             + "preference — try another day, or clear the service." });
+      } else if (got === avail) {
+        tips.push({ k: "ok", t: "All " + avail + " " + nm + " session"
+            + (avail === 1 ? "" : "s") + " on this day are in your plan",
+          d: "There are no others to miss." });
+      } else {
+        tips.push({ k: got ? "ok" : "warn",
+          /* "is a AWS Transit Gateway session" -- the a/an rule needs the
+             next word, and service names start with anything. Reworded so
+             no article is needed at all. */
+          t: got + " of these " + (got === 1 ? "covers " : "cover ") + nm,
+          d: "The day has " + avail + " in total; "
+             + (avail - got === 0 ? "" : (avail - got) + " could not be "
+                + "reached in time or clashed with something better. ")
+             + (chain.length - got > 0
+                ? "The other " + (chain.length - got) + " "
+                  + (chain.length - got === 1 ? "slot is" : "slots are")
+                  + " filled with the strongest sessions that fit around "
+                  + "them, rather than leaving you with gaps."
+                : "") });
+      }
+    }
 
     // where you spend the day
     var byVenue = {};
@@ -2470,18 +2539,38 @@
     CFG.lanes.forEach(function (x) {
       l.appendChild(new Option(x.name, x.id)); });
 
+    // Ordered by how many sessions carry it, like the Browse filter: the
+    // head of that list is what anybody is actually looking for.
+    var sv = $("#pl-service");
+    sv.appendChild(new Option("Any service", ""));
+    var count = {};
+    DATA.sessions.forEach(function (x) {
+      x.sv.forEach(function (i) { count[i] = (count[i] || 0) + 1; });
+    });
+    Object.keys(count).map(Number).sort(function (a, b) {
+      return count[b] - count[a];
+    }).forEach(function (i) {
+      sv.appendChild(new Option(
+        DATA.facets.Services[i] + "  (" + count[i] + ")", String(i)));
+    });
+
     d.value = planner.day; a.value = planner.at;
     l.value = planner.lane || "all"; pc.value = planner.pace;
+    sv.value = planner.service || "";
     sp.checked = !!planner.sponsored;
+    l.disabled = !!planner.service;
 
     function change() {
       planner.day = d.value; planner.at = a.value;
       planner.lane = l.value; planner.pace = pc.value;
-      planner.sponsored = sp.checked;
+      planner.service = sv.value; planner.sponsored = sp.checked;
+      // A named service is more specific than a lane, so it wins and the
+      // lane is greyed rather than silently ignored.
+      l.disabled = !!planner.service;
       save("ri2026.planner", planner);
       renderPlanner();
     }
-    [d, a, l, pc, sp].forEach(function (x) { x.onchange = change; });
+    [d, a, l, sv, pc, sp].forEach(function (x) { x.onchange = change; });
   }
 
   /* ---- filters ------------------------------------------------------- */
