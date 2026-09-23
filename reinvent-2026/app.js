@@ -1294,7 +1294,7 @@
     var i = plan.indexOf(code);
     if (i === -1) plan.push(code); else plan.splice(i, 1);
     save(PLAN_KEY, plan);
-    syncStars(); renderPlan();
+    syncStars(); renderPlan(); showCta();
     if (!$("#map").hidden) { fillMapDays(); renderMap(); }
   }
   function syncStars() {
@@ -2452,6 +2452,14 @@
 
   /* A control that would do nothing should not be sitting there looking
      operable -- the same rule the map's day picker needed. */
+  /* The banner earns its space only while it is still news. Once a day
+     has been planned or anything starred, it is in the way. */
+  function showCta() {
+    var c = $("#cta");
+    if (!c) return;
+    c.hidden = !!(plan.length || planner.day || planner.at);
+  }
+
   function showReset() {
     var rb = $("#pl-reset");
     if (!rb) return;
@@ -2503,6 +2511,7 @@
       // lane is greyed rather than silently ignored.
       l.disabled = !!planner.service;
       save("ri2026.planner", planner);
+      showCta();
       renderPlanner();
     }
     [d, a, l, sv, pc, sp].forEach(function (x) { x.onchange = change; });
@@ -2639,6 +2648,13 @@
     $("#tab-news").addEventListener("click", function () { view("news"); });
     $("#tab-plan2").addEventListener("click",
                                      function () { view("plan2"); });
+
+    $("#cta-go").addEventListener("click", function () {
+      view("plan2");
+      fillPlannerControls();
+      renderPlanner();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
 
 
     $("#share").addEventListener("click", function () {
@@ -2807,6 +2823,7 @@
       var all = document.querySelector('[data-count="all"]');
       if (all) all.textContent = DATA.sessions.length.toLocaleString();
       buildFilters(); wire(); renderFreshness(); renderMatrix();
+      showCta();
       checkLive();
       render();
       if (shared) view("plan");

@@ -116,6 +116,38 @@ DEAD_CONTROL_JS = """
 }
 """
 
+# Content wider than the box it lives in. This is NOT page overflow -- the
+# document can fit the viewport perfectly while a button's label spills out
+# of the button and across its neighbour, which is exactly what happened
+# when a new tab class collided with .star and inherited width:40px. The
+# label rendered at 187px inside a 40px pill; scrollWidth told the truth
+# that the layout did not.
+#
+# Elements that scroll or clip on purpose are excluded, as is a pixel of
+# rounding slack.
+SPILL_JS = """
+() => {
+  const out = [];
+  document.querySelectorAll(
+      'button, a, .vt, .lane, .chip, .tag, .seat, .zb').forEach(el => {
+    if (!el.offsetParent) return;
+    const c = getComputedStyle(el);
+    if (['auto', 'scroll', 'hidden'].indexOf(c.overflowX) !== -1) return;
+    if (c.textOverflow === 'ellipsis') return;
+    const spill = el.scrollWidth - el.clientWidth;
+    if (spill > 2) {
+      const cls = (el.className || '').toString().trim().split(/\s+/)[0];
+      out.push({ sel: el.tagName.toLowerCase()
+                      + (el.id ? '#' + el.id : '')
+                      + (cls ? '.' + cls : ''),
+                 box: el.clientWidth, content: el.scrollWidth,
+                 text: (el.textContent || '').trim().slice(0, 30) });
+    }
+  });
+  return out;
+}
+"""
+
 TAPPABLE_JS = """
 (id) => {
   const el = document.getElementById(id);
@@ -205,6 +237,14 @@ def main():
                             "at %dpx the %s view is %dpx wide, %dpx past the "
                             "viewport. Widest: %s"
                             % (width, tab, r["docW"], over, names))
+
+                    for sp in page.evaluate(SPILL_JS):
+                        problems.append(
+                            "at %dpx, in the %s view, %s is %dpx wide and "
+                            "its content is %dpx -- %r spills out of its own "
+                            "box and over whatever is beside it"
+                            % (width, tab, sp["sel"], sp["box"],
+                               sp["content"], sp["text"]))
 
                     dead = page.evaluate(DEAD_CONTROL_JS)
                     for d in dead:
