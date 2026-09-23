@@ -2196,9 +2196,7 @@
     }
 
     var first = chain[0], last = chain[chain.length - 1];
-    tips.push({ k: "ok", t: chain.length + " session"
-      + (chain.length === 1 ? "" : "s") + ", " + hhmm(first.b)
-      + " to " + hhmm(last.e),
+    tips.push({ k: "ok", t: "Why this many, and not more",
       /* Friday finishes at lunchtime -- calling three sessions ending at
          12:30 "a full day" is a small lie, and the page has spent enough
          effort not telling those. */
@@ -2267,15 +2265,15 @@
     var moves = 0;
     for (var i = 1; i < chain.length; i++)
       if (chain[i].venue !== chain[i - 1].venue) moves += 1;
-    tips.push({ k: "info",
-      t: moves === 0 ? "No travel at all — you stay at " + venues[0]
-                     : moves + " move" + (moves === 1 ? "" : "s")
-                       + " between properties",
-      d: moves === 0
-         ? "Everything is in one building, which is the least fragile "
-           + "shape a day can have."
-         : venues.join(" → ") + ". Each hop below shows the gap you "
-           + "have and what this page estimates you need." });
+    /* The strip above already gives the number. This says the thing the
+       number cannot: which buildings, in what order. */
+    tips.push(moves === 0
+      ? { k: "ok", t: "Everything is in one building",
+          d: "You stay at " + venues[0] + " all day, which is the least "
+             + "fragile shape a day can have." }
+      : { k: "info", t: "Your route: " + venues.join(" → "),
+          d: "Each hop below shows the gap you have and what this page "
+             + "estimates you need to cover it." });
 
     // the best base, computed rather than assumed
     var bestBase = null;
@@ -2321,13 +2319,10 @@
         break;
       }
     }
-    tips.push(brk
-      ? { k: "ok", t: "Break: " + hhmm(brk.from) + "–" + hhmm(brk.to)
-          + " (" + brk.len + " min)",
-          d: "Long enough to eat and get somewhere. The planner insists on "
-           + "one — a day with no gap is a plan nobody follows past "
-           + "Tuesday." }
-      : { k: "warn", t: "No real break in the middle of this day",
+    /* The strip states the break when there is one. Only its ABSENCE
+       needs explaining. */
+    if (!brk) tips.push({ k: "warn",
+          t: "No real break in the middle of this day",
           d: "Nothing on this day left a 45-minute gap between 11:00 and "
            + "14:30 at an acceptable pace. Consider dropping one session." });
 
@@ -2386,6 +2381,34 @@
 
     var chain = buildDay(planner.day, planner.at);
     var tips = advise(planner.day, planner.at, chain);
+
+    /* The headline numbers as figures rather than as the first of six
+       identical paragraphs. What fits, how long it runs, how much moving,
+       and whether you get to eat. */
+    if (chain.length) {
+      var first0 = chain[0], last0 = chain[chain.length - 1];
+      var moves0 = 0;
+      for (var q = 1; q < chain.length; q++)
+        if (chain[q].venue !== chain[q - 1].venue) moves0 += 1;
+      var brk0 = "none";
+      for (var r2 = 1; r2 < chain.length; r2++) {
+        var g2 = chain[r2].b - chain[r2 - 1].e;
+        if (g2 >= LUNCH_MIN && chain[r2 - 1].e >= LUNCH_FROM
+            && chain[r2].b <= LUNCH_TO) { brk0 = g2 + " min"; break; }
+      }
+      var strip = el("div", "plstats");
+      [[chain.length, chain.length === 1 ? "session" : "sessions"],
+       [hhmm(first0.b) + "\u2013" + hhmm(last0.e), "your day"],
+       [moves0, moves0 === 1 ? "move between hotels"
+                             : "moves between hotels"],
+       [brk0, "break in the middle"]].forEach(function (pair) {
+        var cell = el("div", "plstat");
+        cell.appendChild(el("b", null, String(pair[0])));
+        cell.appendChild(el("span", null, pair[1]));
+        strip.appendChild(cell);
+      });
+      host.appendChild(strip);
+    }
 
     var tipbox = el("div", "tips");
     tips.forEach(function (t) {
@@ -2810,9 +2833,28 @@
        geometry, and Now builds up to eighty cards -- so the position that
        was correct a moment ago is not any more. Measured: the map landed
        409px below the tab row and Now 223px below it. One correction once
-       the layout has settled, and only if it actually drifted. */
+       the layout has settled, and only if it actually drifted.
+
+       BUT NOT IF THE READER HAS TAKEN OVER. Reported as "when I scroll up
+       it automatically goes down" -- the correction fired 450ms later and
+       dragged them back, which is the page overruling a deliberate act.
+       Listening for scroll would not do: our own smooth scroll emits
+       those. These are the events only a person produces. */
     clearTimeout(scrollFix);
+    var give = ["wheel", "touchstart", "pointerdown", "keydown"];
+
+    function surrender() {
+      clearTimeout(scrollFix);
+      give.forEach(function (ev) {
+        window.removeEventListener(ev, surrender, true);
+      });
+    }
+    give.forEach(function (ev) {
+      window.addEventListener(ev, surrender, true);
+    });
+
     scrollFix = setTimeout(function () {
+      surrender();
       var top = bar.getBoundingClientRect().top;
       if (top < -4 || top > 40) scrollToTabs(false);
     }, 450);
