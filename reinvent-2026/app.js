@@ -77,6 +77,111 @@
       { weekday: "long", day: "numeric", month: "long" });
   }
 
+  /* ---- the countdown -------------------------------------------------
+     Four states, because a countdown that only knows how to count down is
+     wrong for a week either side of the thing it counts to:
+
+       far off      the number of days, with one mark per whole week
+       the last     the number of days, with one mark per day, so the
+       fortnight    row itself shows the week closing
+       during       which conference day it is, out of five, and a way
+                    into the Now view rather than a number
+       afterwards   it is over, and says so
+
+     Everything comes from CFG.event and CFG.days -- the same dates the
+     rest of the page runs on -- and is recomputed every minute, so a page
+     left open overnight does not still say yesterday's number. */
+  function isoOf(d) {
+    return d.getFullYear() + "-"
+         + String(d.getMonth() + 1).padStart(2, "0") + "-"
+         + String(d.getDate()).padStart(2, "0");
+  }
+
+  function daysBetween(isoA, isoB) {
+    /* Both parsed as UTC noon: a day difference computed from local
+       midnights is off by one on the days either side of a DST change,
+       and this number is the one a reader checks against their calendar. */
+    var a = Date.parse(isoA + "T12:00:00Z"), b = Date.parse(isoB + "T12:00:00Z");
+    return Math.round((b - a) / 86400000);
+  }
+
+  function marks(host, total, done, cap) {
+    host.textContent = "";
+    if (!total || total > cap) return;
+    for (var i = 0; i < total; i++) {
+      var m = el("i", i < done ? "on" : (i === done ? "now" : null));
+      host.appendChild(m);
+    }
+  }
+
+  function renderCountdown() {
+    var box = $("#countdown");
+    if (!box || !CFG.event || !CFG.days || !CFG.days.length) return;
+    var num = $("#cd-num"), note = $("#cd-note"), row = $("#cd-marks");
+    /* The pulsing dot lives inside the unit line, so the words go in a
+       span of their own -- setting textContent on the line itself would
+       delete the dot on the first repaint, which is the kind of thing
+       that works until the minute tick runs. */
+    var unitBox = $("#cd-unit"), unit = unitBox.querySelector(".cd-words");
+    if (!unit) {
+      unit = el("span", "cd-words");
+      unitBox.appendChild(unit);
+    }
+    var today = isoOf(new Date());
+    var first = CFG.days[0], last = CFG.days[CFG.days.length - 1];
+    var to = daysBetween(today, first);
+    box.hidden = false;
+    box.classList.remove("is-live");
+    note.textContent = "";
+    row.textContent = "";
+
+    if (today >= first && today <= last) {
+      var n = CFG.days.indexOf(today) + 1;
+      box.classList.add("is-live");
+      num.textContent = n;
+      unit.textContent = "of " + CFG.days.length + " — happening now";
+      marks(row, CFG.days.length, n - 1, 14);
+      note.appendChild(document.createTextNode(
+        dayLabel(today) + ". "));
+      var a = el("a", null, "What is on right now");
+      a.href = "#now";
+      a.addEventListener("click", function (e) {
+        e.preventDefault(); view("now", { scroll: true });
+      });
+      note.appendChild(a);
+      note.appendChild(document.createTextNode("."));
+      return;
+    }
+
+    if (today > last) {
+      var since = daysBetween(last, today);
+      num.textContent = "—";
+      unit.textContent = "that is a wrap";
+      note.textContent = "re:Invent 2026 finished " + (
+        since === 1 ? "yesterday" : since + " days ago")
+        + ". Every session is still here to look back over.";
+      return;
+    }
+
+    num.textContent = to.toLocaleString();
+    unit.textContent = to === 1 ? "day to go" : "days to go";
+    if (to <= 14) {
+      marks(row, to, 0, 14);
+    } else {
+      marks(row, Math.floor(to / 7), 0, 30);
+    }
+    var weeks = Math.floor(to / 7), rest = to % 7, shape;
+    if (to <= 14) {
+      shape = "";
+    } else {
+      shape = weeks + (weeks === 1 ? " week" : " weeks")
+            + (rest ? " and " + rest + (rest === 1 ? " day" : " days") : "")
+            + ". ";
+    }
+    note.textContent = shape + "Doors open " + dayLabel(first) + ", and the "
+      + "catalog is still filling — a plan made today is a first draft.";
+  }
+
   /* ---- the venue-hop rule -------------------------------------------
      The gap is a fact from AWS's own times. The distance is a fact from
      the venues' coordinates. Only the PACE is an assumption, and it is
@@ -3099,7 +3204,11 @@
       window.addEventListener("hashchange", function () {
         if (adoptSharedPlan()) { syncStars(); renderPlan(); view("plan"); }
       });
-      indexLanes(); renderCounts();
+      indexLanes(); renderCounts(); renderCountdown();
+      /* Recomputed on the minute rather than on load only: the page is
+         left open, and a countdown that is right when you open it and
+         wrong by morning is worse than none. */
+      setInterval(renderCountdown, 60000);
       buildFilters(); wire(); renderFreshness(); renderMatrix();
       showCta();
       if (!storageOK) {
