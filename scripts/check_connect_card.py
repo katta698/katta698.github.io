@@ -43,7 +43,10 @@ the paper did not move, which is the defect. The comparison is against
 what a real 200px shift of the same paper looks like, so the assertion
 does not depend on a threshold somebody guessed.
 """
+import hashlib
+import io
 import os
+import re
 import subprocess
 import sys
 import time
@@ -93,7 +96,39 @@ BOXES = """()=>{
 }"""
 
 
+def art_is_stamped():
+    """Every picture on the card must carry the hash of the file on disk.
+
+    The service worker serves images cache-first, so a bare filename is a
+    promise never to change that picture. It was broken by every artwork
+    revision in this session, and it showed up as a platform difference
+    that was not one: "on iPhone the birds are there, on Android they are
+    not" -- the iPhone had never cached the old file and the Android had.
+    """
+    page = os.path.join(ROOT, "connect", "index.html")
+    text = io.open(page, encoding="utf-8").read()
+    problems = []
+    for name in sorted(set(re.findall(r"/connect/([a-z0-9-]+\.webp)", text))):
+        art = os.path.join(ROOT, "connect", name)
+        if not os.path.exists(art):
+            continue
+        want = hashlib.md5(io.open(art, "rb").read()).hexdigest()[:8]
+        for m in re.finditer(r"/connect/%s(\?v=([0-9a-f]{8}))?" % re.escape(name),
+                             text):
+            got = m.group(2)
+            if got != want:
+                problems.append(
+                    "%s is referenced as %s where the file hashes to %s -- a "
+                    "phone that cached the old one never sees the new picture"
+                    % (name, got or "no version", want))
+                break
+    return problems
+
+
 def main():
+    bad_early = []
+    for line in art_is_stamped():
+        bad_early.append(line)
     top_f = birds_at()
     print("  the topmost ink in the artwork sits at %.3f of its height"
           % top_f)
@@ -101,7 +136,7 @@ def main():
                            cwd=ROOT, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
     time.sleep(2)
-    bad = []
+    bad = list(bad_early)
     try:
         with sync_playwright() as p:
             b = p.webkit.launch()

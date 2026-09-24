@@ -294,6 +294,38 @@ def inject_subscribe_block(path):
     return False
 
 
+def stamp_connect_art():
+    """Version the contact card's own artwork by content hash.
+
+    The service worker serves images CACHE-FIRST, and every picture on
+    /connect/ was referenced by a bare filename. So a phone that had
+    visited once kept the first copy of ink-scene-dusk.webp forever --
+    reported as "on iPhone the birds are there, on Android they are not",
+    which was not a platform difference at all: the iPhone had never
+    cached that file and the Android had.
+
+    A bare filename plus a cache-first strategy is a promise never to
+    change the picture. Stamping it with the md5 of what is actually on
+    disk keeps that promise honest: change the file, change the URL.
+    """
+    page = REPO_ROOT / "connect" / "index.html"
+    if not page.exists():
+        return 0
+    text = page.read_text(encoding="utf-8")
+    before = text
+    for name in sorted(set(re.findall(r"/connect/([a-z0-9-]+\.webp)", text))):
+        art = REPO_ROOT / "connect" / name
+        if not art.exists():
+            continue
+        token = hashlib.md5(art.read_bytes()).hexdigest()[:8]
+        text = re.sub(r"/connect/%s(\?v=[0-9a-f]{8})?" % re.escape(name),
+                      "/connect/%s?v=%s" % (name, token), text)
+    if text != before:
+        page.write_text(text, encoding="utf-8", newline="\n")
+        return 1
+    return 0
+
+
 def stamp_static_pages():
     """Re-stamp asset cache-busting tokens on the pages sync does not build.
 
@@ -4497,6 +4529,7 @@ def main():
 
     # PWA: re-stamp asset tokens on hand-maintained pages, then emit sw.js
     stamp_static_pages()
+    stamp_connect_art()
     write_service_worker()
     write_sitemap()
     write_colophon()
