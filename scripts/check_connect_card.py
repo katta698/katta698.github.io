@@ -253,6 +253,52 @@ def main():
                 bad.append("at night the artwork is the daylight cut -- its "
                            "pale wash lights a rectangle on the dark sheet")
 
+            # ---- the switch ---------------------------------------------
+            #
+            # It is deliberately a small mark rather than a labelled
+            # control, which makes it exactly the kind of thing that ends
+            # up too small to hit and too quiet to find. So: the target is
+            # measured, the tap has to actually change the sheet, and the
+            # choice has to survive a reload.
+            ctx = b.new_context(viewport={"width": 412, "height": 915},
+                                device_scale_factor=2, is_mobile=True,
+                                has_touch=True, color_scheme="light")
+            pg = ctx.new_page()
+            pg.goto(URL, wait_until="domcontentloaded")
+            pg.wait_for_timeout(1500)
+            lamp = pg.evaluate("""()=>{
+              const e = document.getElementById('lamp');
+              if (!e) return null;
+              const r = e.getBoundingClientRect();
+              return {w: Math.round(r.width), h: Math.round(r.height),
+                      x: Math.round(r.x + r.width/2),
+                      y: Math.round(r.y + r.height/2),
+                      theme: document.documentElement.dataset.theme};
+            }""")
+            if not lamp:
+                bad.append("the card has no day/night switch")
+            else:
+                if lamp["w"] < 44 or lamp["h"] < 44:
+                    bad.append("the switch is %dx%d, under the 44px floor "
+                               "every other target on this site holds"
+                               % (lamp["w"], lamp["h"]))
+                pg.touchscreen.tap(lamp["x"], lamp["y"])
+                pg.wait_for_timeout(600)
+                flipped = pg.evaluate(
+                    "()=>document.documentElement.dataset.theme")
+                pg.reload(wait_until="domcontentloaded")
+                pg.wait_for_timeout(900)
+                kept = pg.evaluate(
+                    "()=>document.documentElement.dataset.theme")
+                print("  switch %dx%d: %s -> %s, still %s after a reload"
+                      % (lamp["w"], lamp["h"], lamp["theme"], flipped, kept))
+                if flipped == lamp["theme"]:
+                    bad.append("tapping the switch did not change the sheet")
+                if kept != flipped:
+                    bad.append("the chosen sheet did not survive a reload "
+                               "(%s became %s)" % (flipped, kept))
+            ctx.close()
+
             # ---- the paper moves with the page --------------------------
             ctx = b.new_context(viewport={"width": 402, "height": 620},
                                 device_scale_factor=2, is_mobile=True,
