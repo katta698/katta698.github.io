@@ -98,7 +98,7 @@ def main():
                                "says %s" % (label, got, local, want))
                 ctx.close()
 
-            # ---- a tap wins, but only until the sky next moves ----------
+            # ---- a tap wins, and keeps winning --------------------------
             ctx = b.new_context(viewport={"width": 402, "height": 874},
                                 device_scale_factor=2, is_mobile=True,
                                 has_touch=True, timezone_id="America/Chicago")
@@ -123,14 +123,20 @@ def main():
                   "expires %s" % (before, after, kept,
                                   "at the next solar change"
                                   if stored and stored.get("until")
-                                  else "never"))
+                                  else "never -- it holds until the next tap"))
             if after == before:
                 bad.append("tapping the orb did not change the sheet")
             if kept != after:
                 bad.append("the tapped choice did not survive a reload")
-            if not (stored and stored.get("until")):
-                bad.append("the tapped choice has no expiry, so it would "
-                           "outlive every sunrise from now on")
+            # A tap is a decision and holds until the next tap. This was
+            # the opposite for a day -- kept only until the next sunrise or
+            # sunset -- and the assertion is inverted with it, deliberately,
+            # so nobody "fixes" it back by accident.
+            if stored is None or stored.get("t") != after:
+                bad.append("the tapped choice was not recorded")
+            if stored and stored.get("until"):
+                bad.append("the tapped choice carries an expiry; it is meant "
+                           "to hold until the reader taps again")
             ctx.close()
             b.close()
     finally:
@@ -143,7 +149,7 @@ def main():
             print("   -", line)
         return 1
     print("  The card is light where the sun is up and dark where it is not,")
-    print("  in nine places, and a tap holds only until the sky next moves.")
+    print("  in nine places, and a tap holds until the reader taps again.")
     return 0
 
 
