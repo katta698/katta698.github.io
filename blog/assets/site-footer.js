@@ -1,3 +1,43 @@
+
+/* ---------------------------------------------------------------------------
+   One panel at a time.
+
+   Reported from a phone: open the palette, then tap the menu mark, and the
+   palette stays up underneath the menu. Tapping the palette button again
+   closed it, and so did tapping anywhere else on the page -- which is the
+   shape of the bug rather than an inconsistency in it.
+
+   The menu's own handler lives on the document in the CAPTURE phase and
+   calls stopPropagation when the tap lands on its button, deliberately: it
+   is the only way it survives the nav being rebuilt under it. But capture
+   runs first, so stopping there means the palette's own "a click outside
+   closes me" listener -- which is on the document in the bubble phase --
+   never runs at all. Every other outside tap reached it; the one tap that
+   was stopped did not.
+
+   Rather than unpick that, each panel now says when it opens and closes
+   itself when it hears another one. It is one line at each opening point,
+   it does not care which phase anybody listens in, and a panel added later
+   only has to say its own name.
+   ------------------------------------------------------------------------ */
+(function () {
+  window.JKPanels = {
+    opened: function (name) {
+      try {
+        document.dispatchEvent(new CustomEvent('jk:panel-open',
+                                               { detail: name }));
+      } catch (e) {
+        /* Older engines: a panel that fails to announce is the old
+           behaviour, not a broken one. */
+      }
+    },
+    onOther: function (name, close) {
+      document.addEventListener('jk:panel-open', function (e) {
+        if (e.detail !== name) close();
+      });
+    }
+  };
+})();
 (function () {
   'use strict';
 
@@ -626,7 +666,16 @@
       if (!open) menu.innerHTML = menuMarkup();
       btn.setAttribute('aria-expanded', open ? 'false' : 'true');
       menu.hidden = open;
+      if (!open && window.JKPanels) window.JKPanels.opened('palette');
     });
+
+    if (window.JKPanels) {
+      window.JKPanels.onOther('palette', function () {
+        if (btn.getAttribute('aria-expanded') !== 'true') return;
+        btn.setAttribute('aria-expanded', 'false');
+        menu.hidden = true;
+      });
+    }
 
     menu.addEventListener('click', function (e) {
       var row = e.target.closest && e.target.closest('[data-day]');
@@ -1428,7 +1477,11 @@
       if (hit) {
         e.preventDefault();
         e.stopPropagation();
-        if (sheet.hidden) { openedAt = Date.now(); open(); } else { close(); }
+        if (sheet.hidden) {
+          openedAt = Date.now();
+          open();
+          if (window.JKPanels) window.JKPanels.opened('cairn');
+        } else { close(); }
         return;
       }
       if (sheet.hidden) return;
@@ -1437,6 +1490,11 @@
       if (sheet.contains(e.target)) return;
       close();
     }, true);
+    if (window.JKPanels) {
+      window.JKPanels.onOther('cairn', function () {
+        if (!sheet.hidden) close();
+      });
+    }
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && !sheet.hidden) { close(); btn.focus(); }
     });
@@ -2216,6 +2274,7 @@
         if (ck && ck.getAttribute('aria-expanded') === 'true') ck.click();
         p.hidden = false;
         btn.setAttribute('aria-expanded', 'true');
+        if (window.JKPanels) window.JKPanels.opened('subscribe');
         var f = p.querySelector('.subnav-input');
         if (f) setTimeout(function () { f.focus(); }, 80);
       });

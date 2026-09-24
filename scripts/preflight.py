@@ -72,7 +72,7 @@ BROWSER = {
     "check_reinvent_scroll",
     "check_tap_targets", "check_reinvent_counts",
     "check_reinvent_countdown", "check_reinvent_live",
-    "check_connect_card",
+    "check_connect_card", "check_one_panel",
 }
 
 # check_colophon_built was in BROWSER and drives no browser at all -- it
@@ -182,6 +182,9 @@ HOOK_BROWSER = {
     "check_connect_card",        # and the card's figure clears the pills
                                  # and the buttons at three widths, with
                                  # paper that scrolls with the page
+    "check_one_panel",           # and opening one panel in the bar closes
+                                 # the others, which a capture-phase
+                                 # stopPropagation had quietly prevented
 }
 
 PER_CHECK_TIMEOUT = 420
