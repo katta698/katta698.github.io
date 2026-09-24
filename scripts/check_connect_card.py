@@ -125,9 +125,47 @@ def art_is_stamped():
     return problems
 
 
+def alpha_is_smooth():
+    """The fades live in the alpha channel, so the alpha must be lossless.
+
+    WebP compresses alpha separately, and lossily by default it keeps
+    about eleven levels. The card's artwork fades out along its left edge
+    and its bottom by fading its ALPHA, so eleven levels turned both into
+    a staircase -- six visible steps across the foot of the picture -- and
+    put a contour on every soft ink edge besides. Reported as the page
+    looking dirty and uneven, on both phones, which is what it was.
+
+    Written as a floor on distinct levels rather than "was it saved
+    losslessly", because the file cannot say how it was made, and because
+    a future re-save at alpha_quality=96 would pass a flag check and still
+    band. scripts/build_connect_art.py is what produces these.
+    """
+    problems = []
+    for name in ("ink-scene.webp", "ink-scene-dusk.webp"):
+        art = os.path.join(ROOT, "connect", name)
+        if not os.path.exists(art):
+            continue
+        try:
+            from PIL import Image
+            import numpy as np
+        except ImportError:
+            return []
+        alpha = np.asarray(Image.open(art).convert("RGBA"))[..., 3]
+        levels = len(np.unique(alpha))
+        print("  %-22s %3d alpha levels" % (name, levels))
+        if levels < 200:
+            problems.append(
+                "%s has only %d alpha levels -- its fades are a staircase. "
+                "Rebuild with scripts/build_connect_art.py, which writes the "
+                "alpha losslessly" % (name, levels))
+    return problems
+
+
 def main():
     bad_early = []
     for line in art_is_stamped():
+        bad_early.append(line)
+    for line in alpha_is_smooth():
         bad_early.append(line)
     top_f = birds_at()
     print("  the topmost ink in the artwork sits at %.3f of its height"
