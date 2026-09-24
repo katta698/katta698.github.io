@@ -186,6 +186,73 @@ def main():
                            "phone draws above the card does not match it"
                            % (declared, off))
 
+            # ---- and the same page at night -----------------------------
+            #
+            # Dark mode is the same sheet stained dark, not a second
+            # design, so the things that can go wrong are the same ones:
+            # a band round the page that does not match it, type that
+            # stops carrying, and -- the one that actually happened -- the
+            # artwork's pale wash lighting up a rectangle, because low
+            # alpha over white pixels lightens whatever is behind it.
+            ctx = b.new_context(viewport={"width": 412, "height": 915},
+                                device_scale_factor=2, is_mobile=True,
+                                has_touch=True, color_scheme="dark")
+            pg = ctx.new_page()
+            pg.goto(URL, wait_until="domcontentloaded")
+            pg.wait_for_timeout(1800)
+            night = pg.evaluate("""()=>{
+              const cs = getComputedStyle(document.documentElement);
+              const g = n => cs.getPropertyValue(n).trim();
+              const meta = [...document.querySelectorAll('meta[name=theme-color]')]
+                .filter(m => (m.media||'').includes('dark'))[0];
+              return {paper: g('--paper'), ink: g('--ink'), muted: g('--muted'),
+                      theme: meta ? meta.getAttribute('content') : null,
+                      scene: getComputedStyle(document.querySelector('.hero'))
+                               .backgroundImage};
+            }""")
+            pg.screenshot(path=os.path.join(ROOT, "_night.png"))
+            ctx.close()
+            shot = np.asarray(Image.open(os.path.join(ROOT, "_night.png"))
+                              .convert("RGB"), dtype=float)
+            os.remove(os.path.join(ROOT, "_night.png"))
+            edge = np.median(shot[0:24].reshape(-1, 3), axis=0)
+            field = np.median(shot[900:1500, 8:120].reshape(-1, 3), axis=0)
+
+            def lin(c):
+                c = c / 255.0
+                return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+            def lum(t):
+                return (0.2126 * lin(t[0]) + 0.7152 * lin(t[1])
+                        + 0.0722 * lin(t[2]))
+
+            def ratio(hexc, bg):
+                t = tuple(int(hexc.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+                a, c = lum(t), lum(bg)
+                hi, lo = max(a, c), min(a, c)
+                return (hi + 0.05) / (lo + 0.05)
+
+            ink_cr = ratio(night["ink"], field)
+            muted_cr = ratio(night["muted"], field)
+            want = tuple(int(night["theme"].lstrip("#")[i:i + 2], 16)
+                         for i in (0, 2, 4))
+            off = max(abs(edge[i] - want[i]) for i in range(3))
+            print("  night: paper %s  ink %.1f:1  muted %.1f:1  "
+                  "theme-color %s off by %d"
+                  % (night["paper"], ink_cr, muted_cr, night["theme"], off))
+            if ink_cr < 7:
+                bad.append("at night the body ink is %.1f:1 on the page's own "
+                           "background" % ink_cr)
+            if muted_cr < 4.5:
+                bad.append("at night the muted text is %.1f:1, under 4.5"
+                           % muted_cr)
+            if off > 8:
+                bad.append("the dark theme-color is %d off the page's top "
+                           "edge at night" % off)
+            if "dusk" not in night["scene"]:
+                bad.append("at night the artwork is the daylight cut -- its "
+                           "pale wash lights a rectangle on the dark sheet")
+
             # ---- the paper moves with the page --------------------------
             ctx = b.new_context(viewport={"width": 402, "height": 620},
                                 device_scale_factor=2, is_mobile=True,
