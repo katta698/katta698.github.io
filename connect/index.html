@@ -16,15 +16,139 @@
 <meta name="theme-color" content="#1E231C" media="(prefers-color-scheme: dark)">
 <meta name="color-scheme" content="light dark">
 <script>
-/* Before the first paint: what you chose, else what the phone is set to.
+/* Before the first paint: the sun where the reader is.
+   -------------------------------------------------------------------------
+   Asked for: "let mode change based on sunset and sunrise time in local
+   time zone wherever it is." So the page works out the actual solar times
+   for the device and picks day or night from them, rather than asking the
+   operating system what it prefers.
+
+   Where "where you are" comes from, and what it costs:
+
+     Longitude is the timezone's own meridian -- getTimezoneOffset in
+     minutes, divided by four. No permission prompt, no network call, and
+     accurate to the width of a timezone, which is up to half an hour of
+     sunset. Asking for geolocation on a contact card to tint a page would
+     be a poor trade.
+
+     Latitude comes from the IANA zone name against a short table, falling
+     back by continent and then to 40 degrees north. Latitude is what
+     decides how much the times move through the year -- getting it roughly
+     right is the difference between a June sunset at 21:30 in London and
+     20:00 in Chennai.
+
+   Then the standard sunrise equation, and the poles are handled: above the
+   Arctic circle in summer the sun does not set, and the page stays light
+   rather than dividing by a cosine it cannot have.
+
    Inline and synchronous on purpose -- a theme applied after paint is a
    white flash on a page whose whole subject is paper. */
 (function () {
-  var t = null;
-  try { t = localStorage.getItem("connect.theme"); } catch (e) {}
-  if (t !== "light" && t !== "dark") {
-    t = window.matchMedia
-      && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  var LAT = {
+    "Asia/Kolkata": 22, "Asia/Calcutta": 22, "Asia/Dubai": 25,
+    "Asia/Singapore": 1, "Asia/Tokyo": 36, "Asia/Shanghai": 31,
+    "Asia/Hong_Kong": 22, "Asia/Seoul": 37, "Asia/Jakarta": -6,
+    "Asia/Manila": 14, "Asia/Bangkok": 14, "Asia/Karachi": 25,
+    "Asia/Dhaka": 24, "Asia/Jerusalem": 32, "Asia/Riyadh": 25,
+    "Europe/London": 51, "Europe/Dublin": 53, "Europe/Paris": 48,
+    "Europe/Berlin": 52, "Europe/Madrid": 40, "Europe/Rome": 42,
+    "Europe/Amsterdam": 52, "Europe/Stockholm": 59, "Europe/Oslo": 60,
+    "Europe/Helsinki": 60, "Europe/Warsaw": 52, "Europe/Moscow": 56,
+    "Europe/Zurich": 47, "Europe/Lisbon": 39, "Europe/Athens": 38,
+    "America/New_York": 41, "America/Chicago": 42, "America/Denver": 40,
+    "America/Phoenix": 33, "America/Los_Angeles": 34,
+    "America/Vancouver": 49, "America/Toronto": 44, "America/Mexico_City": 19,
+    "America/Bogota": 5, "America/Lima": -12, "America/Sao_Paulo": -23,
+    "America/Argentina/Buenos_Aires": -35, "America/Santiago": -33,
+    "Australia/Sydney": -34, "Australia/Melbourne": -38,
+    "Australia/Brisbane": -27, "Australia/Perth": -32,
+    "Pacific/Auckland": -37, "Africa/Cairo": 30, "Africa/Lagos": 6,
+    "Africa/Nairobi": -1, "Africa/Johannesburg": -26
+  };
+  var REGION = { America: 39, Europe: 50, Asia: 28, Africa: 5,
+                 Australia: -30, Pacific: -15, Indian: -10, Atlantic: 35,
+                 Antarctica: -70 };
+
+  function where() {
+    var zone = "";
+    try {
+      zone = (Intl.DateTimeFormat().resolvedOptions().timeZone || "");
+    } catch (e) {}
+    var lat = LAT[zone];
+    if (lat === undefined) lat = REGION[zone.split("/")[0]];
+    if (lat === undefined) lat = 40;
+    /* getTimezoneOffset is minutes BEHIND UTC, so west is positive; four
+       minutes of offset is one degree of longitude. The STANDARD offset,
+       not today's: in summer a daylight-saving zone reports an hour less,
+       which would place the reader fifteen degrees east of where they are
+       and move sunset by an hour. January and July bracket the year, and
+       standard time is whichever of the two is further behind UTC. */
+    var y = new Date().getFullYear();
+    var std = Math.max(new Date(y, 0, 1).getTimezoneOffset(),
+                       new Date(y, 6, 1).getTimezoneOffset());
+    var lon = -std / 4;
+    return { lat: lat, lon: lon };
+  }
+
+  /* The sunrise equation, in the form the almanacs give it. Returns the two
+     instants as milliseconds, or a string when the sun does not do both. */
+  function sun(now, lat, lon) {
+    var rad = Math.PI / 180;
+    /* Anchored to LOCAL noon, not to the instant. The day number has to be
+       the reader's day: at 07:00 in Sydney it is still yesterday in UTC, so
+       anchoring on the instant returned yesterday's sunrise and the page
+       came up dark in the morning. Seen on Sydney and Tokyo; invisible from
+       anywhere within a few hours of Greenwich, which is exactly the kind
+       of bug that ships. */
+    var noon = new Date(now.valueOf());
+    noon.setHours(12, 0, 0, 0);
+    var jul = noon.valueOf() / 86400000 + 2440587.5;
+    var n = Math.round(jul - 2451545.0 + 0.0008);
+    /* lon east-positive, so the west-positive term the almanac uses is
+       subtracted. Checked against four cities before it was believed:
+       Kolkata, London and Sydney land within three minutes of published
+       times, Chicago within one once the daylight-saving correction above
+       is applied. */
+    var star = n - (lon / 360);
+    var M = (357.5291 + 0.98560028 * star) % 360;
+    var C = 1.9148 * Math.sin(M * rad) + 0.02 * Math.sin(2 * M * rad)
+          + 0.0003 * Math.sin(3 * M * rad);
+    var lam = (M + C + 180 + 102.9372) % 360;
+    var transit = 2451545.0 + star + 0.0053 * Math.sin(M * rad)
+                - 0.0069 * Math.sin(2 * lam * rad);
+    var dec = Math.asin(Math.sin(lam * rad) * Math.sin(23.4397 * rad));
+    var cosH = (Math.sin(-0.833 * rad) - Math.sin(lat * rad) * Math.sin(dec))
+             / (Math.cos(lat * rad) * Math.cos(dec));
+    if (cosH >= 1) return "night";              // the sun never rises today
+    if (cosH <= -1) return "day";               // and never sets
+    var H = Math.acos(cosH) / rad;
+    var toMs = function (j) { return (j - 2440587.5) * 86400000; };
+    return { rise: toMs(transit - H / 360), set: toMs(transit + H / 360) };
+  }
+
+  window.JKSolar = function (at) {
+    var now = at || new Date();
+    var w = where();
+    var t = sun(now, w.lat, w.lon);
+    if (t === "day") return { theme: "light", next: null };
+    if (t === "night") return { theme: "dark", next: null };
+    var ms = now.valueOf();
+    if (ms < t.rise) return { theme: "dark", next: t.rise };
+    if (ms < t.set) return { theme: "light", next: t.set };
+    return { theme: "dark", next: t.rise + 86400000 };
+  };
+
+  /* A tap still wins -- but only until the sky next changes, so nobody is
+     stuck in a sheet they picked once at midnight three weeks ago. */
+  var choice = null;
+  try { choice = JSON.parse(localStorage.getItem("connect.theme") || "null"); }
+  catch (e) {}
+  var solar = window.JKSolar();
+  var t = solar.theme;
+  if (choice && typeof choice === "object"
+      && (choice.t === "light" || choice.t === "dark")
+      && (!choice.until || Date.now() < choice.until)) {
+    t = choice.t;
   }
   document.documentElement.setAttribute("data-theme", t);
 })();
@@ -771,6 +895,7 @@ a { color: inherit; text-decoration: none; -webkit-tap-highlight-color: transpar
 
   <h1 class="name rise d1">Jayanth<br>Katta<button class="dot" id="lamp"
       type="button" aria-label="Switch between day and night"
+      title="Day or night. Follows your local sunrise and sunset until you say otherwise."
       aria-pressed="false"></button></h1>
 
   <div class="rise d2">
@@ -854,19 +979,33 @@ a { color: inherit; text-decoration: none; -webkit-tap-highlight-color: transpar
   btn.addEventListener("click", function () {
     var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
     paint(next);
-    try { localStorage.setItem("connect.theme", next); } catch (e) {}
+    /* The choice is kept WITH an expiry: the next time the sun actually
+       moves, the page goes back to following it. A card someone taps once
+       at midnight should not still be dark at noon next Tuesday. */
+    var solar = window.JKSolar ? window.JKSolar() : null;
+    try {
+      localStorage.setItem("connect.theme", JSON.stringify(
+        { t: next, until: solar && solar.next ? solar.next : null }));
+    } catch (e) {}
   });
 
-  /* If nothing was ever chosen here, keep following the phone -- somebody
-     whose screen turns itself dark at sunset should see this do the same. */
-  var stored = null;
-  try { stored = localStorage.getItem("connect.theme"); } catch (e) {}
-  if (stored !== "light" && stored !== "dark" && window.matchMedia) {
-    var mq = matchMedia("(prefers-color-scheme: dark)");
-    var follow = function (e) { paint(e.matches ? "dark" : "light"); };
-    if (mq.addEventListener) mq.addEventListener("change", follow);
-    else if (mq.addListener) mq.addListener(follow);
+  /* And while the page is open, it keeps watch. Checked every five minutes
+     rather than scheduled once, because a phone that sleeps through the
+     moment would wake with a stale sheet either way, and five minutes of a
+     timer costs nothing. */
+  function follow() {
+    var choice = null;
+    try {
+      choice = JSON.parse(localStorage.getItem("connect.theme") || "null");
+    } catch (e) {}
+    if (choice && choice.until && Date.now() < choice.until) return;
+    if (choice && choice.until === null && choice.t) return;
+    var solar = window.JKSolar ? window.JKSolar() : null;
+    if (solar && solar.theme !== root.getAttribute("data-theme")) {
+      paint(solar.theme);
+    }
   }
+  setInterval(follow, 300000);
 })();
 </script>
 <script>

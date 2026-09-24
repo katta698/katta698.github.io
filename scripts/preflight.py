@@ -72,7 +72,7 @@ BROWSER = {
     "check_reinvent_scroll",
     "check_tap_targets", "check_reinvent_counts",
     "check_reinvent_countdown", "check_reinvent_live",
-    "check_connect_card", "check_one_panel",
+    "check_connect_card", "check_one_panel", "check_solar_theme",
 }
 
 # check_colophon_built was in BROWSER and drives no browser at all -- it
@@ -185,6 +185,9 @@ HOOK_BROWSER = {
     "check_one_panel",           # and opening one panel in the bar closes
                                  # the others, which a capture-phase
                                  # stopPropagation had quietly prevented
+    "check_solar_theme",         # and the card is light where the sun is
+                                 # up, in nine timezones, with the clock
+                                 # pinned so the answer is not in doubt
 }
 
 PER_CHECK_TIMEOUT = 420
