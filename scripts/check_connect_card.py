@@ -65,6 +65,22 @@ WIDTHS = [(360, 780), (402, 874), (430, 932)]
 HEAD = 0.764          # where the figure's head sits in the artwork
 FEET = 0.953          # and his feet
 GAP = 12              # px of air the head needs under the AI pill
+SCENE = os.path.join(ROOT, "connect", "ink-scene.webp")
+
+
+def birds_at():
+    """How far down the artwork the topmost ink sits, as a fraction.
+
+    The birds are the only marks in the top eighth -- above the sun and
+    above the pine -- so this finds them without a hardcoded box, and it
+    re-derives itself if the crop ever changes.
+    """
+    im = Image.open(SCENE).convert("RGBA")
+    a = np.asarray(im)
+    lum = 0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2]
+    ink = (a[..., 3] > 110) & (lum < 120)
+    ys, _ = np.where(ink[:int(im.height * 0.13)])
+    return (ys.min() / im.height) if len(ys) else 0.0
 
 BOXES = """()=>{
   const r = s => { const e = document.querySelector(s); if (!e) return null;
@@ -78,6 +94,9 @@ BOXES = """()=>{
 
 
 def main():
+    top_f = birds_at()
+    print("  the topmost ink in the artwork sits at %.3f of its height"
+          % top_f)
     srv = subprocess.Popen([sys.executable, "-m", "http.server", str(PORT)],
                            cwd=ROOT, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
@@ -104,8 +123,9 @@ def main():
                 # pill row there is nothing to clear vertically.
                 beside = hero["l"] >= ai["r"]
                 print("  %4dx%-3d head clears AI by %+3d   feet clear the "
-                      "button by %+3d   page %d in %d%s"
-                      % (w, h, over_ai, over_btn, m["page"], m["vh"],
+                      "button by %+3d   birds at %+4d   page %d in %d%s"
+                      % (w, h, over_ai, over_btn,
+                         round(hero["t"] + top_f * H), m["page"], m["vh"],
                          "  [figure is beside the pills]" if beside else ""))
                 if not beside and over_ai < GAP:
                     bad.append("%dpx: the figure's head clears the AI pill by "
@@ -114,6 +134,16 @@ def main():
                 if over_btn < 0:
                     bad.append("%dpx: the figure runs %dpx behind the LinkedIn "
                                "button" % (w, -over_btn))
+                # "Are all the birds at the top visible or cut?" On one
+                # size of three they were cut: the panel is anchored to
+                # the buttons, and on a short screen the buttons sit high
+                # enough to push its top off the viewport.
+                birds = hero["t"] + top_f * H
+                if birds < 0:
+                    bad.append("%dx%d: the birds at the top of the artwork "
+                               "are cut off by %dpx -- the panel starts "
+                               "above the screen" % (w, h, -birds))
+
                 over = m["page"] - m["vh"]
                 if over > 2:
                     bad.append("%dx%d: the card is %dpx taller than the "
