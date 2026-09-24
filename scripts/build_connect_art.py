@@ -128,8 +128,15 @@ def envelope(key, fade):
     says nothing the colour does not already say. The envelope is smooth,
     so it compresses to nothing, and the detail lives in the colour where
     it belongs."""
-    env = ndimage.gaussian_filter(key, 16)
-    return np.clip(env * 1.9, 0, 1) * fade
+    env = np.clip(ndimage.gaussian_filter(key, 16) * 1.9, 0, 1)
+    # ...but never below the ink it has to carry. A pixel at 55% alpha
+    # cannot be darker than 55% of the way to black, however dark the ink
+    # in it is, so a smooth envelope alone washed out everything the
+    # picture draws THINLY -- the birds came out at 159 where they should
+    # be 93, and the mist with them, while the dense mass round the man
+    # stayed at full strength. That is what made him look cut out and
+    # pasted on: it was not his edge, it was everything else fading.
+    return np.maximum(env, key) * fade
 
 
 def unmultiply(target, sheet, a):
@@ -149,11 +156,19 @@ def quiet(rgb, a, toward):
     return rgb * w + toward * (1 - w)
 
 
-def build_day(rgb, key, fade):
+def build_day(rgb, key, fade, bird):
     seen = rgb * key[..., None] + PAPER * (1 - key[..., None])
     a = envelope(key, fade)
-    return save(quiet(unmultiply(seen, PAPER, a), a, PAPER), a * 255.0,
-                "ink-scene.webp")
+    out = quiet(unmultiply(seen, PAPER, a), a, PAPER)
+    # The birds are inked in, the same way the night cut lights them.
+    # The poster draws them at 160 on a 207 sheet, which is a bird at
+    # poster size and nothing at all at a card's -- reported as no
+    # visible birds at all, on a monitor and on both phones. Deepened to
+    # 117, which is the same mark, read at the size it is actually shown.
+    w = (bird * 0.92)[..., None]
+    out = out * (1 - w) + np.array([44, 42, 39]) * w
+    a = np.maximum(a, bird * 0.90)
+    return save(out, a * 255.0, "ink-scene.webp")
 
 
 def build_night(rgb, lum, key, fade, bird):
@@ -241,7 +256,7 @@ def main():
     bird = birds(lum, key, sun_disc(seen))
     print("  from print-art.png %s, keyed on ink and faded in the alpha"
           % (CROP,))
-    build_day(rgb, key, fade)
+    build_day(rgb, key, fade, bird)
     build_night(rgb, lum, key, fade, bird)
     build_seals()
     return 0
