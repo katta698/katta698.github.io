@@ -40,9 +40,11 @@ belongs to whoever owns the shared build, so this script makes the current
 arrangement survivable in the meantime.
 """
 import argparse
+import io
 import os
 import subprocess
 import sys
+import time
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -56,6 +58,10 @@ GENERATED = (
     "blog/", "sitemap.xml", "robots.txt", "how-this-was-made/",
     "intelligence/", "index.html", "now.html", "resume.html", "sw.js",
 )
+
+
+# Every push transcript, appended. Gitignored: it is a diagnostic, not content.
+LOG_NAME = "push-retry.log"
 
 
 def run(*cmd, **kw):
@@ -132,15 +138,39 @@ def attempt(n):
     _, ahead = run("git", "rev-list", "--count", "origin/main..HEAD")
     print("  rebased, %s commit(s) to push -- running the gate" % ahead.strip())
 
+    t0 = time.time()
     code, out = run("git", "push", "origin", "HEAD:main")
+    took = time.time() - t0
+
+    # Keep the whole transcript, every attempt. Printing the last three lines
+    # was not enough on 2026-09-24: a gate failure names the failing check in
+    # the middle of the output and the tail is boilerplate, so recovering one
+    # line cost a second full run of the gate to reproduce it.
+    with io.open(os.path.join(ROOT, LOG_NAME), "a",
+                 encoding="utf-8", errors="replace") as fh:
+        fh.write("%s attempt %d  %.0fs  exit=%d%s"
+                 % (os.linesep, n, took, code, os.linesep))
+        fh.write(out)
+
     if "rejected" in out or code != 0:
-        why = "main moved again" if ("fetch first" in out or "lock ref" in out
-                                     or "non-fast-forward" in out) else "gate"
-        print("  push refused (%s)" % why)
-        for line in out.strip().splitlines()[-3:]:
+        moved = ("fetch first" in out or "lock ref" in out
+                 or "non-fast-forward" in out)
+        print("  push refused (%s) after %.0fs"
+              % ("main moved again" if moved else "gate", took))
+        if moved:
+            # Nothing to diagnose: the gate passed and lost a race.
+            tail = out.strip().splitlines()[-2:]
+        else:
+            # A real gate failure. Show the checks that failed wherever they
+            # sit in the transcript, not whatever happened to print last.
+            tail = [l.rstrip() for l in out.splitlines()
+                    if "FAILED" in l or l.startswith("ERROR")][:12]
+            tail = tail or out.strip().splitlines()[-5:]
+        for line in tail:
             print("    %s" % line)
+        print("    full transcript: %s" % LOG_NAME)
         return False
-    print("  PUSHED")
+    print("  PUSHED in %.0fs" % took)
     for line in out.strip().splitlines()[-2:]:
         print("    %s" % line)
     return True
