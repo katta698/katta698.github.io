@@ -27,9 +27,15 @@ machine it was built on:
                                         it. A sheet of paper moves with
                                         what is printed on it.
 
-Both are geometry, so both are measurable. The art is positioned in
-percentages against a fixed aspect ratio, which means every phone width
-resolves it differently -- the clearances are checked at three.
+And one more, from the same session: the card fits iPhone's screen
+without scrolling and does not fit Android's, because Chrome's address
+bar and gesture bar take about 85px more than Safari's chrome at the same
+nominal height. Not two layouts -- one layout and two viewport heights.
+So the height is asserted too, at the three the card is actually read on.
+
+All of it is geometry, so all of it is measurable. The art is positioned
+in percentages against a fixed aspect ratio, which means every phone size
+resolves it differently -- hence three, not one.
 
 The scroll half is checked by scrolling and comparing a strip of bare
 paper against itself: if the strip is identical after scrolling 200px,
@@ -66,6 +72,7 @@ BOXES = """()=>{
     return {l: Math.round(b.left), t: Math.round(b.top),
             r: Math.round(b.right), b: Math.round(b.bottom)}; };
   return {ai: r('.c-ai'), hero: r('.hero'), btn: r('.act-main'),
+          page: document.body.scrollHeight, vh: innerHeight,
           attach: getComputedStyle(document.documentElement).backgroundAttachment};
 }"""
 
@@ -96,9 +103,9 @@ def main():
                 # Horizontal: if the figure is clear to the right of the
                 # pill row there is nothing to clear vertically.
                 beside = hero["l"] >= ai["r"]
-                print("  %4dpx  head %3d (AI ends %3d, clear by %+d)  "
-                      "feet %3d (button at %3d, clear by %+d)%s"
-                      % (w, head, ai["b"], over_ai, feet, btn["t"], over_btn,
+                print("  %4dx%-3d head clears AI by %+3d   feet clear the "
+                      "button by %+3d   page %d in %d%s"
+                      % (w, h, over_ai, over_btn, m["page"], m["vh"],
                          "  [figure is beside the pills]" if beside else ""))
                 if not beside and over_ai < GAP:
                     bad.append("%dpx: the figure's head clears the AI pill by "
@@ -107,6 +114,11 @@ def main():
                 if over_btn < 0:
                     bad.append("%dpx: the figure runs %dpx behind the LinkedIn "
                                "button" % (w, -over_btn))
+                over = m["page"] - m["vh"]
+                if over > 2:
+                    bad.append("%dx%d: the card is %dpx taller than the "
+                               "screen, so the footer needs a scroll -- it is "
+                               "meant to be one screen" % (w, h, over))
                 if m["attach"] == "fixed":
                     bad.append("%dpx: the paper is attachment:fixed, so it "
                                "stays still while the card scrolls" % w)
