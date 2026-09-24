@@ -1,0 +1,365 @@
+---
+title: "AWS Architecture Series #62 — The quota burns faster than the bill"
+date: '2026-09-24T09:00:00'
+slug: aws-architecture-bedrock-throughput-cost
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-24'
+verified_claims:
+  - claim: "A quota set by AWS at the model level on the number of tokens (including both input and output) that you can use in one minute is the tokens per minute or TPM quota, and burndown rate is the rate at which input and output tokens are converted into token quota usage for the throttling system"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html
+  - claim: "The burndown rate for Anthropic Claude models version 4.8 is 15x for output tokens and the burndown rate for Anthropic Claude Opus 5.5, Claude Sonnet 5, Claude Opus 5, and Claude Fable 5.1 is 10x for output tokens"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html
+  - claim: "For all other Anthropic models version 4.7 and below, the burndown is 5x for output tokens, and for all other models the burndown rate is 1:1"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html
+  - claim: "You're only billed for your actual token usage, so for a request of 1,000 input tokens generating 100 output tokens on Anthropic Claude Sonnet 4, 1,500 tokens will be depleted from your TPM and TPD quotas and you'll only be billed for 1,100 tokens"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html
+  - claim: "A Claude 4.8 request of 1,000 input and 1,000 output tokens burns 8 times as much quota as it bills tokens"
+    derive: "(1000 + 1000*15) / (1000 + 1000)"
+    expect: "8"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html
+  - claim: "At the start of the request the sum of total input tokens plus max_tokens is deducted from your quotas and the request is throttled if you exceed a quota"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html
+  - claim: "In the high max_tokens scenario the initial deduction when the request is made is 36,000 and the final adjusted deduction after the response is generated is 9,000"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html
+  - claim: "The high max_tokens scenario reserves four times the quota the completed request actually consumed"
+    derive: "36000 / 9000"
+    expect: "4"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html
+  - claim: "CacheReadInputTokenCount don't contribute to this calculation and are not counted toward your quota"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html
+  - claim: "Token burndown rates apply only to models available on the bedrock-runtime endpoint, and models available exclusively on the bedrock-mantle endpoint have separate quotas for input and output tokens so burndown does not apply"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/quotas.html
+  - claim: "Amazon Bedrock offers two inference endpoints, bedrock-runtime and bedrock-mantle, each with its own per-model quota allocations, and traffic to the two endpoints is tracked against separate quotas even when calling the same underlying model"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/quotas.html
+  - claim: "You can purchase Provisioned Throughput to provision a higher level of throughput for a model at a fixed cost, and if you customized a model you must purchase Provisioned Throughput to be able to use it"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/prov-throughput.html
+  - claim: "An MU delivers a specific throughput level for the specified model, specifying the number of input tokens an MU can process across all requests within a span of one minute and the number of output tokens an MU can generate within a span of one minute"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/prov-throughput.html
+  - claim: "For more information about what an MU specifies, pricing per MU, and to request limit increases, contact your AWS account manager"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/prov-throughput.html
+  - claim: "With no commitment you can delete the Provisioned Throughput at any time, with a 1 month commitment you can't delete it until the one month commitment term is over, and with a 6 months commitment you can't delete it until the six month commitment term is over"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/prov-throughput.html
+  - claim: "Billing continues until you delete the Provisioned Throughput"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/prov-throughput.html
+  - claim: "Your Provisioned Throughput will automatically renew at the end of each commitment term, maintaining your current input and output tokens configurations"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/prov-thru-delete.html
+  - claim: "If you cancel auto renew your Provisioned Throughput will remain in service until the end of your commitment term and you will still be charged the full provision fee for your current term, whether you run inference or not"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/prov-thru-delete.html
+  - claim: "Auto renew cannot be re-enabled after it is cancelled, and after you cancel auto renew you can't make any further modifications to your Provisioned Throughput for the remainder of the commitment term"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/prov-thru-delete.html
+  - claim: "Provisioned Throughput is supported in AWS GovCloud (US-West) only for custom models with a no-commitment purchase"
+    source: https://docs.aws.amazon.com/bedrock/latest/userguide/prov-thru-supported.html
+problem: "A Bedrock workload is budgeted from the price list, and then it starts returning throttling errors at a fraction of the spend that was planned for. Nothing is wrong with the billing and nothing is wrong with the model. The quota and the bill are measured in the same unit and consumed at different rates."
+builds: "A reading of Bedrock capacity as two separate products rather than two prices: what on-demand actually limits you on, what Provisioned Throughput commits you to, and which decisions in each are irreversible."
+catch: "Output tokens burn quota at up to 15x while billing stays 1:1, so a Claude 4.8 request costs eight times as much quota as it does billed tokens. And max_tokens is deducted in full before the model writes a word — AWS's own worked example reserves 36,000 against a request that consumed 9,000."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #062 &middot; AI &amp; ML</div>
+  <h1 class="post-title">The quota burns faster than the bill</h1>
+  <p class="post-subtitle">On-demand and Provisioned Throughput are not two prices for one product. They are two products with different failure modes, and only one of them is reversible.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Cost Optimization &middot; Reliability</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      A team sizes a Bedrock workload from the price list, doubles it for safety, and ships. Within a week
+      it is returning throttling errors while the bill sits at a fraction of the budget.
+    </p>
+    <p>
+      The instinct is to look for a billing error, then for a leak. There is neither. Quota and cost are
+      both counted in tokens, and they are consumed at different rates &mdash; so the number you budgeted
+      and the number that throttles you were never the same number.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The quota and the bill are different currencies</strong></div>
+      <div class="challenge-body">
+        <p>
+          AWS defines a <em>&ldquo;burndown rate&rdquo;</em> &mdash; <em>&ldquo;the rate at which input and
+          output tokens are converted into token quota usage for the throttling system.&rdquo;</em> For output
+          tokens it is not 1:1.
+        </p>
+        <p>
+          <em>&ldquo;The burndown rate for Anthropic Claude models version 4.8 is <strong>15x for output
+          tokens</strong>&hellip; and the burndown rate for Anthropic Claude Opus 5.5, Claude Sonnet 5, Claude
+          Opus 5, and Claude Fable 5.1 is <strong>10x</strong>&hellip; For all other Anthropic models version
+          4.7 and below, the burndown is <strong>5x</strong>&hellip; For all other models, the burndown rate
+          is 1:1.&rdquo;</em>
+        </p>
+        <p>
+          And then the sentence that separates the two currencies entirely:
+          <em>&ldquo;You're only billed for your actual token usage.&rdquo;</em>
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Budget cost from the price list and capacity from the burndown rate. They are not convertible.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong><code class="inline">max_tokens</code> is spent before the model writes a word</strong></div>
+      <div class="challenge-body">
+        <p>
+          Quota is deducted on the way in, not on the way out:
+          <em>&ldquo;At the start of the request &ndash; The following sum is deducted from your quotas&hellip;
+          <code class="inline">Total input tokens + max_tokens</code>. The request is throttled if you exceed
+          a quota.&rdquo;</em>
+        </p>
+        <p>
+          So <code class="inline">max_tokens</code> is a reservation, and an optimistic one is paid for in
+          concurrency. AWS's own worked example sets it to 32,000 against a response that turns out to be
+          1,000 tokens: <em>&ldquo;Initial deduction when request is made: <strong>36,000</strong>&hellip;
+          Final adjusted deduction after response is generated: <strong>9,000</strong>.&rdquo;</em>
+        </p>
+        <p>
+          That is <strong>four times</strong> the quota the completed request actually used, held for the
+          duration and unavailable to anything else.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Set <code class="inline">max_tokens</code> to the size of the answers you actually get, not to the model's ceiling.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The obvious escape hatch is shut for the models you want</strong></div>
+      <div class="challenge-body">
+        <p>
+          The answer to throttling is supposed to be Provisioned Throughput &mdash; buy capacity, stop being
+          throttled. But the list of models you can buy it for is not the list of models you are using.
+        </p>
+        <p>
+          On the supported-models page, the newest Anthropic entry is <strong>Claude 3.5 Sonnet v2</strong>.
+          The models carrying the 15x and 10x burndown rates &mdash; the ones whose quota cost is highest
+          &mdash; do not appear on it at all.
+        </p>
+        <p>
+          Region coverage narrows it again: most entries are single-Region, and every Claude 3.5 Sonnet
+          variant is <code class="inline">us-west-2</code> only.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Check the supported list before designing around Provisioned Throughput. It is not a general escape.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The useful frame is two products, not one product with two prices.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-062-bedrock-throughput-cost.svg" alt="Diagram: the two Amazon Bedrock capacity products and the different way each one fails. On the left, on-demand inference, where you are throttled by a tokens-per-minute quota set at the model level. A request deducts its total input tokens plus its max_tokens value at the start, before the model generates anything, and the request is throttled if that sum exceeds the quota. When the response is finished the deduction is adjusted to input tokens plus cache write tokens plus output tokens multiplied by a burndown rate, and cached read tokens are not counted toward the quota at all. The burndown rate is fifteen times for Claude 4.8 output tokens, ten times for Claude Opus 5.5, Sonnet 5, Opus 5 and Fable 5.1, five times for Anthropic models version 4.7 and below, and one to one for all other models, while billing remains one to one throughout, so quota and cost are consumed at different rates. A panel gives AWS's own worked example, where a request of one thousand input tokens generating one hundred output tokens on Claude Sonnet 4 depletes one thousand five hundred tokens of quota but is billed for one thousand one hundred. On the right, Provisioned Throughput, bought in model units where each unit delivers a set number of input tokens per minute and output tokens per minute, with the note that the actual figure per model unit and its price are not published and require contacting an AWS account manager. Its commitment terms are no commitment, deletable at any time, one month, and six months, where a committed purchase cannot be deleted before the term completes. A closing panel records that the commitment renews automatically at the end of each term, that cancelling auto renew still charges the full fee for the current term whether or not inference runs, that auto renew cannot be re-enabled once cancelled, and that no further modifications are possible for the remainder of the term." />
+      <figcaption>On-demand fails on quota, which you can measure. Provisioned fails on commitment, which you cannot exit.</figcaption>
+    </figure>
+
+    <h3>On-demand: the limit is not the one you budgeted</h3>
+    <p>
+      The arithmetic at the end of a request is precise, and every term in it matters:
+      <code class="inline">InputTokenCount + CacheWriteInputTokenCount + (OutputTokenCount x burndown rate)</code>.
+    </p>
+    <p>
+      AWS works it through: 1,000 input tokens producing 100 output tokens on Claude Sonnet 4 means
+      <em>&ldquo;<strong>1,500 tokens</strong> (1,000 + 100 x 5) will be depleted from your TPM and TPD
+      quotas&rdquo;</em> while <em>&ldquo;You'll only be billed for <strong>1,100 tokens</strong>.&rdquo;</em>
+    </p>
+    <p>
+      Push that to a generation-heavy workload on a 15x model &mdash; 1,000 in, 1,000 out &mdash; and the
+      request burns 16,000 tokens of quota while billing 2,000. <strong>Eight times as much quota as
+      cost</strong>, for the same request.
+    </p>
+
+    <div class="callout amber">
+      <strong>One term in that formula runs the other way</strong>
+      <p><em>&ldquo;<code class="inline">CacheReadInputTokenCount</code> don't contribute to this calculation and are not counted toward your quota.&rdquo;</em> Prompt caching is usually filed under cost reduction. It is also the only lever in the formula that buys back throughput, because a cache read is free against the quota as well as cheaper on the bill. On a workload with a large stable prefix, that is the difference between being throttled and not.</p>
+    </div>
+
+    <h3>Provisioned Throughput: a reservation, priced privately</h3>
+    <p>
+      Capacity is bought in <strong>Model Units</strong>. An MU <em>&ldquo;delivers a specific throughput
+      level for the specified model&rdquo;</em> &mdash; a number of input tokens per minute and a number of
+      output tokens per minute.
+    </p>
+    <p>
+      What those numbers are, AWS does not publish: <em>&ldquo;For more information about what an MU
+      specifies, pricing per MU, and to request limit increases, contact your AWS account
+      manager.&rdquo;</em>
+    </p>
+    <p>
+      That is worth sitting with, because it decides how this post can honestly end. The break-even between
+      on-demand and provisioned is a function of the throughput one MU delivers and what it costs, and
+      neither is public. <strong>Nobody can compute that break-even from the documentation</strong> &mdash;
+      not me, and not you. It is a conversation with an account team, and any blog post that prints a
+      crossover point for it is printing a guess.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The commitment is a one-way door with a default that closes it again</h3>
+    <p>
+      The three terms look like a normal discount ladder: <em>&ldquo;No commitment &ndash; You can delete the
+      Provisioned Throughput at any time. 1 month &ndash; You can't delete the Provisioned Throughput until
+      the one month commitment term is over. 6 months &ndash; You can't delete&hellip; until the six month
+      commitment term is over.&rdquo;</em>
+    </p>
+    <p>
+      The part that is not a normal discount ladder is what happens next:
+      <em>&ldquo;Your Provisioned Throughput will <strong>automatically renew</strong> at the end of each
+      commitment term.&rdquo;</em> A six-month commitment is not a six-month decision unless somebody
+      diaries it.
+    </p>
+
+    <div class="callout red">
+      <strong>And the exit is itself irreversible</strong>
+      <p>Cancelling auto renew does not stop the current bill: <em>&ldquo;you will still be charged the full provision fee for your current term, whether you run inference or not.&rdquo;</em> It also freezes the resource &mdash; <em>&ldquo;you can't make any further modifications to your Provisioned Throughput for the remainder of the commitment term&rdquo;</em> &mdash; and it cannot be undone: <em>&ldquo;Auto renew cannot be re-enabled after it is cancelled.&rdquo;</em> So the sequence is: commit, forget, renew, cancel, and then run six months of a resource you can neither resize nor stop paying for. Every step of that is documented and none of it is an error.</p>
+    </div>
+
+    <h3>Two endpoints, two quotas, one model</h3>
+    <p>
+      A detail that will confuse exactly one incident per organisation:
+      <em>&ldquo;Amazon Bedrock offers two inference endpoints &ndash; <code class="inline">bedrock-runtime</code>
+      and <code class="inline">bedrock-mantle</code> &ndash; each with its own per-model quota allocations.
+      Traffic to the two endpoints is tracked against separate quotas, <strong>even when calling the same
+      underlying model</strong>.&rdquo;</em>
+    </p>
+    <p>
+      Burndown does not cross over either: it <em>&ldquo;applies only to models available on the
+      <code class="inline">bedrock-runtime</code> endpoint&rdquo;</em>, while mantle-only models
+      <em>&ldquo;have separate quotas for input and output tokens, so burndown does not apply.&rdquo;</em>
+      Two services' worth of capacity behaviour behind one model name.
+    </p>
+
+    <h3>Customisation removes the choice</h3>
+    <p>
+      One line collapses this entire decision for anyone fine-tuning:
+      <em>&ldquo;If you customized a model, you must purchase Provisioned Throughput to be able to use
+      it.&rdquo;</em>
+    </p>
+    <p>
+      So a custom model is not a model change, it is a billing-model change &mdash; from per-token to hourly,
+      <em>&ldquo;Billing continues until you delete the Provisioned Throughput.&rdquo;</em> The cost of
+      fine-tuning is not the training run; it is the floor under every hour afterwards. And in GovCloud
+      (US-West) it is the only thing supported at all, <em>&ldquo;only for custom models with a
+      no-commitment purchase.&rdquo;</em>
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Capacity planning input</td>
+        <td>Burndown rate, not price</td>
+        <td>Output tokens burn up to 15x quota while billing stays 1:1.</td>
+      </tr>
+      <tr>
+        <td><code class="inline">max_tokens</code></td>
+        <td>Sized to real completions</td>
+        <td>Deducted in full up front. AWS's example reserves 36,000 for a 9,000 request.</td>
+      </tr>
+      <tr>
+        <td>Prompt caching</td>
+        <td>Treat as a capacity lever</td>
+        <td>Cache reads are not counted toward quota — the only term that gives throughput back.</td>
+      </tr>
+      <tr>
+        <td>Model choice</td>
+        <td>Check burndown before benchmarking</td>
+        <td>A 15x model and a 1:1 model need different quota headroom at the same spend.</td>
+      </tr>
+      <tr>
+        <td>Provisioned Throughput</td>
+        <td>Only with an account-team number</td>
+        <td>MU throughput and price are unpublished; no break-even is computable without them.</td>
+      </tr>
+      <tr>
+        <td>Commitment term</td>
+        <td>No commitment until measured</td>
+        <td>1 and 6 month terms cannot be deleted early, and renew automatically.</td>
+      </tr>
+      <tr>
+        <td>Auto renew</td>
+        <td>Diarised before the term ends</td>
+        <td>Cancelling is irreversible, still bills the full term, and freezes modifications.</td>
+      </tr>
+      <tr>
+        <td>Fine-tuning</td>
+        <td>Budget the hourly floor, not the run</td>
+        <td>A custom model cannot be invoked without Provisioned Throughput.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The measurement worth taking first</h3>
+    <p>
+      Before any of this is a capacity decision, it is an observability one. The burndown formula is built
+      from CloudWatch metrics you already have &mdash; <code class="inline">InputTokenCount</code>,
+      <code class="inline">OutputTokenCount</code>, <code class="inline">CacheReadInputTokenCount</code>,
+      <code class="inline">CacheWriteInputTokenCount</code> &mdash; so the quota cost of your real traffic
+      can be computed rather than estimated.
+    </p>
+    <p>
+      Do that before comparing it to anything. A workload whose output-to-input ratio is small is barely
+      affected by a 15x multiplier; one that generates long answers from short prompts is dominated by it.
+      The same spend produces completely different capacity profiles, and only the metrics know which one
+      you have.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The pricing page answers one question well: what will this cost per token. It is silent on the question
+      that actually stops a launch, which is how much of it you are allowed to do per minute.
+    </p>
+    <p>
+      Those two are related by a multiplier that lives on a different page, applies to only some models,
+      changes with model version, and runs as high as fifteen. A team that reads only the first page will
+      budget correctly and still be throttled, and every instinct will point at the bill, which is the one
+      thing that is behaving exactly as documented.
+    </p>
+    <p>
+      The honest conclusion of a cost-lens post is usually a number. This one cannot be, and that is the
+      finding: the crossover between on-demand and provisioned depends on two figures AWS publishes to
+      account managers and not to documentation. What you can do without them is measure the quota cost of
+      your own traffic, which is computable today, and refuse to sign a six-month commitment against a
+      break-even nobody can show you.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>AI &amp; ML &mdash; vector storage for retrieval: OpenSearch Serverless, pgvector on Aurora and S3 Vectors, what each one costs at rest versus at query time, and why the cheapest place to keep embeddings is not always the cheapest place to search them.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html" target="_blank" rel="noopener">How tokens are counted in Amazon Bedrock &#8212; burndown rates, the deduction formula, and the max_tokens worked examples</a></li>
+      <li><a href="https://docs.aws.amazon.com/bedrock/latest/userguide/prov-throughput.html" target="_blank" rel="noopener">Increase model invocation capacity with Provisioned Throughput &#8212; model units, commitment terms, and the custom-model requirement</a></li>
+      <li><a href="https://docs.aws.amazon.com/bedrock/latest/userguide/prov-thru-delete.html" target="_blank" rel="noopener">Delete a Provisioned Throughput or cancel auto renew &#8212; automatic renewal and what cancelling does and does not stop</a></li>
+      <li><a href="https://docs.aws.amazon.com/bedrock/latest/userguide/quotas.html" target="_blank" rel="noopener">Quotas for Amazon Bedrock &#8212; the two inference endpoints and their separate allocations</a></li>
+      <li><a href="https://docs.aws.amazon.com/bedrock/latest/userguide/prov-thru-supported.html" target="_blank" rel="noopener">Supported Regions and models for Provisioned Throughput &#8212; the model list and its Region coverage</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

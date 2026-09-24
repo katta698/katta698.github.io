@@ -1,0 +1,297 @@
+---
+title: 'AWS Daily Intelligence #39 - The partition key was doing two jobs'
+date: '2026-09-24T10:00:00'
+slug: aws-daily-intelligence-kinesis-service-managed-partition-keys
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-09-24'
+verified_claims:
+  - claim: "Amazon Kinesis Data Streams announced Service-Managed Partition Keys, eliminating hot partition keys and reducing time to production for streaming workloads where record ordering is not required"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/kinesis/service-managed-partition-keys
+  - claim: "With Service-Managed Partition Keys the service automatically distributes records based on available warm capacity, without requiring customers to specify partition keys when publishing data"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/kinesis/service-managed-partition-keys
+  - claim: "Service-Managed Partition Keys applies to On-Demand Standard and On-Demand Advantage streams"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/kinesis/service-managed-partition-keys
+  - claim: "Service-Managed Partition Keys is available today in all AWS commercial regions at no additional cost"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/kinesis/service-managed-partition-keys
+  - claim: "To use Service-Managed Partition Keys you simply upgrade to the latest AWS SDK or Kinesis Producer Library (KPL) version"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/kinesis/service-managed-partition-keys
+  - claim: "A partition key is used to group data by shard within a stream, and Kinesis Data Streams uses the partition key associated with each data record to determine which shard a given data record belongs to"
+    source: https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html
+  - claim: "When an application puts data into a stream, it must specify a partition key"
+    source: https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html
+  - claim: "An MD5 hash function is used to map partition keys to 128-bit integer values and to map associated data records to shards using the hash key ranges of the shards"
+    source: https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html
+  - claim: "Partition keys are Unicode strings, with a maximum length limit of 256 characters for each key"
+    source: https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html
+  - claim: "Each data record has a sequence number that is unique per partition-key within its shard, and sequence numbers for the same partition key generally increase over time"
+    source: https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html
+  - claim: "Each shard can support up to 5 transactions per second for reads, up to a maximum total data read rate of 2 MB per second and up to 1,000 records per second for writes, up to a maximum total data write rate of 1 MB per second (including partition keys)"
+    source: https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html
+  - claim: "A shard's two write ceilings meet at about 1 KB per record, so records smaller than that exhaust the record-count limit before the byte limit"
+    derive: "1048576 / 1000"
+    expect: "1048.576"
+    source: https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html
+  - claim: "With on-demand mode Kinesis Data Streams automatically manages the shards in order to provide the necessary throughput and you are charged only for the actual throughput that you use, while with provisioned mode you must specify the number of shards and are charged for the number of shards at an hourly rate"
+    source: https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html
+  - claim: "A shard is a uniquely identified sequence of data records in a stream, each of which provides a fixed unit of capacity, and the total capacity of the stream is the sum of the capacities of its shards"
+    source: https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html
+  - claim: "A data blob in a Kinesis data record can be up to 1 MB"
+    source: https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html
+problem: "Hot shards are the classic Kinesis failure: one partition key value carries a disproportionate share of traffic, its shard saturates, and the stream throttles while the other shards sit idle. The usual fixes — salting the key, re-deriving it, resharding — are all work that has nothing to do with the data."
+builds: "A reading of what Service-Managed Partition Keys actually removes, and what it necessarily removes along with it, because in Kinesis one mechanism has always served two different purposes."
+catch: "The partition key does not only distribute load — it is also the ordering guarantee, because sequence numbers are unique per partition key within a shard. Giving the key to the service gives up both. The announcement states the condition in a subordinate clause: workloads 'where record ordering is not required'."
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      Amazon Kinesis Data Streams has launched <strong>Service-Managed Partition Keys</strong>, aimed at
+      <em>&ldquo;eliminating hot partition keys and reducing time to production for streaming workloads&rdquo;</em>.
+      Instead of the producer choosing a key, <em>&ldquo;the service automatically distributes records based on
+      available warm capacity&rdquo;</em>.
+    </p>
+    <p>
+      It covers <em>&ldquo;On-Demand Standard and On-Demand Advantage streams&rdquo;</em>, is
+      <em>&ldquo;available today in all AWS commercial regions&rdquo;</em>, arrives
+      <em>&ldquo;at no additional cost&rdquo;</em>, and is adopted by upgrading the SDK or the Kinesis
+      Producer Library rather than by changing stream configuration.
+    </p>
+    <p>
+      The qualifying clause is the whole story, and it is easy to read past: this is for workloads
+      <strong>&ldquo;where record ordering is not required.&rdquo;</strong> That is not a footnote. In Kinesis
+      the partition key has always done two jobs at once, and you cannot hand over one without handing over
+      the other.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>
+      A sentence in the developer guide has been true since the service launched:
+      <em>&ldquo;When an application puts data into a stream, it must specify a partition key.&rdquo;</em>
+      That requirement is what has just become optional.
+    </p>
+    <p>
+      What the key did mechanically: <em>&ldquo;An MD5 hash function is used to map partition keys to 128-bit
+      integer values and to map associated data records to shards using the hash key ranges of the
+      shards.&rdquo;</em> Deterministic, and indifferent to how much traffic any one value carries.
+    </p>
+    <p>
+      That indifference is the hot-shard problem. A key chosen for meaning &mdash;
+      <code class="inline">customer_id</code>, <code class="inline">device_id</code>,
+      <code class="inline">tenant</code> &mdash; inherits whatever skew the business has. One large customer
+      is one hash value, and one hash value is one shard.
+    </p>
+    <p>
+      <strong>Nothing about the shard limits changed.</strong> A shard still supports
+      <em>&ldquo;up to 1,000 records per second for writes, up to a maximum total data write rate of 1 MB per
+      second&rdquo;</em>. What changed is who decides which shard a record lands on.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-039-kinesis-service-managed-partition-keys.svg" alt="Diagram: what a Kinesis partition key does, and what Service-Managed Partition Keys changes. On the left, the existing behaviour: a producer must specify a partition key with every record, an MD5 hash function maps that key to a 128-bit integer, and the record lands in whichever shard owns that hash key range. This single mechanism delivers two separate properties at once. The first is distribution, spreading records across shards, which fails when one key value carries a disproportionate share of traffic and saturates its shard while the others sit idle. The second is ordering, because each record's sequence number is unique per partition key within its shard and sequence numbers for the same partition key generally increase over time, so all records sharing a key arrive in order on one shard. In the centre, the shard limits that are unchanged by this launch: 1,000 records per second and 1 megabyte per second for writes, 2 megabytes per second and 5 transactions per second for reads, with partition keys themselves counting toward the write byte limit, and the two write ceilings meeting at about 1 kilobyte per record. On the right, the new behaviour: the producer specifies no partition key, and the service distributes records based on available warm capacity, which removes the hot-shard failure entirely. A closing panel records the trade, that distribution and ordering were always the same mechanism, so opting out of the hot shard also opts out of the per-key ordering guarantee, which is why the announcement scopes the feature to workloads where record ordering is not required. It applies to On-Demand Standard and On-Demand Advantage streams, in all commercial regions, at no additional cost, adopted by upgrading the SDK or Kinesis Producer Library." />
+      <figcaption>One mechanism, two guarantees. Handing the key to the service hands over both.</figcaption>
+    </figure>
+
+    <p>
+      The second job is the one that does not appear in the announcement's headline, and it is stated in the
+      developer guide's definition of a sequence number: <em>&ldquo;Each data record has a sequence number
+      that is <strong>unique per partition-key within its shard</strong>&hellip; Sequence numbers for the same
+      partition key generally increase over time.&rdquo;</em>
+    </p>
+    <p>
+      That is the ordering guarantee, and it is a consequence of the key, not a separate feature. All records
+      sharing a key hash to one shard, and a shard is <em>&ldquo;a uniquely identified sequence of data
+      records&rdquo;</em>. Order is preserved because the records were co-located, and they were co-located
+      because they shared a key.
+    </p>
+    <p>
+      So &ldquo;eliminate hot partition keys&rdquo; and &ldquo;preserve per-entity ordering&rdquo; are not two
+      features you can have separately. They are the same mechanism read two ways, which is exactly why the
+      announcement scopes itself to workloads <em>&ldquo;where record ordering is not required.&rdquo;</em>
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      The work this removes is real and unglamorous. Hot-shard mitigation usually means salting the key with
+      a random suffix, then reassembling meaning downstream &mdash; a change that touches the producer, the
+      consumer, and anything that reasoned about the key in between.
+    </p>
+    <p>
+      <em>&ldquo;Reducing time to production&rdquo;</em> is the honest framing. For a team whose records are
+      genuinely independent &mdash; clickstream, metrics, logs, telemetry fan-in &mdash; picking a partition
+      key has always been a chore with no good answer, because the requirement being encoded was
+      &ldquo;spread evenly&rdquo; and the key is a poor way to say that.
+    </p>
+    <p>
+      <em>&ldquo;Based on available warm capacity&rdquo;</em> is the other half. A hash function cannot know
+      which shards are busy; a service can. That is a better input than any key the producer could have
+      chosen, for the subset of workloads that do not need the key's other property.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      Nothing in the security model changes: the same stream, the same KMS-backed server-side encryption, the
+      same IAM on <code class="inline">PutRecord</code> and <code class="inline">PutRecords</code>.
+    </p>
+    <p>
+      One second-order effect is worth naming. Partition keys are frequently business identifiers, and
+      <em>&ldquo;partition keys are Unicode strings, with a maximum length limit of 256 characters&rdquo;</em>
+      &mdash; a field that has carried customer IDs, account numbers and email addresses into stream metadata
+      for years. Removing the requirement to supply one removes a place that identifier was being written.
+    </p>
+    <p>
+      That is a small, genuine privacy improvement for anyone who has had to think about what their key values
+      reveal. It is not a reason to adopt the feature, but it is a reason not to reintroduce a key out of habit.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      <em>&ldquo;At no additional cost&rdquo;</em>, and restricted to on-demand streams, where
+      <em>&ldquo;you are charged only for the actual throughput that you use.&rdquo;</em>
+    </p>
+    <p>
+      The indirect saving is the one that matters. Under provisioned mode a hot shard is paid for twice: once
+      in the throttling, and once in the shards added to relieve it, since
+      <em>&ldquo;you are charged for the number of shards at an hourly rate&rdquo;</em> whether or not they
+      carry traffic. Even skew is cheaper capacity.
+    </p>
+    <p>
+      There is a detail in the shard limit worth carrying into any sizing estimate:
+      <em>&ldquo;1 MB per second <strong>(including partition keys)</strong>&rdquo;</em>. The key counts
+      against the byte budget. And the two write ceilings meet at roughly <strong>1 KB per record</strong> —
+      below that size a shard exhausts its 1,000-records-per-second limit before its megabyte, which is the
+      case most telemetry workloads are actually in.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      <strong>Adoption is a client-library change, not a stream setting.</strong>
+      <em>&ldquo;Simply upgrade to the latest AWS SDK or Kinesis Producer Library (KPL) version.&rdquo;</em>
+      That is convenient and it is also how this reaches production without a review: a dependency bump plus a
+      producer that stops passing a key is a small diff with a semantic consequence.
+    </p>
+    <p>
+      <strong>The failure it introduces is silent.</strong> A hot shard announces itself &mdash; throttling
+      errors, a visible skew in per-shard metrics. Records arriving out of order relative to each other does
+      not announce itself. It surfaces later, as a consumer that computed a wrong running total or applied a
+      stale update over a fresh one.
+    </p>
+    <p>
+      <strong>Check the consumer, not the producer.</strong> The question is not whether the producer needs
+      ordering; it is whether anything downstream assumes it. Aggregations by entity, state machines,
+      last-write-wins updates and anything keyed off <code class="inline">sequence number</code> ordering all
+      quietly depend on the property being given up.
+    </p>
+    <p>
+      <strong>It is per-record, so the decision can be mixed.</strong> Nothing requires a stream to be
+      all-or-nothing; the key is supplied per <code class="inline">PutRecord</code>. Ordered entities can keep
+      explicit keys on the same stream as independent records that do not.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <p>
+      <strong>Even distribution against per-key ordering.</strong> The single real trade, and it is not
+      tunable — the mechanism that provides one provides the other.
+    </p>
+    <p>
+      <strong>Service knowledge against determinism.</strong> <em>&ldquo;Available warm capacity&rdquo;</em>
+      beats a hash function at balancing load and is no longer reproducible: you can no longer compute which
+      shard a record went to, which matters for anyone who has built debugging around that.
+    </p>
+    <p>
+      <strong>On-demand only.</strong> Restricted to On-Demand Standard and On-Demand Advantage, so the teams
+      on provisioned mode — often precisely those managing shard counts by hand because of skew — are not the
+      ones who get this.
+    </p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      <strong>Write down what each consumer assumes about order before changing any producer.</strong> This is
+      the entire decision, and it lives downstream of the change being made.
+    </p>
+    <p>
+      <strong>Adopt per record type, not per stream.</strong> Telemetry and audit events can stop specifying a
+      key while entity updates on the same stream keep theirs.
+    </p>
+    <p>
+      <strong>If you are salting keys today, this replaces that.</strong> A random suffix is a worse version of
+      what the service now does with knowledge of warm capacity — and it leaves reassembly logic downstream
+      that can now be deleted.
+    </p>
+    <p>
+      <strong>Keep watching per-shard metrics through the change.</strong> It is the evidence that the
+      distribution improved, and it is the only place the change is visible at all.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <p>
+      <strong>Treat &ldquo;record ordering is not required&rdquo; as a claim to verify, not a description to
+      accept.</strong> It is a statement about every consumer of the stream, including ones added later.
+    </p>
+    <p>
+      <strong>Do not reintroduce a partition key for meaning.</strong> If a record needs an entity identifier,
+      that belongs in the data blob, where it is not also a routing decision.
+    </p>
+    <p>
+      <strong>Revisit sizing at roughly 1 KB per record.</strong> That is where a shard's record-count ceiling
+      and its byte ceiling cross, and it decides which one you are actually limited by.
+    </p>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should adopt this</h2>
+    <p>
+      Available today everywhere commercial, free, and behind a library upgrade — so the barrier is
+      verification rather than availability.
+    </p>
+    <p>
+      Adopt it now if your stream carries genuinely independent records and you have ever salted a key or added
+      shards to relieve skew. Do not adopt it if any consumer aggregates or sequences by entity, if you are on
+      provisioned mode where it is not offered, or if you cannot yet name every consumer of the stream —
+      because the question this feature asks is about all of them.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>Service-Managed Partition Keys removes the requirement that a producer specify a partition key.</li>
+      <li>The service distributes records <strong>based on available warm capacity</strong> rather than by MD5 hash.</li>
+      <li>On-Demand Standard and On-Demand Advantage only; all commercial Regions; no additional cost.</li>
+      <li>Adopted by upgrading the AWS SDK or the KPL — a client change, not a stream setting.</li>
+      <li><strong>The partition key also provides ordering</strong>: sequence numbers are unique per partition key within a shard.</li>
+      <li>So the feature is scoped to workloads <em>"where record ordering is not required"</em> — the trade is not optional.</li>
+      <li>Shard limits are unchanged: 1,000 records/sec and 1 MB/sec writes, <strong>including partition keys</strong>.</li>
+      <li>Those two ceilings meet near <strong>1 KB per record</strong>; smaller records hit the count limit first.</li>
+      <li>The new failure mode is silent — out-of-order processing surfaces as wrong results, not as errors.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/09/kinesis/service-managed-partition-keys" target="_blank" rel="noopener">Amazon Kinesis Data Streams announces Service-Managed Partition Keys for simplified data ingestion</a></li>
+      <li><a href="https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html" target="_blank" rel="noopener">Amazon Kinesis Data Streams terminology and concepts &#8212; partition keys, MD5 shard mapping, sequence numbers and shard limits</a></li>
+    </ul>
+  </div>
+</div>

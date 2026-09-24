@@ -92,6 +92,24 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 23 September 2026 — covered by post #39
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Service-Managed Partition Keys — the service places records by available warm capacity, so no partition key is supplied; scoped to workloads "where record ordering is not required", because the key was also the per-key ordering guarantee | Kinesis Data Streams | **#39** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/kinesis/service-managed-partition-keys) |
+| CloudWatch Omni — AI-first observability capturing every prompt, model call and tool invocation; GA in three Regions | CloudWatch | **#38** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-cloudwatch-omni-ai/) |
+| Multi-Region strong consistency in more Regions, plus cross-continent configurations | DynamoDB | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/dynamodb-mrsc-additional-regions/) |
+| Salesforce and Zendesk as native data source connectors for Managed Knowledge Base | Bedrock | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-bedrock-managed-knowledge-base-salesforce-zendesk-native-data-source-connectors/) |
+| EMR on EKS supports IPv6 EKS clusters | EMR | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-emr-eks-ipv6-support) |
+| Routing step data in the analytics data lake | Amazon Connect | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-connect-routing-step-data/) |
+
+Not ranked as candidates — blog posts rather than announcements, kept for reference:
+ICYMI August 2026 security roundup; ASD multi-factor authentication campaign; single-pane NOC
+dashboard for EKS with CloudWatch; FireTV parallel queries and vertical partitioning in DynamoDB;
+diskless Apache Kafka on S3 Files; Spark Connect on EMR on EC2; domain-level VPC networking in
+SageMaker Unified Studio; querying unstructured data in SageMaker Catalog; HEMA's MCP and Bedrock
+journey; agentic conversational video intelligence; open weight models as a coding agent.
+
 ## 10 September 2026 — covered by post #30
 
 | Item | Service | Status | Importance | Reference |
