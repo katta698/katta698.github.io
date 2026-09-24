@@ -194,10 +194,15 @@ def main():
             # stops carrying, and -- the one that actually happened -- the
             # artwork's pale wash lighting up a rectangle, because low
             # alpha over white pixels lightens whatever is behind it.
+            # The page follows the SUN now, not the OS preference, so
+            # asking for a dark colour-scheme is no longer enough to see
+            # the night sheet -- at 07:00 in Chicago it correctly ignores
+            # you. The clock is pinned to 22:00 local instead.
             ctx = b.new_context(viewport={"width": 412, "height": 915},
                                 device_scale_factor=2, is_mobile=True,
-                                has_touch=True, color_scheme="dark")
+                                has_touch=True, timezone_id="America/Chicago")
             pg = ctx.new_page()
+            pg.clock.install(time="2026-09-25T03:00:00Z")
             pg.goto(URL, wait_until="domcontentloaded")
             pg.wait_for_timeout(1800)
             night = pg.evaluate("""()=>{
@@ -262,8 +267,9 @@ def main():
             # choice has to survive a reload.
             ctx = b.new_context(viewport={"width": 412, "height": 915},
                                 device_scale_factor=2, is_mobile=True,
-                                has_touch=True, color_scheme="light")
+                                has_touch=True, timezone_id="America/Chicago")
             pg = ctx.new_page()
+            pg.clock.install(time="2026-09-24T17:00:00Z")   # midday, so light
             pg.goto(URL, wait_until="domcontentloaded")
             pg.wait_for_timeout(1500)
             lamp = pg.evaluate("""()=>{
