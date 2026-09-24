@@ -12,6 +12,13 @@ machine it was built on:
                                         behind the LinkedIn button
                                         entirely.
 
+  "the borders don't quite match"       theme-color, left behind by a
+                                        repaint. The phone paints the
+                                        status bar above the page and the
+                                        gesture bar below it with that
+                                        colour, so it is part of the card
+                                        whether or not the CSS thinks so.
+
   "the background image stays static    background-attachment: fixed. The
    and the whole page is moving"        paper was pinned to the viewport
                                         while the card slid over it, so
@@ -104,6 +111,38 @@ def main():
                     bad.append("%dpx: the paper is attachment:fixed, so it "
                                "stays still while the card scrolls" % w)
                 ctx.close()
+
+                    # ---- the colour the phone paints around the page ---------
+            #
+            # Sampled from the render rather than compared against a
+            # constant, so the day the paper changes again this fails
+            # instead of quietly going stale -- which is how it got three
+            # points out in the first place.
+            ctx = b.new_context(viewport={"width": 402, "height": 874},
+                                device_scale_factor=2)
+            pg = ctx.new_page()
+            pg.goto(URL, wait_until="domcontentloaded")
+            pg.wait_for_timeout(1600)
+            declared = pg.evaluate(
+                "()=>document.querySelector('meta[name=theme-color]')"
+                ".getAttribute('content')")
+            pg.screenshot(path=os.path.join(ROOT, "_paper_top.png"))
+            ctx.close()
+            shot = np.asarray(Image.open(os.path.join(ROOT, "_paper_top.png"))
+                              .convert("RGB"), dtype=float)
+            os.remove(os.path.join(ROOT, "_paper_top.png"))
+            edge = np.median(shot[0:24].reshape(-1, 3), axis=0)
+            want = tuple(int(declared.lstrip("#")[i:i + 2], 16)
+                         for i in (0, 2, 4))
+            off = max(abs(edge[i] - want[i]) for i in range(3))
+            print("  theme-color %s, page's top edge #%02X%02X%02X, "
+                  "worst channel off by %d"
+                  % (declared, int(edge[0]), int(edge[1]), int(edge[2]), off))
+            if off > 6:
+                bad.append("theme-color %s is %d off the colour the page "
+                           "actually paints at its top edge, so the band the "
+                           "phone draws above the card does not match it"
+                           % (declared, off))
 
             # ---- the paper moves with the page --------------------------
             ctx = b.new_context(viewport={"width": 402, "height": 620},
