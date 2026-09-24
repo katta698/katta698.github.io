@@ -22,6 +22,8 @@ this morning is a site whose dates cannot be believed.
 import datetime as dt
 import io
 import os
+import pathlib
+import re
 import subprocess
 import sys
 
@@ -67,6 +69,33 @@ def git_date(path):
         return None
 
 
+NOINDEX = re.compile(
+    r"<meta[^>]+name=[\"']robots[\"'][^>]*content=[\"'][^\"']*noindex", re.I)
+
+
+def declares_noindex(path):
+    """Does this page tell crawlers to stay away?
+
+    Path-based skipping cannot see a draft: a draft post is built to
+    blog/<slug>/index.html, exactly like a published one, and is told apart
+    only by the robots meta the builder stamps into it. Advertising a
+    noindex URL in the sitemap is a contradiction -- and it publishes the
+    address of a post nobody has agreed to publish yet.
+
+    So ask the page, rather than its filename.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    # Bound the search on </head> rather than a byte count. A fixed window
+    # is a guess about where the meta lands, and a page whose head grows
+    # past it goes back to being advertised -- silently, and only for the
+    # pages that most need not to be.
+    cut = text.lower().find("</head>")
+    return bool(NOINDEX.search(text if cut < 0 else text[:cut]))
+
+
 def pages():
     found = []
     for base, dirs, files in os.walk(ROOT):
@@ -78,6 +107,8 @@ def pages():
             rel = os.path.relpath(os.path.join(base, name), ROOT)
             rel = rel.replace("\\", "/")
             if rel in SKIP_PATHS or "/page/" in rel:
+                continue
+            if declares_noindex(pathlib.Path(base) / name):
                 continue
             found.append(rel)
     return sorted(found)
