@@ -92,6 +92,31 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 24 September 2026 — covered by post #40
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Enhanced Custom event bus — consumers create their own Subscribers; bus allowance falls 100 to 5 while subscribers rise to 10,000 per bus and throughput to 500,000 events/sec; ordering with content-based dedup; pricing by data transferred, not events; 14 Regions | EventBridge | **#40** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/eventbridge-relaunches-custom-event-buses/) |
+| CVE-2026-96883 — type confusion in AWS pgcollection allows remote code execution | pgcollection | **open — high urgency** | High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-118-aws/) |
+| CVE-2026-5747 — out-of-bounds write in Firecracker virtio-pci transport | Firecracker | **open — high urgency** | High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-015-aws/) |
+| CVE-2026-5190 — stack buffer overflow in the AWS C event stream streaming decoder | AWS C libraries | open | Med-High | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-011-aws/) |
+| Post-quantum TLS key exchange | RDS for PostgreSQL | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/postgresql-post-quantum-tls-key-exchange/) |
+| Network Security Manager GA — us-east-1 only | Network Security Manager | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/network-security-manager-us-east-va/) |
+| HyperPod Inference Gateway for scalable LLM inference | SageMaker | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/sagemaker-hyperpod-inference-gateway/) |
+| Durable functions reach the European Sovereign Cloud | Lambda | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/durablefunctions-european-sovereign-cloud/) |
+| Multi-AZ for SQL Server Developer Edition | RDS | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-rds-sql-server-multi-az-developer-edition/) |
+| Spark Connect for interactive workloads on EMR on EKS | EMR | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/emr-eks-spark-connect-interactive/) |
+| PostgreSQL 19 Beta 4 in the RDS Database Preview Environment | RDS for PostgreSQL | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/postgresql-19-beta-4-amazon-rds-database-preview-environment/) |
+| Extended Support minor versions 5.7.44-rds.20260902 and 8.0.46-rds.20260908 | RDS for MySQL | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-rds-mysql-extended-support-minor-5744-8046-rds/) |
+| Global Datastore supports tagging and tag-based access control | ElastiCache | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-elasticache-global-datastore-tagging/) |
+| Available in 5 new Regions and 8 Local Zones | GameLift Servers | open | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-gamelift-servers-region-expansion-2026) |
+| Issues with the Athena ODBC Driver; issues with Research and Engineering Studio; AWS Ops Wheel CVE-2026-6911 and CVE-2026-6912 | various | open | Low-Med | [link](https://aws.amazon.com/security/security-bulletins/rss/2026-013-aws/) |
+
+Three security bulletins on one day is worth noting, and two of them are remote code execution or
+memory corruption in code that runs inside the trust boundary — pgcollection and Firecracker. Neither
+became the post because the EventBridge relaunch changes an architecture rather than a version number,
+but both are higher urgency than anything else in this table and are held here deliberately.
+
 ## 23 September 2026 — covered by post #39
 
 | Item | Service | Status | Importance | Reference |
