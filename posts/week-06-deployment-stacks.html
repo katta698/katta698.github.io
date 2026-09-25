@@ -1,0 +1,465 @@
+---
+title: 'Week 6 — I Gave Myself Owner, Then Couldn''t Delete My Own Storage Account'
+date: '2026-09-26T10:00:00'
+labels:
+- Azure
+- Terraform
+- Azure Weekly Lab
+slug: week-06-deployment-stacks
+---
+<div id="jk-post">
+
+<div class="meta">
+  <span class="stack-badge">Deployment Stacks</span>
+  <span class="stack-badge">Deny Assignments</span>
+  <span class="stack-badge">Management Groups</span>
+  <span class="stack-badge">ARM Templates</span>
+  <span class="stack-badge">Azure CLI</span>
+  <span class="stack-badge">Terraform</span>
+</div>
+
+<div class="post-eyebrow">Azure Platform Engineering Lab · Week 6 of 52</div>
+
+<h1>Week 6 — I Gave Myself Owner, Then Couldn't Delete My Own Storage Account</h1>
+
+<p class="post-subtitle">Every guardrail this lab has built so far can be removed
+by the person it is meant to stop. This week builds one that cannot — and proves
+it by holding Owner and User Access Administrator, being told by Azure that I
+have permission to delete, and being refused anyway.</p>
+
+<div class="post-meta">
+  <span>26 September 2026</span>
+  <span>Terraform + Azure CLI · HCP Terraform, local execution</span>
+  <span>~$0.00 — nothing here bills by the hour</span>
+</div>
+
+<div class="toc">
+  <h2>📋 In This Post</h2>
+  <ol>
+    <li><a href="#why">Why — The Problem This Solves</a></li>
+    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
+    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
+    <li><a href="#build">How We Built It — In Deployment Order</a></li>
+    <li><a href="#proof">The Proof — Two Deletes, One Refusal</a></li>
+    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
+    <li><a href="#security">Security — Controls at Every Layer</a></li>
+    <li><a href="#cost">Cost</a></li>
+    <li><a href="#cleanup">Cleanup — The Hard Part</a></li>
+    <li><a href="#references">References</a></li>
+    <li><a href="#takeaways">Key Takeaways</a></li>
+  </ol>
+</div>
+
+<h2 id="why">Why — The Problem This Solves</h2>
+
+<p>Here is an uncomfortable thing about most Azure guardrails: the person they
+are designed to stop can usually remove them.</p>
+
+<p>A <strong>resource lock</strong> is itself a resource. An Owner deletes the
+lock, then deletes the thing the lock was protecting. Two commands.</p>
+
+<p>An <strong>Azure Policy</strong> with a <code>deny</code> effect is an
+assignment. An Owner with rights at that scope unassigns it, does what they
+wanted, and re-assigns it if they are tidy. Also two commands.</p>
+
+<p>In both cases the control and the target live at the same scope, under the
+same identity. So the guardrail is exactly as strong as the discipline of the
+person standing next to it at 2am during an incident — which is to say, it is
+not a guardrail. It is a reminder.</p>
+
+<div class="callout amber">
+  <p><strong>A deployment stack is different in kind, not in degree.</strong> The
+  stack owns a set of resources and holds a <strong>deny assignment</strong> over
+  them. A deny assignment is not a role assignment and cannot be out-voted by
+  one. No amount of <code>Owner</code> gets around it — you have to go to where
+  the <em>stack</em> lives and remove the stack.</p>
+</div>
+
+<p>So the claim for the week, stated so that it can fail: <strong>an Owner with
+full rights over the subscription cannot delete a resource a deployment stack is
+protecting, and can delete an otherwise identical resource sitting beside
+it.</strong></p>
+
+<h2 id="skills">What You Need to Know — Skills &amp; Tools</h2>
+
+<ul>
+  <li><strong>Deployment stacks</strong> — a resource
+  (<code>Microsoft.Resources/deploymentStacks</code>) that owns the resources a
+  template deployed, and manages their lifecycle as a unit.</li>
+  <li><strong>Deny assignments</strong> — the other half of Azure's authorization
+  model. Role assignments say what you <em>may</em> do; deny assignments say what
+  you may not, and they win.</li>
+  <li><strong>Scope</strong> — that a stack can be created at resource group,
+  subscription or management group scope, and that this choice <em>is</em> the
+  security control.</li>
+  <li><strong>ARM template JSON</strong> — enough to read one. Bicep compiles to
+  this; the stack only ever sees this.</li>
+  <li><strong>The Azure CLI's <code>az stack</code> command group</strong>, which
+  has <code>group</code>, <code>sub</code> and <code>mg</code> variants that are
+  <em>not</em> interchangeable.</li>
+</ul>
+
+<h2 id="architecture">Architecture — How It Fits Together</h2>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-06-deployment-stacks/docs/blog/diagrams/week-06-architecture.svg" alt="Diagram: week 6 deployment stacks. One caller holding Owner and User Access Administrator attempts to delete two identical storage accounts in sub-lab-dev. The control, built by Terraform, deletes successfully. The protected one, owned by a deployment stack scoped at the mg-lz-dev management group with denyWriteAndDelete, is refused by a deny assignment." style="width:100%;max-width:900px" /></p>
+
+<p>Two storage accounts. Same subscription, same region, same SKU, same TLS
+floor, same public access setting, same identity doing the deleting. One
+variable differs: a deployment stack is holding one of them.</p>
+
+<h2 id="build">How We Built It — In Deployment Order</h2>
+
+<h3>0. How any of this gets deployed</h3>
+
+<p>This week is the first one in the lab that is <em>not</em> pure Terraform,
+and the reason is worth being blunt about.</p>
+
+<div class="callout red">
+  <p><strong>Deployment stacks have no Terraform resource.</strong> I checked the
+  azurerm provider's own documentation tree on 20 September 2026: there are
+  <code>*_template_deployment</code> resources, and there is nothing for
+  <code>Microsoft.Resources/deploymentStacks</code>. Microsoft's own guidance says
+  the same thing — <em>"To create and update a deployment stack, use the Azure
+  CLI, Azure PowerShell, or the Azure portal with Bicep files."</em> Terraform is
+  not on that list, so this week does not pretend otherwise.</p>
+</div>
+
+<p>So the week splits along that line, and the split turns out to be useful:</p>
+
+<pre><code>the control     Terraform, into sub-lab-dev.
+                An ordinary storage account, no protection at all.
+
+the protected   an ARM template, deployed as a deployment stack created at
+                mg-lz-dev scope, into sub-lab-dev, deny settings on.</code></pre>
+
+<p>The Terraform half is the usual setup — state in HCP Terraform, the apply
+running locally against whatever <code>az login</code> session is on the
+machine:</p>
+
+<pre><code>terraform {
+  required_providers {
+    azurerm = { source = "hashicorp/azurerm", version = "~&gt; 5.2" }
+  }
+
+  cloud {
+    organization = "Katta"
+    workspaces {
+      name    = "azure-week-06-dev"
+      project = "Azure Platform Lab"
+    }
+  }
+}</code></pre>
+
+
+<p>And the control itself is deliberately boring:</p>
+
+<pre><code>resource "azurerm_storage_account" "control" {
+  name                = var.control_storage_account_name
+  resource_group_name = azurerm_resource_group.control.name
+  location            = azurerm_resource_group.control.location
+
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  account_kind             = "StorageV2"
+
+  # Matched to the stack's template on purpose. If the two accounts
+  # differed in configuration, "one delete was refused" would have more
+  # than one possible explanation.
+  min_tls_version                 = "TLS1_2"
+  https_traffic_only_enabled      = true
+  allow_nested_items_to_be_public = false
+}</code></pre>
+
+<p>The control is not decoration and it is not padding. Without it,
+<em>"the delete failed"</em> has several possible explanations — a typo in the
+account name, a transient Azure error, a role I thought I had and didn't. With
+it, there is exactly one difference between the two attempts.</p>
+
+<h3>1. The protected half — an ARM template the stack will own</h3>
+
+<p>The template is <strong>subscription-scoped</strong>, and it creates its own
+resource group:</p>
+
+<pre><code>{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "resources": [
+    {
+      "type": "Microsoft.Resources/resourceGroups",
+      "apiVersion": "2021-04-01",
+      "name": "[parameters('resourceGroupName')]",
+      "location": "[parameters('location')]",
+      "tags": { "week": "06", "managed-by": "deployment-stack" }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "name": "protected-storage",
+      "resourceGroup": "[parameters('resourceGroupName')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/resourceGroups', parameters('resourceGroupName'))]"
+      ],
+      "properties": { "mode": "Incremental", "template": { "...": "the storage account" } }
+    }
+  ]
+}</code></pre>
+
+<p>That the stack makes its own resource group rather than reusing one Terraform
+created is the important detail. <strong>A resource with two owners has an
+ambiguous teardown</strong> — and an ambiguous teardown is precisely the failure
+this whole week is about avoiding. The stack owns everything it protects, right
+down to the container it lives in.</p>
+
+<h3>2. Creating the stack — and why the scope is the control</h3>
+
+<p>The stack is created at <code>mg-lz-dev</code>, a <strong>management
+group</strong>, and deploys <em>into</em> <code>sub-lab-dev</code>:</p>
+
+<pre><code>az stack mg create \
+  --name stack-wk06-protected \
+  --management-group-id mg-lz-dev \
+  --location southcentralus \
+  --deployment-subscription "$SUB" \
+  --template-file stack/protected.json \
+  --parameters storageAccountName="$PROTECTED_SA" \
+  --action-on-unmanage deleteAll \
+  --deny-settings-mode denyWriteAndDelete \
+  --yes</code></pre>
+
+<p>A deny assignment lives where the <strong>stack</strong> lives. Put the stack
+in the subscription, and an Owner of that subscription can reach the stack,
+delete the stack, and take the deny assignment with it — you are back to two
+commands. Put the stack a level up, and lifting the restriction requires rights
+at the management group: a different grant, held by different people, reviewed on
+a different cadence.</p>
+
+<p>Two flags in that command carry real weight:</p>
+
+<ul>
+  <li><code>--deny-settings-mode denyWriteAndDelete</code>, not
+  <code>denyDelete</code>. <code>denyDelete</code> leaves a wide door open: an
+  account whose network rules can still be rewritten, whose public access can be
+  re-enabled and whose TLS floor can be dropped is not meaningfully protected. It
+  just cannot be removed while being quietly ruined.</li>
+  <li><code>--action-on-unmanage deleteAll</code> — which matters at teardown, and
+  is the subject of the <a href="#cleanup">Cleanup</a> section below.</li>
+</ul>
+
+<p>The deploy script runs <code>az stack mg validate</code> first, because a
+stack that fails halfway still exists, and a half-failed stack <em>with deny
+settings on</em> is harder to remove than one that never started.</p>
+
+<h3>3. What the stack actually created</h3>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-06-deployment-stacks/docs/blog/screenshots/01-protected-resource-group.png" alt="Azure portal resource group rg-wk06-protected-dev-scus-001 containing the storage account created by the deployment stack" style="width:100%" /></p>
+
+<p>And the control, which looks identical because it is meant to:</p>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-06-deployment-stacks/docs/blog/screenshots/02-control-resource-group.png" alt="Azure portal resource group rg-wk06-control-dev-scus-001 containing the unprotected storage account created by Terraform" style="width:100%" /></p>
+
+<p>The difference is not in either resource group. It is here, under the
+subscription's <strong>Access control (IAM) → Deny assignments</strong>:</p>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-06-deployment-stacks/docs/blog/screenshots/03-deny-assignment.png" alt="Azure portal deny assignments blade showing a deny assignment created by Deployment stack, with Denied set to All principals and Excluded principals set to No" style="width:100%" /></p>
+
+<p>Note what that blade says: created by <strong>Deployment stack</strong>,
+<em>Denied: All principals</em>, <em>Excluded principals: No</em>. Nobody made it
+by hand, and nobody can edit it there. The stack is the only thing that changes
+it.</p>
+
+<h2 id="proof">The Proof — Two Deletes, One Refusal</h2>
+
+<p><code>scripts/validate.sh</code> runs five checks, and check 3 genuinely
+deletes something. That is the point of it — a test that only ever attempts the
+delete it expects to fail proves nothing about whether deletes work at all.</p>
+
+<pre><code>control:   stwk06ctrl082142   (Terraform, unprotected)
+protected: stwk06prot345788   (deployment stack, denyWriteAndDelete)
+
+1. The stack exists at mg-lz-dev and reports its managed resources
+   managed resources: 2   denySettings.mode: denyWriteAndDelete
+   RESULT: the stack is managing resources with deny settings on
+
+2. The managed resources report a deny status
+   status=managed  denyStatus=denyWriteAndDelete
+   status=managed  denyStatus=denyWriteAndDelete
+   RESULT: 2 resource(s) carry denyWriteAndDelete
+
+3. Deleting the CONTROL storage account succeeds
+   RESULT: deleted - an ordinary account, deletable by an Owner
+
+4. Deleting the PROTECTED storage account is refused
+   RESULT: REFUSED by the stack's deny assignment
+     DenyAssignmentAuthorizationFailed) The client '&lt;signed-in user&gt;' with
+     object id '&lt;oid&gt;' has permission to perform action
+     'Microsoft.Storage/storageAccounts/delete' ...
+
+5. The refusal applied to an Owner, not a limited principal
+   caller roles on the subscription: Owner User Access Administrator
+   RESULT: the caller holds Owner and was still refused
+
+── 5 passed, 0 failed ──</code></pre>
+
+<div class="callout amber">
+  <p>Read check 4's error text again, slowly. Azure is not saying I lack
+  permission. It is saying I <strong>have</strong> permission — <code>has
+  permission to perform action 'Microsoft.Storage/storageAccounts/delete'</code> —
+  and refusing anyway. The deny assignment is evaluated after the role grant, and
+  overrides it. That one sentence is the entire week.</p>
+</div>
+
+<p>Check 5 exists because the result is worthless without it. "A delete was
+refused" is unremarkable if the caller was a Reader. It is the whole point if the
+caller holds <code>Owner</code> <em>and</em> <code>User Access
+Administrator</code> — the role that exists specifically to let you grant
+yourself things.</p>
+
+<h2 id="challenges">Challenges — What Actually Went Wrong</h2>
+
+<h3>ARM rejects the JSON comment convention</h3>
+
+<p>ARM templates have no comments, and the common workaround is a top-level
+<code>"//"</code> key. It does not work at template root:</p>
+
+<pre><code>InvalidRequestContent: Could not find member '//' on object of type 'Template'</code></pre>
+
+<p>Commentary has to go in <code>metadata</code>, which is a real schema member.
+Slightly annoying, entirely fair.</p>
+
+<h3>Sibling CLI commands with different arguments</h3>
+
+<p><code>az stack mg create</code> accepts <code>--yes</code>. <code>az stack mg
+validate</code> does not, and fails with <code>unrecognized arguments:
+--yes</code>. They read like the same command with a different verb. They are
+not.</p>
+
+<h3>A marker file two scripts disagreed about</h3>
+
+<p><code>deploy.sh</code> writes the generated storage account name to
+<code>.protected-storage-account</code> so that <code>validate.sh</code> attempts
+to delete the right thing. Deploy wrote it at the week root; validate read it
+from <code>scripts/</code>. The result was validation reporting <em>"Could not
+resolve both storage accounts. Run deploy.sh first."</em> against a deploy that
+had succeeded ninety seconds earlier — an error message pointing confidently at
+the wrong cause.</p>
+
+<h3>Management-group stacks have no portal UI</h3>
+
+<p>I went looking for a portal view of the stack itself, to screenshot it. There
+isn't one:</p>
+
+<pre><code>This feature isn't implemented at this time.</code></pre>
+
+<p>Stacks at subscription and resource group scope render in the portal. The
+management group blade does not, as of 25 September 2026. This is worth knowing
+before you standardise on management-group-scoped stacks: you will operate them
+entirely from the CLI, and your change-review evidence has to come from
+<code>az stack mg show</code> and the deny assignments blade, because there is no
+stack page to link to.</p>
+
+<h2 id="security">Security — Controls at Every Layer</h2>
+
+<ul>
+  <li><strong>The control outranks the subscription's Owner</strong>, which is
+  the first time in this lab that has been true. Every previous guardrail was
+  removable by the identity it constrained.</li>
+  <li><strong>The stack sits above the subscription it protects.</strong> Removing
+  the restriction requires rights at <code>mg-lz-dev</code>, not at
+  <code>sub-lab-dev</code>.</li>
+  <li><strong><code>denyWriteAndDelete</code>, not <code>denyDelete</code></strong>
+  — a resource that cannot be deleted but can be reconfigured is not protected.</li>
+  <li><strong>The stack owns its own resource group</strong>, so there is exactly
+  one authority over every protected resource and no ambiguity about who removes
+  what.</li>
+  <li><strong>The deny assignment is not hand-made and not hand-editable.</strong>
+  It exists because the stack exists, and it is inventoried in the portal under
+  the subscription's IAM blade where an auditor will look for it.</li>
+</ul>
+
+<h2 id="cost">Cost</h2>
+
+<p>Two empty <code>Standard_LRS</code> storage accounts. Storage bills for
+capacity and transactions; these hold nothing and serve nothing. The stack, the
+deny assignment and the resource groups are free.</p>
+
+<p><strong>What this week cost: $0.00.</strong> After week 5's firewall ran 47
+minutes longer than planned, a week with no hourly meter in it was a deliberate
+choice.</p>
+
+<h2 id="cleanup">Cleanup — The Hard Part</h2>
+
+<p>The protected resources cannot be deleted directly. That is the entire point
+of the week, and it means teardown is not the usual <code>terraform
+destroy</code>. You delete the <strong>stack</strong>, which drops the deny
+assignment and then acts on what it managed:</p>
+
+<pre><code>az stack mg delete --name stack-wk06-protected \
+  --management-group-id mg-lz-dev \
+  --action-on-unmanage deleteAll --yes</code></pre>
+
+<div class="callout red">
+  <p><strong><code>deleteAll</code> is not optional.</strong> The documented
+  default is <em>detach</em>: deployment stacks detach and do not delete unmanaged
+  resources. Omit the flag and the stack goes away, the deny assignment goes with
+  it, and every resource it was protecting keeps running — unowned, untracked,
+  still billing — while the command exits 0 and tells you nothing is wrong. On
+  this week that costs nothing. On a week with a firewall in it, that is the bill
+  that arrives a month later.</p>
+</div>
+
+<p>There are three documented ways the delete itself can fail, and the cleanup
+script handles all three rather than assuming success:</p>
+
+<ul>
+  <li><strong>Permission.</strong> Updating or deleting a stack whose deny setting
+  is anything other than <code>none</code> needs rights at the stack's scope.
+  <em>Deployment Stack Contributor</em> cannot do it; Owner at the management
+  group can.</li>
+  <li><strong>Stack out of sync.</strong> Azure refuses the delete rather than risk
+  removing something unexpected. There is a bypass flag. I deliberately don't use
+  it — it deletes whatever the managed list happens to contain, which is exactly
+  the situation the error exists to stop.</li>
+  <li><strong>A resource group containing resources the stack does not
+  manage</strong> is not removed, and neither are those resources.</li>
+</ul>
+
+<p>So <code>cleanup.sh</code> checks the delete's exit code explicitly, and then
+<strong>verifies against Azure</strong> that both resource groups are actually
+gone before reporting clean. That is a direct correction from last week, where a
+teardown script reported success while an Azure Firewall carried on billing.</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/deployment-stacks" target="_blank" rel="noopener">Deployment stacks</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/role-based-access-control/deny-assignments" target="_blank" rel="noopener">Understand Azure deny assignments</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/cli/azure/stack/mg" target="_blank" rel="noopener">az stack mg command reference</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources" target="_blank" rel="noopener">Lock resources to prevent changes</a></li>
+  <li><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-06-deployment-stacks" target="_blank" rel="noopener">Week 6 code in the lab repository</a></li>
+</ul>
+
+<h2 id="takeaways">Key Takeaways</h2>
+
+<ul>
+  <li><strong>Deny assignments beat role assignments.</strong> Azure's own error
+  message says the caller has permission to perform the action, and refuses. If
+  you have only ever reasoned about RBAC as "what roles do I hold", this is the
+  other half of the model.</li>
+  <li><strong>A guardrail at the same scope as its target is not a
+  guardrail.</strong> Locks and policy assignments are removable by the Owner they
+  constrain. The scope you create the stack at <em>is</em> the strength of the
+  control.</li>
+  <li><strong>Always build the control.</strong> A test that only attempts the
+  delete it expects to fail cannot distinguish "protected" from "broken". The
+  unprotected twin costs nothing and turns an anecdote into evidence.</li>
+  <li><strong>Choose <code>denyWriteAndDelete</code>.</strong> Undeletable but
+  reconfigurable is not protected — it is just harder to clean up afterwards.</li>
+  <li><strong>The teardown default is <code>detach</code>, and it is silent.</strong>
+  A teardown that leaves everything running while exiting 0 is worse than one that
+  fails loudly, because nobody goes looking.</li>
+  <li><strong>Not everything is Terraform, and that's fine.</strong> There is no
+  azurerm resource for deployment stacks. Reaching for the CLI where the provider
+  genuinely doesn't reach is honest; pretending otherwise produces a worse
+  design.</li>
+</ul>
+
+</div>
