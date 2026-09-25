@@ -1602,17 +1602,13 @@
       if (state.lane && state.lane !== "all") planner.lane = state.lane;
       if (state.service !== "") planner.service = state.service;
       save("ri2026.planner", planner);
-      view("plan2");
-      fillPlannerControls();
-      var d = $("#pl-day"), at = $("#pl-at"), l = $("#pl-lane"),
-          sv2 = $("#pl-service");
-      if (d) d.value = planner.day;
-      if (at) at.value = planner.at;
-      if (l) l.value = planner.lane || "all";
-      if (sv2) sv2.value = planner.service || "";
-      if (l) l.disabled = !!planner.service;
-      renderPlanner();
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      /* Through view(), like every other way of opening a panel. This
+         used to open the view and then scrollTo(0), which is the exact
+         fault that was found and fixed on the hero button -- and fixed
+         only there. Two doors into the same room, one of them going the
+         wrong way: reported as "one Plan a day goes to the right
+         location, one goes up". */
+      view("plan2", { scroll: true });
     });
     host.appendChild(a);
     host.hidden = false;
@@ -2890,10 +2886,17 @@
                   || planner.pace !== "standard" || planner.sponsored);
   }
 
+  /* Builds the controls once, and puts the stored plan onto them EVERY
+     time. It used to return early the moment the options existed, so the
+     second call did nothing -- which is why callers that changed the plan
+     had to reach in and set each <select> by hand afterwards, and why the
+     one that forgot a field silently showed a stale one. A function named
+     "fill the planner controls" should fill the planner controls. */
   function fillPlannerControls() {
     var d = $("#pl-day"), a = $("#pl-at"), l = $("#pl-lane"),
-        pc = $("#pl-pace"), sp = $("#pl-sponsored");
-    if (!d || d.options.length) return;
+        pc = $("#pl-pace"), sp = $("#pl-sponsored"), sv = $("#pl-service");
+    if (!d) return;
+    if (!d.options.length) {
     d.appendChild(new Option("— pick a day —", ""));
     CFG.days.forEach(function (x) { d.appendChild(new Option(dayLabel(x), x)); });
     a.appendChild(new Option("— where are you starting? —", ""));
@@ -2905,7 +2908,6 @@
 
     // Ordered by how many sessions carry it, like the Browse filter: the
     // head of that list is what anybody is actually looking for.
-    var sv = $("#pl-service");
     sv.appendChild(new Option("Any service", ""));
     var count = {};
     DATA.sessions.forEach(function (x) {
@@ -2917,12 +2919,6 @@
       sv.appendChild(new Option(
         DATA.facets.Services[i] + "  (" + count[i] + ")", String(i)));
     });
-
-    d.value = planner.day; a.value = planner.at;
-    l.value = planner.lane || "all"; pc.value = planner.pace;
-    sv.value = planner.service || "";
-    sp.checked = !!planner.sponsored;
-    l.disabled = !!planner.service;
 
     function change() {
       planner.day = d.value; planner.at = a.value;
@@ -2952,6 +2948,13 @@
         renderPlanner();
       };
     }
+    }
+
+    d.value = planner.day; a.value = planner.at;
+    l.value = planner.lane || "all"; pc.value = planner.pace;
+    sv.value = planner.service || "";
+    sp.checked = !!planner.sponsored;
+    l.disabled = !!planner.service;
     showReset();
   }
 

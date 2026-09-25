@@ -34,7 +34,32 @@ Three separate causes, each hiding behind the last:
 So this asserts the two halves together, which is the only way they stay
 true: left alone, every view lands with the tab row on screen; scrolled
 during the window, every view stays exactly where it was put.
+
+And it drives EVERY door into the planner, not just the tab. The fix for
+cause 1 was applied to the hero button and not to the "Plan a day from
+here" link in the sessions box, so for weeks one of them opened the
+planner and the other threw you at the top of the document. This file
+existed the whole time and did not notice, because it only knew about the
+button. A check that tests one of two identical paths is testing the
+wrong thing.
 """
+LANDED = """() => {
+  /* Where the scroll actually ended up, against where scrollToTabs aims.
+     "Is the bar somewhere on screen" is not the question: after a
+     scrollTo(0) the bar sits most of a screen down and is still
+     technically visible, which is how the first version of this check
+     passed the very bug it was written for. The question is whether the
+     page went as far towards the target as it could. */
+  const bar = document.querySelector('.resultbar');
+  const docTop = bar.getBoundingClientRect().top + window.scrollY;
+  return {y: Math.round(window.scrollY),
+          want: Math.round(Math.max(0, docTop - 8)),
+          max: Math.round(document.documentElement.scrollHeight
+                          - window.innerHeight),
+          top: Math.round(bar.getBoundingClientRect().top)};
+}"""
+
+
 import sys, subprocess, time
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from playwright.sync_api import sync_playwright
@@ -109,16 +134,71 @@ try:
             pg.wait_for_timeout(200)
             pg.evaluate("document.getElementById('cta-go').click()")
             pg.wait_for_timeout(1200)
-            t = pg.evaluate("Math.round(document.querySelector"
-                            "('.resultbar').getBoundingClientRect().top)")
+            r = pg.evaluate(LANDED)
             opened = pg.evaluate("!document.getElementById('plan2').hidden")
-            visible = -4 <= t < h - 40
-            print("   %-7s opens planner: %-5s | lands visible: %-5s (y=%d)"
-                  % ("cta", opened, visible, t))
+            landed = r["y"] >= min(r["want"], r["max"]) - 4
+            print("   %-7s opens planner: %-5s | scrolled %d of the %d it "
+                  "wanted (page allows %d) -> %s"
+                  % ("cta", opened, r["y"], r["want"], r["max"],
+                     "landed" if landed else "WENT SOMEWHERE ELSE"))
             if not opened:
                 bad.append("%s/cta did not open the planner" % lab)
-            if not visible:
-                bad.append("%s/cta left the planner off screen" % lab)
+            if not landed:
+                bad.append("%s/cta scrolled to %d when the planner is at %d "
+                           "-- it is going somewhere of its own"
+                           % (lab, r["y"], r["want"]))
+
+            # ...and so is the "Plan a day from here" link inside the
+            # sessions box. It is the SECOND door into the planner, and it
+            # was still doing the thing the hero button was fixed for:
+            # open the view, then scrollTo(0). Reported as "one Plan a day
+            # goes to the right location, one goes up" -- a fix applied to
+            # one call site and not to its twin, which is the failure this
+            # whole file exists to catch and did not, because it only knew
+            # about the button.
+            pg.evaluate("document.getElementById('tab-browse').click()")
+            pg.wait_for_timeout(250)
+            picked = pg.evaluate("""() => {
+              for (const s of document.querySelectorAll('.controls select')) {
+                const o = [...s.options].find(
+                    o => /Mon|Tue|Wed|Thu|Fri/.test(o.textContent));
+                if (o) { s.value = o.value;
+                         s.dispatchEvent(new Event('change', {bubbles: true}));
+                         return true; } }
+              return false; }""")
+            pg.wait_for_timeout(700)
+            shown = pg.evaluate("() => { const t = "
+                                "document.getElementById('browsetip');"
+                                " return !!t && !t.hidden "
+                                "&& !!t.querySelector('.tiplink'); }")
+            if not picked or not shown:
+                bad.append("%s/tip: could not raise the sessions box, so "
+                           "the second Plan a day was never tested" % lab)
+            else:
+                pg.evaluate("document.querySelector('.tiplink')"
+                            ".scrollIntoView({block:'center'})")
+                pg.wait_for_timeout(300)
+                pg.evaluate("document.querySelector('.tiplink').click()")
+                pg.wait_for_timeout(1200)
+                r2 = pg.evaluate(LANDED)
+                op2 = pg.evaluate("!document.getElementById('plan2').hidden")
+                carried = pg.evaluate("(document.getElementById('pl-day')"
+                                      "||{}).value || ''")
+                land2 = r2["y"] >= min(r2["want"], r2["max"]) - 4
+                print("   %-7s opens planner: %-5s | scrolled %d of the %d "
+                      "it wanted (page allows %d) -> %-18s | day carried: %r"
+                      % ("tip", op2, r2["y"], r2["want"], r2["max"],
+                         "landed" if land2 else "WENT SOMEWHERE ELSE",
+                         carried))
+                if not op2:
+                    bad.append("%s/tip did not open the planner" % lab)
+                if not land2:
+                    bad.append("%s/tip scrolled to %d when the planner is at "
+                               "%d -- the second door is going somewhere of "
+                               "its own again" % (lab, r2["y"], r2["want"]))
+                if not carried:
+                    bad.append("%s/tip opened the planner without the day "
+                               "the reader had chosen" % lab)
 
             print("   errors:", errs if errs else "none")
             if errs:
