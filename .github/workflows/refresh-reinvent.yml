@@ -70,14 +70,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The catalog will not answer without two headers it mints into the
-      # page at load, so there is no way to do this without a browser.
-      - name: Install Playwright and Chromium
-        run: |
-          python -m pip install --quiet --upgrade pip
-          python -m pip install --quiet playwright
-          python -m playwright install --with-deps chromium
-
       - name: Stop once the event is over
         # A cron nobody turns off outlives its reason to exist. After the
         # event the catalog stops changing and this would run every day
@@ -88,44 +80,82 @@ jobs:
             echo "done=yes" >> "$GITHUB_ENV"
           fi
 
-      - name: Decide whether this hour is due
+      - name: Decide whether the catalog is stale enough to refetch
         if: env.done != 'yes'
-        # Hourly all the way through would be about 1,600 runs for a
-        # catalog that changes a few times a day, and every run that
-        # changes nothing still costs a checkout, a Chromium install and
-        # four minutes of a runner. So the cadence follows how fast the
-        # thing being watched actually moves:
+        # Gated on the AGE OF THE DATA, not on the clock.
         #
-        #   during the event   every hour. Rooms and times change on the
-        #                      day, and somebody is reading this in a
-        #                      corridor deciding where to walk.
-        #   the fortnight      every hour. This is when the catalog fills
-        #   before            out and when people build their week.
-        #   before that        every three hours, which bounds how wrong
-        #                      the page can be at nine to five.
+        # This used to ask "is the current hour a multiple of three?", on
+        # the assumption that a cron set to :20 every hour arrives at :20
+        # every hour. It does not. Measured over 24 to 25 September, GitHub
+        # delivered eight runs in two days -- roughly one every five hours,
+        # each 30 to 90 minutes after the requested minute -- because
+        # scheduled workflows are best-effort and get dropped under load.
         #
-        # workflow_dispatch always runs: a person asking for it has a
-        # reason, and a manual run that silently no-ops is a trap.
+        # Two reductions then multiplied. GitHub dropped five runs in six,
+        # and the hour gate rejected almost every survivor: of those eight
+        # runs exactly one landed on an hour divisible by three. The
+        # catalog went 44 hours without a refresh while the workflow
+        # reported eight consecutive successes, which is the worst shape a
+        # failure can have -- nothing to see anywhere.
+        #
+        # Age has neither problem. However late a run arrives and however
+        # many were dropped before it, it refetches if the stored capture
+        # is older than the window, and no-ops cheaply if it is not. The
+        # windows are the same as before; what changes is that they are now
+        # about the data rather than about the runner.
         run: |
-          hour=$(date -u +%-H)
           today=$(date -u +%Y-%m-%d)
-          due=no
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            due=yes
-            why="asked for by hand"
-          elif [ "$today" \> "2026-11-15" ]; then
-            due=yes
-            why="inside the fortnight before the event: hourly"
-          elif [ $((hour % 3)) -eq 0 ]; then
-            due=yes
-            why="three-hourly slot"
+          if [ "$today" \> "2026-11-15" ]; then
+            want=1; why="inside the fortnight before the event"
           else
-            why="not a due hour (every third hour until 16 November)"
+            want=3; why="before the fortnight"
           fi
-          echo "$why"
-          if [ "$due" = "no" ]; then
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "asked for by hand -- refetching whatever the age"
+            exit 0
+          fi
+
+          age=$(python - <<'PY'
+          import io, json, time, calendar
+          try:
+              d = json.load(io.open("intelligence/reinvent2026.json",
+                                    encoding="utf-8"))
+              t = d.get("captured_utc")
+              # No stored capture at all is infinitely stale, not an error.
+              print("%.2f" % ((time.time() - calendar.timegm(
+                  time.strptime(t, "%Y-%m-%dT%H:%M:%SZ"))) / 3600.0)
+                  if t else "999")
+          except Exception:
+              print("999")
+          PY
+          )
+
+          # Half an hour of slack, because a run that arrives at 2h55m into
+          # a 3h window is this window's run -- refusing it would push the
+          # refresh into the next delivery, hours later.
+          echo "catalog is ${age}h old; ${why}, so the window is ${want}h"
+          if [ "$(python -c "print(1 if $age >= $want - 0.5 else 0)")" = "0" ]; then
+            echo "fresh enough -- nothing to do"
             echo "done=yes" >> "$GITHUB_ENV"
           fi
+
+      # The catalog will not answer without two headers it mints into the
+      # page at load, so there is no way to do this without a browser.
+      #
+      # After the gates, not before them. Installing Chromium takes about
+      # thirty seconds and most runs decide they have nothing to do -- so
+      # it was thirty seconds of a runner spent, every time, to then skip
+      # every step that needed it. Ordering it here also means the cron
+      # can be asked to fire more often without that costing anything:
+      # a run that is not due now exits having done a checkout and a
+      # timestamp comparison.
+      - name: Install Playwright and Chromium
+        if: env.done != 'yes'
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium
 
       - name: Fetch the catalog
         if: env.done != 'yes'
