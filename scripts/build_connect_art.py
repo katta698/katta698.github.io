@@ -25,6 +25,7 @@ The alpha is keyed from ink density, so the page's own paper shows through
 the picture and the two share a texture instead of meeting at a seam.
 """
 import hashlib
+import io
 import os
 import sys
 
@@ -108,6 +109,37 @@ def birds(lum, key, disc):
         0, 1) ** 0.40
 
 
+def each_bird(bird):
+    """One mask per bird, and where its body is.
+
+    Labelled on a dilated mask, because each bird's wing tips break into
+    their own specks otherwise -- eleven marks for four birds. The body is
+    the vertex of the V: the lowest ink in the column where the mark is
+    heaviest. That point is what the wings have to pivot about, so it is
+    measured rather than assumed to be the middle of the box."""
+    solid = ndimage.binary_dilation(bird > 0.25, iterations=3)
+    lab, n = ndimage.label(solid)
+    keep = [i for i, size in enumerate(ndimage.sum(solid, lab, range(1, n + 1)), 1)
+            if size >= 200]
+    h, w = bird.shape
+    out = []
+    for i in sorted(keep, key=lambda i: ndimage.find_objects(lab)[i - 1][0].start):
+        mask = bird * (lab == i)
+        cols = mask.sum(0)
+        cx = int(np.argmax(ndimage.uniform_filter1d(cols, 5)))
+        rows = np.nonzero(mask[:, max(cx - 2, 0):cx + 3].sum(1) > 0.05)[0]
+        by = int(rows.max()) if len(rows) else int(np.argmax(mask.sum(1)))
+        out.append((mask, 100.0 * cx / w, 100.0 * by / h))
+    return out
+
+
+def erase_flock(key, bird):
+    """Close the sky over the birds, so the drawn ones do not sit under the
+    flying ones and show as a second, stationary flock a few pixels off."""
+    near = ndimage.binary_dilation(bird > 0.02, iterations=6)
+    return np.where(near, np.minimum(key, ndimage.grey_opening(key, size=9)), key)
+
+
 def save(rgb, alpha, name):
     """Colour lossy, alpha lossless -- the fades live in the alpha."""
     img = Image.fromarray(np.dstack([np.clip(rgb, 0, 255),
@@ -159,16 +191,58 @@ def quiet(rgb, a, toward):
 def build_day(rgb, key, fade, bird):
     seen = rgb * key[..., None] + PAPER * (1 - key[..., None])
     a = envelope(key, fade)
-    out = quiet(unmultiply(seen, PAPER, a), a, PAPER)
-    # The birds are inked in, the same way the night cut lights them.
-    # The poster draws them at 160 on a 207 sheet, which is a bird at
-    # poster size and nothing at all at a card's -- reported as no
-    # visible birds at all, on a monitor and on both phones. Deepened to
-    # 117, which is the same mark, read at the size it is actually shown.
-    w = (bird * 0.92)[..., None]
-    out = out * (1 - w) + np.array([44, 42, 39]) * w
-    a = np.maximum(a, bird * 0.90)
-    return save(out, a * 255.0, "ink-scene.webp")
+    return save(quiet(unmultiply(seen, PAPER, a), a, PAPER), a * 255.0,
+                "ink-scene.webp")
+
+
+DAY_BIRD = np.array([44, 42, 39], dtype=float)     # inked, as before
+NIGHT_BIRD = np.array([238, 244, 234], dtype=float)
+
+
+# Seconds per wingbeat and seconds per soar, one pair per bird. Deliberately
+# not round multiples of each other: four birds beating in step is a machine,
+# not a flock, and the eye catches that immediately.
+BEAT = [0.62, 0.74, 0.55, 0.68]
+SOAR = [37, 44, 41, 49]
+
+
+def build_flock(bird):
+    """One full-size sheet per bird, plus the CSS that flies them.
+
+    Full-size and mostly empty on purpose: each layer then takes exactly
+    the same `right bottom / contain` sizing as the picture it sits over,
+    so it lands on the same pixels at every screen width without a single
+    hand-measured offset. An empty alpha channel is what WebP compresses
+    best, so four of them cost less than 8KB.
+
+    The CSS is written from the measured bodies rather than typed, because
+    a pivot that is two per cent out makes the bird lurch instead of beat,
+    and nothing about the file would show it."""
+    found = each_bird(bird)
+    lines = []
+    for i, (mask, cx, by) in enumerate(found):
+        for tag, ink in (("", DAY_BIRD), ("-dusk", NIGHT_BIRD)):
+            rgbv = np.broadcast_to(ink, mask.shape + (3,)).copy()
+            save(rgbv, np.clip(mask * 0.92, 0, 1) * 250.0,
+                 "ink-bird-%d%s.webp" % (i + 1, tag))
+        n = i + 1
+        lines += [
+            "  .b%d { animation-duration: %ds; animation-delay: -%ds; }"
+            % (n, SOAR[i], SOAR[i] * n // 5),
+            "  .b%d::before {" % n,
+            "    background-image: url(\"/connect/ink-bird-%d.webp\");" % n,
+            "    transform-origin: %.2f%% %.2f%%;" % (cx, by),
+            "    animation-duration: %.2fs; animation-delay: -%.2fs;"
+            % (BEAT[i], BEAT[i] * i * 0.37),
+            "  }",
+            "  [data-theme=\"dark\"] .b%d::before {" % n,
+            "    background-image: url(\"/connect/ink-bird-%d-dusk.webp\");" % n,
+            "  }",
+        ]
+    path = os.path.join(ROOT, "_sweep", "flock.css")
+    if os.path.isdir(os.path.dirname(path)):
+        io.open(path, "w", encoding="utf-8").write(chr(10).join(lines) + chr(10))
+    return len(found)
 
 
 def build_night(rgb, lum, key, fade, bird):
@@ -216,10 +290,7 @@ def build_night(rgb, lum, key, fade, bird):
     # showing through this much of it to land on the tone above?
     a = envelope(key, fade)
     out = quiet(unmultiply(out, SHEET, a), a, SHEET)
-    lit = (bird * 0.92)[..., None]
-    out = out * (1 - lit) + np.array([238, 244, 234]) * lit
-    alpha = np.maximum(a * 255.0, bird * 250 * fade)
-    return save(out, alpha, "ink-scene-dusk.webp")
+    return save(out, a * 255.0, "ink-scene-dusk.webp")
 
 
 def build_seals():
@@ -254,10 +325,12 @@ def main():
     lum, key, fade = key_and_fade(rgb)
     seen = rgb * key[..., None] + PAPER * (1 - key[..., None])
     bird = birds(lum, key, sun_disc(seen))
+    key = erase_flock(key, bird)
     print("  from print-art.png %s, keyed on ink and faded in the alpha"
           % (CROP,))
     build_day(rgb, key, fade, bird)
     build_night(rgb, lum, key, fade, bird)
+    print("  %d birds lifted onto their own layers" % build_flock(bird))
     build_seals()
     return 0
 
