@@ -1,0 +1,341 @@
+---
+title: "GCP Architecture Series #43 — Workload Identity Federation for AWS"
+date: '2026-09-25T09:00:00'
+slug: gcp-architecture-workload-identity-federation-aws
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-09-25'
+verified_claims:
+  - claim: "Your workloads use AWS temporary security credentials (IAM roles or instance profiles), and Google Cloud verifies them using the AWS GetCallerIdentity API"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-other-clouds
+  - claim: "need to make any configuration changes in your AWS account for this option"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-other-clouds
+  - claim: "arn:aws:sts::000000000000:assumed-role/ec2-my-role/i-00000000000000000"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-other-clouds
+  - claim: "Introduces a custom attribute aws_role and assigns it the AWS role name"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-other-clouds
+  - claim: "we recommend that you grant direct resource access to the principal"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-other-clouds
+  - claim: "In this case, the principal is the federated user"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-other-clouds
+  - claim: "A unique identifier for the user. This attribute is used in IAM principal:// role bindings and appears in Cloud Logging logs"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation
+  - claim: "An attribute condition is a CEL expression that can check assertion attributes and target attributes"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation
+  - claim: "If the attribute condition evaluates to true for a given credential, the credential is accepted. Otherwise, the credential is rejected"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation
+  - claim: "it implements claims-based identities"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+  - claim: "when two tokens are issued by the same identity provider (IdP) and their claims map to the same google.subject value, the two tokens are assumed to identify the same user"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+  - claim: "the old and new users will be indistinguishable for Workload Identity Federation"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+  - claim: "an IAM binding that was meant to only refer to the old user might apply to the new user too"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+  - claim: "bad actors might be able to gain unauthorized access to other resources by deliberately modifying their user attributes to match existing IAM bindings"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+  - claim: "Use a single provider per workload identity pool to avoid subject collisions"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+problem: "Three posts have been spent removing the service account key. Federation removes the service account too: an AWS workload presents the credentials it already has, and Google verifies them by calling AWS. Nothing is issued, nothing is stored — and the identity that results is not backed by any directory, which is where the risk moves to."
+builds: "How Google verifies an AWS credential without any AWS-side configuration, what an attribute mapping turns an ARN into, why direct resource access is now the recommendation over impersonation, and what a claims-based identity cannot do."
+catch: "#39 said recreating a service account with the same name inherits nothing, because bindings use an immutable unique ID. Federation inverts that exactly: delete an external identity and recreate it with the same attributes, and the old and new are indistinguishable — so a binding meant for the old one applies to the new one."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #043 &middot; IAM</div>
+  <h1 class="post-title">Workload Identity Federation for AWS</h1>
+  <p class="post-subtitle">No key, no service account, and no configuration on the AWS side. Also no directory — which changes what an identity is.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Google Cloud &middot; IAM &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #40 removed the key and #41 removed the need to hold one. This removes the Google Cloud identity as a thing you provision at all.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"We will need a role and a trust policy on the AWS side"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Not for this mechanism. Your workloads use AWS temporary security credentials &mdash; IAM roles or instance profiles &mdash; and Google Cloud verifies them using the AWS <code>GetCallerIdentity</code> API. You do not need to make any configuration changes in your AWS account for this option.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Configure the pool and provider on the Google side and leave AWS alone. The trust is established by Google asking AWS who the caller is, not by AWS being told to trust Google.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"So the workload impersonates a service account"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It can, but that is no longer the recommendation. Google recommends that you grant direct resource access to the principal &mdash; and in that case, the principal is the federated user. Impersonation is the fallback for APIs with limitations.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Grant the role to the federated principal on the resource. Reach for a service account only when a specific API forces it.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"We will map the role name, it is stable enough"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          AWS role names are reusable, and federation has no directory to tell two of them apart. Delete an identity and recreate one sharing its attributes, and the old and new will be indistinguishable to Workload Identity Federation &mdash; so a binding that was meant to only refer to the old one might apply to the new one too.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Map attributes that cannot be reused over time. This is the single most important decision in the configuration and it is made once, invisibly, in a mapping expression.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"One pool, several providers, it is tidier"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It is also how subjects collide. Google's guidance is explicit: use a single provider per workload identity pool to avoid subject collisions.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          One pool per provider, in a dedicated project, with an organization policy constraint stopping pools being created elsewhere.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The AWS mechanism is unusual among federations because the verification runs in the opposite direction from the one you expect.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-043-workload-identity-federation-aws.svg" alt="Diagram: how Google Cloud verifies an AWS credential using GetCallerIdentity without AWS-side configuration, how an attribute mapping turns an ARN into a subject and custom attributes, direct resource access compared with service account impersonation, and why a claims-based identity makes recreated identities indistinguishable" />
+      <figcaption>Google asks AWS who the caller is. Everything after that is a mapping expression, and the mapping is the security boundary.</figcaption>
+    </figure>
+
+    <h3>What arrives, and what you do with it</h3>
+    <p>
+      The AWS assertion carries three things: <code>account</code> (the AWS account number), <code>arn</code> (the ARN of the external entity) and <code>userid</code>. An attribute mapping turns those into a Google Cloud identity. The documented mapping for an EC2 instance with an attached role is:
+    </p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Mapping</th><th>Produces</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>google.subject=assertion.arn</code></td>
+          <td>The subject &mdash; a unique identifier for the user, used in IAM <code>principal://</code> role bindings, and appearing in Cloud Logging logs.</td>
+        </tr>
+        <tr>
+          <td><code>attribute.account=assertion.account</code></td>
+          <td>The AWS account ID as a custom attribute.</td>
+        </tr>
+        <tr>
+          <td><code>attribute.aws_role=assertion.arn.extract(...)</code></td>
+          <td>Introduces a custom attribute <code>aws_role</code> and assigns it the AWS role name.</td>
+        </tr>
+        <tr>
+          <td><code>attribute.aws_ec2_instance=...</code></td>
+          <td>The EC2 instance ID, pulled out of the same ARN.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <p>
+      From a single ARN like <code>arn:aws:sts::000000000000:assumed-role/ec2-my-role/i-00000000000000000</code>, the mapping produces four separately grantable facts. You can then bind a role to every workload in that AWS role, or to one specific EC2 instance, using a <code>principalSet://</code> identifier that names the attribute and its value &mdash; the same principal type from #31, pointed at a pool rather than a project.
+    </p>
+
+    <h3>Two ways to use the result</h3>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th></th><th>Direct resource access</th><th>Service account impersonation</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Who the principal is</td>
+          <td>The federated user itself.</td>
+          <td>The Google Cloud service account.</td>
+        </tr>
+        <tr>
+          <td>Where the grant lives</td>
+          <td>On the resource, naming the federated principal.</td>
+          <td>On the resource, naming the service account.</td>
+        </tr>
+        <tr>
+          <td>Status</td>
+          <td><strong>Recommended.</strong></td>
+          <td>For APIs with documented limitations.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <p>
+      Direct access is the more interesting of the two, because it means an AWS workload appears in a Google Cloud allow policy as itself. No service account exists to be audited, disabled, or accidentally granted Editor. The #39 checklist does not apply, because there is nothing there to check.
+    </p>
+
+    <div class="callout">
+      <strong>The attribute condition fails closed, and that is worth noting after #36</strong>
+      <p>An attribute condition is a CEL expression that can check assertion attributes and target attributes. Its evaluation rule is stated plainly: if the condition evaluates to true for a given credential, the credential is accepted &mdash; otherwise, the credential is rejected. Compare #36, where a denial condition that <em>cannot be evaluated</em> applies the deny. Both fail safe, but by opposite routes: the deny rule fires when it cannot decide, and the federation condition refuses when it cannot confirm. Same instinct, mirrored, because one is subtracting access and the other is admitting an identity.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>An Identity With No Directory</h2>
+
+    <p>
+      The sentence that governs everything else is this: Workload Identity Federation does not maintain a directory of user accounts; instead, <strong>it implements claims-based identities</strong>. The consequence is stated just as directly &mdash; when two tokens are issued by the same identity provider and their claims map to the same <code>google.subject</code> value, the two tokens are assumed to identify the same user.
+    </p>
+    <p>
+      There is no lookup. Identity <em>is</em> the mapped claim. Which produces an exact inversion of something established four posts ago.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Delete it, then recreate it with the same name</th><th>Result</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>A Google Cloud service account</strong> (#39)</td>
+            <td>Inherits <em>nothing</em>. Bindings use an immutable unique ID, so the old grants do not apply.</td>
+          </tr>
+          <tr>
+            <td><strong>A federated external identity</strong></td>
+            <td>Inherits <em>everything</em>. The old and new are indistinguishable, so a binding meant for the old one may apply to the new one.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Same scenario, opposite outcome, and the reason is ownership of the identifier. Google mints the unique ID behind a service account and can guarantee it is never reissued. It has no such control over an AWS ARN or an email address in somebody else's directory, so it cannot promise the identifier means one thing forever &mdash; and it tells you so rather than pretending.
+    </p>
+    <p>
+      That pushes the guarantee onto the mapping expression, which is why the best-practice list reads the way it does. Use attributes that cannot be reused over time. Use attributes the user cannot modify, because bad actors might be able to gain unauthorized access to other resources by deliberately modifying their user attributes to match existing IAM bindings. Do not let the mappings themselves be changed. Each of those is a sentence about a CEL expression that somebody writes once during setup and nobody reviews again.
+    </p>
+
+    <h3>What to do with this</h3>
+    <ol>
+      <li><strong>Map on something non-reusable.</strong> A role name can be deleted and recreated; treat that as the default assumption rather than the edge case.</li>
+      <li><strong>Treat the attribute mapping as production security config.</strong> It is the entire trust relationship, expressed in one field.</li>
+      <li><strong>Prefer direct resource access.</strong> It is the recommendation, and it removes the service account from the design entirely.</li>
+      <li><strong>One provider per pool</strong>, in a dedicated project, with pool creation elsewhere blocked by organization policy.</li>
+      <li><strong>Remember the AWS side is untouched.</strong> Nothing in your AWS account records that this trust exists, so the documentation for it has to live somewhere you will look.</li>
+      <li><strong>Check what the subject will be</strong> before granting anything &mdash; it is what appears in Cloud Logging, so it is what an investigation will have to work from.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>An AWS workload needs Google Cloud access</td>
+          <td>Federation, not a key</td>
+          <td>Google verifies the AWS credentials it already has.</td>
+        </tr>
+        <tr>
+          <td>Configuration on the AWS side</td>
+          <td>None required</td>
+          <td>Verification runs through <code>GetCallerIdentity</code>.</td>
+        </tr>
+        <tr>
+          <td>How the workload gets permissions</td>
+          <td>Direct resource access</td>
+          <td>It is the recommendation; the principal is the federated user.</td>
+        </tr>
+        <tr>
+          <td>Service account impersonation</td>
+          <td>Only for limited APIs</td>
+          <td>It is the documented fallback, not the default.</td>
+        </tr>
+        <tr>
+          <td>What to map to <code>google.subject</code></td>
+          <td>Something non-reusable</td>
+          <td>Recreated identities are otherwise indistinguishable.</td>
+        </tr>
+        <tr>
+          <td>Attributes a user can edit</td>
+          <td>Never map them</td>
+          <td>They can be modified to match an existing binding.</td>
+        </tr>
+        <tr>
+          <td>Pool and provider layout</td>
+          <td>One provider per pool</td>
+          <td>It is how subject collisions are avoided.</td>
+        </tr>
+        <tr>
+          <td>Where pools live</td>
+          <td>A dedicated project</td>
+          <td>Creation elsewhere can be blocked by org policy.</td>
+        </tr>
+        <tr>
+          <td>Granting a whole AWS role</td>
+          <td><code>principalSet://</code> on <code>attribute.aws_role</code></td>
+          <td>The mapping makes the role name separately grantable.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Federation is usually sold as the end of a credential problem, and for the workload it is: nothing is issued, nothing is stored, nothing expires into an outage. But the problem has not disappeared so much as changed form. A service account key was a secret you had to protect. A federated identity is an <em>assertion</em> you have to be able to trust, and trusting it means trusting that the attribute you mapped means the same thing next year as it does today.
+    </p>
+    <p>
+      Google is unusually candid about this. It does not claim to maintain a directory; it says outright that identity here is whatever the claims map to, and then spends a best-practices page explaining what that costs. The whole list &mdash; immutable attributes, non-reusable attributes, unmodifiable mappings, one provider per pool &mdash; is really one instruction repeated: the identifier is now yours to choose, and nobody downstream can tell a good choice from a bad one. A service account key at least announced itself as dangerous by being a file. A mapping expression looks like configuration.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#44 takes federation to the place it is most used and most misconfigured: OIDC providers and CI systems &mdash; GitHub Actions, Terraform Cloud, and why a single shared issuer URL makes the attribute condition non-optional.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/iam/docs/workload-identity-federation" target="_blank" rel="noopener">Workload Identity Federation</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-other-clouds" target="_blank" rel="noopener">Configure Workload Identity Federation with AWS or Azure</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation" target="_blank" rel="noopener">Best practices for using Workload Identity Federation</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/manage-workload-identity-pools-providers" target="_blank" rel="noopener">Manage workload identity pools and providers</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/principal-identifiers" target="_blank" rel="noopener">Principal identifiers</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/service-account-impersonation" target="_blank" rel="noopener">Service account impersonation</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
