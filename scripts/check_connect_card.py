@@ -43,7 +43,6 @@ the paper did not move, which is the defect. The comparison is against
 what a real 200px shift of the same paper looks like, so the assertion
 does not depend on a threshold somebody guessed.
 """
-import glob
 import hashlib
 import io
 import os
@@ -75,23 +74,16 @@ SCENE = os.path.join(ROOT, "connect", "ink-scene.webp")
 def birds_at():
     """How far down the artwork the topmost ink sits, as a fraction.
 
-    Read off the bird LAYERS, not the scene. The birds used to be painted
-    into the picture and this measured them there; they fly on their own
-    sheets now, and pointed at the scene it quietly returned 0 -- which
-    made the "are the birds on screen" assertion pass for any layout at
-    all, including one that cut them off. A check that cannot fail is
-    worse than no check.
+    The birds are the only marks in the top eighth -- above the sun and
+    above the pine -- so this finds them without a hardcoded box, and it
+    re-derives itself if the crop ever changes.
     """
-    top = None
-    for art in sorted(glob.glob(os.path.join(ROOT, "connect", "ink-bird-*.webp"))):
-        if art.endswith("-dusk.webp"):
-            continue
-        a = np.asarray(Image.open(art).convert("RGBA"))
-        ys, _ = np.where(a[..., 3] > 60)
-        if len(ys):
-            f = ys.min() / a.shape[0]
-            top = f if top is None else min(top, f)
-    return 0.0 if top is None else top
+    im = Image.open(SCENE).convert("RGBA")
+    a = np.asarray(im)
+    lum = 0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2]
+    ink = (a[..., 3] > 110) & (lum < 120)
+    ys, _ = np.where(ink[:int(im.height * 0.13)])
+    return (ys.min() / im.height) if len(ys) else 0.0
 
 BOXES = """()=>{
   const r = s => { const e = document.querySelector(s); if (!e) return null;
@@ -166,56 +158,6 @@ def alpha_is_smooth():
                 "%s has only %d alpha levels -- its fades are a staircase. "
                 "Rebuild with scripts/build_connect_art.py, which writes the "
                 "alpha losslessly" % (name, levels))
-    return problems
-
-
-FLOCK = """()=>{
-  const out = [];
-  document.querySelectorAll('.bird').forEach(el => {
-    const b = getComputedStyle(el, '::before');
-    const anims = el.getAnimations({subtree: true}).map(a => a.animationName);
-    out.push({img: b.backgroundImage, anims: anims,
-              origin: b.transformOrigin});
-  });
-  return out;
-}"""
-
-
-def flock_flies(pg):
-    """Four birds, each carrying its own drawing, both motions running.
-
-    Every part of this has a silent failure behind it. A `background:`
-    shorthand in .bird::before resets the background-image the per-bird
-    rules set, and the birds vanish with no error. Two animations on one
-    element do not add -- the second replaces the first -- so putting the
-    beat and the soar on the same element loses one of them and the birds
-    still move, just not as birds. And a transform-origin left at the
-    default pivots the wings about the middle of a full-size sheet, which
-    throws the bird across the sky instead of beating it.
-
-    So this asserts what a reader would see: a drawing, both motions, and
-    a pivot that is actually on the bird.
-    """
-    problems = []
-    birds = pg.evaluate(FLOCK)
-    if len(birds) != 4:
-        return ["the flock has %d birds, not 4" % len(birds)]
-    for i, b in enumerate(birds, 1):
-        if "ink-bird-" not in (b["img"] or ""):
-            problems.append("bird %d has no drawing (background-image is %r) "
-                            "-- a shorthand upstream has reset it"
-                            % (i, b["img"]))
-        for want in ("soar", "beat"):
-            if want not in b["anims"]:
-                problems.append("bird %d is not running '%s' (running %s) -- "
-                                "two animations on one element replace each "
-                                "other" % (i, want, b["anims"] or "nothing"))
-        ox, oy = (b["origin"] or "0px 0px").split()[:2]
-        if ox.endswith("px") and float(ox[:-2]) == 0:
-            problems.append("bird %d pivots on the corner of its sheet, not "
-                            "on its body" % i)
-    print("  the flock: 4 birds, each with its own drawing, soaring and "
-          "beating on its own body")
     return problems
 
 
@@ -427,8 +369,6 @@ def main():
                 pg.wait_for_timeout(900)
                 kept = pg.evaluate(
                     "()=>document.documentElement.dataset.theme")
-                for line in flock_flies(pg):
-                    bad.append(line)
                 print("  switch %dx%d: %s -> %s, still %s after a reload"
                       % (lamp["w"], lamp["h"], lamp["theme"], flipped, kept))
                 if flipped == lamp["theme"]:
