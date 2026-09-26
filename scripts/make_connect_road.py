@@ -107,16 +107,32 @@ BASE = """
 .walker { width: 17px; height: 32px; display: block; fill: #241f1a; stroke: none; }
 .bot { width: 11px; height: 19px; display: block; fill: #241f1a; stroke: none; }
 .walker .far, .bot .far { opacity: .88; }
-/* Each posted agent works at a laptop, placed in FRONT of it rather than
-   under it. Centred on the robot the screen fell behind its legs and the
-   whole thing read as a pedestal -- the raked screen is the only part
-   that says laptop, so it has to be the part you can see. The crew were
-   moved apart to make room for it, and it is the laptop rather than the
-   robot that now lines up with the board's drop line.
-   Last in the markup, so it draws in front of the robot it belongs to. */
-.lap { position: absolute; left: -2px; bottom: 0; width: 6px; height: 4px;
-  display: block; fill: #241f1a; }
-[data-theme="dark"] .lap { fill: #a7b2a0; }
+/* A parade of shops on the far side of the road, one per cloud.
+   -------------------------------------------------------------------------
+   The agents had laptops and it read as three robots sitting in the
+   middle of a carriageway. They have somewhere to work now instead.
+
+   Sitting on the TOP edge of the tarmac rather than on the line the
+   figures stand on, which is what puts them across the road: in a view
+   this flat, further away is higher up, so a building whose base is the
+   far kerb is a building on the far side. The agents keep their feet on
+   the near edge where they were, so they read as standing outside it.
+
+   Muted, part-transparent and at z-index 0 with the boards: the far side
+   of a street is not the subject, and everything that walks has to pass
+   in front of it. */
+/* --shift, because the parade belongs behind the AGENTS and the agents
+   stand to the right of the drop line. Centred on the board it sat
+   behind him and the model instead, which put an empty street behind the
+   people who live there. */
+.shops { position: absolute; left: calc(var(--at) + var(--shift));
+  bottom: 20px; transform: translateX(-50%); height: 11px; display: block;
+  z-index: 0; fill: var(--muted); opacity: .42; }
+.shops.wide { width: 34px; }
+.shops.small { width: 19px; }
+.shops .win { fill: var(--paper); opacity: .8; }
+.shops .awn { fill: var(--rust); opacity: .78; }
+[data-theme="dark"] .shops { opacity: .5; }
 .walker .pack { fill: inherit; opacity: 1; }
 [data-theme="dark"] .walker, [data-theme="dark"] .bot { fill: #a7b2a0; }
 .wcheer, .wstand { display: none; }
@@ -209,6 +225,9 @@ MARKUP = """    <div class="road">
       <span class="sign g-azu" style="--at:20%"><span class="plate">__AZU__<b>Azure</b></span><i class="drop"></i></span>
       <span class="sign g-aws" style="--at:50%"><span class="plate">__AWS__<b>AWS</b></span><i class="drop"></i></span>
       <span class="sign g-gcp" style="--at:80%"><span class="plate">__GCP__<b>GCP</b></span><i class="drop"></i></span>
+      __SHOPAZU__
+      __SHOPAWS__
+      __SHOPGCP__
       __SVCAZU__
       __SVCAWS__
       __SVCGCP__
@@ -302,6 +321,13 @@ def _mark(kind):
     return '<svg class="pin" viewBox="0 0 24 24" aria-hidden="true">%s</svg>' % art
 
 
+def _shop(art, size, at, shift):
+    """The parade behind one cloud's agents."""
+    return art.replace('class="shops"',
+                       'class="shops %s" style="--at:%s;--shift:%s"'
+                       % (size, at, shift))
+
+
 def _svcs(cls, at):
     """The services a board offers, hung under that board."""
     for name, kind, words in C.PUFFS:
@@ -316,6 +342,9 @@ def markup():
             .replace("__AZU__", _mark("azu"))
             .replace("__AWS__", _mark("aws"))
             .replace("__GCP__", _mark("gcp"))
+            .replace("__SHOPAZU__", _shop(C.SHOPS_SMALL, "small", "20%", "5px"))
+            .replace("__SHOPAWS__", _shop(C.SHOPS_WIDE, "wide", "50%", "11.5px"))
+            .replace("__SHOPGCP__", _shop(C.SHOPS_SMALL, "small", "80%", "5px"))
             .replace("__SVCAZU__", _svcs("s-azu", "20%"))
             .replace("__SVCAWS__", _svcs("s-aws", "50%"))
             .replace("__SVCGCP__", _svcs("s-gcp", "80%"))

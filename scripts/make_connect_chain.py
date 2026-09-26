@@ -82,11 +82,11 @@ MODEL = ("f1", 15.0, 19.0, 0.48, 0.8, -5.0)
 # The ones that stay. name, height, x, how far back it stands, which way
 # it faces, and how often it stirs.
 #
-# Each one's LAPTOP starts at the drop line of its own board and the
-# robot stands just behind it, so the board it belongs to is the thing it
-# is working under rather than something off in the distance. They had
-# been seven to twenty pixels clear of it, which with nothing in their
-# hands read as a row of spectators.
+# Each one stands just right of the drop line of its own board, outside
+# the shop behind it, so the board it belongs to is the thing it is
+# working under rather than something off in the distance. They had been
+# seven to twenty pixels clear of it, which with nothing around them read
+# as a row of spectators.
 # and the model always takes his left, so at each stop the three of them
 # line up the same way: model, him, the agent who lives there. The first
 # version put the Azure outpost out past its board on the far side and it
@@ -358,21 +358,74 @@ def css():
 # front of it is working, and a figure with empty hands is watching. That
 # was the real complaint. Being a few pixels off the board was only how
 # it showed.
-# The screen stands clear of the robot, the deck runs back under its
-# feet. Centred on the robot it read as a pedestal, because the only part
-# that says "laptop" rather than "box" is the raked screen, and the legs
-# were in front of it. Six pixels wide and four tall is small, but the
-# silhouette is a screen and a deck at an angle to each other, and that
-# is enough at this size.
-LAPTOP = ('<svg class="lap" viewBox="0 0 24 16" aria-hidden="true">'
-          '<path d="M1.6 0.8 8.8 0.8 11.2 11.2 4.0 11.2Z" opacity=".85"/>'
-          '<path d="M3.2 11.8 22.6 11.8 24 15.4 1.8 15.4Z"/></svg>')
+# A little parade on the far side of the road, one per cloud ------------
+#
+# The agents had laptops and it read as three robots sitting in the
+# middle of a carriageway, which is not what anybody means by working.
+# The laptops are gone. They have somewhere to work instead: a coffee
+# shop with a neighbour either side, standing on the far verge with the
+# agents outside it.
+#
+# A generic cafe, not a named one -- an awning, a hanging sign and a cup
+# in the window. Drawing somebody's trademark at eleven pixels would be
+# both illegible and not ours to draw, and the shape alone is what reads
+# at this size anyway.
+#
+# Behind everything: the buildings take z-index 0 with the boards, so
+# the agents stand in front of their shop and he walks in front of the
+# lot of them. Muted and part-transparent as well, because they are the
+# far side of the street and the figures are the subject.
+def _shops(wide):
+    """A parade, drawn so it survives being eleven pixels tall.
+
+    The first go had a round hanging sign and a cup in the window and
+    neither was a pixel across once it was scaled. What reads at this
+    size is a roofline that steps, bright windows, and an awning -- the
+    awning in rust, because a coloured band across a shopfront is the one
+    shape that says shop rather than building, and rust is already on
+    this card in the seal and the closing line.
+
+    The viewBox matches the rendered aspect so nothing is squashed. Two
+    buildings and a cafe where there is room for three, a cafe and one
+    neighbour where there is not: Azure and GCP have a single agent each,
+    and a full parade behind one robot is a high street with nobody in
+    it.
+    """
+    o = []
+    if wide:
+        o.append('<svg class="shops" viewBox="0 0 70 22" aria-hidden="true">')
+        o.append('<path d="M0 7h18v15H0Z"/>')
+        o.append('<rect class="win" x="3" y="10" width="4.5" height="4.5"/>')
+        o.append('<rect class="win" x="10" y="10" width="4.5" height="4.5"/>')
+        cx, cw = 21.0, 27.0
+        o.append('<path d="M51 9h19v13H51Z"/>')
+        o.append('<rect class="win" x="55" y="12" width="4.5" height="4.5"/>')
+        o.append('<rect class="win" x="62" y="12" width="4.5" height="4.5"/>')
+    else:
+        o.append('<svg class="shops" viewBox="0 0 38 22" aria-hidden="true">')
+        cx, cw = 0.0, 24.0
+        o.append('<path d="M27 9h11v13H27Z"/>')
+        o.append('<rect class="win" x="30" y="12" width="4.5" height="4.5"/>')
+    # the cafe: the tallest of them, with an awning and a lit front
+    o.append('<path d="M%.1f 3h%.1fv19h-%.1fZ"/>' % (cx, cw, cw))
+    o.append('<path class="awn" d="M%.1f 12h%.1fv4h-%.1fZ"/>'
+             % (cx - 1.5, cw + 3.0, cw + 3.0))
+    o.append('<rect class="win" x="%.1f" y="17" width="7.5" height="4.5"/>'
+             % (cx + 3.0))
+    o.append('<rect class="win" x="%.1f" y="16.5" width="5.5" height="5.5"/>'
+             % (cx + cw - 9.0))
+    o.append('</svg>')
+    return "".join(o)
+
+
+SHOPS_WIDE = _shops(True)
+SHOPS_SMALL = _shops(False)
 
 
 def markup(sprite):
     return "\n      ".join(
-        '<div class="follow %s">%s<span>%s</span>%s</div>'
-        % (n, puff_markup(n), sprite, LAPTOP if n != MODEL[0] else '')
+        '<div class="follow %s">%s<span>%s</span></div>'
+        % (n, puff_markup(n), sprite)
         for n in [MODEL[0]] + [s[0] for s in STATIONS])
 
 
