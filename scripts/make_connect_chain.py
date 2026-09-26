@@ -353,27 +353,64 @@ def markup(sprite):
 # What each one puffs out and lets go of ----------------------------------
 #
 # The model breathes out MODELS, because which one he is working in
-# changes week to week; the posted agents breathe out the thing that
-# actually runs where they stand. Where an agent belongs to a cloud it is
-# posted at that cloud -- Copilot at Azure, Antigravity at GCP, Kiro and
-# Bedrock Agents at AWS -- so the arrangement is not decoration. It is
-# where the work happens.
+# changes week to week. Every posted agent breathes out its own name and
+# then the services it minds in the cloud it is standing in -- which is
+# the point of posting them there at all. Azure's services rise over
+# Azure, GCP's over GCP, and AWS's over the three at AWS.
 #
-# This is Jayanth's own stack, not a chart of what is popular. The first
-# version listed sixteen names picked on general prominence -- Cursor,
+# The tool names stayed. Each agent leads with its own -- Copilot at
+# Azure, Antigravity at GCP, Kiro and Bedrock Agents at AWS -- because
+# dropping them to make room for services would have traded the half of
+# this that is Jayanth's actual stack for the half that is any cloud
+# diagram. Both halves are true and both fit.
+#
+# This is his own stack, not a chart of what is popular. The first
+# version listed sixteen tools picked on general prominence -- Cursor,
 # Devin, Windsurf, Llama, Mistral -- and a contact card naming tools you
-# do not use is a claim you have to defend to anyone who asks.
+# do not use is a claim you have to defend to anyone who asks. The
+# services are held to the same standard: the ones a platform engineer
+# actually touches, not the ones with the best launch posts.
+#
+# One queue for all of them, and the order round-robins the clouds.
+#
+# Per-robot clocks were tried and they collide. A label is now a service
+# name rather than one word -- "Azure Functions" is fifty-four pixels of
+# text over a six-pixel robot -- and the three at AWS stand six pixels
+# apart. Give them independent cycles and two of them are on screen at
+# once often enough to matter, overlapping into something unreadable,
+# and the travelling model runs into whichever outpost it is visiting.
+# One shared queue is the only arrangement where that cannot happen, and
+# it is what was here before the lists got long.
+#
+# The cost is that a given name comes round less often, so the order is
+# round-robin across the robots rather than robot by robot: you get a
+# model, then Azure, then AWS, then GCP, rather than five AWS services
+# in a row while the other two clouds sit silent.
 PUFFS = [
     ("f1", ["Claude", "ChatGPT", "Gemini", "Grok", "DeepSeek"]),
-    ("f2", ["Copilot"]),
-    ("f3", ["Antigravity"]),
-    ("f4", ["Kiro", "Claude Code"]),
-    ("f5", ["Bedrock Agents", "Codex"]),
-    ("f6", ["Grok bot"]),
+    ("f2", ["Copilot", "Entra ID", "AKS", "Azure Functions", "Blob Storage"]),
+    ("f4", ["Kiro", "Claude Code", "IAM", "VPC", "EC2"]),
+    ("f3", ["Antigravity", "GKE", "BigQuery", "Cloud Run", "Cloud Storage"]),
+    ("f5", ["Bedrock Agents", "Codex", "S3", "Lambda", "DynamoDB"]),
+    ("f6", ["Grok bot", "EKS", "RDS", "CloudFront"]),
 ]
-PUFF_CYCLE = 42.0          # not a multiple of the 26s walk, so the two
+PUFF_CYCLE = 62.0          # not a multiple of the 26s walk, so the two
                            # never fall into step and start looking canned
-PUFF_DUTY = 4.0            # per cent of the cycle a name is on screen
+PUFF_DUTY = 2.4            # per cent of the cycle one name is on screen
+
+
+def puff_order():
+    """Round-robin across the robots, so the clouds take turns."""
+    out, i = [], 0
+    while True:
+        took = False
+        for name, words in PUFFS:
+            if i < len(words):
+                out.append((name, i))
+                took = True
+        if not took:
+            return out
+        i += 1
 
 
 def puff_css():
@@ -386,10 +423,16 @@ def puff_css():
   0%% { opacity: 0; transform: translate(-50%%, 2px); }
   %.2f%% { opacity: .95; transform: translate(-50%%, 0); }
   %.2f%% { opacity: .95; transform: translate(-50%%, -1px); }
-  %.2f%% { opacity: 0; transform: translate(-50%%, -3px); }
-  100%% { opacity: 0; transform: translate(-50%%, -3px); }
+  %.2f%% { opacity: 0; transform: translate(-50%%, -2px); }
+  100%% { opacity: 0; transform: translate(-50%%, -2px); }
 }""" % (d * 0.16, d * 0.62, d),
-".puff { position: absolute; left: 50%; bottom: 100%; margin-bottom: 1px;",
+"/* -1px, and the rise below is 2px not 3. The model is the tallest of",
+"   the six, so its label sits highest, and with the old numbers it rose",
+"   a pixel into a gantry board whenever it stood under one -- which is",
+"   most of the loop, because its place is beside him and his place is",
+"   under AWS. Three pixels lower clears it. The boards own the top of",
+"   this block; the names get the gap underneath. */",
+".puff { position: absolute; left: 50%; bottom: 100%; margin-bottom: -1px;",
 "        width: 0; pointer-events: none; }",
 ".puff b { position: absolute; left: 0; bottom: 0; opacity: 0;",
 "          transform: translate(-50%, 0); white-space: nowrap;",
@@ -397,15 +440,12 @@ def puff_css():
 "          font-style: normal; line-height: 1; letter-spacing: .06em;",
 "          text-transform: none; color: var(--muted); }",
 "@media (prefers-reduced-motion: no-preference) {"]
-    slot = 0
-    total = sum(len(n) for _, n in PUFFS)
-    step = PUFF_CYCLE / total
-    for name, words in PUFFS:
-        for i in range(len(words)):
-            out.append("  .%s .puff b:nth-child(%d) { animation: puff %.0fs "
-                       "ease-out %.2fs infinite; }"
-                       % (name, i + 1, PUFF_CYCLE, 1.5 + slot * step))
-            slot += 1
+    queue = puff_order()
+    step = PUFF_CYCLE / len(queue)
+    for slot, (name, i) in enumerate(queue):
+        out.append("  .%s .puff b:nth-child(%d) { animation: puff %.0fs "
+                   "ease-out %.2fs infinite; }"
+                   % (name, i + 1, PUFF_CYCLE, 1.5 + slot * step))
     out.append("}")
     return chr(10).join(out)
 

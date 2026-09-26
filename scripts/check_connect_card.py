@@ -320,11 +320,105 @@ def figures_never_flicker(pg):
     return problems
 
 
+def labels_never_collide():
+    """Two service names are never on screen at once.
+
+    This is arithmetic, not rendering, because it is a property of how
+    the queue is laid out rather than of any one frame -- and the frame
+    that would catch it comes round once a minute.
+
+    It matters now in a way it did not before. A label used to be one
+    word over a robot; it is a service name now, and "Azure Functions" is
+    fifty-four pixels of text over a six-pixel robot while the three at
+    AWS stand six pixels apart. Give each robot its own clock and two of
+    them overlap into something unreadable often enough to matter. One
+    shared queue is the only arrangement where that cannot happen, so the
+    check is that the queue really is shared and really is spaced.
+    """
+    problems = []
+    queue = C.puff_order()
+    step = C.PUFF_CYCLE / len(queue)
+    on = C.PUFF_CYCLE * C.PUFF_DUTY / 100.0
+    names = sum(len(w) for _, w in C.PUFFS)
+    if len(queue) != names:
+        problems.append(
+            "the puff queue holds %d slots for %d names -- every name needs "
+            "exactly one slot or two of them share an instant"
+            % (len(queue), names))
+    seen = set()
+    for slot, key in enumerate(queue):
+        if key in seen:
+            problems.append("%s name %d is queued twice" % key)
+        seen.add(key)
+    print("  %d names, one every %.2fs, each on for %.2fs -- %.2fs of clear "
+          "air between them" % (len(queue), step, on, step - on))
+    if on >= step:
+        problems.append(
+            "a name is on screen for %.2fs but the next one starts %.2fs "
+            "later, so two are lit at once and the labels overlap. Either "
+            "lengthen PUFF_CYCLE or drop PUFF_DUTY in make_connect_chain.py"
+            % (on, step))
+    return problems
+
+
+def labels_fit(pg):
+    """Every service name fits the card, wherever its robot is standing.
+
+    Five of the six never move, but the model does, so its label sweeps
+    the whole road -- and the longest names belong to the outposts at the
+    two ends, where there is least room left. Each name is checked at
+    every stop rather than at one instant, because a label is on screen
+    for a second and a half once a minute and a screenshot will not find
+    this.
+    """
+    problems = []
+    for where, pct in (("Azure", C.AT_AZ + 2.0), ("AWS", 95.0),
+                       ("GCP", C.AT_GCP + 2.0)):
+        pg.evaluate(SCRUB, 26000.0 * pct / 100.0 + 0.31)
+        hits = pg.evaluate("""() => {
+          const card = document.querySelector('.wrap').getBoundingClientRect();
+          const board = Math.max(...[...document.querySelectorAll('.plate')]
+              .map(e => e.getBoundingClientRect().bottom));
+          const out = [];
+          for (const el of document.querySelectorAll('.puff b')) {
+            const keep = el.style.cssText;
+            el.style.animation = 'none'; el.style.opacity = '1';
+            const k = el.getBoundingClientRect();
+            out.push({who: el.closest('.follow').classList[1],
+                      txt: el.textContent,
+                      left: k.left - card.left, right: card.right - k.right,
+                      board: k.top - board});
+            el.style.cssText = keep; }
+          return out; }""")
+        worst = min(hits, key=lambda h: min(h["left"], h["right"]))
+        low = min(hits, key=lambda h: h["board"])
+        print("  labels with him at %-5s worst card edge %5.1fpx (%s), "
+              "closest under a board %4.1fpx (%s)"
+              % (where, min(worst["left"], worst["right"]), worst["txt"],
+                 low["board"], low["txt"]))
+        for h in hits:
+            if min(h["left"], h["right"]) < 2:
+                problems.append(
+                    "with him at %s, the label %r runs off the card (%.1fpx "
+                    "left, %.1fpx right). Shorten the name or move the robot "
+                    "-- see PUFFS in make_connect_chain.py"
+                    % (where, h["txt"], h["left"], h["right"]))
+            if h["board"] < 0:
+                problems.append(
+                    "with him at %s, the label %r rises %.1fpx into a gantry "
+                    "board. The boards own the top of this block and the "
+                    "names get the gap under them"
+                    % (where, h["txt"], -h["board"]))
+    return problems
+
+
 def main():
     bad_early = []
     for line in art_is_stamped():
         bad_early.append(line)
     for line in alpha_is_smooth():
+        bad_early.append(line)
+    for line in labels_never_collide():
         bad_early.append(line)
     top_f = birds_at()
     print("  the topmost ink in the artwork sits at %.3f of its height"
@@ -378,6 +472,7 @@ def main():
 
                 if (w, h) == WIDTHS[0]:
                     bad.extend(figures_never_flicker(pg))
+                    bad.extend(labels_fit(pg))
 
                 over = m["page"] - m["vh"]
                 if over > 2:
