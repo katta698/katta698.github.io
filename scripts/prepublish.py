@@ -163,6 +163,14 @@ CHECKS = [
     # means a post cannot drift back later without a red run.
     ("check_figure_order.py",    True,  False, False, False),
 
+    # A post going live for the first time must carry today's date. Week 20 was
+    # written on 24 Sep, reviewed for two days, and published on the 26th
+    # reading "Sep 24" -- Jay found it on the site. Weeks 18 and 19 were written
+    # and published the same day, so their dates were right by accident and this
+    # never came up until a review separated the two. Already-published posts
+    # are exempt: editing a post later does not change when it was published.
+    ("check_publish_date.py",   True,  False, False, False),
+
     ("check_index_complete.py", True,  False, False, False),
     ("fix_series_nav.py",       True,  False, False, False),
     # Is anything MISSING? Every other check here inspects what is on the page,
