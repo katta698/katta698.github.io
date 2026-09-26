@@ -25,12 +25,39 @@ ones.
 import io
 import os
 import re
+import subprocess
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKIP = {"node_modules", ".git", "_archive"}
+
+
+def publishable():
+    """Paths git would actually publish: tracked, plus untracked-but-not-ignored.
+
+    Why this filter exists (2026-09-26): a publish was blocked by two orphan
+    braces in _sweep/road/, a GITIGNORED scratch directory holding another
+    workstream's in-progress files. Nothing in there can ever reach the site,
+    so nothing in there can break it -- but the walk below found the files and
+    the gate stopped the push.
+
+    A check that fails on files it is not responsible for teaches people to
+    reach for --no-verify, which is worse than the bug it was written to catch.
+
+    Returns None when git cannot answer, in which case everything is scanned:
+    over-reporting beats silently skipping real stylesheets.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            cwd=ROOT, capture_output=True, text=True, timeout=120)
+        if out.returncode != 0:
+            return None
+        return {l.strip().replace("\\", "/") for l in out.stdout.splitlines() if l.strip()}
+    except Exception:                                           # noqa: BLE001
+        return None
 
 
 def balance(css):
@@ -44,12 +71,18 @@ def balance(css):
 def main():
     problems = []
     checked = 0
+    allowed = publishable()
+    skipped = 0
 
     for base, dirs, files in os.walk(ROOT):
         dirs[:] = [d for d in dirs if d not in SKIP and not d.startswith(".")]
         for name in files:
             path = os.path.join(base, name)
             rel = os.path.relpath(path, ROOT).replace("\\", "/")
+
+            if allowed is not None and rel not in allowed:
+                skipped += 1
+                continue
 
             if name.endswith(".css"):
                 try:
