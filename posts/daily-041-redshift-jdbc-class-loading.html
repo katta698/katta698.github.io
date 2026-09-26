@@ -1,0 +1,325 @@
+---
+title: 'AWS Daily Intelligence #41 - The connection string is executable'
+date: '2026-09-26T10:00:00'
+slug: aws-daily-intelligence-redshift-jdbc-class-loading
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-09-26'
+verified_claims:
+  - claim: "CVE-2026-8178 affects the Amazon Redshift JDBC Driver in versions earlier than 2.2.2, and is fixed in Amazon Redshift JDBC Driver version 2.2.2"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-028-aws/
+  - claim: "Under certain conditions the Amazon Redshift JDBC driver could load and execute arbitrary classes when processing JDBC connection URL parameters"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-028-aws/
+  - claim: "The Amazon Redshift JDBC Driver is a Type 4 JDBC driver that provides database connectivity"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-028-aws/
+  - claim: "AWS advises ensuring any forked or derivative code is patched to incorporate the new fixes"
+    source: https://aws.amazon.com/security/security-bulletins/rss/2026-028-aws/
+  - claim: "You can set Redshift JDBC driver version 2.x configuration properties using the connection URL, and configuration options are not case sensitive"
+    source: https://docs.aws.amazon.com/redshift/latest/mgmt/jdbc20-configuration-options.html
+  - claim: "The Plugin_Name option is the fully qualified class name to implement a specific credentials provider plugin"
+    source: https://docs.aws.amazon.com/redshift/latest/mgmt/jdbc20-configuration-options.html
+  - claim: "The socketFactory option specifies a socket factory for socket creation, and the SSLFactory option is the SSL factory to use when connecting to the server through TLS/SSL without using a server certificate"
+    source: https://docs.aws.amazon.com/redshift/latest/mgmt/jdbc20-configuration-options.html
+  - claim: "The IniFile option is the full path of the .ini file including file name, and the IniSection option is the name of a section in the .ini file containing the configuration options"
+    source: https://docs.aws.amazon.com/redshift/latest/mgmt/jdbc20-configuration-options.html
+  - claim: "The LogPath option is the full path to the folder where the driver saves log files, and if the LogPath value is invalid the driver sends the logged information to the standard output stream"
+    source: https://docs.aws.amazon.com/redshift/latest/mgmt/jdbc20-configuration-options.html
+  - claim: "The StsEndpointUrl option lets you specify an AWS Security Token Service endpoint, if you specify this option the Region option is ignored, and you can only specify a secure protocol (HTTPS) for this endpoint"
+    source: https://docs.aws.amazon.com/redshift/latest/mgmt/jdbc20-configuration-options.html
+  - claim: "The SSL_Insecure option indicates whether the IDP hosts server certificate should be verified and its default value is true, meaning the driver doesn't check the authenticity of the IDP server certificate"
+    source: https://docs.aws.amazon.com/redshift/latest/mgmt/jdbc20-configuration-options.html
+  - claim: "The SSLMode option default value is verify-ca, which verifies that the certificate comes from a trusted certificate authority, while verify-full also verifies that the host name in the certificate matches the host name specified in the connection URL, and AWS recommends using verify-full for SSL connections whenever possible"
+    source: https://docs.aws.amazon.com/redshift/latest/mgmt/jdbc20-configuration-options.html
+  - claim: "Supported Plugin_Name provider options include AdfsCredentialsProvider, AzureCredentialsProvider, BasicJwtCredentialsProvider, BasicSamlCredentialsProvider, BrowserAzureCredentialsProvider, BrowserIdcAuthPlugin, BrowserSamlCredentialsProvider, IdpTokenAuthPlugin, OktaCredentialsProvider and PingCredentialsProvider"
+    source: https://docs.aws.amazon.com/redshift/latest/mgmt/jdbc20-configuration-options.html
+  - claim: "If AccessKeyID, SecretAccessKey or the temporary IAM session token are passed in the JDBC URL they must be URL encoded"
+    source: https://docs.aws.amazon.com/redshift/latest/mgmt/jdbc20-configuration-options.html
+  - claim: "The AutoCreate option specifies whether the driver causes a new user to be created when the specified user doesn't exist, and when true a new user with that name is created if the user specified by DBUser or UID doesn't exist"
+    source: https://docs.aws.amazon.com/redshift/latest/mgmt/jdbc20-configuration-options.html
+  - claim: "The EnableTableTypes and preferPQ options are available in driver versions 2.2.8 and later"
+    source: https://docs.aws.amazon.com/redshift/latest/mgmt/jdbc20-configuration-options.html
+problem: "A JDBC connection string is treated as configuration. It lives in a properties file, an environment variable, a Secrets Manager secret or an IaC template, and it gets reviewed as though its worst case were pointing at the wrong database. CVE-2026-8178 is the reminder that a connection URL is closer to code than to config."
+builds: "A reading of what a Redshift JDBC connection URL can actually instruct the driver to do, from the driver's own documented option list, and therefore what it means for any system where a user or a database row can influence that string."
+catch: "The documented options include a fully qualified class name to load (Plugin_Name), two more class-name-valued factories (socketFactory, SSLFactory), a local file path the driver will read configuration from (IniFile), a path it will write to (LogPath), and an STS endpoint it will call. CVE-2026-8178 is that surface failing, not an unexpected one appearing."
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      AWS published <strong>CVE-2026-8178</strong> against the Amazon Redshift JDBC Driver. The description is
+      one sentence and it is worth reading twice:
+      <em>&ldquo;Under certain conditions, the driver could <strong>load and execute arbitrary classes</strong>
+      when processing JDBC connection URL parameters.&rdquo;</em>
+    </p>
+    <p>
+      Affected: <em>&ldquo;Amazon Redshift JDBC Driver &lt; 2.2.2&rdquo;</em>. Fixed in
+      <strong>2.2.2</strong>. The bulletin publishes no CVSS score and documents no workaround beyond
+      upgrading &mdash; plus one instruction that is easy to skip:
+      <em>&ldquo;any forked or derivative code&rdquo;</em> must be patched too.
+    </p>
+    <p>
+      Upgrade and the specific bug is gone. The more durable finding is what the driver's own documentation
+      says a connection URL is allowed to do, because a class-loading bug in that code path is the sharp end of
+      a surface that is documented, intended, and much larger than most people assume.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>
+      A Type 4 JDBC driver is pure Java running inside your process &mdash; a Glue job, a Spark executor, an
+      EMR cluster, a BI server, a Lambda. Arbitrary class loading there is not a database problem. It is code
+      execution with whatever identity that JVM holds, which on AWS is usually an instance or task role.
+    </p>
+    <p>
+      The upgrade path is straightforward: move every consumer to <strong>2.2.2</strong> or later. The part
+      that takes longer is finding them, because a JDBC driver arrives bundled &mdash; inside a BI tool, a
+      Glue connection, a container image, a fat JAR built months ago.
+    </p>
+    <p>
+      <strong>Two option names are worth noting while you are auditing versions.</strong>
+      <code class="inline">EnableTableTypes</code> and <code class="inline">preferPQ</code> are documented as
+      <em>&ldquo;available in driver versions 2.2.8 and later&rdquo;</em>, which is a useful marker: a
+      codebase setting either of those is already past the fix, and a codebase that cannot is telling you how
+      old its driver is.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-041-redshift-jdbc-class-loading.svg" alt="Diagram: why a JDBC connection URL is closer to code than to configuration. On the left, how a connection string is usually handled: it is stored in a properties file, an environment variable, a Secrets Manager secret or an infrastructure-as-code template, and it is reviewed as though the worst case were pointing at the wrong database. In the centre, what the Amazon Redshift JDBC driver version 2 documentation says connection URL parameters can actually instruct the driver to do, all of them settable in the URL and none of them case sensitive. Plugin_Name takes the fully qualified class name of a credentials provider plugin, so the URL names a class the driver loads. socketFactory specifies a socket factory for socket creation and SSLFactory specifies the SSL factory used when connecting without a server certificate, both class-name valued. IniFile gives the full path of an ini file the driver reads its configuration from and IniSection names the section within it, so the URL can redirect configuration to an arbitrary local file. LogPath gives the folder the driver writes log files to, and an invalid value sends output to standard out instead. StsEndpointUrl specifies an AWS Security Token Service endpoint and causes the Region option to be ignored, though it must be HTTPS. On the right, CVE-2026-8178: under certain conditions the driver could load and execute arbitrary classes when processing connection URL parameters, in versions earlier than 2.2.2, fixed in 2.2.2, with no published CVSS score and no workaround other than upgrading, including any forked or derivative code. A closing panel notes that the driver is a Type 4 driver, meaning pure Java inside the calling process, so class loading there executes with whatever identity that JVM holds, typically an instance or task role. A final panel records two insecure-looking documented defaults found on the same page: SSL_Insecure defaults to true so the identity provider server certificate is not verified, and SSLMode defaults to verify-ca rather than the verify-full that AWS itself recommends, which is the setting that checks the host name matches." />
+      <figcaption>Every option on the middle panel is documented and intended. The CVE is that surface failing, not a new one appearing.</figcaption>
+    </figure>
+
+    <p>
+      The driver documentation opens with the relevant sentence:
+      <em>&ldquo;You can set configuration properties using the connection URL&hellip; Configuration options
+      are <strong>not case sensitive</strong>.&rdquo;</em> Then it lists them. Six are worth pulling out.
+    </p>
+    <p>
+      <strong><code class="inline">Plugin_Name</code></strong> &mdash;
+      <em>&ldquo;The <strong>fully qualified class name</strong> to implement a specific credentials provider
+      plugin.&rdquo;</em> A connection URL parameter whose value is a class the driver loads. Ten providers
+      are supported by name, from <code class="inline">OktaCredentialsProvider</code> to
+      <code class="inline">IdpTokenAuthPlugin</code> &mdash; but the documented data type is a fully qualified
+      class name, not an enumeration.
+    </p>
+    <p>
+      <strong><code class="inline">socketFactory</code></strong> and
+      <strong><code class="inline">SSLFactory</code></strong> &mdash; <em>&ldquo;specifies a socket factory for
+      socket creation&rdquo;</em> and <em>&ldquo;The SSL factory to use when connecting to the server through
+      TLS/SSL without using a server certificate.&rdquo;</em> Two more class names, both on the connection
+      path.
+    </p>
+    <p>
+      <strong><code class="inline">IniFile</code></strong> and
+      <strong><code class="inline">IniSection</code></strong> &mdash;
+      <em>&ldquo;The full path of the .ini file, including file name&rdquo;</em> and
+      <em>&ldquo;The name of a section in the .ini file containing the configuration options.&rdquo;</em> The
+      URL can point the driver at a local file and have it take its configuration from there.
+    </p>
+    <p>
+      <strong><code class="inline">StsEndpointUrl</code></strong> &mdash; specifies an STS endpoint, and
+      <em>&ldquo;If you specify this option, the Region option is ignored.&rdquo;</em> Constrained to HTTPS,
+      which is the right constraint, and still a redirection of where credentials are requested from.
+    </p>
+
+    <div class="callout amber">
+      <strong>So the question to ask is not "can a user pick the database"</strong>
+      <p>It is: can anything outside your code contribute a fragment of that URL? A BI tool where analysts configure their own data source. A multi-tenant product that accepts a customer's warehouse endpoint. A Glue job whose connection options come from a job parameter. Anything that string-concatenates a JDBC URL from a database row. In each of those, the documented option list &mdash; never mind the CVE &mdash; is the actual threat model.</p>
+    </div>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      There is no feature here, so the value is in what the audit turns up. Inventorying every Redshift JDBC
+      driver in the estate is work that pays twice: once for this CVE, and again for the next one, because the
+      hard part is the inventory rather than the upgrade.
+    </p>
+    <p>
+      The instruction about <em>&ldquo;forked or derivative code&rdquo;</em> is the one that finds the
+      interesting cases. A vendored driver, a shaded JAR, a relocated package inside somebody's connector
+      &mdash; those do not show up as the driver and do not get upgraded with it.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      <strong>Treat connection strings as code.</strong> They belong under the same controls as code: built
+      from a template with a fixed option set, not concatenated; validated against an allowlist of parameter
+      names if any part is externally supplied; and reviewed when they change.
+    </p>
+    <p>
+      <strong>Two documented defaults deserve attention while you are in this page.</strong>
+      <code class="inline">SSL_Insecure</code> has a <em>default value of <strong>true</strong></em>, meaning
+      <em>&ldquo;The driver doesn't check the authenticity of the IDP server certificate.&rdquo;</em> For
+      anyone authenticating through an identity provider, that is certificate verification off unless set.
+    </p>
+    <p>
+      And <code class="inline">SSLMode</code> defaults to <em>&ldquo;verify-ca&rdquo;</em>, which checks the CA
+      but not the hostname. <em>&ldquo;verify-full&rdquo;</em> checks that
+      <em>&ldquo;the host name in the certificate matches the host name specified in the connection
+      URL&rdquo;</em>, and AWS's own note is unambiguous: <em>&ldquo;We recommend using
+      <strong>verify-full</strong> for SSL connections whenever possible.&rdquo;</em> The recommended value is
+      not the default value.
+    </p>
+    <p>
+      <strong>Credentials in the URL are a related hazard.</strong> The documentation notes that
+      <code class="inline">AccessKeyID</code>, <code class="inline">SecretAccessKey</code> and the session
+      token <em>&ldquo;must be URL encoded&rdquo;</em> if passed in the JDBC URL &mdash; which tells you people
+      do. A connection string containing a secret key ends up in logs, stack traces and process listings.
+    </p>
+    <p>
+      <strong>And check <code class="inline">AutoCreate</code>.</strong> Set true,
+      <em>&ldquo;If the user specified by either <code class="inline">DBUser</code> or unique ID (UID) doesn't
+      exist, a new user with that name is created.&rdquo;</em> Combined with a URL an outsider can influence,
+      that is user provisioning driven by a connection parameter.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      None directly &mdash; a driver upgrade is free. The cost is engineering time, and it is proportional to
+      how many places a JDBC driver is bundled rather than to how many clusters you run.
+    </p>
+    <p>
+      One indirect note: <code class="inline">LogPath</code> and <code class="inline">LogLevel</code> are
+      URL-settable, and the documentation warns that logging <em>&ldquo;decreases performance and can consume a
+      large quantity of disk space&rdquo;</em>, with <code class="inline">LogLevel</code> 6 logging
+      <em>&ldquo;all driver activity&rdquo;</em>. A connection string that quietly turns on TRACE logging is a
+      performance and storage event as well as a disclosure one.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      <strong>Find the driver, not the application.</strong> Search build manifests and container images for
+      the artifact, not just your own dependency files &mdash; <code class="inline">redshift-jdbc42</code> and
+      its relocated variants inside other packages.
+    </p>
+    <p>
+      <strong>Option names are case-insensitive, so filters must be too.</strong>
+      <em>&ldquo;Configuration options are not case sensitive&rdquo;</em> &mdash; any allowlist or blocklist
+      that matches <code class="inline">Plugin_Name</code> exactly will miss
+      <code class="inline">plugin_name</code> and <code class="inline">PLUGIN_NAME</code>.
+    </p>
+    <p>
+      <strong>Check the whole bulletin list from this week, not just this one.</strong> The same day's feed
+      carried the Firecracker out-of-bounds write and a FreeRTOS-Plus-TCP issue; the week carried the
+      <code class="inline">pgcollection</code> RCE. This one is the most broadly deployed of them, which is why
+      it is here, and it is not the only one worth a ticket.
+    </p>
+    <p>
+      <strong>An upgrade is the fix, but the surface remains.</strong> 2.2.2 closes the specific class-loading
+      path. <code class="inline">Plugin_Name</code>, <code class="inline">socketFactory</code>,
+      <code class="inline">SSLFactory</code> and <code class="inline">IniFile</code> are features and are still
+      there, working as documented.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <p>
+      <strong>Pluggable auth against a larger parse surface.</strong> A class-name option is genuinely how you
+      support ten identity providers plus customers' own. It is also, unavoidably, a string that names code to
+      load.
+    </p>
+    <p>
+      <strong>Convenience defaults against secure defaults.</strong>
+      <code class="inline">SSL_Insecure</code> true and <code class="inline">SSLMode</code> verify-ca make
+      first connections work in more environments. Both are weaker than the documentation's own
+      recommendation.
+    </p>
+    <p>
+      <strong>Configuration in the URL against configuration in code.</strong> Putting everything in one string
+      is portable across tools that only accept a URL. It also means configuration travels through logs and
+      user input paths that a properties object would not.
+    </p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      <strong>Upgrade to 2.2.2 or later, everywhere, including vendored and shaded copies.</strong> That is the
+      fix and the bulletin offers no alternative.
+    </p>
+    <p>
+      <strong>Build connection URLs from a template with a fixed parameter set.</strong> Externally supplied
+      values belong in named slots, never appended as raw parameters.
+    </p>
+    <p>
+      <strong>Allowlist parameter names case-insensitively</strong> anywhere a URL is assembled from
+      configuration you do not fully control.
+    </p>
+    <p>
+      <strong>Set <code class="inline">SSLMode=verify-full</code> and
+      <code class="inline">SSL_Insecure=false</code> explicitly.</strong> Neither is the default; both are what
+      the documentation recommends.
+    </p>
+    <p>
+      <strong>Keep credentials out of the URL.</strong> Use IAM authentication or a properties object, so the
+      string that gets logged is not the string that holds a secret.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <p>
+      <strong>Review connection strings in code review.</strong> A changed JDBC URL can alter which class
+      loads, which file is read and which STS endpoint is called.
+    </p>
+    <p>
+      <strong>Pin driver versions and alert on drift.</strong> The inventory is the expensive part; keeping it
+      current is cheap once built.
+    </p>
+    <p>
+      <strong>Assume the next one lands in the same place.</strong> URL-parameter parsing in database drivers
+      has been a recurring class of bug across the industry, not a Redshift-specific event.
+    </p>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should act on this</h2>
+    <p>
+      Anyone running the Redshift JDBC driver below 2.2.2 &mdash; which, given how drivers arrive bundled, is
+      worth checking even if you do not think you use it directly.
+    </p>
+    <p>
+      Prioritise it where the JVM holds a powerful role and where any part of the connection string originates
+      outside your code: BI servers with user-defined data sources, multi-tenant products accepting customer
+      endpoints, and Glue or EMR jobs taking connection options as parameters. Deprioritise it where the URL is
+      a constant in an image you build and the role is tightly scoped &mdash; still upgrade, just not tonight.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li><strong>CVE-2026-8178</strong>: the Redshift JDBC driver <em>"could load and execute arbitrary classes when processing JDBC connection URL parameters."</em></li>
+      <li>Affected below <strong>2.2.2</strong>; fixed in <strong>2.2.2</strong>. No CVSS published, no workaround but upgrading.</li>
+      <li><strong>Forked or derivative code must be patched separately</strong> — vendored and shaded copies will not upgrade with the dependency.</li>
+      <li>A Type 4 driver is pure Java in your process, so class loading runs with the JVM's role.</li>
+      <li><code class="inline">Plugin_Name</code> is documented as <strong>"the fully qualified class name"</strong> — the URL names code to load, by design.</li>
+      <li><code class="inline">socketFactory</code> and <code class="inline">SSLFactory</code> are two more class-name options on the connection path.</li>
+      <li><code class="inline">IniFile</code> / <code class="inline">IniSection</code> let the URL take configuration from an arbitrary local file; <code class="inline">LogPath</code> chooses where it writes.</li>
+      <li><code class="inline">StsEndpointUrl</code> redirects credential requests and causes <code class="inline">Region</code> to be ignored.</li>
+      <li><strong><code class="inline">SSL_Insecure</code> defaults to <code class="inline">true</code></strong> — the IdP certificate is not verified unless you set it.</li>
+      <li><code class="inline">SSLMode</code> defaults to <code class="inline">verify-ca</code>, while AWS recommends <code class="inline">verify-full</code>.</li>
+      <li>Option names are <strong>not case sensitive</strong>, so any filtering must be case-insensitive too.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/security/security-bulletins/rss/2026-028-aws/" target="_blank" rel="noopener">CVE-2026-8178 &#8212; Remote Code Execution via Unsafe Class Loading in Amazon Redshift JDBC Driver</a></li>
+      <li><a href="https://docs.aws.amazon.com/redshift/latest/mgmt/jdbc20-configuration-options.html" target="_blank" rel="noopener">Options for JDBC driver version 2.x configuration &#8212; the full connection-URL option list, including Plugin_Name, socketFactory, SSLFactory, IniFile, StsEndpointUrl and the SSL defaults</a></li>
+    </ul>
+  </div>
+</div>
