@@ -358,64 +358,48 @@ def css():
 # front of it is working, and a figure with empty hands is watching. That
 # was the real complaint. Being a few pixels off the board was only how
 # it showed.
-# A little parade on the far side of the road, one per cloud ------------
+# A data centre on the far side of the road, one per cloud --------------
 #
-# The agents had laptops and it read as three robots sitting in the
-# middle of a carriageway, which is not what anybody means by working.
-# The laptops are gone. They have somewhere to work instead: a coffee
-# shop with a neighbour either side, standing on the far verge with the
-# agents outside it.
+# The agents had laptops and it read as robots sitting in a carriageway.
+# Then they had a coffee shop, which fixed where they were standing but
+# not what they were standing at. A data centre is the right building:
+# it is what a cloud actually is, the agents are minding it, and the
+# services come out of it rather than off a sign.
 #
-# A generic cafe, not a named one -- an awning, a hanging sign and a cup
-# in the window. Drawing somebody's trademark at eleven pixels would be
-# both illegible and not ours to draw, and the shape alone is what reads
-# at this size anyway.
+# The awning went with the coffee shop. It was there because a coloured
+# band across a shopfront is about the only thing that separates a shop
+# from a plain block at eleven pixels -- but a rust smear on a building
+# is what it looked like, and a data centre does not have one.
 #
-# Behind everything: the buildings take z-index 0 with the boards, so
-# the agents stand in front of their shop and he walks in front of the
-# lot of them. Muted and part-transparent as well, because they are the
-# far side of the street and the figures are the subject.
-def _shops(wide):
-    """A parade, drawn so it survives being eleven pixels tall.
-
-    The first go had a round hanging sign and a cup in the window and
-    neither was a pixel across once it was scaled. What reads at this
-    size is a roofline that steps, bright windows, and an awning -- the
-    awning in rust, because a coloured band across a shopfront is the one
-    shape that says shop rather than building, and rust is already on
-    this card in the seal and the closing line.
-
-    The viewBox matches the rendered aspect so nothing is squashed. Two
-    buildings and a cafe where there is room for three, a cafe and one
-    neighbour where there is not: Azure and GCP have a single agent each,
-    and a full parade behind one robot is a high street with nobody in
-    it.
-    """
-    o = []
-    if wide:
-        o.append('<svg class="shops" viewBox="0 0 70 22" aria-hidden="true">')
-        o.append('<path d="M0 7h18v15H0Z"/>')
-        o.append('<rect class="win" x="3" y="10" width="4.5" height="4.5"/>')
-        o.append('<rect class="win" x="10" y="10" width="4.5" height="4.5"/>')
-        cx, cw = 21.0, 27.0
-        o.append('<path d="M51 9h19v13H51Z"/>')
-        o.append('<rect class="win" x="55" y="12" width="4.5" height="4.5"/>')
-        o.append('<rect class="win" x="62" y="12" width="4.5" height="4.5"/>')
-    else:
-        o.append('<svg class="shops" viewBox="0 0 38 22" aria-hidden="true">')
-        cx, cw = 0.0, 24.0
-        o.append('<path d="M27 9h11v13H27Z"/>')
-        o.append('<rect class="win" x="30" y="12" width="4.5" height="4.5"/>')
-    # the cafe: the tallest of them, with an awning and a lit front
-    o.append('<path d="M%.1f 3h%.1fv19h-%.1fZ"/>' % (cx, cw, cw))
-    o.append('<path class="awn" d="M%.1f 12h%.1fv4h-%.1fZ"/>'
-             % (cx - 1.5, cw + 3.0, cw + 3.0))
-    o.append('<rect class="win" x="%.1f" y="17" width="7.5" height="4.5"/>'
-             % (cx + 3.0))
-    o.append('<rect class="win" x="%.1f" y="16.5" width="5.5" height="5.5"/>'
-             % (cx + cw - 9.0))
+# What says data centre at this size is repetition: one long low block,
+# a flat roof with plant on it, and a regular row of lit slots. Nothing
+# pitched, nothing domestic. Behind everything at z-index 0, muted and
+# part-transparent, because the far side of a street is not the subject.
+def _datacentre(wide):
+    w, units = (68.0, 3) if wide else (38.0, 2)
+    o = ['<svg class="shops" viewBox="0 0 %.0f 22" aria-hidden="true">'
+         % w]
+    # plant on the roof, which is the half of the silhouette that is not
+    # just a box
+    for i in range(units):
+        x = 5.0 + i * (w - 16.0) / max(units - 1, 1)
+        o.append('<path d="M%.1f 2.5h7v4h-7Z"/>' % x)
+    o.append('<path d="M0 6.5h%.1fv15.5H0Z"/>' % w)
+    # a row of lit slots, evenly spaced, which is the other half
+    n = int(w // 8)
+    gap = w / n
+    for i in range(n):
+        o.append('<rect class="win" x="%.1f" y="10" width="2.6" height="5.5"/>'
+                 % (gap * i + gap / 2.0 - 1.3))
+    # and a door, so there is a way in
+    o.append('<rect class="win" x="%.1f" y="16.5" width="5" height="5.5"/>'
+             % (w / 2.0 - 2.5))
     o.append('</svg>')
     return "".join(o)
+
+
+def _shops(wide):
+    return _datacentre(wide)
 
 
 SHOPS_WIDE = _shops(True)
@@ -519,11 +503,11 @@ def puff_css():
   100%% { opacity: 0; transform: translate(-50%%, -2px); }
 }
 @keyframes svcpuff {
-  0%% { opacity: 0; transform: translate(-50%%, -2px); }
-  %.2f%% { opacity: .95; transform: translate(-50%%, 0); }
-  %.2f%% { opacity: .95; transform: translate(-50%%, 1px); }
-  %.2f%% { opacity: 0; transform: translate(-50%%, 2px); }
-  100%% { opacity: 0; transform: translate(-50%%, 2px); }
+  0%% { opacity: 0; transform: translate(0, 2px); }
+  %.2f%% { opacity: .95; transform: translate(0, 0); }
+  %.2f%% { opacity: .95; transform: translate(0, -1px); }
+  %.2f%% { opacity: 0; transform: translate(0, -2px); }
+  100%% { opacity: 0; transform: translate(0, -2px); }
 }""" % (d * 0.16, d * 0.62, d, d * 0.16, d * 0.62, d),
 "/* -1px, and the rise below is 2px not 3. The model is the tallest of",
 "   the six, so its label sits highest, and with the old numbers it rose",
@@ -538,15 +522,26 @@ def puff_css():
 "   still rises off its head. Same type, same queue, opposite",
 "   direction -- which is the difference between a cloud offering a",
 "   service and a robot saying who it is. */",
-".svcs { position: absolute; left: var(--at); top: 14px; width: 0;",
+"/* Anchored to the DATA CENTRE and left-aligned at its near",
+"   corner, rising off the roof. A service comes out of the",
+"   building that runs it. Left-aligned rather than centred",
+"   because centred on a nineteen-pixel building a forty-three",
+"   pixel name reaches back over his head while he is standing",
+"   there, and he is drawn in ink. */",
+".svcs { position: absolute; left: var(--svcx); top: 22px; width: 0;",
 "        pointer-events: none; z-index: 5; }",
-".svcs b { top: 0; }",
 ".puff b { bottom: 0; }",
 ".puff b, .svcs b { position: absolute; left: 0; opacity: 0;",
 "          transform: translate(-50%, 0); white-space: nowrap;",
 "          font-family: inherit; font-size: 6px; font-weight: 700;",
 "          font-style: normal; line-height: 1; letter-spacing: .06em;",
 "          text-transform: none; color: var(--muted); }",
+"/* AFTER the shared rule, not before it: same specificity, so",
+"   the later one wins. Before it, the static transform stayed",
+"   centred while the keyframes ran left-aligned -- the animation",
+"   was right and every still of it was wrong, which is worse",
+"   than both being wrong, because the check took the still. */",
+".svcs b { bottom: 0; transform: translate(0, 0); }",
 "@media (prefers-reduced-motion: no-preference) {"]
     queue = puff_order()
     step = PUFF_CYCLE / len(queue)

@@ -107,10 +107,11 @@ BASE = """
 .walker { width: 17px; height: 32px; display: block; fill: #241f1a; stroke: none; }
 .bot { width: 11px; height: 19px; display: block; fill: #241f1a; stroke: none; }
 .walker .far, .bot .far { opacity: .88; }
-/* A parade of shops on the far side of the road, one per cloud.
+/* A data centre on the far side of the road, one per cloud.
    -------------------------------------------------------------------------
    The agents had laptops and it read as three robots sitting in the
-   middle of a carriageway. They have somewhere to work now instead.
+   middle of a carriageway. They mind a data centre now, and the service
+   names come out of it rather than off the sign above the road.
 
    Sitting on the TOP edge of the tarmac rather than on the line the
    figures stand on, which is what puts them across the road: in a view
@@ -126,12 +127,11 @@ BASE = """
    behind him and the model instead, which put an empty street behind the
    people who live there. */
 .shops { position: absolute; left: calc(var(--at) + var(--shift));
-  bottom: 20px; transform: translateX(-50%); height: 11px; display: block;
+  bottom: 20px; transform: translateX(-50%); height: 10px; display: block;
   z-index: 0; fill: var(--muted); opacity: .42; }
 .shops.wide { width: 34px; }
 .shops.small { width: 19px; }
-.shops .win { fill: var(--paper); opacity: .8; }
-.shops .awn { fill: var(--rust); opacity: .78; }
+.shops .win { fill: var(--paper); opacity: .75; }
 [data-theme="dark"] .shops { opacity: .5; }
 .walker .pack { fill: inherit; opacity: 1; }
 [data-theme="dark"] .walker, [data-theme="dark"] .bot { fill: #a7b2a0; }
@@ -328,12 +328,19 @@ def _shop(art, size, at, shift):
                        % (size, at, shift))
 
 
-def _svcs(cls, at):
-    """The services a board offers, hung under that board."""
+def _svcs(cls, x):
+    """The services a cloud runs, coming out of the building that runs them.
+
+    Positioned in px off the left of the road rather than as a share of
+    it, because it has to line up with the data centre and the data
+    centre is placed against the agents standing in front of it, which
+    are placed in px too. A percentage here would drift away from the
+    building the moment anything moved.
+    """
     for name, kind, words in C.PUFFS:
         if name == cls:
-            return ('<i class="svcs %s" style="--at:%s">%s</i>'
-                    % (cls, at, "".join("<b>%s</b>" % w for w in words)))
+            return ('<i class="svcs %s" style="--svcx:%s">%s</i>'
+                    % (cls, x, "".join("<b>%s</b>" % w for w in words)))
     return ""
 
 
@@ -342,11 +349,11 @@ def markup():
             .replace("__AZU__", _mark("azu"))
             .replace("__AWS__", _mark("aws"))
             .replace("__GCP__", _mark("gcp"))
-            .replace("__SHOPAZU__", _shop(C.SHOPS_SMALL, "small", "20%", "5px"))
-            .replace("__SHOPAWS__", _shop(C.SHOPS_WIDE, "wide", "50%", "11.5px"))
-            .replace("__SHOPGCP__", _shop(C.SHOPS_SMALL, "small", "80%", "5px"))
-            .replace("__SVCAZU__", _svcs("s-azu", "20%"))
-            .replace("__SVCAWS__", _svcs("s-aws", "50%"))
-            .replace("__SVCGCP__", _svcs("s-gcp", "80%"))
+            .replace("__SHOPAZU__", _shop(C.SHOPS_SMALL, "small", "20%", "8.7px"))
+            .replace("__SHOPAWS__", _shop(C.SHOPS_WIDE, "wide", "50%", "16px"))
+            .replace("__SHOPGCP__", _shop(C.SHOPS_SMALL, "small", "80%", "8.8px"))
+            .replace("__SVCAZU__", _svcs("s-azu", "48px"))
+            .replace("__SVCAWS__", _svcs("s-aws", "121px"))
+            .replace("__SVCGCP__", _svcs("s-gcp", "194.5px"))
             .replace("__CHAIN__", C.markup(R.sprite()))
             .replace("__MAN__", W.sprite()))
