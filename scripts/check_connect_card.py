@@ -90,7 +90,12 @@ BOXES = """()=>{
     const b = e.getBoundingClientRect();
     return {l: Math.round(b.left), t: Math.round(b.top),
             r: Math.round(b.right), b: Math.round(b.bottom)}; };
-  return {ai: r('.c-ai'), hero: r('.hero'), btn: r('.act-main'),
+  /* The cloud pills became a road he walks, so the thing the
+     figure has to clear is the road block now. Left pointing at
+     .c-ai this threw rather than passing -- which is the right
+     failure, but the check has to follow the page. */
+  return {ai: r('.road') || r('.c-ai'), hero: r('.hero'),
+          btn: r('.act-main'),
           page: document.body.scrollHeight, vh: innerHeight,
           attach: getComputedStyle(document.documentElement).backgroundAttachment};
 }"""
@@ -193,17 +198,17 @@ def main():
                 over_ai = head - ai["b"]
                 over_btn = btn["t"] - feet
                 # Horizontal: if the figure is clear to the right of the
-                # pill row there is nothing to clear vertically.
+                # road block there is nothing to clear vertically.
                 beside = hero["l"] >= ai["r"]
-                print("  %4dx%-3d head clears AI by %+3d   feet clear the "
+                print("  %4dx%-3d head clears the road by %+3d   feet clear the "
                       "button by %+3d   birds at %+4d   page %d in %d%s"
                       % (w, h, over_ai, over_btn,
                          round(hero["t"] + top_f * H), m["page"], m["vh"],
-                         "  [figure is beside the pills]" if beside else ""))
+                         "  [figure is beside it]" if beside else ""))
                 if not beside and over_ai < GAP:
-                    bad.append("%dpx: the figure's head clears the AI pill by "
-                               "%dpx, under the %dpx that stops it reading as "
-                               "touching" % (w, over_ai, GAP))
+                    bad.append("%dpx: the figure's head clears the road block "
+                               "by %dpx, under the %dpx that stops it reading "
+                               "as touching" % (w, over_ai, GAP))
                 if over_btn < 0:
                     bad.append("%dpx: the figure runs %dpx behind the LinkedIn "
                                "button" % (w, -over_btn))
