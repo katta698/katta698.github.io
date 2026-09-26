@@ -22,7 +22,12 @@ the loop at AWS with the crew that lives there -- which is the true
 shape of it, and needs no caption.
 """
 
-AZURE, AWS, GCP = 39.0, 112.0, 186.0
+# Where HE stops, which is no longer under the middle of each board.
+# The agents took that spot: they are what the cloud is, so they stand at
+# the drop line and he walks up and stands beside them. He used to have
+# it and they were pushed out to one side, which is what made them look
+# like they were watching rather than working.
+AZURE, AWS, GCP = 33.9, 107.1, 180.3
 GROUND = 42.0        # where every foot lands
 
 # The loop, in per cent of the 26s cycle. Both legs are the same length
@@ -72,12 +77,16 @@ def resting(pct):
 # That last one is negative: it takes his left at every stop, so he never
 # has his back to the model. Coming home from GCP he is already facing
 # left, so it costs him no turn at all.
-MODEL = ("f1", 15.0, 19.0, 0.48, 0.8, -5.4)
+MODEL = ("f1", 15.0, 19.0, 0.48, 0.8, -5.0)
 
 # The ones that stay. name, height, x, how far back it stands, which way
 # it faces, and how often it stirs.
 #
-# Every one of them stands just to the RIGHT of the board it belongs to,
+# Each one's LAPTOP starts at the drop line of its own board and the
+# robot stands just behind it, so the board it belongs to is the thing it
+# is working under rather than something off in the distance. They had
+# been seven to twenty pixels clear of it, which with nothing in their
+# hands read as a row of spectators.
 # and the model always takes his left, so at each stop the three of them
 # line up the same way: model, him, the agent who lives there. The first
 # version put the Azure outpost out past its board on the far side and it
@@ -94,12 +103,12 @@ MODEL = ("f1", 15.0, 19.0, 0.48, 0.8, -5.4)
 # around 8px of ink -- so offsets that look tight on paper leave gaps
 # wider than the robots standing in them.
 STATIONS = [
-    #  name  height   x              back  faces  stirs
-    ("f2", 11.0, AZURE + 14.0,  0.0,  -1,  3.1),   # the Azure outpost
-    ("f3", 11.0, GCP + 14.0,    0.0,  -1,  3.7),   # the GCP outpost
-    ("f4", 12.0, AWS + 14.1,    0.0,  -1,  3.4),   # and the AWS crew
-    ("f5", 11.0, AWS + 20.0,    0.0,  -1,  4.0),
-    ("f6", 10.0, AWS + 25.6,   -2.5,  -1,  4.6),
+    #  name  height   x      back  faces  stirs
+    ("f2", 11.0,  50.8,  0.0,  -1,  3.1),   # the Azure outpost
+    ("f3", 11.0, 197.2,  0.0,  -1,  3.7),   # the GCP outpost
+    ("f4", 12.0, 124.0,  0.0,  -1,  3.4),   # and the AWS crew
+    ("f5", 11.0, 132.2,  0.0,  -1,  4.0),
+    ("f6", 10.0, 140.0, -2.5,  -1,  4.6),
 ]
 
 
@@ -343,10 +352,27 @@ def css():
     return chr(10).join(out)
 
 
+# A little open laptop, drawn rather than dotted in: a base, a screen
+# raked back, and a hinge between them. Three pixels tall at the foot of
+# a ten-pixel robot, which is all it takes -- a figure with something in
+# front of it is working, and a figure with empty hands is watching. That
+# was the real complaint. Being a few pixels off the board was only how
+# it showed.
+# The screen stands clear of the robot, the deck runs back under its
+# feet. Centred on the robot it read as a pedestal, because the only part
+# that says "laptop" rather than "box" is the raked screen, and the legs
+# were in front of it. Six pixels wide and four tall is small, but the
+# silhouette is a screen and a deck at an angle to each other, and that
+# is enough at this size.
+LAPTOP = ('<svg class="lap" viewBox="0 0 24 16" aria-hidden="true">'
+          '<path d="M1.6 0.8 8.8 0.8 11.2 11.2 4.0 11.2Z" opacity=".85"/>'
+          '<path d="M3.2 11.8 22.6 11.8 24 15.4 1.8 15.4Z"/></svg>')
+
+
 def markup(sprite):
     return "\n      ".join(
-        '<div class="follow %s">%s<span>%s</span></div>'
-        % (n, puff_markup(n), sprite)
+        '<div class="follow %s">%s<span>%s</span>%s</div>'
+        % (n, puff_markup(n), sprite, LAPTOP if n != MODEL[0] else '')
         for n in [MODEL[0]] + [s[0] for s in STATIONS])
 
 
@@ -373,26 +399,39 @@ def markup(sprite):
 #
 # One queue for all of them, and the order round-robins the clouds.
 #
-# Per-robot clocks were tried and they collide. A label is now a service
-# name rather than one word -- "Azure Functions" is fifty-four pixels of
+# WHERE a name appears says what kind of thing it is. A service belongs
+# to the cloud, not to the robot minding it, so service names come off
+# the board itself -- Entra ID out of the Azure board, DynamoDB out of
+# the AWS one. What belongs to a robot is its own name: the agents say
+# what they are, and the model that travels says which model it is this
+# week. Read that way the picture says an agent is posted at a cloud and
+# the cloud has services, which is the true shape of it. The other way
+# round it said the robot owned the service, which it does not.
+#
+# Per-robot clocks were tried and they collide. A label is a service name
+# now rather than one word -- "Azure Functions" is fifty-four pixels of
 # text over a six-pixel robot -- and the three at AWS stand six pixels
-# apart. Give them independent cycles and two of them are on screen at
-# once often enough to matter, overlapping into something unreadable,
-# and the travelling model runs into whichever outpost it is visiting.
-# One shared queue is the only arrangement where that cannot happen, and
-# it is what was here before the lists got long.
+# apart. Give them independent cycles and two are on screen at once often
+# enough to matter, overlapping into something unreadable. One shared
+# queue is the only arrangement where that cannot happen, and it has to
+# cover the boards too, because a board label and a robot label share the
+# same band of air.
 #
 # The cost is that a given name comes round less often, so the order is
-# round-robin across the robots rather than robot by robot: you get a
-# model, then Azure, then AWS, then GCP, rather than five AWS services
-# in a row while the other two clouds sit silent.
+# round-robin across the sources rather than source by source: a model,
+# then Azure, then AWS, then GCP, rather than nine AWS services in a row
+# while the other two clouds sit silent.
 PUFFS = [
-    ("f1", ["Claude", "ChatGPT", "Gemini", "Grok", "DeepSeek"]),
-    ("f2", ["Copilot", "Entra ID", "AKS", "Azure Functions", "Blob Storage"]),
-    ("f4", ["Kiro", "Claude Code", "IAM", "VPC", "EC2"]),
-    ("f3", ["Antigravity", "GKE", "BigQuery", "Cloud Run", "Cloud Storage"]),
-    ("f5", ["Bedrock Agents", "Codex", "S3", "Lambda", "DynamoDB"]),
-    ("f6", ["Grok bot", "EKS", "RDS", "CloudFront"]),
+    ("f1", "bot", ["Claude", "ChatGPT", "Gemini", "Grok", "DeepSeek"]),
+    ("s-azu", "sign", ["Entra ID", "AKS", "Azure Functions", "Blob Storage"]),
+    ("s-aws", "sign", ["IAM", "VPC", "EC2", "S3", "Lambda", "DynamoDB",
+                       "EKS", "RDS", "CloudFront"]),
+    ("s-gcp", "sign", ["GKE", "BigQuery", "Cloud Run", "Cloud Storage"]),
+    ("f2", "bot", ["Copilot"]),
+    ("f4", "bot", ["Kiro", "Claude Code"]),
+    ("f5", "bot", ["Bedrock Agents", "Codex"]),
+    ("f6", "bot", ["Grok bot"]),
+    ("f3", "bot", ["Antigravity"]),
 ]
 PUFF_CYCLE = 62.0          # not a multiple of the 26s walk, so the two
                            # never fall into step and start looking canned
@@ -404,7 +443,7 @@ def puff_order():
     out, i = [], 0
     while True:
         took = False
-        for name, words in PUFFS:
+        for name, _kind, words in PUFFS:
             if i < len(words):
                 out.append((name, i))
                 took = True
@@ -425,7 +464,14 @@ def puff_css():
   %.2f%% { opacity: .95; transform: translate(-50%%, -1px); }
   %.2f%% { opacity: 0; transform: translate(-50%%, -2px); }
   100%% { opacity: 0; transform: translate(-50%%, -2px); }
-}""" % (d * 0.16, d * 0.62, d),
+}
+@keyframes svcpuff {
+  0%% { opacity: 0; transform: translate(-50%%, -2px); }
+  %.2f%% { opacity: .95; transform: translate(-50%%, 0); }
+  %.2f%% { opacity: .95; transform: translate(-50%%, 1px); }
+  %.2f%% { opacity: 0; transform: translate(-50%%, 2px); }
+  100%% { opacity: 0; transform: translate(-50%%, 2px); }
+}""" % (d * 0.16, d * 0.62, d, d * 0.16, d * 0.62, d),
 "/* -1px, and the rise below is 2px not 3. The model is the tallest of",
 "   the six, so its label sits highest, and with the old numbers it rose",
 "   a pixel into a gantry board whenever it stood under one -- which is",
@@ -434,7 +480,16 @@ def puff_css():
 "   this block; the names get the gap underneath. */",
 ".puff { position: absolute; left: 50%; bottom: 100%; margin-bottom: -1px;",
 "        width: 0; pointer-events: none; }",
-".puff b { position: absolute; left: 0; bottom: 0; opacity: 0;",
+"/* A service name hangs UNDER its board and drifts down, away from",
+"   it, because the board is what it is coming out of. A robot name",
+"   still rises off its head. Same type, same queue, opposite",
+"   direction -- which is the difference between a cloud offering a",
+"   service and a robot saying who it is. */",
+".svcs { position: absolute; left: var(--at); top: 14px; width: 0;",
+"        pointer-events: none; z-index: 5; }",
+".svcs b { top: 0; }",
+".puff b { bottom: 0; }",
+".puff b, .svcs b { position: absolute; left: 0; opacity: 0;",
 "          transform: translate(-50%, 0); white-space: nowrap;",
 "          font-family: inherit; font-size: 6px; font-weight: 700;",
 "          font-style: normal; line-height: 1; letter-spacing: .06em;",
@@ -442,17 +497,27 @@ def puff_css():
 "@media (prefers-reduced-motion: no-preference) {"]
     queue = puff_order()
     step = PUFF_CYCLE / len(queue)
+    kinds = dict((n, k) for n, k, _w in PUFFS)
     for slot, (name, i) in enumerate(queue):
-        out.append("  .%s .puff b:nth-child(%d) { animation: puff %.0fs "
+        sign = kinds[name] == "sign"
+        # A sign queue IS the element, a robot queue is inside one.
+        # The service labels sit beside the boards rather than within
+        # them, because .sign carries a z-index and so opens a stacking
+        # context -- a label inside it can never come forward of the
+        # figures walking past, and the whole point is that it reads.
+        out.append("  %s b:nth-child(%d) { animation: %s %.0fs "
                    "ease-out %.2fs infinite; }"
-                   % (name, i + 1, PUFF_CYCLE, 1.5 + slot * step))
+                   % (".%s" % name if sign else ".%s .puff" % name, i + 1,
+                      "svcpuff" if sign else "puff",
+                      PUFF_CYCLE, 1.5 + slot * step))
     out.append("}")
     return chr(10).join(out)
 
 
 def puff_markup(name):
-    for n, words in PUFFS:
+    for n, kind, words in PUFFS:
         if n == name:
-            return ('<i class="puff">%s</i>'
-                    % "".join("<b>%s</b>" % w for w in words))
+            return ('<i class="%s">%s</i>'
+                    % ("svcs" if kind == "sign" else "puff",
+                       "".join("<b>%s</b>" % w for w in words)))
     return ""

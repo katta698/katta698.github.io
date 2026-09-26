@@ -339,7 +339,7 @@ def labels_never_collide():
     queue = C.puff_order()
     step = C.PUFF_CYCLE / len(queue)
     on = C.PUFF_CYCLE * C.PUFF_DUTY / 100.0
-    names = sum(len(w) for _, w in C.PUFFS)
+    names = sum(len(w) for _n, _k, w in C.PUFFS)
     if len(queue) != names:
         problems.append(
             "the puff queue holds %d slots for %d names -- every name needs "
@@ -364,12 +364,17 @@ def labels_never_collide():
 def labels_fit(pg):
     """Every service name fits the card, wherever its robot is standing.
 
-    Five of the six never move, but the model does, so its label sweeps
-    the whole road -- and the longest names belong to the outposts at the
-    two ends, where there is least room left. Each name is checked at
+    Five of the six robots never move, but the model does, so its label
+    sweeps the whole road -- and the longest names belong to the boards at
+    the two ends, where there is least room left. Each name is checked at
     every stop rather than at one instant, because a label is on screen
     for a second and a half once a minute and a screenshot will not find
     this.
+
+    Both kinds are measured: the names that rise off a robot and the
+    service names that hang under a board. The second lot were added and
+    not checked for one round, which is exactly how the first lot came to
+    be a pixel inside a gantry board.
     """
     problems = []
     for where, pct in (("Azure", C.AT_AZ + 2.0), ("AWS", 95.0),
@@ -380,11 +385,12 @@ def labels_fit(pg):
           const board = Math.max(...[...document.querySelectorAll('.plate')]
               .map(e => e.getBoundingClientRect().bottom));
           const out = [];
-          for (const el of document.querySelectorAll('.puff b')) {
+          for (const el of document.querySelectorAll('.puff b, .svcs b')) {
             const keep = el.style.cssText;
             el.style.animation = 'none'; el.style.opacity = '1';
             const k = el.getBoundingClientRect();
-            out.push({who: el.closest('.follow').classList[1],
+            const own = el.closest('.follow') || el.parentElement;
+            out.push({who: own.classList[1] || own.classList[0],
                       txt: el.textContent,
                       left: k.left - card.left, right: card.right - k.right,
                       board: k.top - board});

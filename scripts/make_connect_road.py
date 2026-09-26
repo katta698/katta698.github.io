@@ -68,7 +68,12 @@ BASE = """
    model names cannot rise into -- they come off the robots' heads, and the
    gap between the board and those heads is all the room they get. */
 .plate { display: flex; align-items: center; gap: 4px;
-  padding: 1px 5px 1px 4px; border-radius: 3px;
+  /* No vertical padding. Every pixel this board is tall is a pixel
+     the service names cannot use -- they hang under it and the
+     robots' heads come up to meet them, so the gap between the two
+     is all the room there is. Two pixels off the plate is two
+     pixels of air for the labels. */
+  padding: 0 5px 0 4px; border-radius: 3px;
   border: 1px solid var(--line, rgba(90,74,56,.30));
   background: color-mix(in srgb, var(--paper) 88%, var(--ink) 5%); }
 [data-theme="dark"] .plate { border-color: rgba(220,226,211,.22);
@@ -102,6 +107,16 @@ BASE = """
 .walker { width: 17px; height: 32px; display: block; fill: #241f1a; stroke: none; }
 .bot { width: 11px; height: 19px; display: block; fill: #241f1a; stroke: none; }
 .walker .far, .bot .far { opacity: .88; }
+/* Each posted agent works at a laptop, placed in FRONT of it rather than
+   under it. Centred on the robot the screen fell behind its legs and the
+   whole thing read as a pedestal -- the raked screen is the only part
+   that says laptop, so it has to be the part you can see. The crew were
+   moved apart to make room for it, and it is the laptop rather than the
+   robot that now lines up with the board's drop line.
+   Last in the markup, so it draws in front of the robot it belongs to. */
+.lap { position: absolute; left: -2px; bottom: 0; width: 6px; height: 4px;
+  display: block; fill: #241f1a; }
+[data-theme="dark"] .lap { fill: #a7b2a0; }
 .walker .pack { fill: inherit; opacity: 1; }
 [data-theme="dark"] .walker, [data-theme="dark"] .bot { fill: #a7b2a0; }
 .wcheer, .wstand { display: none; }
@@ -194,6 +209,9 @@ MARKUP = """    <div class="road">
       <span class="sign g-azu" style="--at:20%"><span class="plate">__AZU__<b>Azure</b></span><i class="drop"></i></span>
       <span class="sign g-aws" style="--at:50%"><span class="plate">__AWS__<b>AWS</b></span><i class="drop"></i></span>
       <span class="sign g-gcp" style="--at:80%"><span class="plate">__GCP__<b>GCP</b></span><i class="drop"></i></span>
+      __SVCAZU__
+      __SVCAWS__
+      __SVCGCP__
     </div>"""
 
 
@@ -284,10 +302,22 @@ def _mark(kind):
     return '<svg class="pin" viewBox="0 0 24 24" aria-hidden="true">%s</svg>' % art
 
 
+def _svcs(cls, at):
+    """The services a board offers, hung under that board."""
+    for name, kind, words in C.PUFFS:
+        if name == cls:
+            return ('<i class="svcs %s" style="--at:%s">%s</i>'
+                    % (cls, at, "".join("<b>%s</b>" % w for w in words)))
+    return ""
+
+
 def markup():
     return (MARKUP
             .replace("__AZU__", _mark("azu"))
             .replace("__AWS__", _mark("aws"))
             .replace("__GCP__", _mark("gcp"))
+            .replace("__SVCAZU__", _svcs("s-azu", "20%"))
+            .replace("__SVCAWS__", _svcs("s-aws", "50%"))
+            .replace("__SVCGCP__", _svcs("s-gcp", "80%"))
             .replace("__CHAIN__", C.markup(R.sprite()))
             .replace("__MAN__", W.sprite()))
