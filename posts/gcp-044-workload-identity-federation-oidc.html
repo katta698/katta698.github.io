@@ -1,0 +1,314 @@
+---
+title: "GCP Architecture Series #44 — Workload Identity Federation for OIDC Providers and CI Systems"
+date: '2026-09-26T09:00:00'
+slug: gcp-architecture-workload-identity-federation-oidc
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-09-26'
+verified_claims:
+  - claim: "Some providers, such as GitHub and Terraform Cloud, use a single issuer URL across all of their tenants"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+  - claim: "not a specific GitHub or Terraform Cloud organization"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+  - claim: "We recommend that you configure a Workload Identity Federation attribute condition to check that the token originated from a trusted tenant"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+  - claim: "An administrator might revoke access for one principal, but might be unaware of the existence of another principal, inadvertently causing the external identity to retain access"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+  - claim: "the TLS connection ensures the authenticity of the load balancer or reverse proxy, but not of the actual identity provider"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+  - claim: "Swapping the JWKS lets a bad actor sign tokens that are considered valid by Workload Identity Federation"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+  - claim: "you must validate the JSON before using it"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+  - claim: "a malicious actor could use the credential configuration to cause your workload to access malicious endpoints"
+    source: https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation
+  - claim: "Use the following attribute condition to restrict access to tokens issued by your GitHub organization"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines
+  - claim: "The value for the GitHub Actions OIDC token subject can vary depending on the source event"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines
+  - claim: "Contains the unique repository ID"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines
+  - claim: "Be sure to map any claims that you plan to use as attribute conditions"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines
+  - claim: "https://token.actions.githubusercontent.com/"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines
+  - claim: "fb60f99c-7a34-4190-8149-302f77469936"
+    source: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines
+problem: "#43 federated with AWS, where the provider is your own account and the trust boundary comes for free. GitHub, GitLab and Terraform Cloud share one issuer URL across every customer they have — so configuring the provider and stopping there does not trust your CI system, it trusts all of GitHub."
+builds: "Why a multi-tenant issuer makes the attribute condition load-bearing rather than optional, which GitHub claims are safe to condition on, and three further ways the trust can be subverted after it is configured."
+catch: "Two Google pages point different ways. The setup guide conditions on repository_owner — the organisation name. The best-practices page says use attributes that cannot be reused. GitHub organisation names can be renamed and reclaimed; the numeric owner ID cannot."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #044 &middot; IAM</div>
+  <h1 class="post-title">Workload Identity Federation for OIDC Providers and CI Systems</h1>
+  <p class="post-subtitle">One issuer URL for every customer GitHub has. Without an attribute condition, that is who you trusted.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Google Cloud &middot; IAM &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #43 federated with AWS, where your account number is the boundary. CI providers do not work that way, and the difference is the whole post.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"We configured the GitHub issuer, so only our workflows can authenticate"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          No. Some providers, such as GitHub and Terraform Cloud, use a single issuer URL across all of their tenants &mdash; the issuer identifies all of GitHub, not a specific GitHub organization. Anybody with a GitHub account gets tokens from <code>https://token.actions.githubusercontent.com/</code>.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          The attribute condition is the trust boundary, not the issuer. Google recommends configuring one to check that the token originated from a trusted tenant, and for these providers it is not optional.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"We will condition on the organisation name"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          That is what the setup guide shows, and it conflicts with the best-practice rule from #43 to use attributes that cannot be reused. A GitHub organisation can be renamed, and the name becomes available again.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Condition on <code>repository_owner_id</code> rather than <code>repository_owner</code> where you can &mdash; the numeric ID is the one that cannot be reclaimed by somebody else.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"We mapped the subject, that identifies the workflow"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Not reliably. The value for the GitHub Actions OIDC token subject can vary depending on the source event &mdash; a push, a pull request and a tag do not produce the same <code>sub</code>.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Map the specific claims you intend to use, and be sure to map any claims that you plan to use as attribute conditions. Do not lean on <code>sub</code> as though it were a stable identifier.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"We added a second provider for the new pipeline"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Now one external identity is two IAM principals, and revocation becomes unreliable: an administrator might revoke access for one principal, but might be unaware of the existence of another principal, inadvertently causing the external identity to retain access.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          One pool, one provider, and an attribute condition that covers both pipelines. Federating twice is how access survives being revoked.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The mechanics are #43's. What changes is where the trust boundary sits, and therefore which field is load-bearing.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-044-workload-identity-federation-oidc.svg" alt="Diagram: why a multi-tenant OIDC issuer URL such as GitHub Actions does not identify an organisation, how the attribute condition becomes the trust boundary, which GitHub claims are stable and non-reusable, and three further ways the federation trust can be subverted after configuration" />
+      <figcaption>With AWS the account is the boundary. With GitHub the boundary is a CEL expression you have to remember to write.</figcaption>
+    </figure>
+
+    <h3>Where the boundary moved</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th></th><th>AWS (#43)</th><th>GitHub, GitLab, Terraform Cloud</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>What the issuer identifies</td>
+          <td>Verified against your AWS account via <code>GetCallerIdentity</code>.</td>
+          <td>All of GitHub. One URL for every tenant.</td>
+        </tr>
+        <tr>
+          <td>Who can obtain a token from it</td>
+          <td>Principals in your AWS account.</td>
+          <td>Anybody with an account on the platform.</td>
+        </tr>
+        <tr>
+          <td>The trust boundary</td>
+          <td>Implicit in the provider configuration.</td>
+          <td><strong>The attribute condition, and nothing else.</strong></td>
+        </tr>
+        <tr>
+          <td>Forgetting it</td>
+          <td>Not possible in the same way.</td>
+          <td>Configuration completes successfully.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      The last row is why this deserves its own post. A missing attribute condition is not an error, a warning, or a failed setup. The pool works, the pipeline authenticates, the deploy succeeds &mdash; and the same door opens for a workflow in a repository you have never heard of.
+    </p>
+
+    <h3>The claims worth knowing</h3>
+    <p>
+      GitHub Actions tokens carry several claims, and they are not equally trustworthy as identifiers:
+    </p>
+    <ul>
+      <li><strong><code>repository_owner</code></strong> &mdash; the username or organisation name, for example <code>google</code>. What the setup guide conditions on.</li>
+      <li><strong><code>repository_owner_id</code></strong> &mdash; the unique owner ID. Not reclaimable.</li>
+      <li><strong><code>repository</code></strong> &mdash; owner and repository name together, for example <code>google/guava</code>.</li>
+      <li><strong><code>repository_id</code></strong> &mdash; contains the unique repository ID.</li>
+      <li><strong><code>ref</code></strong> &mdash; the branch or tag, which lets a condition require <code>refs/heads/main</code>.</li>
+      <li><strong><code>sub</code></strong> &mdash; varies by source event. Useful, but not an identity.</li>
+    </ul>
+
+    <div class="callout amber">
+      <strong>Two Google pages, two different answers</strong>
+      <p>The deployment-pipelines guide gives the attribute condition as <code>assertion.repository_owner=='ORGANIZATION'</code> &mdash; the organisation <em>name</em>. The best-practices page, covered in #43, says to use attributes that cannot be reused over time, because a recreated identity sharing an attribute becomes indistinguishable from the original. GitHub organisation names are reusable: rename an organisation and the old name is free for anyone to take. Both pages are correct about their own subject and they point in different directions, and the guide is the one people follow because it is the one with the commands in it. Where the tooling allows, condition on the numeric <code>repository_owner_id</code> &mdash; and if you use the name, understand you are trusting that nobody renames the organisation.</p>
+    </div>
+
+    <h3>Three more ways the trust gets subverted</h3>
+    <ol>
+      <li><strong>Federating twice.</strong> Two providers for the same IdP means one identity maps to two principals. Revoke one and the other survives &mdash; the failure is silent and looks exactly like a completed revocation.</li>
+      <li><strong>JWKS swapping.</strong> If your IdP sits behind a load balancer or reverse proxy that terminates TLS, the TLS connection ensures the authenticity of the load balancer or reverse proxy, but not of the actual identity provider. Swapping the JWKS lets a bad actor sign tokens that are considered valid by Workload Identity Federation.</li>
+      <li><strong>A credential configuration you were handed.</strong> These files contain URLs and paths. You must validate the JSON before using it, or a malicious actor could use the credential configuration to cause your workload to access malicious endpoints.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This One Fails Quietly</h2>
+
+    <p>
+      Every misconfiguration in this block so far has had a tell. A missing <code>expect:</code> fails a build. An unsupported permission is rejected. An over-long JWT is refused by its recipient. The multi-tenant issuer has no tell at all, and that is worth dwelling on.
+    </p>
+    <p>
+      Configure a GitHub provider with no attribute condition and every single thing you test will pass. Your workflow authenticates. Your deploy runs. The audit log shows your pipeline doing exactly what it should. Nothing in Google Cloud, GitHub or your pipeline output indicates that the pool will accept a token from any GitHub account in the world, because from the pool's perspective nothing is wrong &mdash; it was told to trust that issuer and it does.
+    </p>
+    <p>
+      The gap only becomes visible if somebody asks the right question, and the right question is unnatural: <em>not</em> "does our pipeline work" but "whose tokens does this issuer sign". For AWS in #43 that question answers itself, because the issuer is your account. Here the answer is "everyone's", and the configuration screen does not say so.
+    </p>
+    <p>
+      That makes this the one place in the federation design where the documentation's ordering works against you. The attribute condition appears as an optional field, described as a way to restrict access &mdash; language that suggests narrowing something already bounded. For a multi-tenant issuer it is not narrowing anything. It is the only boundary there is.
+    </p>
+
+    <h3>What to do with this</h3>
+    <ol>
+      <li><strong>Treat the attribute condition as required</strong> for any shared-issuer provider. Not a hardening step &mdash; the boundary itself.</li>
+      <li><strong>Condition on IDs, not names</strong>, where the claim exists. Names can be released and reclaimed.</li>
+      <li><strong>Add the branch when it matters.</strong> <code>assertion.ref=='refs/heads/main'</code> stops a fork or a feature branch minting deploy credentials.</li>
+      <li><strong>Never federate the same provider twice.</strong> One pool, one provider, one principal per identity &mdash; otherwise revocation is a guess.</li>
+      <li><strong>Audit existing pools for missing conditions</strong> first. This is the configuration most likely to be wrong and least likely to have complained.</li>
+      <li><strong>Validate any credential configuration you did not write</strong> before a workload loads it.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Federating with GitHub or Terraform Cloud</td>
+          <td>An attribute condition, always</td>
+          <td>One issuer URL covers all of their tenants.</td>
+        </tr>
+        <tr>
+          <td>What to condition on</td>
+          <td>The numeric owner or repository ID</td>
+          <td>Names can be renamed and reclaimed; IDs cannot.</td>
+        </tr>
+        <tr>
+          <td>Restricting to a branch</td>
+          <td>Add <code>assertion.ref</code></td>
+          <td>It limits which workflows can mint credentials.</td>
+        </tr>
+        <tr>
+          <td>Using <code>sub</code> as the identity</td>
+          <td>No</td>
+          <td>Its value varies depending on the source event.</td>
+        </tr>
+        <tr>
+          <td>Claims you plan to condition on</td>
+          <td>Map them explicitly</td>
+          <td>Be sure to map any claims you plan to use as conditions.</td>
+        </tr>
+        <tr>
+          <td>A second pipeline on the same IdP</td>
+          <td>Extend the condition, not a new provider</td>
+          <td>Two principals make revocation unreliable.</td>
+        </tr>
+        <tr>
+          <td>A self-hosted IdP behind a proxy</td>
+          <td>Verify the IdP, not the proxy</td>
+          <td>TLS authenticates the load balancer, not the provider.</td>
+        </tr>
+        <tr>
+          <td>A credential configuration from elsewhere</td>
+          <td>Validate the JSON first</td>
+          <td>It can point a workload at malicious endpoints.</td>
+        </tr>
+        <tr>
+          <td>Azure DevOps audience</td>
+          <td><code>fb60f99c-7a34-4190-8149-302f77469936</code></td>
+          <td>It is the application ID of the Azure Token Exchange Endpoint.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The interesting thing about federating with a CI system is how much of the security depends on one optional-looking field. Everything else in the setup is mechanical: an issuer URL you copy, an audience you accept, a mapping you adapt from an example. The attribute condition is the only part that requires you to have understood what you are doing, and it is the only part that will not complain if you skip it.
+    </p>
+    <p>
+      That asymmetry is worth naming because it generalises. A shared-tenancy identity provider hands you a token that proves a true thing &mdash; this came from GitHub &mdash; which is not the thing you wanted proved. The gap between those two statements is invisible in every test you would think to run, and it is closed by one CEL expression that nobody reviews after the pipeline goes green. If you inherit a federation configuration from anyone, that expression is the first thing to read, and an empty one is not a simpler configuration. It is a different one.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#45 brings federation inside Google Cloud: Workload Identity for GKE &mdash; how a Kubernetes service account becomes a Google Cloud principal, and why the cluster is the trust boundary that AWS and GitHub had to be given explicitly.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/iam/docs/best-practices-for-using-workload-identity-federation" target="_blank" rel="noopener">Best practices for using Workload Identity Federation</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines" target="_blank" rel="noopener">Configure Workload Identity Federation with deployment pipelines</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/workload-identity-federation" target="_blank" rel="noopener">Workload Identity Federation</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/manage-workload-identity-pools-providers" target="_blank" rel="noopener">Manage workload identity pools and providers</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/using-workload-identity-federation" target="_blank" rel="noopener">Obtain short-lived credentials with Workload Identity Federation</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/conditions-overview" target="_blank" rel="noopener">Overview of IAM Conditions</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
