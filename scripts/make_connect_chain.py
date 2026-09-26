@@ -88,5 +88,78 @@ def css():
 
 def markup(sprite):
     return "\n      ".join(
-        '<div class="follow %s"><span>%s</span></div>' % (n, sprite)
+        '<div class="follow %s">%s<span>%s</span></div>'
+        % (n, puff_markup(n), sprite)
         for n, _, _, _, _ in FOLLOWERS)
+
+
+# What each one puffs out and lets go of ----------------------------------
+#
+# The model names rise off the big robot, the tool names off the small ones.
+# One at a time across the whole chain, roughly every six seconds, each
+# visible for about two and a half -- five per cent of the cycle. Any more
+# and it is a tag cloud walking down a road.
+#
+# The rise is capped at 7px. There are only 9px between the road and the
+# job title, the man's own box already uses 10 of them mid-jump, and at
+# 8px a label's top landed 1px inside the title at 360 wide -- measured,
+# not guessed, because one pixel is not something you see in a
+# screenshot.
+# The big robot is the model, so it breathes out MODELS. The three small
+# ones are agents, so they breathe out the things that run on top.
+#
+# Worth saying plainly: this is prominence as of a knowledge cutoff, not a
+# measured ranking of worldwide use -- nobody publishes that. It is also
+# the part of the card that dates fastest, so it is one list in one file.
+PUFFS = [
+    ("f1", ["Claude", "ChatGPT", "Gemini", "Grok",
+            "Llama", "DeepSeek", "Mistral"]),
+    ("f2", ["Claude Code", "Codex", "Cursor"]),
+    ("f3", ["Copilot", "Kiro", "Antigravity"]),
+    ("f4", ["Devin", "Windsurf", "Amazon Q"]),
+]
+PUFF_CYCLE = 42.0          # not a multiple of the 26s walk, so the two
+                           # never fall into step and start looking canned
+PUFF_DUTY = 4.0            # per cent of the cycle a name is on screen
+
+
+def puff_css():
+    # The -50% is inside every keyframe on purpose. transform is one
+    # property: a keyframe setting translateY REPLACES the translateX that
+    # was centring the label, and the name drifts half its own width off
+    # the robot it belongs to.
+    d = PUFF_DUTY
+    out = ["""@keyframes puff {
+  0%% { opacity: 0; transform: translate(-50%%, 2px); }
+  %.2f%% { opacity: .95; transform: translate(-50%%, -1px); }
+  %.2f%% { opacity: .95; transform: translate(-50%%, -4px); }
+  %.2f%% { opacity: 0; transform: translate(-50%%, -7px); }
+  100%% { opacity: 0; transform: translate(-50%%, -7px); }
+}""" % (d * 0.16, d * 0.62, d),
+".puff { position: absolute; left: 50%; bottom: 100%; margin-bottom: -2px;",
+"        width: 0; pointer-events: none; }",
+".puff b { position: absolute; left: 0; bottom: 0; opacity: 0;",
+"          transform: translate(-50%, 0); white-space: nowrap;",
+"          font-family: inherit; font-size: 6.4px; font-weight: 700;",
+"          font-style: normal; line-height: 1; letter-spacing: .06em;",
+"          text-transform: none; color: var(--muted); }",
+"@media (prefers-reduced-motion: no-preference) {"]
+    slot = 0
+    total = sum(len(n) for _, n in PUFFS)
+    step = PUFF_CYCLE / total
+    for name, words in PUFFS:
+        for i in range(len(words)):
+            out.append("  .%s .puff b:nth-child(%d) { animation: puff %.0fs "
+                       "ease-out %.2fs infinite; }"
+                       % (name, i + 1, PUFF_CYCLE, 1.5 + slot * step))
+            slot += 1
+    out.append("}")
+    return "\n".join(out)
+
+
+def puff_markup(name):
+    for n, words in PUFFS:
+        if n == name:
+            return ('<i class="puff">%s</i>'
+                    % "".join("<b>%s</b>" % w for w in words))
+    return ""
