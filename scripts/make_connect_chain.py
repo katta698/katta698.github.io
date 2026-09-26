@@ -61,7 +61,7 @@ def css():
     out = []
     for name, back, h, step, delay in FOLLOWERS:
         w = round(h * 11.0 / 19.0, 1)
-        out.append(".%s { top: %.0fpx; width: %.1fpx; }" % (name, 21 - h, w))
+        out.append(".%s { top: %.0fpx; width: %.1fpx; }" % (name, 33 - h, w))
         out.append(".%s .bot { width: %.1fpx; height: %.1fpx; }" % (name, w, h))
         out.append("@media (prefers-reduced-motion: no-preference) {")
         out.append("  .%s { animation: trek-%s 26s linear infinite; }" % (name, name))
@@ -100,11 +100,10 @@ def markup(sprite):
 # visible for about two and a half -- five per cent of the cycle. Any more
 # and it is a tag cloud walking down a road.
 #
-# The rise is capped at 7px. There are only 9px between the road and the
-# job title, the man's own box already uses 10 of them mid-jump, and at
-# 8px a label's top landed 1px inside the title at 360 wide -- measured,
-# not guessed, because one pixel is not something you see in a
-# screenshot.
+# The names sit BELOW the road now. They used to rise off each robot's
+# head, and the overhead gantries took that air -- 'Claude' landed
+# inside the AZURE board. Under the tarmac there are nine pixels, which
+# is room to appear and fade but not to rise, so they no longer do.
 # The big robot is the model, so it breathes out MODELS. The three small
 # ones are agents, so they breathe out the things that run on top.
 #
@@ -131,15 +130,15 @@ def puff_css():
     # the robot it belongs to.
     d = PUFF_DUTY
     out = ["""@keyframes puff {
-  0%% { opacity: 0; transform: translate(-50%%, 2px); }
-  %.2f%% { opacity: .95; transform: translate(-50%%, -1px); }
-  %.2f%% { opacity: .95; transform: translate(-50%%, -4px); }
-  %.2f%% { opacity: 0; transform: translate(-50%%, -7px); }
-  100%% { opacity: 0; transform: translate(-50%%, -7px); }
+  0%% { opacity: 0; transform: translate(-50%%, 3px); }
+  %.2f%% { opacity: .95; transform: translate(-50%%, 1px); }
+  %.2f%% { opacity: .95; transform: translate(-50%%, 0); }
+  %.2f%% { opacity: 0; transform: translate(-50%%, -2px); }
+  100%% { opacity: 0; transform: translate(-50%%, -2px); }
 }""" % (d * 0.16, d * 0.62, d),
-".puff { position: absolute; left: 50%; bottom: 100%; margin-bottom: -2px;",
+".puff { position: absolute; left: 50%; top: 100%; margin-top: 11px;",
 "        width: 0; pointer-events: none; }",
-".puff b { position: absolute; left: 0; bottom: 0; opacity: 0;",
+".puff b { position: absolute; left: 0; top: 0; opacity: 0;",
 "          transform: translate(-50%, 0); white-space: nowrap;",
 "          font-family: inherit; font-size: 6.4px; font-weight: 700;",
 "          font-style: normal; line-height: 1; letter-spacing: .06em;",
