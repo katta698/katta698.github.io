@@ -19,10 +19,17 @@ AWS = ('<g transform="translate(0,-3.2)">'
        '<path d="M17.3 11.9l4.6 1.5-1.2 4.5" fill="none" stroke-width="2.5" '
        'stroke-linecap="round" stroke-linejoin="round"/></g>')
 
-AZURE = ('<path d="M9.6 3.4h6.1l-6.3 18.6H3.1l6.5-6.1h4.2L9.6 3.4z" '
-         'stroke="none"/>'
-         '<path d="M15.7 3.4L21 22h-8.6l-1.1-3.3 5.4-15.3z" stroke="none" '
-         'opacity=".72"/>')
+# An A, because at nine pixels that is the only part of the Azure mark
+# that survives. The first attempt traced the real logo's two offset
+# shapes and the diagonal between them closed up at size, so it read as
+# a bowtie -- an hourglass on top of a wedge, which is not a letter and
+# not Azure. The notch keeps a nod to the cut through the real mark; the
+# two tones keep its light-and-dark blue. Drawn, not copied: see the
+# module docstring.
+AZURE = ('<path d="M12.4 2.6 2.8 21.6 8.2 21.6 12.4 11.6Z" stroke="none"/>'
+         '<path d="M12.4 2.6 22.0 21.6 16.6 21.6 12.4 11.6Z" stroke="none" '
+         'opacity=".72"/>'
+         '<path d="M9.7 15.4h5.4l1.5 3.4H8.2Z" stroke="none" opacity=".72"/>')
 
 # The cloud in four arcs. Monochrome it is just a cloud -- and this card
 # already has cloud shapes on it -- so the colour is the whole message.

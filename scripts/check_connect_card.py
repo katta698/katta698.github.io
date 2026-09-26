@@ -51,6 +51,9 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import make_connect_chain as C          # noqa: E402
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -166,6 +169,157 @@ def alpha_is_smooth():
     return problems
 
 
+# Only the looping animations get scrubbed. document.getAnimations()
+# also returns the card's finished entrance fade, and winding that back
+# dims the whole card -- which is exactly what an earlier version of this
+# measurement did, then blamed the walker for the result it had caused.
+PICK_LOOPS = """() => {
+  window.__a = document.getAnimations().filter(a => {
+    try { return a.effect.getTiming().iterations === Infinity; }
+    catch (e) { return false; } });
+  window.__a.forEach(a => a.pause());
+  return window.__a.length; }"""
+# The pose frames are held apart by animation-delay, so the delay has to
+# come out before the modulo and go back after it. Ignore it and all
+# eight walk poses land on the same phase -- sometimes all lit, sometimes
+# none, and the figure appears to vanish for reasons nothing on the page
+# is doing.
+SCRUB = """t => window.__a.forEach(a => {
+  const ti = a.effect.getTiming(), d = ti.duration || 1, dl = ti.delay || 0;
+  try { a.currentTime = ((t - dl) % d + d) % d + dl; } catch (e) {} })"""
+HIKER_BOX = """() => { const r = document.querySelector('.hiker').getBoundingClientRect();
+  return {x: r.x, y: r.y, w: r.width, h: r.height}; }"""
+
+
+def figures_never_flicker(pg):
+    """Exactly one pose, fully opaque, for every figure, all the way round.
+
+    "He's kind of disappearing for a millisecond" was reported three
+    times in those words, and fixed wrongly twice, because both fixes
+    were checked by SUMMING the opacity of the pose groups. That sum
+    cannot see the failure: cross-fading one silhouette into another
+    holds the sum at 1 while the figure is genuinely see-through, since
+    two shapes at half opacity composite to 75% where they overlap and
+    50% where they do not, and nowhere to solid.
+
+    Counting pixels instead was tried and abandoned. At 27px a pose
+    change and a fade are not separable by ink: the airborne pose is
+    thin raised arms on a tucked body, so it legitimately has a third
+    less solid area than a stride, and any threshold loose enough to
+    let that through is loose enough to let a fade through with it. A
+    number tuned until it passed would be a check that cannot fail.
+
+    So assert the rule the artwork actually follows, which is sharp:
+    poses CUT. One lit, none part-lit, no instant with nothing. That
+    catches a cross-fade (part-lit) and a mistimed swap (none lit), and
+    it cannot be confused by what shape the pose happens to be.
+
+    It sweeps the whole loop rather than the jump, and every figure
+    rather than the man. Each of them now carries three pose groups
+    instead of one -- walking, standing and, for him, the jump -- and
+    the windows that hand over between them are generated per figure
+    from a simulation. Seven figures times three handovers is twenty-one
+    seams, and the one that matters will not be the one anybody thought
+    to look at.
+    """
+    problems = []
+    pg.evaluate(PICK_LOOPS)
+    who = pg.evaluate("""() => ['.hiker .walker']
+        .concat([...document.querySelectorAll('.follow')]
+                .map(f => '.' + [...f.classList].find(c => /^f\d+$/.test(c)) + ' .bot'))""")
+    bad, seen = {}, dict((w, []) for w in who)
+    # 241 samples, offset off every boundary. A cut has no width, so at
+    # the exact instant of one both the outgoing and the incoming pose
+    # read as lit -- that is the boundary being measured, not anything a
+    # frame can ever show.
+    for i in range(241):
+        pg.evaluate(SCRUB, 26000.0 * i / 240.0 + 0.31)
+        st = pg.evaluate("""sels => sels.map(sel => {
+          const o = e => +getComputedStyle(e).opacity;
+          let lit = [], group = '';
+          for (const g of document.querySelectorAll(sel + ' > g')) {
+            const go = o(g);
+            if (go < 0.02) continue;
+            group = g.getAttribute('class') || '';
+            for (const pose of g.children) {
+              const v = go * o(pose);
+              if (v > 0.02) lit.push(v);
+            }
+          }
+          const box = document.querySelector(sel).getBoundingClientRect();
+          return {n: lit.length, min: lit.length ? Math.min(...lit) : 0,
+                  group: group, x: box.x}; })""", who)
+        for sel, r in zip(who, st):
+            pct = 100.0 * i / 240.0
+            seen[sel].append((pct, r))
+            if r["n"] == 0:
+                bad.setdefault(sel, []).append(("nothing drawn", pct, 0))
+            elif r["n"] > 1:
+                bad.setdefault(sel, []).append(("%d poses at once" % r["n"], pct, 0))
+            elif r["min"] < 0.99:
+                bad.setdefault(sel, []).append(
+                    ("only %.0f%% opaque" % (100 * r["min"]), pct, r["min"]))
+    # And the pose has to be the RIGHT one. "Exactly one pose lit" is
+    # satisfied perfectly by a figure that walks on the spot for the five
+    # seconds it is meant to be standing at AWS working -- which is what
+    # it was doing, through two rounds of this check passing, because a
+    # generator function was written and never called. Tie the pose to
+    # the motion and neither half can drift from the other.
+    #
+    # Sustained mismatch only, for two reasons that are not fussiness. At
+    # the instant a figure arrives somewhere it is both "was moving" and
+    # "is standing", so every honest handover looks like a fault for one
+    # sample. And a follower waiting for the line to reach it creeps at a
+    # fraction of a pixel per sample, which is walking slowly, not
+    # standing. A treadmill lasts seconds; a seam lasts one frame. A
+    # check that cries wolf on every seam gets switched off, and then it
+    # is not protecting anything.
+    RUN, SPAN = 6, 3           # ~1.6s of disagreement, measured over ~0.8s
+    for sel in who:
+        rows = seen[sel]
+        streak, worst = {}, {}
+        for i in range(SPAN, len(rows) - SPAN - 1):
+            pct, r = rows[i]
+            travel = abs(rows[i + SPAN][1]["x"] - rows[i - SPAN][1]["x"])
+            still = travel < 0.3
+            grp = r["group"]
+            if still and grp in ("wcyc", "rcyc"):
+                kind = "treadmill"
+            elif not still and grp in ("wstand", "rstand"):
+                kind = "sliding"
+            else:
+                streak.clear()
+                continue
+            streak[kind] = streak.get(kind, 0) + 1
+            if streak[kind] >= RUN and kind not in worst:
+                worst[kind] = pct - RUN * 100.0 / 240.0
+        if "treadmill" in worst:
+            problems.append(
+                "%s stands still from %.1f%% of the loop but keeps running its "
+                "walk cycle -- it stops by marching on the spot, which is a "
+                "treadmill and contradicts the one thing the stop at AWS is "
+                "there to say" % (sel, worst["treadmill"]))
+        if "sliding" in worst:
+            problems.append(
+                "%s is walking from %.1f%% of the loop but showing its standing "
+                "pose -- it slides along the road without moving its legs"
+                % (sel, worst["sliding"]))
+    if not bad and not problems:
+        print("  %d figures, 241 instants each: one pose lit at every one of "
+              "them, none part-lit, and each one walking or standing to match "
+              "whether it is moving" % len(who))
+    for sel, hits in bad.items():
+        what, pct, _ = hits[0]
+        problems.append(
+            "%s: %s at %.1f%% of the loop (%d instant(s) in all). Every figure "
+            "must have exactly one pose lit and fully opaque at every moment "
+            "-- poses CUT between neighbouring shapes, they never cross-fade, "
+            "and the walking, standing and jumping windows must tile with no "
+            "gap. See make_connect_road.py and make_connect_chain.py"
+            % (sel, what, pct, len(hits)))
+    return problems
+
+
 def main():
     bad_early = []
     for line in art_is_stamped():
@@ -221,6 +375,9 @@ def main():
                     bad.append("%dx%d: the birds at the top of the artwork "
                                "are cut off by %dpx -- the panel starts "
                                "above the screen" % (w, h, -birds))
+
+                if (w, h) == WIDTHS[0]:
+                    bad.extend(figures_never_flicker(pg))
 
                 over = m["page"] - m["vh"]
                 if over > 2:

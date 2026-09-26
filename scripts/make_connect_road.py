@@ -64,87 +64,145 @@ BASE = """
 .sign { position: absolute; left: var(--at); top: 0; height: 33px; z-index: 0;
   transform: translateX(-50%);
   display: flex; flex-direction: column; align-items: center; line-height: 1; }
+/* Short plates on purpose. Every pixel this board is tall is a pixel the
+   model names cannot rise into -- they come off the robots' heads, and the
+   gap between the board and those heads is all the room they get. */
 .plate { display: flex; align-items: center; gap: 4px;
-  padding: 2px 5px 2px 4px; border-radius: 3px;
+  padding: 1px 5px 1px 4px; border-radius: 3px;
   border: 1px solid var(--line, rgba(90,74,56,.30));
   background: color-mix(in srgb, var(--paper) 88%, var(--ink) 5%); }
 [data-theme="dark"] .plate { border-color: rgba(220,226,211,.22);
   background: color-mix(in srgb, var(--paper) 78%, #dce2d3 6%); }
 .drop { width: 1.2px; flex: 1 0 6px; background: var(--muted); opacity: .42; }
-.plate .pin { width: 11px; height: 11px; display: block; flex: none; }
+.plate .pin { width: 9px; height: 9px; display: block; flex: none; }
 .plate b { font: inherit; color: currentColor; }
 .g-azu { color: #3a5570; } .g-aws { color: #6f5336; } .g-gcp { color: #4f5b30; }
 [data-theme="dark"] .g-azu { color: #9ab8d4; }
 [data-theme="dark"] .g-aws { color: #c49a68; }
 [data-theme="dark"] .g-gcp { color: #9aad72; }
 .g-azu .pin { fill: #1a7cc0; stroke: none; }
-.g-aws .pin { fill: none; stroke: #d97f12; width: 12px; height: 12px; }
+.g-aws .pin { fill: none; stroke: #d97f12; width: 10px; height: 10px; }
 .g-gcp .pin { fill: none;
   --g-blue: #3d76c8; --g-red: #c8483c; --g-yellow: #d9a222; --g-green: #3d8f52; }
 [data-theme="dark"] .g-azu .pin { fill: #6fb3e4; }
 [data-theme="dark"] .g-aws .pin { stroke: #efa444; }
 [data-theme="dark"] .g-gcp .pin {
   --g-blue: #7fa9e0; --g-red: #d97f76; --g-yellow: #e0be6a; --g-green: #79b58c; }
-.hiker, .follow { z-index: 2; }
+/* He is in front of all six; the formation's back row is behind
+   the front row, which is what makes it read as a ring rather
+   than a queue. The boards stay behind everybody at 0. */
+.hiker { z-index: 4; }
 
 .hiker, .follow { position: absolute; left: 0; }
 .follow > span { display: block; }
-.hiker { top: 13px; width: 17px; }
+/* 11, so his feet land on 42 -- the same line the robots stand on.
+     He was on 44 and they were on 33. */
+.hiker { top: 11px; width: 17px; }
 .jump { display: block; }
 .walker { width: 17px; height: 32px; display: block; fill: #241f1a; stroke: none; }
 .bot { width: 11px; height: 19px; display: block; fill: #241f1a; stroke: none; }
 .walker .far, .bot .far { opacity: .88; }
 .walker .pack { fill: inherit; opacity: 1; }
 [data-theme="dark"] .walker, [data-theme="dark"] .bot { fill: #a7b2a0; }
-.wcheer { display: none; }
-.walker > g > g, .bot > g { display: none; }
+.wcheer, .wstand { display: none; }
+.walker > g > g, .bot > g > g { display: none; }
 
 @media (prefers-reduced-motion: no-preference) {
   .hiker { animation: trek 26s linear infinite; }
   .jump { animation: hop 26s ease-out infinite; }
   .walker { animation: face 26s steps(1) infinite; }
+  /* steps(1), not linear. Adjacent keyframe stops still interpolate
+     across the gap between them -- a tenth of a per cent of 26s is 26ms
+     of both poses part-lit, which is a cross-fade however short. With
+     steps(1) each interval holds its opening value and jumps at the
+     end, so the windows tile exactly and nothing is ever part-drawn. */
   .wcyc { display: block; animation: showwalk 26s steps(1) infinite; }
   .wcheer { display: block; opacity: 0; animation: showjump 26s steps(1) infinite; }
-  .walker > g > g { display: inline; opacity: 0; animation: cyc .72s steps(1) infinite; }
-  .bot > g { display: inline; opacity: 0; animation: rcyc .48s steps(1) infinite; }
+  .wstand { display: block; opacity: 0; animation: showstand 26s steps(1) infinite; }
+  /* Every pose in every group is laid out and transparent; which one is
+     drawn is decided entirely by the group it sits in and the keyframes
+     above. Only the two cycling groups step through their poses -- the
+     standing pose is a single frame and holds. */
+  .walker > g > g, .bot > g > g { display: inline; opacity: 0; }
+  .wcyc > g { animation: cyc .72s steps(1) infinite; }
+  .bot .rcyc > g { animation: rcyc .48s steps(1) infinite; }
+  /* .walker .wstand, not .wstand: two classes and a type beats the
+     one class and two types of the rule above it, and without the
+     extra class the standing figure was laid out, switched on, and
+     drawn at zero opacity -- a man who stopped by vanishing. The
+     robots' rule already had the class and already worked, which is
+     what made the difference visible. */
+  .walker .wstand > g, .bot .rstand > g { opacity: 1; }
   .wcyc .k0 { animation-delay: 0s; }   .wcyc .k1 { animation-delay: .09s; }
   .wcyc .k2 { animation-delay: .18s; } .wcyc .k3 { animation-delay: .27s; }
   .wcyc .k4 { animation-delay: .36s; } .wcyc .k5 { animation-delay: .45s; }
   .wcyc .k6 { animation-delay: .54s; } .wcyc .k7 { animation-delay: .63s; }
-  .wcheer .c1 { opacity: 1; }
+  /* The two jump poses cut, they do not blend -- see showcrouch. */
+  .wcheer .c0 { animation: showcrouch 26s steps(1) infinite; }
+  .wcheer .c1 { animation: showair 26s steps(1) infinite; }
   .g-aws .pin { animation: breathe 2.4s ease-in-out infinite; }
 }
 @media (prefers-reduced-motion: reduce) {
   .hiker { transform: translateX(112px); }
-  .wcyc { display: block; } .wcyc .k0, .bot .r0 { display: inline; }
+  .wstand, .bot .rstand { display: block; }
+  .wstand > g, .bot .rstand > g { display: inline; }
+  .wcyc, .wcheer, .bot .rcyc { display: none; }
 }
+/* One round trip, then the team stands at AWS and works ---------------
+   Out to Azure and straight back, out to GCP and straight back, then
+   eight seconds at AWS -- three of them the six of them filing in around
+   him, and five stood in formation. The two clouds he only reaches and
+   turns at; AWS is the only place anybody stops, and the length of that
+   stop is the whole point of the picture. Both legs are the same length,
+   Azure being 73px off and GCP 74, so neither reads as further away than
+   it is. The followers are not written here: they run a pursuit against
+   this timeline in make_connect_chain.py, which is why they reflect off
+   each turn one at a time instead of pivoting together. */
 @keyframes trek {
-  0%, 2% { transform: translateX(39px); }  20% { transform: translateX(112px); }
-  28% { transform: translateX(112px); }    46% { transform: translateX(186px); }
-  52% { transform: translateX(186px); }    70% { transform: translateX(112px); }
-  78% { transform: translateX(112px); }    96%, 100% { transform: translateX(39px); }
+  0% { transform: translateX(112px); }    15% { transform: translateX(39px); }
+  18% { transform: translateX(39px); }    33% { transform: translateX(112px); }
+  36% { transform: translateX(112px); }   51% { transform: translateX(186px); }
+  54% { transform: translateX(186px); }   69%, 100% { transform: translateX(112px); }
 }
+/* The jump waits for the formation. He is home at 69% but the tail is
+   still walking in until 81%, and a leader celebrating alone while his
+   team is still arriving is not the picture -- they all go up together,
+   him first and the rest in a wave behind him. */
 @keyframes hop {
-  0%, 21% { transform: translateY(0); }    23.5% { transform: translateY(-9px); }
-  26%, 71% { transform: translateY(0); }   73.5% { transform: translateY(-9px); }
-  76%, 100% { transform: translateY(0); }
+  0%, 86.5% { transform: translateY(0); }  88% { transform: translateY(-9px); }
+  89.5%, 100% { transform: translateY(0); }
 }
-@keyframes face { 0%, 47% { transform: scaleX(1); }
-                  48%, 97% { transform: scaleX(-1); }
-                  98%, 100% { transform: scaleX(1); } }
-/* The pose swap has to land exactly on the airborne window. It used to
-   start at 20.1% while the lift began at 21%, so for a beat he stood on
-   the road with both arms in the air, and again after he came down --
-   an instant change of silhouette with no motion to explain it, which
-   reads as the figure blinking out and back rather than jumping. */
-@keyframes showwalk { 0%, 21% { opacity: 1; } 21.1%, 25.9% { opacity: 0; }
-                      26%, 71% { opacity: 1; } 71.1%, 75.9% { opacity: 0; }
-                      76%, 100% { opacity: 1; } }
-@keyframes showjump { 0%, 21% { opacity: 0; } 21.1%, 25.9% { opacity: 1; }
-                      26%, 71% { opacity: 0; } 71.1%, 75.9% { opacity: 1; }
-                      76%, 100% { opacity: 0; } }
-@keyframes cheerA { 0%, 49.9% { opacity: 1; } 50%, 100% { opacity: 0; } }
-@keyframes cheerB { 0%, 49.9% { opacity: 0; } 50%, 100% { opacity: 1; } }
+/* He never turns his back on the model. Coming home from GCP he is
+   already facing left, which is the side f1 takes in the formation, so
+   the huddle asks no turn of him at all -- and left is also the way he
+   sets off for Azure on the next loop. */
+@keyframes face { 0%, 17% { transform: scaleX(-1); }
+                  18%, 53% { transform: scaleX(1); }
+                  54%, 100% { transform: scaleX(-1); } }
+/* Why there are three jump poses and no cross-fade.
+   Two earlier goes at this both failed, and both failed for the same
+   reason: the figure changed silhouette faster than a body can. First
+   the swap was misaligned -- arms went up at 20.1% while the lift did
+   not start until 21%, so for a beat he stood on the road with both
+   arms overhead. Aligning it left a hard cut from mid-stride to
+   both-arms-up, which at 27px still reads as a blink. So the cut was
+   softened into a two-tenths cross-fade, and that was worse in a way
+   that does not show up in a measurement of opacity: two silhouettes
+   at half opacity do not add back up to one solid figure. Where they
+   overlap you get 75%, where they do not you get 50%, so mid-fade he
+   is genuinely see-through. Summing the two groups' opacity said
+   0.5 + 0.5 = 1 and reported no problem, which is why it took a third
+   report to find.
+   The fix is the beat that was missing rather than a way to hide its
+   absence: a crouch, held for a tenth of a second either side of the
+   lift, so he gathers, leaves, lands and gathers again. Every change
+   is now between neighbouring poses and every one of them is a hard
+   cut -- nothing is ever partly transparent. */
+/* Gather, and land. Bracketing the airborne pose on both sides. */
+@keyframes showcrouch { 0%, 86.5% { opacity: 1; } 86.6%, 89.4% { opacity: 0; }
+                        89.5%, 100% { opacity: 1; } }
+@keyframes showair { 0%, 86.5% { opacity: 0; } 86.6%, 89.4% { opacity: 1; }
+                     89.5%, 100% { opacity: 0; } }
 @keyframes cyc { 0%, 12.4% { opacity: 1; } 12.5%, 100% { opacity: 0; } }
 @keyframes rcyc { 0%, 24.9% { opacity: 1; } 25%, 100% { opacity: 0; } }
 /* filter, not box-shadow: a box-shadow ring is the shape of the BOX, and
@@ -166,8 +224,37 @@ MARKUP = """    <div class="road">
     </div>"""
 
 
+
+# His gait, on the same footing as theirs -----------------------------------
+# walk while he is going somewhere, stand while he is not, and the jump
+# carved out of the stand at AWS. Generated from the timeline rather than
+# typed, because it moved once already -- the round trip turned one stop
+# into four -- and four hand-written windows that have to tile exactly is
+# four chances to leave a gap nothing would report.
+MAN_JUMP = (85.5, 90.5)
+MAN_GAIT = ([(0.0, "walk"), (C.AT_AZ, "stand"), (C.OFF_AZ, "walk"),
+             (C.HOME_1, "stand"), (C.OFF_HOME, "walk"),
+             (C.AT_GCP, "stand"), (C.OFF_GCP, "walk"),
+             (C.HOME_2, "stand"), (MAN_JUMP[0], "jump"), (MAN_JUMP[1], "stand")])
+
+
+def gait_css():
+    out = []
+    for kind, want in (("showwalk", "walk"), ("showstand", "stand"),
+                       ("showjump", "jump")):
+        rows = ["@keyframes %s {" % kind]
+        for i, (t, state) in enumerate(MAN_GAIT):
+            nxt = MAN_GAIT[i + 1][0] if i + 1 < len(MAN_GAIT) else 100.0
+            rows.append("  %.2f%%, %.2f%% { opacity: %d; }"
+                        % (t, max(t, nxt - 0.01), 1 if state == want else 0))
+        rows.append("}")
+        out.append(chr(10).join(rows))
+    return chr(10).join(out)
+
+
 def css():
-    return BASE + "\n" + C.css() + "\n" + C.puff_css() + "\n"
+    return (BASE + chr(10) + gait_css() + chr(10) + C.css() + chr(10)
+            + C.puff_css() + chr(10))
 
 
 def _mark(kind):

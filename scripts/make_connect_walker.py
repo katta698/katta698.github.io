@@ -173,13 +173,74 @@ def cheer(tuck):
     return "".join(o)
 
 
+def crouch():
+    """The beat before he leaves the ground, and the beat he lands on.
+
+    Without it the figure went from mid-stride to both-arms-overhead in a
+    single frame, and a silhouette that changes that much at once reads as
+    a blink. Cross-fading the two only made it worse: two half-transparent
+    figures do not add back to a solid one, so he went see-through instead
+    of jumping. Poses in between, cut hard -- the way it has always been
+    done."""
+    global LEAN
+    keep, LEAN = LEAN, 15.0
+    hip = (CX, HIP_Y + 4.0)
+    neck = pt(CX, hip[1], 180-LEAN, HIP_Y-NECK_Y)
+    sh = pt(CX, hip[1], 180-LEAN, HIP_Y-SHOULDER_Y)
+    globals()['_SH'] = sh
+    o = []
+    top = pt(sh[0], sh[1], 180-LEAN, -0.030*H)
+    bot = pt(sh[0], sh[1], 180-LEAN, -0.235*H)
+    o.append('<g class="pack">%s</g>'
+             % seg((top[0]-6.2, top[1]), (bot[0]-7.0, bot[1]), 0.185*H, 0.215*H))
+
+    def leg(t, k, far):
+        knee = pt(hip[0], hip[1], t, THIGH)
+        ank = pt(knee[0], knee[1], t+k, CALF)
+        return '<g%s>%s%s%s</g>' % (' class="far"' if far else '',
+            seg(hip, knee, W_HIPJ, W_KNEE), seg(knee, ank, W_KNEE, W_ANKLE),
+            shoe(ank, (t+k)*0.3 + 6))
+
+    def arm(a1, far):
+        shx = sh[0] - (2.2 if far else 0.0)
+        el = pt(shx, sh[1], a1, UPPER_ARM)
+        wr = pt(el[0], el[1], a1 - 22, FOREARM)
+        return '<g%s>%s%s</g>' % (' class="far"' if far else '',
+            seg((shx, sh[1]), el, W_SHLD, W_ELBOW), seg(el, wr, W_ELBOW, W_WRIST))
+
+    o.append(leg(-14, -52, True)); o.append(arm(-46, True))
+    waist = ((hip[0]+neck[0])/2, (hip[1]+neck[1])/2)
+    o.append(seg(hip, waist, W_HIPW, W_WAIST))
+    o.append(seg(waist, neck, W_WAIST, W_SHOULDER))
+    o.append(leg(10, -48, False)); o.append(arm(-38, False))
+    head = pt(neck[0], neck[1], 180-LEAN, HEAD_R*1.22)
+    o.append('<circle cx="%.2f" cy="%.2f" r="%.2f"/>' % (head[0], head[1], HEAD_R))
+    for ang, d, rx, ry, rot in ((54,.72,1.05,.62,30), (16,.80,1.02,.58,8),
+                                (-34,.74,.66,.46,-30)):
+        hh = pt(head[0], head[1], 180-LEAN+ang, HEAD_R*d)
+        o.append('<ellipse cx="%.2f" cy="%.2f" rx="%.2f" ry="%.2f" '
+                 'transform="rotate(%.1f %.2f %.2f)"/>'
+                 % (hh[0], hh[1], HEAD_R*rx, HEAD_R*ry, -LEAN+rot, hh[0], hh[1]))
+    LEAN = keep
+    return "".join(o)
+
+
+# Standing still actually still. Every figure on the road ran one walk
+# cycle regardless of whether it was going anywhere, so the team that
+# stops at AWS to work stopped by marching on the spot -- which reads
+# as a treadmill and quietly contradicts the one thing the stop is
+# there to say. Weight on both feet, arms down, a hand's width between
+# the heels so the far leg still reads as a leg.
+STAND = frame((5, -3, -5, -3, -7, -5, 7, -5))
+
 FRAMES = [frame(a) for a in CYCLE]
-CHEER = [cheer(0.0), cheer(2.5)]
+CHEER = [crouch(), cheer(1.0)]
 
 
 def sprite(cls="walker"):
     walk = "".join('<g class="k%d">%s</g>' % (i, f) for i, f in enumerate(FRAMES))
     cheers = "".join('<g class="c%d">%s</g>' % (i, f) for i, f in enumerate(CHEER))
     return ('<svg class="%s" viewBox="18 -20 64 122" aria-hidden="true">'
-            '<g class="wcyc">%s</g><g class="wcheer">%s</g></svg>'
-            % (cls, walk, cheers))
+            '<g class="wcyc">%s</g><g class="wstand"><g class="s0">%s</g></g>'
+            '<g class="wcheer">%s</g></svg>'
+            % (cls, walk, STAND, cheers))

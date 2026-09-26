@@ -85,9 +85,13 @@ def frame(a):
 
 
 FRAMES = [frame(a) for a in CYCLE]
+# See STAND in make_connect_walker: a stopped robot that keeps stepping
+# is a robot on a treadmill.
+STAND = frame((4, -3, -4, -3, -5, 5))
 
 
 def sprite(cls="bot"):
     gs = "".join('<g class="r%d">%s</g>' % (i, f) for i, f in enumerate(FRAMES))
-    return ('<svg class="%s" viewBox="28 0 44 100" aria-hidden="true">%s</svg>'
-            % (cls, gs))
+    return ('<svg class="%s" viewBox="28 0 44 100" aria-hidden="true">'
+            '<g class="rcyc">%s</g><g class="rstand"><g class="s0">%s</g></g></svg>'
+            % (cls, gs, STAND))
