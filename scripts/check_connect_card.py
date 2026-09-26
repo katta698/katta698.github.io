@@ -321,43 +321,45 @@ def figures_never_flicker(pg):
 
 
 def labels_never_collide():
-    """Two service names are never on screen at once.
+    """No two names ever share an instant within one queue.
 
-    This is arithmetic, not rendering, because it is a property of how
-    the queue is laid out rather than of any one frame -- and the frame
-    that would catch it comes round once a minute.
+    Arithmetic, not rendering, because it is a property of how a queue is
+    laid out rather than of any one frame -- and the frame that would
+    catch it comes round once a minute.
 
-    It matters now in a way it did not before. A label used to be one
-    word over a robot; it is a service name now, and "Azure Functions" is
-    fifty-four pixels of text over a six-pixel robot while the three at
-    AWS stand six pixels apart. Give each robot its own clock and two of
-    them overlap into something unreadable often enough to matter. One
-    shared queue is the only arrangement where that cannot happen, so the
-    check is that the queue really is shared and really is spaced.
+    There are four queues now, not one. A single queue was right while
+    every label could reach every other, but the labels are anchored to
+    the data centres and each cloud has about seventy pixels of clear air
+    before the next one's begin, so the three clouds run their own
+    streams and none of them waits its turn. Each cloud's queue carries
+    its agent's own name alongside its services, because an agent stands
+    in front of its building and the two share a column.
     """
     problems = []
-    queue = C.puff_order()
-    step = C.PUFF_CYCLE / len(queue)
-    on = C.PUFF_CYCLE * C.PUFF_DUTY / 100.0
-    names = sum(len(w) for _n, _k, w in C.PUFFS)
-    if len(queue) != names:
-        problems.append(
-            "the puff queue holds %d slots for %d names -- every name needs "
-            "exactly one slot or two of them share an instant"
-            % (len(queue), names))
-    seen = set()
-    for slot, key in enumerate(queue):
-        if key in seen:
-            problems.append("%s name %d is queued twice" % key)
-        seen.add(key)
-    print("  %d names, one every %.2fs, each on for %.2fs -- %.2fs of clear "
-          "air between them" % (len(queue), step, on, step - on))
-    if on >= step:
-        problems.append(
-            "a name is on screen for %.2fs but the next one starts %.2fs "
-            "later, so two are lit at once and the labels overlap. Either "
-            "lengthen PUFF_CYCLE or drop PUFF_DUTY in make_connect_chain.py"
-            % (on, step))
+    for qname, step, entries in C.QUEUES:
+        cycle = step * len(entries)
+        gap = step - C.VISIBLE
+        print("  %-6s %2d names, one every %.1fs, each on %.1fs -- %.1fs of "
+              "clear air" % (qname, len(entries), step, C.VISIBLE, gap))
+        if gap <= 0:
+            problems.append(
+                "the %s queue shows a name for %.1fs but starts the next one "
+                "%.1fs later, so two are lit at once and the labels overlap. "
+                "Raise the step or drop VISIBLE in make_connect_chain.py"
+                % (qname, C.VISIBLE, step))
+        seen = {}
+        for who, kind, txt in entries:
+            seen.setdefault((who, txt), 0)
+            seen[(who, txt)] += 1
+        for key, n in seen.items():
+            if n > 1:
+                problems.append("%s says %r %d times in one queue"
+                                % (key[0], key[1], n))
+        if cycle % 26 == 0:
+            problems.append(
+                "the %s queue laps in %.0fs, a whole multiple of the 26s "
+                "walk -- the two will fall into step and the card will "
+                "start looking canned" % (qname, cycle))
     return problems
 
 
@@ -391,7 +393,7 @@ def labels_fit(pg):
             const k = el.getBoundingClientRect();
             const own = el.closest('.follow') || el.parentElement;
             out.push({who: own.classList[1] || own.classList[0],
-                      txt: el.textContent,
+                      txt: el.textContent, w: k.width,
                       left: k.left - card.left, right: card.right - k.right,
                       board: k.top - board});
             el.style.cssText = keep; }
@@ -402,6 +404,25 @@ def labels_fit(pg):
               "closest under a board %4.1fpx (%s)"
               % (where, min(worst["left"], worst["right"]), worst["txt"],
                  low["board"], low["txt"]))
+        # The clouds must not be able to reach each other. This is the
+        # geometry the four separate queues rest on: within a cloud a
+        # queue keeps two labels apart, but nothing keeps Azure's longest
+        # name off AWS's building except the distance between them.
+        band = {}
+        for h in hits:
+            if not h["who"].startswith("s-"):
+                continue
+            lo, hi = band.get(h["who"], (1e9, -1e9))
+            band[h["who"]] = (min(lo, h["left"]), max(hi, h["left"] + h["w"]))
+        rows = sorted(band.items(), key=lambda kv: kv[1][0])
+        for (n1, (_l1, r1)), (n2, (l2, _r2)) in zip(rows, rows[1:]):
+            if r1 > l2:
+                problems.append(
+                    "with him at %s, %s's longest label runs %.1fpx into "
+                    "where %s's labels start. The per-cloud queues assume "
+                    "the clouds cannot reach each other -- shorten the name "
+                    "or move the buildings apart"
+                    % (where, n1, r1 - l2, n2))
         for h in hits:
             if min(h["left"], h["right"]) < 2:
                 problems.append(
@@ -415,6 +436,64 @@ def labels_fit(pg):
                     "board. The boards own the top of this block and the "
                     "names get the gap under them"
                     % (where, h["txt"], -h["board"]))
+    return problems
+
+
+def label_colours_read(pg, theme):
+    """Every label colour clears 4.5:1 on the paper it is printed on.
+
+    Six pixels is small text, so 4.5:1 is the floor -- not the 3:1 that
+    display type gets. A colour that reads on a board at nine and a half
+    pixels bold is not automatically legible at six, and the card's rust
+    is exactly that case: it clears the floor easily on the name in the
+    heading and missed it on a service label, at 3.84 on paper.
+
+    Measured against --paper rather than body's background colour. The
+    body paints its paper through a layered background image, so its
+    computed backgroundColor is transparent, which parses as black and
+    flatters every light-mode reading into nonsense.
+    """
+    problems = []
+    r = pg.evaluate("""() => {
+      const pick = sel => { const e = document.querySelector(sel);
+        return e ? getComputedStyle(e).color : null; };
+      return {paper: getComputedStyle(document.documentElement)
+                  .getPropertyValue('--paper').trim(),
+              Azure: pick('.s-azu b'), AWS: pick('.s-aws b'),
+              GCP: pick('.s-gcp b'), model: pick('.f1 .puff b'),
+              agent: pick('.f2 .puff b')}; }""")
+
+    def rgb(t):
+        t = t.strip()
+        if t.startswith("#"):
+            h = t[1:]
+            if len(h) == 3:
+                h = "".join(c * 2 for c in h)
+            return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+        return tuple(int(x) for x in
+                     t.replace("rgba", "rgb").strip("rgb() ").split(",")[:3])
+
+    def lum(c):
+        def f(v):
+            v /= 255.0
+            return v / 12.92 if v <= .04045 else ((v + .055) / 1.055) ** 2.4
+        return .2126 * f(c[0]) + .7152 * f(c[1]) + .0722 * f(c[2])
+
+    paper = rgb(r["paper"])
+    worst, worst_k = 99.0, ""
+    for k in ("Azure", "AWS", "GCP", "model", "agent"):
+        c = rgb(r[k])
+        la, lb = lum(c), lum(paper)
+        cr = (max(la, lb) + .05) / (min(la, lb) + .05)
+        if cr < worst:
+            worst, worst_k = cr, k
+        if cr < 4.5:
+            problems.append(
+                "the %s label colour measures %.2f:1 on the %s paper, under "
+                "the 4.5:1 that six-pixel text needs. Deepen it in the --c-* "
+                "block in make_connect_chain.py" % (k, cr, theme))
+    print("  %-5s label colours: worst is %s at %.2f:1"
+          % (theme, worst_k, worst))
     return problems
 
 
@@ -479,6 +558,13 @@ def main():
                 if (w, h) == WIDTHS[0]:
                     bad.extend(figures_never_flicker(pg))
                     bad.extend(labels_fit(pg))
+                    bad.extend(label_colours_read(pg, "light"))
+                    pg.evaluate("() => document.documentElement"
+                                ".setAttribute('data-theme','dark')")
+                    pg.wait_for_timeout(300)
+                    bad.extend(label_colours_read(pg, "dark"))
+                    pg.evaluate("() => document.documentElement"
+                                ".setAttribute('data-theme','light')")
 
                 over = m["page"] - m["vh"]
                 if over > 2:

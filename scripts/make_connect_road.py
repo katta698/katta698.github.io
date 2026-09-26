@@ -337,11 +337,9 @@ def _svcs(cls, x):
     are placed in px too. A percentage here would drift away from the
     building the moment anything moved.
     """
-    for name, kind, words in C.PUFFS:
-        if name == cls:
-            return ('<i class="svcs %s" style="--svcx:%s">%s</i>'
-                    % (cls, x, "".join("<b>%s</b>" % w for w in words)))
-    return ""
+    words = C._texts(cls)
+    return ('<i class="svcs %s" style="--svcx:%s">%s</i>'
+            % (cls, x, "".join("<b>%s</b>" % w for w in words)))
 
 
 def markup():
