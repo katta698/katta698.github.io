@@ -171,7 +171,7 @@ tells you a deployment failed — never that a role is missing.</p>
       <div class="post-info">
         <span>Aug 26, 2026</span>
         <span class="post-info-dot"></span>
-        <span>11 min read</span>
+        <span>12 min read</span>
       </div>
     </header>
     
@@ -490,6 +490,30 @@ group. <code>deployIfNotExists</code> sends a storage account's diagnostics to a
 Log Analytics workspace when no such setting exists. <code>modify</code> copies a
 <code>cost-center</code> tag down from the resource group.</p>
 <h2 id="build">How We Built It — Step by Step</h2>
+<h3>0. How any of this gets deployed</h3>
+<p>Everything below is Terraform. There is no portal click anywhere in this
+week — the screenshots are the <em>result</em> of an apply, not a record of
+someone configuring things by hand.</p>
+<p>State lives in HCP Terraform; the apply runs locally:</p>
+<pre><code>terraform {
+  required_providers {
+    azurerm = { source = "hashicorp/azurerm", version = "~&gt; 5.2" }
+  }
+
+  cloud {
+    organization = "Katta"
+    workspaces {
+      name    = "azure-week-02-dev"
+      project = "Azure Platform Lab"
+    }
+  }
+}</code></pre>
+<p>The workspace is set to <strong>local execution</strong> deliberately. HCP
+defaults a new workspace to <em>remote</em>, which fails immediately here because
+there are no Azure credentials stored in the workspace — the apply authenticates
+with whatever <code>az login</code> session is on the machine. So HCP holds the
+state file and its version history, and the plan and apply run locally. There are
+no HCP run logs for this week, because there were no HCP runs.</p>
 <h3>User-assigned, and the ordering that follows from it</h3>
 <p>A policy assignment holds exactly one managed identity either way, so this is
 not a question of how many. It is a question of when its principal ID exists.</p>
@@ -503,7 +527,7 @@ principal is orphaned, naming an object ID that no longer resolves.</p>
 <p>A <strong>user-assigned</strong> identity inverts that: create it, grant it,
 then hand it over.</p>
 <div class="code-label">The ordering, in Terraform</div>
-<pre class="code-block">resource "azurerm_user_assigned_identity" "remediation" { ... }
+<pre><code>resource "azurerm_user_assigned_identity" "remediation" { ... }
 
 resource "azurerm_role_assignment" "remediation" {
   for_each     = var.grant_remediation_roles ? local.roles : {}
@@ -517,16 +541,16 @@ resource "azurerm_management_group_policy_assignment" "dev" {
     identity_ids = [azurerm_user_assigned_identity.remediation.id]
   }
   depends_on = [azurerm_role_assignment.remediation]
-}</pre>
+}</code></pre>
 <p>The <code>depends_on</code> is not decoration. Terraform sees the assignment
 reference the <em>identity</em>, not the grants, so without it the assignment is
 free to be created first — reintroducing exactly the race that user-assigned was
 chosen to remove.</p>
 <h3>Three stages, and the middle one is meant to fail</h3>
 <div class="code-label">Run in this order</div>
-<pre class="code-block">./scripts/deploy.sh audit       auditIfNotExists, no grants
+<pre><code>./scripts/deploy.sh audit       auditIfNotExists, no grants
 ./scripts/deploy.sh no-grants   deployIfNotExists — identity attached, holding nothing
-./scripts/deploy.sh remediate   the same, with the three grants in place</pre>
+./scripts/deploy.sh remediate   the same, with the three grants in place</code></pre>
 <figure class="screenshot">
 <img alt="Azure Policy compliance blade showing the lab remediation initiative non-compliant with two non-compliant resources at Landing Zones - Dev" src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-02-policy-as-code/docs/blog/screenshots/01-audit-stage-compliance.png"/>
 <figcaption>Stage 1. Two storage accounts flagged, nothing altered — the
@@ -556,14 +580,14 @@ and the same rules that could not write a single tag now finish the job:</p>
 <p>Both effects failed for the same reason — an identity holding no roles — and
   they reported it completely differently.</p>
 <p><code>modify</code> names the missing permission and the principal:</p>
-<pre class="code-block">The 'PATCH' request failed with status code: 'Forbidden'. Inner Error: 'The
+<pre><code>The 'PATCH' request failed with status code: 'Forbidden'. Inner Error: 'The
 client '…' with object id '…' does not have authorization to perform action
 'Microsoft.Resources/tags/write' over scope '…/providers/Microsoft.Resources/
-tags/default' or the scope is invalid.</pre>
+tags/default' or the scope is invalid.</code></pre>
 <p><code>deployIfNotExists</code> says only that something is missing:</p>
-<pre class="code-block">Evaluation of DeployIfNotExists policy was unsuccessful. The policy assignment
+<pre><code>Evaluation of DeployIfNotExists policy was unsuccessful. The policy assignment
 '…/assign-remediation-dev' resource identity does not have the necessary
-permissions to create deployment '…/PolicyDeployment_12003642577558566238'.</pre>
+permissions to create deployment '…/PolicyDeployment_12003642577558566238'.</code></pre>
 <p>Not which permission. Not at which scope. Not which of the two roles is
   absent. It points at a deployment name, so it gets debugged as a deployment
   problem — and the fault is a role assignment that was never made.</p>
@@ -572,9 +596,9 @@ permissions to create deployment '…/PolicyDeployment_12003642577558566238'.</p
 <h3>An audit-only assignment still carries an identity</h3>
 <p>Assigning the initiative with every effect set to
   <code>AuditIfNotExists</code> and <code>Disabled</code> was refused outright:</p>
-<pre class="code-block">ResourceIdentityRequired: … must include a 'managed identity' when assigning
+<pre><code>ResourceIdentityRequired: … must include a 'managed identity' when assigning
 'DeployIfNotExists' policy definitions or policy definitions that contain a
-deployment in the effect details</pre>
+deployment in the effect details</code></pre>
 <p>The <em>definition</em> decides whether an identity is required, not the
   effect you assign it with. So "it is only auditing, there is no identity" is
   false. What separates a safe audit stage from a dangerous one is not the
@@ -583,9 +607,9 @@ deployment in the effect details</pre>
 <div class="challenge-card">
 <h3>One remediation at a time, per assignment, per rule, per scope</h3>
 <p>A second request while one is running is refused:</p>
-<pre class="code-block">InvalidCreateRemediationRequest: … are already running for policy assignment
+<pre><code>InvalidCreateRemediationRequest: … are already running for policy assignment
 '…/assign-remediation-dev', definition reference ID 'storage-diagnostics' on a
-scope conflicting with requested scope.</pre>
+scope conflicting with requested scope.</code></pre>
 <p>Worth knowing before you write a loop that fans out remediation across
   rules, and worth knowing if two people are working the same subscription.</p>
 </div>
@@ -611,9 +635,9 @@ write a tag.</p>
 that decision can be made is the definition, and this week ships its own copy —
 identical rule, one line different:</p>
 <div class="code-label">The only line that differs from the built-in</div>
-<pre class="code-block">"roleDefinitionIds": [
+<pre><code>"roleDefinitionIds": [
   "/providers/Microsoft.Authorization/roleDefinitions/4a9ae827-6dc8-4573-8ac7-8239d42aa03f"
-]</pre>
+]</code></pre>
 <p>Tag Contributor. Write tags, nothing else.</p>
 <p><strong>Two roles for diagnostics, not one.</strong> Monitoring Contributor
 writes the diagnostic setting on the storage account; Log Analytics Contributor
