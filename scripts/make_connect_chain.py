@@ -1,17 +1,25 @@
 # -*- coding: utf-8 -*-
-"""The followers' tracks, simulated rather than hand-typed.
+"""Who travels and who stays, and where the ones who stay are posted.
 
-One robot became four and then six: the model he works with, and the five
-agents it runs. Each trails a little further back and stands a little
-shorter, so the chain reads as a hierarchy without a word of explanation
--- him, then what he uses, then what that uses.
+The six robots used to be a retinue: all of them walked behind him
+everywhere, which says the work follows the person. It does not. The
+agents are already running in each cloud whether he is stood next to
+them or not -- the Azure series and its labs, the GCP series, the AWS
+series and the weekly labs -- so a picture with all of them at his heels
+is a picture of the wrong thing.
 
-The loop is a round trip now, not a patrol. Out to Azure and back, out to
-GCP and back, then the whole team stands at AWS with him at the centre
-and the six of them around him. That is the claim the picture is making:
-the other two clouds are places he goes, and AWS is where the work
-happens -- so AWS is the only place anybody stops, and the length of that
-stop is the point.
+So one robot travels and five are posted:
+
+  the model    walks with him everywhere. It is the Gen AI model he
+               actually works in, and the name on it cycles, because
+               which one it is changes week to week.
+  Azure        one agent, posted, standing by its board.
+  GCP          one agent, posted, standing by its board.
+  AWS          three, because that is where most of the work is.
+
+He crosses to Azure and back, to GCP and back, and spends the rest of
+the loop at AWS with the crew that lives there -- which is the true
+shape of it, and needs no caption.
 """
 
 AZURE, AWS, GCP = 39.0, 112.0, 186.0
@@ -20,21 +28,30 @@ GROUND = 42.0        # where every foot lands
 # The loop, in per cent of the 26s cycle. Both legs are the same length
 # on purpose -- Azure is 73px from AWS and GCP is 74 -- so the two trips
 # take the same time and neither cloud reads as further away than it is.
-LEG = 15.0                        # per cent of the loop spent walking a leg
-AT_AZ, OFF_AZ = 15.0, 18.0        # reach Azure, turn round
-HOME_1, OFF_HOME = 33.0, 36.0     # back through AWS, straight out again
-AT_GCP, OFF_GCP = 51.0, 54.0      # reach GCP, turn round
-HOME_2 = 69.0                     # home for good; the huddle starts here
-JUMP = 86.5                       # and the team jumps once it has formed
+#
+# Azure and GCP get a real stop now, not just a turn. There is somebody
+# posted at each of them, and a visit you cannot see him standing through
+# is not a visit.
+LEG = 13.0                        # per cent of the loop spent walking a leg
+AT_AZ, OFF_AZ = 13.0, 21.0        # reach Azure, two seconds, head back
+HOME_1, OFF_HOME = 34.0, 36.0     # back through AWS without stopping
+AT_GCP, OFF_GCP = 49.0, 57.0      # reach GCP, two seconds, head back
+HOME_2 = 70.0                     # home for good
+JUMP = 80.0                       # and the two of them jump
 
 SPEED = (AWS - AZURE) / LEG       # his pace, in px per per-cent
-VMAX = SPEED * 1.2                # theirs -- a little quicker, so one that
-                                  # loses ground at a turn has some way of
-                                  # getting it back
+VMAX = SPEED * 1.2                # the model's -- a little quicker, so it
+                                  # can cross him at a stop and still be
+                                  # in place before he moves off again
 
 STOPS = [(0.0, AWS), (AT_AZ, AZURE), (OFF_AZ, AZURE),
          (HOME_1, AWS), (OFF_HOME, AWS), (AT_GCP, GCP), (OFF_GCP, GCP),
          (HOME_2, AWS), (100.0, AWS)]
+
+# Where he is standing still. The model settles beside him inside these
+# and trails him outside them. The pass back through AWS at HOME_1 is
+# deliberately not one: he does not stop there, so neither does it.
+RESTS = [(AT_AZ, OFF_AZ), (AT_GCP, OFF_GCP), (HOME_2, 100.0)]
 
 
 def man_at(pct):
@@ -45,57 +62,65 @@ def man_at(pct):
     return AWS
 
 
-# name, px behind him on the march, height, seconds per step, hop delay,
-# where it stands in the formation, and how far back it steps into it.
+def resting(pct):
+    return any(a <= pct <= b for a, b in RESTS)
+
+
+# The one that travels. name, px behind on the march, height, seconds per
+# step, hop delay, and where it stands when he stops.
 #
-# The standing offsets are set from MEASURED ink, not from the boxes.
-# A figure's SVG box is a good deal wider than the figure in it -- his is
-# 17px around 8px of ink, and the robots' are half empty too -- so
-# offsets that look tight on paper left gaps of six to ten pixels
-# between figures three to eight pixels wide. The gaps were wider than
-# the people, which is not what a team standing together looks like.
-# scripts/measure_connect_formation.py renders the formation, hides
-# the road and the boards, and reports the gaps that are actually
-# there; these numbers come back from it, and any change to a pose,
-# a size or the formation needs it run again.
+# That last one is negative: it takes his left at every stop, so he never
+# has his back to the model. Coming home from GCP he is already facing
+# left, so it costs him no turn at all.
+MODEL = ("f1", 15.0, 19.0, 0.48, 0.8, -5.4)
+
+# The ones that stay. name, height, x, how far back it stands, which way
+# it faces, and how often it stirs.
 #
-# The three that take his left are the three nearest the front. They come
-# home from GCP strung out to his right, so anyone bound for his left has
-# to get past him -- and the way they do it is simply to keep walking
-# after he stops, which is both the shortest path and the only one that
-# needs no explaining. Give that walk to the tail instead and the
-# smallest robots have to cover 90px in the time he covers none.
-FOLLOWERS = [
-    #  name  back  height  step   hop  stand   back-step
-    ("f1", 15.0, 19.0, 0.48, 0.8,  -5.4,  0.0),   # the model he works with
-    ("f2", 26.0, 13.0, 0.40, 1.4, -10.1, -2.0),   # and the five agents it runs
-    ("f3", 34.0, 12.0, 0.36, 2.0, -15.2, -4.0),
-    ("f4", 42.0, 11.0, 0.34, 2.6,  14.1,  0.0),
-    ("f5", 50.0, 10.0, 0.32, 3.2,  20.0, -2.0),
-    ("f6", 58.0,  9.5, 0.30, 3.8,  25.6, -4.0),
+# Every one of them stands just to the RIGHT of the board it belongs to,
+# and the model always takes his left, so at each stop the three of them
+# line up the same way: model, him, the agent who lives there. The first
+# version put the Azure outpost out past its board on the far side and it
+# read as stranded rather than posted -- fifteen pixels clear of the only
+# thing that said which cloud it was standing in.
+#
+# It also means the AWS crew is a crew: three together to the right of
+# the board, rather than two of them with a gap between where his own
+# place is. An empty slot in a group of five reads as somebody missing.
+#
+# The x values come from scripts/measure_connect_formation.py, which
+# reports the gaps that are actually rendered. Box edges lie about this:
+# a figure's SVG box is much wider than the figure in it -- his is 17px
+# around 8px of ink -- so offsets that look tight on paper leave gaps
+# wider than the robots standing in them.
+STATIONS = [
+    #  name  height   x              back  faces  stirs
+    ("f2", 11.0, AZURE + 14.0,  0.0,  -1,  3.1),   # the Azure outpost
+    ("f3", 11.0, GCP + 14.0,    0.0,  -1,  3.7),   # the GCP outpost
+    ("f4", 12.0, AWS + 14.1,    0.0,  -1,  3.4),   # and the AWS crew
+    ("f5", 11.0, AWS + 20.0,    0.0,  -1,  4.0),
+    ("f6", 10.0, AWS + 25.6,   -2.5,  -1,  4.6),
 ]
 
 
 def follow(back, hud, dt=0.05):
-    """Walk the follower through the loop instead of placing it.
+    """Walk the model through the loop instead of placing it.
 
     Hand-written keyframes kept producing the same two faults, because
     both are what you get from saying where something should BE without
-    asking whether it could have got there. Six figures given the same
-    arrival time converge into a heap; a small robot told to be on the
-    far side of the group in three seconds sprints at twice the pace its
-    legs are animating at.
+    asking whether it could have got there: a figure given an arrival
+    time it cannot reach sprints at twice the pace its legs animate at,
+    and several given the same one converge into a heap.
 
-    So this is a pursuit instead. A follower wants to be `back` behind
-    him on whichever side is behind, it moves at VMAX and no faster, and
-    where it ends up is wherever that leaves it. Falling in, the way the
-    chain reflects off each turn one robot at a time, and the order the
-    formation assembles in are all consequences of those two rules
-    rather than timings chosen by hand -- and none of them can ask a
-    figure for a speed it does not have.
+    So this is a pursuit. It wants to be `back` behind him on whichever
+    side is behind while he walks, and beside him at `hud` while he
+    stands; it moves at VMAX and no faster; and where it ends up is
+    wherever that leaves it. The crossing it does at Azure -- he arrives
+    walking left, so the model is on his right, and its place is on his
+    left -- falls out of those two rules rather than being timed by hand.
 
-    Closing the loop needs no second pass: the last third pins everyone
-    to their formation place, so t=100 always lands where t=0 starts.
+    Closing the loop needs no second pass: the last stop pins it beside
+    him, so t=100 always lands where t=0 starts.
     """
     p, side, path = AWS + hud, 1.0, []
     for k in range(int(100.0 / dt) + 1):
@@ -105,7 +130,7 @@ def follow(back, hud, dt=0.05):
             side = 1.0          # he is heading left, so behind him is right
         elif ahead > behind + 1e-9:
             side = -1.0
-        target = (AWS + hud) if t >= HOME_2 else man_at(t) + back * side
+        target = man_at(t) + (hud if resting(t) else back * side)
         p += max(-VMAX * dt, min(VMAX * dt, target - p))
         path.append((t, p))
     return path
@@ -138,29 +163,17 @@ def _simplify(path, tol=0.4):
     return [path[i] for i in sorted(keep)]
 
 
-def arrival(path, hud):
-    """When it last settles into its place in the formation."""
-    home = AWS + hud
-    for t, p in reversed(path):
-        if abs(p - home) > 0.5:
-            return min(t + 0.5, 100.0)
-    return HOME_2
-
-
 def moving(path, eps=0.02, knit=1.0):
-    """The stretches of the loop this follower is actually walking.
+    """The stretches of the loop the model is actually walking.
 
-    A figure only steps while it is going somewhere. Every one of them
-    used to run its walk cycle for the whole 26s regardless, so the team
-    that stops at AWS to work stopped by marching on the spot -- which
-    reads as a treadmill and undoes the one thing the stop exists to
-    say. The simulation already knows who is moving and when, including
-    the beats where a follower is still walking after he has halted, so
-    the windows come from it rather than from the man's timeline.
+    A figure only steps while it is going somewhere. Every robot used to
+    run its walk cycle for the whole 26s regardless, so one that stopped
+    stopped by marching on the spot -- a treadmill, which undoes the one
+    thing a stop exists to say.
 
-    Gaps shorter than `knit` are knitted up: a follower crawling through
-    a turn dips under the threshold for a twentieth of a second at a
-    time, and honouring every one of those would emit sixty keyframes to
+    Gaps shorter than `knit` are knitted up: crawling the last pixel into
+    place dips under the threshold for a twentieth of a second at a time,
+    and honouring every one of those would emit sixty keyframes to
     describe a pause nobody can see.
     """
     spans, run = [], None
@@ -181,18 +194,25 @@ def moving(path, eps=0.02, knit=1.0):
     return [(a, b) for a, b in out if b - a > 0.3]
 
 
-def gait(name, spans):
-    """One pose group on while it walks, the other on while it stands.
+def _frames(name, kind, keys, fmt):
+    out = ["@keyframes %s-%s {" % (kind, name)]
+    for pct, val in keys:
+        out.append("  %.2f%% { transform: %s; }" % (pct, fmt % val))
+    out.append("}")
+    return chr(10).join(out)
 
-    steps(1) and stops that tile exactly, for the reason written up over
-    showwalk in make_connect_road.py: adjacent keyframe stops still
+
+def gait(name, spans):
+    """Walking pose on while it walks, standing pose on while it stands.
+
+    steps(1) and windows that tile exactly, for the reason written up
+    over showwalk in make_connect_road.py: adjacent keyframe stops still
     interpolate across the gap between them, and interpolating between
-    two silhouettes is how the figure ends up part-drawn.
+    two silhouettes is how a figure ends up part-drawn.
     """
     marks = [(0.0, False)]
     for a, b in spans:
-        marks.append((a, True))
-        marks.append((b, False))
+        marks += [(a, True), (b, False)]
     out = []
     for kind, walking in (("showwalk", True), ("showstand", False)):
         rows = ["@keyframes %s-%s {" % (kind, name)]
@@ -205,151 +225,150 @@ def gait(name, spans):
     return chr(10).join(out)
 
 
-def _frames(name, kind, keys, fmt):
-    out = ["@keyframes %s-%s {" % (kind, name)]
-    for pct, val in keys:
-        out.append("  %.2f%% { transform: %s; }" % (pct, fmt % val))
-    out.append("}")
-    return "\n".join(out)
-
-
-def track(name, path):
-    return _frames(name, "trek", _simplify(path), "translateX(%.1fpx)")
-
-
-def hop(name, delay, lift, settled):
-    """Up after him, not with him -- the line catches the jump one by one.
-
-    It carries the formation's depth as well, because transform is one
-    property and this is the one already on the element: a follower that
-    stands a row back is drawn a couple of pixels higher, the way
-    anything further away sits higher in a frame. The jump has to return
-    to that height rather than to zero, or the back row lands in the
-    front row's lap.
-    """
-    a = JUMP + delay
-    return _frames(name, "hop", [
-        (0.0, lift), (2.0, lift),          # still in formation
-        (8.0, 0.0), (HOME_2, 0.0),         # down on the road with everyone
-        (settled, lift),                   # stepped back into its row
-        (a, lift), (a + 1.5, lift - 5.0), (a + 3.0, lift), (100.0, lift),
-    ], "translateY(%.1fpx)")
-
-
-def face(name, path, hud, settled):
+def face(name, path, hud):
     """Facing the way it is actually walking, read off the simulation.
 
-    By hand this was wrong twice, because a follower's turns do not
-    happen where his do: it keeps walking toward Azure for a moment after
-    he has turned round and started back, which is the whole reason the
-    chain reflects off each end instead of pivoting on the spot. The
-    velocity already knows. Once it is parked, it faces him.
+    By hand this was wrong twice, because the model's turns do not happen
+    where his do: it keeps walking toward Azure for a moment after he has
+    turned round, which is the whole reason it swings in behind him
+    rather than pivoting with him. The velocity already knows. Once it is
+    parked for the last time, it faces him.
     """
     look = 1 if hud < 0 else -1
     keys, last = [], None
     for (t0, p0), (t1, p1) in zip(path, path[1:]):
-        if t1 > settled:
-            break
         if abs(p1 - p0) < 1e-6:
             continue
         d = -1 if p1 < p0 else 1
         if d != last:
             keys.append((t0, d))
             last = d
-    keys.append((settled, look))
+    keys.append((99.5, look))
     out = ["@keyframes face-%s {" % name]
     for i, (t, d) in enumerate(keys):
         nxt = keys[i + 1][0] if i + 1 < len(keys) else 100.0
         out.append("  %.2f%%, %.2f%% { transform: scaleX(%d); }"
                    % (t, max(t, nxt - 0.01), d))
     out.append("}")
-    return "\n".join(out)
+    return chr(10).join(out)
+
+
+def hop(name, delay):
+    """Up after him -- the model catches the jump a beat late."""
+    a = JUMP + delay
+    return _frames(name, "hop", [
+        (0.0, 0.0), (a, 0.0), (a + 1.5, -5.0), (a + 3.0, 0.0), (100.0, 0.0),
+    ], "translateY(%.1fpx)")
+
+
+def stir(name, lift):
+    """A posted robot is working, not frozen.
+
+    Standing perfectly still for twenty-six seconds reads as a prop. One
+    small dip, on its own clock rather than the loop's, is enough to say
+    somebody is home -- and because the five periods are all different
+    and none of them divides 26, they never fall into step and start
+    looking choreographed.
+
+    It carries the depth offset too, because transform is one property
+    and this is the one already on the element: a robot standing a row
+    back is drawn a couple of pixels higher, the way anything further
+    away sits higher in a frame.
+    """
+    return _frames(name, "stir", [
+        (0.0, lift), (54.0, lift), (62.0, lift - 1.6),
+        (70.0, lift), (100.0, lift),
+    ], "translateY(%.1fpx)")
 
 
 def css():
     out = []
-    for i, (name, back, h, step, delay, hud, lift) in enumerate(FOLLOWERS):
+
+    # --- the one that travels ----------------------------------------
+    name, back, h, step, delay, hud = MODEL
+    w = round(h * 11.0 / 19.0, 1)
+    path = follow(back, hud)
+    out.append(".%s { top: %.0fpx; width: %.1fpx; z-index: 3; }"
+               % (name, GROUND - h, w))
+    out.append(".%s .bot { width: %.1fpx; height: %.1fpx; }" % (name, w, h))
+    out.append("@media (prefers-reduced-motion: no-preference) {")
+    out.append("  .%s { animation: trek-%s 26s linear infinite; }" % (name, name))
+    out.append("  .%s > span { animation: hop-%s 26s ease-out infinite; }"
+               % (name, name))
+    out.append("  .%s .bot { animation: face-%s 26s steps(1) infinite; }"
+               % (name, name))
+    out.append("  .%s .rcyc { animation: showwalk-%s 26s steps(1) infinite; }"
+               % (name, name))
+    out.append("  .%s .rstand { animation: showstand-%s 26s steps(1) infinite; }"
+               % (name, name))
+    # The four poses are held by four delays a quarter of a cycle apart,
+    # and the selector reaches the POSES, not the groups they sit in. One
+    # level too high and the duration lands on the 26s gait window and
+    # re-times it to half a second.
+    out.append("  .%s .bot .rcyc > g { animation-duration: %.3fs; }" % (name, step))
+    for k in range(4):
+        out.append("  .%s .bot .rcyc .r%d { animation-delay: %.3fs; }"
+                   % (name, k, step * k / 4.0))
+    out.append("}")
+    out.append("@media (prefers-reduced-motion: reduce) {")
+    out.append("  .%s { transform: translateX(%.1fpx); }" % (name, AWS + hud))
+    out.append("}")
+    out.append(_frames(name, "trek", _simplify(path), "translateX(%.1fpx)"))
+    out.append(hop(name, delay))
+    out.append(face(name, path, hud))
+    out.append(gait(name, moving(path)))
+
+    # --- the ones that stay ------------------------------------------
+    for name, h, x, lift, look, period in STATIONS:
         w = round(h * 11.0 / 19.0, 1)
-        path = follow(back, hud)
-        settled = arrival(path, hud)
-        # Every foot on the same line. They were landing on 33 and the man
-        # on 44 -- eleven pixels apart, one lot on the top edge of the
-        # road and him on the bottom, which is what "not natural" was.
-        # Stacked by which row of the formation it stands in, not by
-        # its place in the line. Indexed by position it paired a back-row
-        # robot with a front-row one, so the one standing further away
-        # was drawn in front of the one standing nearer.
-        out.append(".%s { top: %.0fpx; width: %.1fpx; z-index: %d; }"
-                   % (name, GROUND - h, w, 3 + int(round(lift / 2.0))))
-        out.append(".%s .bot { width: %.1fpx; height: %.1fpx; }" % (name, w, h))
+        out.append(".%s { top: %.0fpx; width: %.1fpx; z-index: %d;"
+                   " transform: translateX(%.1fpx); }"
+                   % (name, GROUND - h, w, 3 + int(round(lift / 2.0)), x))
+        out.append(".%s .bot { width: %.1fpx; height: %.1fpx;"
+                   " transform: scaleX(%d); }" % (name, w, h, look))
+        # Posted, so: never the walk cycle, always the standing pose.
+        # Written flat rather than as a 26s window, because there is no
+        # window -- it does not walk at any point of the loop.
+        out.append(".%s .rcyc { opacity: 0; }" % name)
+        out.append(".%s .rstand { opacity: 1; }" % name)
         out.append("@media (prefers-reduced-motion: no-preference) {")
-        out.append("  .%s { animation: trek-%s 26s linear infinite; }" % (name, name))
-        out.append("  .%s > span { animation: hop-%s 26s ease-out infinite; }"
-                   % (name, name))
-        out.append("  .%s .bot { animation: face-%s 26s steps(1) infinite; }"
-                   % (name, name))
-        out.append("  .%s .rcyc { animation: showwalk-%s 26s steps(1) infinite; }"
-                   % (name, name))
-        out.append("  .%s .rstand { animation: showstand-%s 26s steps(1) infinite; }"
-                   % (name, name))
-        # The four poses are held by four delays a quarter of a cycle
-        # apart. Change the duration and keep the delays and they no
-        # longer divide it -- at some instants two poses show, at others
-        # NONE, and the follower vanishes while still animating. Both
-        # have to scale together.
-        # .rcyc > g, NOT .bot > g. The poses gained a wrapper when the
-        # standing frame arrived, and a duration aimed one level too high
-        # lands on the groups -- which re-timed the 26s walk/stand window
-        # to 0.4s, so a robot's gait flickered four times a second and it
-        # never once stood still. It also left these delays sized for a
-        # duration the poses no longer had, which is the old vanishing
-        # bug all over again.
-        out.append("  .%s .bot .rcyc > g { animation-duration: %.3fs; }"
-                   % (name, step))
-        for k in range(4):
-            out.append("  .%s .bot .rcyc .r%d { animation-delay: %.3fs; }"
-                       % (name, k, step * k / 4.0))
+        out.append("  .%s > span { animation: stir-%s %.1fs ease-in-out"
+                   " infinite; }" % (name, name, period))
         out.append("}")
         out.append("@media (prefers-reduced-motion: reduce) {")
-        out.append("  .%s { transform: translateX(%.1fpx); }" % (name, AWS + hud))
+        out.append("  .%s > span { transform: translateY(%.1fpx); }"
+                   % (name, lift))
         out.append("}")
-        out.append(track(name, path))
-        out.append(hop(name, delay, lift, settled))
-        out.append(face(name, path, hud, settled))
-        out.append(gait(name, moving(path)))
-    return "\n".join(out)
+        out.append(stir(name, lift))
+    return chr(10).join(out)
 
 
 def markup(sprite):
     return "\n      ".join(
         '<div class="follow %s">%s<span>%s</span></div>'
-        % (f[0], puff_markup(f[0]), sprite)
-        for f in FOLLOWERS)
+        % (n, puff_markup(n), sprite)
+        for n in [MODEL[0]] + [s[0] for s in STATIONS])
 
 
 # What each one puffs out and lets go of ----------------------------------
 #
-# The model names rise off the big robot, the tool names off the small ones.
-# One at a time across the whole chain, each visible for about a second --
-# four per cent of the cycle. Any more and it is a tag cloud walking down
-# a road.
-#
-# Back above the robots, where they belong. They were moved under the
-# road when the gantries took that air; the answer was to make the
-# boards shorter rather than to put the names somewhere they made no
-# sense. The rise is 3px, which is what the gap allows.
+# The model breathes out MODELS, because which one he is working in
+# changes week to week; the posted agents breathe out the thing that
+# actually runs where they stand. Where an agent belongs to a cloud it is
+# posted at that cloud -- Copilot at Azure, Antigravity at GCP, Kiro and
+# Bedrock Agents at AWS -- so the arrangement is not decoration. It is
+# where the work happens.
 #
 # This is Jayanth's own stack, not a chart of what is popular. The first
 # version listed sixteen names picked on general prominence -- Cursor,
 # Devin, Windsurf, Llama, Mistral -- and a contact card naming tools you
-# do not use is a claim you have to defend to anyone who asks. Three you
-# can talk about beat sixteen you cannot.
+# do not use is a claim you have to defend to anyone who asks.
 PUFFS = [
     ("f1", ["Claude", "ChatGPT", "Gemini", "Grok", "DeepSeek"]),
-    ("f2", ["Claude Code", "Codex"]),
-    ("f3", ["Kiro", "Antigravity"]),
-    ("f4", ["Copilot"]),
-    ("f5", ["Bedrock Agents"]),
+    ("f2", ["Copilot"]),
+    ("f3", ["Antigravity"]),
+    ("f4", ["Kiro", "Claude Code"]),
+    ("f5", ["Bedrock Agents", "Codex"]),
     ("f6", ["Grok bot"]),
 ]
 PUFF_CYCLE = 42.0          # not a multiple of the 26s walk, so the two
@@ -388,7 +407,7 @@ def puff_css():
                        % (name, i + 1, PUFF_CYCLE, 1.5 + slot * step))
             slot += 1
     out.append("}")
-    return "\n".join(out)
+    return chr(10).join(out)
 
 
 def puff_markup(name):

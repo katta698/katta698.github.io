@@ -148,37 +148,14 @@ BASE = """
   .wstand > g, .bot .rstand > g { display: inline; }
   .wcyc, .wcheer, .bot .rcyc { display: none; }
 }
-/* One round trip, then the team stands at AWS and works ---------------
-   Out to Azure and straight back, out to GCP and straight back, then
-   eight seconds at AWS -- three of them the six of them filing in around
-   him, and five stood in formation. The two clouds he only reaches and
-   turns at; AWS is the only place anybody stops, and the length of that
-   stop is the whole point of the picture. Both legs are the same length,
-   Azure being 73px off and GCP 74, so neither reads as further away than
-   it is. The followers are not written here: they run a pursuit against
-   this timeline in make_connect_chain.py, which is why they reflect off
-   each turn one at a time instead of pivoting together. */
-@keyframes trek {
-  0% { transform: translateX(112px); }    15% { transform: translateX(39px); }
-  18% { transform: translateX(39px); }    33% { transform: translateX(112px); }
-  36% { transform: translateX(112px); }   51% { transform: translateX(186px); }
-  54% { transform: translateX(186px); }   69%, 100% { transform: translateX(112px); }
-}
-/* The jump waits for the formation. He is home at 69% but the tail is
-   still walking in until 81%, and a leader celebrating alone while his
-   team is still arriving is not the picture -- they all go up together,
-   him first and the rest in a wave behind him. */
-@keyframes hop {
-  0%, 86.5% { transform: translateY(0); }  88% { transform: translateY(-9px); }
-  89.5%, 100% { transform: translateY(0); }
-}
-/* He never turns his back on the model. Coming home from GCP he is
-   already facing left, which is the side f1 takes in the formation, so
-   the huddle asks no turn of him at all -- and left is also the way he
-   sets off for Azure on the next loop. */
-@keyframes face { 0%, 17% { transform: scaleX(-1); }
-                  18%, 53% { transform: scaleX(1); }
-                  54%, 100% { transform: scaleX(-1); } }
+/* One round trip, and a crew that was already there -------------------
+   Out to Azure and back, out to GCP and back, then the rest of the loop
+   at AWS. Only he and the model walk it: the five agents are posted,
+   one at Azure, one at GCP and three at AWS, and they are working
+   whether he is stood beside them or not. His trek, his jump and his
+   facing are all generated from the timeline in make_connect_chain.py
+   rather than typed here, because the model's pursuit is written
+   against that same timeline and two copies of it would drift. */
 /* Why there are three jump poses and no cross-fade.
    Two earlier goes at this both failed, and both failed for the same
    reason: the figure changed silhouette faster than a body can. First
@@ -199,10 +176,6 @@ BASE = """
    is now between neighbouring poses and every one of them is a hard
    cut -- nothing is ever partly transparent. */
 /* Gather, and land. Bracketing the airborne pose on both sides. */
-@keyframes showcrouch { 0%, 86.5% { opacity: 1; } 86.6%, 89.4% { opacity: 0; }
-                        89.5%, 100% { opacity: 1; } }
-@keyframes showair { 0%, 86.5% { opacity: 0; } 86.6%, 89.4% { opacity: 1; }
-                     89.5%, 100% { opacity: 0; } }
 @keyframes cyc { 0%, 12.4% { opacity: 1; } 12.5%, 100% { opacity: 0; } }
 @keyframes rcyc { 0%, 24.9% { opacity: 1; } 25%, 100% { opacity: 0; } }
 /* filter, not box-shadow: a box-shadow ring is the shape of the BOX, and
@@ -231,11 +204,60 @@ MARKUP = """    <div class="road">
 # typed, because it moved once already -- the round trip turned one stop
 # into four -- and four hand-written windows that have to tile exactly is
 # four chances to leave a gap nothing would report.
-MAN_JUMP = (85.5, 90.5)
+MAN_JUMP = (C.JUMP - 1.0, C.JUMP + 4.0)
 MAN_GAIT = ([(0.0, "walk"), (C.AT_AZ, "stand"), (C.OFF_AZ, "walk"),
              (C.HOME_1, "stand"), (C.OFF_HOME, "walk"),
              (C.AT_GCP, "stand"), (C.OFF_GCP, "walk"),
              (C.HOME_2, "stand"), (MAN_JUMP[0], "jump"), (MAN_JUMP[1], "stand")])
+
+
+def man_css():
+    """His walk, his jump and which way he is facing, from the timeline.
+
+    All three were typed out by hand and all three had to be retyped
+    every time the loop changed -- which it has done three times, and the
+    third time the jump was left measuring a stretch of empty road.
+    """
+    out = ["@keyframes trek {"]
+    for pct, x in C.STOPS:
+        out.append("  %.2f%% { transform: translateX(%.0fpx); }" % (pct, x))
+    out.append("}")
+
+    # He is home at HOME_2 but the model is still walking in, and a man
+    # celebrating on his own while his companion is still arriving is not
+    # the picture. They go up together, him first.
+    lift, land = MAN_JUMP[0] + 1.0, MAN_JUMP[1] - 1.0
+    out += ["@keyframes hop {",
+            "  0%%, %.2f%% { transform: translateY(0); }" % lift,
+            "  %.2f%% { transform: translateY(-9px); }" % ((lift + land) / 2.0),
+            "  %.2f%%, 100%% { transform: translateY(0); }" % land,
+            "}"]
+
+    # He never turns his back on the model, which takes his left at every
+    # stop. Coming home from GCP he is already facing left, so the last
+    # stop asks no turn of him at all -- and left is also the way he sets
+    # off for Azure on the next loop.
+    out += ["@keyframes face {",
+            "  0%%, %.2f%% { transform: scaleX(-1); }" % (C.OFF_AZ - 0.01),
+            "  %.2f%%, %.2f%% { transform: scaleX(1); }"
+            % (C.OFF_AZ, C.OFF_GCP - 0.01),
+            "  %.2f%%, 100%% { transform: scaleX(-1); }" % C.OFF_GCP,
+            "}"]
+    # Gather, leave, land, gather. The crouch brackets the airborne pose
+    # on both sides so every change of silhouette is between neighbours
+    # -- see the note above showwalk for why that matters and what the
+    # two wrong answers were.
+    out += ["@keyframes showcrouch {",
+            "  0%%, %.2f%% { opacity: 1; }" % lift,
+            "  %.2f%%, %.2f%% { opacity: 0; }" % (lift + 0.01, land - 0.01),
+            "  %.2f%%, 100%% { opacity: 1; }" % land,
+            "}",
+            "@keyframes showair {",
+            "  0%%, %.2f%% { opacity: 0; }" % lift,
+            "  %.2f%%, %.2f%% { opacity: 1; }" % (lift + 0.01, land - 0.01),
+            "  %.2f%%, 100%% { opacity: 0; }" % land,
+            "}"]
+    return chr(10).join(out)
 
 
 def gait_css():
@@ -253,7 +275,7 @@ def gait_css():
 
 
 def css():
-    return (BASE + chr(10) + gait_css() + chr(10) + C.css() + chr(10)
+    return (BASE + chr(10) + man_css() + chr(10) + gait_css() + chr(10) + C.css() + chr(10)
             + C.puff_css() + chr(10))
 
 
