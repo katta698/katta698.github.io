@@ -108,15 +108,16 @@ def markup(sprite):
 # The big robot is the model, so it breathes out MODELS. The three small
 # ones are agents, so they breathe out the things that run on top.
 #
-# Worth saying plainly: this is prominence as of a knowledge cutoff, not a
-# measured ranking of worldwide use -- nobody publishes that. It is also
-# the part of the card that dates fastest, so it is one list in one file.
+# This is Jayanth's own stack, not a chart of what is popular. The first
+# version listed sixteen names picked on general prominence -- Cursor,
+# Devin, Windsurf, Llama, Mistral -- and a contact card naming tools you
+# do not use is a claim you have to defend to anyone who asks. Three you
+# can talk about beat sixteen you cannot.
 PUFFS = [
-    ("f1", ["Claude", "ChatGPT", "Gemini", "Grok",
-            "Llama", "DeepSeek", "Mistral"]),
-    ("f2", ["Claude Code", "Codex", "Cursor"]),
-    ("f3", ["Copilot", "Kiro", "Antigravity"]),
-    ("f4", ["Devin", "Windsurf", "Amazon Q"]),
+    ("f1", ["Claude", "ChatGPT", "Gemini", "Grok", "DeepSeek"]),
+    ("f2", ["Claude Code", "Codex"]),
+    ("f3", ["Kiro", "Antigravity"]),
+    ("f4", ["Copilot", "Bedrock Agents"]),
 ]
 PUFF_CYCLE = 42.0          # not a multiple of the 26s walk, so the two
                            # never fall into step and start looking canned
