@@ -117,7 +117,7 @@ PUFFS = [
     ("f1", ["Claude", "ChatGPT", "Gemini", "Grok", "DeepSeek"]),
     ("f2", ["Claude Code", "Codex"]),
     ("f3", ["Kiro", "Antigravity"]),
-    ("f4", ["Copilot", "Bedrock Agents"]),
+    ("f4", ["Copilot", "Bedrock Agents", "Grok bot"]),
 ]
 PUFF_CYCLE = 42.0          # not a multiple of the 26s walk, so the two
                            # never fall into step and start looking canned
