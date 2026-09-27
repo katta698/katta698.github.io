@@ -1,0 +1,584 @@
+---
+title: 'Week 6 — Billing Export on Google Cloud: The Data Was Already There'
+date: '2026-09-27T12:30:00'
+labels:
+- GCP
+- Terraform
+- GCP Weekly Lab
+slug: week-06-billing-export
+verified: '2026-09-27'
+verified_claims:
+  - claim: "Budget notification delivery can fail when organization policies limit resource sharing by domain, and the remedy is to remove or override the domain restriction constraint for the project containing the Pub/Sub topic"
+    source: https://docs.cloud.google.com/billing/docs/how-to/notify
+  - claim: "The detailed usage cost export includes all of the data fields from the standard usage cost table, along with additional fields that provide resource-level cost data"
+    source: https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables
+  - claim: "Pricing data is exported to BigQuery once each day, may take up to 48 hours to first appear, and is not added retroactively"
+    source: https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables
+  - claim: "iam.allowedPolicyMemberDomains is a list constraint defining the Google Workspace customer IDs and principal sets whose principals can be added to IAM policies, and all other domains are blocked"
+    source: https://docs.cloud.google.com/resource-manager/docs/organization-policy/restricting-domains
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Platform Engineering Lab &middot; Week 6 of 58</div>
+  <div class="post-title">The data was already there</div>
+  <div class="post-subtitle">This week was supposed to build the thing that proves what the lab costs. It turned out that thing had been running since July, into a dataset nobody had queried, and half the week's Terraform was deleted before it created anything. What remained produced a better result: a four-word error with no resource, no permission and no policy named &mdash; whose cause was a guardrail I built myself three weeks ago.</div>
+  <div class="post-meta">
+    <span>27 September 2026</span>
+    <span>Cloud Billing &middot; BigQuery &middot; Pub/Sub &middot; Organization Policy</span>
+    <span>$0.006 &middot; and for once that is measured</span>
+  </div>
+</div>
+
+<div class="toc">
+  <h3>&#128203; In This Post</h3>
+  <ol>
+    <li><a href="#why">Why — The Problem This Solves</a></li>
+    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
+    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
+    <li><a href="#build">How We Built It — Step by Step</a></li>
+    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
+    <li><a href="#security">Security — Controls at Every Layer</a></li>
+    <li><a href="#cost">Cost</a></li>
+    <li><a href="#cleanup">Cleanup</a></li>
+    <li><a href="#references">References</a></li>
+    <li><a href="#takeaways">Key Takeaways</a></li>
+  </ol>
+</div>
+
+<div class="section" id="why">
+<h2>Why — The Problem This Solves</h2>
+
+<p>Every week of this lab opens with a cost note, and five of them have claimed
+<strong>$0</strong>. Asked to prove one of those figures, the only answer
+available was to open the billing console and read a summary off the screen.</p>
+
+<p>That is not evidence. It is a number I looked at once. A lab that makes a
+cost claim in writing every week and cannot query any of them is running on
+trust, and the whole point of the exercise is to stop doing that.</p>
+
+<p>So the plan was to build the queryable source: export billing data to
+BigQuery, put a budget on it, and wire the budget to something a machine can
+read rather than something a person has to notice in an inbox.</p>
+
+<p><strong>The plan was wrong about the premise.</strong> The source already
+existed. It had been running since 1 July, into a dataset in the seed project,
+and in eleven weeks nobody &mdash; me &mdash; had ever pointed a query at it.
+The gap was never missing infrastructure. It was an absent question.</p>
+
+<p>That discovery is worth more than the week's original deliverable, and it
+changed what the week built: less Terraform, not more.</p>
+</div>
+
+<div class="section" id="skills">
+<h2>What You Need to Know — Skills &amp; Tools</h2>
+
+<p><strong>A billing account is not in the resource hierarchy.</strong> This is
+the fact everything else this week follows from. Projects live in folders, which
+live in an organization. A billing account sits outside all of it, owned by no
+project, linked to many. That is why its IAM is not Terraform-managed here, why
+the Budgets API needs a quota project explicitly nominated, and why the export
+has no natural home in the hierarchy at all.</p>
+
+<p><strong>Cloud Billing export to BigQuery is console-only.</strong> No gcloud
+command, no Terraform resource, no public REST endpoint &mdash;
+<code>/v1/billingAccounts/{id}/exportSettings</code> returns 404. Confirmed
+against the provider's own schema, which lists nine <code>google_billing_*</code>
+resources and no export among them, and against Google's own billing-dashboard
+module, which creates the datasets and then instructs the operator to link them
+by hand.</p>
+
+<p><strong>There are several exports and they are not alternatives.</strong>
+Standard usage cost, detailed usage cost, pricing, FOCUS, and committed use
+discounts. The important relationship: detailed is a strict <em>superset</em> of
+standard &mdash; same fields plus resource-level cost. Pricing is a different
+thing entirely; it answers what a SKU costs rather than what was spent.</p>
+
+<p><strong>A budget is an alert, not a brake.</strong> Spend caps shipped in
+Preview on 27 July 2026 and do genuinely pause services, but only for the Gemini
+API, the Gemini Enterprise Agent Platform, Cloud Run and Cloud Run functions.
+For Compute Engine, Cloud Storage and BigQuery a budget notifies and Google
+keeps billing past it.</p>
+
+<p><strong>Budgets publish to Pub/Sub several times a day</strong>, carrying
+current spend against the budget &mdash; not only when a threshold is crossed.
+Email fires on breach; the topic is a cost feed. That difference is the reason
+to bother with a topic at all.</p>
+</div>
+
+<div class="section" id="architecture">
+<h2>Architecture — How It Fits Together</h2>
+
+<pre><code>billing account  (outside the hierarchy, owned by no project)
+│
+├── detailed usage cost export ──────► seed project
+│     running since 2026-07-01              billing_export
+│     console-only link                     gcp_billing_export_resource_v1_*
+│
+├── pricing export ─────────────────► logging project
+│     linked 2026-09-27                     billing_pricing
+│
+└── budget "GCP lab guardrail - programmatic"   $25/month
+      thresholds 50% · 90% · 100% actual · 100% forecast
+      │
+      └── Pub/Sub topic ───────────► logging project
+            billing-budget-notifications
+            publisher: billing-budget-alert@system.gserviceaccount.com
+                       (added by Cloud Billing, not by this configuration)</code></pre>
+
+<p>Two things in that diagram are deliberate and look like mistakes.</p>
+
+<p><strong>The two exports live in different projects.</strong> Consolidating
+them would be tidier and would have cost July and August: re-pointing an export
+does not move its history, the old table simply stops receiving rows, and a new
+dataset backfills at most the previous month. The detailed export stays where it
+already was.</p>
+
+<p><strong>Nothing subscribes to the topic.</strong> A subscriber is a decision
+about what should <em>happen</em> to spend, and inventing one before there is any
+spend to react to is building a mechanism for an unobserved problem.</p>
+</div>
+
+<div class="section" id="build">
+<h2>How We Built It — Step by Step</h2>
+
+<h3>1. Read the live state before believing the plan</h3>
+
+<p>The week's own configuration file opened with a comment explaining that the
+lab had no queryable cost source. Before writing anything further, I listed the
+datasets that actually existed.</p>
+
+<pre><code>$ bq ls --project_id=&lt;seed project&gt;
+    datasetId
+ ----------------
+  billing_export</code></pre>
+
+<p>A dataset I had not created, in a project this week was not going to touch,
+holding a table named <code>gcp_billing_export_resource_v1_*</code> &mdash; the
+detailed export's own naming. It had been filling since 1 July.</p>
+
+<h3>2. Ask the question nobody had asked</h3>
+
+<p>One query against a table that had existed for three months:</p>
+
+<pre><code>SELECT COUNT(*) AS rows_,
+       MIN(DATE(usage_start_time)) AS first_day,
+       MAX(DATE(usage_start_time)) AS last_day,
+       ROUND(SUM(cost), 4)          AS total_cost,
+       COUNT(DISTINCT project.id)   AS projects
+FROM `&lt;seed&gt;.billing_export.gcp_billing_export_resource_v1_*`
+
++-------+------------+------------+------------+----------+
+| rows_ | first_day  |  last_day  | total_cost | projects |
++-------+------------+------------+------------+----------+
+|  2412 | 2026-07-01 | 2026-09-27 |      0.006 |        5 |
++-------+------------+------------+------------+----------+</code></pre>
+
+<p>Every previous week's <strong>$0</strong> was true, and had been provable for
+three months. Six tenths of a cent across five projects and a quarter of a year.</p>
+
+<p>I want to be precise about what was actually wrong here, because "we already
+had the data" sounds like a small filing error. It is not. The lab had been
+publishing unverifiable numbers while holding the verification in a table one
+query away. <strong>Infrastructure that nobody queries is indistinguishable from
+infrastructure that does not exist</strong>, and it is worse, because it bills.</p>
+
+<h3>3. Delete half the week</h3>
+
+<p>The configuration at this point created two datasets: one for the standard
+export and one for pricing. Google's own table reference settles what that first
+one would have been worth &mdash; the detailed export "includes all of the data
+fields from the standard usage cost table, along with additional fields that
+provide resource-level cost data".</p>
+
+<p>So with a detailed export already running, a standard export stores a strict
+subset of data the account is already keeping, in a second dataset, billed
+again. <strong>The correct number of standard exports to run alongside a detailed
+one is zero.</strong> The dataset was removed from the configuration before it
+ever received a row.</p>
+
+<p>Pricing survived the cut because it is genuinely additive: it describes what a
+SKU <em>costs</em>, not what was spent, which is a question the usage export
+cannot answer at all.</p>
+
+<h3>4. The apply, and then the part that would not apply</h3>
+
+<p>Everything from here was produced by a Terraform run executing remotely in HCP
+Terraform, authenticating to Google Cloud through Workload Identity Federation.
+No service account key exists, and no Google credential is present on the machine
+that starts the run. Every console screenshot below is evidence of what a run
+produced, never a thing that was clicked.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-06-billing-export/docs/blog/screenshots/04-hcp-apply.png"
+       alt="HCP Terraform run list for the Week 6 workspace showing an applied run and several errored runs above it"/>
+  <figcaption>The run that worked, and the seven that did not. Those failures are
+  the next two sections &mdash; they are not noise, they are the week.</figcaption>
+</figure>
+
+<p>The datasets, the topic and the budget all created cleanly. Attaching the
+topic <em>to</em> the budget did not:</p>
+
+<pre><code>Error 400: Precondition check failed.</code></pre>
+
+<p>Four words. No resource, no permission, no policy, no field. I checked the raw
+REST response in case the provider was truncating something useful:</p>
+
+<pre><code>{
+  "code": 400,
+  "message": "Precondition check failed.",
+  "status": "FAILED_PRECONDITION"
+}</code></pre>
+
+<p>No <code>details</code> array. That message is the entire diagnostic surface.</p>
+
+<h3>5. Bisect the error instead of re-reading the documentation</h3>
+
+<p>An error naming nothing cannot be researched, only eliminated. Four probes,
+each removing one candidate:</p>
+
+<pre><code>bogus topic name        ->  NOT_FOUND             so topic resolution works
+real topic, budget A    ->  FAILED_PRECONDITION
+real topic, budget B    ->  FAILED_PRECONDITION   so it is not the budget
+testIamPermissions      ->  setIamPolicy HELD     so it is not the caller</code></pre>
+
+<p>The first probe matters most and is the least obvious: a deliberately wrong
+topic name returns a <em>different</em> error. That proves the API resolves the
+real topic successfully, which eliminates the entire class of "the topic is
+missing, misnamed, or in the wrong project" explanations in one call.</p>
+
+<p>Two different budgets failing identically eliminates the budget. And the
+caller holding <code>pubsub.topics.setIamPolicy</code> &mdash; the permission
+Google's own documentation says you need &mdash; eliminates the caller.</p>
+
+<p>I then ran the whole sequence again as a human organization administrator
+rather than as the CI service account. Identical. <strong>A cause that survives
+both identities is not about identity at all</strong>, and a cause that survives
+all four probes is not about the resources either. That points at the
+organization.</p>
+
+<h3>6. The cause was a guardrail I built in Week 3</h3>
+
+<p>Attaching a Pub/Sub topic to a budget is not a reference. Cloud Billing writes
+<em>its own Google-owned service agent</em> onto that topic's IAM policy as a
+publisher, at attach time.</p>
+
+<p>Week 3 enforced <code>iam.allowedPolicyMemberDomains</code> across the
+organization, restricted to this Workspace customer ID. A Google-owned principal
+is by definition outside it. So the IAM write was refused, and the refusal
+surfaced &mdash; several layers away, in a different API &mdash; as a
+precondition failure.</p>
+
+<p>The detail that stings: <strong>the console says this in plain words and the
+API does not.</strong> The budget's own notification section carries the
+sentence, sitting directly above the control it describes:</p>
+
+<blockquote><p>It may not be possible to add a Pub/Sub topic if it belongs to an
+organization that has domain restricted sharing enabled.</p></blockquote>
+
+<p>Same condition, same product, same afternoon. Through the console it is a
+sentence naming the exact constraint. Through the API it is
+<code>Precondition check failed</code>.</p>
+
+<h3>7. Fix it with scope, not surrender</h3>
+
+<p>The obvious fix is to relax the constraint. The right fix is to relax it in
+exactly one place.</p>
+
+<pre><code>resource "google_org_policy_policy" "drs_exception" {
+  name   = "projects/${var.data_project_id}/policies/iam.allowedPolicyMemberDomains"
+  parent = "projects/${var.data_project_id}"
+
+  spec {
+    inherit_from_parent = false
+    rules { allow_all = "TRUE" }
+  }
+}</code></pre>
+
+<p>A list constraint has no vocabulary for "Google's own service agents" &mdash;
+it takes customer IDs and principal sets, and the agent's address is not
+published anywhere. The exception therefore cannot be expressed as membership.
+It can only be expressed as <em>scope</em>.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-06-billing-export/docs/blog/screenshots/03-drs-override-scoped.png"
+       alt="Organization policy details for domain restricted sharing, showing it applies to the Logging project and overrides the parent policy"/>
+  <figcaption>Three lines carry the whole argument: <strong>Applies to: Project
+  "Logging"</strong>, <strong>Policy source: Override parent's policy</strong>,
+  <strong>Policy enforcement: Replace parent</strong>. One project is exempt.
+  Every other project in the organization keeps Week 3's restriction untouched.</figcaption>
+</figure>
+
+<p>One more thing was needed, and it is easy to miss. Organization policy does
+not propagate instantly &mdash; Week 3 measured that on the way in, and the same
+lag applies on the way out. The budget attach races the relaxation and fails with
+the identical opaque error, which looks exactly like the diagnosis having been
+wrong. An explicit wait sits between them:</p>
+
+<pre><code>resource "time_sleep" "drs_propagation" {
+  depends_on      = [google_org_policy_policy.drs_exception]
+  create_duration = "120s"
+}</code></pre>
+
+<p>A retry loop would have been worse than useless here: it cannot distinguish
+"still propagating" from "wrong diagnosis", so it would have turned a solved
+problem back into an ambiguous one.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-06-billing-export/docs/blog/screenshots/02-budget-pubsub-attached.png"
+       alt="Budget edit page showing a Pub/Sub topic connected to the budget, with four alert threshold rules and the domain restricted sharing warning"/>
+  <figcaption>The attach that took seven runs. The topic is connected, the four
+  thresholds are visible &mdash; and so, in the same frame, is Google's warning
+  about domain restricted sharing. The console knew all along.</figcaption>
+</figure>
+
+<h3>8. Read the service agent back rather than guessing it</h3>
+
+<p>An earlier draft of this configuration granted <code>roles/pubsub.publisher</code>
+to <code>billing-budgets@system.gserviceaccount.com</code>, inferred from the
+shape other Google service agents take. Google's reply was unusually direct:</p>
+
+<pre><code>Error 400: Service account billing-budgets@system.gserviceaccount.com does not exist</code></pre>
+
+<p>The correct move is to grant nothing, let Cloud Billing add its own binding,
+and then read the topic's IAM policy to find out which identity it used:</p>
+
+<pre><code>roles/pubsub.publisher
+  serviceAccount:billing-budget-alert@system.gserviceaccount.com</code></pre>
+
+<p>Singular <em>budget</em>, and <em>alert</em> rather than <em>budgets</em>.
+Close enough to the guess to survive a code review, wrong enough to fail. The
+address appears in no documentation I found, which makes reading it back the only
+reliable way to know it &mdash; and makes it a poor thing to hardcode in a check.
+The validation script asserts that <em>something</em> holds publisher and then
+prints what, rather than matching a name.</p>
+
+<p>Worth noting what the policy does <em>not</em> contain: the project's own
+editors get no publish rights on that topic. The binding Cloud Billing added is
+exactly as wide as the integration needs and no wider.</p>
+
+<h3>9. The pricing export, and a permission split worth knowing</h3>
+
+<p>The last step was enabling the pricing export, and it produced a small, sharp
+lesson about how Google splits billing permissions.</p>
+
+<p>Configuring <em>any</em> export requires two permissions, and they do not live
+together:</p>
+
+<table>
+  <thead>
+    <tr><th>Role</th><th><code>getPricing</code></th><th><code>updateUsageExportSpec</code></th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>roles/billing.viewer</code></td><td>&#10003;</td><td></td></tr>
+    <tr><td><code>roles/billing.admin</code></td><td>&#10003;</td><td>&#10003;</td></tr>
+    <tr><td><code>roles/billing.user</code></td><td></td><td>&#10003;</td></tr>
+    <tr><td><code>roles/billing.costsManager</code></td><td></td><td>&#10003;</td></tr>
+  </tbody>
+</table>
+
+<p>The operating account held <code>user</code> and <code>costsManager</code>
+&mdash; two roles that both carry the second permission and neither of which
+carries the first. The result is a page that renders completely normally and
+refuses only at the moment you try to configure anything.
+<code>roles/billing.viewer</code>, the least powerful role in the table, is what
+closes the gap.</p>
+
+<p>Granting it requires <code>billing.accounts.setIamPolicy</code>, which lives
+only in <code>roles/billing.admin</code> &mdash; held by the account that created
+the billing account. That is an out-of-band grant by design: billing account
+bindings are never Terraform-managed in this lab, because the account is not in
+the hierarchy the configuration owns.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-06-billing-export/docs/blog/screenshots/01-export-already-running.png"
+       alt="Google Cloud billing export page showing detailed usage cost and pricing exports enabled, with standard, FOCUS and CUD exports disabled"/>
+  <figcaption>The end state, and the whole week in one frame.
+  <strong>Detailed</strong> was enabled before this week began &mdash; that is
+  what the opening query found. <strong>Pricing</strong> is what the week added.
+  <strong>Standard</strong> stays off on purpose: it would store a subset of data
+  the detailed export already holds.</figcaption>
+</figure>
+</div>
+
+<div class="section" id="challenges">
+<h2>Challenges — What Actually Went Wrong</h2>
+
+<div class="challenge-card">
+  <h3>1. Four words with no details array</h3>
+  <p><code>Error 400: Precondition check failed.</code> &mdash; naming no
+  resource, no permission, no policy and no field, with nothing in the REST
+  response to expand on it.</p>
+  <p>The technique that worked was elimination, not research: send a request you
+  <em>know</em> is wrong in a specific way and see whether the error changes. A
+  deliberately bogus topic name returned <code>NOT_FOUND</code>, which proved in
+  one call that topic resolution was fine and removed a whole family of
+  hypotheses.</p>
+  <p>The general rule: when an error names nothing, stop reading and start
+  varying one thing at a time. Four probes cost ten minutes and produced a
+  certain answer where a morning of documentation produced none.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>2. My own guardrail, three weeks later, in a different service</h3>
+  <p>Week 3's domain restricted sharing constraint did exactly what it was built
+  to do. It blocked a Google-owned principal from being added to an IAM policy.
+  That was the correct behaviour and it broke a legitimate integration, in a
+  product that never mentions organization policy, via an error that never
+  mentions IAM.</p>
+  <p>This is the actual cost of guardrails and it is rarely stated honestly: the
+  bill does not arrive when you build them, it arrives weeks later in an
+  unrelated service, disguised as something else.</p>
+  <p>What made it findable was that the failure was identical for the CI service
+  account and for a human organization administrator. Identity-shaped problems
+  vary by identity; this one did not.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>3. The premise was wrong, and the configuration asserted it confidently</h3>
+  <p>The file began with a comment stating the lab had no queryable cost source.
+  It was well-argued and it was false, and nothing in the repository would ever
+  have contradicted it &mdash; the export lived in the console, in a project the
+  week did not touch.</p>
+  <p>Reading live cloud state is already a standing rule here for
+  <em>policies</em>, because configured and enforced are different. This week
+  extended it: planned and absent are also different. A premise I wrote is not
+  evidence, and it is the part nobody re-checks.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>4. A validation message that asserted a cause it no longer had</h3>
+  <p>The check for the pricing dataset reported that it was empty <em>and</em>
+  that the account lacked <code>getPricing</code>. The second half was true when
+  written and false a day later, so the script confidently printed a fixed
+  problem as the reason for a normal one.</p>
+  <p>An empty dataset has two causes here and they are distinguishable by a single
+  API call, so the check now makes that call and reports which: a permissions
+  failure, or the 48-hour first-delivery window, since pricing data is not
+  backfilled. A check that guesses between two causes is not a check.</p>
+</div>
+</div>
+
+<div class="section" id="security">
+<h2>Security — Controls at Every Layer</h2>
+
+<p><strong>The exception is scoped to one project, in code, next to its reason.</strong>
+A console click relaxing an organization-wide constraint is indistinguishable a
+month later from carelessness. The override is a Terraform resource with the
+diagnosis written above it, so the next person to read it learns why it exists
+rather than whether to delete it.</p>
+
+<p><strong>The blast radius is asserted, not assumed.</strong> The validation
+script checks two things, and the second matters more: that the data project
+overrides the restriction, <em>and</em> that the organization still enforces it.
+The second check exists to catch a plausible future mistake &mdash; someone
+hitting the same error, reaching for the same fix, and applying it one level too
+high.</p>
+
+<p><strong>No publisher binding is written by hand.</strong> Granting a guessed
+service agent address would have meant either a binding to a principal that does
+not exist, or a permanent grant to whatever that name later resolves to. Letting
+Cloud Billing add its own binding means the policy contains exactly one publisher
+and it is the one Google actually uses.</p>
+
+<p><strong>Billing account IAM stays out of Terraform.</strong> A billing account
+is outside the hierarchy this configuration owns, and the only identity that can
+modify its bindings is deliberately not the identity that runs applies. The CI
+service account cannot widen its own access to the account that pays for
+everything.</p>
+
+<p><strong>The lab's evidence is redacted at capture time.</strong> The screenshot
+tooling masks organization IDs, billing account IDs, project numbers and personal
+email addresses, and refuses to write the file if any survive redaction. Service
+account addresses are allowlisted deliberately &mdash; a Google-owned service
+identity is a public fact about the platform, and this week it is the evidence.</p>
+</div>
+
+<div class="section" id="cost">
+<h2>Cost</h2>
+
+<p><strong>$0.006.</strong> Total, across five projects, from 1 July to 27
+September 2026 &mdash; and this is the first cost note in the series that is a
+query result rather than an assertion.</p>
+
+<p>What this week adds costs nothing meaningful. BigQuery storage for the billing
+export is the only ongoing charge, and 2,412 rows sits far below the 10 GiB free
+tier. The budget, the Pub/Sub topic and the organization policy override are all
+free. The topic has no subscriber, so nothing accumulates in it.</p>
+
+<p>The non-monetary cost is worth naming instead: an organization-wide security
+control now has a documented exception. That is a real, permanent increase in the
+surface area someone has to understand, and it is the actual price of this
+week.</p>
+</div>
+
+<div class="section" id="cleanup">
+<h2>Cleanup</h2>
+
+<p><strong>This week is exempt from teardown, and says so deliberately.</strong>
+A cost-observability layer that is destroyed at the end of the week observes
+nothing. Weeks 7 onward depend on the export existing, and the historical rows
+cannot be recovered once the link is broken &mdash; a re-enabled export backfills
+at most the previous month.</p>
+
+<p>If you do tear it down, two things behave in ways worth knowing in advance.</p>
+
+<p>Destroying the dataset does <em>not</em> unlink the export, because unlinking
+is console-only in the same way linking is. You will have a billing account
+cheerfully writing to a destination that no longer exists.</p>
+
+<p>And removing the organization policy override will silently break budget
+notifications rather than loudly failing. The binding Cloud Billing wrote stays
+on the topic, so nothing errors &mdash; the next re-attach or re-verification
+simply refuses, with the same four words this week started with.</p>
+</div>
+
+<div class="section" id="references">
+<h2>References</h2>
+
+<ul>
+  <li><a href="https://docs.cloud.google.com/billing/docs/how-to/notify">Set up programmatic budget notifications</a> &mdash; the one page naming this week's blocker: notification delivery fails where organization policies limit resource sharing by domain. It does not connect that to the error string.</li>
+  <li><a href="https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables">Billing export table structure</a> &mdash; that detailed includes every field standard has. That sentence deleted a dataset from this week.</li>
+  <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/restricting-domains">Restricting identities by domain</a> &mdash; a list constraint over customer IDs and principal sets, with no way to name an individual service agent.</li>
+  <li><a href="https://docs.cloud.google.com/billing/docs/how-to/budgets">Create and manage budgets</a> &mdash; thresholds, forecast basis, and what a budget does and does not stop.</li>
+</ul>
+
+<p><strong>Not answered anywhere I looked, and measured instead:</strong> what
+<code>Precondition check failed</code> means; which identity Cloud Billing
+publishes as; how long an organization policy takes to relax; and which roles
+carry <code>billing.accounts.getPricing</code>.</p>
+</div>
+
+<div class="section" id="takeaways">
+<h2>Key Takeaways</h2>
+
+<ul>
+  <li><strong>Check whether the thing you are about to build already exists.</strong>
+  Half this week's Terraform was deleted after one <code>bq ls</code>. A premise
+  you wrote yourself is not evidence, and it is the assumption nobody
+  re-examines.</li>
+  <li><strong>Infrastructure nobody queries is worse than infrastructure that
+  does not exist.</strong> It bills, it looks like coverage, and it lets you
+  believe a question is answered when it has never been asked.</li>
+  <li><strong>When an error names nothing, vary one thing at a time.</strong> A
+  deliberately wrong request that fails <em>differently</em> is worth more than
+  any amount of documentation, because it eliminates rather than suggests.</li>
+  <li><strong>Guardrails bill you later, in another service.</strong> A control
+  working exactly as designed broke a legitimate integration three weeks on,
+  through an error that mentioned neither IAM nor policy. Budget for that when
+  you build them, not when you hit it.</li>
+  <li><strong>Scope the exception, never lift the control.</strong> One project
+  exempt, in code, with the reason attached &mdash; and a check asserting the
+  organization still enforces it, because the tempting fix is one level too
+  high.</li>
+  <li><strong>Read service identities back; never write them from memory.</strong>
+  <code>billing-budget-alert</code>, not <code>billing-budgets</code>. Close
+  enough to pass review, wrong enough to fail.</li>
+</ul>
+
+<p>Next week the hierarchy starts answering questions about itself: what exists,
+what changed, and what no longer matches the thing that was supposed to have
+created it.</p>
+</div>
+
+</div>
