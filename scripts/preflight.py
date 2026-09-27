@@ -241,6 +241,77 @@ PER_CHECK_TIMEOUT = 420
 # stops publishing for a day over a socket.
 WORKERS = 2
 
+# name -> extra argv. Empty for every check unless main() scopes them.
+SCOPE = {}
+
+
+def scopable_checks():
+    """Checks that accept post names, read from prepublish rather than listed.
+
+    prepublish.CHECKS already carries this as its fifth flag, and two
+    copies of the same list is two copies that drift. Importing it keeps
+    one source of truth; if the import fails for any reason we scope
+    nothing, which is the old behaviour and safe.
+    """
+    try:
+        import prepublish
+        return {row[0][:-3] for row in prepublish.CHECKS if row[4]}
+    except Exception:                                           # noqa: BLE001
+        return set()
+
+
+def pushed_posts():
+    """Post slugs this push actually contains, or None if we cannot tell.
+
+    None means "do not scope" -- a full unscoped run, exactly as before.
+    That is the fail-safe direction: the cost of being wrong here is a
+    slow push, and the cost of the other direction is an unchecked post.
+
+    git hands a pre-push hook one line per ref on stdin:
+
+        <local ref> <local sha> <remote ref> <remote sha>
+
+    The remote sha is what the other end already has, so the range
+    remote..local is precisely what is new. A remote sha of all zeroes
+    means the branch is new over there and nothing can be assumed.
+    """
+    ranges = []
+    try:
+        if not sys.stdin.isatty():
+            for line in sys.stdin.read().splitlines():
+                bits = line.split()
+                if len(bits) != 4:
+                    continue
+                local_sha, remote_sha = bits[1], bits[3]
+                if set(local_sha) == {"0"}:
+                    continue                    # a delete; nothing to check
+                if set(remote_sha) == {"0"}:
+                    return None                 # new branch: check everything
+                ranges.append("%s..%s" % (remote_sha, local_sha))
+    except Exception:                                           # noqa: BLE001
+        return None
+
+    if not ranges:
+        # Run by hand rather than by git. Fall back to what the remote has.
+        ranges = ["origin/main..HEAD"]
+
+    slugs, saw_any = set(), False
+    for rng in ranges:
+        try:
+            out = subprocess.run(["git", "diff", "--name-only", rng],
+                                 cwd=ROOT, capture_output=True, text=True,
+                                 timeout=30)
+        except Exception:                                       # noqa: BLE001
+            return None
+        if out.returncode != 0:
+            return None
+        saw_any = True
+        for path in out.stdout.splitlines():
+            path = path.strip()
+            if path.startswith("posts/") and path.endswith(".html"):
+                slugs.add(os.path.basename(path)[:-len(".html")])
+    return sorted(slugs) if saw_any else None
+
 
 def discover(fast, hook=False):
     names = []
@@ -262,8 +333,10 @@ def discover(fast, hook=False):
 
 def run_once(name):
     t0 = time.time()
+    args = SCOPE.get(name, [])
     try:
-        p = subprocess.run([sys.executable, os.path.join(SCRIPTS, name + ".py")],
+        p = subprocess.run([sys.executable, os.path.join(SCRIPTS, name + ".py")]
+                           + args,
                            cwd=ROOT, capture_output=True, text=True,
                            timeout=PER_CHECK_TIMEOUT,
                            encoding="utf-8", errors="replace")
@@ -373,12 +446,43 @@ def main():
                     help="install the git pre-push hook")
     ap.add_argument("--hook", action="store_true",
                     help="running as the hook; quieter, and fails the push")
+    ap.add_argument("--no-scope", action="store_true",
+                    help="check every post, not only the ones this push carries")
     args = ap.parse_args()
 
     if args.install:
         return install()
 
     names = discover(args.fast, args.hook)
+
+    # Scope the per-post checks to the posts this push actually carries.
+    #
+    # publish.py has done this for its own run since the day someone
+    # forgot to name a post and sat through the network checks for every
+    # post on the site. The hook never learned: it globs every check off
+    # disk and runs each with no arguments, so a push re-read all 250
+    # posts whatever it contained -- including a push that touched no
+    # post at all.
+    #
+    # None means we could not work it out, and then nothing is scoped:
+    # the old, slower, always-correct behaviour. The fallback only ever
+    # goes that way, because the cost of guessing wrong here is a slow
+    # push and the cost of the other direction is an unchecked post.
+    posts = None if args.no_scope else pushed_posts()
+    if posts is None:
+        print("  could not tell what this push carries; checking everything")
+    else:
+        takes = scopable_checks()
+        scoped = [n for n in names if n in takes]
+        for n in scoped:
+            SCOPE[n] = list(posts)
+        if posts:
+            print("  this push carries %d post(s): %s"
+                  % (len(posts), ", ".join(posts)))
+            print("  %d per-post check(s) scoped to them" % len(scoped))
+        else:
+            print("  this push carries no posts; %d per-post check(s) have "
+                  "nothing to read" % len(scoped))
     print("  running %d check(s)%s, %d at a time\n"
           % (len(names), " (browser checks skipped)" if args.fast else "", WORKERS))
 
