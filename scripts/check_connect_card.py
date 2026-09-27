@@ -67,7 +67,13 @@ except ImportError:
 
 PORT = 9002
 URL = "http://127.0.0.1:%d/connect/" % PORT
-WIDTHS = [(360, 780), (402, 874), (430, 932)]
+# The two short ones are Android with its chrome showing: a 360x800
+# handset gives about 740 of usable viewport, a 393x800 one about
+# 760. Without them the height assertion only ever saw sizes the
+# card happened to fit, and it was over by 18 to 24px on a real
+# phone for months while reporting "page N in N" three times.
+WIDTHS = [(360, 740), (393, 760), (360, 780), (402, 874),
+          (430, 880), (430, 932)]
 HEAD = 0.764          # where the figure's head sits in the artwork
 FEET = 0.953          # and his feet
 GAP = 12              # px of air the head needs under the AI pill
