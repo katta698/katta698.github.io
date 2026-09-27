@@ -465,7 +465,11 @@ def label_colours_read(pg, theme):
       return {paper: getComputedStyle(document.documentElement)
                   .getPropertyValue('--paper').trim(),
               Azure: pick('.s-azu b'), AWS: pick('.s-aws b'),
-              GCP: pick('.s-gcp b'), model: pick('.f1 .puff b'),
+              GCP: pick('.s-gcp b'),
+              // the agents and the model keep the default ink; checked
+              // here too, because "the default" is a colour like any
+              // other and six-pixel text is held to 4.5:1 whatever it is
+              model: pick('.f1 .puff b'),
               agent: pick('.f2 .puff b')}; }""")
 
     def rgb(t):
