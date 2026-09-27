@@ -321,45 +321,50 @@ def figures_never_flicker(pg):
 
 
 def labels_never_collide():
-    """No two names ever share an instant within one queue.
+    """Three names at once, but never two in the same column.
 
-    Arithmetic, not rendering, because it is a property of how a queue is
-    laid out rather than of any one frame -- and the frame that would
+    Arithmetic, not rendering, because it is a property of how the queue
+    is laid out rather than of any one frame -- and the frame that would
     catch it comes round once a minute.
 
-    There are four queues now, not one. A single queue was right while
-    every label could reach every other, but the labels are anchored to
-    the data centres and each cloud has about seventy pixels of clear air
-    before the next one's begin, so the three clouds run their own
-    streams and none of them waits its turn. Each cloud's queue carries
-    its agent's own name alongside its services, because an agent stands
-    in front of its building and the two share a column.
+    The clouds fire together on purpose now: one row is one capability in
+    three dialects, so S3, Blob Storage and Cloud Storage light at the
+    same moment. That is only safe because each cloud's labels are
+    anchored to its own data centre with seventy-odd pixels of clear air
+    before the next one's begin -- which labels_fit measures. What this
+    checks is the other half: that a row never asks one cloud to say two
+    things at once, and that a name is gone before the next row starts.
     """
     problems = []
-    for qname, step, entries in C.QUEUES:
-        cycle = step * len(entries)
-        gap = step - C.VISIBLE
-        print("  %-6s %2d names, one every %.1fs, each on %.1fs -- %.1fs of "
-              "clear air" % (qname, len(entries), step, C.VISIBLE, gap))
-        if gap <= 0:
-            problems.append(
-                "the %s queue shows a name for %.1fs but starts the next one "
-                "%.1fs later, so two are lit at once and the labels overlap. "
-                "Raise the step or drop VISIBLE in make_connect_chain.py"
-                % (qname, C.VISIBLE, step))
+    gap = C.BEAT - C.VISIBLE
+    print("  %d rows (%d capabilities + %d agent beats), one every %.1fs, "
+          "each on %.1fs -- %.1fs of clear air, full lap %.0fs"
+          % (len(C.CLOUD_SLOTS), len(C.TRIPLETS), len(C.AWS_AGENTS),
+             C.BEAT, C.VISIBLE, gap, C.CLOUD_CYCLE))
+    if gap <= 0:
+        problems.append(
+            "a name is on screen for %.1fs but the next row starts %.1fs "
+            "later, so two rows are lit at once and every column doubles "
+            "up. Raise BEAT or drop VISIBLE in make_connect_chain.py"
+            % (C.VISIBLE, C.BEAT))
+    column = {"s-aws": "AWS", "s-azu": "Azure", "s-gcp": "GCP",
+              "f4": "AWS", "f5": "AWS", "f6": "AWS", "f2": "Azure",
+              "f3": "GCP"}
+    for i, row in enumerate(C.CLOUD_SLOTS):
         seen = {}
-        for who, kind, txt in entries:
-            seen.setdefault((who, txt), 0)
-            seen[(who, txt)] += 1
-        for key, n in seen.items():
-            if n > 1:
-                problems.append("%s says %r %d times in one queue"
-                                % (key[0], key[1], n))
-        if cycle % 26 == 0:
-            problems.append(
-                "the %s queue laps in %.0fs, a whole multiple of the 26s "
-                "walk -- the two will fall into step and the card will "
-                "start looking canned" % (qname, cycle))
+        for who, _kind, txt in row:
+            col = column.get(who, who)
+            if col in seen:
+                problems.append(
+                    "row %d lights %r and %r in the %s column at the same "
+                    "instant -- one cloud, one name per row"
+                    % (i, seen[col], txt, col))
+            seen[col] = txt
+    if C.CLOUD_CYCLE % 26 == 0:
+        problems.append(
+            "the cloud queue laps in %.0fs, a whole multiple of the 26s "
+            "walk -- the two will fall into step and the card will start "
+            "looking canned" % C.CLOUD_CYCLE)
     return problems
 
 

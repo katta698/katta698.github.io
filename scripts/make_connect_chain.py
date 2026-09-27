@@ -434,123 +434,135 @@ def markup(sprite):
 # services are held to the same standard: the ones a platform engineer
 # actually touches, not the ones with the best launch posts.
 #
-# One queue PER CLOUD, so all three speak at once ------------------------
+# The same thing, in three dialects -------------------------------------
 #
-# There was a single queue across the whole card, and it was right while
-# the labels could reach each other: twenty-nine names taking turns, one
-# every two seconds. The cost was that any given cloud got a word in once
-# a minute, from a list of four, so the services were barely there.
+# The three clouds each ran their own stream, which fixed the services
+# being invisible but left them saying unrelated things at unrelated
+# moments. They say the SAME thing now, at the same moment, in their own
+# names: S3, Blob Storage and Cloud Storage together; Lambda, Azure
+# Functions and Cloud Functions together. That is the one fact a
+# multi-cloud card can state that a single-cloud one cannot, and it took
+# no extra machinery -- the labels were already far enough apart to be
+# lit at once, which is the same geometry the separate queues rested on.
 #
-# They cannot reach each other any more. The labels are anchored to the
-# data centres now and left-aligned at each one's near corner, and
-# scripts/../\_sweep measured the room between them: Azure has 73px
-# before AWS's labels start, AWS has 73px before GCP's, and GCP has 143px
-# to the card edge at the narrowest width the card is read at. Nothing
-# here is longer than eighteen characters, which is about 65px. So the
-# three clouds each run their own stream and none of them waits.
-#
-# Each cloud's queue carries its agent's own name as well as its
-# services, which is what keeps THOSE from colliding: an agent stands in
-# front of its building, so the two labels share a column and must share
-# a queue.
-#
-# The model is the exception and it gets its own answer further down.
+# Each row is one capability. Where a cloud genuinely has no counterpart
+# the cell is left empty and that cloud simply says nothing that beat,
+# rather than being given something that only nearly fits.
+TRIPLETS = [
+    # AWS                  Azure                 GCP
+    ("S3",                 "Blob Storage",       "Cloud Storage"),
+    ("Lambda",             "Azure Functions",    "Cloud Functions"),
+    ("EKS",                "AKS",                "GKE"),
+    ("IAM",                "Entra ID",           "Cloud IAM"),
+    ("EC2",                "Virtual Machines",   "Compute Engine"),
+    ("VPC",                "VNet",               "VPC"),
+    ("RDS",                "Azure SQL",          "Cloud SQL"),
+    ("DynamoDB",           "Cosmos DB",          "Firestore"),
+    ("Redshift",           "Synapse",            "BigQuery"),
+    ("Secrets Manager",    "Key Vault",          "Secret Manager"),
+    ("CloudFront",         "Front Door",         "Cloud CDN"),
+    ("Route 53",           "Azure DNS",          "Cloud DNS"),
+    ("CloudWatch",         "Azure Monitor",      "Cloud Monitoring"),
+    ("SNS",                "Event Grid",         "Pub/Sub"),
+    ("SQS",                "Service Bus",        "Cloud Tasks"),
+    ("Fargate",            "Container Apps",     "Cloud Run"),
+    ("CodeBuild",          "Azure Pipelines",    "Cloud Build"),
+    ("ECR",                "Container Registry", "Artifact Registry"),
+    ("CloudFormation",     "Bicep",              "Deployment Manager"),
+    ("CloudTrail",         "Activity Log",       "Cloud Audit Logs"),
+    ("Glue",               "Data Factory",       "Dataflow"),
+    ("Bedrock",            "Azure OpenAI",       "Vertex AI"),
+    ("ELB",                "Load Balancer",      "Cloud Load Balancing"),
+    ("Organizations",      "Management Groups",  "Resource Manager"),
+    ("Step Functions",     "Logic Apps",         "Workflows"),
+    ("EMR",                "HDInsight",          "Dataproc"),
+]
+
 MODELS = ["Claude", "ChatGPT", "Gemini", "Grok", "DeepSeek"]
 
-# The services a platform engineer actually touches, not the ones with
-# the best launch posts -- the same standard the tool names are held to.
-AZURE_SVCS = [
-    "Entra ID", "AKS", "Azure Functions", "Blob Storage", "VNet",
-    "Key Vault", "Cosmos DB", "Azure SQL", "App Service", "Azure Monitor",
-    "Log Analytics", "Service Bus", "Event Hubs", "Front Door",
-    "Container Apps", "Load Balancer", "Private Link", "Bicep",
-]
-AWS_SVCS = [
-    "IAM", "VPC", "EC2", "S3", "Lambda", "DynamoDB", "EKS", "ECS",
-    "Fargate", "RDS", "Aurora", "CloudFront", "Route 53", "CloudWatch",
-    "CloudTrail", "EventBridge", "SQS", "SNS", "KMS", "Secrets Manager",
-    "API Gateway", "Step Functions", "Transit Gateway", "CloudFormation",
-    "Organizations", "GuardDuty", "Systems Manager",
-]
-GCP_SVCS = [
-    "GKE", "BigQuery", "Cloud Run", "Cloud Storage", "Cloud SQL",
-    "Pub/Sub", "Spanner", "Vertex AI", "Dataflow", "Firestore",
-    "Cloud Armor", "Cloud IAM", "Cloud DNS", "Cloud Build",
-    "Artifact Registry", "Cloud Logging", "Bigtable", "Dataproc",
-]
-# Which agent says its own name in which cloud's queue.
+# Every few beats the agents say who they are instead. All three at once,
+# same as the services, so the rhythm never breaks. AWS has five names to
+# get through and the other two have one each, which is honest: that is
+# how many are posted where.
 AWS_AGENTS = [("f4", "Kiro"), ("f4", "Claude Code"), ("f5", "Bedrock Agents"),
               ("f5", "Codex"), ("f6", "Grok bot")]
+AZ_AGENT = ("f2", "Copilot")
+GCP_AGENT = ("f3", "Antigravity")
 
-VISIBLE = 1.5              # seconds a name is legible, whatever its queue
-
-
-def _aws_queue():
-    """The agents' own names spread through the services, not bunched.
-
-    All five in a row at the top of a thirty-two name queue is ten
-    seconds of robots introducing themselves followed by a minute of
-    nothing but AWS, which is not what the card is about.
-    """
-    out, step = [], max(len(AWS_SVCS) // len(AWS_AGENTS), 1)
-    ag = list(AWS_AGENTS)
-    for i, svc in enumerate(AWS_SVCS):
-        if i % step == 0 and ag:
-            who, txt = ag.pop(0)
-            out.append((who, "bot", txt))
-        out.append(("s-aws", "sign", svc))
-    out += [(who, "bot", txt) for who, txt in ag]
-    return out
+BEAT = 2.0                 # seconds from one row to the next
+VISIBLE = 1.5              # seconds a name stays legible
+MODEL_BEAT = 3.6           # the model keeps its own clock; see below
+EVERY = 5                  # a row of agents after this many rows of services
 
 
-# name, seconds between one name and the next, and the entries.
-# The four periods are all different and none divides the 26s walk, so
-# the card never settles into a rhythm.
-QUEUES = [
-    ("model", 3.6, [("f1", "bot", n) for n in MODELS]),
-    ("azure", 2.6, [("f2", "bot", "Copilot")]
-     + [("s-azu", "sign", n) for n in AZURE_SVCS]),
-    ("aws", 2.0, _aws_queue()),
-    ("gcp", 2.8, [("f3", "bot", "Antigravity")]
-     + [("s-gcp", "sign", n) for n in GCP_SVCS]),
-]
+def _cloud_slots():
+    """The rows, with the agents' own names threaded through them."""
+    slots, agents = [], list(AWS_AGENTS)
+    for i, (aws, azu, gcp) in enumerate(TRIPLETS):
+        if i and i % EVERY == 0 and agents:
+            who, txt = agents.pop(0)
+            slots.append([(who, "bot", txt),
+                          (AZ_AGENT[0], "bot", AZ_AGENT[1]),
+                          (GCP_AGENT[0], "bot", GCP_AGENT[1])])
+        row = []
+        for target, txt in (("s-aws", aws), ("s-azu", azu), ("s-gcp", gcp)):
+            if txt:
+                row.append((target, "sign", txt))
+        slots.append(row)
+    for who, txt in agents:
+        slots.append([(who, "bot", txt),
+                      (AZ_AGENT[0], "bot", AZ_AGENT[1]),
+                      (GCP_AGENT[0], "bot", GCP_AGENT[1])])
+    return slots
+
+
+CLOUD_SLOTS = _cloud_slots()
+CLOUD_CYCLE = BEAT * len(CLOUD_SLOTS)
+MODEL_CYCLE = MODEL_BEAT * len(MODELS)
 
 
 def queue_slots():
-    """Every name, with the queue it is in and its place in that queue."""
-    for qname, step, entries in QUEUES:
-        cycle = step * len(entries)
-        for slot, (who, kind, txt) in enumerate(entries):
-            yield qname, cycle, step, slot, who, kind, txt
+    """Every name, with its queue, that queue's length, and when it fires.
+
+    Two queues. One drives all three clouds together, because the whole
+    point is that they speak in chorus. The other is the model's, alone,
+    because it walks the length of the road and would sooner or later
+    pass under every label on the card -- its name hangs below the
+    tarmac instead, where nothing else goes.
+    """
+    for i, row in enumerate(CLOUD_SLOTS):
+        for who, kind, txt in row:
+            yield "cloud", CLOUD_CYCLE, i * BEAT, who, kind, txt
+    for i, txt in enumerate(MODELS):
+        yield "model", MODEL_CYCLE, i * MODEL_BEAT, "f1", "bot", txt
 
 
 def _texts(target):
     """Everything one element says, in the order its <b> tags appear."""
-    out = []
-    for _q, _c, _s, _slot, who, kind, txt in queue_slots():
-        if who == target:
-            out.append(txt)
-    return out
+    return [t for _q, _c, _at, who, _k, t in queue_slots() if who == target]
 
 
-def _keyframes(qname, cycle, down, left):
-    """One on-window, sized so every queue shows a name for VISIBLE seconds.
+def _keyframes(name, cycle, down, left):
+    """One on-window, sized so both queues show a name for VISIBLE seconds.
 
-    The queues run at different lengths, so a duty written as one
-    percentage would mean a name lingering for four seconds on the short
-    queue and flashing for one on the long one.
+    The two queues are different lengths, so a duty written as a single
+    percentage would mean a name lingering on the short one and flashing
+    on the long one.
     """
     d = 100.0 * VISIBLE / cycle
     y0, y1 = (-2, 2) if down else (2, -2)
     x = "0" if left else "-50%"
-    return ("@keyframes %s {\n"
-            "  0%% { opacity: 0; transform: translate(%s, %dpx); }\n"
-            "  %.2f%% { opacity: .95; transform: translate(%s, 0); }\n"
-            "  %.2f%% { opacity: .95; transform: translate(%s, %.1fpx); }\n"
-            "  %.2f%% { opacity: 0; transform: translate(%s, %dpx); }\n"
-            "  100%% { opacity: 0; transform: translate(%s, %dpx); }\n"
-            "}" % (qname, x, y0, d * 0.16, x, d * 0.62, x, y1 * 0.5,
-                   d, x, y1, x, y1)).replace("\n", chr(10))
+    rows = ["@keyframes %s {" % name,
+            "  0%% { opacity: 0; transform: translate(%s, %dpx); }" % (x, y0),
+            "  %.2f%% { opacity: .95; transform: translate(%s, 0); }"
+            % (d * 0.16, x),
+            "  %.2f%% { opacity: .95; transform: translate(%s, %.1fpx); }"
+            % (d * 0.62, x, y1 * 0.5),
+            "  %.2f%% { opacity: 0; transform: translate(%s, %dpx); }"
+            % (d, x, y1),
+            "  100%% { opacity: 0; transform: translate(%s, %dpx); }" % (x, y1),
+            "}"]
+    return chr(10).join(rows)
 
 
 def puff_css():
@@ -559,25 +571,20 @@ def puff_css():
     # was centring the label, and the name drifts half its own width off
     # the thing it belongs to.
     out = []
-    seen = set()
-    for qname, cycle, _step, _slot, _who, kind, _txt in queue_slots():
-        key = (qname, kind)
-        if key in seen:
-            continue
-        seen.add(key)
-        down = qname == "model"
-        out.append(_keyframes("%s-%s" % (kind, qname), cycle, down,
-                              kind == "sign"))
+    for qname, cycle, left in (("cloud", CLOUD_CYCLE, True),
+                               ("cloud", CLOUD_CYCLE, False),
+                               ("model", MODEL_CYCLE, False)):
+        out.append(_keyframes("%s-%s" % ("sign" if left else "bot", qname),
+                              cycle, qname == "model", left))
     out += [
         ".puff { position: absolute; left: 50%; bottom: 100%;",
         "        margin-bottom: -1px; width: 0; pointer-events: none; }",
         "/* The model's name hangs BELOW the road, and it is the only one",
         "   that does. Everything else is anchored to something that never",
-        "   moves, so a queue per cloud is enough to keep two labels apart;",
-        "   the model walks the whole road and would sooner or later pass",
-        "   under every one of them. Under the tarmac is nine pixels nobody",
-        "   else is using, and it reads as his companion rather than as",
-        "   something a cloud is offering, which is the truth of it. */",
+        "   moves; the model walks the whole road and would sooner or later",
+        "   pass under every one of them. Under the tarmac is nine pixels",
+        "   nobody else is using, and it reads as his companion rather than",
+        "   as something a cloud is offering, which is the truth of it. */",
         ".f1 .puff { bottom: auto; top: 100%; margin-top: 1px; }",
         "/* Anchored to the DATA CENTRE and left-aligned at its near",
         "   corner, rising off the roof. A service comes out of the",
@@ -596,26 +603,15 @@ def puff_css():
         "   wrong, because the check takes the still. */",
         ".svcs b { bottom: 0; transform: translate(0, 0); }",
         "/* Colour says which cloud a name belongs to, which is work the",
-        "   position was doing on its own and not doing well: every label",
-        "   was the same ink, so a service and an agent and a model name",
-        "   all read as one kind of thing in one pile. They are three",
-        "   kinds of thing.",
-        "",
-        "   The three cloud colours are the ones already on the boards, so",
-        "   a service arrives in the colour of the board it belongs under",
-        "   and nothing new is introduced. An agent takes the colour of",
-        "   the cloud it is posted at, because that is what it is: the",
-        "   thing minding that cloud.",
-        "",
-        "   The model takes rust, which is the card's own accent and the",
-        "   one colour here that belongs to no cloud -- correctly, because",
-        "   it is the only one of them that travels. */",
-        "/* --c-model is the card's rust taken a shade further than the",
-        "   seal's. The seal and the name wink are display type, where",
-        "   the floor is 3:1 and rust clears it easily; these are six",
-        "   pixels, where the floor is 4.5:1 and it measured 3.84 on",
-        "   paper and 4.24 at night. A shade down in daylight and a",
-        "   shade up in the dark puts both at 4.6:1, hue unmoved. */",
+        "   position was doing alone and not doing well: every label was",
+        "   the same ink, so a service, an agent and a model name read as",
+        "   one kind of thing in one pile. They are three kinds of thing.",
+        "   The cloud colours are the ones already on the boards, so a",
+        "   service arrives in the colour of the board it belongs under.",
+        "   --c-model is the card's rust taken a shade further than the",
+        "   seal's: the seal and the name wink are display type, where the",
+        "   floor is 3:1 and rust clears it; these are six pixels, where",
+        "   the floor is 4.5:1 and it measured 3.84 on paper. */",
         ".road { --c-azu: #33506d; --c-aws: #6a4e30; --c-gcp: #49552b;",
         "        --c-model: #943b25; }",
         '[data-theme="dark"] .road {',
@@ -627,12 +623,12 @@ def puff_css():
         ".f1 .puff b { color: var(--c-model); }",
         "@media (prefers-reduced-motion: no-preference) {"]
     nth = {}
-    for qname, cycle, step, slot, who, kind, _txt in queue_slots():
+    for qname, cycle, at, who, kind, _txt in queue_slots():
         nth[who] = nth.get(who, 0) + 1
         out.append("  .%s %s b:nth-child(%d) { animation: %s-%s %.1fs "
                    "ease-out %.2fs infinite; }"
                    % (who, ".svcs" if kind == "sign" else ".puff", nth[who],
-                      kind, qname, cycle, 1.5 + slot * step))
+                      kind, qname, cycle, 1.5 + at))
     out.append("}")
     return chr(10).join(out)
 
