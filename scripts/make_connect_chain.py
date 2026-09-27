@@ -625,10 +625,16 @@ def puff_css():
     nth = {}
     for qname, cycle, at, who, kind, _txt in queue_slots():
         nth[who] = nth.get(who, 0) + 1
-        out.append("  .%s %s b:nth-child(%d) { animation: %s-%s %.1fs "
+        # A sign queue IS the element; a robot queue is inside one.
+        # ".s-aws .svcs b" is a DESCENDANT selector and the element is
+        # <i class="svcs s-aws"> -- one element carrying both classes, so
+        # it matched nothing and the service labels ran with no animation
+        # attached at all. They were laid out, coloured, correctly placed,
+        # and permanently invisible.
+        sel = (".%s b" % who) if kind == "sign" else (".%s .puff b" % who)
+        out.append("  %s:nth-child(%d) { animation: %s-%s %.1fs "
                    "ease-out %.2fs infinite; }"
-                   % (who, ".svcs" if kind == "sign" else ".puff", nth[who],
-                      kind, qname, cycle, 1.5 + at))
+                   % (sel, nth[who], kind, qname, cycle, 1.5 + at))
     out.append("}")
     return chr(10).join(out)
 

@@ -502,6 +502,52 @@ def label_colours_read(pg, theme):
     return problems
 
 
+def labels_actually_animate(pg):
+    """Every label has a running animation attached to it.
+
+    This is the check that was missing, and the bug it would have caught
+    shipped: the service labels were generated with a DESCENDANT selector
+    -- ".s-aws .svcs b" -- against an element carrying both classes at
+    once, <i class="svcs s-aws">. It matched nothing. The labels were
+    laid out, coloured, correctly placed and permanently invisible, and
+    every other check passed, because every other check forces
+    "animation: none" and reads the static position. A still cannot tell
+    a label that is waiting its turn from a label that will never come.
+
+    So this one asks the browser what is actually animating, and asserts
+    that the count matches the number of names the queues were told to
+    run.
+    """
+    problems = []
+    got = pg.evaluate("""() => {
+      const out = {};
+      for (const el of document.querySelectorAll('.puff b, .svcs b')) {
+        const own = el.closest('.follow') || el.parentElement;
+        const key = own.classList[1] || own.classList[0];
+        const name = getComputedStyle(el).animationName;
+        out[key] = out[key] || {total: 0, running: 0};
+        out[key].total += 1;
+        if (name && name !== 'none') out[key].running += 1;
+      }
+      return out; }""")
+    want = {}
+    for _q, _c, _at, who, _k, _t in C.queue_slots():
+        want[who] = want.get(who, 0) + 1
+    total = sum(want.values())
+    live = sum(v["running"] for v in got.values())
+    print("  %d of %d labels have an animation attached" % (live, total))
+    for who, n in sorted(want.items()):
+        g = got.get(who, {"total": 0, "running": 0})
+        if g["running"] != n:
+            problems.append(
+                "%s has %d names in the queue but %d of its %d labels are "
+                "actually animating -- the rule that drives them is not "
+                "matching the element. Check the selector built in "
+                "puff_css() in make_connect_chain.py"
+                % (who, n, g["running"], g["total"]))
+    return problems
+
+
 def main():
     bad_early = []
     for line in art_is_stamped():
@@ -562,6 +608,7 @@ def main():
 
                 if (w, h) == WIDTHS[0]:
                     bad.extend(figures_never_flicker(pg))
+                    bad.extend(labels_actually_animate(pg))
                     bad.extend(labels_fit(pg))
                     bad.extend(label_colours_read(pg, "light"))
                     pg.evaluate("() => document.documentElement"
