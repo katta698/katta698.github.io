@@ -1,0 +1,117 @@
+name: Deploy the site
+
+# Pages serves the main branch directly today, which means a push is live
+# the moment it lands and nothing can stand between the two. That is why
+# the browser checks have to run on a laptop before the push: it is the
+# only place left to put them.
+#
+# This moves the deploy behind a workflow, so there is somewhere to put a
+# gate. Nothing changes about what is served -- the artifact is the same
+# tree Pages reads now, minus the things it was never serving anyway.
+#
+# It is deliberately inert until the repository variable PAGES_VIA_ACTIONS
+# is set to "true" AND Settings -> Pages -> Source is switched to "GitHub
+# Actions". Until then this builds the artifact and reports on it, so the
+# fidelity can be proved before anything is switched over. Setting the
+# variable back to anything else disables the deploy again without
+# touching a line of this file.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy, rather than only building and reporting"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Queue deploys, never cancel one. Two windows publishing at the same
+# moment is the normal case here, not the exception, and a cancelled
+# deploy would leave the site on whichever build lost the race.
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          # Faithful to a fault, on purpose. Pages serves this branch
+          # verbatim today -- scripts/, .github/ and all -- so the
+          # first version of this ships exactly that. Nothing else is
+          # allowed to change at the same time as the mechanism:
+          # trimming what gets served is a real improvement and a
+          # SEPARATE decision, and doing both at once would leave a
+          # 404 with two possible causes.
+          rsync -a --delete --exclude '.git' ./ _site/
+          touch _site/.nojekyll
+
+      - name: What is in the artifact
+        run: |
+          set -euo pipefail
+          echo "files: $(find _site -type f | wc -l)"
+          echo "size : $(du -sh _site | cut -f1)"
+          echo
+          echo "top-level:"
+          ls -1 _site | sed 's/^/  /'
+
+      - name: Does it match what is live right now
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          # Proof, for the window before the switch: the artifact should be
+          # byte-identical to what jayanthkatta.com serves today. After the
+          # switch this compares the site to itself and always passes, so it
+          # never blocks -- it is evidence, not a gate.
+          same=0; differ=0; missing=0
+          for path in index.html connect/index.html blog/index.html \
+                      resume.html now.html blog/rss.xml sitemap.xml; do
+            if [ ! -f "_site/$path" ]; then
+              echo "  MISSING from artifact: $path"; missing=$((missing+1)); continue
+            fi
+            curl -fsS --max-time 30 "https://jayanthkatta.com/$path" \
+              -o /tmp/live.out || { echo "  could not fetch $path"; continue; }
+            if diff -q <(tr -d '\r' < /tmp/live.out) \
+                       <(tr -d '\r' < "_site/$path") >/dev/null 2>&1; then
+              echo "  same as live: $path"; same=$((same+1))
+            else
+              a=$(wc -c < /tmp/live.out); b=$(wc -c < "_site/$path")
+              echo "  DIFFERS: $path (live ${a}b, artifact ${b}b)"
+              differ=$((differ+1))
+            fi
+          done
+          echo
+          echo "identical: $same   differing: $differ   missing: $missing"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    # Inert until the repository variable is set AND Pages is switched to
+    # "GitHub Actions" as its source. Either one missing and this is a
+    # build-and-report workflow, which is what it should be until the
+    # artifact has been proved.
+    if: >-
+      vars.PAGES_VIA_ACTIONS == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs.deploy)
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
