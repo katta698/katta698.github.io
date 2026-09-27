@@ -169,6 +169,14 @@ CHECKS = [
     # and published the same day, so their dates were right by accident and this
     # never came up until a review separated the two. Already-published posts
     # are exempt: editing a post later does not change when it was published.
+    # The share of checks that can prove they work may rise and must never
+    # fall. Counted the day Jay asked how to break the fix-recur-fix loop:
+    # 3 of 73. The other 70 are in the position the sign-in guard was in the
+    # day before -- green every run, never once watched to fail. Blocking, so
+    # a new check cannot ship without a self-test; advisory would put it in the
+    # same drawer as the account-id warning that was true and ignored for
+    # twelve days.
+    ("check_selftest_ratchet.py", True, False, False, False),
     ("check_publish_date.py",   True,  False, False, False),
 
     ("check_index_complete.py", True,  False, False, False),
