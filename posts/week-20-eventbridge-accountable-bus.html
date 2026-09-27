@@ -8,6 +8,10 @@ labels:
 slug: week-20-eventbridge-accountable-bus
 verified: '2026-09-24'
 verified_claims:
+  - claim: "Week 20 billed $0.0000281 in total: AWS CloudTrail $0.000013 and EventBridge (billed as CloudWatch Events) $0.0000151, both incurred 24 September 2026, with 25 and 26 September billing zero while every resource was still running"
+    source: "Cost Explorer, aws ce get-cost-and-usage --granularity DAILY --group-by SERVICE, read 26 September 2026 after AWS posted the charges"
+  - claim: "The week20-bus archive held 13 events in 1,096 bytes (1.1 KB) at a one-day retention, matching the 13 PutEvents records the trail captured"
+    source: "aws events describe-archive --archive-name week20-bus-archive (SizeBytes 1096, EventCount 13); trail objects read from S3 before teardown"
   - claim: "EventBridge PutEvents and PutPartnerEvents are data-plane operations; every other EventBridge API is a control-plane operation, and CloudTrail does not log data events by default"
     source: https://docs.aws.amazon.com/eventbridge/latest/userguide/logging-using-cloudtrail.html
   - claim: "EventBridge data-plane logging to CloudTrail became available on 4 May 2026 and must be configured; it is not on by default"
@@ -260,6 +264,10 @@ verified_claims:
   <div class="section" id="how">
     <h2>How We Built It &mdash; Step by Step</h2>
 
+    <p>Steps 1 to 7 are things you <em>write</em>. Nothing exists in AWS until step 8, which is a
+    single <code>terraform apply</code> where all of it appears at once. The order below is the order
+    to build it in, not a sequence of deployments.</p>
+
     <h3>Step 1 &mdash; Decide what "accountable" means before building it</h3>
 
     <p>Four questions, four mechanisms, each answering exactly one:</p>
@@ -274,9 +282,60 @@ verified_claims:
       </tbody>
     </table>
 
-    <h3>Step 2 &mdash; The trail, and the one line that decides the bill</h3>
+    <p>Write these down first. Each one costs something, and deciding afterwards means discovering
+    the cost after you are already paying it.</p>
 
-    <p><code>PutEvents</code> is a data-plane operation, so it needs an <strong>advanced event selector</strong>, and data events are charged. The third field selector is the one that matters:</p>
+    <h3>Step 2 &mdash; Create the bus</h3>
+
+    <p>One resource. Every account already has a bus called <code>default</code>, and it carries
+    events from AWS services whether you asked for them or not &mdash; which is why this week uses its
+    own, for the reason given under Architecture above.</p>
+
+    <pre><code>resource "aws_cloudwatch_event_bus" "this" {
+  name = var.bus_name          # week20-bus
+}</code></pre>
+
+    <h3>Step 3 &mdash; Turn on the archive and schema discovery</h3>
+
+    <p>Two more resources, both pointed at the bus. The archive keeps a copy of everything
+    <em>published</em>, which is not the same as everything delivered &mdash; it sits in front of the
+    rules, so it also keeps events no rule wanted. Schema discovery watches real traffic and writes
+    down the shape of each event type it sees.</p>
+
+    <p>Neither is passive. <strong>Each one silently installs a managed rule on your bus</strong>, because
+    that is how they consume from it &mdash; there is no privileged back channel. You will see the
+    result at step 8.</p>
+
+    <h3>Step 4 &mdash; Add the subscriber</h3>
+
+    <p>The normal path, and the only part of this build most systems have: a rule matching
+    <code>order.created</code>, pointed at a Lambda function. This is the path every dashboard
+    watches and the one that works.</p>
+
+    <h3>Step 5 &mdash; Catch both kinds of failure, because there are two</h3>
+
+    <p>A dead-letter queue on the target catches <strong>delivery</strong> failures: no permission, no
+    resource, throttling. It is what every tutorial configures.</p>
+
+    <p>It is not enough. Lambda targets are invoked <strong>asynchronously</strong> &mdash; EventBridge
+    hands the event over, Lambda accepts it, and delivery has already succeeded. If the function
+    then throws, the DLQ never hears about it. That needs a second queue, attached to the function
+    rather than to the rule:</p>
+
+    <pre><code>resource "aws_lambda_function_event_invoke_config" "consumer" {
+  function_name          = aws_lambda_function.consumer.function_name
+  maximum_retry_attempts = 0
+  destination_config { on_failure { destination = aws_sqs_queue.function_failures.arn } }
+}</code></pre>
+
+    <p>Two failure modes, two mechanisms. Section 2 of Challenges shows them behaving differently
+    on the same event.</p>
+
+    <h3>Step 6 &mdash; The trail, and the one line that decides the bill</h3>
+
+    <p><code>PutEvents</code> is a data-plane operation, so it needs an <strong>advanced event
+    selector</strong>, and data events are charged. The third field selector is the one that
+    matters:</p>
 
     <pre><code>advanced_event_selector {
   field_selector { field = "eventCategory"  equals = ["Data"] }
@@ -287,7 +346,10 @@ verified_claims:
   field_selector { field = "resources.ARN"  equals = [aws_cloudwatch_event_bus.this.arn] }
 }</code></pre>
 
-    <h3>Step 3 &mdash; Build the detection AWS does not give you</h3>
+    <p>Get that third line right before you apply, not after. An unscoped selector starts logging
+    and billing every <code>PutEvents</code> in the account immediately, and you cannot un-bill it.</p>
+
+    <h3>Step 7 &mdash; Build the detection AWS does not give you</h3>
 
     <p>EventBridge publishes a <code>MatchedEvents</code> metric <strong>per rule</strong>. There is no metric anywhere for <em>events that matched no rule at all</em> &mdash; the thing you actually want to know. An unmatched event is not an error; it is a successful publish with no subscriber, and AWS has no opinion about it.</p>
 
@@ -297,7 +359,10 @@ verified_claims:
 
     <p>That is a CloudWatch metric-math alarm, not a Lambda. <strong>And it is not free.</strong> Every event now goes to a log group as well as wherever it was going, and you pay ingestion and storage for it. You buy the visibility with a second delivery. Anyone presenting the catch-all as a neat trick without saying that is selling you something.</p>
 
-    <h3>Step 4 &mdash; Deploy it</h3>
+    <h3>Step 8 &mdash; Apply it</h3>
+
+    <p>Everything above becomes real here, in one run. The bus is created before the trail that watches it, because the trail references the bus ARN &mdash; so there is no window in which you could have instrumented first even if you wanted to.</p>
+
 
     <figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-20-eventbridge-accountable-bus/docs/blog/screenshots/01-hcp-run-applied.png" alt="HCP Terraform run list for week-20-dev showing the initial plan applied, with a resource count of 31">
@@ -309,7 +374,10 @@ verified_claims:
       <figcaption><strong>Four rules, and I wrote two of them.</strong> Turning on the archive and the discoverer silently installs a managed rule each &mdash; that is how those features consume from the bus. There is no privileged back channel; they subscribe like anything else. Every event is now evaluated against four rules, not two.</figcaption>
     </figure>
 
-    <h3>Step 5 &mdash; Who published it, and the half you do not get</h3>
+    <h3>Step 9 &mdash; Read the record</h3>
+
+    <p>Publish one event, then look at what the trail captured &mdash; and at what it deliberately did not.</p>
+
 
     <figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-20-eventbridge-accountable-bus/docs/blog/screenshots/04-cloudtrail-data-event.png" alt="CloudTrail trail detail page: management events not configured, data events set to EventBridge event bus with a custom selector reading Log PutEvents on week20-bus only">
