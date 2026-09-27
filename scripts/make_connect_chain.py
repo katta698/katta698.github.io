@@ -489,9 +489,16 @@ AWS_AGENTS = [("f4", "Kiro"), ("f4", "Claude Code"), ("f5", "Bedrock Agents"),
 AZ_AGENT = ("f2", "Copilot")
 GCP_AGENT = ("f3", "Antigravity")
 
-BEAT = 2.0                 # seconds from one row to the next
-VISIBLE = 1.5              # seconds a name stays legible
-MODEL_BEAT = 3.6           # the model keeps its own clock; see below
+# Four seconds on screen, because these are names to be read rather
+# than a texture to be felt. At a second and a half they went by before
+# you could finish "Secrets Manager", let alone pair it with Key Vault
+# across the road -- and pairing them is the entire point of the rows.
+# The lap is long as a result, about two and a half minutes for all
+# thirty-one, which is the right trade: a card nobody can read quickly
+# is worse than one that takes a while to get through.
+BEAT = 4.6                 # seconds from one row to the next
+VISIBLE = 4.0              # seconds a name stays legible
+MODEL_BEAT = 5.4           # the model keeps its own clock; see below
 EVERY = 5                  # a row of agents after this many rows of services
 
 
