@@ -1,0 +1,320 @@
+---
+title: "GCP Architecture Series #45 — Workload Identity for GKE"
+date: '2026-09-27T09:00:00'
+slug: gcp-architecture-workload-identity-gke
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-09-27'
+verified_claims:
+  - claim: "Google Cloud manages the workload identity pool and provider for you"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "Creates a fixed workload identity pool"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "delete this workload identity pool even if you delete all of the clusters in your project"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "which intercepts credential requests from workloads, on every node"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "grant your workloads any additional IAM permissions"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "All Pods in a namespace, regardless of service account or cluster"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "Select the ServiceAccount by UID"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "asks the Kubernetes API server for a Kubernetes ServiceAccount token that identifies the requesting workload"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "uses Security Token Service to exchange the JWT for a short-lived federated access token"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "GKE still uses the configured IAM service account for the node pool to pull container images from the image registry"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "The Exchange Token API in Security Token Service has a quota limit of 6,000 requests per minute"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "GKE automatically routes requests from these Pods to the Compute Engine metadata server"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "The GKE metadata server takes a few seconds to start accepting requests on a newly created Pod"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "In most cases, Workload Identity Federation for GKE is the recommended way"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+  - claim: "you can optionally configure service account impersonation"
+    source: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+problem: "#44 made you responsible for the trust boundary, because a shared issuer proved only that a token came from GitHub. GKE removes that problem entirely — Google Cloud manages the pool and the provider for you, so there is no external IdP, no attribute mapping and no condition to forget. The risk moves somewhere less obvious: the pool belongs to the project, not the cluster."
+builds: "What enabling it actually creates, the four principal identifiers and which of them is wider than it looks, the credential flow through the metadata server, and two ways a Pod ends up authenticating as something else."
+catch: "A namespace principal grants to all Pods in that namespace regardless of service account or cluster. The pool is per-project, so the grant reaches a namespace of the same name in every cluster in the project — including one created next year by somebody else."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #045 &middot; IAM</div>
+  <h1 class="post-title">Workload Identity for GKE</h1>
+  <p class="post-subtitle">No external provider, no mapping, no condition to forget. The scope surprise is in the identifier instead.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>Google Cloud &middot; IAM &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #43 and #44 federated with identity providers you do not control. This one Google runs for you, which removes three classes of mistake and introduces a different one.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"We granted the namespace, so it covers that namespace in this cluster"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It covers more than that. The namespace identifier selects all Pods in a namespace, <em>regardless of service account or cluster</em> &mdash; and the pool is per-project, so a namespace called <code>prod</code> in any cluster in that project matches.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Grant to a Kubernetes ServiceAccount rather than a namespace unless you genuinely mean every Pod in every cluster. If you need cluster scope, there is a separate identifier for it.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"We enabled it on the cluster, so the workloads have access now"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Enabling Workload Identity Federation for GKE on the cluster does not grant your workloads any additional IAM permissions. It creates the identities; the allow policies are still yours to write.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat enabling as plumbing and granting as a separate, deliberate step &mdash; which is the same separation #39 drew between an account existing and an account being permitted.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"Now we can strip the node service account"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Not entirely. Even with Workload Identity Federation for GKE configured, GKE still uses the configured IAM service account for the node pool to pull container images from the image registry.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Reduce the node service account to image-pull rights rather than removing it. An empty one produces <code>ImagePullBackOff</code>, which looks nothing like an IAM problem.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"Every Pod in the cluster authenticates the same way"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Not the ones on the host network. Pods with <code>hostNetwork: true</code> do not use Workload Identity Federation for GKE &mdash; GKE automatically routes requests from these Pods to the Compute Engine metadata server, so they authenticate as the <em>node</em>.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Audit for <code>hostNetwork: true</code> alongside your IAM review. One field in a Pod spec changes which identity the workload has.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      In most cases, Workload Identity Federation for GKE is the recommended way for workloads on GKE to reach Google Cloud services. The reason it is simpler than #43 and #44 is one sentence: in GKE, <strong>Google Cloud manages the workload identity pool and provider for you</strong>, and does not require an external identity provider.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-045-workload-identity-gke.svg" alt="Diagram: what enabling Workload Identity Federation for GKE creates, the credential flow from application default credentials through the GKE metadata server and Security Token Service, the four principal identifiers and the namespace one that spans clusters, and the two cases where a Pod authenticates as the node instead" />
+      <figcaption>Google Cloud manages the pool and provider. The pool belongs to the project, which is where the scope surprise lives.</figcaption>
+    </figure>
+
+    <h3>What enabling it creates</h3>
+    <ul>
+      <li><strong>A fixed workload identity pool</strong> for the project, named <code>PROJECT_ID.svc.id.goog</code>. Note the scope in the name: project, not cluster.</li>
+      <li><strong>The cluster registered as an identity provider</strong> inside that pool.</li>
+      <li><strong>The GKE metadata server</strong>, which intercepts credential requests from workloads, on every node.</li>
+    </ul>
+    <p>
+      And it persists: GKE does not delete this workload identity pool even if you delete all of the clusters in your project. The pool outlives the clusters, which matters because the grants you wrote against it outlive them too.
+    </p>
+
+    <h3>The credential flow</h3>
+    <p>
+      Four steps, and the interesting part is who signs what:
+    </p>
+    <ol>
+      <li>Application Default Credentials asks the Compute Engine metadata server for a token &mdash; the workload does nothing special.</li>
+      <li>The GKE metadata server intercepts, and asks the Kubernetes API server for a Kubernetes ServiceAccount token that identifies the requesting workload. That JWT is signed by the API server.</li>
+      <li>The metadata server uses Security Token Service to exchange the JWT for a short-lived federated access token.</li>
+      <li>The workload uses it, with whatever the principal identifier can reach.</li>
+    </ol>
+    <p>
+      So the trust chain ends at the Kubernetes API server's signature. That is the thing GKE can vouch for and an external provider cannot, and it is why none of #44's issuer problems arise here.
+    </p>
+
+    <h3>Four identifiers, and one of them is wider than it reads</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Selects</th><th>Scope</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>A ServiceAccount <strong>by name</strong> &mdash; <code>/subject/ns/NAMESPACE/sa/SERVICEACCOUNT</code></td>
+          <td>All Pods using that ServiceAccount. The everyday choice.</td>
+        </tr>
+        <tr>
+          <td>A ServiceAccount <strong>by UID</strong> &mdash; <code>/kubernetes.serviceaccount.uid/UID</code></td>
+          <td>The same, but tied to that exact object rather than the name.</td>
+        </tr>
+        <tr>
+          <td>A <strong>namespace</strong> &mdash; <code>/namespace/NAMESPACE</code></td>
+          <td><strong>All Pods in a namespace, regardless of service account or cluster.</strong></td>
+        </tr>
+        <tr>
+          <td>A <strong>cluster</strong> &mdash; <code>/kubernetes.cluster/...</code></td>
+          <td>All Pods in one named cluster.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout amber">
+      <strong>The namespace identifier crosses clusters, because the pool is the project</strong>
+      <p>Read the third row against the first fact in this post. The pool is <code>PROJECT_ID.svc.id.goog</code> &mdash; one pool for the project, with every cluster registered inside it. So a grant to <code>/namespace/prod</code> does not mean "the prod namespace in this cluster". It means the prod namespace anywhere in the project: the staging cluster that also has a <code>prod</code> namespace, the cluster somebody creates next quarter, the cluster restored from a backup for an incident. Kubernetes namespace names are conventional and repeated by design, which is exactly what makes this dangerous &mdash; the names collide on purpose. If you want cluster scope, the fourth identifier exists and names the cluster explicitly.</p>
+    </div>
+
+    <h3>Name or UID, for the third time in this block</h3>
+    <p>
+      GKE offers both, and the choice is the one from #43 and #44 in new clothes. Select the ServiceAccount by name and a deleted-and-recreated ServiceAccount with the same name in the same namespace inherits the grant. Select the ServiceAccount by UID and it does not, because the UID is a different object.
+    </p>
+    <p>
+      Which is right depends on what you mean. A grant to <code>ns/prod/sa/database-reader</code> is a statement about a <em>role in the system</em> that should survive a redeploy &mdash; and redeploys recreate ServiceAccounts routinely, so the name is usually correct here. That is the opposite conclusion from #44, where the GitHub organisation name was the risky choice. The difference is who controls the namespace: your own cluster manifests, versus a public registry where somebody else can claim a released name.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Two Ways a Pod Authenticates as Something Else</h2>
+
+    <p>
+      Both are quiet, and both produce a working system that is not the one you configured.
+    </p>
+    <p>
+      <strong>Host network Pods.</strong> A Pod with <code>hostNetwork: true</code> does not use Workload Identity Federation for GKE at all &mdash; GKE automatically routes requests from these Pods to the Compute Engine metadata server. It therefore authenticates as the node's service account, with whatever that can do. Nothing errors, nothing warns; the Pod simply has a different identity from its neighbours in the same namespace. This is #41's attached-service-account problem in a new location: a workload inside the machine becomes the machine.
+    </p>
+    <p>
+      <strong>The first few seconds.</strong> The GKE metadata server takes a few seconds to start accepting requests on a newly created Pod, so attempts to authenticate within the first few seconds of a Pod's life might fail. That is a startup race, not a permissions problem, and it presents as an intermittent auth failure on cold starts &mdash; the kind of thing that gets diagnosed as a flaky IAM grant and papered over with a retry nobody documents.
+    </p>
+    <p>
+      There is also a capacity ceiling worth knowing before it surprises you: the Exchange Token API in Security Token Service has a quota limit of 6,000 requests per minute. Every Pod authenticating is an exchange, so a large cluster with short-lived Pods and no token caching can reach that, and the failure will look like an identity problem rather than a quota one.
+    </p>
+
+    <h3>What to do with this</h3>
+    <ol>
+      <li><strong>Prefer the ServiceAccount identifier</strong> to the namespace one. The namespace identifier is a project-wide grant wearing a cluster-shaped name.</li>
+      <li><strong>Use the cluster identifier when you mean a cluster.</strong> It exists precisely so the namespace one does not have to be misused for it.</li>
+      <li><strong>Audit Pod specs for <code>hostNetwork: true</code></strong> as part of an access review, not a networking one.</li>
+      <li><strong>Keep the node service account, minimised.</strong> Image pulls still use it.</li>
+      <li><strong>Expect a cold-start race</strong> and let the client library retry rather than treating it as a grant failure.</li>
+      <li><strong>Remember the pool outlives the clusters.</strong> Deleting every cluster leaves the pool and the grants written against it in place.</li>
+    </ol>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>How a GKE workload reaches Google Cloud</td>
+          <td>Workload Identity Federation for GKE</td>
+          <td>It is the recommended way in most cases.</td>
+        </tr>
+        <tr>
+          <td>Granting to a workload</td>
+          <td>The ServiceAccount identifier</td>
+          <td>The namespace one ignores both service account and cluster.</td>
+        </tr>
+        <tr>
+          <td>Granting to a whole cluster</td>
+          <td>The cluster identifier</td>
+          <td>It names the cluster; the namespace one does not.</td>
+        </tr>
+        <tr>
+          <td>Name or UID for a ServiceAccount</td>
+          <td>Name, usually</td>
+          <td>Redeploys recreate ServiceAccounts, and you control the namespace.</td>
+        </tr>
+        <tr>
+          <td>The node service account</td>
+          <td>Keep it, minimised</td>
+          <td>Image pulls still use it.</td>
+        </tr>
+        <tr>
+          <td>A Pod on the host network</td>
+          <td>Expect the node identity</td>
+          <td>Those requests go to the Compute Engine metadata server.</td>
+        </tr>
+        <tr>
+          <td>Intermittent auth failure at startup</td>
+          <td>Retry, do not re-grant</td>
+          <td>The metadata server takes a few seconds on a new Pod.</td>
+        </tr>
+        <tr>
+          <td>A service with federation limitations</td>
+          <td>Service account impersonation</td>
+          <td>It is the documented fallback for those services.</td>
+        </tr>
+        <tr>
+          <td>Very high Pod churn</td>
+          <td>Watch the STS quota</td>
+          <td>6,000 token exchanges per minute is the limit.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Three posts of federation have moved the same risk around rather than removing it. With AWS, Google verifies the credential by asking AWS, and the boundary comes free. With GitHub, the issuer proves almost nothing and the boundary is a CEL expression you have to remember. With GKE, Google Cloud manages the pool and provider itself, the API server's signature is the trust, and there is nothing to map or condition &mdash; so the risk reappears as a naming question: which of four identifiers did you use, and how wide is it really.
+    </p>
+    <p>
+      The namespace identifier is the one to be careful with, and it is careless in a specific way. It reads like a Kubernetes concept and behaves like a project-wide one, because the pool it lives in belongs to the project and every cluster registers into the same pool. Kubernetes encourages reusing namespace names across clusters &mdash; that is the whole point of namespaces &mdash; so the identifier is at its most dangerous in exactly the estates that are organised well. That has been the recurring shape of this block: the better the convention, the wider the grant that follows it.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#46 goes back to plain VMs for the mechanism GKE has been quietly falling back to all post: attached service accounts on Compute Engine &mdash; what the metadata server hands out, and why scopes are still there underneath IAM.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity" target="_blank" rel="noopener">About Workload Identity Federation for GKE</a></li>
+      <li><a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/workload-identity" target="_blank" rel="noopener">Configure Workload Identity Federation for GKE</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/workload-identity-federation" target="_blank" rel="noopener">Workload Identity Federation</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/principal-identifiers" target="_blank" rel="noopener">Principal identifiers</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/service-account-impersonation" target="_blank" rel="noopener">Service account impersonation</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/conditions-overview" target="_blank" rel="noopener">Overview of IAM Conditions</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
