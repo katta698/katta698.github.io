@@ -163,6 +163,13 @@ CHECKS = [
     # means a post cannot drift back later without a red run.
     ("check_figure_order.py",    True,  False, False, False),
 
+    # A section heading that names a form is a promise. "Architecture -- How It
+    # Fits Together" with only an ASCII <pre> under it, and "What You Need to
+    # Know -- Skills & Tools" with no list of either, both shipped in the GCP
+    # series and both were found by Jay reading the page. Presence only; this
+    # cannot judge whether a diagram is any good.
+    ("check_lab_post_shape.py",  True,  False, True,  True),
+
     # A post going live for the first time must carry today's date. Week 20 was
     # written on 24 Sep, reviewed for two days, and published on the 26th
     # reading "Sep 24" -- Jay found it on the site. Weeks 18 and 19 were written
