@@ -552,23 +552,30 @@ def _texts(target):
 def _keyframes(name, cycle, down, left):
     """One on-window, sized so both queues show a name for VISIBLE seconds.
 
+    OPACITY ONLY. These used to drift two pixels as they faded, which
+    was a nice touch and cost more than it was worth: an animated
+    transform gets its own composited layer, and there are ninety-eight
+    labels. Measured on the live page, that came to 164 animations and
+    173 layer promoters on a 1900-element page -- at 3x on a phone, more
+    texture memory than a contact card has any business asking for, and
+    the kind of thing that gets a tab killed.
+
+    The centring stays, as a STATIC transform on the element. A
+    transform that never changes does not promote anything; it is
+    animating one that does.
+
     The two queues are different lengths, so a duty written as a single
     percentage would mean a name lingering on the short one and flashing
     on the long one.
     """
     d = 100.0 * VISIBLE / cycle
-    y0, y1 = (-2, 2) if down else (2, -2)
-    x = "0" if left else "-50%"
     rows = ["@keyframes %s {" % name,
-            "  0%% { opacity: 0; transform: translate(%s, %dpx); }" % (x, y0),
-            "  %.2f%% { opacity: .95; transform: translate(%s, 0); }"
-            % (d * 0.16, x),
-            "  %.2f%% { opacity: .95; transform: translate(%s, %.1fpx); }"
-            % (d * 0.62, x, y1 * 0.5),
-            "  %.2f%% { opacity: 0; transform: translate(%s, %dpx); }"
-            % (d, x, y1),
-            "  100%% { opacity: 0; transform: translate(%s, %dpx); }" % (x, y1),
-            "}"]
+            "  0% { opacity: 0; }",
+            "  %.2f%% { opacity: .95; }" % (d * 0.16),
+            "  %.2f%% { opacity: .95; }" % (d * 0.62),
+            "  %.2f%% { opacity: 0; }" % d,
+            "  100% { opacity: 0; }"]
+    rows.append("}")
     return chr(10).join(rows)
 
 
