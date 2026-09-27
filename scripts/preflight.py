@@ -147,6 +147,24 @@ ADVISORY = {"validate_arch_post", "check_news_reserve", "check_contrast",
 #
 # The rest still run -- `python scripts/preflight.py` with no arguments -- and
 # should, before anything structural. The hook is the floor, not the ceiling.
+#
+# check_nav was removed from this set on 2026-09-27. It was in HOOK_BROWSER and
+# in ADVISORY at the same time, which is the worst combination available: the
+# hook ran it on every push from every worktree, run_one() retried it because it
+# failed, and then its verdict was discarded because it is advisory. The comment
+# above ADVISORY already records why it fails here -- a socket error in the
+# transport against the local test server, an environment fault rather than a
+# defect in the site -- so the cost was two PER_CHECK_TIMEOUT windows per push,
+# spent to learn nothing.
+#
+# What it cost, measured: AWS Architecture #65 spent 44 minutes across repeated
+# attempts before this change, and GCP Architecture #45 took 33 minutes the same
+# morning. Both were commits that were clean, rebased, and a fast-forward away
+# from landing. The gate was longer than the interval between commits on main,
+# so pushes lost a race they then re-ran from the start.
+#
+# It still runs in a full `python scripts/preflight.py`, which is where an
+# advisory check belongs: reported, not blocking a push and not costing one.
 HOOK_BROWSER = {
     "check_shell_consistency",   # the five bars agreeing
     "check_shift",               # nothing moving sideways after paint
@@ -154,7 +172,6 @@ HOOK_BROWSER = {
                                  # never looked at, and without a list of
                                  # element names a real shift can fall out of
     "check_brand",               # mark and wordmark identical
-    "check_nav",                 # every page reachable, the bar fits
     "check_music",               # the button actually plays
     "check_audio_glyph",         # ...once, and keeps playing across tabs
     "check_post_controls",       # ask, arrow and star not swallowed
@@ -268,9 +285,18 @@ def run_one(name):
     One retry only, and it is reported. A check that fails twice in a row is
     not luck, and a check that needs three goes is a check with a bug of its
     own that should be fixed rather than tolerated.
+
+    ADVISORY checks are not retried, added 2026-09-27. The retry exists to stop
+    a flaky failure blocking a push -- but an advisory check cannot block one,
+    so the second run buys nothing and costs up to another PER_CHECK_TIMEOUT.
+    Several of these are advisory precisely because they fail here for
+    environment reasons, which is exactly the case that always pays the retry.
+    They still run, and still print, on the first result.
     """
     code, out, secs = run_once(name)
     if code == 0:
+        return name, code, out, secs, False
+    if name in ADVISORY:
         return name, code, out, secs, False
     code2, out2, secs2 = run_once(name)
     if code2 == 0:
