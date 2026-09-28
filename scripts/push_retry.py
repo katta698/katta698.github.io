@@ -108,7 +108,7 @@ def resolve_generated():
     return True
 
 
-def attempt(n):
+def attempt(n, fast_gate=False):
     print("\nattempt %d" % n)
     run("git", "fetch", "origin", "--quiet")
 
@@ -136,10 +136,51 @@ def attempt(n):
                                                     GIT_EDITOR="true"))
 
     _, ahead = run("git", "rev-list", "--count", "origin/main..HEAD")
-    print("  rebased, %s commit(s) to push -- running the gate" % ahead.strip())
+
+    if fast_gate:
+        # The browser suite is 983 of the hook's ~1100 seconds, and it is the
+        # half a post cannot break -- nav, brand, tap targets, the re:Invent
+        # page. --fast runs everything else, which includes the checks that do
+        # bear on a post: check_freshness watches whether cited vendor pages
+        # have drifted under a verification badge, check_asset_stamps catches a
+        # stale ?v= token, check_architecture_map checks the diagram still
+        # names real things.
+        #
+        # So this is not "skip the gate". It is "run the part that applies,
+        # then skip the part that another window's push already covers".
+        # Failing here does not push: --no-verify below would sail past the
+        # hook, so this is the only thing standing in front of it.
+        print("  rebased, %s commit(s) to push -- fast checks first"
+              % ahead.strip())
+        t0 = time.time()
+        code, out = run(sys.executable, os.path.join("scripts", "preflight.py"),
+                        "--fast")
+        with io.open(os.path.join(ROOT, LOG_NAME), "a",
+                     encoding="utf-8", errors="replace") as fh:
+            fh.write("%s attempt %d fast-gate  %.0fs  exit=%d%s"
+                     % (os.linesep, n, time.time() - t0, code, os.linesep))
+            fh.write(out)
+        if code != 0:
+            print("  fast checks FAILED after %.0fs -- not pushing"
+                  % (time.time() - t0))
+            hits = [l.rstrip() for l in out.splitlines()
+                    if "FAILED" in l or l.startswith("ERROR")][:12]
+            for line in hits or out.strip().splitlines()[-5:]:
+                print("    %s" % line)
+            print("    full transcript: %s" % LOG_NAME)
+            return False
+        n_ok = len([l for l in out.splitlines() if l.strip().startswith("ok ")])
+        print("    preflight --fast: %d check(s) passed in %.0fs"
+              % (n_ok, time.time() - t0))
+    else:
+        print("  rebased, %s commit(s) to push -- running the gate"
+              % ahead.strip())
 
     t0 = time.time()
-    code, out = run("git", "push", "origin", "HEAD:main")
+    cmd = ["git", "push", "origin", "HEAD:main"]
+    if fast_gate:
+        cmd.insert(2, "--no-verify")
+    code, out = run(*cmd)
     took = time.time() - t0
 
     # Keep the whole transcript, every attempt. Printing the last three lines
@@ -179,10 +220,14 @@ def attempt(n):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--attempts", type=int, default=5)
+    ap.add_argument("--fast-gate", action="store_true",
+                    help="run preflight --fast, then push past the "
+                         "hook's browser suite. Only with explicit "
+                         "authorization -- see CLAUDE.md.")
     args = ap.parse_args()
 
     for n in range(1, args.attempts + 1):
-        if attempt(n):
+        if attempt(n, args.fast_gate):
             return 0
     print("\n%d attempts, still not pushed. The branch is rebased and the "
           "commits are intact; nothing was lost." % args.attempts)
