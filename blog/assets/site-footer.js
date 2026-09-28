@@ -1405,18 +1405,69 @@
       nav.addEventListener('transitionend', tone, { once: true });
     }, true);
 
+    /* The page stays where it was while the menu is over it.
+     * ---------------------------------------------------------------------
+     * Reported as "why when I scroll here does the background move?", and it
+     * moved because nothing was stopping it: the sheet is absolutely
+     * positioned over a page that is still perfectly scrollable, and on a
+     * phone the whole area below the sheet is page.
+     *
+     * Taking the body out of flow at its current offset is the part every
+     * browser honours, and the offset has to be put back on close or the
+     * reader is thrown to the top -- a worse bug than the one being fixed.
+     *
+     * iOS needs the second half. Safari keeps its own scroll on the document
+     * element and hands it any touch the sheet does not consume, so the page
+     * still slides about behind a body that is nailed down. Refusing the
+     * gesture outright off the sheet is what holds it. Non-passive, or
+     * preventDefault is ignored; and touches inside the sheet pass through,
+     * or a menu longer than the screen cannot be scrolled to its end.
+     */
+    var ckScrollY = 0;
+
+    function ckTouchMove(e) {
+      if (sheet.contains(e.target)) return;
+      if (e.cancelable) e.preventDefault();
+    }
+
+    function ckLock() {
+      ckScrollY = window.scrollY || window.pageYOffset || 0;
+      var b = document.body.style;
+      b.position = 'fixed';
+      b.top = (-ckScrollY) + 'px';
+      b.left = '0';
+      b.right = '0';
+      b.width = '100%';
+      document.addEventListener('touchmove', ckTouchMove, { passive: false });
+    }
+
+    function ckUnlock() {
+      var b = document.body.style;
+      if (b.position !== 'fixed') return;
+      document.removeEventListener('touchmove', ckTouchMove,
+                                   { passive: false });
+      b.position = '';
+      b.top = '';
+      b.left = '';
+      b.right = '';
+      b.width = '';
+      window.scrollTo(0, ckScrollY);
+    }
+
     function close() {
       if (sheet.hidden) return;
       sheet.hidden = true;
       btn.setAttribute('aria-expanded', 'false');
       btn.setAttribute('aria-label', 'Open the menu');
       document.documentElement.classList.remove('ck-open');
+      ckUnlock();
     }
     function open() {
       sheet.hidden = false;
       btn.setAttribute('aria-expanded', 'true');
       btn.setAttribute('aria-label', 'Close the menu');
       document.documentElement.classList.add('ck-open');
+      ckLock();
       /* Focus the PANEL, not the first link inside it.
        *
        * Focusing a link made the browser paint its own focus ring around it --
