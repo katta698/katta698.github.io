@@ -92,6 +92,23 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 28 September 2026 — covered by post #42
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Logically air-gapped vault support for FSx for NetApp ONTAP — the backups sit in an AWS Backup service owned account, which CloudTrail reports as shared outside your organization; always compliance-mode locked, 7-day minimum retention, KMS key immutable after creation, RAM sharing to individual account IDs only | AWS Backup | **#42** | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-backup-air-gapped-vault-fsx-ontap/) |
+| Face Liveness now returns Feedback Codes | Rekognition | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/rekognition-liveness-feedback-codes/) |
+| Retryable writes support | DocumentDB | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-documentdb-retryable-writes/) |
+| 5 MongoDB aggregation stages and change stream capabilities in 8.0.2 | DocumentDB | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-documentdb-8-0-2/) |
+| Future-dated Capacity Reservations now support postponing start dates | EC2 | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/ec2-fcr-postpone-start-date/) |
+| Grok 4.7 available on Bedrock | Bedrock | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-bedrock-grok-4-7/) |
+| Claude Sonnet 5.5 available on AWS, and separately on GovCloud (US) | Bedrock | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/claude-sonnet-5-5-aws/) |
+| September 2026 patch updates | Amazon Corretto | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-corretto-sept-2026-updates/) |
+
+Rekognition Face Liveness was the other strong candidate and was deliberately passed over: Architecture
+#67 published the same morning covers Rekognition's quotas, and two Rekognition posts in one day is a
+worse use of the slot than a backup-immutability piece. It stays open and is still worth writing.
+
 ## 24 September 2026 — covered by post #40
 
 | Item | Service | Status | Importance | Reference |
