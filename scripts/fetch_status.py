@@ -89,15 +89,35 @@ def get(url, timeout=45):
 
 
 def flat(s, limit=500):
-    s = html.unescape(s or "")
-    """Collapse whitespace and strip Markdown headings.
+    """Collapse whitespace, strip Markdown headings, and drop HTML tags.
 
     Google writes its updates in Markdown, so an update opens with
     "## Preliminary Incident Report" and renders that literally in HTML that
     does not process Markdown. Only the heading markers are removed -- the
     prose is the vendor's and is shown as written.
+
+    Azure writes its updates in HTML, and that is why the tags are removed
+    rather than passed through. The page escapes whatever it is given, so a
+    stored "<p>We are investigating" was displayed to the reader as those
+    characters. Passing the markup through to be rendered instead is the
+    other way to make the symptom go away and is the wrong one: it is
+    vendor-controlled markup in our page, it can arrive unbalanced -- the
+    observed record carried an empty <strong> </strong> -- and the card's
+    own typography is not the vendor's to set.
+
+    Block boundaries become a space before the tags go, or the last word of
+    one paragraph and the first of the next are run together into one.
+
+    Only real tag names are removed, not everything between angle
+    brackets. A vendor writing &lt;X-Request-Id&gt; means those characters,
+    and a blanket <[^>]+> deletes the phrase after the entities are
+    decoded -- silently, and in prose about headers and placeholders that
+    is exactly where it would happen.
     """
-    s = re.sub(r"^#{1,6}\s*", "", (s or "").strip(), flags=re.M)
+    s = html.unescape(s or "")
+    s = re.sub(r"(?i)</(?:p|div|li|tr|h[1-6]|blockquote|section|article)\s*>|<br\s*/?>", " ", s)
+    s = re.sub(r"(?i)</?(?:p|div|span|strong|b|i|em|u|a|br|ul|ol|li|h[1-6]|table|tr|td|th|tbody|thead|tfoot|pre|code|blockquote|img|hr|small|sub|sup|font|section|article|header|footer|figure|figcaption)\b[^>]*>", "", s)
+    s = re.sub(r"^#{1,6}\s*", "", s.strip(), flags=re.M)
     return re.sub(r"\s+", " ", s).strip()[:limit]
 
 

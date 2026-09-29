@@ -269,8 +269,17 @@ def region_payload(history, live):
 
 
 def detag(text):
-    """Entity-decoded text, for records fetched before ingest decoded them."""
-    return html.unescape(text or "")
+    """Plain text, for records fetched before ingest cleaned them.
+
+    Decodes entities and removes HTML. The store holds updates written
+    before the fetcher stripped tags -- Azure's are full of them -- and the
+    page escapes what it renders, so without this the reader is shown the
+    vendor's markup as literal characters.
+    """
+    t = html.unescape(text or "")
+    t = re.sub(r"(?i)</(?:p|div|li|tr|h[1-6]|blockquote|section|article)\s*>|<br\s*/?>", " ", t)
+    t = re.sub(r"(?i)</?(?:p|div|span|strong|b|i|em|u|a|br|ul|ol|li|h[1-6]|table|tr|td|th|tbody|thead|tfoot|pre|code|blockquote|img|hr|small|sub|sup|font|section|article|header|footer|figure|figcaption)\b[^>]*>", "", t)
+    return re.sub(r"\s+", " ", t).strip()
 
 
 def write_timeline_index(history, live):
@@ -1090,13 +1099,13 @@ def incident_card(cloud, i):
 
     meta = "".join('<div class="k">%s</div><div>%s</div>' % (k, v) for k, v in rows)
     upd = ('<div class="upd"><span class="lab">Latest update, in the vendor’s '
-           'words</span>%s</div>' % e(i["update"])) if i.get("update") else ""
+           'words</span>%s</div>' % e(detag(i["update"]))) if i.get("update") else ""
     return ('<article class="inc"><div class="top">%s</div>'
             '<h3 class="ttl">%s</h3><div class="meta">%s</div>%s'
             '<div class="foot"><span>%d update%s published by the vendor</span>'
             '<a href="%s" target="_blank" rel="noopener">Vendor status page &rarr;</a>'
             '</div></article>'
-            % (chips, e(i.get("title", "")), meta, upd,
+            % (chips, e(detag(i.get("title", ""))), meta, upd,
                i.get("updates", 0), "" if i.get("updates") == 1 else "s",
                e(i.get("url", "#"))))
 
