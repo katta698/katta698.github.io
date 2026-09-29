@@ -49,6 +49,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -652,11 +653,27 @@ def main():
             declared = pg.evaluate(
                 "()=>document.querySelector('meta[name=theme-color]')"
                 ".getAttribute('content')")
-            pg.screenshot(path=os.path.join(ROOT, "_paper_top.png"))
-            ctx.close()
-            shot = np.asarray(Image.open(os.path.join(ROOT, "_paper_top.png"))
-                              .convert("RGB"), dtype=float)
-            os.remove(os.path.join(ROOT, "_paper_top.png"))
+            # Its own file, not a fixed name at the repo root. The hook
+            # runs checks two at a time and retries failures, so two runs
+            # of this check overlap -- and the shared path meant one could
+            # delete the image the other was still reading. Worse, a run
+            # that died between the write and the remove left a zero-byte
+            # file behind, and every later run opened THAT and failed with
+            # UnidentifiedImageError, which says nothing about the page and
+            # never clears itself.
+            fd, shot_path = tempfile.mkstemp(prefix="paper_top_",
+                                             suffix=".png")
+            os.close(fd)
+            try:
+                pg.screenshot(path=shot_path)
+                ctx.close()
+                shot = np.asarray(Image.open(shot_path).convert("RGB"),
+                                  dtype=float)
+            finally:
+                try:
+                    os.remove(shot_path)
+                except OSError:
+                    pass
             edge = np.median(shot[0:24].reshape(-1, 3), axis=0)
             want = tuple(int(declared.lstrip("#")[i:i + 2], 16)
                          for i in (0, 2, 4))
