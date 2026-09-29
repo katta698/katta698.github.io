@@ -63,10 +63,24 @@ GENERATED = (
 # Every push transcript, appended. Gitignored: it is a diagnostic, not content.
 LOG_NAME = "push-retry.log"
 
+# preflight --fast measures 155-190s. This is a ceiling, not an expectation:
+# on 2026-09-28 a --fast pass wedged and the push sat for 23 hours holding a
+# worktree, because nothing above it had a clock. preflight times out each
+# check at 420s but has no limit on the whole run, so that limit lives here.
+FAST_TIMEOUT = 900
+
 
 def run(*cmd, **kw):
-    p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", **kw)
+    timeout = kw.pop("timeout", None)
+    try:
+        p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           timeout=timeout, **kw)
+    except subprocess.TimeoutExpired as exc:
+        out = (exc.stdout or "") + (exc.stderr or "")
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        return 124, out + "\nTIMED OUT after %ss\n" % timeout
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
@@ -154,7 +168,7 @@ def attempt(n, fast_gate=False):
               % ahead.strip())
         t0 = time.time()
         code, out = run(sys.executable, os.path.join("scripts", "preflight.py"),
-                        "--fast")
+                        "--fast", timeout=FAST_TIMEOUT)
         with io.open(os.path.join(ROOT, LOG_NAME), "a",
                      encoding="utf-8", errors="replace") as fh:
             fh.write("%s attempt %d fast-gate  %.0fs  exit=%d%s"
