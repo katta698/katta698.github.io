@@ -1,0 +1,381 @@
+---
+title: 'Week 7 — Cloud Asset Inventory: The Rule I Wrote and Never Enforced'
+date: '2026-09-29T15:30:00'
+labels:
+- GCP
+- Terraform
+- GCP Weekly Lab
+slug: week-07-asset-inventory
+verified: '2026-09-29'
+verified_claims:
+  - claim: "Cloud Asset Inventory is a metadata inventory service that lets you export an asset snapshot from an organization, folder or project to a BigQuery table for analysis"
+    source: https://docs.cloud.google.com/asset-inventory/docs/export-bigquery
+  - claim: "Cloud Asset Inventory provides asset feeds that publish real-time notifications of asset changes to a Pub/Sub topic"
+    source: https://docs.cloud.google.com/asset-inventory/docs/asset-inventory-overview
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Platform Engineering Lab &middot; Week 7 of 58</div>
+  <div class="post-title">The rule I wrote and never enforced</div>
+  <div class="post-subtitle">Two weeks ago I built a constraint saying every project must live in a folder, and left it in dry run. This week I exported the whole organization into BigQuery and asked which projects break it. Two do &mdash; one of them mine, one of them a project I had forgotten existed.</div>
+  <div class="post-meta">
+    <span>29 September 2026</span>
+    <span>Cloud Asset Inventory &middot; BigQuery &middot; Pub/Sub</span>
+    <span>$0</span>
+  </div>
+</div>
+
+<div class="toc">
+  <h3>&#128203; In This Post</h3>
+  <ol>
+    <li><a href="#why">Why — The Problem This Solves</a></li>
+    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
+    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
+    <li><a href="#build">How We Built It — Step by Step</a></li>
+    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
+    <li><a href="#security">Security — Controls at Every Layer</a></li>
+    <li><a href="#cost">Cost</a></li>
+    <li><a href="#cleanup">Cleanup</a></li>
+    <li><a href="#references">References</a></li>
+    <li><a href="#takeaways">Key Takeaways</a></li>
+  </ol>
+</div>
+
+<div class="section" id="why">
+<h2>Why — The Problem This Solves</h2>
+
+<p>Six weeks of this lab have built a hierarchy: folders, projects, policies, a
+Shared VPC, a project factory, a billing export. Asked <em>what exists in this
+organization right now</em>, the only honest answer was to open the console and
+scroll.</p>
+
+<p>Fine at seven projects, useless at seventy &mdash; and it cannot answer the
+question that matters: <strong>which of the rules I have written are being
+broken right now?</strong> Cloud Asset Inventory turns the organization into a
+table you can query. This week wires it up and asks it two questions.</p>
+</div>
+
+<div class="section" id="skills">
+<h2>What You Need to Know — Skills &amp; Tools</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <h3>Google Cloud</h3>
+    <ul>
+      <li><strong>Cloud Asset Inventory</strong> — snapshots and feeds, at organization scope</li>
+      <li><strong>BigQuery</strong> — where the snapshot lands and gets queried</li>
+      <li><strong>Pub/Sub</strong> — where the feed publishes changes</li>
+      <li><strong>IAM service agents</strong> — the identity Google uses on your behalf</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Tooling</h3>
+    <ul>
+      <li><strong>Terraform</strong> — <code>google_cloud_asset_organization_feed</code></li>
+      <li><strong>HCP Terraform</strong> — remote runs, Workload Identity Federation</li>
+      <li><strong>gcloud asset export</strong> — the half that is not declarative</li>
+      <li><strong>Standard SQL</strong> — enough for <code>COUNT</code> and <code>ARRAY_LENGTH</code></li>
+    </ul>
+  </div>
+</div>
+
+<h3>Concepts to understand before starting</h3>
+
+<div class="tag-grid">
+  <span>Snapshot = what IS</span>
+  <span>Feed = what CHANGED</span>
+  <span>Google writes as itself</span>
+  <span>Creation-time rules are not retroactive</span>
+</div>
+</div>
+
+<div class="section" id="architecture">
+<h2>Architecture — How It Fits Together</h2>
+
+<svg viewBox="0 0 880 300" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="The organization feeds two destinations. A Terraform-managed asset feed watching Project and Folder changes publishes to a Pub/Sub topic in the logging project. A gcloud asset export writes a snapshot of every asset into a BigQuery table in the same project."
+     style="width:100%;height:auto;border:1px solid #e4e7ec;border-radius:8px">
+  <rect x="0" y="0" width="880" height="300" fill="#ffffff"/>
+  <defs>
+    <marker id="w7a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="28" font-family="Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#202124">Two shapes of the same data</text>
+
+  <rect x="26" y="98" width="180" height="90" rx="7" fill="#ffffff" stroke="#5f6368" stroke-width="1.3"/>
+  <text x="44" y="128" font-family="Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#202124">organization</text>
+  <text x="44" y="150" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">7 projects, 4 folders</text>
+  <text x="44" y="168" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">213 assets</text>
+
+  <path d="M 206 128 L 332 88" fill="none" stroke="#5f6368" stroke-width="1.4" marker-end="url(#w7a)"/>
+  <text x="214" y="100" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" font-weight="700" fill="#0F9D58">feed &#183; Terraform</text>
+
+  <path d="M 206 158 L 332 212" fill="none" stroke="#5f6368" stroke-width="1.4" marker-end="url(#w7a)"/>
+  <text x="212" y="196" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" font-weight="700" fill="#DB4437">export &#183; gcloud</text>
+
+  <rect x="338" y="52" width="270" height="74" rx="7" fill="#ffffff" stroke="#4285F4" stroke-width="1.2"/>
+  <text x="354" y="78" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">Pub/Sub &#183; asset-hierarchy-changes</text>
+  <text x="354" y="98" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">Project and Folder changes only</text>
+  <text x="354" y="114" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">delivered in under 25 seconds</text>
+
+  <rect x="338" y="178" width="270" height="74" rx="7" fill="#e6f4ea" stroke="#0F9D58" stroke-width="1.2"/>
+  <text x="354" y="204" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">BigQuery &#183; asset_inventory.hierarchy</text>
+  <text x="354" y="224" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">every asset, point in time</text>
+  <text x="354" y="240" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">table created by the export, not Terraform</text>
+
+  <text x="640" y="82" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">what CHANGED</text>
+  <text x="640" y="100" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">a stream, for reacting</text>
+  <text x="640" y="208" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">what IS</text>
+  <text x="640" y="226" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">a table, for asking</text>
+
+  <text x="20" y="284" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">Both land in the logging project, which already holds the billing export &#8212; so cost and inventory can be joined.</text>
+</svg>
+
+<p>The feed is a Terraform resource; the export is not. That is not a provider
+gap &mdash; a snapshot is an operation with a moment attached, not a thing you
+own. Run it twice and you get two different answers, neither of which is drift.</p>
+</div>
+
+<div class="section" id="build">
+<h2>How We Built It — Step by Step</h2>
+
+<h3>1. The Terraform, and how it deploys</h3>
+
+<p>Five resources: the API on two projects, a BigQuery dataset, a Pub/Sub topic,
+and the feed itself. The feed is the only interesting one.</p>
+
+<pre><code>resource "google_cloud_asset_organization_feed" "hierarchy" {
+  billing_project = var.seed_project_id
+  org_id          = var.org_id
+  feed_id         = "hierarchy-changes"
+  content_type    = "RESOURCE"
+
+  asset_types = [
+    "cloudresourcemanager.googleapis.com/Project",
+    "cloudresourcemanager.googleapis.com/Folder",
+  ]
+
+  feed_output_config {
+    pubsub_destination { topic = google_pubsub_topic.asset_changes.id }
+  }
+}</code></pre>
+
+<p>Two asset types, not everything &mdash; a hierarchy change is rare and
+meaningful, and worth not burying under every metadata write in the org.</p>
+
+<p><strong>Deployment is three commands</strong>, because the workspace holds
+everything else:</p>
+
+<pre><code>terraform init      # binds this directory to HCP workspace gcp-week-07
+terraform plan
+terraform apply</code></pre>
+
+<p>The run executes <em>in HCP Terraform</em>, not on my laptop. HCP mints an
+OIDC token for the run, Google exchanges it through a workload identity pool
+that trusts <code>app.terraform.io</code> under an attribute condition, and the
+run receives a short-lived token impersonating a service account. There is no
+service account key, and no Google credential on the machine that typed
+<code>apply</code>. Input variables &mdash; the organization ID, the project IDs
+&mdash; live in the workspace, which is why there is no <code>tfvars</code> file
+in the repository.</p>
+
+<p>Plan runs as a read-only identity and apply as a write-capable one, so a
+mistake fails before it can write. Mostly. See the challenges.</p>
+
+<h3>2. The snapshot, which is not Terraform</h3>
+
+<pre><code>gcloud asset export \
+  --organization="$ORG_ID" \
+  --content-type=resource \
+  --bigquery-table="projects/$PROJECT/datasets/asset_inventory/tables/hierarchy" \
+  --output-bigquery-force</code></pre>
+
+<p>Asynchronous: gcloud returns an operation name and the rows appear a minute
+later. <code>--output-bigquery-force</code> overwrites rather than appends,
+because appending would turn the table into overlapping pictures with no column
+saying which is which.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-07-asset-inventory/docs/blog/screenshots/02-bq-snapshot.png"
+       alt="The hierarchy table in BigQuery showing its schema: name, asset_type, resource, ancestors and update_time"/>
+  <figcaption>Terraform made the dataset; the export made this table. The field
+  that matters is <code>ancestors</code> &mdash; a repeated column of the
+  resource's parents, which turns "which projects are not in a folder" into one
+  line of SQL.</figcaption>
+</figure>
+
+<h3>3. Asking the two questions</h3>
+
+<p>First: <strong>which projects sit outside a folder?</strong> A project's
+<code>ancestors</code> array is itself, then its parents, so a project directly
+under the organization has exactly two.</p>
+
+<pre><code>SELECT JSON_VALUE(resource.data, '$.projectId') AS project_id,
+       ARRAY_LENGTH(ancestors)                  AS depth
+FROM `…asset_inventory.hierarchy`
+WHERE asset_type = 'cloudresourcemanager.googleapis.com/Project'
+
+project_id                 state             depth
+dev-adapter-506301-k1      ACTIVE                2   ← at the org root
+katta698-gcp-lab-seed      ACTIVE                2   ← at the org root
+katta698-gcp-dev-app-01    DELETE_REQUESTED      4
+katta698-gcp-dev-app-02    ACTIVE                4
+katta698-gcp-logging       ACTIVE                3
+katta698-gcp-net-hub       ACTIVE                3
+katta698-gcp-security      ACTIVE                3</code></pre>
+
+<p>In Week 5 I wrote a custom organization policy constraint requiring a project
+ID to start with the org prefix <em>and</em> its parent to be a folder. It is
+still in dry run. Both of these projects predate it, <code>dev-adapter-506301-k1</code>
+breaks the naming half as well, and I had genuinely forgotten it existed.</p>
+
+<p>Second: <strong>are there any service account keys?</strong> This lab's
+standing rule is none, ever. The naive query says two, which is alarming for
+about fifteen seconds:</p>
+
+<pre><code>service_account   key_type         key_origin
+…719141           SYSTEM_MANAGED   GOOGLE_PROVIDED
+…820355           SYSTEM_MANAGED   GOOGLE_PROVIDED</code></pre>
+
+<p>Both are Google's own rotating signing keys, not downloadable credentials.
+User-managed keys: zero. The inventory answered exactly what I asked, which was
+not quite what I meant.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-07-asset-inventory/docs/blog/screenshots/04-asset-dashboard.png"
+       alt="The Cloud Asset Inventory console dashboard showing resource counts by type and by project"/>
+  <figcaption>The console view of the same data &mdash; and a warning.
+  <strong>"Overview data last updated: September 23"</strong>, six days stale,
+  next to an export that was minutes old. The counts disagree accordingly. For a
+  question that matters, query the snapshot.</figcaption>
+</figure>
+
+<h3>4. Testing the feed</h3>
+
+<p>A subscription has to exist before the change, or there is nothing to catch.
+Then: create a folder, wait, pull.</p>
+
+<pre><code>assetType  : cloudresourcemanager.googleapis.com/Folder
+name       : //cloudresourcemanager.googleapis.com/folders/336002261512
+displayName: week07-feed-test
+window     : 2026-09-29T20:05:27.608Z</code></pre>
+
+<p><strong>Under 25 seconds</strong> from folder creation to message. Deleting
+it produced another. The test folder is now in <code>DELETE_REQUESTED</code> and
+purges itself.</p>
+</div>
+
+<div class="section" id="challenges">
+<h2>Challenges — What Actually Went Wrong</h2>
+
+<div class="challenge-card">
+  <h3>1. Google writes as itself, not as you</h3>
+  <p>Three separate 403s, all the same cause: Cloud Asset Inventory delivers to
+  every destination as its own service agent, and being project <em>owner</em>
+  on that destination does not help. The agent needs
+  <code>pubsub.publisher</code> on the topic, <code>bigquery.dataEditor</code>
+  on the dataset and <code>bigquery.jobUser</code> on the project.</p>
+  <p>A shape rather than three facts: when a Google service writes somewhere
+  for you, check what <em>it</em> may do, not what you may.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>2. The same product, two very different errors</h3>
+  <p>Creating the feed without the publisher binding names the service account,
+  the exact permission and the resource. The identical missing-grant condition on
+  the BigQuery destination returns <code>The caller does not have permission</code>
+  and nothing else &mdash; no details array, no field.</p>
+  <p>Same service, same afternoon. When you get the useless one, the fastest
+  route is a guess you can test in one call, not more documentation.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>3. There is no read-only role that can read a feed</h3>
+  <p><code>roles/cloudasset.viewer</code> does not carry
+  <code>cloudasset.feeds.get</code>. Only <code>roles/cloudasset.owner</code>
+  does, and that also grants create, update and delete. Every HCP apply runs a
+  plan first, so the plan identity had to be given owner or the resource could
+  not be managed at all.</p>
+  <p>Plan is read-only everywhere else in this lab. That guarantee now has one
+  hole, written into the CI config rather than left to be discovered.</p>
+</div>
+</div>
+
+<div class="section" id="security">
+<h2>Security — Controls at Every Layer</h2>
+
+<p><strong>The audit is the control.</strong> Six weeks of guardrails were all
+preventive &mdash; policies refusing things at creation. This is the first
+detective one, and it immediately found two resources no policy would ever have
+caught.</p>
+
+<p><strong>The feed scope is narrow on purpose.</strong> Projects and folders
+only. A feed on everything is an alert that fires constantly, which is an alert
+nobody reads.</p>
+
+<p><strong>A human cannot borrow the CI identity.</strong> The apply service
+account is impersonatable only by HCP's principal set, never by a person &mdash;
+so running the export by hand cost me one read-only grant of my own.</p>
+</div>
+
+<div class="section" id="cost">
+<h2>Cost</h2>
+
+<p><strong>$0.</strong> Cloud Asset Inventory exports and feeds are free. The
+snapshot is 213 rows of BigQuery storage, far below the 10 GiB free tier, and
+the topic has no subscriber so nothing accumulates in it.</p>
+
+<p>Both destinations share a project with Week 6's billing export, so cost and
+inventory are one join apart &mdash; what a resource is, and what it charged.</p>
+</div>
+
+<div class="section" id="cleanup">
+<h2>Cleanup</h2>
+
+<p><strong>This week is exempt from teardown.</strong> A feed has value only
+while it runs, and the snapshot is what later weeks compare against. Destroying
+it removes the ability to answer the question it was built for.</p>
+
+<p>If you do tear it down, delete the feed before the topic. A feed pointing at a
+topic that no longer exists does not error; it simply stops delivering, which is
+the failure mode you would least like to discover by noticing nothing.</p>
+</div>
+
+<div class="section" id="references">
+<h2>References</h2>
+
+<ul>
+  <li><a href="https://docs.cloud.google.com/asset-inventory/docs/asset-inventory-overview">Cloud Asset Inventory overview</a> &mdash; snapshots, feeds, and the 35-day history window.</li>
+  <li><a href="https://docs.cloud.google.com/asset-inventory/docs/export-bigquery">Export asset metadata to BigQuery</a> &mdash; the export as an operation, with no declarative form.</li>
+  <li><a href="https://docs.cloud.google.com/asset-inventory/docs/release-notes">Release notes</a> &mdash; checked before writing code; current, not renamed, adding resource types only.</li>
+</ul>
+
+<p><strong>Not answered anywhere I looked, and measured instead:</strong> that
+the service agent needs three separate grants on the destinations; that no
+read-only role can read a feed; and that a feed delivers in under 25 seconds.</p>
+</div>
+
+<div class="section" id="takeaways">
+<h2>Key Takeaways</h2>
+
+<ul>
+  <li><strong>A creation-time rule says nothing about what already exists.</strong>
+  Policies govern what comes next. Finding out what came before is a different
+  tool, and you need both.</li>
+  <li><strong>Check what the service is allowed to do, not what you are.</strong>
+  Owner on the destination bought me nothing three times in one afternoon.</li>
+  <li><strong>The naive query is usually the wrong query.</strong> "Two service
+  account keys" and "zero user-managed keys" are the same data, and only one of
+  them is the answer.</li>
+  <li><strong>Query the source, not the dashboard.</strong> The console summary
+  was six days stale while sitting next to live data.</li>
+</ul>
+
+<p>Next week: what the hierarchy is actually doing &mdash; logs, sinks, and
+getting them somewhere they can be read.</p>
+</div>
+
+</div>
