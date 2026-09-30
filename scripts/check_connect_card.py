@@ -243,12 +243,20 @@ def figures_never_flicker(pg):
         pg.evaluate(SCRUB, 26000.0 * i / 240.0 + 0.31)
         st = pg.evaluate("""sels => sels.map(sel => {
           const o = e => +getComputedStyle(e).opacity;
+          // Drawn, not merely opaque. The pose frames step with
+          // visibility rather than opacity -- an animated opacity made
+          // every frame its own compositing layer, and the handover
+          // between two layers is what blinked -- so a pose can sit at
+          // opacity 1 and be painted by nobody. Asking only about
+          // opacity here reported eight poses at once.
+          const shown = e => getComputedStyle(e).visibility !== 'hidden';
           let lit = [], group = '';
           for (const g of document.querySelectorAll(sel + ' > g')) {
             const go = o(g);
-            if (go < 0.02) continue;
+            if (go < 0.02 || !shown(g)) continue;
             group = g.getAttribute('class') || '';
             for (const pose of g.children) {
+              if (!shown(pose)) continue;
               const v = go * o(pose);
               if (v > 0.02) lit.push(v);
             }
