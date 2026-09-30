@@ -54,6 +54,22 @@ POSTS = os.path.join(ROOT, "posts")
 
 SERIES_LABEL = "GCP Weekly Lab"
 
+# Every lab post from this week on must show the files it was built from.
+# Asked for on 2026-09-30: prose describes what the Terraform does and never
+# shows a reader what was actually written, so "these are the scripts" has to be
+# visible. Earlier posts are left alone rather than retrofitted - the rule starts
+# where it was agreed.
+#
+# A rendered file tree, NOT a screenshot of the repository. The first attempt was
+# a GitHub directory listing and Jay rejected it for the right reason: anyone can
+# open the repo, and a list of filenames says nothing about what is in them. A
+# tree with line counts and a one-line purpose per file answers "how big is this
+# really" and "where would I look", which a screenshot of the same directory does
+# not.
+CODE_SHOT_FROM_WEEK = 7
+CODE_SHOT_MARKER = "The Terraform behind this week"
+WEEK_RE = re.compile(r"week-(\d+)")
+
 # section id -> (human name, regex that proves the promised shape is present)
 REQUIRED = {
     "architecture": (
@@ -82,8 +98,13 @@ def section(text, sid):
     return m.group(0) if m else None
 
 
-def check_text(text, name, report):
+def check_text(text, name, report, week=None):
     problems = []
+    if week is not None and week >= CODE_SHOT_FROM_WEEK and CODE_SHOT_MARKER not in text:
+        problems.append(
+            f"no file-tree block (expected a section headed '{CODE_SHOT_MARKER}' "
+            "listing each file, its line count and what it does)"
+        )
     for sid, (want, pattern) in REQUIRED.items():
         sec = section(text, sid)
         if sec is None:
@@ -111,12 +132,15 @@ def main():
                 '<div class="section" id="architecture"><h2>y</h2><svg></svg></div>')
         stripped = ('<div class="section" id="skills"><h2>x</h2><p>prose only</p></div>'
                     '<div class="section" id="architecture"><h2>y</h2><pre>ascii</pre></div>')
-        r1, r2 = [], []
-        ok = check_text(good, "synthetic-good", r1)
+        good_w7 = good + f"<h3>{CODE_SHOT_MARKER}</h3><pre><code>main.tf 174</code></pre>"
+        r1, r2, r3 = [], [], []
+        ok = check_text(good_w7, "synthetic-good", r1, CODE_SHOT_FROM_WEEK)
         bad = check_text(stripped, "synthetic-stripped", r2)
-        print("\n".join(r1 + r2))
-        if ok == 0 and bad == 2:
-            print("\nself-test passed: clean post passes, stripped post fails on both sections.")
+        nocode = check_text(good, "synthetic-no-code-shot", r3, CODE_SHOT_FROM_WEEK)
+        print("\n".join(r1 + r2 + r3))
+        if ok == 0 and bad == 2 and nocode == 1:
+            print("\nself-test passed: clean post passes, stripped post fails on both")
+            print("sections, and a post missing the file-tree block fails too.")
             return 0
         print("\nSELF-TEST FAILED: the check cannot detect the defect it exists for.")
         return 1
@@ -133,7 +157,8 @@ def main():
         if SERIES_LABEL not in front_matter(text):
             continue
         checked += 1
-        failures += check_text(text, fn, report)
+        m = WEEK_RE.search(fn)
+        failures += check_text(text, fn, report, int(m.group(1)) if m else None)
 
     print("\n".join(report))
     print(f"\n{checked} {SERIES_LABEL} post(s) checked.")
