@@ -1,0 +1,214 @@
+---
+title: 'Week 7 — CI That Deploys to Azure With No Password Anywhere'
+date: '2026-09-30T10:00:00'
+labels:
+- Azure
+- Terraform
+- Azure Weekly Lab
+slug: week-07-workload-identity
+---
+<div id="jk-post">
+
+<div class="meta">
+  <span class="stack-badge">Workload Identity</span>
+  <span class="stack-badge">Managed Identity</span>
+  <span class="stack-badge">OIDC</span>
+  <span class="stack-badge">GitHub Actions</span>
+  <span class="stack-badge">Terraform</span>
+</div>
+
+<div class="post-eyebrow">Azure Platform Engineering Lab · Week 7 of 52</div>
+
+<h1>Week 7 — CI That Deploys to Azure With No Password Anywhere</h1>
+
+<p class="post-subtitle">GitHub Actions authenticates to Azure, reads the
+subscription, and is refused when it tries to create anything. There is no
+secret in the repository — not a hidden one, not a rotated one. None exists.</p>
+
+<div class="post-meta">
+  <span>30 September 2026</span>
+  <span>Terraform · HCP Terraform, local execution</span>
+  <span>$0.00 — nothing here bills</span>
+</div>
+
+<h2 id="why">What we're building</h2>
+
+<p>A CI pipeline that deploys to Azure without storing a credential. GitHub
+mints a short-lived token describing the run, Azure checks it against a trust
+configured once, and hands back an access token.</p>
+
+<p>The point is not that the secret is well hidden. It is that <strong>no
+password is ever created</strong>, so there is nothing to leak, rotate, or find
+in a repo three years later.</p>
+
+<h2 id="architecture">Architecture</h2>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-07-workload-identity/docs/blog/diagrams/week-07-architecture.svg" alt="Diagram: a GitHub Actions run mints an OIDC token describing the repository and branch. Entra checks it against a federated credential on a user-assigned managed identity, matching issuer, audience and an exact subject, then returns an Azure access token carrying only the Reader role." style="width:100%;max-width:900px" /></p>
+
+<h2 id="terraform">The Terraform</h2>
+
+<p>Four resources. The identity has to be <strong>user-assigned</strong> —
+federation does not work with a system-assigned identity, because there is no
+Azure resource here to own one. The workload runs on GitHub's machines.</p>
+
+<pre><code>resource "azurerm_user_assigned_identity" "ci" {
+  name                = "id-wk07-github-ci-dev-scus-001"
+  resource_group_name = azurerm_resource_group.identity.name
+  location            = azurerm_resource_group.identity.location
+}
+
+resource "azurerm_federated_identity_credential" "main_branch" {
+  name                      = "github-main"
+  user_assigned_identity_id = azurerm_user_assigned_identity.ci.id
+
+  audience = ["api://AzureADTokenExchange"]
+  issuer   = "https://token.actions.githubusercontent.com"
+  subject  = "${var.github_subject_prefix}:ref:refs/heads/main"
+}
+
+resource "azurerm_role_assignment" "ci_reader" {
+  scope                = "/subscriptions/${var.subscription_id}"
+  role_definition_name = "Reader"          # not Contributor
+  principal_id         = azurerm_user_assigned_identity.ci.principal_id
+}</code></pre>
+
+<p><code>subject</code> is the security boundary, and it is <strong>exact-match,
+not a prefix</strong>. A different repo, or the same repo on a different branch,
+presents a different subject and is refused — which is why a fork raising a pull
+request cannot borrow this identity.</p>
+
+<p><strong>Reader, not Contributor.</strong> This workload reads. Granting more
+"so it works later" is how a CI identity quietly becomes the most powerful
+principal in a tenant.</p>
+
+<h2 id="build">How it gets deployed</h2>
+
+<p>Terraform, state in HCP Terraform, apply running locally:</p>
+
+<pre><code>./scripts/deploy.sh      # reads the subject prefix from GitHub, then applies
+./scripts/validate.sh    # 5 checks against the live identity
+./scripts/cleanup.sh     # destroys it and verifies against Azure</code></pre>
+
+<p>The deploy prints three identifiers, and they go into GitHub as repository
+<strong>variables</strong> — Settings → Secrets and variables → Actions →
+<em>Variables</em>:</p>
+
+<pre><code>AZURE_CLIENT_ID   AZURE_TENANT_ID   AZURE_SUBSCRIPTION_ID</code></pre>
+
+<p>Variables, not secrets. They are identifiers; knowing them grants nothing
+without a token GitHub will only mint for this repo on this branch. Three
+variables and zero secrets is the whole week on one settings page.</p>
+
+<h2 id="portal">What appeared in the portal</h2>
+
+<p>The identity, with no credential of any kind attached to it:</p>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-07-workload-identity/docs/blog/screenshots/02-managed-identity.png" alt="Azure portal overview for the user-assigned managed identity id-wk07-github-ci-dev-scus-001, showing its resource group, location and type, with client ID and object ID redacted" style="width:100%" /></p>
+
+<p>And the trust itself — one credential, GitHub as issuer, the subject carrying
+numeric IDs:</p>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-07-workload-identity/docs/blog/screenshots/01-federated-credential.png" alt="Azure portal federated credentials blade showing one credential named github-main, issuer token.actions.githubusercontent.com, and a subject identifier beginning repo:katta698@63027619" style="width:100%" /></p>
+
+<h2 id="testing">How it's tested</h2>
+
+<p><code>validate.sh</code> runs five checks. The one that matters is the
+fourth:</p>
+
+<pre><code>4. There is no secret to steal
+   password credentials on the identity's service principal: 0
+   RESULT: none - authentication is a federated token, minted per run
+
+5. The role is Reader, and only Reader
+   roles: Reader
+   RESULT: Reader alone - it can look, and cannot change anything
+
+── 5 passed, 0 failed ──</code></pre>
+
+<p>A managed identity <strong>cannot</strong> hold a password — the API has
+nowhere to put one. That is the difference from an app registration, where "no
+secret" is a discipline somebody has to keep.</p>
+
+<p>Then the workflow, on a real runner:</p>
+
+<pre><code>client id  : f8bfdca3-...          &lt;- a variable, not a secret
+secrets    : none configured for this repo
+
+── who am I ──
+Subscription    Tenant
+sub-lab-dev     29a908ac-...
+
+── what can I see ──
+rg-wk07-identity-dev-scus-001
+
+── what I cannot do (Reader, deliberately) ──
+refused, as designed - this identity reads and nothing more</code></pre>
+
+<p>The workflow asserts its own limit rather than assuming it: it attempts a
+resource group create and fails the build if that <em>succeeds</em>.</p>
+
+<h2 id="challenges">Challenges</h2>
+
+<p><strong>The first run failed at login, not at apply.</strong></p>
+
+<pre><code>AADSTS700213: No matching federated identity record found for presented
+assertion subject 'repo:katta698@63027619/Azure-Platform-Engineering-Lab@1342954118:ref:refs/heads/main'</code></pre>
+
+<p>GitHub now defaults to <strong>immutable subject claims</strong>: the owner
+and the repository each carry their numeric ID. That is deliberate — renaming or
+transferring a repo no longer carries the Azure trust with it. It also means the
+documented <code>repo:owner/repo</code> form is not what a runner presents, so a
+credential built from the names applies cleanly and matches nothing. The fix is
+to ask GitHub instead of assuming:</p>
+
+<pre><code>gh api repos/{owner}/{repo}/actions/oidc/customization/sub --jq '.sub_claim_prefix'</code></pre>
+
+<p><strong>A new HCP workspace defaults to remote execution.</strong> The plan
+ran on HCP's servers and failed with <code>az: executable file not found in
+$PATH</code> — which reads exactly like a local problem. There is no Azure CLI on
+HCP's runners and no credentials there either. Setting the workspace to local
+execution fixed it immediately.</p>
+
+<p><strong>azurerm 5.x changed the resource.</strong>
+<code>azurerm_federated_identity_credential</code> takes a single
+<code>user_assigned_identity_id</code> where 4.x took
+<code>resource_group_name</code> plus <code>parent_id</code>, so every example
+predating 5.0 fails on all three arguments at once.</p>
+
+<h2 id="security">Security</h2>
+
+<ul>
+  <li><strong>No secret exists</strong>, rather than no secret being committed.</li>
+  <li><strong>Tokens are minted per run</strong> and expire with it — nothing to rotate.</li>
+  <li><strong>Trust is pinned to one repo and one branch</strong>, with immutable
+  IDs so a rename cannot carry it.</li>
+  <li><strong>Reader only</strong>, asserted by the workflow rather than assumed.</li>
+  <li><code>permissions: id-token: write</code> is required, or GitHub never mints
+  a token and the error points at Azure instead of at the workflow.</li>
+</ul>
+
+<h2 id="cost">Cost and cleanup</h2>
+
+<p>Managed identities, federated credentials and role assignments are all free.
+<strong>This week cost $0.00.</strong></p>
+
+<p><code>cleanup.sh</code> destroys all four resources and then checks Azure
+directly — 0 resource groups, 0 identities, 0 orphaned role assignments. Not
+trusted from an exit code.</p>
+
+<h2 id="takeaways">Key takeaways</h2>
+
+<ul>
+  <li><strong>"No secret" should be a property, not a discipline.</strong> A
+  managed identity cannot hold a password. That is a stronger guarantee than
+  remembering not to create one.</li>
+  <li><strong>Federation needs a user-assigned identity.</strong> System-assigned
+  cannot do it, and the reason is structural rather than arbitrary.</li>
+  <li><strong>Ask GitHub for the subject.</strong> Immutable subject claims mean
+  the documented format is no longer what runners send, and the mismatch only
+  shows at login — long after a clean apply.</li>
+  <li><strong>Grant Reader and make the pipeline prove it.</strong> A test that
+  asserts what CI <em>cannot</em> do is worth more than one that asserts what it can.</li>
+</ul>
+
+</div>
