@@ -1,0 +1,287 @@
+---
+title: 'Week 21 - Blue/Green on ECS: The Rollback That Never Had To Happen'
+date: '2026-09-30T09:00:00'
+labels:
+- AWS
+- Terraform
+- AWS Weekly Lab
+slug: week-21-bluegreen-ecs
+draft: true
+verified: '2026-09-29'
+verified_claims:
+  - claim: "A NAT gateway in US East (N. Virginia) is priced at $0.045 per hour plus data processing charges, which is why this build places tasks in public subnets instead"
+    source: https://aws.amazon.com/vpc/pricing/
+  - claim: "CloudWatch alarms are priced at $0.10 per alarm per month, with the first 10 alarms free"
+    source: https://aws.amazon.com/cloudwatch/pricing/
+  - claim: "Running this build costs roughly $0.05 per hour with both versions live, and an Application Load Balancer left running is roughly $16 per month at $0.0225/hr"
+    source: "Derived from the published ALB and Fargate rates above: ALB $0.0225/hr plus two 0.25 vCPU / 0.5 GB Fargate tasks; 0.0225 x 730 = $16.43/month"
+  - claim: "Amazon ECS launched built-in blue/green deployments in July 2025 and added canary and linear strategies in October 2025, reaching feature parity with CodeDeploy; as of March 2026 AWS recommends ECS-native as the default for new projects"
+    source: https://aws.amazon.com/blogs/devops/choosing-between-amazon-ecs-blue-green-native-or-aws-codedeploy-in-aws-cdk
+  - claim: "Application Load Balancer in US East (N. Virginia) is priced at $0.0225 per hour plus $0.008 per LCU-hour"
+    source: https://aws.amazon.com/elasticloadbalancing/pricing/
+  - claim: "AWS Fargate in US East (N. Virginia) is priced at $0.04048 per vCPU-hour and $0.004445 per GB-hour for Linux/x86 on-demand"
+    source: https://aws.amazon.com/fargate/pricing/
+  - claim: "Terraform AWS provider support for aws_ecs_service deployment_configuration with strategy BLUE_GREEN, bake_time_in_minutes and lifecycle_hook was added in provider version 6.4.0"
+    source: https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ecs_service
+  - claim: "The IAM managed policy AmazonECSInfrastructureRolePolicyForLoadBalancers has the ARN arn:aws:iam::aws:policy/AmazonECSInfrastructureRolePolicyForLoadBalancers, with no /service-role/ path, unlike AmazonECSTaskExecutionRolePolicy"
+    source: "aws iam list-policies --scope AWS, 1,582 policies enumerated and searched, 2026-09-29"
+  - claim: "During the v1-to-v2 release the cutover became visible to a client at t+182s, with 62 requests served v1 and 86 served v2 and no failed requests"
+    source: "watch_shift.sh polling the ALB every 2s, 2026-09-29"
+  - claim: "During the deliberately broken v3 deployment all 214 client requests were served by the previous version, the tasks failed the target group health check with Target.ResponseCodeMismatch, and the CloudWatch 4xx alarm recorded no state change"
+    source: "watch_shift.sh, aws ecs describe-services events, and aws cloudwatch describe-alarm-history, 2026-09-29"
+---
+
+  <div class="section" id="why">
+    <h2>Why &mdash; The Problem This Solves</h2>
+
+    <p>You have a website running. You want to put a new version of it live. The obvious way is
+    to stop the old one and start the new one, which means a gap where the site is down, and no
+    way back if the new version turns out to be broken except doing the whole thing again in
+    reverse.</p>
+
+    <p>Blue/green is the other way. Start the new version alongside the old one, wait until it
+    looks healthy, then point the front door at it. The old version stays running for a while.
+    If something is wrong, you point the door back &mdash; no redeploy, no gap.</p>
+
+    <p>The half everyone builds is the traffic switch. The half almost nobody tests is the
+    pointing back. This week built both and then deliberately shipped a broken release to see
+    which part actually saved us.</p>
+  </div>
+
+  <div class="section" id="what">
+    <h2>What You Need to Know &mdash; Skills &amp; Tools</h2>
+
+    <ul>
+      <li><strong>Amazon ECS on Fargate</strong> &mdash; runs containers with no servers to manage</li>
+      <li><strong>Application Load Balancer</strong> &mdash; the front door; it points at one of two target groups</li>
+      <li><strong>ECS native blue/green</strong> &mdash; ECS shipped this in July 2025, canary and linear in October 2025. As of March 2026 AWS recommends it over CodeDeploy for new work, so there is no CodeDeploy here</li>
+      <li><strong>Terraform + HCP Terraform</strong> &mdash; the AWS provider needs <strong>6.4.0 or later</strong> for the blue/green block</li>
+    </ul>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture &mdash; How It Fits Together</h2>
+
+    <p>One load balancer, two target groups, one service that moves between them.</p>
+
+<svg viewBox="0 0 900 340" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="A client sends requests to an Application Load Balancer. The load balancer has one listener rule that points at either the blue target group or the green target group. An ECS service on Fargate runs task sets registered to those target groups, and during a deployment ECS rewrites the listener rule to switch which target group receives traffic. A CloudWatch alarm on 4xx responses is wired to the service for automatic rollback."
+     style="width:100%;height:auto;max-width:900px;display:block;margin:18px auto">
+  <rect x="0" y="0" width="900" height="340" fill="#ffffff"/>
+  <rect x="24" y="130" width="120" height="58" rx="8" fill="#f4f6f8" stroke="#c9d1d9"/>
+  <text x="84" y="155" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#16191f" text-anchor="middle">Client</text>
+  <text x="84" y="173" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#5f6b7a" text-anchor="middle">curl / browser</text>
+
+  <line x1="144" y1="159" x2="208" y2="159" stroke="#8a94a0" stroke-width="2"/>
+  <polygon points="208,159 200,155 200,163" fill="#8a94a0"/>
+
+  <rect x="210" y="118" width="160" height="82" rx="8" fill="#fff5f0" stroke="#FF9900" stroke-width="1.6"/>
+  <text x="290" y="144" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#16191f" text-anchor="middle">Application</text>
+  <text x="290" y="161" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#16191f" text-anchor="middle">Load Balancer</text>
+  <text x="290" y="182" font-family="Helvetica, Arial, sans-serif" font-size="10.5" fill="#5f6b7a" text-anchor="middle">one listener rule</text>
+
+  <line x1="370" y1="140" x2="452" y2="92" stroke="#8a94a0" stroke-width="2"/>
+  <polygon points="452,92 443,93 447,100" fill="#8a94a0"/>
+  <line x1="370" y1="178" x2="452" y2="226" stroke="#8a94a0" stroke-width="2" stroke-dasharray="5 4"/>
+  <polygon points="452,226 447,218 443,225" fill="#8a94a0"/>
+
+  <rect x="455" y="58" width="180" height="66" rx="8" fill="#eef7ff" stroke="#3b82f6" stroke-width="1.6"/>
+  <text x="545" y="83" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#16191f" text-anchor="middle">blue target group</text>
+  <text x="545" y="102" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#5f6b7a" text-anchor="middle">current version</text>
+
+  <rect x="455" y="196" width="180" height="66" rx="8" fill="#f1fbf4" stroke="#1a7f37" stroke-width="1.6"/>
+  <text x="545" y="221" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#16191f" text-anchor="middle">green target group</text>
+  <text x="545" y="240" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#5f6b7a" text-anchor="middle">new version</text>
+
+  <line x1="635" y1="91" x2="700" y2="130" stroke="#8a94a0" stroke-width="2"/>
+  <line x1="635" y1="229" x2="700" y2="190" stroke="#8a94a0" stroke-width="2"/>
+
+  <rect x="702" y="128" width="170" height="64" rx="8" fill="#fff5f0" stroke="#FF9900" stroke-width="1.6"/>
+  <text x="787" y="152" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#16191f" text-anchor="middle">ECS service</text>
+  <text x="787" y="171" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#5f6b7a" text-anchor="middle">Fargate task sets</text>
+
+  <rect x="210" y="248" width="425" height="54" rx="8" fill="#fff7f7" stroke="#cc0c39" stroke-width="1.4"/>
+  <text x="422" y="270" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#cc0c39" text-anchor="middle">CloudWatch alarm on 4xx &rarr; automatic rollback</text>
+  <text x="422" y="289" font-family="Helvetica, Arial, sans-serif" font-size="10.5" fill="#5f6b7a" text-anchor="middle">it never fired, and that is this week's finding</text>
+
+  <text x="450" y="322" font-family="Helvetica, Arial, sans-serif" font-size="10.5" fill="#8a94a0" text-anchor="middle">During a deployment ECS rewrites the listener rule. The dashed arrow is the switch.</text>
+</svg>
+
+    <p>Blue and green are interchangeable slots, not fixed roles. ECS put the first deployment in
+    <em>green</em>, which surprised me &mdash; Terraform names blue as the primary.</p>
+  </div>
+
+  <div class="section" id="how">
+    <h2>How We Built It &mdash; Step by Step</h2>
+
+    <h3>What we deployed</h3>
+
+    <p>Twelve resources: an ALB with two target groups and one listener rule, an ECS cluster and
+    Fargate service, a task definition, a CloudWatch alarm and log group, two IAM roles and two
+    security groups. Default VPC on purpose &mdash; a NAT gateway costs about $0.045/hr and would
+    have been the biggest line on the bill for containers that only pull a public image.</p>
+
+    <p>The application is deliberately trivial: <code>busybox</code> from ECR Public writes an
+    environment variable into a file and serves it. A "new version" is therefore just a variable
+    change, which keeps the deployment itself as the subject rather than a container build.</p>
+
+    <h3>How we wrote it</h3>
+
+    <p>The whole week is one Terraform block:</p>
+
+    <pre><code>deployment_configuration {
+  strategy             = "BLUE_GREEN"
+  bake_time_in_minutes = 5      # how long the old version stays alive
+}
+
+alarms {
+  enable      = true
+  rollback    = true            # roll back if the alarm goes off
+  alarm_names = [aws_cloudwatch_metric_alarm.errors.alarm_name]
+}</code></pre>
+
+    <p>Two details that are easy to get wrong. The provider must be <strong>6.4.0 or
+    later</strong>; on earlier versions the block is silently ignored and you get a rolling update
+    that looks correct in the file. And ECS switches the <em>listener rule</em>, not the listener,
+    so the rule needs <code>ignore_changes = [action]</code> or the next Terraform plan proposes
+    shifting traffic back.</p>
+
+    <h3>How we deployed it</h3>
+
+    <p>HCP Terraform, VCS-driven, OIDC credentials, no static keys.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-21-bluegreen-ecs/docs/blog/screenshots/01-hcp-run-applied.png" alt="HCP Terraform run list for week-21-dev showing the applied run and an earlier errored run">
+      <figcaption>Twenty resources. The errored run above it is real &mdash; see Challenges.</figcaption>
+    </figure>
+
+    <h3>What appeared in the console</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-21-bluegreen-ecs/docs/blog/screenshots/02-ecs-service-blue-green.png" alt="The ECS service in the console showing deployment strategy blue/green with a five minute bake time">
+      <figcaption>The service carries the strategy, not a separate deployment controller. This is what replaces CodeDeploy.</figcaption>
+    </figure>
+
+    <h3>How we tested it</h3>
+
+    <p>Two deployments. A normal one, then a broken one. Throughout both, a script polled the load
+    balancer every two seconds and recorded what a caller actually got &mdash; because the console
+    shows task sets and percentages, and only a client sees the service.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-21-bluegreen-ecs/docs/blog/screenshots/03-traffic-shifting.png" alt="The ECS console during a deployment showing the new task set in progress alongside the active one">
+      <figcaption>Mid-deployment: both versions running, traffic still on the old one.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-21-bluegreen-ecs/docs/blog/screenshots/04-client-view.png" alt="Terminal output from the polling script for both deployments: 62 requests served v1 and 86 served v2 with no failures, then 214 requests all served by the old version during the broken deployment">
+      <figcaption>The client's view of both releases. No failed request in either.</figcaption>
+    </figure>
+
+    <p><strong>What success looked like:</strong> the good release cut over at t+182s &mdash; 62
+    requests on v1, 86 on v2, nothing failed. The broken release reached <strong>nobody</strong>:
+    214 requests, every one served by the previous version.</p>
+  </div>
+
+  <div class="section" id="challenges">
+    <h2>Challenges &mdash; What Actually Went Wrong</h2>
+
+    <h3>The rollback never happened, and that is the finding</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-21-bluegreen-ecs/docs/blog/screenshots/05-failed-deploy-healthcheck.png" alt="The ECS console showing the new deployment failing, with the target reported unhealthy due to a response code mismatch">
+      <figcaption><code>Target.ResponseCodeMismatch</code> &mdash; "Health checks failed with these codes: [404]".</figcaption>
+    </figure>
+
+    <p>The broken version failed its <em>health check</em>, so ECS never sent it any traffic. No
+    client request reached it, so there were no errors, so the alarm stayed <code>OK</code> and
+    rolled back nothing. Alarm history confirms no state change during the deployment.</p>
+
+    <p>Users were protected &mdash; by the health check, not by the mechanism built for the job. If
+    you only ever test rollback with a fault your health check catches, you have tested the health
+    check.</p>
+
+    <h3>A failing deployment does not give up on its own</h3>
+
+    <p><code>deploymentCircuitBreaker</code> is <strong>off by default</strong>. The failed
+    deployment did not roll back; it retried, cycling tasks for over ten minutes until I reverted
+    the change. Turn the circuit breaker on.</p>
+
+    <h3>Two small ones</h3>
+
+    <p><code>terraform apply</code> returned <strong>applied</strong> with zero new tasks running
+    and the old version still serving &mdash; it hands off to ECS and returns. Gate a pipeline on
+    that and you have gated on nothing.</p>
+
+    <p>And the first apply failed on
+    <code>AmazonECSInfrastructureRolePolicyForLoadBalancers</code>: it has <strong>no
+    <code>/service-role/</code> path</strong>, unlike <code>AmazonECSTaskExecutionRolePolicy</code>.
+    ECS then reports it as "Unable to assume role and validate the specified targetGroupArn",
+    which sends you looking at target groups instead of at the role.</p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security &mdash; Controls at Every Layer</h2>
+
+    <ul>
+      <li><strong>No static AWS credentials.</strong> HCP Terraform assumes a role via OIDC</li>
+      <li><strong>Tasks reachable only through the ALB.</strong> The task security group accepts traffic from the load balancer's group and nothing else</li>
+      <li><strong>Scoped IAM.</strong> Two AWS managed policies, one per role, no inline wildcards</li>
+      <li><strong>Known gap:</strong> tasks run in public subnets with public IPs to avoid NAT costs. Production puts them in private subnets</li>
+    </ul>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost</h2>
+
+    <table class="tbl">
+      <thead><tr><th>Item</th><th>Rate</th></tr></thead>
+      <tbody>
+        <tr><td>Application Load Balancer</td><td>$0.0225/hr + $0.008/LCU-hr</td></tr>
+        <tr><td>Fargate</td><td>$0.04048/vCPU-hr + $0.004445/GB-hr</td></tr>
+        <tr><td>CloudWatch alarm</td><td>$0.10/month (first 10 free)</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>This build has a real hourly meter</strong>, and the load balancer is most of it
+    &mdash; it bills whether or not anyone visits. About $0.05/hour with both versions running;
+    roughly $16/month for an ALB left up. Ran about three hours.</p>
+
+    <div class="callout">
+      <p><strong>No total yet.</strong> AWS had not posted the charges at publication. This section
+      will be updated with the billed figure, because a calculation is not a measurement.</p>
+    </div>
+  </div>
+
+  <div class="section" id="cleanup">
+    <h2>Cleanup</h2>
+
+    <p>Destroyed via HCP, then verified independently of the teardown script: no load balancer, no
+    cluster, no target groups, no leftover network interfaces, workspace at zero resources.</p>
+
+    <pre><code>bash week-21-bluegreen-ecs/scripts/cleanup.sh
+# CLEAN - nothing from Week 21 remains.</code></pre>
+  </div>
+
+  <div class="section" id="references">
+    <h2>References</h2>
+
+    <ul>
+      <li><a href="https://aws.amazon.com/blogs/devops/choosing-between-amazon-ecs-blue-green-native-or-aws-codedeploy-in-aws-cdk">Choosing between ECS blue/green native and CodeDeploy</a></li>
+      <li><a href="https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ecs_service">Terraform <code>aws_ecs_service</code></a></li>
+      <li><a href="https://aws.amazon.com/elasticloadbalancing/pricing/">ELB pricing</a> &middot; <a href="https://aws.amazon.com/fargate/pricing/">Fargate pricing</a></li>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/week-21-bluegreen-ecs">This week's code</a></li>
+    </ul>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key Takeaways</h2>
+
+    <ul>
+      <li><strong>ECS does blue/green itself now.</strong> No CodeDeploy for new work &mdash; one less service in the failure path</li>
+      <li><strong>Test rollback with a fault your health check cannot see.</strong> Otherwise you are testing the health check and learning nothing about the alarm</li>
+      <li><strong>Turn on the deployment circuit breaker.</strong> Without it a failing deployment retries instead of reverting</li>
+      <li><strong>The load balancer is the cost.</strong> It bills hourly with no traffic at all, so tear it down</li>
+      <li><strong>Watch a deployment from the client's side.</strong> The console shows task sets; only a caller shows the service</li>
+    </ul>
+  </div>
