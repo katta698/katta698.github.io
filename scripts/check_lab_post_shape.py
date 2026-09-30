@@ -60,14 +60,18 @@ SERIES_LABEL = "GCP Weekly Lab"
 # visible. Earlier posts are left alone rather than retrofitted - the rule starts
 # where it was agreed.
 #
-# A rendered file tree, NOT a screenshot of the repository. The first attempt was
-# a GitHub directory listing and Jay rejected it for the right reason: anyone can
-# open the repo, and a list of filenames says nothing about what is in them. A
-# tree with line counts and a one-line purpose per file answers "how big is this
-# really" and "where would I look", which a screenshot of the same directory does
-# not.
+# A rendered card, named *terraform-layout*, matching the Azure and AWS labs so a
+# reader moving between the three series meets the same object each week. Built
+# by scripts/screenshots/render_tree_card.py in the lab repo from a tree.txt
+# whose line counts come from wc -l.
+#
+# Two wrong turns are recorded so they are not retaken. A screenshot of the
+# GitHub directory listing: rejected, because anyone can open the repo and a list
+# of filenames says nothing about what is in them. An inline <pre> block: closer,
+# but it inherits the post's code styling, reads as a code sample rather than a
+# figure, and looked nothing like the other two clouds.
 CODE_SHOT_FROM_WEEK = 7
-CODE_SHOT_MARKER = "The Terraform behind this week"
+CODE_SHOT_MARKER = "terraform-layout"
 WEEK_RE = re.compile(r"week-(\d+)")
 
 # section id -> (human name, regex that proves the promised shape is present)
@@ -102,8 +106,8 @@ def check_text(text, name, report, week=None):
     problems = []
     if week is not None and week >= CODE_SHOT_FROM_WEEK and CODE_SHOT_MARKER not in text:
         problems.append(
-            f"no file-tree block (expected a section headed '{CODE_SHOT_MARKER}' "
-            "listing each file, its line count and what it does)"
+            f"no Terraform layout card (expected an image named *{CODE_SHOT_MARKER}*, "
+            "built with render_tree_card.py)"
         )
     for sid, (want, pattern) in REQUIRED.items():
         sec = section(text, sid)
@@ -132,7 +136,7 @@ def main():
                 '<div class="section" id="architecture"><h2>y</h2><svg></svg></div>')
         stripped = ('<div class="section" id="skills"><h2>x</h2><p>prose only</p></div>'
                     '<div class="section" id="architecture"><h2>y</h2><pre>ascii</pre></div>')
-        good_w7 = good + f"<h3>{CODE_SHOT_MARKER}</h3><pre><code>main.tf 174</code></pre>"
+        good_w7 = good + f'<img src="05-{CODE_SHOT_MARKER}.png"/>'
         r1, r2, r3 = [], [], []
         ok = check_text(good_w7, "synthetic-good", r1, CODE_SHOT_FROM_WEEK)
         bad = check_text(stripped, "synthetic-stripped", r2)
@@ -140,7 +144,7 @@ def main():
         print("\n".join(r1 + r2 + r3))
         if ok == 0 and bad == 2 and nocode == 1:
             print("\nself-test passed: clean post passes, stripped post fails on both")
-            print("sections, and a post missing the file-tree block fails too.")
+            print("sections, and a post missing the Terraform layout card fails too.")
             return 0
         print("\nSELF-TEST FAILED: the check cannot detect the defect it exists for.")
         return 1
