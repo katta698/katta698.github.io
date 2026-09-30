@@ -23,6 +23,7 @@ files currently produce.
 """
 import io
 import os
+import subprocess
 import re
 import sys
 
@@ -32,6 +33,32 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKIP = {"node_modules", ".git", "_archive", "_templates"}
 
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
+
+
+
+def publishable():
+    """Paths git would actually publish: tracked, plus untracked-not-ignored.
+
+    Why (2026-09-30): a push was blocked by a stale stamp in
+    _sweep/publish/, a gitignored scratch page. Nothing in there can reach the
+    site, so nothing in there can serve a stale asset to anybody -- but the
+    directory walk found it and the shared hook stopped every worktree.
+
+    Same fix, same reason, as check_css_balance: a gate that fails on files it
+    is not responsible for teaches people to reach for --no-verify.
+
+    None when git cannot answer, in which case everything is scanned.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            cwd=ROOT, capture_output=True, text=True, timeout=120)
+        if out.returncode != 0:
+            return None
+        return {l.strip().replace("\\", "/") for l in out.stdout.splitlines() if l.strip()}
+    except Exception:                                           # noqa: BLE001
+        return None
+
 
 
 def main():
@@ -46,6 +73,7 @@ def main():
 
     linked = re.compile(r'site-footer\.js(\?v=([a-f0-9]+))?')
     stale, unversioned, ok = [], [], 0
+    allowed = publishable()
 
     for base, dirs, files in os.walk(ROOT):
         dirs[:] = [d for d in dirs if d not in SKIP and not d.startswith(".")]
@@ -54,6 +82,8 @@ def main():
                 continue
             path = os.path.join(base, name)
             rel = os.path.relpath(path, ROOT).replace("\\", "/")
+            if allowed is not None and rel not in allowed:
+                continue
             try:
                 text = io.open(path, encoding="utf-8").read()
             except (OSError, UnicodeDecodeError):
