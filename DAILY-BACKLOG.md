@@ -92,6 +92,28 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 29 September 2026 — covered by post #43
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Bedrock Managed Agents in **Preview** — built on a customized version of OpenAI's Agents API; 3 US Regions; free during preview. The finding is next to it: Bedrock Agents is now Bedrock Agents Classic and closed to new customers, while AgentCore Harness is already a managed agent loop that already reaches OpenAI | Bedrock | **#43** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/bedrock-managed-agents-preview/) |
+| Systems Manager documents can now be shared through AWS RAM | Systems Manager | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-systems-manager-ram-sharing/) |
+| Full snapshot size now in the Console and API | RDS | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-rds-full-snapshot-size-available/) |
+| GPT-6.1 Sol generally available on Bedrock | Bedrock | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/openai-gpt-6-1-sol-on-amazon-bedrock/) |
+| Claude model availability expands to India, South Korea and Singapore | Bedrock | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/claude-region-expansion-in-sk/) |
+| Apache Kafka migration assessments for Amazon MSK | AWS Transform | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-msk-migration-assessment-with-aws-transform) |
+| PostgreSQL 18.6, 17.11, 16.15, 15.19 and 14.24 | Aurora | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-aurora-postgresql-18-6-17-11-16-15-15-19-14-24/) |
+| Extended Support minor versions 13.23, 12.22 and 11.22 | RDS for PostgreSQL | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-rds-postgresql-extended-support/) |
+| Business users can manage more reference data in real time | Amazon Connect | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-connect-manage-data-tables/) |
+| Unified graphics images | WorkSpaces Applications | open | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-workspaces-applications-unified-graphics-images/) |
+| AWS Service Availability Updates | various | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-service-availability/) |
+
+This is the first Preview item to win a daily slot, and it was chosen deliberately against the bias this
+file warns about — re-ranking from scratch each day favours GA, all-Regions, well-documented launches, so
+Previews never win on the day. The BMA documentation page is still a shell, so the post is sourced from
+the announcement plus the AgentCore and Bedrock Agents pages, which is where the real finding turned out
+to be.
+
 ## 28 September 2026 — covered by post #42
 
 | Item | Service | Status | Importance | Reference |

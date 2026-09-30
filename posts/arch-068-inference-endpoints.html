@@ -1,0 +1,367 @@
+---
+title: "AWS Architecture Series #68 — Your payload picks the endpoint before your latency budget does"
+date: '2026-09-30T09:00:00'
+slug: aws-architecture-inference-endpoints
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-09-30'
+verified_claims:
+  - claim: "A customer's model containers must respond to InvokeEndpoint requests within 60 seconds, the model itself can have a maximum processing time of 60 seconds before responding to invocations, and if your model is going to take 50-60 seconds of processing time the SDK socket timeout should be set to be 70 seconds"
+    source: https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_runtime_InvokeEndpoint.html
+  - claim: "The InvokeEndpoint request Body has length constraints of a maximum length of 6291456, and the response Body has the same maximum length of 6291456"
+    source: https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_runtime_InvokeEndpoint.html
+  - claim: "The real-time payload ceiling of 6291456 bytes is exactly 6 MiB"
+    derive: "6291456 / 1048576"
+    expect: "6"
+    source: https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_runtime_InvokeEndpoint.html
+  - claim: "InvokeEndpoint returns ModelNotReadyException with HTTP status code 429 when either a serverless endpoint variant's resources are still being provisioned, or a multi-model endpoint is still downloading or loading the target model"
+    source: https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_runtime_InvokeEndpoint.html
+  - claim: "Amazon SageMaker AI strips all POST headers except those supported by the API and might add additional headers, so you should not rely on the behavior of headers outside those enumerated in the request syntax"
+    source: https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_runtime_InvokeEndpoint.html
+  - claim: "Real-time inference is ideal for inference workloads where you have real-time, interactive, low latency requirements, and these endpoints are fully managed and support autoscaling"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/realtime-endpoints.html
+  - claim: "Amazon SageMaker Asynchronous Inference queues incoming requests and processes them asynchronously, and is ideal for requests with large payload sizes up to 1GB, long processing times up to one hour, and near real-time latency requirements"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/async-inference.html
+  - claim: "Asynchronous inference accepts a payload roughly a hundred and seventy times larger than the real-time ceiling"
+    derive: "1024 / 6"
+    expect: "170.67"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/async-inference.html
+  - claim: "Asynchronous Inference enables you to save on costs by autoscaling the instance count to zero when there are no requests to process, so you only pay when your endpoint is processing requests"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/async-inference.html
+  - claim: "To invoke an asynchronous endpoint you need to place the request payload in Amazon S3 and provide a pointer to this payload as part of the InvokeEndpointAsync request, and upon invocation SageMaker AI queues the request and returns an identifier and output location as a response"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/async-inference.html
+  - claim: "The presence of an asynchronous inference configuration (AsyncInferenceConfig) object in the endpoint configuration implies that the endpoint can only receive asynchronous invocations"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/async-inference.html
+  - claim: "With asynchronous inference you can optionally choose to receive success or error notifications with Amazon SNS"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/async-inference.html
+  - claim: "Use batch transform when you need to preprocess datasets, get inferences from large datasets, run inference when you don't need a persistent endpoint, or associate input records with inferences to help with the interpretation of results"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/batch-transform.html
+  - claim: "Batch Transform partitions the Amazon S3 objects in the input by key and maps Amazon S3 objects to instances"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/batch-transform.html
+  - claim: "If you have one input file but initialize multiple compute instances, only one instance processes the input file and the rest of the instances are idle"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/batch-transform.html
+  - claim: "For batch transform MaxPayloadInMB must not be greater than 100 MB, and if you specify the optional MaxConcurrentTransforms parameter then the value of (MaxConcurrentTransforms * MaxPayloadInMB) must also not exceed 100 MB"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/batch-transform.html
+  - claim: "At a 10 MB batch transform payload the product constraint allows at most ten concurrent transforms"
+    derive: "100 / 10"
+    expect: "10"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/batch-transform.html
+  - claim: "SageMaker AI processes each batch transform input file separately and doesn't combine mini-batches from different input files to comply with the MaxPayloadInMB limit"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/batch-transform.html
+  - claim: "Batch Transform doesn't support CSV-formatted input that contains embedded newline characters"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/batch-transform.html
+  - claim: "The number of batch transform output files is equal to the number of input files, and using AssembleWith does not merge files"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/batch-transform.html
+  - claim: "The ideal value for MaxConcurrentTransforms is equal to the number of compute workers in the batch transform job"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/batch-transform.html
+  - claim: "When batch transform input data is very large and is transmitted using HTTP chunked encoding, set MaxPayloadInMB to 0 to stream the data to the algorithm, and Amazon SageMaker AI built-in algorithms don't support this feature"
+    source: https://docs.aws.amazon.com/sagemaker/latest/dg/batch-transform.html
+problem: "The four inference options get compared on latency, which is the wrong first question. Real-time caps the request and the response at 6 MiB each and gives the model 60 seconds. Exceed either and real-time is unavailable no matter how fast you need the answer — the payload has already made the choice."
+builds: "A reading of the four SageMaker inference options by their hard input and output constraints rather than by their latency profiles, including the two rules that decide whether batch transform parallelises at all."
+catch: "Batch transform's parallelism comes from how many S3 objects you have, not how many instances you asked for. AWS states it plainly: one input file and multiple instances means one instance works and 'the rest of the instances are idle' — billed, and doing nothing."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #068 &middot; AI &amp; ML</div>
+  <h1 class="post-title">Your payload picks the endpoint before your latency budget does</h1>
+  <p class="post-subtitle">Real-time, serverless, asynchronous and batch are usually compared on speed. Their input and output ceilings eliminate options first, and those are the numbers worth knowing.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Sep 2026</span>
+    <span>AWS Well-Architected &middot; Performance Efficiency &middot; Cost Optimization</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <a href="/blog/aws-architecture-bedrock-or-sagemaker/">#65</a> named these four options and showed that
+      the transitions between them run one way. This post is the level below that: given that you are hosting
+      a model, which of the four can actually accept your data &mdash; and it is answered by constraints, not
+      by preference.
+    </p>
+    <p>
+      The usual comparison starts with latency, because that is the requirement people arrive with.
+      Two numbers settle it earlier than that.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Real-time is capped at 6 MiB and 60 seconds, in both directions</strong></div>
+      <div class="challenge-body">
+        <p>
+          The <code class="inline">InvokeEndpoint</code> API reference states the timeout in its opening
+          paragraphs: <em>&ldquo;A customer's model containers must respond to requests within
+          <strong>60 seconds</strong>. The model itself can have a maximum processing time of 60 seconds before
+          responding to invocations.&rdquo;</em>
+        </p>
+        <p>
+          And the payload constraint is on both the request and the response body, expressed in bytes:
+          <em>&ldquo;Length Constraints: Maximum length of <strong>6291456</strong>.&rdquo;</em> That is exactly
+          <strong>6 MiB</strong>.
+        </p>
+        <p>
+          Either ceiling removes real-time from consideration on its own. A 20 MB document or a 90-second model
+          cannot use a real-time endpoint however urgently the answer is wanted, and no amount of instance
+          sizing changes it.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Measure your largest payload and your slowest inference first. They decide what is even available.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>An asynchronous endpoint cannot also serve real-time traffic</strong></div>
+      <div class="challenge-body">
+        <p>
+          Asynchronous inference looks like a mode you switch on. It is a property of the endpoint, and it is
+          exclusive: <em>&ldquo;The presence of an asynchronous inference configuration
+          (<code class="inline">AsyncInferenceConfig</code>) object in the endpoint configuration implies that
+          the endpoint <strong>can only receive asynchronous invocations</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So a single endpoint cannot serve a fast path and a slow path. A workload with both needs two
+          endpoints, two sets of scaling policy, and the same model deployed twice.
+        </p>
+        <p>
+          It also changes the call shape entirely: <em>&ldquo;you need to <strong>place the request payload in
+          Amazon S3</strong>&rdquo;</em> and pass a pointer, and the response is
+          <em>&ldquo;an identifier and output location&rdquo;</em> rather than a prediction.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Decide per endpoint, not per request. Mixed workloads mean two deployments.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Batch parallelism comes from your file layout, not your instance count</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the one that quietly wastes money. <em>&ldquo;Batch Transform partitions the Amazon S3
+          objects in the input <strong>by key</strong> and maps Amazon S3 objects to instances.&rdquo;</em>
+        </p>
+        <p>
+          And then the consequence, stated without euphemism: <em>&ldquo;If you have one input file but
+          initialize multiple compute instances, <strong>only one instance processes the input file. The rest of
+          the instances are idle.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Ten instances against one large CSV is one instance working and nine billed for nothing. The job
+          completes, the output is correct, and the only symptom is the bill and the duration.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Shard the input into at least as many S3 objects as instances before tuning anything else.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Laid out by what each one will accept, the choice mostly makes itself.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-068-inference-endpoints.svg" alt="Diagram: the four SageMaker inference options arranged by the input and output constraints that eliminate options before latency is considered. Real-time inference is ideal for interactive low-latency requirements and is fully managed with autoscaling, but the InvokeEndpoint request body and the response body each carry a maximum length of 6,291,456 bytes, which is exactly 6 mebibytes, and the model container must respond within 60 seconds with a maximum model processing time of 60 seconds, so AWS advises setting the SDK socket timeout to 70 seconds for a model taking 50 to 60 seconds. Serverless inference shares the real-time invocation path and returns ModelNotReadyException with HTTP status 429 while a serverless variant's resources are still being provisioned. Asynchronous inference queues requests and suits payloads up to 1 gigabyte and processing times up to one hour, roughly a hundred and seventy times the real-time payload ceiling, and it autoscales the instance count to zero when idle so you pay only while processing. Its call shape differs: the payload is placed in Amazon S3 and a pointer passed to InvokeEndpointAsync, which returns an identifier and an output location rather than a prediction, with optional success or error notifications through Amazon SNS. Critically, the presence of an AsyncInferenceConfig object means the endpoint can only receive asynchronous invocations, so one endpoint cannot serve both a fast and a slow path. Batch transform uses no persistent endpoint and suits large datasets and preprocessing. It partitions the input S3 objects by key and maps objects to instances, so if there is one input file and multiple instances only one instance processes it and the rest are idle. MaxPayloadInMB must not exceed 100 megabytes, and the product of MaxConcurrentTransforms and MaxPayloadInMB must also not exceed 100 megabytes, so payload size and concurrency trade directly against each other, with ten-megabyte payloads permitting at most ten concurrent transforms. The ideal MaxConcurrentTransforms equals the number of compute workers. Input files are processed separately and never combined, the number of output files equals the number of input files, AssembleWith does not merge them, and CSV input containing embedded newline characters is unsupported. A closing panel records the decision rule: measure the largest payload and the slowest inference first, because those eliminate options, and only then consider the latency budget." />
+      <figcaption>Two ceilings on the left, two orders of magnitude more on the right. Latency is the last question, not the first.</figcaption>
+    </figure>
+
+    <h3>The four, by what they accept</h3>
+    <p>
+      <strong>Real-time</strong> is <em>&ldquo;ideal for inference workloads where you have real-time,
+      interactive, low latency requirements&rdquo;</em>, and it is bounded at 6 MiB in, 6 MiB out, 60 seconds.
+    </p>
+    <p>
+      <strong>Serverless</strong> shares that invocation path, and has its own tell in the error list:
+      <code class="inline">ModelNotReadyException</code>, HTTP <strong>429</strong>, returned when
+      <em>&ldquo;a serverless endpoint variant's resources are still being provisioned&rdquo;</em>. That is the
+      cold start from <a href="/blog/aws-architecture-bedrock-or-sagemaker/">#65</a> arriving as a retryable
+      status code rather than a slow response &mdash; worth handling explicitly, because a 429 that means
+      &ldquo;wait&rdquo; and a 429 that means &ldquo;you are throttled&rdquo; deserve different backoff.
+    </p>
+    <p>
+      <strong>Asynchronous</strong> takes <em>&ldquo;large payload sizes (up to 1GB), long processing times (up
+      to one hour), and near real-time latency requirements&rdquo;</em> &mdash; about
+      <strong>170 times</strong> the real-time payload ceiling &mdash; and it
+      <em>&ldquo;autoscal[es] the instance count to zero when there are no requests to process, so you only pay
+      when your endpoint is processing requests.&rdquo;</em>
+    </p>
+    <p>
+      <strong>Batch transform</strong> is for when you <em>&ldquo;don't need a persistent endpoint&rdquo;</em>
+      at all, and its constraints are about file shape rather than request shape.
+    </p>
+
+    <div class="callout amber">
+      <strong>The batch constraint that is a product, not a limit</strong>
+      <p><em>&ldquo;<code class="inline">MaxPayloadInMB</code> must not be greater than 100 MB. If you specify the optional <code class="inline">MaxConcurrentTransforms</code> parameter, then the value of <strong><code class="inline">(MaxConcurrentTransforms * MaxPayloadInMB)</code> must also not exceed 100 MB</strong>.&rdquo;</em> So payload size and concurrency trade against each other directly: 100 MB payloads mean one concurrent transform, and ten concurrent transforms mean 10 MB payloads. Meanwhile AWS advises that <em>&ldquo;The ideal value for <code class="inline">MaxConcurrentTransforms</code> is equal to the number of compute workers&rdquo;</em> — so a wide fleet forces small mini-batches, and the two pieces of guidance have to be satisfied together.</p>
+    </div>
+
+    <h3>Async changes the contract, not just the timing</h3>
+    <p>
+      The payload lives in S3 and the response is a receipt. Completion is signalled either by the object
+      appearing at the output location or by SNS &mdash; <em>&ldquo;You can <strong>optionally</strong> choose
+      to receive success or error notifications with Amazon SNS&rdquo;</em>, which is genuinely optional here,
+      unlike the pattern Textract documents.
+    </p>
+    <p>
+      Combined with scale-to-zero, that makes asynchronous the closest thing SageMaker has to a job queue with
+      a model attached: no instances running when idle, no payload limit worth worrying about, and an hour of
+      processing available per request.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Batch's output shape is fixed by its input shape</h3>
+    <p>
+      Three statements that together determine what you get back.
+      <em>&ldquo;SageMaker AI processes each input file separately. It doesn't combine mini-batches from
+      different input files.&rdquo;</em> <em>&ldquo;The number of output files is equal to the number of input
+      files, and using <code class="inline">AssembleWith</code> does not merge files.&rdquo;</em>
+    </p>
+    <p>
+      So sharding the input for parallelism &mdash; which card 3 says you must &mdash; also shards the output.
+      A thousand input objects produce a thousand <code class="inline">.out</code> objects, and reassembling
+      them is your problem. The parallelism and the output layout are the same decision.
+    </p>
+
+    <div class="callout red">
+      <strong>And one input format that is quietly unsupported</strong>
+      <p><em>&ldquo;Batch Transform doesn't support CSV-formatted input that contains <strong>embedded newline characters</strong>.&rdquo;</em> That is the default state of any CSV containing free text — an address field, a comment, a product description. The job does not reject the file up front; the records split at the wrong place, because <code class="inline">SplitType: Line</code> means what it says. Anything with quoted multi-line fields needs converting before it reaches batch transform, and the failure looks like a model producing nonsense rather than like a parsing error.</p>
+    </div>
+
+    <h3>The 60-second rule has a client-side corollary</h3>
+    <p>
+      AWS spells out the consequence rather than leaving it to be discovered:
+      <em>&ldquo;If your model is going to take 50-60 seconds of processing time, the <strong>SDK socket
+      timeout should be set to be 70 seconds</strong>.&rdquo;</em>
+    </p>
+    <p>
+      A model near the ceiling will otherwise fail at the client while succeeding at the server, which produces
+      the worst kind of incident: a timeout in your logs, a completed inference you paid for, and no error on
+      the SageMaker side to correlate against.
+    </p>
+    <p>
+      There is a smaller warning in the same place worth heeding if you have built any custom plumbing:
+      <em>&ldquo;Amazon SageMaker AI strips all POST headers except those supported by the API&hellip; You
+      should not rely on the behavior of headers outside those enumerated in the request syntax.&rdquo;</em>
+      Tracing metadata belongs in <code class="inline">CustomAttributes</code>, not in a header of your own.
+    </p>
+
+    <h3>Streaming is the escape hatch, with a caveat</h3>
+    <p>
+      For genuinely large batch input, <em>&ldquo;set <code class="inline">MaxPayloadInMB</code> to
+      <strong>0</strong>&rdquo;</em> and the data is streamed with chunked encoding. Then the caveat:
+      <em>&ldquo;Amazon SageMaker AI <strong>built-in algorithms don't support this feature</strong>.&rdquo;</em>
+    </p>
+    <p>
+      Which means the option exists only for your own container. A built-in algorithm and a file larger than the
+      100 MB payload ceiling is a combination you cannot resolve by configuration &mdash; the input has to be
+      split.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>First question</td>
+        <td>Largest payload, slowest inference</td>
+        <td>6 MiB and 60 seconds eliminate real-time before latency is discussed.</td>
+      </tr>
+      <tr>
+        <td>Payload over 6 MiB</td>
+        <td>Asynchronous or batch</td>
+        <td>Real-time and serverless share the same 6,291,456-byte body limit.</td>
+      </tr>
+      <tr>
+        <td>Inference over 60 seconds</td>
+        <td>Asynchronous</td>
+        <td>Up to one hour; the real-time container timeout is not adjustable.</td>
+      </tr>
+      <tr>
+        <td>Mixed fast and slow traffic</td>
+        <td>Two endpoints</td>
+        <td>An <code class="inline">AsyncInferenceConfig</code> endpoint accepts only async invocations.</td>
+      </tr>
+      <tr>
+        <td>Batch parallelism</td>
+        <td>Shard the input objects first</td>
+        <td>One file plus many instances means one worker and the rest idle.</td>
+      </tr>
+      <tr>
+        <td>Batch tuning</td>
+        <td>Solve the product, not the parts</td>
+        <td><code class="inline">MaxConcurrentTransforms × MaxPayloadInMB ≤ 100 MB</code>.</td>
+      </tr>
+      <tr>
+        <td>CSV with free text</td>
+        <td>Convert before batch transform</td>
+        <td>Embedded newlines are unsupported and fail as bad predictions, not errors.</td>
+      </tr>
+      <tr>
+        <td>Client configuration</td>
+        <td>Socket timeout above 60s</td>
+        <td>AWS's own guidance is 70 seconds for a 50–60 second model.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The order the questions should be asked in</h3>
+    <p>
+      One: how large is the biggest input, and the biggest output? Two: how long does the slowest inference
+      take? Those two answers usually leave one or two options standing. Three: does anything need a synchronous
+      response at all &mdash; because scale-to-zero on asynchronous is cheaper than an idle real-time endpoint,
+      and a great deal of what gets built as real-time never had a user waiting on it.
+    </p>
+    <p>
+      Latency comes fourth, and by then it is often moot.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      <a href="/blog/aws-architecture-task-shaped-services/">#67</a> argued that a published limit is worth more
+      than a plausible answer, because it fails as an exception you can test. This is the same argument applied
+      to your own hosting: <code class="inline">6291456</code> is not a guideline, and 60 seconds is not a
+      default you can raise.
+    </p>
+    <p>
+      The reason to lead with those numbers is that the alternative is discovering them late. A model that
+      works on sample data and fails on production documents, a batch job that runs for six hours on a fleet of
+      ten, a CSV that produces confident nonsense because a comment field contained a line break &mdash; all
+      three are documented behaviours, and all three are cheap to avoid and expensive to diagnose.
+    </p>
+    <p>
+      The decision is not which endpoint is best. It is which endpoints your data has already ruled out.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Distributed systems &mdash; idempotency: the property distributed systems cannot do without, why a retry is a duplicate until something says otherwise, and where the deduplication key has to live.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_runtime_InvokeEndpoint.html" target="_blank" rel="noopener">InvokeEndpoint API reference &#8212; the 60-second container timeout, the 6,291,456-byte body limits, and ModelNotReadyException</a></li>
+      <li><a href="https://docs.aws.amazon.com/sagemaker/latest/dg/async-inference.html" target="_blank" rel="noopener">Asynchronous inference &#8212; the 1 GB and one-hour ceilings, scale to zero, and why an async endpoint is exclusive</a></li>
+      <li><a href="https://docs.aws.amazon.com/sagemaker/latest/dg/batch-transform.html" target="_blank" rel="noopener">Batch transform for inference &#8212; object-to-instance mapping, the payload-times-concurrency product, and the CSV newline restriction</a></li>
+      <li><a href="https://docs.aws.amazon.com/sagemaker/latest/dg/realtime-endpoints.html" target="_blank" rel="noopener">Real-time inference &#8212; what it is recommended for</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
