@@ -59,7 +59,7 @@ NEW_DAYS = 60
 
 VENDOR_ORDER = ["OpenAI", "Anthropic", "Google", "Google DeepMind", "xAI",
                 "Meta", "Microsoft", "Microsoft Azure", "Mistral", "DeepSeek",
-                "Qwen", "Hugging Face", "AWS"]
+                "Qwen", "Hugging Face", "AWS", "TypeSafe AI"]
 
 
 def esc(t):

@@ -99,7 +99,33 @@ SITEMAPS = [
     # x.ai/news/<slug>, with no trailing slash on the section itself, so
     # "/news/" as a prefix matches the articles and not the index page.
     ("xAI", "https://x.ai/sitemap.xml", ("/news/", "/blog/")),
+    # TypeSafe AI, who make Jev. No feed at /feed, /rss.xml, /blog/rss.xml
+    # or /blog/feed.xml, and the sitemap is bare <loc> with no <lastmod>.
+    # See DATELESS.
+    ("TypeSafe AI", "https://typesafe.ai/sitemap.xml", ("/blog/",)),
 ]
+
+# Sitemaps carrying no <lastmod>. Their rows are dated by first sighting
+# rather than dropped. A set rather than a fourth element in SITEMAPS, so
+# that tuple's shape is left alone.
+DATELESS = {"TypeSafe AI"}
+
+# Publication dates established by hand, for items worth having before
+# first-sighting can know of them. TypeSafe released Jev in limited early
+# access on 15 September 2026.
+SEED = {
+    "https://typesafe.ai/blog/introducing-system-one-models-and-jev":
+        "2026-09-15",
+}
+
+# What a URL that predates tracking is recorded as. Not a date, because
+# it has none this fetcher can honestly give.
+SEEDED = "seeded"
+
+FIRST_SEEN_STORE = os.path.join(ROOT, "intelligence", "ai-firstseen.json")
+FIRST_SEEN = {}
+FIRST_RUN = False
+_FS_LOADED = False
 
 MODELS_API = "https://openrouter.ai/api/v1/models"
 
@@ -225,6 +251,38 @@ def parse_feed(vendor, xml):
     return out
 
 
+
+def _today_iso():
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _ensure_first_seen():
+    """Load the first-sighting store once, whichever path asks first.
+
+    SITEMAPS is walked in two places -- by --audit and by the collector --
+    so this is lazy rather than wired into one of them. FIRST_RUN records
+    that the store was absent, because the first run must seed quietly
+    instead of announcing everything it finds.
+    """
+    global FIRST_SEEN, FIRST_RUN, _FS_LOADED
+    if _FS_LOADED:
+        return
+    _FS_LOADED = True
+    if not os.path.exists(FIRST_SEEN_STORE):
+        FIRST_SEEN, FIRST_RUN = {}, True
+        return
+    try:
+        FIRST_SEEN = json.load(io.open(FIRST_SEEN_STORE, encoding="utf-8"))
+        FIRST_RUN = not FIRST_SEEN
+    except ValueError:
+        FIRST_SEEN, FIRST_RUN = {}, True
+
+
+def _save_first_seen():
+    io.open(FIRST_SEEN_STORE, "w", encoding="utf-8").write(
+        json.dumps(FIRST_SEEN, indent=1, sort_keys=True, ensure_ascii=False))
+
+
 def parse_sitemap(vendor, xml, prefixes, limit=12):
     """New pages under the announcement paths, newest first.
 
@@ -233,6 +291,8 @@ def parse_sitemap(vendor, xml, prefixes, limit=12):
     from a URL slug is a headline nobody wrote.
     """
     rows = []
+    if vendor in DATELESS:
+        _ensure_first_seen()
     for m in re.finditer(r"<url>(.*?)</url>", xml, re.S):
         blob = m.group(1)
         loc = re.search(r"<loc>(.*?)</loc>", blob, re.S)
@@ -243,7 +303,27 @@ def parse_sitemap(vendor, xml, prefixes, limit=12):
         if not any(p in url for p in prefixes):
             continue
         d = when(strip_tags(mod.group(1))) if mod else None
+        if d is None and vendor in DATELESS:
+            # The vendor gives no date, so use the first date this fetcher
+            # saw the URL. On the first run everything already present is
+            # recorded and nothing is emitted for it. SEED overrides, for
+            # dates established by hand.
+            iso = SEED.get(url) or FIRST_SEEN.get(url)
+            if iso == SEEDED:
+                # Already on the sitemap when tracking began. Remembered so
+                # it is never mistaken for new, never dated so it is never
+                # announced. Storing today's date here instead published
+                # four three-week-old posts as today's news.
+                iso = None
+            elif iso is None:
+                iso = SEEDED if FIRST_RUN else _today_iso()
+                FIRST_SEEN[url] = iso
+                if iso == SEEDED:
+                    iso = None
+            d = when(iso) if iso else None
         rows.append((d, url))
+    if vendor in DATELESS:
+        _save_first_seen()
     rows = [r for r in rows if r[0]]
     rows.sort(key=lambda r: r[0], reverse=True)
     return [{"vendor": vendor, "url": u, "title": "",
