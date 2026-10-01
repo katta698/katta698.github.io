@@ -92,6 +92,24 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 30 September 2026 — covered by post #44
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Metadata pre-filtering — filters now evaluated before the similarity search, up to 5x more matching vectors on selective filters, new $startsWith operator. The finding is the cutover: buckets created before 30 September 2026 are CLASSIC, where the docs now admit "queries with filters may return fewer than top K results" | S3 Vectors | **#44** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/s3-vectors-introduces-metadata-pre-filtering/) |
+| Aurora Serverless scales faster with instant 16-ACU scaling for agentic AI and bursty workloads | Aurora | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/08/aurora-serverless-instant-16-acu-scaling/) |
+| GPT-6 Astra supports UltraFast mode on Bedrock | Bedrock | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/openai-gpt-6-astra-ultrafast-on-amazon-bedrock/) |
+| Aurora and RDS support AMD-based R8a instances | Aurora, RDS | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aurora-rds-amd-r8a/) |
+| CLI supports bulk skill updates and version checks for the Agent Toolkit | AWS CLI | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-cli-agent-toolkit-update-skill/) |
+| Grafana 13.2 workspaces | Managed Grafana | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-managed-grafana-now-supports-creating-grafana-13-2-workspaces) |
+| Scaling logs | Parallel Computing Service | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-pcs-scaling-logs/) |
+| WorkSpaces Core Managed Instances add NVIDIA Blackwell GPU support | WorkSpaces | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-workspaces-cmi-g7/) |
+
+The S3 Vectors item won on relevance as well as importance: it closes a gap Architecture #61 described in
+the abstract — a wrong answer from missing context is indistinguishable from a weak model — and names a
+concrete mechanism that was producing it. Aurora Serverless instant 16-ACU scaling is the strongest held
+item and is worth writing while agentic workloads are the stated motivation.
+
 ## 29 September 2026 — covered by post #43
 
 | Item | Service | Status | Importance | Reference |

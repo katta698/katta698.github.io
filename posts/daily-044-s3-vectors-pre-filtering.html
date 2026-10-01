@@ -1,0 +1,340 @@
+---
+title: 'AWS Daily Intelligence #44 - The filter ran after the search, and nothing said so'
+date: '2026-10-01T10:00:00'
+slug: aws-daily-intelligence-s3-vectors-pre-filtering
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-10-01'
+verified_claims:
+  - claim: "Amazon S3 Vectors metadata pre-filtering evaluates metadata filters before running similarity search, returning up to 5x more of the matching vectors when your filter is selective"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/s3-vectors-introduces-metadata-pre-filtering/
+  - claim: "Indexes in new vector buckets use metadata pre-filtering by default, with no change to how you write vectors"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/s3-vectors-introduces-metadata-pre-filtering/
+  - claim: "Metadata pre-filtering is available at no additional cost in all commercial AWS Regions where Amazon S3 Vectors is available, and in the AWS China Regions"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/s3-vectors-introduces-metadata-pre-filtering/
+  - claim: "AWS states it is in the process of deploying this change and plans to complete the deployment in the coming days"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/s3-vectors-introduces-metadata-pre-filtering/
+  - claim: "S3 Vectors evaluates your metadata filter before it runs vector search, a technique known as pre-filtering, first identifying the vectors that match your filter then only searching those vectors for the most similar ones, ensuring high recall even when filters match a small fraction of vectors"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
+  - claim: "Pre-filtering applies to vector indexes whose index mode is ENHANCED, vector buckets created on or after September 30, 2026 create ENHANCED indexes, and in a vector bucket created before that date indexes have the index mode CLASSIC"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
+  - claim: "On a CLASSIC index S3 Vectors performs vector search and filter evaluation in tandem, searching through candidate vectors to find the top K similar vectors while simultaneously validating if each candidate matches your metadata filter conditions"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
+  - claim: "On a CLASSIC index, queries with filters may return fewer than top K results when the vector index contains very few matching results"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
+  - claim: "Returning up to five times more matching vectors means a CLASSIC index could have been surfacing as little as one fifth of them"
+    derive: "1 / 5"
+    expect: "0.2"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/09/s3-vectors-introduces-metadata-pre-filtering/
+  - claim: "S3 Vectors filterable metadata supports twelve operators: $eq, $ne, $gt, $gte, $lt, $lte, $startsWith, $in, $nin, $exists, $and and $or"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
+  - claim: "The $startsWith operator performs a prefix match and requires ENHANCED query behavior, being available on a vector index whose index mode is ENHANCED, and on a CLASSIC index when the request sets queryMode to ENHANCED"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
+  - claim: "On a vector index whose index mode is ENHANCED a single query filter can use up to 100 filter constraints, each value the filter evaluates counts as one constraint, and this limit only applies to ENHANCED indexes"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
+  - claim: "Because an ENHANCED index evaluates your filter before it searches, three things increase the work a filtered query does and with it the query's latency: a larger vector index, a filter that matches a larger share of the vectors in the index, and a filter with more constraints"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
+  - claim: "By default all metadata fields are filterable in a similarity query unless explicitly specified as non-filterable during vector index creation, and S3 Vectors supports string, number, boolean and list types of metadata with a size limit per vector"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
+  - claim: "Once a metadata key is designated as non-filterable during index creation it can't be changed to filterable later, and each non-filterable metadata key name is limited to 63 characters"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
+  - claim: "If the metadata size exceeds the supported limits the PutVectors API operation will return a 400 Bad Request error"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
+  - claim: "When comparing $eq with an array metadata value it returns true if the input value matches any element in the array, so a filter on category equal to documentary matches a vector whose category metadata is the list documentary and romance"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
+  - claim: "Non-filterable metadata can be retrieved alongside query results using the return-metadata parameter and included in vector exports by using the ListVectors API operation"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html
+problem: "A filtered vector search that returns too few results looks like a corpus with too little in it. On a CLASSIC S3 Vectors index it was often the filter arriving too late — the search found the nearest neighbours first and then discarded the ones that did not match, so a selective filter left you with a fraction of the real matches and no error."
+builds: "A reading of what changed between the CLASSIC and ENHANCED index modes, what the cutover date means for every bucket you already have, and what pre-filtering costs in exchange for the recall it returns."
+catch: "Vector buckets created before 30 September 2026 are CLASSIC. The documentation is explicit that on a CLASSIC index 'queries with filters may return fewer than top K results' — so this is not a new feature arriving, it is an old failure being named, and your existing buckets still have it."
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      Amazon S3 Vectors now <em>&ldquo;evaluates metadata filters <strong>before</strong> running similarity
+      search, returning up to <strong>5x more</strong> of the matching vectors when your filter is
+      selective.&rdquo;</em> No extra cost, all commercial Regions plus China.
+    </p>
+    <p>
+      Read that backwards and it is a confession about the old behaviour. If pre-filtering returns five times
+      more matches, the previous mode was surfacing as little as <strong>a fifth</strong> of them &mdash; and
+      the documentation now says what that looked like:
+      <em>&ldquo;On a <code class="inline">CLASSIC</code> index, queries with filters <strong>may return fewer
+      than top K results</strong> when the vector index contains very few matching results.&rdquo;</em>
+    </p>
+    <p>
+      Fewer results, no error. That is precisely the failure
+      <a href="/blog/aws-architecture-rag-retrieval/">#61</a> was about: a wrong answer from missing context is
+      indistinguishable from a weak corpus.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>
+      There are now two index modes, and the difference is the order of operations.
+    </p>
+    <p>
+      <strong><code class="inline">ENHANCED</code> &mdash; pre-filtering.</strong>
+      <em>&ldquo;S3 Vectors <strong>first identifies the vectors that match your filter</strong>, then only
+      searches those vectors for the most similar ones, ensuring high recall even when filters match a small
+      fraction of vectors.&rdquo;</em>
+    </p>
+    <p>
+      <strong><code class="inline">CLASSIC</code> &mdash; evaluated in tandem.</strong>
+      <em>&ldquo;S3 Vectors searches through candidate vectors in the index to find the top K similar vectors
+      <strong>while simultaneously validating</strong> if each candidate vector matches your metadata filter
+      conditions.&rdquo;</em> The search decides the candidate set, and the filter then thins it.
+    </p>
+    <p>
+      <strong>And the cutover is a date, not a flag.</strong>
+      <em>&ldquo;Vector buckets created <strong>on or after September 30, 2026</strong> create
+      <code class="inline">ENHANCED</code> indexes. In a vector bucket created <strong>before that
+      date</strong>, indexes have the index mode <code class="inline">CLASSIC</code>.&rdquo;</em>
+    </p>
+    <p>
+      So this is not a feature you wait for. Every S3 Vectors bucket that existed yesterday is on the old
+      behaviour until you move it.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-044-s3-vectors-pre-filtering.svg" alt="Diagram: how the CLASSIC and ENHANCED index modes in Amazon S3 Vectors differ in the order they apply a metadata filter, and what that costs. On the left, the CLASSIC mode, which is what every vector bucket created before 30 September 2026 uses. S3 Vectors performs vector search and filter evaluation in tandem, searching candidate vectors to find the top K most similar while simultaneously validating whether each candidate matches the metadata filter. The consequence, stated in the documentation, is that queries with filters may return fewer than top K results when the index contains very few matching results, so a selective filter leaves a fraction of the real matches and reports no error. On the right, the ENHANCED mode, used by vector buckets created on or after 30 September 2026. Here S3 Vectors first identifies the vectors matching the filter and then searches only those for the most similar ones, which AWS says ensures high recall even when filters match a small fraction of vectors, and which the announcement quantifies as returning up to five times more of the matching vectors when the filter is selective. A central panel records that if pre-filtering returns five times more matches then the old mode could have been surfacing as little as one fifth of them. ENHANCED also unlocks the new dollar startsWith prefix-match operator, which can additionally be used on a CLASSIC index by setting queryMode to ENHANCED on the request, bringing the operator total to twelve alongside equals, not equals, greater than, greater than or equal, less than, less than or equal, in, not in, exists, and, and or. The trade is recorded too: ENHANCED introduces a limit of one hundred filter constraints per query which CLASSIC did not have, where each value evaluated counts as one constraint, and because the filter is evaluated before the search three things increase query latency, namely a larger index, a filter matching a larger share of the vectors, and a filter with more constraints. A closing panel notes that non-filterable metadata keys must be declared at index creation and can never become filterable afterwards, and that exceeding the metadata size limit makes PutVectors return a 400 Bad Request." />
+      <figcaption>Same filter, same data. The only difference is whether it runs before the search or alongside it.</figcaption>
+    </figure>
+
+    <p>
+      The practical difference shows up when the filter is selective, which is the normal case for anything
+      tenant-scoped, date-scoped or permission-scoped.
+    </p>
+    <p>
+      AWS's own example is a corpus of movie embeddings filtered by
+      <code class="inline">genre='mystery'</code>: on <code class="inline">ENHANCED</code>, S3 Vectors
+      <em>&ldquo;first identifies the vectors where the genre metadata is 'mystery', then only searches those
+      for the closest matches.&rdquo;</em> On <code class="inline">CLASSIC</code>, it finds the nearest
+      neighbours across everything and keeps whichever happen to be mysteries. If mysteries are 2% of the
+      corpus, most of the candidate set is discarded and the result is short.
+    </p>
+
+    <div class="callout amber">
+      <strong>Why this is worse than it sounds for a RAG application</strong>
+      <p>Ask for 10 chunks, get 3, and pass those 3 to the model. The model answers from three chunks, fluently, and nothing in the response says the retrieval was short. <a href="/blog/aws-architecture-rag-retrieval/">#61</a> argued the measurement to build first is "how often was the answer present in what came back" — on a <code class="inline">CLASSIC</code> index with a selective filter, that number could be low for a reason that has nothing to do with chunking, embeddings or the model, and nothing surfaces it. Document-level permissions are exactly this shape: a filter that matches a small share of the corpus, on every single query.</p>
+    </div>
+
+    <h3>Twelve operators, and a new one worth having</h3>
+    <p>
+      The filter language covers <code class="inline">$eq</code>, <code class="inline">$ne</code>,
+      <code class="inline">$gt</code>, <code class="inline">$gte</code>, <code class="inline">$lt</code>,
+      <code class="inline">$lte</code>, <code class="inline">$in</code>, <code class="inline">$nin</code>,
+      <code class="inline">$exists</code>, <code class="inline">$and</code>, <code class="inline">$or</code>
+      &mdash; and now <code class="inline">$startsWith</code>, a
+      <em>&ldquo;Prefix match. Matches values that begin with the specified string.&rdquo;</em>
+    </p>
+    <p>
+      That is the one that makes hierarchical scoping practical:
+      <code class="inline">{"s3_path": {"$startsWith": "/marketing/"}}</code>. Previously a folder-scoped
+      search meant enumerating paths with <code class="inline">$in</code>.
+    </p>
+    <p>
+      It is also available without migrating:
+      <em>&ldquo;<code class="inline">$startsWith</code> requires <code class="inline">ENHANCED</code> query
+      behavior. It is available on a vector index whose index mode is <code class="inline">ENHANCED</code>, and
+      on a <code class="inline">CLASSIC</code> index <strong>when the request sets
+      <code class="inline">queryMode</code> to <code class="inline">ENHANCED</code></strong>.&rdquo;</em> A
+      per-request override is the cheapest way to compare the two behaviours on real queries before changing an
+      index.
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      The value is recall on filtered queries, and filtered queries are most production RAG queries. Anything
+      multi-tenant filters by tenant. Anything permission-aware filters by access. Anything time-bounded filters
+      by date. All three are selective filters, which is exactly where the old mode lost the most.
+    </p>
+    <p>
+      It also costs nothing: <em>&ldquo;available at no additional cost in all commercial AWS Regions where
+      Amazon S3 Vectors is available, and in the AWS China Regions&rdquo;</em>, with
+      <em>&ldquo;no change to how you write vectors.&rdquo;</em>
+    </p>
+    <p>
+      Read alongside <a href="/blog/aws-architecture-vector-storage/">#63</a>, it strengthens the case for S3
+      Vectors specifically. That post found the filterable metadata budget tight &mdash; 2 KB of a 40 KB total
+      &mdash; and tight filterable metadata matters much more when filtering works properly.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      <strong>This is a correctness issue for permission-filtered retrieval, and worth stating plainly.</strong>
+      If you implemented document-level access control as a metadata filter on a
+      <code class="inline">CLASSIC</code> index, the filter was never returning the wrong documents &mdash; it
+      was returning <em>too few of the right ones</em>. That fails safe rather than open, which is the right
+      direction, but it means results were silently incomplete for authorised users.
+    </p>
+    <p>
+      <strong>Check the inverse assumption, though.</strong> Anyone who compensated for short result sets by
+      raising top-K, widening filters or falling back to an unfiltered query will now get materially different
+      behaviour on an <code class="inline">ENHANCED</code> index. A fallback that quietly drops the filter is
+      the dangerous pattern here, and it is the kind of workaround short results invite.
+    </p>
+    <p>
+      <strong>And one irreversible decision to get right at index creation.</strong>
+      <em>&ldquo;Once a metadata key is designated as non-filterable during index creation, <strong>it can't be
+      changed to filterable later</strong>.&rdquo;</em> With filtering now substantially better, the
+      filterable/non-filterable split is a more consequential choice than it was yesterday, and it is made once.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      No charge for the feature. The cost shows up as latency, and the documentation is unusually direct about
+      the shape of it:
+    </p>
+    <p>
+      <em>&ldquo;Because an <code class="inline">ENHANCED</code> index evaluates your filter before it searches,
+      the work a filtered query does depends on the filter you send. <strong>Three things increase that work,
+      and with it the query's latency</strong>: a larger vector index, a filter that matches a larger share of
+      the vectors in the index, and a filter with more constraints.&rdquo;</em>
+    </p>
+    <p>
+      Note the middle one &mdash; a filter matching a <em>larger</em> share is more expensive. So pre-filtering
+      is fastest exactly where it helps most, and slowest where it helps least. A filter matching 90% of the
+      corpus does the most work for the least benefit, which is an argument for not filtering at all in that
+      case rather than for staying on <code class="inline">CLASSIC</code>.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      <strong>Find out which mode your indexes are in, by bucket creation date.</strong> Before 30 September
+      2026 means <code class="inline">CLASSIC</code>. That is a one-line audit and it tells you whether every
+      filtered query you have run was subject to the old behaviour.
+    </p>
+    <p>
+      <strong>Compare before migrating, per query, using <code class="inline">queryMode</code>.</strong> The
+      per-request override exists precisely so you can run your real queries both ways and measure the
+      difference rather than assume it. That is the honest version of adopting this.
+    </p>
+    <p>
+      <strong>The 100-constraint limit is new and applies only to <code class="inline">ENHANCED</code>.</strong>
+      <em>&ldquo;A single query filter can use up to 100 filter constraints. Each value the filter evaluates
+      counts as one constraint&hellip; This limit only applies to <code class="inline">ENHANCED</code>
+      indexes.&rdquo;</em> So migrating can break a query that worked &mdash; specifically a long
+      <code class="inline">$in</code> list, where each element counts. Anyone enumerating tenant IDs or document
+      paths in a filter should count them before switching.
+    </p>
+    <p>
+      <strong>Deployment is still in progress.</strong> AWS says it is
+      <em>&ldquo;in the process of deploying this change and plan[s] to complete the deployment in the coming
+      days&rdquo;</em>, so behaviour may vary by Region for a short while. Worth knowing before you conclude
+      that a comparison test disagrees with the documentation.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+    <p>
+      <strong>Recall against predictable latency.</strong> <code class="inline">CLASSIC</code> does roughly the
+      same work regardless of the filter. <code class="inline">ENHANCED</code> does work proportional to what
+      the filter matches, so latency becomes filter-dependent.
+    </p>
+    <p>
+      <strong>Correct results against a new ceiling.</strong> The 100-constraint limit buys the pre-filtering,
+      and it did not exist before.
+    </p>
+    <p>
+      <strong>A better filter language against an irreversible schema choice.</strong>
+      <code class="inline">$startsWith</code> and working pre-filters make the filterable set more valuable, and
+      non-filterable keys can never be promoted.
+    </p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      <strong>Audit bucket creation dates first.</strong> Anything created before 30 September 2026 is
+      <code class="inline">CLASSIC</code>, and its filtered queries have been returning short result sets.
+    </p>
+    <p>
+      <strong>Count your <code class="inline">$in</code> lists before migrating.</strong> Each element is a
+      constraint against the 100 limit.
+    </p>
+    <p>
+      <strong>Use <code class="inline">queryMode: ENHANCED</code> to A/B your real queries.</strong> Measure
+      recall on the questions you actually serve, which is the measurement #61 recommended and almost nobody
+      builds.
+    </p>
+    <p>
+      <strong>Review any fallback that widens or drops a filter.</strong> Those were written to compensate for a
+      behaviour that is changing.
+    </p>
+    <p>
+      <strong>Replace path enumeration with <code class="inline">$startsWith</code>.</strong> Fewer constraints,
+      clearer intent, and it works on <code class="inline">CLASSIC</code> with the query-mode override.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <p>
+      <strong>Treat a short result set as a bug, not as a thin corpus.</strong> That instinct would have caught
+      this a long time ago.
+    </p>
+    <p>
+      <strong>Decide the filterable/non-filterable split deliberately at index creation.</strong> It is the one
+      part of this that cannot be revisited.
+    </p>
+    <p>
+      <strong>Do not filter on something that matches most of the corpus.</strong> On
+      <code class="inline">ENHANCED</code> that is the most expensive filter for the least gain.
+    </p>
+  </div>
+
+  <div class="section" id="adopt">
+    <h2>Who should act on this</h2>
+    <p>
+      Anyone running S3 Vectors with metadata filters, which is to say anyone running multi-tenant,
+      permission-aware or date-bounded retrieval on it.
+    </p>
+    <p>
+      Act now if your filters are selective &mdash; a tenant id, an access list, a recent-documents window
+      &mdash; because that is the case where the old mode lost the most and the new one costs the least. Take
+      more care if your filters use long <code class="inline">$in</code> lists, since the 100-constraint limit is
+      new, or if your application has workarounds built around short result sets.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <ul>
+      <li>S3 Vectors now evaluates metadata filters <strong>before</strong> the similarity search, returning <strong>up to 5x more</strong> matching vectors on selective filters.</li>
+      <li>Which means the old mode could have been surfacing as little as <strong>a fifth</strong> of them.</li>
+      <li>The documentation now states it: on a <code class="inline">CLASSIC</code> index, <em>"queries with filters may return fewer than top K results"</em> — no error.</li>
+      <li><strong>Buckets created before 30 September 2026 are <code class="inline">CLASSIC</code>.</strong> This is a cutover date, not a rollout you wait for.</li>
+      <li>New <code class="inline">$startsWith</code> prefix operator, bringing the filter language to <strong>twelve</strong> operators.</li>
+      <li><code class="inline">$startsWith</code> also works on a <code class="inline">CLASSIC</code> index by setting <code class="inline">queryMode</code> to <code class="inline">ENHANCED</code> per request.</li>
+      <li><strong>New limit: 100 filter constraints per query</strong>, <code class="inline">ENHANCED</code> only — and each element of an <code class="inline">$in</code> list counts as one.</li>
+      <li>Latency now depends on the filter: bigger index, broader match and more constraints all cost more.</li>
+      <li>A filter matching a <em>large</em> share of the corpus is the most expensive and least useful case.</li>
+      <li><strong>Non-filterable metadata keys can never become filterable</strong> — decided once, at index creation.</li>
+      <li>No additional cost, all commercial Regions plus China, and deployment was still completing at announcement.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/09/s3-vectors-introduces-metadata-pre-filtering/" target="_blank" rel="noopener">Amazon S3 Vectors introduces metadata pre-filtering for up to 5x higher recall on filtered search</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-metadata-filtering.html" target="_blank" rel="noopener">Metadata filtering in S3 Vectors &#8212; the CLASSIC and ENHANCED modes, the 30 September 2026 cutover, the twelve operators, the 100-constraint limit and the latency factors</a></li>
+    </ul>
+  </div>
+</div>

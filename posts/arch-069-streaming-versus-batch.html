@@ -1,0 +1,366 @@
+---
+title: "AWS Architecture Series #69 — Small records cost more, and the cheap path starts at 60 seconds"
+date: '2026-10-01T09:00:00'
+slug: aws-architecture-streaming-versus-batch
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-10-01'
+verified_claims:
+  - claim: "Firehose ingestion pricing is based on the number of data records you send to the service, times the size of each record rounded up to the nearest 5KB (5120 bytes), so for the same volume of incoming data, if there is a greater number of incoming records the cost incurred would be higher"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/limits.html
+  - claim: "AWS gives the example that if the total incoming data volume is 5MiB, sending 5MiB of data over 5,000 records costs more compared to sending the same amount of data using 1,000 records"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/limits.html
+  - claim: "A 100-byte record billed at the 5,120-byte rounding unit is charged for over fifty times its own size"
+    derive: "5120 / 100"
+    expect: "51.2"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/limits.html
+  - claim: "The Firehose buffer interval hints range from 60 seconds to 900 seconds"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/limits.html
+  - claim: "Amazon Data Firehose buffers incoming streaming data to a certain size or for a certain period of time before delivering it to destinations, where Buffer Size is in MBs and Buffer Interval is in seconds"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/what-is-this-service.html
+  - claim: "If the increased Firehose quota is much higher than the running traffic it causes small delivery batches to destinations, which is inefficient and can result in higher costs at the destination services"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/limits.html
+  - claim: "The maximum size of a record sent to Amazon Data Firehose, before base64-encoding, is 1,000 KiB, and PutRecordBatch can take up to 500 records per call or 4 MiB per call, whichever is smaller"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/limits.html
+  - claim: "With Direct PUT as the data source each Firehose stream provides a combined quota for PutRecord and PutRecordBatch of 500,000 records per second, 2,000 requests per second and 5 MiB per second in US East (N. Virginia), US West (Oregon) and Europe (Ireland), and 100,000 records per second, 1,000 requests per second and 1 MiB per second in other Regions"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/limits.html
+  - claim: "When Kinesis Data Streams is configured as the Firehose data source the Direct PUT quota doesn't apply, and Amazon Data Firehose scales up and down with no limit"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/limits.html
+  - claim: "Each Firehose stream stores data records for up to 24 hours in case the delivery destination is unavailable and if the source is DirectPut"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/limits.html
+  - claim: "When dynamic partitioning is enabled there is a default quota of 500 active partitions for that Firehose stream, and a max throughput of 1 GB per second is supported for each active partition"
+    source: https://docs.aws.amazon.com/firehose/latest/dev/limits.html
+  - claim: "Kinesis Data Streams offers three modes, On-demand Standard, On-demand Advantage and Provisioned, where a mode determines how the capacity of a data stream is managed and how you're charged for the usage of your data stream"
+    source: https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html
+  - claim: "With On-demand Advantage, data ingest, data retrieval, and extended retention usage across all on-demand streams are at least 60% lower than in On-demand Standard, and there is no longer a fixed charge for each stream"
+    source: https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html
+  - claim: "Enabling On-demand Advantage commits the account to at least 25MiB/s of data ingest and 25MiB/s of data retrieval across all on-demand streams, and if your account's data usage is below the requirement you'll be charged the difference as a shortfall, at the same discounted rate"
+    source: https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html
+  - claim: "Enabling On-demand Advantage has a minimum period of 24 hours before you can disable the mode, and to switch back to On-demand Standard you must first remove warm throughput from any streams that have it configured"
+    source: https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html
+  - claim: "A data stream in the on-demand mode accommodates up to double the peak write throughput observed in the previous 30 days, and write throttling can occur if your traffic increases to more than double the previous peak within a 15-minute duration"
+    source: https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html
+  - claim: "In on-demand mode Kinesis Data Streams splits the shards evenly when it detects an increase in traffic, however it does not detect and isolate hash keys that are driving a higher portion of incoming traffic to a particular shard, and for such use cases AWS recommends the provisioned capacity mode that supports granular shard splits"
+    source: https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html
+  - claim: "With on-demand mode the data stream automatically adapts to handle uneven data distribution patterns unless a single partition key exceeds a shard's 1 MB/s throughput and 1000 records per second limits"
+    source: https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html
+  - claim: "When incoming traffic exceeds 500 KB/s per shard Kinesis Data Streams splits the shard within 15 minutes, and the parent shard's hash key values are redistributed evenly across child shards"
+    source: https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html
+  - claim: "Enhanced Fan-Out supports adding up to 20 consumer applications to a data stream using the SubscribeToShard API, and with On-demand Advantage mode you can register up to 50 consumers per stream to use enhanced fan-out with no price premium compared to standard data retrievals"
+    source: https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html
+  - claim: "In provisioned mode the number of shards is calculated as ceiling(max(incoming_write_bandwidth_in_KiB/1024, outgoing_read_bandwidth_in_KiB/2048))"
+    source: https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html
+  - claim: "For each data stream you can switch between the on-demand and provisioned modes twice within 24 hours, and switching doesn't cause any disruptions to applications using the data stream"
+    source: https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html
+problem: "Streaming versus batch gets argued as a latency question, and the cost side is assumed to follow from volume. It does not. The cheap managed path bills per record rounded up to 5 KB and cannot deliver faster than 60 seconds, so the two axes are set by record size and buffer interval rather than by how much data you move."
+builds: "A reading of the latency and cost curve from the documented quotas: where the floor is, what the rounding unit does to small events, and what the cheapest streaming mode actually commits you to."
+catch: "Firehose bills records rounded up to 5,120 bytes. A 100-byte telemetry event is charged for over fifty times its own size, so halving your event size changes nothing and halving your event count halves the bill. AWS's own example: 5 MiB sent as 5,000 records costs more than the same 5 MiB sent as 1,000."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #069 &middot; Data &amp; Analytics</div>
+  <h1 class="post-title">Small records cost more, and the cheap path starts at 60 seconds</h1>
+  <p class="post-subtitle">The streaming-versus-batch curve is not drawn by data volume. It is drawn by record count and buffer interval, and both are documented.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>AWS Well-Architected &middot; Cost Optimization &middot; Performance Efficiency</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <a href="/blog/aws-architecture-kinesis-msk-firehose/">#60</a> covered which streaming service to pick.
+      This is the cost lens on the same ground: what the choice actually bills for, and where the latency
+      floor sits.
+    </p>
+    <p>
+      The usual framing is a trade between latency and cost, with volume as the driver. Two documented facts
+      change the shape of it.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Firehose bills per record, rounded up to 5 KB</strong></div>
+      <div class="challenge-body">
+        <p>
+          The quota page states the pricing model directly, which pricing pages rarely do:
+          <em>&ldquo;Firehose ingestion pricing is based on the number of data records you send to the service,
+          times the size of each record <strong>rounded up to the nearest 5KB (5120 bytes)</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So a 100-byte event is billed as 5,120 bytes &mdash; <strong>over fifty times its own size</strong>.
+          Shrinking that event to 50 bytes saves nothing. Batching two events into one record halves the bill.
+        </p>
+        <p>
+          AWS gives the worked example: <em>&ldquo;if the total incoming data volume is 5MiB, sending 5MiB of
+          data over <strong>5,000 records</strong> costs more compared to sending the same amount of data using
+          <strong>1,000 records</strong>.&rdquo;</em> Same bytes, different bill.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Optimise record count, not payload size. The rounding unit makes small events the expensive case.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The managed path cannot go below 60 seconds</strong></div>
+      <div class="challenge-body">
+        <p>
+          Firehose buffers before delivering, and the dial has a documented floor:
+          <em>&ldquo;The buffer interval hints range from <strong>60 seconds</strong> to <strong>900
+          seconds</strong>.&rdquo;</em>
+        </p>
+        <p>
+          One minute to fifteen. If your requirement is sub-minute, Firehose is not a slow option to tune
+          &mdash; it is unavailable, and you are running Kinesis Data Streams with a consumer application you
+          operate yourself.
+        </p>
+        <p>
+          That is the real step in the curve. It is not gradual: there is a managed, cheap, 60-second-minimum
+          tier, and below it a tier where you own the consumer.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Write the latency requirement down in seconds first. Sixty is the line that decides the architecture.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The 60%-cheaper streaming mode is a reservation</strong></div>
+      <div class="challenge-body">
+        <p>
+          On-demand Advantage reads like a free upgrade: <em>&ldquo;Data ingest, data retrieval, and extended
+          retention usage across all on-demand streams are <strong>at least 60% lower</strong> than in
+          On-demand Standard&rdquo;</em>, and <em>&ldquo;there's no longer a fixed charge for each
+          stream.&rdquo;</em>
+        </p>
+        <p>
+          Then the condition: <em>&ldquo;Enabling On-demand Advantage <strong>commits the account to at least
+          25MiB/s of data ingest and 25MiB/s of data retrieval</strong> across all on-demand streams.&rdquo;</em>
+          Under-use it and <em>&ldquo;you'll be charged the difference as a shortfall.&rdquo;</em>
+        </p>
+        <p>
+          And it is account-level with a lock-in period: <em>&ldquo;a minimum period of
+          <strong>24 hours</strong> before you can disable the mode.&rdquo;</em> A serverless-shaped product
+          with a floor, a shortfall charge and a cooling-off period is a reserved-capacity deal.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Measure sustained ingest and retrieval against 25 MiB/s each before enabling. Below it you pay for air.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The curve has a step in it, and the step is at sixty seconds.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-069-streaming-versus-batch.svg" alt="Diagram: the latency and cost curve between streaming and batch on AWS, drawn from documented quotas rather than from data volume. At the low-latency end sits Kinesis Data Streams with a consumer application you operate yourself, reaching sub-second delivery. It offers three modes. On-demand Standard requires no capacity planning and accommodates up to double the peak write throughput observed in the previous thirty days, with write throttling possible if traffic more than doubles the previous peak within fifteen minutes. On-demand Advantage is an account-level mode where ingest, retrieval and extended retention are at least sixty percent lower than Standard and the per-stream fixed charge disappears, but enabling it commits the account to at least twenty-five mebibytes per second of ingest and twenty-five of retrieval, bills any shortfall at the discounted rate, and cannot be disabled for twenty-four hours; it also raises enhanced fan-out consumers from twenty to fifty per stream with no price premium. Provisioned mode requires specifying shards, sized by the formula ceiling of the maximum of incoming write bandwidth in kibibytes divided by 1024 and outgoing read bandwidth divided by 2048. A panel notes that on-demand splits shards evenly when traffic rises but explicitly does not detect or isolate hot hash keys, so AWS recommends provisioned mode for granular shard splits, and that a single partition key exceeding one megabyte per second or one thousand records per second will still throttle. At the managed end sits Amazon Data Firehose, whose buffer interval hints range from sixty seconds to nine hundred seconds, making sixty seconds the floor for the managed path. Firehose ingestion is billed by the number of records times each record's size rounded up to the nearest five kilobytes, which is 5,120 bytes, so a hundred-byte event is charged for more than fifty times its own size, and AWS's own example shows five mebibytes sent as five thousand records costing more than the same five mebibytes sent as one thousand records. A closing panel records the design consequence: optimise record count rather than payload size, write the latency requirement in seconds because sixty is the line that decides the architecture, and measure sustained throughput against the twenty-five mebibyte commitment before enabling the discount." />
+      <figcaption>Two axes, both documented: record count sets the bill, buffer interval sets the floor.</figcaption>
+    </figure>
+
+    <h3>Three Kinesis modes, and they are not three prices</h3>
+    <p>
+      <em>&ldquo;A mode determines how the capacity of a data stream is managed <strong>and how you're charged
+      for the usage</strong> of your data stream.&rdquo;</em> That sentence is the whole point &mdash; the mode
+      is a billing model, not a performance tier.
+    </p>
+    <p>
+      <strong>On-demand Standard</strong> <em>&ldquo;accommodates up to double the peak write throughput
+      observed in the previous 30 days&rdquo;</em>, which is a useful and under-appreciated guarantee: your
+      headroom is a function of your own history. The matching warning is that
+      <em>&ldquo;write throttling can occur if your traffic increases to more than double the previous peak
+      within a 15-minute duration.&rdquo;</em>
+    </p>
+    <p>
+      <strong>Provisioned</strong> has an actual formula, which is rare enough to quote:
+      <code class="inline">number_of_shards = ceiling(max(incoming_write_bandwidth_in_KiB/1024,
+      outgoing_read_bandwidth_in_KiB/2048))</code>. Note the asymmetry &mdash; reads get twice the divisor,
+      because a shard offers 2 MB/s out against 1 MB/s in.
+    </p>
+
+    <div class="callout amber">
+      <strong>And on-demand explicitly cannot fix a hot key</strong>
+      <p>This inverts the usual assumption that the serverless mode is strictly better. <em>&ldquo;In the on-demand mode, Kinesis Data Streams splits the shards evenly when it detects an increase in traffic. However, <strong>it does not detect and isolate hash keys</strong> that are driving a higher portion of incoming traffic to a particular shard. If you are using highly uneven partition keys you may continue to receive write exceptions. For such use cases, we recommend that you use the <strong>provisioned</strong> capacity mode that supports granular shard splits.&rdquo;</em> So skew is the one case where you are told to leave the managed mode — and it is the case <a href="/blog/aws-daily-intelligence-kinesis-service-managed-partition-keys/">Service-Managed Partition Keys</a> addressed by removing the key entirely, at the cost of ordering.</p>
+    </div>
+
+    <h3>Where the rounding unit actually bites</h3>
+    <p>
+      The 5,120-byte unit is benign for anything log-shaped and brutal for anything event-shaped. A 2 KB
+      application log line rounds to one unit and wastes 60% of it. A 100-byte IoT reading rounds to the same
+      unit and wastes 98%.
+    </p>
+    <p>
+      Which means the aggregation you do before Firehose is worth more than any compression you do inside it,
+      and <code class="inline">PutRecordBatch</code> is the lever &mdash; it <em>&ldquo;can take up to 500
+      records per call or 4 MiB per call, whichever is smaller&rdquo;</em>. That is batching for the API quota;
+      packing several events into one <em>record</em> is what changes the bill.
+    </p>
+    <p>
+      There is a second, quieter version of the same trap on the far side of the pipeline:
+      <em>&ldquo;If the increased quota is much higher than the running traffic, it causes small delivery
+      batches to destinations. This is inefficient and <strong>can result in higher costs at the destination
+      services</strong>.&rdquo;</em> Raising a Firehose quota speculatively makes your S3 object count go up and
+      your query performance go down &mdash; the small-files problem
+      <a href="/blog/aws-architecture-iceberg-table-formats/">#31</a> was about, arriving from a quota setting.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Chaining the two removes a quota entirely</h3>
+    <p>
+      Direct PUT into Firehose is capped: <em>&ldquo;500,000 records/second, 2,000 requests/second, and 5 MiB/second&rdquo;</em>
+      in the three largest Regions, and <em>&ldquo;100,000 records/second, 1,000 requests/second, and 1
+      MiB/second&rdquo;</em> elsewhere &mdash; a fivefold regional difference worth knowing before you design
+      for one Region and deploy in another.
+    </p>
+    <p>
+      Put a data stream in front and the cap disappears:
+      <em>&ldquo;When Kinesis Data Streams is configured as the data source, this quota <strong>doesn't
+      apply</strong>, and Amazon Data Firehose scales up and down with no limit.&rdquo;</em>
+    </p>
+    <p>
+      That is the argument for the two-service pipeline rather than the one-service one, and it is a capacity
+      argument rather than a feature argument. You are buying the stream's elasticity, and paying for the
+      stream.
+    </p>
+
+    <div class="callout red">
+      <strong>The buffer the managed path gives you for free, and its limit</strong>
+      <p><em>&ldquo;Each Firehose stream stores data records for <strong>up to 24 hours</strong> in case the delivery destination is unavailable and if the source is DirectPut.&rdquo;</em> Twenty-four hours of destination outage absorbed with no work from you. But read the condition: <em>if the source is DirectPut</em>. Chain a data stream in front — the thing the previous section recommends — and that guarantee moves: <em>&ldquo;If the source is Kinesis Data Streams (KDS) and the destination is unavailable, then the data will be retained based on your KDS configuration.&rdquo;</em> So the fix for the throughput quota changes who owns the retention window, and a 24-hour default on the stream is the number to check.</p>
+    </div>
+
+    <h3>Consumer count is a pricing dimension, not just a limit</h3>
+    <p>
+      Enhanced Fan-Out <em>&ldquo;supports adding up to <strong>20</strong> consumer applications&rdquo;</em> on
+      the standard modes. On-demand Advantage raises that to <em>&ldquo;up to <strong>50</strong> consumers per
+      stream&rdquo;</em> and removes the surcharge: <em>&ldquo;Enhanced fan-out data retrievals also do not have
+      a price premium compared to the standard data retrievals in this mode.&rdquo;</em>
+    </p>
+    <p>
+      So for a stream fanning out to many independent consumers, the commitment can pay for itself twice over
+      &mdash; on the 60% discount and on the removed EFO premium. That is the case where Advantage is genuinely
+      the right answer rather than a trap, and AWS says so: it suits accounts that
+      <em>&ldquo;need many fan-out consumers, or operate with hundreds of data streams.&rdquo;</em>
+    </p>
+
+    <h3>Mode switching is reversible, within limits</h3>
+    <p>
+      <em>&ldquo;For each data stream in your AWS account, you can switch between the on-demand and provisioned
+      modes <strong>twice within 24 hours</strong>&hellip; Switching between modes doesn't cause any disruptions
+      to your applications.&rdquo;</em>
+    </p>
+    <p>
+      Twice a day, no disruption, is unusually generous &mdash; most of the decisions in this series have been
+      one-way. The exception is the account-level one: On-demand Advantage needs 24 hours before it can be
+      turned off, and <em>&ldquo;you must first remove any warm throughput&rdquo;</em> from the streams that
+      carry it.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Cost optimisation target</td>
+        <td>Record count, not payload size</td>
+        <td>Billing rounds each record up to 5,120 bytes.</td>
+      </tr>
+      <tr>
+        <td>Sub-minute latency</td>
+        <td>Data Streams with your own consumer</td>
+        <td>Firehose's buffer interval floor is 60 seconds.</td>
+      </tr>
+      <tr>
+        <td>60 seconds to 15 minutes</td>
+        <td>Firehose, buffer tuned</td>
+        <td>The managed path, and the whole documented interval range.</td>
+      </tr>
+      <tr>
+        <td>On-demand Advantage</td>
+        <td>Only above 25 MiB/s sustained, both ways</td>
+        <td>Shortfall is billed, and the mode locks for 24 hours.</td>
+      </tr>
+      <tr>
+        <td>Many fan-out consumers</td>
+        <td>On-demand Advantage</td>
+        <td>50 consumers instead of 20, and no EFO price premium.</td>
+      </tr>
+      <tr>
+        <td>Skewed partition keys</td>
+        <td>Provisioned, not on-demand</td>
+        <td>On-demand splits shards but does not isolate hot hash keys.</td>
+      </tr>
+      <tr>
+        <td>Above the Direct PUT quota</td>
+        <td>Chain a data stream in front</td>
+        <td>The Direct PUT cap stops applying entirely.</td>
+      </tr>
+      <tr>
+        <td>Destination outage tolerance</td>
+        <td>Check which source you use</td>
+        <td>24 hours is the DirectPut guarantee; with KDS it follows your stream retention.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The two numbers that settle it</h3>
+    <p>
+      <strong>Average record size, and required latency in seconds.</strong> Those two place you on the curve
+      before any discussion of volume or service preference.
+    </p>
+    <p>
+      Under 5 KB per record, your bill is a function of how many records you emit, so aggregation upstream is
+      the highest-leverage change available &mdash; and it is free. Under 60 seconds of required latency, the
+      managed path is not an option at any price. Everything else is tuning.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Cost-lens posts usually end with a break-even. This one ends with a rounding unit, because that is where
+      the money actually goes: 5,120 bytes per record whether the record is 5,000 bytes or fifty.
+    </p>
+    <p>
+      It is a good example of a cost structure that does not reward the intuitive optimisation. Compressing
+      payloads, trimming fields, shortening keys &mdash; all of that is effort spent below the rounding unit
+      and therefore invisible on the invoice. Emitting half as many records is the change that matters, and it
+      is usually a batching change in the producer rather than anything in the pipeline.
+    </p>
+    <p>
+      The latency floor has the same quality. Sixty seconds is not a performance characteristic to be tuned
+      around; it is the boundary between a service you configure and a service you operate. Knowing which side
+      of it you are on is a one-sentence answer, and it decides most of the rest.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Data &amp; Analytics &mdash; the next unwritten roadmap entry. Items 21 to 33 are already published as posts #30 through #60, so the series continues past this block rather than revisiting it.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/firehose/latest/dev/limits.html" target="_blank" rel="noopener">Amazon Data Firehose quota &#8212; the 5 KB rounding unit, the 60-to-900-second buffer interval range, Direct PUT quotas and the 24-hour retention guarantee</a></li>
+      <li><a href="https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html" target="_blank" rel="noopener">Choose the right mode to stream in &#8212; the three Kinesis modes, the On-demand Advantage commitment, the shard formula, and why on-demand cannot isolate a hot key</a></li>
+      <li><a href="https://docs.aws.amazon.com/firehose/latest/dev/what-is-this-service.html" target="_blank" rel="noopener">What is Amazon Data Firehose &#8212; buffer size and buffer interval as the two delivery controls</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
