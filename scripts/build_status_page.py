@@ -1513,48 +1513,69 @@ GH_IMPACT = {"none": "ok", "minor": "warn", "major": "bad", "critical": "bad"}
 # because "GitHub is degraded" is not the useful sentence -- "Actions is
 # degraded" is, and Pages being fine while Copilot is not should not read
 # as a problem for this site.
-GH_MINE = ("Pages", "Actions")
+# What this site actually runs on: Actions builds it, Pages serves it,
+# and Git Operations is how anything reaches either. Named explicitly
+# so "Copilot is down" never reads as "this site is in trouble".
+GH_MINE = ("Git Operations", "Actions", "Pages")
+
+
+# Drawn rather than a character, because the glyph fonts render for a
+# lightning bolt vary enough to arrive as an emoji on one platform and a
+# box on another.
+BOLT = ('<svg class="bolt" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+        ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
+        ' aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10'
+        ' 13 2"/></svg>')
 
 
 def github_strip(gh, source):
-    """One line of GitHub, directly under the cloud cards.
+    """GitHub as the supply the site runs on, under the cloud cards.
 
-    Not a fourth card. The three above carry a comparison; this is a
-    different kind of thing and is sized and styled to say so.
+    Not a fourth card. The rail's fill is the share of components that
+    are operational, its colour is the severity GitHub declares, and the
+    spark moves only while everything is up.
     """
     if not gh:
-        return ('<a class="ghs ghs-err" href="#github">'
-                '<span class="ghs-k">GitHub</span>'
-                '<span class="pill err"></span>'
-                '<span class="ghs-v">Could not check</span>'
-                '<span class="ghs-w">builds and serves this site</span>'
-                '<span class="ghs-go" aria-hidden="true">&rsaquo;</span></a>\n')
+        return (
+            '<a class="rail rail-err" href="#github">'
+            '<span class="rail-src">%s<span class="rail-k">GitHub</span></span>'
+            '<span class="rail-line" style="--fill:0%%"></span>'
+            '<span class="rail-say">Could not check &mdash; this is not '
+            'a report that GitHub is healthy</span>'
+            '</a>\n' % BOLT)
 
     ind = gh.get("indicator", "")
     tone = "ok" if ind == "none" else ("bad" if ind in ("major", "critical")
                                        else "err")
-    by = {c.get("name", ""): c.get("status", "") for c in gh.get("components", [])}
+    comps = gh.get("components", []) or []
+    up = sum(1 for c in comps if c.get("status") == "operational")
+    fill = int(round(100.0 * up / len(comps))) if comps else 0
 
-    bits = ""
+    by = {c.get("name", ""): c.get("status", "") for c in comps}
+    stems = ""
     for name in GH_MINE:
         st = by.get(name)
         if not st:
             continue
-        word = GH_WORD.get(st, ("warn", "Unknown"))[1]
         cls = "ok" if st == "operational" else (
             "bad" if st == "major_outage" else "err")
-        bits += ('<span class="ghs-c"><span class="pill %s"></span>'
-                 '<b>%s</b> %s</span>' % (cls, e(name), e(word.lower())))
+        stems += ('<span class="stem"><i class="pin %s"></i>'
+                  '<b>%s</b> <span>%s</span></span>'
+                  % (cls, e(name),
+                     e(GH_WORD.get(st, ("warn", "Unknown"))[1].lower())))
 
-    return ('<a class="ghs ghs-%s" href="#github">'
-            '<span class="ghs-k">GitHub</span>'
-            '<span class="pill %s"></span>'
-            '<span class="ghs-v">%s</span>'
-            '%s'
-            '<span class="ghs-w">builds and serves this site</span>'
-            '<span class="ghs-go" aria-hidden="true">&rsaquo;</span></a>\n'
-            % (tone, tone, e(gh.get("description") or "Unknown"), bits))
-
+    return (
+        '<a class="rail rail-%s" href="#github">'
+        '<span class="rail-src">%s<span class="rail-k">GitHub</span>'
+        '<i class="spark"></i></span>'
+        '<span class="rail-line" style="--fill:%d%%"></span>'
+        '<span class="rail-stems">%s</span>'
+        '<span class="rail-say">%s &middot; %d of %d components operational '
+        '&middot; builds and serves this site <span aria-hidden="true">&rsaquo;'
+        '</span></span>'
+        '</a>\n'
+        % (tone, BOLT, fill, stems,
+           e(gh.get("description") or "Unknown"), up, len(comps)))
 
 def github_block(gh, source):
     """GitHub's own status, or an honest account of why it is missing.
