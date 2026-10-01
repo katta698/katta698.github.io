@@ -40,7 +40,9 @@ uninstalled. It runs everything that does not need a browser, which is the
 majority of the file-level faults, and says clearly that it skipped the rest.
 """
 import argparse
+import atexit
 import concurrent.futures
+import io
 import os
 import subprocess
 import sys
@@ -438,6 +440,158 @@ def checklist():
             print("       %s" % tail)
 
 
+# ---------------------------------------------------------------- the gate lock
+#
+# Two preflight runs at once do not take twice as long each. They take far
+# longer than that and then start failing, because every browser check spawns a
+# headless browser and a local HTTP server, and the machine has eight cores.
+#
+# Measured 2026-09-30, one AWS push with the site window running its own gate:
+#
+#     total CPU 97%   chrome/chromium processes 27
+#     check_connect_card        40.7s  ->  386.3s
+#     check_audio_glyph         79.5s  ->  296.1s
+#     check_shell_consistency  120.5s  ->  227.1s
+#     52 checks                  469s  ->  1645s,  then check_tap_targets FAILED
+#
+# Same checks, same code, 3.5x slower, and then a failure that was nothing to do
+# with the site. The comment above WORKERS already describes this shape for
+# browsers contending inside one run; this is the same thing between two runs,
+# and lowering WORKERS cannot fix it because the other run has its own.
+#
+# The cost of that landed on a person: three windows held back to avoid it, and
+# a post still took 77 minutes from commit to live.
+#
+# So the gate takes a turn rather than competing. The lock lives in the SHARED
+# git directory, which is what makes it work across all four worktrees -- the
+# same reason the hook itself applies to all of them.
+#
+# Serialising is strictly cheaper than contending. Four windows at ~8 minutes
+# each is ~32 minutes of gate in total; two contending runs already cost more
+# than that and produced a false failure as well.
+#
+# On timeout it PROCEEDS rather than failing. A lock that can block a push
+# forever is worse than the contention it prevents -- same reasoning as --fast
+# and --no-verify existing at all. A stale lock from a killed process is
+# detected and stolen rather than waited on, because pushes get interrupted.
+LOCK_WAIT_SECONDS = 2700
+LOCK_POLL_SECONDS = 5
+
+
+def _lock_path():
+    try:
+        common = subprocess.run(["git", "rev-parse", "--git-common-dir"],
+                                cwd=ROOT, capture_output=True, text=True,
+                                timeout=30).stdout.strip()
+    except Exception:                                           # noqa: BLE001
+        return None
+    if not common:
+        return None
+    if not os.path.isabs(common):
+        common = os.path.join(ROOT, common)
+    return os.path.join(common, "preflight.lock")
+
+
+def _holder_alive(pid):
+    """True if that pid is still running. Unknown counts as alive."""
+    try:
+        out = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid, "/NH"],
+                             capture_output=True, text=True, timeout=30).stdout
+        return str(pid) in out
+    except Exception:                                           # noqa: BLE001
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+        except Exception:                                       # noqa: BLE001
+            return True
+
+
+def acquire_gate_lock():
+    """Take the shared gate lock, or wait for whoever has it. Never blocks forever."""
+    path = _lock_path()
+    if path is None:
+        print("  could not locate the shared git dir; running without the gate lock")
+        return None
+
+    waited, announced = 0, False
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, ("%d\n%s\n%s\n" % (os.getpid(), ROOT,
+                                            time.strftime("%Y-%m-%d %H:%M:%S"))
+                          ).encode("utf-8"))
+            os.close(fd)
+            if announced:
+                print("  gate lock acquired after %ds\n" % waited)
+            return path
+        except FileExistsError:
+            # utf-8-sig, because a lock file written by anything other than this
+            # script may carry a BOM and int() does not forgive one. Found while
+            # testing: a BOM made the pid unparseable, which took the branch
+            # below and waited 45 minutes on a lock whose holder was long dead.
+            pid, where = None, "?"
+            try:
+                parts = io.open(path, encoding="utf-8-sig").read().splitlines()
+                pid = int(parts[0].strip())
+                where = parts[1].strip() if len(parts) > 1 else "?"
+            except Exception:                                   # noqa: BLE001
+                pass
+
+            # An unparseable lock is treated as stale, not as a live holder.
+            # The alternative is what the comment above describes: a corrupted
+            # or truncated lock file blocking every worktree for the full wait.
+            # The race this risks -- stealing from a holder caught mid-write --
+            # is a single os.write wide, against a 45-minute stall.
+            if pid is None:
+                print("  gate lock is unreadable; treating it as stale and taking it")
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+                continue
+
+            if not _holder_alive(pid):
+                print("  stale gate lock from pid %d; taking it" % pid)
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+                continue
+
+            if not announced:
+                print("  another gate is running (pid %s, %s)."
+                      % (pid, os.path.basename(where.rstrip("\\/")) or where))
+                print("  waiting for it rather than competing -- two gates at once "
+                      "is slower than taking turns.")
+                announced = True
+
+            if waited >= LOCK_WAIT_SECONDS:
+                print("  waited %ds and it is still held; proceeding anyway.\n"
+                      "  a lock that blocks a push forever is worse than the "
+                      "contention it prevents." % waited)
+                return None
+
+            time.sleep(LOCK_POLL_SECONDS)
+            waited += LOCK_POLL_SECONDS
+
+
+def release_gate_lock(path):
+    if not path:
+        return
+    try:
+        held = io.open(path, encoding="utf-8").read().splitlines()
+        if held and int(held[0]) != os.getpid():
+            return          # not ours; someone stole it as stale. Leave it.
+    except Exception:                                           # noqa: BLE001
+        pass
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fast", action="store_true",
@@ -483,6 +637,11 @@ def main():
         else:
             print("  this push carries no posts; %d per-post check(s) have "
                   "nothing to read" % len(scoped))
+    # Take a turn rather than competing. Released on any exit path, including
+    # the hook being killed mid-push, which happens.
+    lock = acquire_gate_lock()
+    atexit.register(release_gate_lock, lock)
+
     print("  running %d check(s)%s, %d at a time\n"
           % (len(names), " (browser checks skipped)" if args.fast else "", WORKERS))
 
