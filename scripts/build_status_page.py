@@ -46,7 +46,12 @@ RUNS = os.path.join(ROOT, "intelligence", "status-runs.json")
 OUT_DIR = os.path.join(ROOT, "intelligence", "status")
 
 e = html.escape
-LABEL = {"aws": "AWS", "azure": "Azure", "gcp": "Google Cloud"}
+# GitHub is in LABEL but deliberately NOT in ORDER: it is a source the
+# Sources table has to name, and not one of the three clouds the page
+# compares. Leaving it out of LABEL made the Sources table raise
+# KeyError and took the whole build down.
+LABEL = {"aws": "AWS", "azure": "Azure", "gcp": "Google Cloud",
+         "github": "GitHub"}
 ORDER = ["aws", "azure", "gcp"]
 
 # The human-readable status page for each cloud, which is NOT the endpoint the
@@ -1415,6 +1420,8 @@ document.documentElement.setAttribute("data-palette",p);})();
 </section>
 
 <section class="sec">
+  __GITHUB__
+
   <h2>Past outages</h2>
   <p class="lede">Every outage the three clouds have recorded, by year and by
   cloud. Open one for what the vendor said about it and a link to their own
@@ -1485,6 +1492,89 @@ def _shared_js_version():
     """
     from asset_version import JS_VERSION
     return JS_VERSION
+
+
+
+# How Statuspage names a component's health, and what to call it here.
+GH_WORD = {
+    "operational": ("ok", "Operational"),
+    "degraded_performance": ("warn", "Degraded"),
+    "partial_outage": ("warn", "Partial outage"),
+    "major_outage": ("bad", "Major outage"),
+    "under_maintenance": ("warn", "Maintenance"),
+}
+
+GH_IMPACT = {"none": "ok", "minor": "warn", "major": "bad", "critical": "bad"}
+
+
+def github_block(gh, source):
+    """GitHub's own status, or an honest account of why it is missing.
+
+    An unreachable status page renders as "could not check", never as an
+    absence of incidents -- the same rule the cloud cards follow, and for
+    the same reason: a fetch failure shown as good news is a lie the
+    reader cannot detect.
+    """
+    head = ('<h2 id="github">GitHub</h2>\n'
+            '  <p class="sub">Not a cloud, and not counted with the three above. '
+            'It is here because GitHub Pages and Actions are what build and '
+            'serve this site &mdash; when they break, this page breaks with '
+            'them. Status comes from GitHub\u2019s own Statuspage API.</p>\n')
+
+    if not gh:
+        why = e((source or {}).get("error", "")[:120]) or "no reason given"
+        return (head + '  <div class="gh-wrap gh-err">'
+                '<p><b>Could not check GitHub.</b> %s</p>'
+                '<p class="gh-note">Nothing is claimed about GitHub\u2019s health '
+                'here. An unanswered status page is not an operational one.</p>'
+                '</div>\n' % why)
+
+    cls, word = GH_WORD.get(
+        "operational" if gh.get("indicator") == "none" else "", ("warn", ""))
+    if gh.get("indicator") == "none":
+        cls, word = "ok", e(gh.get("description") or "All systems operational")
+    else:
+        cls = GH_IMPACT.get(gh.get("indicator", ""), "warn")
+        word = e(gh.get("description") or gh.get("indicator", ""))
+
+    comps = "".join(
+        '<div class="gh-c"><span class="gh-dot %s"></span>'
+        '<span class="gh-n">%s</span><span class="gh-s">%s</span></div>'
+        % (GH_WORD.get(c.get("status", ""), ("warn", "Unknown"))[0],
+           e(c.get("name", "")),
+           GH_WORD.get(c.get("status", ""), ("warn", "Unknown"))[1])
+        for c in gh.get("components", []))
+
+    rows = ""
+    for i in (gh.get("open") or []):
+        rows += ('<li class="gh-i gh-open"><b>Open</b> %s<span class="gh-when">'
+                 'since %s</span></li>'
+                 % (e(i.get("name", "")), e((i.get("began") or "")[:10])))
+    for i in (gh.get("past") or []):
+        rows += ('<li class="gh-i"><span class="gh-imp %s">%s</span> %s'
+                 '<span class="gh-when">%s</span></li>'
+                 % (GH_IMPACT.get(i.get("impact", ""), "warn"),
+                    e((i.get("impact") or "").title()),
+                    e(i.get("name", "")),
+                    e((i.get("began") or "")[:10])))
+
+    return (head +
+            '  <div class="gh-wrap">\n'
+            '    <p class="gh-top"><span class="gh-dot %s"></span>'
+            '<b>%s</b><span class="gh-when">as GitHub reported it, %s</span></p>\n'
+            '    <div class="gh-cs">%s</div>\n'
+            '    <p class="gh-h">Recent incidents</p>\n'
+            '    <ul class="gh-is">%s</ul>\n'
+            '    <p class="gh-note">Component health and incidents come from '
+            'GitHub&rsquo;s Statuspage API. The uptime percentages shown on '
+            'githubstatus.com are not in that API and are not reproduced here '
+            '&mdash; a figure computed from incident durations would not match '
+            'the one GitHub publishes. '
+            '<a href="https://www.githubstatus.com/" target="_blank" '
+            'rel="noopener">githubstatus.com &rarr;</a></p>\n'
+            '  </div>\n'
+            % (cls, word, e((gh.get("updated") or "")[:16].replace("T", " ")),
+               comps, rows or '<li class="gh-i">None listed.</li>'))
 
 
 def main():
@@ -1611,6 +1701,9 @@ def main():
                 .replace("__CARDS__", cards)
                 .replace("__BODY__", body)
                 .replace("__TIMELINE__", timeline(hist, clouds, hist_meta))
+                .replace("__GITHUB__",
+                         github_block(data.get("github"),
+                                      (data.get("sources") or {}).get("github")))
                 .replace("__DISCLOSURE__", disclosure())
                 .replace("__POSTMORTEMS__", postmortems(cssv))
                 .replace("__CADENCE__", cadence())

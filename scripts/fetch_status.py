@@ -544,6 +544,78 @@ def load_previous():
         return {}
 
 
+
+GITHUB_SUMMARY = "https://www.githubstatus.com/api/v2/summary.json"
+GITHUB_INCIDENTS = "https://www.githubstatus.com/api/v2/incidents.json"
+
+# The status page lists itself as a component, under a name that reads as
+# a sentence: "Visit www.githubstatus.com for more information". A reader
+# looking at whether GitHub is up does not need to know whether GitHub's
+# status page is up. Matched on the prefix, because an exact-match set
+# missed it -- the full name was never visible in a truncated listing.
+GITHUB_SKIP_PREFIX = ("Visit www.githubstatus.com",)
+
+GITHUB_KEEP = 8
+
+
+def fetch_github():
+    """GitHub's components and recent incidents, from the Statuspage API.
+
+    Returns the shape the page renders, or raises. The caller records the
+    failure rather than letting an empty result read as healthy.
+    """
+    raw, _code = get(GITHUB_SUMMARY)
+    d = json.loads(raw.decode("utf-8", "replace"))
+
+    comps = []
+    for c in d.get("components", []):
+        # Statuspage returns group headers in the same list as their
+        # children; `group` marks a header, and showing both prints every
+        # name twice.
+        name = c.get("name", "")
+        if c.get("group") or name.startswith(GITHUB_SKIP_PREFIX):
+            continue
+        comps.append({"name": name,
+                      "status": c.get("status", "unknown")})
+
+    live = [{"id": i.get("id", ""), "name": i.get("name", ""),
+             "impact": i.get("impact", ""),
+             "status": i.get("status", ""), "began": i.get("created_at", ""),
+             "url": i.get("shortlink", "")}
+            for i in d.get("incidents", [])]
+    open_ids = {i["id"] for i in live if i.get("id")}
+
+    past = []
+    try:
+        raw2, _c2 = get(GITHUB_INCIDENTS)
+        for i in json.loads(raw2.decode("utf-8", "replace")).get("incidents", []):
+            # An unresolved incident is in BOTH feeds. Listing it under
+            # "open" and again under recent would print the same outage
+            # twice, which is what it did.
+            if i.get("id") in open_ids:
+                continue
+            past.append({"name": i.get("name", ""),
+                         "impact": i.get("impact", ""),
+                         "began": i.get("created_at", ""),
+                         "ended": i.get("resolved_at", "") or "",
+                         "url": i.get("shortlink", "")})
+    except Exception:                                       # noqa: BLE001
+        # History is the optional half. Losing it must not cost the live
+        # state, which is the part a reader is actually here for.
+        past = []
+
+    st = d.get("status", {}) or {}
+    return {
+        "indicator": st.get("indicator", "unknown"),
+        "description": st.get("description", ""),
+        "updated": (d.get("page", {}) or {}).get("updated_at", ""),
+        "components": comps,
+        "open": live,
+        "past": past[:GITHUB_KEEP],
+        "url": "https://www.githubstatus.com/",
+    }
+
+
 def merge_history(past_by_cloud):
     """Keep resolved incidents so the track-record panel has something to say.
 
@@ -799,9 +871,30 @@ def main():
     if not args.dry_run:
         record_run(sources)
 
+    # GitHub, in its own key rather than among the clouds -- see
+    # fetch_github. A failure is recorded as a failure; an empty result
+    # must never render as "operational".
+    github = None
+    started = now()
+    try:
+        github = fetch_github()
+        sources["github"] = {
+            "name": "GitHub Status", "url": "https://www.githubstatus.com/",
+            "ok": True, "http": 200, "fetched": stamp(),
+            "ms": int((now() - started).total_seconds() * 1000),
+            "parsed": len(github["components"]),
+        }
+    except Exception as exc:                                # noqa: BLE001
+        sources["github"] = {
+            "name": "GitHub Status", "url": "https://www.githubstatus.com/",
+            "ok": False, "http": None, "error": str(exc)[:200],
+            "attempted": stamp(),
+        }
+
     payload = {
         "checked": stamp(),
         "clouds": clouds,
+        "github": github,
         "sources": sources,
         "history_count": total,
     }
