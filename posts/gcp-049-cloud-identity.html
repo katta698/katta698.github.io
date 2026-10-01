@@ -1,0 +1,344 @@
+---
+title: "GCP Architecture Series #49 — Cloud Identity: Users, Groups and Domain Verification"
+date: '2026-10-01T09:00:00'
+slug: gcp-architecture-cloud-identity
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-10-01'
+verified_claims:
+  - claim: "An identity is a name that uniquely identifies the person who is interacting with a Google service"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "Google uses email addresses for this purpose"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "User accounts are identified by an ID that is not exposed externally"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "Despite this indirection, any data and configuration details are associated with the user account, not with the identity"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "The relationship between user accounts and identities is not fixed"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "You can change the primary email address of a user account, which associates a different identity with the user"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "you can even swap the primary email addresses of two users"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "also possible that one identity refers to two different user accounts"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "a user is shown a ballot screen during authentication in which they select the user account to use"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "The person who created the consumer account has full control of the account and any data created by using the account"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "When someone uses their corporate email address to create a Google Account, this account is an unmanaged account"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "After your domain is verified, users can no longer use their corporate email address to create unmanaged accounts"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "A Cloud Identity or Google Workspace account is not a user account, but a directory of user accounts"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "A user account cannot belong to more than one OU, which makes OUs different from groups"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "they are not intended to be used for managing access"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "the two entities serve different purposes and are unrelated to another"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "Groups can contain members from any Cloud Identity or Google Workspace account as well as consumer accounts"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "You can use the disallow members outside your organization setting to restrict members to user accounts of the same Cloud Identity or Google Workspace account"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "This user account must exist before the first single sign-on attempt"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "Managed user accounts are intended to be used by human users rather than machine users"
+    source: https://docs.cloud.google.com/architecture/identity/overview-google-authentication
+  - claim: "Managed user accounts are under the full control of a Cloud Identity or Google Workspace administrator"
+    source: https://docs.cloud.google.com/architecture/identity/assessing-existing-user-accounts
+  - claim: "Consumer accounts are fully owned and managed by the people who created them"
+    source: https://docs.cloud.google.com/architecture/identity/assessing-existing-user-accounts
+  - claim: "You cannot control the lifecycle of the consumer account"
+    source: https://docs.cloud.google.com/architecture/identity/assessing-existing-user-accounts
+  - claim: "An employee who leaves the company might continue to use the user account to access corporate resources or to generate corporate expenses"
+    source: https://docs.cloud.google.com/architecture/identity/assessing-existing-user-accounts
+  - claim: "the former employee might be able to convince current employees or business partners to grant access to resources again"
+    source: https://docs.cloud.google.com/architecture/identity/assessing-existing-user-accounts
+  - claim: "You cannot enforce security policies like MFA verification or password complexity rules on the account"
+    source: https://docs.cloud.google.com/architecture/identity/assessing-existing-user-accounts
+  - claim: "You cannot restrict which Google services can be accessed by using this user account"
+    source: https://docs.cloud.google.com/architecture/identity/assessing-existing-user-accounts
+  - claim: "you need to add a unique text (TXT) record in your domain settings, which proves you own your domain"
+    source: https://docs.cloud.google.com/identity/docs/how-to/verify-domain
+  - claim: "It can take up to 72 hours for the new TXT records to be recognized"
+    source: https://docs.cloud.google.com/identity/docs/how-to/verify-domain
+  - claim: "google-site-verification="
+    source: https://docs.cloud.google.com/identity/docs/how-to/verify-domain
+problem: "Eighteen posts have written IAM bindings against principals like user:alice@example.com and treated that string as a person. It is not. It is an identity, and Google states that data and configuration are associated with the user account rather than the identity. The mapping between the two is mutable, and an administrator can change it without touching the policy."
+builds: "The difference between an identity and a user account, the two ways the mapping moves underneath an unchanged binding, why an unverified domain means the account behind a binding may not be yours, and what domain verification actually prevents."
+catch: "An administrator can swap the primary email addresses of two users. Every binding naming the old address now resolves to the other account, with its data and its configuration, and nothing in the allow policy records that anything happened."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #049 &middot; IAM</div>
+  <h1 class="post-title">Cloud Identity: Users, Groups and Domain Verification</h1>
+  <p class="post-subtitle">An IAM binding names an identity. Everything that matters lives in the account behind it, and the join between them can move.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>Google Cloud &middot; IAM &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Eighteen posts have written bindings like <code>user:alice@example.com</code> and reasoned about them as though the left-hand side named a colleague. This post is about what that string actually refers to, which is narrower and less stable than it looks.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"A binding to an email address is a binding to a person"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It is a binding to an identity, and the documentation separates the two carefully. An identity is a name that uniquely identifies the person who is interacting with a Google service, and Google uses email addresses for this purpose. The account is a different object: user accounts are identified by an ID that is not exposed externally, so the API has no way to let you name one directly.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Read a binding as naming a slot, not an individual. Who occupies the slot is a separate question answered in Cloud Identity, not in the policy.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"If the policy has not changed, the access has not changed"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          The relationship between user accounts and identities is not fixed. You can change the primary email address of a user account, which associates a different identity with the user &mdash; and as an administrator you can even swap the primary email addresses of two users. The binding is untouched; the account it resolves to is somebody else.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat the directory as part of the access control surface. A policy diff is not sufficient evidence that effective access is unchanged.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"An address on our domain is an account we control"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Not until the domain is verified. When someone uses their corporate email address to create a Google Account, this account is an unmanaged account, and the person who created the consumer account has full control of the account and any data created by using the account. Managed user accounts are under the full control of an administrator; consumer accounts are fully owned and managed by the people who created them.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Verify every domain your mail system accepts, then audit for accounts that were created before you did.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"Organizational units are the Cloud Identity version of folders"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          They are not, and the documentation says so twice over. On the resemblance to the resource hierarchy from #29: the two entities serve different purposes and are unrelated to another. And on using them for access at all: they are not intended to be used for managing access. A user account cannot belong to more than one OU, which makes OUs different from groups.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Use OUs for configuration that should follow a person, and groups for access. Do not try to mirror your folder structure in OUs.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Cloud Identity is the directory that gives the left-hand side of an IAM binding its meaning. The structural point worth getting right is that it is a directory rather than an account in the ordinary sense: a Cloud Identity or Google Workspace account is not a user account, but a directory of user accounts.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-049-cloud-identity.svg" alt="Diagram: how an identity differs from a user account in Cloud Identity, the two ways the mapping between them can move underneath an existing IAM binding, why an unverified domain means the account behind a binding may not be yours, and how domain verification acts as a preventive control" />
+      <figcaption>The policy can only name the identity. The access lands on the account, and the join between them is mutable.</figcaption>
+    </figure>
+
+    <h3>Identity, user account, and why the distinction is load-bearing</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Thing</th><th>What it is</th><th>How it is referenced</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Identity</strong></td>
+          <td>An email address, and nothing more.</td>
+          <td>Directly &mdash; <code>user:alice@example.com</code> in an allow policy.</td>
+        </tr>
+        <tr>
+          <td><strong>User account</strong></td>
+          <td>A data structure holding the attributes, activities and configuration that apply when that identity uses a Google service.</td>
+          <td><strong>Never directly.</strong> It has an ID that is not exposed externally.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      One sentence in the documentation carries the whole consequence: <em>despite this indirection, any data and configuration details are associated with the user account, not with the identity</em>. The thing you can name is not the thing that holds the state.
+    </p>
+
+    <div class="callout amber">
+      <strong>Two ways the account behind a binding changes while the binding does not</strong>
+      <p><strong>The swap.</strong> An administrator can change the primary email address of a user account, which associates a different identity with the user, and can even swap the primary email addresses of two users. After a swap, every binding naming <code>alice@example.com</code> resolves to what was Bob&#8217;s account &mdash; his data, his configuration, his group memberships. Nothing in the allow policy changed, so nothing in a policy diff, a drift report or a Terraform plan shows it. In a federated setup you would not even need to reset passwords for the swap to take effect.</p>
+      <p><strong>The ballot screen.</strong> It is also possible that one identity refers to two different user accounts &mdash; the conflicting-account case. The documentation recommends avoiding it, and describes what happens when it exists: a user is shown a ballot screen during authentication in which they select the user account to use. Your binding names one string; the human chooses which account answers to it.</p>
+    </div>
+
+    <h3>Why an unverified domain is a live exposure, not an incomplete form</h3>
+    <p>
+      A consumer account can be created with any address the creator owns, including one on your corporate domain. The consequences are listed plainly, and each one is a control you would assume you had:
+    </p>
+    <ul>
+      <li>You cannot control the lifecycle of the consumer account.</li>
+      <li>You cannot enforce security policies like MFA verification or password complexity rules on the account.</li>
+      <li>You cannot restrict which Google services can be accessed by using this user account.</li>
+    </ul>
+    <p>
+      The operational version of the first point is the one worth carrying into a review: an employee who leaves the company might continue to use the user account to access corporate resources or to generate corporate expenses. And revoking their IAM roles does not finish the job, because the address itself is the asset &mdash; the former employee might be able to convince current employees or business partners to grant access to resources again. The identity looks exactly like a colleague, because as far as the string is concerned it is one.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Domain Verification Is a Preventive Control</h2>
+
+    <p>
+      Verification reads like a setup step: copy a value, add a DNS record, click confirm. You need to add a unique text (TXT) record in your domain settings, which proves you own your domain &mdash; a value beginning <code>google-site-verification=</code> &mdash; and it can take up to 72 hours for the new TXT records to be recognized.
+    </p>
+
+    <p>
+      What it does is more than prove ownership. <em>After your domain is verified, users can no longer use their corporate email address to create unmanaged accounts.</em> That is a preventive control with a date on it, and it reframes the whole task: the period before verification is when the problem gets manufactured, one self-service signup at a time, and verifying both stops new ones and makes the existing ones discoverable so they can be transferred or evicted.
+    </p>
+
+    <div class="callout">
+      <strong>The scope question that decides whether this works</strong>
+      <p>Verification is per domain, and the exposure follows your mail system rather than your brand. Every domain and subdomain your mail accepts is a domain somebody could have signed up with, so a secondary domain left unverified leaves that surface open while the primary one looks finished. This is the same failure shape as a partially-applied org policy in #22: the control is real, the coverage is the thing that was never checked.</p>
+    </div>
+
+    <h3>Groups, which are the next post and the bigger surface</h3>
+    <p>
+      Groups are how access should be managed &mdash; that is the documentation recommendation and it is what #52 will build on. Two properties matter before then, because both bear directly on bindings written today.
+    </p>
+    <p>
+      First, a group is not restricted to your organization. <em>Groups can contain members from any Cloud Identity or Google Workspace account as well as consumer accounts.</em> So a role granted to <code>group:data-readers@example.com</code> is granted to whoever is in that group, including consumer accounts and people in other organizations, and the membership list is not in the policy you reviewed. The containment exists but is opt-in: you can use the disallow members outside your organization setting to restrict members to user accounts of the same Cloud Identity or Google Workspace account.
+    </p>
+    <p>
+      Second, a group is not a container the way an OU is. A user account cannot belong to more than one OU, which makes OUs different from groups &mdash; and deleting a group does not delete its members. That asymmetry is why OUs carry configuration and groups carry access, and why trying to express access through OUs produces a model that cannot represent someone needing two things at once.
+    </p>
+
+    <h3>One prerequisite that catches federation projects</h3>
+    <p>
+      Looking ahead to #51, there is a sequencing requirement that surprises people who expect single sign-on to create accounts as users arrive. To link an identity and enable it for sign-on, your Cloud Identity account must contain a user account using that identity, and <em>this user account must exist before the first single sign-on attempt</em>. Federation authenticates against an account; it does not conjure one. That is what provisioning &mdash; #50 &mdash; is for.
+    </p>
+    <p>
+      Worth noting alongside it: managed user accounts are intended to be used by human users rather than machine users. The machine-user path is the service account work of #39 to #48, and the two should not be mixed in the directory.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Which domains to verify</td>
+          <td>Every domain your mail system accepts</td>
+          <td>An unverified domain can still be used to create unmanaged accounts.</td>
+        </tr>
+        <tr>
+          <td>Evidence that access has not changed</td>
+          <td>A policy diff plus a directory review</td>
+          <td>A primary email address change moves the account under an unchanged binding.</td>
+        </tr>
+        <tr>
+          <td>Handling a leaver with a consumer account</td>
+          <td>Transfer or evict the account, not just the roles</td>
+          <td>The address keeps working as a trustworthy-looking identity.</td>
+        </tr>
+        <tr>
+          <td>Managing access</td>
+          <td>Groups</td>
+          <td>OUs are explicitly not intended for managing access.</td>
+        </tr>
+        <tr>
+          <td>Applying configuration to people</td>
+          <td>Organizational units</td>
+          <td>Settings apply by OU and are inherited by child OUs.</td>
+        </tr>
+        <tr>
+          <td>Groups named in IAM bindings</td>
+          <td>Enforce disallow members outside your organization</td>
+          <td>Otherwise the group may contain consumer and external accounts.</td>
+        </tr>
+        <tr>
+          <td>Modelling your folder hierarchy in OUs</td>
+          <td>Do not</td>
+          <td>The two are unrelated and serve different purposes.</td>
+        </tr>
+        <tr>
+          <td>Order of work for single sign-on</td>
+          <td>Provision accounts first, then federate</td>
+          <td>The user account must exist before the first sign-on attempt.</td>
+        </tr>
+        <tr>
+          <td>Investigating a duplicate-login complaint</td>
+          <td>Suspect a conflicting account</td>
+          <td>One identity can refer to two accounts, with a ballot screen between them.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      List every domain and subdomain your mail system will accept, and compare it with the verified domains in your Admin console. The gap is not an administrative loose end; it is the set of domains on which somebody can still create an account that uses your company name, holds its own data, takes no policy you set, and cannot be deprovisioned by you. That gap tends to be made of acquisitions, retired brands and regional domains &mdash; the ones nobody owns.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      There is a real design here and it is not an accident. Using email addresses as identities is what lets one Google identity work across every Google service and federate to an external provider, and keeping state on the account rather than the address is what makes it possible to rename a person without destroying their history. Both choices are right. The indirection is the price of them.
+    </p>
+    <p>
+      What the series has to absorb is that the allow policy is one half of an answer. Eighteen posts reasoned about principals as though the string were the subject; the string is a reference, resolved elsewhere, by a system with its own administrators and its own change history. #48 found that the policy has an author you cannot see. This one finds that it has a referent you cannot name &mdash; and that the join between the two can be re-pointed by a directory change that leaves the policy, and every diff of it, entirely unchanged.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#50 covers how managed accounts actually get into the directory at scale: directory synchronisation from on-premises, what it reconciles, and what it does when it meets an account that already exists.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/architecture/identity/overview-google-authentication" target="_blank" rel="noopener">Overview of Google identity management</a></li>
+      <li><a href="https://docs.cloud.google.com/architecture/identity/assessing-existing-user-accounts" target="_blank" rel="noopener">Assess existing user accounts</a></li>
+      <li><a href="https://docs.cloud.google.com/identity/docs/how-to/verify-domain" target="_blank" rel="noopener">Verifying your domain</a></li>
+      <li><a href="https://docs.cloud.google.com/architecture/identity/migrating-consumer-accounts" target="_blank" rel="noopener">Migrate consumer accounts</a></li>
+      <li><a href="https://docs.cloud.google.com/identity/docs/overview" target="_blank" rel="noopener">Cloud Identity overview</a></li>
+      <li><a href="https://docs.cloud.google.com/architecture/identity/best-practices-for-planning" target="_blank" rel="noopener">Best practices for planning accounts and organizations</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
