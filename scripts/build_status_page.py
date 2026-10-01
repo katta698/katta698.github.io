@@ -1255,6 +1255,7 @@ document.documentElement.setAttribute("data-palette",p);})();
 </header>
 <div class="wrap">
   __CARDS__
+  __GHSTRIP__
   <dialog id="inc-dialog" aria-labelledby="inc-title">
     <button class="pm-x" data-inc-close aria-label="Close">&times;</button>
     <div class="pm-body" id="inc-body"></div>
@@ -1507,6 +1508,54 @@ GH_WORD = {
 GH_IMPACT = {"none": "ok", "minor": "warn", "major": "bad", "critical": "bad"}
 
 
+
+# The two components this site actually runs on. Named in the strip
+# because "GitHub is degraded" is not the useful sentence -- "Actions is
+# degraded" is, and Pages being fine while Copilot is not should not read
+# as a problem for this site.
+GH_MINE = ("Pages", "Actions")
+
+
+def github_strip(gh, source):
+    """One line of GitHub, directly under the cloud cards.
+
+    Not a fourth card. The three above carry a comparison; this is a
+    different kind of thing and is sized and styled to say so.
+    """
+    if not gh:
+        return ('<a class="ghs ghs-err" href="#github">'
+                '<span class="ghs-k">GitHub</span>'
+                '<span class="pill err"></span>'
+                '<span class="ghs-v">Could not check</span>'
+                '<span class="ghs-w">builds and serves this site</span>'
+                '<span class="ghs-go" aria-hidden="true">&rsaquo;</span></a>\n')
+
+    ind = gh.get("indicator", "")
+    tone = "ok" if ind == "none" else ("bad" if ind in ("major", "critical")
+                                       else "err")
+    by = {c.get("name", ""): c.get("status", "") for c in gh.get("components", [])}
+
+    bits = ""
+    for name in GH_MINE:
+        st = by.get(name)
+        if not st:
+            continue
+        word = GH_WORD.get(st, ("warn", "Unknown"))[1]
+        cls = "ok" if st == "operational" else (
+            "bad" if st == "major_outage" else "err")
+        bits += ('<span class="ghs-c"><span class="pill %s"></span>'
+                 '<b>%s</b> %s</span>' % (cls, e(name), e(word.lower())))
+
+    return ('<a class="ghs ghs-%s" href="#github">'
+            '<span class="ghs-k">GitHub</span>'
+            '<span class="pill %s"></span>'
+            '<span class="ghs-v">%s</span>'
+            '%s'
+            '<span class="ghs-w">builds and serves this site</span>'
+            '<span class="ghs-go" aria-hidden="true">&rsaquo;</span></a>\n'
+            % (tone, tone, e(gh.get("description") or "Unknown"), bits))
+
+
 def github_block(gh, source):
     """GitHub's own status, or an honest account of why it is missing.
 
@@ -1701,6 +1750,9 @@ def main():
                 .replace("__CARDS__", cards)
                 .replace("__BODY__", body)
                 .replace("__TIMELINE__", timeline(hist, clouds, hist_meta))
+                .replace("__GHSTRIP__",
+                         github_strip(data.get("github"),
+                                      (data.get("sources") or {}).get("github")))
                 .replace("__GITHUB__",
                          github_block(data.get("github"),
                                       (data.get("sources") or {}).get("github")))
