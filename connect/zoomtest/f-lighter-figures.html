@@ -1,0 +1,2015 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta name="robots" content="noindex,nofollow">
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- The colour the phone paints around the page -- the status bar above it
+     and, on Android, the gesture bar below. It was #E6D3BE, the paper's flat
+     fill from before the grain and the vignette went on; the page now renders
+     #E6D5C1 at its top edge and #DFCEB8 at its bottom, so the band above the
+     card was a shade off and the band below it more so. #E5D3BE sits within
+     three points of both. Reported as the borders not quite matching the
+     page, which is exactly what a theme-color left behind by a repaint looks
+     like. -->
+<meta name="theme-color" content="#e5d3be">
+<meta name="theme-color" content="#e5d3be" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1E231C" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<script>
+/* Before the first paint: the sun where the reader is.
+   -------------------------------------------------------------------------
+   Asked for: "let mode change based on sunset and sunrise time in local
+   time zone wherever it is." So the page works out the actual solar times
+   for the device and picks day or night from them, rather than asking the
+   operating system what it prefers.
+
+   Where "where you are" comes from, and what it costs:
+
+     Longitude is the timezone's own meridian -- getTimezoneOffset in
+     minutes, divided by four. No permission prompt, no network call, and
+     accurate to the width of a timezone, which is up to half an hour of
+     sunset. Asking for geolocation on a contact card to tint a page would
+     be a poor trade.
+
+     Latitude comes from the IANA zone name against a short table, falling
+     back by continent and then to 40 degrees north. Latitude is what
+     decides how much the times move through the year -- getting it roughly
+     right is the difference between a June sunset at 21:30 in London and
+     20:00 in Chennai.
+
+   Then the standard sunrise equation, and the poles are handled: above the
+   Arctic circle in summer the sun does not set, and the page stays light
+   rather than dividing by a cosine it cannot have.
+
+   Inline and synchronous on purpose -- a theme applied after paint is a
+   white flash on a page whose whole subject is paper. */
+(function () {
+  var LAT = {
+    "Asia/Kolkata": 22, "Asia/Calcutta": 22, "Asia/Dubai": 25,
+    "Asia/Singapore": 1, "Asia/Tokyo": 36, "Asia/Shanghai": 31,
+    "Asia/Hong_Kong": 22, "Asia/Seoul": 37, "Asia/Jakarta": -6,
+    "Asia/Manila": 14, "Asia/Bangkok": 14, "Asia/Karachi": 25,
+    "Asia/Dhaka": 24, "Asia/Jerusalem": 32, "Asia/Riyadh": 25,
+    "Europe/London": 51, "Europe/Dublin": 53, "Europe/Paris": 48,
+    "Europe/Berlin": 52, "Europe/Madrid": 40, "Europe/Rome": 42,
+    "Europe/Amsterdam": 52, "Europe/Stockholm": 59, "Europe/Oslo": 60,
+    "Europe/Helsinki": 60, "Europe/Warsaw": 52, "Europe/Moscow": 56,
+    "Europe/Zurich": 47, "Europe/Lisbon": 39, "Europe/Athens": 38,
+    "America/New_York": 41, "America/Chicago": 42, "America/Denver": 40,
+    "America/Phoenix": 33, "America/Los_Angeles": 34,
+    "America/Vancouver": 49, "America/Toronto": 44, "America/Mexico_City": 19,
+    "America/Bogota": 5, "America/Lima": -12, "America/Sao_Paulo": -23,
+    "America/Argentina/Buenos_Aires": -35, "America/Santiago": -33,
+    "Australia/Sydney": -34, "Australia/Melbourne": -38,
+    "Australia/Brisbane": -27, "Australia/Perth": -32,
+    "Pacific/Auckland": -37, "Africa/Cairo": 30, "Africa/Lagos": 6,
+    "Africa/Nairobi": -1, "Africa/Johannesburg": -26
+  };
+  var REGION = { America: 39, Europe: 50, Asia: 28, Africa: 5,
+                 Australia: -30, Pacific: -15, Indian: -10, Atlantic: 35,
+                 Antarctica: -70 };
+
+  function where() {
+    var zone = "";
+    try {
+      zone = (Intl.DateTimeFormat().resolvedOptions().timeZone || "");
+    } catch (e) {}
+    var lat = LAT[zone];
+    if (lat === undefined) lat = REGION[zone.split("/")[0]];
+    if (lat === undefined) lat = 40;
+    /* getTimezoneOffset is minutes BEHIND UTC, so west is positive; four
+       minutes of offset is one degree of longitude. The STANDARD offset,
+       not today's: in summer a daylight-saving zone reports an hour less,
+       which would place the reader fifteen degrees east of where they are
+       and move sunset by an hour. January and July bracket the year, and
+       standard time is whichever of the two is further behind UTC. */
+    var y = new Date().getFullYear();
+    var std = Math.max(new Date(y, 0, 1).getTimezoneOffset(),
+                       new Date(y, 6, 1).getTimezoneOffset());
+    var lon = -std / 4;
+    return { lat: lat, lon: lon };
+  }
+
+  /* The sunrise equation, in the form the almanacs give it. Returns the two
+     instants as milliseconds, or a string when the sun does not do both. */
+  function sun(now, lat, lon) {
+    var rad = Math.PI / 180;
+    /* Anchored to LOCAL noon, not to the instant. The day number has to be
+       the reader's day: at 07:00 in Sydney it is still yesterday in UTC, so
+       anchoring on the instant returned yesterday's sunrise and the page
+       came up dark in the morning. Seen on Sydney and Tokyo; invisible from
+       anywhere within a few hours of Greenwich, which is exactly the kind
+       of bug that ships. */
+    var noon = new Date(now.valueOf());
+    noon.setHours(12, 0, 0, 0);
+    var jul = noon.valueOf() / 86400000 + 2440587.5;
+    var n = Math.round(jul - 2451545.0 + 0.0008);
+    /* lon east-positive, so the west-positive term the almanac uses is
+       subtracted. Checked against four cities before it was believed:
+       Kolkata, London and Sydney land within three minutes of published
+       times, Chicago within one once the daylight-saving correction above
+       is applied. */
+    var star = n - (lon / 360);
+    var M = (357.5291 + 0.98560028 * star) % 360;
+    var C = 1.9148 * Math.sin(M * rad) + 0.02 * Math.sin(2 * M * rad)
+          + 0.0003 * Math.sin(3 * M * rad);
+    var lam = (M + C + 180 + 102.9372) % 360;
+    var transit = 2451545.0 + star + 0.0053 * Math.sin(M * rad)
+                - 0.0069 * Math.sin(2 * lam * rad);
+    var dec = Math.asin(Math.sin(lam * rad) * Math.sin(23.4397 * rad));
+    var cosH = (Math.sin(-0.833 * rad) - Math.sin(lat * rad) * Math.sin(dec))
+             / (Math.cos(lat * rad) * Math.cos(dec));
+    if (cosH >= 1) return "night";              // the sun never rises today
+    if (cosH <= -1) return "day";               // and never sets
+    var H = Math.acos(cosH) / rad;
+    var toMs = function (j) { return (j - 2440587.5) * 86400000; };
+    return { rise: toMs(transit - H / 360), set: toMs(transit + H / 360) };
+  }
+
+  window.JKSolar = function (at) {
+    var now = at || new Date();
+    var w = where();
+    var t = sun(now, w.lat, w.lon);
+    if (t === "day") return { theme: "light", next: null };
+    if (t === "night") return { theme: "dark", next: null };
+    var ms = now.valueOf();
+    if (ms < t.rise) return { theme: "dark", next: t.rise };
+    if (ms < t.set) return { theme: "light", next: t.set };
+    return { theme: "dark", next: t.rise + 86400000 };
+  };
+
+  /* A tap wins, and keeps winning until the next tap. The sun decides
+     only for a reader who has never said otherwise. */
+  var choice = null;
+  try { choice = JSON.parse(localStorage.getItem("connect.theme") || "null"); }
+  catch (e) {}
+  var solar = window.JKSolar();
+  var t = solar.theme;
+  if (choice && typeof choice === "object"
+      && (choice.t === "light" || choice.t === "dark")
+      && (!choice.until || Date.now() < choice.until)) {
+    t = choice.t;
+  }
+  document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+<title>Jayanth Katta &mdash; Connect</title>
+<meta name="description" content="Cloud Infrastructure Engineer. Build, learn, share, repeat &mdash; across AWS, Azure, GCP and AI.">
+<link rel="canonical" href="/connect/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/connect/manifest.webmanifest">
+<link rel="preload" as="image" href="/connect/ink-scene.webp?v=29e759c1" fetchpriority="high">
+<meta property="og:type" content="profile">
+<meta property="og:site_name" content="Jayanth Katta">
+<meta property="og:title" content="Jayanth Katta &mdash; Connect">
+<meta property="og:description" content="Cloud Infrastructure Engineer. Build, learn, share, repeat.">
+<meta property="og:url" content="/connect/">
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Jayanth Katta &mdash; Connect">
+<meta name="twitter:description" content="Cloud Infrastructure Engineer. Build, Learn, Share, Repeat.">
+<style>
+/* ---------------------------------------------------------------------------
+   The card, continued.
+
+   Someone taps a piece of paper and this opens, so it has to feel like the
+   same object: same ground, same ink, same restraint.
+
+   The version before this one kept the wash in a corner where the cloud
+   pills collided with it, and left a third of the phone as empty paper
+   under the buttons. Here the wash is the hero at full bleed, and the stack
+   is sized to reach the bottom of a phone rather than stopping short of it.
+--------------------------------------------------------------------------- */
+:root {
+  color-scheme: light dark;
+  /* The poster's open field, measured: 131,000 unmarked pixels put the
+     median at #E3CFB9 and the field above the mountains at #E7D4BF. This
+     sits between them, two points warmer than the flat #E6D3BE it
+     replaces. */
+  --paper:  #e0ccb3;
+  --ink:    #211f1c;
+  /* Darkened with the paper, twice now, and for the same reason both
+     times: a change to the ground is a change to every contrast on it.
+     #6C6659 measured 4.61:1 on the old lighter paper and 3.92:1 on the
+     card's own. #5B564B fixed that at 5.01:1 -- on a FLAT ground. The
+     vignette below takes the edges down 12%, where the footer sits, and
+     that same colour measures 4.36:1 there: under, again, for a texture.
+     Four percent deeper at the same hue and saturation is 5.95:1 in the
+     field and 5.17:1 in the deepest corner the page paints. */
+  --muted:  #504b42;
+  --line:   rgba(33, 31, 28, .16);
+  --rust:   #a8432a;
+  --rust-d: #8a3520;
+  /* The paper, measured off the poster rather than guessed.
+     -----------------------------------------------------------------------
+     Sampling 131,000 unmarked pixels of the artwork: the open field reads
+     #E7D4BF, the quarter below it #D9C4AF, the edges settle around #DBC4AC
+     and the deepest corner reaches #BFA58D. The flat fill here was already
+     #E6D3BE -- the tone was right and the SURFACE was not, because real
+     washi is never one value across a sheet.
+
+     So four things, cheapest first, and no image request: a fibre noise
+     that is an inline SVG turbulence rather than a tile (it scales to any
+     screen and costs about a kilobyte), the two fine dot grains that were
+     already here, three soft mottles for the uneven pulp, and a vignette
+     that takes the edges down by the 12% the measurement asked for.
+
+     The vignette stops well short of the poster's darkest corner on
+     purpose: that corner is dark because a mountain is drawn on it, and
+     dragging the page's own edges that far would put the footer's muted
+     text under 4.5:1. Texture is not worth legibility. */
+  /* The paper, measured off the poster rather than guessed.
+     -----------------------------------------------------------------------
+     Sampling 131,000 unmarked pixels of the artwork: the open field reads
+     #E7D4BF, the median #E3CFB9, and a high-pass of a blank patch puts its
+     grain at 6.4 standard deviations of luminance. The flat fill here was
+     #E6D3BE with two dot gradients at .014 alpha, which measured 0.54 --
+     twelve times too faint to see. The tone was right and the SURFACE was
+     not, because real washi is never one value across a sheet.
+
+     Four things, no image request, about 1.5 KB of data URI:
+
+       pulp     an inline SVG turbulence, stretched to full contrast by a
+                linear feComponentTransfer (the raw turbulence is
+                low-contrast mid-grey, which is why the first attempt was
+                invisible) and blended with OVERLAY rather than laid on
+                top. Overlay pushes the ground both lighter and darker, so
+                the grain appears without the paper drifting grey or dark
+                -- every version that simply painted noise over the top
+                cost 20-40 points of lightness to get anything visible.
+                Rendered: #E4D2BD at 4.9 sd, against the poster's #E3CFB9
+                at 6.4. Deliberately short of the print: a screen is lit
+                from behind and this page is read at arm's length.
+       fibre    a second, barely-there directional pass: a first attempt
+                ran this as the MAIN layer at baseFrequency '0.012 0.7'
+                and the page came out corrugated, like lined paper. Long
+                fibres are an accent on washi, not its structure.
+       specks   a third, fine turbulence for pulp flecks.
+       mottle   three soft radial washes, because a sheet is uneven.
+       vignette the 12% the edges measured darker than the field.
+
+     The vignette stops well short of the poster's darkest corner on
+     purpose: that corner is dark because a mountain is drawn on it, and
+     dragging the page's own edges that far would put the footer's muted
+     text under 4.5:1. Texture is not worth legibility. */
+  /* The three noise layers, named so the dark theme can reuse the
+     exact same paper rather than inventing a second one. */
+  --grain-fibre:  url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='420' height='420'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.035' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='3' intercept='-1.0'/%3E%3CfeFuncG type='linear' slope='3' intercept='-1.0'/%3E%3CfeFuncB type='linear' slope='3' intercept='-1.0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='420' height='420' filter='url(%23n)' opacity='0.36'/%3E%3C/svg%3E");
+  --grain-weave:  url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='420' height='420'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.010 0.5' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='3' intercept='-1.0'/%3E%3CfeFuncG type='linear' slope='3' intercept='-1.0'/%3E%3CfeFuncB type='linear' slope='3' intercept='-1.0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='420' height='420' filter='url(%23n)' opacity='0.08'/%3E%3C/svg%3E");
+  --grain-specks: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='90' height='90'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.1' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='5' intercept='-2.0'/%3E%3CfeFuncG type='linear' slope='5' intercept='-2.0'/%3E%3CfeFuncB type='linear' slope='5' intercept='-2.0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='90' height='90' filter='url(%23n)' opacity='0.26'/%3E%3C/svg%3E");
+  --paper-grain:
+    var(--grain-fibre),
+    var(--grain-weave),
+    var(--grain-specks),
+    radial-gradient(ellipse 60% 40% at 18% 12%, rgba(255,250,240,.30), transparent 70%),
+    radial-gradient(ellipse 70% 45% at 88% 62%, rgba(120,92,58,.055), transparent 72%),
+    radial-gradient(ellipse 80% 50% at 35% 96%, rgba(120,92,58,.05), transparent 75%);
+  --paper-blend: overlay, overlay, overlay, normal, normal, normal;
+  --paper-grain-size: 420px 420px, 420px 420px, 90px 90px,
+    auto, auto, auto;
+  /* The vignette is no longer one of the layers above. See html::before. */
+  --paper-vignette:
+    radial-gradient(ellipse 120% 100% at 50% 42%,
+                    transparent 52%, rgba(120,92,58,.12) 100%);
+}
+*, *::before, *::after { box-sizing: border-box; }
+html {
+  min-height: 100%;
+  min-height: -webkit-fill-available;
+  /* CSS-only, still: the paper-grain.webp tile was too loud on a phone and
+     made browser overscroll (a flat theme-color) look like a different
+     surface. Declared once in :root and used here and on body, because the
+     two were separate copies of the same four lines and had already drifted
+     by two thousandths of an alpha. */
+  background-color: var(--paper);
+  background-image: var(--paper-grain);
+  background-size: var(--paper-grain-size);
+  background-repeat: repeat, repeat, repeat,
+    no-repeat, no-repeat, no-repeat, no-repeat;
+  background-blend-mode: var(--paper-blend);
+  /* Six layers scroll, the seventh does not.
+     -----------------------------------------------------------------
+     Added to the home screen on an iPhone, a band along the bottom read
+     as a flatter, plainer surface than the rest of the card. It is the
+     safe area behind the home indicator, and the cause is a rule of the
+     canvas background: html's background COLOUR is propagated to the
+     whole canvas, but its background IMAGES keep the html box as their
+     positioning area. So the paper colour ran to the bottom of the
+     screen and the vignette stopped short of it, and a vignette taking
+     the edges down 12% is exactly the difference between "paper" and
+     "a flat swatch".
+
+     The vignette is the seventh layer, and background-attachment is
+     per-layer, so only it is fixed. That makes the viewport its
+     positioning area, and with viewport-fit=cover the viewport includes
+     the safe areas. The six grain layers stay on scroll, which is the
+     whole point of the note below -- a vignette belongs to the light in
+     the room and may sit still, but the grain belongs to the sheet and
+     has to move with what is printed on it. */
+  /* NOT background-attachment: fixed for the grain. Reported as "the background image
+     stays static and the whole page is moving", which is exactly what
+     fixed attachment does -- the paper pinned to the viewport while the
+     card slides over it, so the grain swims against the content instead
+     of belonging to it. The sheet should move with what is printed on
+     it. */
+}
+/* The vignette, on its own fixed layer.
+   -------------------------------------------------------------------------
+   Added to the home screen on an iPhone, a band along the bottom read as
+   a flatter, plainer surface than the rest of the card. Sampled from the
+   report: the band was exactly (25,30,23) -- the raw --paper -- while the
+   card above it was (20,24,18). It is the safe area behind the home
+   indicator, and it was getting the paper COLOUR without the vignette
+   that darkens the edges by a third.
+
+   The cause is a rule of the canvas background: html's background colour
+   is propagated to the whole canvas, but its background IMAGES keep the
+   html box as their positioning area, and the html box stops short of
+   the safe area. Moving the vignette to background-attachment: fixed did
+   not fix it -- measured, the step stayed -- so it is not one of those
+   layers any more. A fixed element covers the viewport, which with
+   viewport-fit=cover includes the safe areas, and there is nothing
+   subtle left to get wrong.
+
+   z-index -1 puts it under every bit of content and over the canvas
+   colour, which is exactly where a vignette belongs. The grain layers
+   stay on html and stay scrolling: a vignette is the light in the room
+   and may sit still, but the grain belongs to the sheet and has to move
+   with what is printed on it. */
+html::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: var(--paper-vignette);
+}
+
+body {
+  margin: 0;
+  min-height: 100%;
+  min-height: 100svh;
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
+  color: var(--ink);
+  font: 400 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* html already paints it, fixed to the viewport. Painting it again here
+     would put a second, independently-scrolling copy of the vignette on
+     top of the first. */
+  background: transparent;
+}
+
+a { color: inherit; text-decoration: none; -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 3px solid var(--rust); outline-offset: 3px; border-radius: 4px; }
+
+.wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  min-height: 100svh;
+  min-height: 100dvh;
+
+  min-height: -webkit-fill-available;
+  max-width: 480px;
+  margin-inline: auto;
+  padding: 0 22px calc(12px + env(safe-area-inset-bottom, 0px));
+  isolation: isolate;
+}
+
+/* The poster, on the card.
+   -------------------------------------------------------------------------
+   Asked for exactly this: "the guy sitting under the tree, and the seal."
+   So both are cut from the artwork itself rather than approximated -- the
+   scene column (sun, mountains, pine, the figure on the rock) and the
+   継続 seal, at the places the poster puts them: art down the right, words
+   down the left, the stamp under the creed.
+
+   Cut out with a real alpha channel, which is the expensive answer and the
+   right one. The cheap answer was tried first: divide each pixel by the
+   poster's own paper tone so its background lands on white, ship it with
+   no alpha at 63 KB, and let CSS multiply it onto this page's paper. It
+   rendered correctly in Chromium and as a white rectangle on iPhone --
+   .wrap carries isolation:isolate, so the blend had nothing but its own
+   transparent group to blend with, and WebKit honours that where Blink
+   did not. Reported from the phone as "the colour at the top right is
+   lighter", which is exactly what a white rectangle over warm paper looks
+   like.
+
+   So the paper is keyed to transparency instead: luminance drives alpha,
+   saturation keeps the sun, and both fades -- mist at the left edge, gone
+   before the first button -- are multiplied into the alpha rather than
+   applied as CSS masks, because two mask layers need mask-composite and
+   WebKit's legacy property takes different values from the standard one.
+   113 KB, and it composites the same way on every engine with no blend
+   mode at all.
+
+   Cropped from x=648 of the poster, not 430: the first crop carried the
+   tail of the poster's OWN typesetting -- "th" from the name and "RUCTURE"
+   from the role -- into the sky, where it read as the name printed twice.
+   Reported as exactly that. */
+.hero {
+  position: absolute;
+  z-index: -1;
+  /* Anchored to the TOP EDGE OF THE BUTTONS, not to the top of the page.
+     The first version pinned it 44px from the top, which held on the
+     phone it was measured on and nowhere else: the spacing above it is
+     set in svh, so the pill row lands at y=356 on one screen height and
+     y=389 on another, and a figure at a fixed offset drifts into it.
+     Positioned inside .bottom with bottom:100%, the panel's foot sits on
+     the button line at every width and every height, and because the man
+     sits low in the crop -- head at 0.76 of the panel, feet at 0.95 --
+     his head is a fixed 24% of the panel above that line rather than a
+     fixed number of pixels below the top of a page that moves. */
+  bottom: 100%;
+  margin-bottom: 8px;
+  /* Off the edge of the screen, not up to it. -2px left the column's own
+     22px of padding as a strip of bare paper down the right, and the art
+     ended against it in a straight vertical line -- reported as "it's kind
+     of a straight line, can the tree go towards the border". A poster
+     bleeds; only a pasted-in picture has a right edge. */
+  right: -22px;
+  width: 48%;
+  max-width: 200px;
+  aspect-ratio: 380 / 1067;
+  /* Anchored bottom-right inside its own box, so that when the clamp
+     below shortens the box the art shrinks toward the figure rather than
+     away from it -- the rock stays on the button line and the sky is what
+     goes. */
+  background: url("/connect/ink-scene.webp?v=29e759c1") right bottom / contain no-repeat;
+  /* And the clamp itself: never taller than the room above the buttons.
+     The button block is about 330px of buttons, spacing and footer, so
+     anything past 100svh minus that would put the panel's top off the top
+     of the screen -- which is how the birds got cut on one phone and not
+     on the two I happened to be rendering. A breakpoint fixes the heights
+     you thought of; this fixes the ones you did not. */
+  max-height: calc(100svh - 348px);
+  /* The two fades -- mist at the left edge, gone before the first button --
+     are baked into the image rather than applied as CSS masks. Two mask
+     layers need mask-composite, and WebKit's legacy -webkit-mask-composite
+     takes different values from the standard property: measured on iPhone,
+     the fades simply did not apply and the pine ran down behind the
+     buttons at full strength. Fading toward WHITE in the file is the same
+     thing under multiply, and it renders identically on both engines. */
+    animation: settle 1.4s cubic-bezier(.2,.7,.3,1) backwards;
+}
+
+/* 継続 -- keizoku, "keep going". The poster's own stamp, at the poster's
+   own size relative to the text beside it. */
+/* On the brush stroke's own line, not under it: the card is meant to be
+   one screen, and a row of its own cost 60px of height for a 34px mark. */
+.mark { display: flex; align-items: center; gap: 14px; margin: 0; }
+.seal {
+  display: block;
+  width: 32px;
+  height: auto;
+  margin: 0;
+  /* Keyed to transparency like the scene, and for the same reason: a blend
+     mode inside .wrap's isolated group does nothing on WebKit. */
+  animation: settle 1.4s cubic-bezier(.2,.7,.3,1) backwards;
+  animation-delay: .5s;
+}
+@media (prefers-reduced-motion: reduce) { .hero, .seal { animation: none; } }
+
+@keyframes settle { from { opacity: 0; transform: scale(1.06) translateY(-8px); } to { opacity: 1; transform: none; } }
+
+.creed {
+  margin: clamp(18px, 3.8svh, 34px) 0 0;
+  color: var(--muted);
+  font-size: .625rem; font-weight: 700; letter-spacing: .2em; line-height: 1.95; text-transform: uppercase;
+}
+
+/* auto top margin pushes the name clear of the wash on any screen height */
+.name {
+  margin: clamp(8px, 1.5svh, 18px) 0 0;
+  /* 11svh, not 12: the pills went to two rows and this is the one
+     space on the card measured as a share of the screen, so taking
+     a point off it scales with the phone instead of landing as a
+     fixed nudge that only suits the handset it was tuned on. */
+  padding-top: clamp(58px, 11svh, 138px);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(2.9rem, 13.5vw, 4.1rem);
+  font-weight: 400; letter-spacing: -.045em; line-height: .92;
+}
+/* He goes by Jay.
+   -------------------------------------------------------------------------
+   The name says it by doing it. Every eleven seconds the tail of
+   "Jayanth" recedes, the card reads JAY on its own for a beat in the
+   same rust the seal and the closing line are written in, and then the
+   name completes again. Nobody has to be told; they watch it happen.
+
+   An underline was the first attempt and it was the obvious one -- a
+   mark pointing AT the letters rather than the letters behaving. It also
+   had to be nudged twice to stop colliding with the K of Katta
+   underneath, which is a sign a thing is being placed rather than
+   belonging.
+
+   Rust, not the accent orange: that belongs to the sun-and-moon dot at
+   the end of the next line, which is a control, and borrowing it here
+   would make the name look like something to press. Rust is already on
+   this card twice, on the hanko and on "a curious mind", so the wink
+   lands in a colour the card has already introduced.
+
+   Eight seconds of the eleven are the whole name, and it never goes
+   past the tail -- "Jay" is always there, and a screenshot almost
+   always catches "Jayanth". The resting state is the full name with a
+   softer tail, so with motion switched off the card still says which
+   part he goes by. */
+.name .jay-rest { color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) {
+  .name .jay-rest { animation: jaywink 11s ease-in-out infinite; }
+  .name .jay { animation: jaywarm 11s ease-in-out infinite; }
+}
+@keyframes jaywink {
+  0%, 58% { opacity: 1; }
+  68%, 82% { opacity: 0; }
+  92%, 100% { opacity: 1; }
+}
+@keyframes jaywarm {
+  0%, 58% { color: inherit; }
+  68%, 82% { color: var(--rust); }
+  92%, 100% { color: inherit; }
+}
+/* The dot after the name is the switch.
+   -------------------------------------------------------------------------
+   It was already the one piece of colour up there, and it is exactly the
+   shape of the thing it now does: an orange sun while the page is in
+   daylight, a full moon at night. Same size it always was -- the mark does
+   not grow to announce that it became a control.
+
+   The touch target does, though. .38em of padding on a 3.4rem heading is
+   about 20px a side, so a 10px dot answers to a 50px tap, and the negative
+   margin hands that space straight back to the line: the name sits where
+   it sat. Padding rather than an absolutely positioned pseudo-element,
+   because a tap landing on such a pseudo does not always produce a click
+   in WebKit -- which cost an afternoon on this same page. */
+.dot {
+  display: inline-block;
+  /* font:inherit, or every em here resolves against the browser's own
+     button font (13px) instead of the 54px heading -- which is how a
+     50px target came out 12px wide. */
+  font: inherit; line-height: 1;
+  width: .17em; height: .17em;
+  padding: .38em; margin: 0 -.38em 0 -.28em;
+  box-sizing: content-box;
+  border: 0; border-radius: 50%;
+  /* The sun, photographed through haze, cut to its disc -- the same
+     treatment the moon gets below, and for the same reason: at ten pixels
+     a drawn gradient reads as a dot, and a photograph reads as the sun. */
+  background: url("/connect/sun.webp?v=c7eb28df") center / contain no-repeat content-box;
+  /* drop-shadow, not box-shadow: the box is 52px of invisible padding, so
+     a box-shadow drew a saucer round the whole target. A filter follows the
+     pixels that are actually painted -- the 10px disc -- so the sun glows
+     and the tap area stays invisible. */
+  filter: drop-shadow(0 0 .13em rgba(165,67,64,.62))
+          drop-shadow(0 0 .30em rgba(165,67,64,.32));
+  vertical-align: .18em;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .35s ease, filter .35s ease, transform .18s ease;
+}
+.dot:active { transform: scale(.92); }
+/* Night: the moon itself, photographed.
+   -------------------------------------------------------------------------
+   The first version drew it -- a pale radial gradient with two grey blobs
+   for seas -- and at ten pixels that is what it looked like: two grey
+   blobs. Asked for something natural, so this is a real full moon, cut
+   from a photograph, keyed to a circle and shipped at 96px for 4.8 KB. At
+   the size it renders, the maria do the work no gradient could: the disc
+   reads as the moon rather than as a light-coloured dot.
+
+   content-box, so the artwork sits in the same 10px the sun occupies and
+   the 52px of touch padding around it stays empty. */
+[data-theme="dark"] .dot {
+  background: url("/connect/moon.webp?v=a9063376") center / contain no-repeat content-box;
+  filter: drop-shadow(0 0 .14em rgba(226,232,222,.55))
+          drop-shadow(0 0 .32em rgba(226,232,222,.28));
+}
+/* It breathes, so it is findable.
+   -------------------------------------------------------------------------
+   A mark this small, sitting in a heading, is easy to read as punctuation
+   and walk past -- which is a problem for the one control on the page. So
+   the halo swells and settles on a four-second cycle: slow enough to be
+   atmosphere rather than a notification, enough movement that the eye
+   catches it while reading the name.
+
+   A glow rather than a blink, and drop-shadow rather than box-shadow, for
+   the same reason as the disc itself: the box is mostly invisible padding
+   and a box-shadow would draw a saucer around all 52px of it. Warm around
+   the sun, cold around the moon. It stops entirely for anyone who asked
+   for less motion -- the disc is still perfectly visible standing still. */
+@keyframes sun-breathe {
+  0%, 100% { transform: scale(1);
+             filter: drop-shadow(0 0 .08em rgba(165,67,64,.34))
+                     drop-shadow(0 0 .18em rgba(165,67,64,.12)); }
+  50%      { transform: scale(1.10);
+             filter: drop-shadow(0 0 .32em rgba(165,67,64,.98))
+                     drop-shadow(0 0 .66em rgba(165,67,64,.48)); }
+}
+@keyframes moon-breathe {
+  0%, 100% { transform: scale(1);
+             filter: drop-shadow(0 0 .09em rgba(226,232,222,.30))
+                     drop-shadow(0 0 .20em rgba(226,232,222,.12)); }
+  50%      { transform: scale(1.10);
+             filter: drop-shadow(0 0 .34em rgba(226,232,222,.92))
+                     drop-shadow(0 0 .68em rgba(226,232,222,.44)); }
+}
+/* Three and a half seconds, and it scales as well as glows. The first
+   version only animated the halo, and on a phone with animations turned
+   down -- battery saver does this, and so does the accessibility switch --
+   it reported as "static, I don't see any glow". So the RESTING state now
+   carries a real halo of its own, and the movement is on top of it rather
+   than the whole of it. */
+@media (prefers-reduced-motion: no-preference) {
+  .dot { animation: sun-breathe 3.5s ease-in-out infinite; }
+  [data-theme="dark"] .dot { animation: moon-breathe 3.5s ease-in-out infinite; }
+}
+/* Even with motion turned down, the orb still breathes -- gently.
+   -------------------------------------------------------------------------
+   Reported as: the glow shows on the desktop and not on the phone. It was
+   not a rendering difference; the phone reports prefers-reduced-motion --
+   battery saver does this, and so does the accessibility switch -- and the
+   rule above switched the animation off completely.
+
+   Asked for, so this is a deliberate exception rather than an oversight:
+   the switch is the only control on the page, and a control nobody
+   notices is worse than a little movement. What it gets is the mildest
+   version -- no scaling, nothing that moves position, only the halo
+   fading up and down, over seven seconds instead of three and a half.
+   Nothing here flashes: the WCAG concern is three flashes a second, and
+   this is one slow breath every seven. */
+@keyframes sun-ember {
+  0%, 100% { filter: drop-shadow(0 0 .08em rgba(165,67,64,.34))
+                     drop-shadow(0 0 .18em rgba(165,67,64,.12)); }
+  50%      { filter: drop-shadow(0 0 .30em rgba(165,67,64,.95))
+                     drop-shadow(0 0 .62em rgba(165,67,64,.45)); }
+}
+@keyframes moon-ember {
+  0%, 100% { filter: drop-shadow(0 0 .09em rgba(226,232,222,.30))
+                     drop-shadow(0 0 .20em rgba(226,232,222,.12)); }
+  50%      { filter: drop-shadow(0 0 .32em rgba(226,232,222,.88))
+                     drop-shadow(0 0 .64em rgba(226,232,222,.42)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot { transition: none; animation: sun-ember 7s ease-in-out infinite; }
+  [data-theme="dark"] .dot { animation: moon-ember 7s ease-in-out infinite; }
+}
+.role { margin: 11px 0 0; font-size: 1.02rem; font-weight: 600; }
+
+.clouds { display: flex; flex-wrap: wrap; gap: 5px 7px; margin: 9px 0 0; padding: 0; list-style: none; }
+/* The qualifier is set lighter and in ordinary case against the
+   uppercase, tracked-out name, so the pill still reads as a label with a
+   note on it rather than as two words of equal weight. Baseline
+   alignment, not centre: the two sizes sit on one line that way. */
+.qual {
+  margin-left: 6px; font-size: .88em; font-weight: 600;
+  letter-spacing: .04em; text-transform: none;
+  /* Neutral ink at full strength, NOT the pill's own colour faded out.
+     Faded, it measured 2.0-2.8:1 against a 4.5:1 floor at nine pixels --
+     fine in a screenshot at 3x, faint on the phone it is actually read
+     on. Neutral also separates the two jobs: the colour names the cloud,
+     the ink is the note about it. */
+  color: var(--muted);
+}
+.cloud {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  padding: 4px 11px 4px 9px;
+  border: 1px solid currentColor; border-radius: 999px;
+  background: rgba(247, 241, 229, .78);
+  font-size: .68rem; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+}
+/* The second row is the background, so it is set smaller as well as
+   later. That is the hierarchy said twice -- in the words and in the
+   weight -- and it is also where the two rows get their height back on a
+   card that is meant to be one screen. */
+.cloud:nth-child(n+3) { font-size: .62rem; padding: 3px 10px 3px 8px; }
+.cloud:nth-child(n+3) svg { width: 11px; height: 11px; }
+.cloud svg { width: 12px; height: 12px; align-self: center; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.c-azu { color: #3a5570; } .c-gcp { color: #4f5b30; }
+.c-ai { color: #74505c; }
+.c-aws { color: #6f5336; }
+/* AWS = primary focus right now; AI = actively in the mix.
+   Whole pill colour/glow pulses (border uses currentColor) so the signal
+   is readable without resizing anything or adding new chrome.
+   Timings are offset so the two reads as a pair, not a strobe.
+   Honours reduced-motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .c-aws {
+    animation: aws-live 2.6s ease-in-out infinite;
+  }
+  .c-aws .ink {
+    animation: aws-ink 2.6s ease-in-out infinite;
+  }
+  .c-ai {
+    animation: ai-live 3.1s ease-in-out infinite 0.55s;
+  }
+  .c-ai .ink {
+    animation: ai-ink 3.1s ease-in-out infinite 0.55s;
+  }
+  @keyframes aws-live {
+    0%, 100% {
+      color: #6f5336;
+      background: rgba(247, 241, 229, .78);
+      box-shadow: none;
+    }
+    48% {
+      color: #b33f24;
+      background: rgba(255, 236, 220, .95);
+      box-shadow:
+        0 0 0 1px rgba(168, 67, 42, .42),
+        0 0 12px rgba(168, 67, 42, .32),
+        0 0 22px rgba(168, 67, 42, .16);
+    }
+  }
+  @keyframes aws-ink {
+    0%, 100% { text-shadow: none; }
+    48% {
+      text-shadow:
+        0 0 2px rgba(168, 67, 42, .65),
+        0 0 8px rgba(168, 67, 42, .4),
+        0 0 16px rgba(168, 67, 42, .22);
+    }
+  }
+  @keyframes ai-live {
+    0%, 100% {
+      color: #74505c;
+      background: rgba(247, 241, 229, .78);
+      box-shadow: none;
+    }
+    50% {
+      color: #7a3d8c;
+      background: rgba(244, 232, 246, .94);
+      box-shadow:
+        0 0 0 1px rgba(122, 61, 140, .36),
+        0 0 12px rgba(122, 61, 140, .26),
+        0 0 20px rgba(122, 61, 140, .14);
+    }
+  }
+  @keyframes ai-ink {
+    0%, 100% { text-shadow: none; }
+    50% {
+      text-shadow:
+        0 0 2px rgba(122, 61, 140, .55),
+        0 0 8px rgba(122, 61, 140, .32),
+        0 0 14px rgba(122, 61, 140, .18);
+    }
+  }
+}
+.here { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* the best line on the card, finally given the size it deserves */
+.creedo {
+  margin: clamp(11px, 2.1svh, 22px) 0 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(1.18rem, 5.2vw, 1.45rem);
+  font-style: italic; line-height: 1.32;
+}
+.creedo em { color: var(--rust); }
+.brush { display: block; width: 92px; height: 7px; margin: 14px 0 0; border-radius: 60% 40% 55% 45%; background: linear-gradient(90deg, rgba(168,67,42,.9), rgba(168,67,42,.22) 76%, transparent); transform: rotate(-1.6deg) skewX(-16deg); }
+
+.grow { flex: 1 1 auto; min-height: 12px; }
+.bottom { position: relative;
+  margin-top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  padding-top: clamp(14px, 2.2svh, 24px);
+}
+.acts { display: grid; gap: 9px; margin: 0; }
+.act {
+  display: flex; align-items: center; gap: 12px;
+  min-height: 58px; padding: 0 17px;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255,252,246,.92), rgba(243,236,223,.78));
+  box-shadow: 0 1px 0 rgba(255,255,255,.75) inset, 0 2px 6px rgba(78,62,38,.055);
+  font-size: .96rem; font-weight: 650;
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+}
+.act:active { transform: translateY(1px) scale(.994); }
+@media (hover: hover) { .act:hover { border-color: rgba(33,31,28,.34); box-shadow: 0 1px 0 rgba(255,255,255,.8) inset, 0 6px 16px rgba(78,62,38,.1); transform: translateY(-1px); } }
+.act svg { width: 19px; height: 19px; flex: none; stroke: currentColor; stroke-width: 1.75; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.act .go { margin-left: auto; opacity: .38; font-size: 1.05rem; }
+
+.act-main {
+  min-height: 66px;
+  border-color: var(--rust-d);
+  background: linear-gradient(180deg, #b44a2f, var(--rust) 62%, var(--rust-d));
+  box-shadow: 0 1px 0 rgba(255,255,255,.22) inset, 0 8px 20px rgba(138,53,32,.28);
+  color: #fdf7ee; font-size: 1.04rem; font-weight: 700;
+}
+@media (hover: hover) { .act-main:hover { box-shadow: 0 1px 0 rgba(255,255,255,.25) inset, 0 12px 26px rgba(138,53,32,.34); } }
+.act-main .go { opacity: .8; }
+.li { display: grid; place-items: center; width: 26px; height: 26px; flex: none; border: 1.6px solid currentColor; border-radius: 5px; font-size: .78rem; font-weight: 800; letter-spacing: -.07em; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.pair .act { padding-inline: 14px; font-size: .9rem; }
+
+.foot {
+  position: relative;
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--muted); font-size: .61rem; font-weight: 700; letter-spacing: .17em; text-transform: uppercase;
+}
+
+/* re:Invent, counted down
+   -------------------------------------------------------------------------
+   A card is where someone lands when they have just met you, so the one
+   thing worth putting on it besides how to reach you is what you are doing
+   next. The number is written by the script at the bottom of this file from
+   the event's own dates -- never typed in, because a number typed into a
+   card is wrong the next morning and this page is handed to people. */
+.rein {
+  display: flex; align-items: center; gap: 13px;
+  min-height: 62px; padding: 0 16px; margin-top: 9px;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255,252,246,.92), rgba(243,236,223,.62));
+  box-shadow: 0 1px 0 rgba(255,255,255,.75) inset, 0 2px 6px rgba(78,62,38,.055);
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+}
+.rein:active { transform: translateY(1px) scale(.994); }
+@media (hover: hover) { .rein:hover { border-color: rgba(33,31,28,.34); transform: translateY(-1px); box-shadow: 0 1px 0 rgba(255,255,255,.8) inset, 0 6px 16px rgba(78,62,38,.1); } }
+.rein-n {
+  font-size: 1.62rem; font-weight: 700; line-height: 1;
+  color: var(--rust); font-variant-numeric: tabular-nums; flex: none;
+}
+.rein-x { display: grid; gap: 2px; min-width: 0; }
+.rein-x b { font-size: .9rem; font-weight: 700; }
+.rein-x em {
+  font-style: normal; font-size: .72rem; font-weight: 600;
+  letter-spacing: .04em; color: var(--muted);
+}
+.rein .go { margin-left: auto; opacity: .38; font-size: 1.05rem; }
+/* The number breathes, so the card has one thing quietly alive on it.
+   A slow fade, not a blink: a hard flash is a seizure risk above two a
+   second and an irritation below it, and this sits on a page somebody may
+   leave open. The dot keeps the same time, and both stop dead for anyone
+   who has asked for less motion. */
+@keyframes rein-breathe { 0%, 100% { opacity: 1 } 50% { opacity: .6 } }
+@keyframes rein-dot {
+  0%, 100% { opacity: .85; transform: scale(1) }
+  50%      { opacity: .2;  transform: scale(.7) }
+}
+.rein-n { animation: rein-breathe 2.6s ease-in-out infinite; }
+.rein-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--rust); margin-right: 6px; vertical-align: middle;
+  animation: rein-dot 2.6s ease-in-out infinite;
+}
+.rein.is-live .rein-n, .rein.is-live .rein-dot { animation-duration: 1.4s; }
+@media (prefers-reduced-motion: reduce) {
+  .rein-n, .rein-dot { animation: none; }
+}
+
+/* each block arrives a beat after the one above it */
+.rise { animation: rise .72s cubic-bezier(.22,.7,.3,1) backwards; }
+.d0 { animation-delay: .06s; } .d1 { animation-delay: .14s; } .d2 { animation-delay: .22s; }
+.d3 { animation-delay: .30s; } .d4 { animation-delay: .38s; } .d5 { animation-delay: .46s; }
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .rise, .hero { animation: none; }
+  .act { transition: none; }
+}
+
+/* One screen, on the phones that have less of one.
+   -------------------------------------------------------------------------
+   Reported as: it fits without scrolling on iPhone, but Android needs a
+   scroll for the bottom. It is not two layouts -- it is one layout and two
+   viewport heights. Measured: the same page is 855px tall against 874px of
+   iPhone Safari and 790px of Chrome on Android, whose address bar and
+   gesture bar take about 85px more. Nothing is removed here and nothing
+   shrinks that is read: the air between the blocks is taken in, roughly
+   eight pixels at a time, and the flexible spacer that only exists to push
+   the buttons down goes away entirely. */
+/* A light tier for the tall phones once their toolbars are showing.
+   A 430x932 handset gives about 880 of usable viewport in Safari, and
+   the card ran three pixels long there -- above the 845px tier, so
+   nothing was trimming it. Three pixels is still a scrollbar and still
+   a page that moves under the thumb.
+
+   BEFORE the 845 and 800 blocks, so the shorter tiers still win where
+   they also match. */
+@media (max-height: 900px) {
+  .name   { padding-top: clamp(50px, 9.5svh, 120px); }
+}
+@media (max-height: 845px) {
+  /* Taken from ABOVE the pills, not from between the pills and the
+     buttons. The first version trimmed the gap the artwork lives in --
+     the creed's margin, the seal, the flexible spacer -- and the figure's
+     head went from clearing the AI pill by 21px to overlapping it by 5,
+     because the art is anchored to the buttons and the buttons had moved
+     up while the pills had not. Space above the pills moves both by the
+     same amount and costs the figure nothing. */
+  .name   { padding-top: clamp(40px, 7svh, 96px); margin-top: 8px; }
+  .creed  { margin-top: 14px; }
+  .role   { margin-top: 10px; }
+  .clouds { margin-top: 10px; }
+  /* And the art itself comes in, because on a short screen the buttons
+     sit higher and the panel is anchored to them -- at 412x790 its top
+     had gone 34px above the viewport, which took 18px off the birds.
+     Asked directly: "are all birds at the top visible or cut?" They
+     were cut, on exactly one of the three sizes. */
+  .hero   { width: 43%; max-width: 178px; }
+  /* Below the art, so these are free. */
+  .acts   { gap: 7px; }
+  .pair   { gap: 7px; }
+  .rein   { margin-top: 7px; min-height: 56px; }
+  .foot   { margin-top: 8px; padding-top: 8px; }
+}
+/* A second, tighter tier for the short end of Android.
+   -------------------------------------------------------------------------
+   Chrome's address bar and gesture bar take about 85px more than Safari's
+   at the same nominal height, so a 360x800 handset gives about 740 of
+   usable viewport and a 393x800 one about 760. At those the card ran 18
+   to 24px long and had to be scrolled, which for a card whose whole
+   claim is "one screen, no scrolling" is the defect that matters most.
+
+   Taken from ABOVE the pills, for the reason set out in the 845px block:
+   the art is anchored to the buttons, so space removed between the pills
+   and the buttons moves the buttons up while the pills stay, and the
+   figure's head walks into the road block. Space removed above moves
+   both by the same amount and costs the figure nothing.
+
+   It had been over by this much all along -- measured identical before
+   and after a day of changes to the road block -- so this is an old
+   defect that the checks could not see, not a new one. They tested
+   780, 874 and 932, and the card happens to fit all three. */
+@media (max-height: 800px) {
+  .name   { padding-top: clamp(24px, 4.6svh, 72px); margin-top: 4px; }
+  .creed  { margin-top: 6px; }
+}
+/* Night on the same sheet.
+   -------------------------------------------------------------------------
+   Asked for: "some sort of dark mode too. Not black but some sort of moody,
+   rustic, wabi sabi texture."
+
+   So not an inversion, and not a black page with the colours flipped. The
+   sheet is a deep tea brown -- #2A2420, a stained paper rather than an
+   absence of light -- and EVERY OTHER PART OF THE PAGE IS THE SAME OBJECT.
+   The same turbulence, the same mottle, the same vignette, warmed instead
+   of darkened; the same artwork file, unchanged.
+
+   That last one is the whole trick and it was not obvious. The first
+   attempt made a second, inverted copy of the scene, bone strokes on dark,
+   and it read as a photographic negative -- an x-ray, not an ink painting.
+   The original needs no inversion: the ink is nearly black, the ground is
+   dark brown rather than black, and the mist that was pale on paper becomes
+   the light in the picture. The pine and the man go to silhouette, the sun
+   keeps its glow, and nothing about the file changes.
+
+   Text goes to a warm bone rather than white, which is the difference
+   between a lit room and a screen. */
+/* The night palette hangs off an attribute rather than the media query
+   alone, because the card now carries its own switch -- see the lamp
+   at the bottom of the page. A tiny script sets data-theme before
+   first paint: what you chose if you chose, otherwise what the phone
+   is set to. One block, so the two routes cannot drift apart. */
+:root[data-theme="dark"] {
+    /* Chosen from twenty-four surfaces on five depths of sage: the near
+       black sheet (#191E17) with the cracked-lacquer surface. The sheet is
+       sampled from the reference rooms -- shadow #0C0705, mid #221C16,
+       stone #8A8175 -- carried into green rather than brown, which is
+       where the eye went. It is a stained dark, not an absence of light. */
+    --paper:  #191e17;
+    --ink:    #dce2d3;
+    --muted:  #9faa98;
+    --line:   rgba(220, 226, 211, .15);
+    --rust:   #c2663c;
+    --rust-d: #8e4526;
+    /* Cracked lacquer: feTurbulence with type="turbulence" rather than
+       fractalNoise, which gives veins instead of clouds -- at this depth a
+       cloud reads as a stain and a vein reads as a surface. A fine tooth
+       under it so the sheet has something to catch the light. The vignette
+       is deeper than the day's: in every reference photograph the corners
+       go to almost nothing and the light is a small patch in the middle. */
+    --grain-veins:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='520' height='520'%3E%3Cfilter id='v'%3E%3CfeTurbulence type='turbulence' baseFrequency='0.022' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='3.2' intercept='-1.10'/%3E%3CfeFuncG type='linear' slope='3.2' intercept='-1.10'/%3E%3CfeFuncB type='linear' slope='3.2' intercept='-1.10'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='520' height='520' filter='url(%23v)' opacity='0.26'/%3E%3C/svg%3E");
+    --grain-tooth:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Cfilter id='t'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.6' numOctaves='1' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='6' intercept='-2.50'/%3E%3CfeFuncG type='linear' slope='6' intercept='-2.50'/%3E%3CfeFuncB type='linear' slope='6' intercept='-2.50'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='60' height='60' filter='url(%23t)' opacity='0.16'/%3E%3C/svg%3E");
+    --paper-grain:
+      var(--grain-veins),
+      var(--grain-tooth),
+      radial-gradient(ellipse 58% 38% at 78% 20%, rgba(168,178,150,.16), transparent 72%),
+      radial-gradient(ellipse 60% 40% at 16% 14%, rgba(255,255,255,.05), transparent 70%),
+      radial-gradient(ellipse 80% 50% at 35% 96%, rgba(0,0,0,.18), transparent 75%);
+    --paper-blend: soft-light, soft-light,
+      normal, normal, normal;
+    --paper-grain-size: 520px 520px, 60px 60px,
+      auto, auto, auto;
+    --paper-vignette:
+      radial-gradient(ellipse 120% 100% at 50% 42%,
+                      transparent 46%, rgba(0,0,0,.34) 100%);
+  }
+  /* The cards stop being paper on paper and become lit surfaces: a little
+     of the room's own light, held by a warm edge. */
+  [data-theme="dark"] .act,
+  [data-theme="dark"] .rein {
+    background: linear-gradient(180deg, rgba(255,238,210,.07), rgba(255,238,210,.03));
+    box-shadow: 0 1px 0 rgba(255,244,226,.06) inset, 0 2px 10px rgba(0,0,0,.42);
+  }
+  [data-theme="dark"] .cloud { background: rgba(255,238,210,.055); }
+  /* The two pills that pulse carry their background INSIDE the keyframes,
+     so the theme's rule never gets a look in -- at night the AWS and AI
+     pills stayed cream while the other two went dark. Same animation,
+     night values. */
+  @media (prefers-reduced-motion: no-preference) {
+    [data-theme="dark"] .c-aws { animation-name: aws-live-night; }
+    [data-theme="dark"] .c-ai  { animation-name: ai-live-night; }
+  }
+  @keyframes aws-live-night {
+    0%, 100% { color: #c49a68; background: rgba(255,238,210,.055);
+               box-shadow: none; }
+    48%      { color: #e0b079; background: rgba(255,214,170,.12);
+               box-shadow: 0 0 0 1px rgba(224,176,121,.30),
+                           0 0 12px rgba(224,176,121,.22),
+                           0 0 22px rgba(224,176,121,.12); }
+  }
+  @keyframes ai-live-night {
+    0%, 100% { color: #bb8e9c; background: rgba(255,238,210,.055);
+               box-shadow: none; }
+    50%      { color: #d7a6be; background: rgba(226,190,238,.10);
+               box-shadow: 0 0 0 1px rgba(215,166,190,.30),
+                           0 0 12px rgba(215,166,190,.22),
+                           0 0 20px rgba(215,166,190,.12); }
+  }
+  [data-theme="dark"] .c-aws { color: #c49a68; }
+  [data-theme="dark"] .c-azu { color: #86a8c6; }
+  [data-theme="dark"] .c-gcp { color: #9aad72; }
+  [data-theme="dark"] .c-ai  { color: #bb8e9c; }
+  [data-theme="dark"] .act-main {
+    border-color: #8e4526;
+    background: linear-gradient(180deg, #a8492c, #8e4526 62%, #6b3119);
+    box-shadow: 0 1px 0 rgba(255,255,255,.10) inset, 0 8px 24px rgba(0,0,0,.5);
+  }
+  @media (hover: hover) {
+    .act:hover, .rein:hover { border-color: rgba(222,213,196,.32); }
+  }
+  [data-theme="dark"] .brush { background: linear-gradient(90deg, rgba(194,102,60,.92), rgba(194,102,60,.24) 76%, transparent); }
+  /* A second cut of the same artwork, not a second artwork: the pale wash
+     that reads as mist on paper reads as a lit rectangle on a dark ground,
+     because low alpha over white pixels lightens whatever is behind it. So
+     the dusk file keeps the ink and the sun and lets the wash go
+     transparent -- same crop, same fades, same everything else. */
+  [data-theme="dark"] .hero {
+    background-image: url("/connect/ink-scene-dusk.webp?v=ffe6fb97");
+    opacity: .96;
+  }
+  /* And the stamp, cut the same way: on paper it is a red block on cream,
+     and the cream round it was showing up as a pale tile on the dark
+     sheet. The vermilion and the characters stay; the paper goes. */
+  [data-theme="dark"] .seal { content: url("/connect/ink-seal-dusk.webp?v=e6fee2d3"); }
+
+@media (min-width: 700px) {
+  .wrap { max-width: 470px; padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
+
+  /* On a phone the art runs off the side of the screen, which is what
+     makes it read as a printed sheet rather than a pasted-in picture. On
+     a tablet there is no side to run off -- the card is a column in the
+     middle of the page -- so the same bleed ends in a hard vertical line
+     at the column edge. Here it dissolves instead. One mask layer, not
+     two: two need mask-composite, whose legacy WebKit spelling takes
+     different values and silently applies neither. */
+  .hero {
+    right: -34px;
+    -webkit-mask-image: linear-gradient(90deg, #000 62%, transparent 99%);
+            mask-image: linear-gradient(90deg, #000 62%, transparent 99%);
+  }
+}
+
+/* A desktop, rather than a phone with a lot of paper round it.
+   -------------------------------------------------------------------------
+   Reported from a monitor: the page is "kind of overkill", with black
+   shades across the whole screen and a phone layout sitting in the middle
+   of it. Both halves of that are fair, and they are two different faults.
+
+   THE SHADES are the paper's own mottle and vignette. They are sized in
+   percentages, so on a 1920px screen the same ellipses that read as a soft
+   unevenness on a 400px phone become metre-wide smudges -- a stain rather
+   than a sheet. Above 1000px they are widened and lightened until the
+   ground is nearly flat, and only the outermost edge keeps any fall-off.
+   Same colour, same grain, same paper: less weather on it.
+
+   THE LAYOUT is now two columns, which is what the card would be if it had
+   been drawn for a screen: the words down the left at a size a desktop can
+   carry, the picture whole and upright on the right, the actions in a
+   proper grid underneath rather than a stack of full-width bars. The
+   artwork stops being anchored to the buttons -- that anchor exists to keep
+   the figure off them in a single narrow column, and in two columns there
+   is nothing to keep him off. */
+/* 860, not 1000.
+   -------------------------------------------------------------------------
+   Browser zoom does not magnify a page, it shrinks the CSS viewport: a
+   1920px screen at 200% hands the page a 960px one. At 1000 that landed
+   on the far side of this breakpoint, so zooming in on a desktop dropped
+   the two-column layout and gave back the phone card -- a 470px column
+   marooned in the middle of a wide window with the backdrop washed out
+   around it. That reads as broken, and it was reported as "the tree is
+   invisible and I see all the dirty shades".
+
+   860 is safe because the two columns do not shrink: measured at 820,
+   860, 900, 960 and 1000, the artwork panel stays 214px and the gap to
+   the buttons and to the name stays +72px at every one. The layout
+   simply holds, so the only question was where to stop asking it to,
+   and 860 leaves room to spare while covering 200% zoom on every common
+   desktop width. */
+@media (min-width: 860px) {
+  /* Matte on a monitor, in both modes. The grain was already taken down
+     here -- the mottles widened, the corner fall-off faded -- and it was
+     still wrong: a phone screen is a hand's width and the texture reads
+     as a sheet of paper, while the same texture across a metre of glass
+     reads as patches of light on a wall. Reported as white shades on the
+     desktop sheet, twice.
+
+     So the desktop sheet is the colour and nothing else. Every named
+     grain layer is still declared in :root and still used on the phone;
+     this turns off the LAYERS, not the palette, so the two surfaces are
+     the same colour and only the finish differs. Nothing else in the
+     desktop tier changes -- the picture, the figure, the birds and the
+     seal are exactly the ones on the phone. */
+  :root, :root[data-theme="dark"] { --paper-grain: none; }
+
+  /* Two columns, made by giving the card a right margin the picture lives
+     in. Not CSS grid: the artwork sits inside the button block in the
+     markup -- that is what keeps the figure off the first button on a
+     phone -- and a grid can only place a direct child. Making .bottom
+     static hands the picture back to .wrap to position against. */
+  .wrap {
+    position: relative;
+    max-width: 1020px;
+    padding: 44px 330px 32px 48px;
+    justify-content: center;
+  }
+  .bottom { position: static; margin-top: 22px; }
+  .grow { display: none; }
+
+  .hero {
+    position: absolute;
+    top: 54px; right: 44px; bottom: auto; left: auto;
+    /* Sized by HEIGHT here, not width: the panel is a tall portrait, and
+       on a screen the constraint is the fold, not the margin. Its own
+       aspect ratio gives the width, so the picture is never squeezed. */
+    height: min(690px, calc(100vh - 130px));
+    width: auto; max-width: none; max-height: none; margin: 0;
+    /* The picture's right edge is the poster's own, and against a flat
+       desktop sheet it ends in a line. One mask layer -- never two, for
+       the reason in the 700px block above -- dissolves it. */
+    -webkit-mask-image: linear-gradient(90deg, #000 72%, transparent 100%);
+            mask-image: linear-gradient(90deg, #000 72%, transparent 100%);
+  }
+
+  /* The words, at a size a screen can carry. */
+  .creed  { margin: 0 0 10px; font-size: .68rem; }
+  .name   { padding-top: 0; margin: 0; font-size: 4.2rem; }
+  .role   { margin: 16px 0 0; font-size: 1.14rem; }
+  .clouds { margin: 16px 0 0; gap: 8px; }
+  .cloud  { font-size: .72rem; padding: 6px 13px 6px 11px; }
+  .creedo { margin: 20px 0 0; font-size: 1.46rem; }
+  .mark   { margin-top: 18px; }
+
+  .acts { gap: 12px; }
+  .act-main { min-height: 62px; }
+  .pair { gap: 12px; }
+  .rein { margin-top: 12px; min-height: 66px; }
+  .foot { margin-top: 22px; padding-top: 16px; }
+}
+
+/* A laptop is a desktop with less height. 1280x800 and 1366x768 are the
+   two screens this page is most likely to be opened on at work, and the
+   full-height version overran both by about a hundred pixels -- the same
+   arithmetic as the phone, one screen down. Nothing is removed; the air
+   between the blocks comes in and the name gives back a few points. */
+/* Follows the main breakpoint down; a short desktop window between
+   860 and 1000 is still a desktop window. */
+@media (min-width: 860px) and (max-height: 900px) {
+  .wrap   { padding-top: 30px; padding-bottom: 22px; }
+  .creed  { margin-bottom: 6px; }
+  .name   { font-size: 3.4rem; }
+  .role   { margin-top: 12px; font-size: 1.04rem; }
+  .clouds { margin-top: 12px; }
+  .creedo { margin-top: 15px; font-size: 1.26rem; }
+  .mark   { margin-top: 12px; }
+  .bottom { margin-top: 14px; }
+  .acts   { gap: 9px; }
+  .act-main { min-height: 54px; }
+  .pair .act { min-height: 50px; }
+  .rein   { margin-top: 9px; min-height: 56px; }
+  .foot   { margin-top: 10px; padding-top: 9px; }
+  .hero   { top: 34px; height: min(600px, calc(100vh - 76px)); }
+}
+
+@media (min-width: 1500px) {
+  .wrap { max-width: 1180px; }
+  .name { font-size: 5rem; }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* The road, the walk, and the jump ---------------------------------------
+   He walks the road with the model and its agents behind him, breaks
+   stride in the middle and jumps with both arms up, and carries on. The
+   three grounds sit underneath: AWS is the only one that breathes, and
+   two of three staying still is what makes the third mean anything. */
+.road { position: relative; margin: 8px 0 0;
+  /* 53, not 56: the grounds row is absolutely positioned so it can
+     hang a little past the box without moving anything, and the
+     picture's head needs 12px of clear air under this block. */
+  width: min(100%, 244px); height: 53px;
+  font-size: .58rem; font-weight: 700; letter-spacing: .07em;
+  text-transform: uppercase; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden;
+      clip: rect(0 0 0 0); white-space: nowrap; margin: 0; }
+.tarmac { position: absolute; left: 0; top: 33px; width: 100%; height: 11px;
+  background: var(--muted); opacity: .28; border-radius: 1px;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+          mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent); }
+.lane { position: absolute; left: 0; top: 38px; width: 100%; height: 1.4px;
+  background: repeating-linear-gradient(90deg,
+              var(--paper) 0 7px, transparent 7px 15px);
+  opacity: .8;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 15%, #000 85%, transparent);
+          mask-image: linear-gradient(90deg, transparent, #000 15%, #000 85%, transparent); }
+/* Overhead boards ------------------------------------------------------
+   One gantry per destination, hung over the carriageway on a short drop,
+   spread to 20/50/80 so they are nowhere near each other.
+
+   They sit BEHIND the walkers in the stacking order, so he and the chain
+   pass in front of them rather than through them. That is the only way
+   this works at all: a board needs the air above the road, and the air
+   above the road is where he already is. In front of them it reads as a
+   sign on the far side; drawn over him it would read as a mistake. */
+/* 31 tall: the plate takes the top 13 and the drop runs the rest of the
+     way down to the tarmac. The road had to move DOWN to make this work --
+     with it where it was, the man's head was inside the boards and the
+     whole chain sat on top of AZURE. Gantries need air, and the air above
+     the road is where he walks. */
+.sign { position: absolute; left: var(--at); top: 0; height: 33px; z-index: 0;
+  transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; line-height: 1; }
+/* Short plates on purpose. Every pixel this board is tall is a pixel the
+   model names cannot rise into -- they come off the robots' heads, and the
+   gap between the board and those heads is all the room they get. */
+.plate { display: flex; align-items: center; gap: 4px;
+  /* No vertical padding. Every pixel this board is tall is a pixel
+     the service names cannot use -- they hang under it and the
+     robots' heads come up to meet them, so the gap between the two
+     is all the room there is. Two pixels off the plate is two
+     pixels of air for the labels. */
+  padding: 0 5px 0 4px; border-radius: 3px;
+  border: 1px solid var(--line, rgba(90,74,56,.30));
+  background: color-mix(in srgb, var(--paper) 88%, var(--ink) 5%); }
+[data-theme="dark"] .plate { border-color: rgba(220,226,211,.22);
+  background: color-mix(in srgb, var(--paper) 78%, #dce2d3 6%); }
+.drop { width: 1.2px; flex: 1 0 6px; background: var(--muted); opacity: .42; }
+.plate .pin { width: 9px; height: 9px; display: block; flex: none; }
+.plate b { font: inherit; color: currentColor; }
+.g-azu { color: #3a5570; } .g-aws { color: #6f5336; } .g-gcp { color: #4f5b30; }
+[data-theme="dark"] .g-azu { color: #9ab8d4; }
+[data-theme="dark"] .g-aws { color: #c49a68; }
+[data-theme="dark"] .g-gcp { color: #9aad72; }
+.g-azu .pin { fill: #1a7cc0; stroke: none; }
+.g-aws .pin { fill: none; stroke: #d97f12; width: 10px; height: 10px; }
+.g-gcp .pin { fill: none;
+  --g-blue: #3d76c8; --g-red: #c8483c; --g-yellow: #d9a222; --g-green: #3d8f52; }
+[data-theme="dark"] .g-azu .pin { fill: #6fb3e4; }
+[data-theme="dark"] .g-aws .pin { stroke: #efa444; }
+[data-theme="dark"] .g-gcp .pin {
+  --g-blue: #7fa9e0; --g-red: #d97f76; --g-yellow: #e0be6a; --g-green: #79b58c; }
+/* He is in front of all six; the formation's back row is behind
+   the front row, which is what makes it read as a ring rather
+   than a queue. The boards stay behind everybody at 0. */
+.hiker { z-index: 4; }
+
+.hiker, .follow { position: absolute; left: 0; }
+.follow > span { display: block; }
+/* 11, so his feet land on 42 -- the same line the robots stand on.
+     He was on 44 and they were on 33. */
+.hiker { top: 11px; width: 17px; }
+.jump { display: block; }
+.walker { width: 17px; height: 32px; display: block; fill: #241f1a; stroke: none; }
+.bot { width: 11px; height: 19px; display: block; fill: #241f1a; stroke: none; }
+.walker .far, .bot .far { opacity: .88; }
+/* A data centre on the far side of the road, one per cloud.
+   -------------------------------------------------------------------------
+   The agents had laptops and it read as three robots sitting in the
+   middle of a carriageway. They mind a data centre now, and the service
+   names come out of it rather than off the sign above the road.
+
+   Sitting on the TOP edge of the tarmac rather than on the line the
+   figures stand on, which is what puts them across the road: in a view
+   this flat, further away is higher up, so a building whose base is the
+   far kerb is a building on the far side. The agents keep their feet on
+   the near edge where they were, so they read as standing outside it.
+
+   Muted, part-transparent and at z-index 0 with the boards: the far side
+   of a street is not the subject, and everything that walks has to pass
+   in front of it. */
+/* --shift, because the parade belongs behind the AGENTS and the agents
+   stand to the right of the drop line. Centred on the board it sat
+   behind him and the model instead, which put an empty street behind the
+   people who live there. */
+.shops { position: absolute; left: calc(var(--at) + var(--shift));
+  bottom: 20px; transform: translateX(-50%); height: 10px; display: block;
+  z-index: 0; fill: var(--muted); opacity: .42; }
+.shops.wide { width: 34px; }
+.shops.small { width: 19px; }
+.shops .win { fill: var(--paper); opacity: .75; }
+[data-theme="dark"] .shops { opacity: .5; }
+.walker .pack { fill: inherit; opacity: 1; }
+[data-theme="dark"] .walker, [data-theme="dark"] .bot { fill: #a7b2a0; }
+.wcheer, .wstand { display: none; }
+.walker > g > g, .bot > g > g { display: none; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .hiker { animation: trek 26s linear infinite; }
+  .jump { animation: hop 26s ease-out infinite; }
+  .walker { animation: face 26s steps(1) infinite; }
+  /* steps(1), not linear. Adjacent keyframe stops still interpolate
+     across the gap between them -- a tenth of a per cent of 26s is 26ms
+     of both poses part-lit, which is a cross-fade however short. With
+     steps(1) each interval holds its opening value and jumps at the
+     end, so the windows tile exactly and nothing is ever part-drawn. */
+  .wcyc { display: block; animation: showwalk 26s steps(1) infinite; }
+  .wcheer { display: block; opacity: 0; animation: showjump 26s steps(1) infinite; }
+  .wstand { display: block; opacity: 0; animation: showstand 26s steps(1) infinite; }
+  /* Every pose in every group is laid out and hidden; which one is drawn
+     is decided entirely by the group it sits in and the keyframes above.
+     Only the two cycling groups step through their poses -- the standing
+     pose is a single frame and holds.
+
+     HIDDEN, not transparent, and that distinction is the whole point.
+     An animated opacity is compositor-accelerated, so each pose frame
+     became its own GPU layer -- eight per walker, four per robot -- and a
+     handover was two layers changing: one off, the next on. The
+     compositor may apply those on different frames, and a frame catching
+     the gap draws neither. Reported as the man and the robots blinking,
+     on both Android and iPhone, and only when zoomed -- zoom being what
+     forces every layer to re-rasterise and leaves the compositor busy
+     enough for the two halves to separate.
+
+     visibility is not accelerated. No layer per frame, and both halves of
+     a handover land in one style recalculation. The parent groups keep
+     their opacity animation on purpose: an opacity:0 parent hides its
+     children whatever their own visibility says, while a
+     visibility:hidden parent does not hide a child that sets
+     visibility:visible. */
+  .walker > g > g, .bot > g > g { display: inline; visibility: hidden; }
+
+
+  .wcyc > g { animation: cyc .72s steps(1) infinite; }
+  .bot .rcyc > g { animation: rcyc .48s steps(1) infinite; }
+  /* .walker .wstand, not .wstand: two classes and a type beats the
+     one class and two types of the rule above it, and without the
+     extra class the standing figure was laid out, switched on, and
+     drawn at zero opacity -- a man who stopped by vanishing. The
+     robots' rule already had the class and already worked, which is
+     what made the difference visible. */
+  .walker .wstand > g, .bot .rstand > g { visibility: visible; }
+  .wcyc .k0 { animation-delay: 0s; }   .wcyc .k1 { animation-delay: .09s; }
+  .wcyc .k2 { animation-delay: .18s; } .wcyc .k3 { animation-delay: .27s; }
+  .wcyc .k4 { animation-delay: .36s; } .wcyc .k5 { animation-delay: .45s; }
+  .wcyc .k6 { animation-delay: .54s; } .wcyc .k7 { animation-delay: .63s; }
+  /* The two jump poses cut, they do not blend -- see showcrouch. */
+  .wcheer .c0 { animation: showcrouch 26s steps(1) infinite; }
+  .wcheer .c1 { animation: showair 26s steps(1) infinite; }
+  .g-aws .pin { animation: breathe 2.4s ease-in-out infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hiker { transform: translateX(112px); }
+  .wstand, .bot .rstand { display: block; }
+  .wstand > g, .bot .rstand > g { display: inline; }
+  .wcyc, .wcheer, .bot .rcyc { display: none; }
+}
+/* One round trip, and a crew that was already there -------------------
+   Out to Azure and back, out to GCP and back, then the rest of the loop
+   at AWS. Only he and the model walk it: the five agents are posted,
+   one at Azure, one at GCP and three at AWS, and they are working
+   whether he is stood beside them or not. His trek, his jump and his
+   facing are all generated from the timeline in make_connect_chain.py
+   rather than typed here, because the model's pursuit is written
+   against that same timeline and two copies of it would drift. */
+/* Why there are three jump poses and no cross-fade.
+   Two earlier goes at this both failed, and both failed for the same
+   reason: the figure changed silhouette faster than a body can. First
+   the swap was misaligned -- arms went up at 20.1% while the lift did
+   not start until 21%, so for a beat he stood on the road with both
+   arms overhead. Aligning it left a hard cut from mid-stride to
+   both-arms-up, which at 27px still reads as a blink. So the cut was
+   softened into a two-tenths cross-fade, and that was worse in a way
+   that does not show up in a measurement of opacity: two silhouettes
+   at half opacity do not add back up to one solid figure. Where they
+   overlap you get 75%, where they do not you get 50%, so mid-fade he
+   is genuinely see-through. Summing the two groups' opacity said
+   0.5 + 0.5 = 1 and reported no problem, which is why it took a third
+   report to find.
+   The fix is the beat that was missing rather than a way to hide its
+   absence: a crouch, held for a tenth of a second either side of the
+   lift, so he gathers, leaves, lands and gathers again. Every change
+   is now between neighbouring poses and every one of them is a hard
+   cut -- nothing is ever partly transparent. */
+/* Gather, and land. Bracketing the airborne pose on both sides. */
+@keyframes cyc { 0%, 12.4% { visibility: visible; } 12.5%, 100% { visibility: hidden; } }
+@keyframes rcyc { 0%, 24.9% { visibility: visible; } 25%, 100% { visibility: hidden; } }
+/* filter, not box-shadow: a box-shadow ring is the shape of the BOX, and
+   the moment the dot became a logo that ring was a square drawn round it. */
+@keyframes breathe {
+  0%, 100% { transform: scale(1); filter: none; }
+  50% { transform: scale(1.18); filter: drop-shadow(0 0 3px currentColor); }
+}
+
+@keyframes trek {
+  0.00% { transform: translateX(107px); }
+  13.00% { transform: translateX(34px); }
+  21.00% { transform: translateX(34px); }
+  34.00% { transform: translateX(107px); }
+  36.00% { transform: translateX(107px); }
+  49.00% { transform: translateX(180px); }
+  57.00% { transform: translateX(180px); }
+  70.00% { transform: translateX(107px); }
+  100.00% { transform: translateX(107px); }
+}
+@keyframes hop {
+  0%, 80.00% { transform: translateY(0); }
+  81.50% { transform: translateY(-9px); }
+  83.00%, 100% { transform: translateY(0); }
+}
+@keyframes face {
+  0%, 20.99% { transform: scaleX(-1); }
+  21.00%, 56.99% { transform: scaleX(1); }
+  57.00%, 100% { transform: scaleX(-1); }
+}
+@keyframes showcrouch {
+  0%, 80.00% { visibility: visible; }
+  80.01%, 82.99% { visibility: hidden; }
+  83.00%, 100% { visibility: visible; }
+}
+@keyframes showair {
+  0%, 80.00% { visibility: hidden; }
+  80.01%, 82.99% { visibility: visible; }
+  83.00%, 100% { visibility: hidden; }
+}
+@keyframes showwalk {
+  0.00%, 12.99% { opacity: 1; }
+  13.00%, 20.99% { opacity: 0; }
+  21.00%, 33.99% { opacity: 1; }
+  34.00%, 35.99% { opacity: 0; }
+  36.00%, 48.99% { opacity: 1; }
+  49.00%, 56.99% { opacity: 0; }
+  57.00%, 69.99% { opacity: 1; }
+  70.00%, 78.99% { opacity: 0; }
+  79.00%, 83.99% { opacity: 0; }
+  84.00%, 99.99% { opacity: 0; }
+}
+@keyframes showstand {
+  0.00%, 12.99% { opacity: 0; }
+  13.00%, 20.99% { opacity: 1; }
+  21.00%, 33.99% { opacity: 0; }
+  34.00%, 35.99% { opacity: 1; }
+  36.00%, 48.99% { opacity: 0; }
+  49.00%, 56.99% { opacity: 1; }
+  57.00%, 69.99% { opacity: 0; }
+  70.00%, 78.99% { opacity: 1; }
+  79.00%, 83.99% { opacity: 0; }
+  84.00%, 99.99% { opacity: 1; }
+}
+@keyframes showjump {
+  0.00%, 12.99% { opacity: 0; }
+  13.00%, 20.99% { opacity: 0; }
+  21.00%, 33.99% { opacity: 0; }
+  34.00%, 35.99% { opacity: 0; }
+  36.00%, 48.99% { opacity: 0; }
+  49.00%, 56.99% { opacity: 0; }
+  57.00%, 69.99% { opacity: 0; }
+  70.00%, 78.99% { opacity: 0; }
+  79.00%, 83.99% { opacity: 1; }
+  84.00%, 99.99% { opacity: 0; }
+}
+.f1 { top: 23px; width: 11.0px; z-index: 3; }
+.f1 .bot { width: 11.0px; height: 19.0px; }
+@media (prefers-reduced-motion: no-preference) {
+  .f1 { animation: trek-f1 26s linear infinite; }
+  .f1 > span { animation: hop-f1 26s ease-out infinite; }
+  .f1 .bot { animation: face-f1 26s steps(1) infinite; }
+  .f1 .rcyc { animation: showwalk-f1 26s steps(1) infinite; }
+  .f1 .rstand { animation: showstand-f1 26s steps(1) infinite; }
+  .f1 .bot .rcyc > g { animation-duration: 0.480s; }
+  .f1 .bot .rcyc .r0 { animation-delay: 0.000s; }
+  .f1 .bot .rcyc .r1 { animation-delay: 0.120s; }
+  .f1 .bot .rcyc .r2 { animation-delay: 0.240s; }
+  .f1 .bot .rcyc .r3 { animation-delay: 0.360s; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .f1 { transform: translateX(102.1px); }
+}
+@keyframes trek-f1 {
+  0.00% { transform: translateX(102.4px); }
+  1.60% { transform: translateX(113.1px); }
+  12.95% { transform: translateX(49.2px); }
+  15.95% { transform: translateX(28.9px); }
+  21.00% { transform: translateX(28.9px); }
+  21.80% { transform: translateX(23.5px); }
+  34.00% { transform: translateX(92.1px); }
+  36.00% { transform: translateX(92.1px); }
+  48.95% { transform: translateX(165.0px); }
+  50.45% { transform: translateX(175.2px); }
+  57.00% { transform: translateX(175.3px); }
+  58.60% { transform: translateX(186.1px); }
+  69.95% { transform: translateX(122.4px); }
+  72.95% { transform: translateX(102.1px); }
+  100.00% { transform: translateX(102.1px); }
+}
+@keyframes hop-f1 {
+  0.00% { transform: translateY(0.0px); }
+  80.80% { transform: translateY(0.0px); }
+  82.30% { transform: translateY(-5.0px); }
+  83.80% { transform: translateY(0.0px); }
+  100.00% { transform: translateY(0.0px); }
+}
+@keyframes face-f1 {
+  0.00%, 1.59% { transform: scaleX(1); }
+  1.60%, 21.79% { transform: scaleX(-1); }
+  21.80%, 58.59% { transform: scaleX(1); }
+  58.60%, 99.49% { transform: scaleX(-1); }
+  99.50%, 99.99% { transform: scaleX(1); }
+}
+@keyframes showwalk-f1 {
+  0.00%, 0.00% { opacity: 0; }
+  0.00%, 15.94% { opacity: 1; }
+  15.95%, 20.99% { opacity: 0; }
+  21.00%, 33.99% { opacity: 1; }
+  34.00%, 35.99% { opacity: 0; }
+  36.00%, 50.49% { opacity: 1; }
+  50.50%, 56.99% { opacity: 0; }
+  57.00%, 72.94% { opacity: 1; }
+  72.95%, 99.99% { opacity: 0; }
+}
+@keyframes showstand-f1 {
+  0.00%, 0.00% { opacity: 1; }
+  0.00%, 15.94% { opacity: 0; }
+  15.95%, 20.99% { opacity: 1; }
+  21.00%, 33.99% { opacity: 0; }
+  34.00%, 35.99% { opacity: 1; }
+  36.00%, 50.49% { opacity: 0; }
+  50.50%, 56.99% { opacity: 1; }
+  57.00%, 72.94% { opacity: 0; }
+  72.95%, 99.99% { opacity: 1; }
+}
+.f2 { top: 31px; width: 6.4px; z-index: 3; transform: translateX(50.8px); }
+.f2 .bot { width: 6.4px; height: 11.0px; transform: scaleX(-1); }
+.f2 .rcyc { opacity: 0; }
+.f2 .rstand { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .f2 > span { animation: stir-f2 3.1s ease-in-out infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .f2 > span { transform: translateY(0.0px); }
+}
+@keyframes stir-f2 {
+  0.00% { transform: translateY(0.0px); }
+  54.00% { transform: translateY(0.0px); }
+  62.00% { transform: translateY(-1.6px); }
+  70.00% { transform: translateY(0.0px); }
+  100.00% { transform: translateY(0.0px); }
+}
+.f3 { top: 31px; width: 6.4px; z-index: 3; transform: translateX(197.2px); }
+.f3 .bot { width: 6.4px; height: 11.0px; transform: scaleX(-1); }
+.f3 .rcyc { opacity: 0; }
+.f3 .rstand { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .f3 > span { animation: stir-f3 3.7s ease-in-out infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .f3 > span { transform: translateY(0.0px); }
+}
+@keyframes stir-f3 {
+  0.00% { transform: translateY(0.0px); }
+  54.00% { transform: translateY(0.0px); }
+  62.00% { transform: translateY(-1.6px); }
+  70.00% { transform: translateY(0.0px); }
+  100.00% { transform: translateY(0.0px); }
+}
+.f4 { top: 30px; width: 6.9px; z-index: 3; transform: translateX(124.0px); }
+.f4 .bot { width: 6.9px; height: 12.0px; transform: scaleX(-1); }
+.f4 .rcyc { opacity: 0; }
+.f4 .rstand { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .f4 > span { animation: stir-f4 3.4s ease-in-out infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .f4 > span { transform: translateY(0.0px); }
+}
+@keyframes stir-f4 {
+  0.00% { transform: translateY(0.0px); }
+  54.00% { transform: translateY(0.0px); }
+  62.00% { transform: translateY(-1.6px); }
+  70.00% { transform: translateY(0.0px); }
+  100.00% { transform: translateY(0.0px); }
+}
+.f5 { top: 31px; width: 6.4px; z-index: 3; transform: translateX(132.2px); }
+.f5 .bot { width: 6.4px; height: 11.0px; transform: scaleX(-1); }
+.f5 .rcyc { opacity: 0; }
+.f5 .rstand { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .f5 > span { animation: stir-f5 4.0s ease-in-out infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .f5 > span { transform: translateY(0.0px); }
+}
+@keyframes stir-f5 {
+  0.00% { transform: translateY(0.0px); }
+  54.00% { transform: translateY(0.0px); }
+  62.00% { transform: translateY(-1.6px); }
+  70.00% { transform: translateY(0.0px); }
+  100.00% { transform: translateY(0.0px); }
+}
+.f6 { top: 32px; width: 5.8px; z-index: 2; transform: translateX(140.0px); }
+.f6 .bot { width: 5.8px; height: 10.0px; transform: scaleX(-1); }
+.f6 .rcyc { opacity: 0; }
+.f6 .rstand { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .f6 > span { animation: stir-f6 4.6s ease-in-out infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .f6 > span { transform: translateY(-2.5px); }
+}
+@keyframes stir-f6 {
+  0.00% { transform: translateY(-2.5px); }
+  54.00% { transform: translateY(-2.5px); }
+  62.00% { transform: translateY(-4.1px); }
+  70.00% { transform: translateY(-2.5px); }
+  100.00% { transform: translateY(-2.5px); }
+}
+@keyframes sign-cloud {
+  0% { opacity: 0; }
+  0.45% { opacity: .95; }
+  1.74% { opacity: .95; }
+  2.81% { opacity: 0; }
+  100% { opacity: 0; }
+}
+@keyframes bot-cloud {
+  0% { opacity: 0; }
+  0.45% { opacity: .95; }
+  1.74% { opacity: .95; }
+  2.81% { opacity: 0; }
+  100% { opacity: 0; }
+}
+@keyframes bot-model {
+  0% { opacity: 0; }
+  2.37% { opacity: .95; }
+  9.19% { opacity: .95; }
+  14.81% { opacity: 0; }
+  100% { opacity: 0; }
+}
+.puff { position: absolute; left: 50%; bottom: 100%;
+        margin-bottom: -1px; width: 0; pointer-events: none; }
+/* The model's name hangs BELOW the road, and it is the only one
+   that does. Everything else is anchored to something that never
+   moves; the model walks the whole road and would sooner or later
+   pass under every one of them. Under the tarmac is nine pixels
+   nobody else is using, and it reads as his companion rather than
+   as something a cloud is offering, which is the truth of it. */
+.f1 .puff { bottom: auto; top: 100%; margin-top: 1px; }
+/* Anchored to the DATA CENTRE and left-aligned at its near
+   corner, rising off the roof. A service comes out of the
+   building that runs it. */
+.svcs { position: absolute; left: var(--svcx); top: 22px; width: 0;
+        pointer-events: none; z-index: 5; }
+.puff b, .svcs b { position: absolute; left: 0; opacity: 0;
+          transform: translate(-50%, 0); white-space: nowrap;
+          font-family: inherit; font-size: 6px; font-weight: 700;
+          font-style: normal; line-height: 1; letter-spacing: .06em;
+          text-transform: none; color: var(--muted); }
+/* AFTER the shared rule, not before it: same specificity, so the
+   later one wins. Before it, the static transform stayed centred
+   while the keyframes ran left-aligned -- the animation was right
+   and every still of it was wrong, which is worse than both being
+   wrong, because the check takes the still. */
+.svcs b { bottom: 0; transform: translate(0, 0); }
+/* Colour says which cloud a SERVICE belongs to, and nothing
+   else. A service and the building it came out of are the only
+   pair here the reader has to connect across a gap; an agent is
+   already standing under its own board and the model is already
+   walking beside him, so neither needs the help.
+   The cloud colours are the ones already on the boards, so a
+   service arrives in the colour of the board it belongs under,
+   and nothing new is introduced. Each was checked at 4.5:1 on
+   the paper it is printed on -- six pixels is small text, not
+   the display type the boards themselves are. */
+.road { --c-azu: #33506d; --c-aws: #6a4e30; --c-gcp: #49552b; }
+[data-theme="dark"] .road {
+  --c-azu: #9fbcd8; --c-aws: #c9a06e; --c-gcp: #a0b378; }
+/* SERVICES only. The agents and the model keep the default ink.
+   Colouring them too was the wrong read of what colour is for
+   here: it is not decoration handed out evenly, it is the one
+   thing telling you a name came out of a cloud. Give it to the
+   robots as well and it stops saying that -- everything is
+   coloured, so nothing is marked. */
+.s-azu b { color: var(--c-azu); }
+.s-aws b { color: var(--c-aws); }
+.s-gcp b { color: var(--c-gcp); }
+@media (prefers-reduced-motion: no-preference) {
+  .s-aws b:nth-child(1) { animation: sign-cloud 142.6s ease-out 1.50s infinite; }
+  .s-azu b:nth-child(1) { animation: sign-cloud 142.6s ease-out 1.50s infinite; }
+  .s-gcp b:nth-child(1) { animation: sign-cloud 142.6s ease-out 1.50s infinite; }
+  .s-aws b:nth-child(2) { animation: sign-cloud 142.6s ease-out 6.10s infinite; }
+  .s-azu b:nth-child(2) { animation: sign-cloud 142.6s ease-out 6.10s infinite; }
+  .s-gcp b:nth-child(2) { animation: sign-cloud 142.6s ease-out 6.10s infinite; }
+  .s-aws b:nth-child(3) { animation: sign-cloud 142.6s ease-out 10.70s infinite; }
+  .s-azu b:nth-child(3) { animation: sign-cloud 142.6s ease-out 10.70s infinite; }
+  .s-gcp b:nth-child(3) { animation: sign-cloud 142.6s ease-out 10.70s infinite; }
+  .s-aws b:nth-child(4) { animation: sign-cloud 142.6s ease-out 15.30s infinite; }
+  .s-azu b:nth-child(4) { animation: sign-cloud 142.6s ease-out 15.30s infinite; }
+  .s-gcp b:nth-child(4) { animation: sign-cloud 142.6s ease-out 15.30s infinite; }
+  .s-aws b:nth-child(5) { animation: sign-cloud 142.6s ease-out 19.90s infinite; }
+  .s-azu b:nth-child(5) { animation: sign-cloud 142.6s ease-out 19.90s infinite; }
+  .s-gcp b:nth-child(5) { animation: sign-cloud 142.6s ease-out 19.90s infinite; }
+  .f4 .puff b:nth-child(1) { animation: bot-cloud 142.6s ease-out 24.50s infinite; }
+  .f2 .puff b:nth-child(1) { animation: bot-cloud 142.6s ease-out 24.50s infinite; }
+  .f3 .puff b:nth-child(1) { animation: bot-cloud 142.6s ease-out 24.50s infinite; }
+  .s-aws b:nth-child(6) { animation: sign-cloud 142.6s ease-out 29.10s infinite; }
+  .s-azu b:nth-child(6) { animation: sign-cloud 142.6s ease-out 29.10s infinite; }
+  .s-gcp b:nth-child(6) { animation: sign-cloud 142.6s ease-out 29.10s infinite; }
+  .s-aws b:nth-child(7) { animation: sign-cloud 142.6s ease-out 33.70s infinite; }
+  .s-azu b:nth-child(7) { animation: sign-cloud 142.6s ease-out 33.70s infinite; }
+  .s-gcp b:nth-child(7) { animation: sign-cloud 142.6s ease-out 33.70s infinite; }
+  .s-aws b:nth-child(8) { animation: sign-cloud 142.6s ease-out 38.30s infinite; }
+  .s-azu b:nth-child(8) { animation: sign-cloud 142.6s ease-out 38.30s infinite; }
+  .s-gcp b:nth-child(8) { animation: sign-cloud 142.6s ease-out 38.30s infinite; }
+  .s-aws b:nth-child(9) { animation: sign-cloud 142.6s ease-out 42.90s infinite; }
+  .s-azu b:nth-child(9) { animation: sign-cloud 142.6s ease-out 42.90s infinite; }
+  .s-gcp b:nth-child(9) { animation: sign-cloud 142.6s ease-out 42.90s infinite; }
+  .s-aws b:nth-child(10) { animation: sign-cloud 142.6s ease-out 47.50s infinite; }
+  .s-azu b:nth-child(10) { animation: sign-cloud 142.6s ease-out 47.50s infinite; }
+  .s-gcp b:nth-child(10) { animation: sign-cloud 142.6s ease-out 47.50s infinite; }
+  .f4 .puff b:nth-child(2) { animation: bot-cloud 142.6s ease-out 52.10s infinite; }
+  .f2 .puff b:nth-child(2) { animation: bot-cloud 142.6s ease-out 52.10s infinite; }
+  .f3 .puff b:nth-child(2) { animation: bot-cloud 142.6s ease-out 52.10s infinite; }
+  .s-aws b:nth-child(11) { animation: sign-cloud 142.6s ease-out 56.70s infinite; }
+  .s-azu b:nth-child(11) { animation: sign-cloud 142.6s ease-out 56.70s infinite; }
+  .s-gcp b:nth-child(11) { animation: sign-cloud 142.6s ease-out 56.70s infinite; }
+  .s-aws b:nth-child(12) { animation: sign-cloud 142.6s ease-out 61.30s infinite; }
+  .s-azu b:nth-child(12) { animation: sign-cloud 142.6s ease-out 61.30s infinite; }
+  .s-gcp b:nth-child(12) { animation: sign-cloud 142.6s ease-out 61.30s infinite; }
+  .s-aws b:nth-child(13) { animation: sign-cloud 142.6s ease-out 65.90s infinite; }
+  .s-azu b:nth-child(13) { animation: sign-cloud 142.6s ease-out 65.90s infinite; }
+  .s-gcp b:nth-child(13) { animation: sign-cloud 142.6s ease-out 65.90s infinite; }
+  .s-aws b:nth-child(14) { animation: sign-cloud 142.6s ease-out 70.50s infinite; }
+  .s-azu b:nth-child(14) { animation: sign-cloud 142.6s ease-out 70.50s infinite; }
+  .s-gcp b:nth-child(14) { animation: sign-cloud 142.6s ease-out 70.50s infinite; }
+  .s-aws b:nth-child(15) { animation: sign-cloud 142.6s ease-out 75.10s infinite; }
+  .s-azu b:nth-child(15) { animation: sign-cloud 142.6s ease-out 75.10s infinite; }
+  .s-gcp b:nth-child(15) { animation: sign-cloud 142.6s ease-out 75.10s infinite; }
+  .f5 .puff b:nth-child(1) { animation: bot-cloud 142.6s ease-out 79.70s infinite; }
+  .f2 .puff b:nth-child(3) { animation: bot-cloud 142.6s ease-out 79.70s infinite; }
+  .f3 .puff b:nth-child(3) { animation: bot-cloud 142.6s ease-out 79.70s infinite; }
+  .s-aws b:nth-child(16) { animation: sign-cloud 142.6s ease-out 84.30s infinite; }
+  .s-azu b:nth-child(16) { animation: sign-cloud 142.6s ease-out 84.30s infinite; }
+  .s-gcp b:nth-child(16) { animation: sign-cloud 142.6s ease-out 84.30s infinite; }
+  .s-aws b:nth-child(17) { animation: sign-cloud 142.6s ease-out 88.90s infinite; }
+  .s-azu b:nth-child(17) { animation: sign-cloud 142.6s ease-out 88.90s infinite; }
+  .s-gcp b:nth-child(17) { animation: sign-cloud 142.6s ease-out 88.90s infinite; }
+  .s-aws b:nth-child(18) { animation: sign-cloud 142.6s ease-out 93.50s infinite; }
+  .s-azu b:nth-child(18) { animation: sign-cloud 142.6s ease-out 93.50s infinite; }
+  .s-gcp b:nth-child(18) { animation: sign-cloud 142.6s ease-out 93.50s infinite; }
+  .s-aws b:nth-child(19) { animation: sign-cloud 142.6s ease-out 98.10s infinite; }
+  .s-azu b:nth-child(19) { animation: sign-cloud 142.6s ease-out 98.10s infinite; }
+  .s-gcp b:nth-child(19) { animation: sign-cloud 142.6s ease-out 98.10s infinite; }
+  .s-aws b:nth-child(20) { animation: sign-cloud 142.6s ease-out 102.70s infinite; }
+  .s-azu b:nth-child(20) { animation: sign-cloud 142.6s ease-out 102.70s infinite; }
+  .s-gcp b:nth-child(20) { animation: sign-cloud 142.6s ease-out 102.70s infinite; }
+  .f5 .puff b:nth-child(2) { animation: bot-cloud 142.6s ease-out 107.30s infinite; }
+  .f2 .puff b:nth-child(4) { animation: bot-cloud 142.6s ease-out 107.30s infinite; }
+  .f3 .puff b:nth-child(4) { animation: bot-cloud 142.6s ease-out 107.30s infinite; }
+  .s-aws b:nth-child(21) { animation: sign-cloud 142.6s ease-out 111.90s infinite; }
+  .s-azu b:nth-child(21) { animation: sign-cloud 142.6s ease-out 111.90s infinite; }
+  .s-gcp b:nth-child(21) { animation: sign-cloud 142.6s ease-out 111.90s infinite; }
+  .s-aws b:nth-child(22) { animation: sign-cloud 142.6s ease-out 116.50s infinite; }
+  .s-azu b:nth-child(22) { animation: sign-cloud 142.6s ease-out 116.50s infinite; }
+  .s-gcp b:nth-child(22) { animation: sign-cloud 142.6s ease-out 116.50s infinite; }
+  .s-aws b:nth-child(23) { animation: sign-cloud 142.6s ease-out 121.10s infinite; }
+  .s-azu b:nth-child(23) { animation: sign-cloud 142.6s ease-out 121.10s infinite; }
+  .s-gcp b:nth-child(23) { animation: sign-cloud 142.6s ease-out 121.10s infinite; }
+  .s-aws b:nth-child(24) { animation: sign-cloud 142.6s ease-out 125.70s infinite; }
+  .s-azu b:nth-child(24) { animation: sign-cloud 142.6s ease-out 125.70s infinite; }
+  .s-gcp b:nth-child(24) { animation: sign-cloud 142.6s ease-out 125.70s infinite; }
+  .s-aws b:nth-child(25) { animation: sign-cloud 142.6s ease-out 130.30s infinite; }
+  .s-azu b:nth-child(25) { animation: sign-cloud 142.6s ease-out 130.30s infinite; }
+  .s-gcp b:nth-child(25) { animation: sign-cloud 142.6s ease-out 130.30s infinite; }
+  .f6 .puff b:nth-child(1) { animation: bot-cloud 142.6s ease-out 134.90s infinite; }
+  .f2 .puff b:nth-child(5) { animation: bot-cloud 142.6s ease-out 134.90s infinite; }
+  .f3 .puff b:nth-child(5) { animation: bot-cloud 142.6s ease-out 134.90s infinite; }
+  .s-aws b:nth-child(26) { animation: sign-cloud 142.6s ease-out 139.50s infinite; }
+  .s-azu b:nth-child(26) { animation: sign-cloud 142.6s ease-out 139.50s infinite; }
+  .s-gcp b:nth-child(26) { animation: sign-cloud 142.6s ease-out 139.50s infinite; }
+  .f1 .puff b:nth-child(1) { animation: bot-model 27.0s ease-out 1.50s infinite; }
+  .f1 .puff b:nth-child(2) { animation: bot-model 27.0s ease-out 6.90s infinite; }
+  .f1 .puff b:nth-child(3) { animation: bot-model 27.0s ease-out 12.30s infinite; }
+  .f1 .puff b:nth-child(4) { animation: bot-model 27.0s ease-out 17.70s infinite; }
+  .f1 .puff b:nth-child(5) { animation: bot-model 27.0s ease-out 23.10s infinite; }
+}
+
+</style>
+</head>
+<div style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#C4A484;color:#1D2322;font:600 13px/1.5 system-ui;padding:6px 10px;text-align:center">F &mdash; LIGHTER FIGURES: 60% fewer elements, full animation</div><body>
+<main class="wrap">
+  <p class="creed rise d0">Same curiosity<br>Different clouds<br>A brighter tomorrow</p>
+
+  <h1 class="name rise d1"><span class="jay">Jay</span><span class="jay-rest">anth</span><br>Katta<button class="dot" id="lamp"
+      type="button" aria-label="Switch between day and night"
+      title="Day or night. Follows your local sunrise and sunset until you say otherwise."
+      aria-pressed="false"></button></h1>
+
+  <div class="rise d2">
+    <p class="role">Cloud Infrastructure Engineer</p>
+    <!-- Ordered by how close each one is to the work today, and each says
+         so in its own words. Four identical pills read as four equal
+         things, which was not true of any of them: AWS and AI are daily,
+         Azure is a depth behind him, GCP is labs. The qualifier is plain
+         text rather than a bar or a rating, because a bar needs a key and
+         a key is a thing to learn before the card says anything. -->
+    <div class="road">
+      <p class="sr">I work across Azure, AWS and GCP &mdash; AWS most of all &mdash; with a model and the agents it runs alongside me.</p>
+      <div class="tarmac"></div><div class="lane"></div>
+      <div class="follow f1"><i class="puff"><b>Claude</b><b>ChatGPT</b><b>Gemini</b><b>Grok</b><b>DeepSeek</b></i><span><svg class="bot" viewBox="28 0 44 100" aria-hidden="true"><g class="rcyc"><g class="r0"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.43 60.84 L42.67 74.86 A3.00 3.00 0 0 0 48.37 76.72 L53.57 63.16 A3.75 3.75 0 0 0 46.43 60.84 Z"/><path d="M42.87 74.38 L36.33 87.33 A2.70 2.70 0 0 0 41.10 89.86 L48.17 77.20 A3.00 3.00 0 0 0 42.87 74.38 Z"/><rect x="35.14" y="86.91" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.34 40.71 L49.72 51.71 A2.34 2.34 0 0 0 54.23 50.50 L51.66 39.29 A2.75 2.75 0 0 0 46.34 40.71 Z"/><path d="M49.66 50.78 L48.47 61.22 A2.06 2.06 0 0 0 52.56 61.79 L54.29 51.43 A2.34 2.34 0 0 0 49.66 50.78 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.48 63.28 L52.14 76.65 A3.00 3.00 0 0 0 57.78 74.60 L53.52 60.72 A3.75 3.75 0 0 0 46.48 63.28 Z"/><path d="M52.05 76.35 L55.85 90.35 A2.70 2.70 0 0 0 61.09 89.04 L57.87 74.90 A3.00 3.00 0 0 0 52.05 76.35 Z"/><rect x="54.90" y="88.01" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.36 39.24 L43.58 50.41 A2.34 2.34 0 0 0 48.08 51.70 L51.64 40.76 A2.75 2.75 0 0 0 46.36 39.24 Z"/><path d="M43.64 50.24 L40.24 60.18 A2.06 2.06 0 0 0 44.10 61.61 L48.02 51.87 A2.34 2.34 0 0 0 43.64 50.24 Z"/></g></g><g class="r1"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.96 74.90 L40.53 87.36 A2.70 2.70 0 0 0 45.11 90.22 L53.05 78.08 A3.00 3.00 0 0 0 47.96 74.90 Z"/><rect x="39.25" y="87.11" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.25 40.10 L47.07 51.57 A2.34 2.34 0 0 0 51.74 51.41 L51.75 39.90 A2.75 2.75 0 0 0 46.25 40.10 Z"/><path d="M47.13 50.96 L45.00 61.24 A2.06 2.06 0 0 0 49.01 62.19 L51.68 52.03 A2.34 2.34 0 0 0 47.13 50.96 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.51 76.39 L47.30 90.89 A2.70 2.70 0 0 0 52.70 91.08 L53.50 76.60 A3.00 3.00 0 0 0 47.51 76.39 Z"/><rect x="46.43" y="89.30" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.25 39.90 L46.26 51.41 A2.34 2.34 0 0 0 50.93 51.57 L51.75 40.10 A2.75 2.75 0 0 0 46.25 39.90 Z"/><path d="M46.34 50.90 L43.92 61.12 A2.06 2.06 0 0 0 47.91 62.17 L50.86 52.09 A2.34 2.34 0 0 0 46.34 50.90 Z"/></g></g><g class="r2"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.48 63.28 L52.14 76.65 A3.00 3.00 0 0 0 57.78 74.60 L53.52 60.72 A3.75 3.75 0 0 0 46.48 63.28 Z"/><path d="M52.05 76.35 L55.85 90.35 A2.70 2.70 0 0 0 61.09 89.04 L57.87 74.90 A3.00 3.00 0 0 0 52.05 76.35 Z"/><rect x="54.90" y="88.01" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.36 39.24 L43.58 50.41 A2.34 2.34 0 0 0 48.08 51.70 L51.64 40.76 A2.75 2.75 0 0 0 46.36 39.24 Z"/><path d="M43.64 50.24 L40.24 60.18 A2.06 2.06 0 0 0 44.10 61.61 L48.02 51.87 A2.34 2.34 0 0 0 43.64 50.24 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.43 60.84 L42.67 74.86 A3.00 3.00 0 0 0 48.37 76.72 L53.57 63.16 A3.75 3.75 0 0 0 46.43 60.84 Z"/><path d="M42.87 74.38 L36.33 87.33 A2.70 2.70 0 0 0 41.10 89.86 L48.17 77.20 A3.00 3.00 0 0 0 42.87 74.38 Z"/><rect x="35.14" y="86.91" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.34 40.71 L49.72 51.71 A2.34 2.34 0 0 0 54.23 50.50 L51.66 39.29 A2.75 2.75 0 0 0 46.34 40.71 Z"/><path d="M49.66 50.78 L48.47 61.22 A2.06 2.06 0 0 0 52.56 61.79 L54.29 51.43 A2.34 2.34 0 0 0 49.66 50.78 Z"/></g></g><g class="r3"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.51 76.39 L47.30 90.89 A2.70 2.70 0 0 0 52.70 91.08 L53.50 76.60 A3.00 3.00 0 0 0 47.51 76.39 Z"/><rect x="46.43" y="89.30" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.25 39.90 L46.26 51.41 A2.34 2.34 0 0 0 50.93 51.57 L51.75 40.10 A2.75 2.75 0 0 0 46.25 39.90 Z"/><path d="M46.34 50.90 L43.92 61.12 A2.06 2.06 0 0 0 47.91 62.17 L50.86 52.09 A2.34 2.34 0 0 0 46.34 50.90 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.96 74.90 L40.53 87.36 A2.70 2.70 0 0 0 45.11 90.22 L53.05 78.08 A3.00 3.00 0 0 0 47.96 74.90 Z"/><rect x="39.25" y="87.11" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.25 40.10 L47.07 51.57 A2.34 2.34 0 0 0 51.74 51.41 L51.75 39.90 A2.75 2.75 0 0 0 46.25 40.10 Z"/><path d="M47.13 50.96 L45.00 61.24 A2.06 2.06 0 0 0 49.01 62.19 L51.68 52.03 A2.34 2.34 0 0 0 47.13 50.96 Z"/></g></g></g><g class="rstand"><g class="s0"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.26 61.74 L46.00 76.26 A3.00 3.00 0 0 0 51.98 76.67 L53.74 62.26 A3.75 3.75 0 0 0 46.26 61.74 Z"/><path d="M46.01 76.10 L44.54 90.53 A2.70 2.70 0 0 0 49.90 91.19 L51.97 76.83 A3.00 3.00 0 0 0 46.01 76.10 Z"/><rect x="43.65" y="89.18" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.26 40.24 L47.67 51.66 A2.34 2.34 0 0 0 52.33 51.25 L51.74 39.76 A2.75 2.75 0 0 0 46.26 40.24 Z"/><path d="M47.72 50.97 L45.80 61.30 A2.06 2.06 0 0 0 49.84 62.16 L52.29 51.94 A2.34 2.34 0 0 0 47.72 50.97 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.26 62.26 L48.02 76.67 A3.00 3.00 0 0 0 54.00 76.26 L53.74 61.74 A3.75 3.75 0 0 0 46.26 62.26 Z"/><path d="M48.01 76.52 L48.56 91.01 A2.70 2.70 0 0 0 53.96 90.92 L54.01 76.41 A3.00 3.00 0 0 0 48.01 76.52 Z"/><rect x="47.69" y="89.28" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.26 39.76 L45.67 51.25 A2.34 2.34 0 0 0 50.33 51.66 L51.74 40.24 A2.75 2.75 0 0 0 46.26 39.76 Z"/><path d="M45.75 50.81 L43.12 60.98 A2.06 2.06 0 0 0 47.09 62.12 L50.24 52.10 A2.34 2.34 0 0 0 45.75 50.81 Z"/></g></g></g></svg></span></div>
+      <div class="follow f2"><i class="puff"><b>Copilot</b><b>Copilot</b><b>Copilot</b><b>Copilot</b><b>Copilot</b></i><span><svg class="bot" viewBox="28 0 44 100" aria-hidden="true"><g class="rcyc"><g class="r0"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.43 60.84 L42.67 74.86 A3.00 3.00 0 0 0 48.37 76.72 L53.57 63.16 A3.75 3.75 0 0 0 46.43 60.84 Z"/><path d="M42.87 74.38 L36.33 87.33 A2.70 2.70 0 0 0 41.10 89.86 L48.17 77.20 A3.00 3.00 0 0 0 42.87 74.38 Z"/><rect x="35.14" y="86.91" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.34 40.71 L49.72 51.71 A2.34 2.34 0 0 0 54.23 50.50 L51.66 39.29 A2.75 2.75 0 0 0 46.34 40.71 Z"/><path d="M49.66 50.78 L48.47 61.22 A2.06 2.06 0 0 0 52.56 61.79 L54.29 51.43 A2.34 2.34 0 0 0 49.66 50.78 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.48 63.28 L52.14 76.65 A3.00 3.00 0 0 0 57.78 74.60 L53.52 60.72 A3.75 3.75 0 0 0 46.48 63.28 Z"/><path d="M52.05 76.35 L55.85 90.35 A2.70 2.70 0 0 0 61.09 89.04 L57.87 74.90 A3.00 3.00 0 0 0 52.05 76.35 Z"/><rect x="54.90" y="88.01" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.36 39.24 L43.58 50.41 A2.34 2.34 0 0 0 48.08 51.70 L51.64 40.76 A2.75 2.75 0 0 0 46.36 39.24 Z"/><path d="M43.64 50.24 L40.24 60.18 A2.06 2.06 0 0 0 44.10 61.61 L48.02 51.87 A2.34 2.34 0 0 0 43.64 50.24 Z"/></g></g><g class="r1"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.96 74.90 L40.53 87.36 A2.70 2.70 0 0 0 45.11 90.22 L53.05 78.08 A3.00 3.00 0 0 0 47.96 74.90 Z"/><rect x="39.25" y="87.11" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.25 40.10 L47.07 51.57 A2.34 2.34 0 0 0 51.74 51.41 L51.75 39.90 A2.75 2.75 0 0 0 46.25 40.10 Z"/><path d="M47.13 50.96 L45.00 61.24 A2.06 2.06 0 0 0 49.01 62.19 L51.68 52.03 A2.34 2.34 0 0 0 47.13 50.96 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.51 76.39 L47.30 90.89 A2.70 2.70 0 0 0 52.70 91.08 L53.50 76.60 A3.00 3.00 0 0 0 47.51 76.39 Z"/><rect x="46.43" y="89.30" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.25 39.90 L46.26 51.41 A2.34 2.34 0 0 0 50.93 51.57 L51.75 40.10 A2.75 2.75 0 0 0 46.25 39.90 Z"/><path d="M46.34 50.90 L43.92 61.12 A2.06 2.06 0 0 0 47.91 62.17 L50.86 52.09 A2.34 2.34 0 0 0 46.34 50.90 Z"/></g></g><g class="r2"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.48 63.28 L52.14 76.65 A3.00 3.00 0 0 0 57.78 74.60 L53.52 60.72 A3.75 3.75 0 0 0 46.48 63.28 Z"/><path d="M52.05 76.35 L55.85 90.35 A2.70 2.70 0 0 0 61.09 89.04 L57.87 74.90 A3.00 3.00 0 0 0 52.05 76.35 Z"/><rect x="54.90" y="88.01" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.36 39.24 L43.58 50.41 A2.34 2.34 0 0 0 48.08 51.70 L51.64 40.76 A2.75 2.75 0 0 0 46.36 39.24 Z"/><path d="M43.64 50.24 L40.24 60.18 A2.06 2.06 0 0 0 44.10 61.61 L48.02 51.87 A2.34 2.34 0 0 0 43.64 50.24 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.43 60.84 L42.67 74.86 A3.00 3.00 0 0 0 48.37 76.72 L53.57 63.16 A3.75 3.75 0 0 0 46.43 60.84 Z"/><path d="M42.87 74.38 L36.33 87.33 A2.70 2.70 0 0 0 41.10 89.86 L48.17 77.20 A3.00 3.00 0 0 0 42.87 74.38 Z"/><rect x="35.14" y="86.91" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.34 40.71 L49.72 51.71 A2.34 2.34 0 0 0 54.23 50.50 L51.66 39.29 A2.75 2.75 0 0 0 46.34 40.71 Z"/><path d="M49.66 50.78 L48.47 61.22 A2.06 2.06 0 0 0 52.56 61.79 L54.29 51.43 A2.34 2.34 0 0 0 49.66 50.78 Z"/></g></g><g class="r3"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.51 76.39 L47.30 90.89 A2.70 2.70 0 0 0 52.70 91.08 L53.50 76.60 A3.00 3.00 0 0 0 47.51 76.39 Z"/><rect x="46.43" y="89.30" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.25 39.90 L46.26 51.41 A2.34 2.34 0 0 0 50.93 51.57 L51.75 40.10 A2.75 2.75 0 0 0 46.25 39.90 Z"/><path d="M46.34 50.90 L43.92 61.12 A2.06 2.06 0 0 0 47.91 62.17 L50.86 52.09 A2.34 2.34 0 0 0 46.34 50.90 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.96 74.90 L40.53 87.36 A2.70 2.70 0 0 0 45.11 90.22 L53.05 78.08 A3.00 3.00 0 0 0 47.96 74.90 Z"/><rect x="39.25" y="87.11" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.25 40.10 L47.07 51.57 A2.34 2.34 0 0 0 51.74 51.41 L51.75 39.90 A2.75 2.75 0 0 0 46.25 40.10 Z"/><path d="M47.13 50.96 L45.00 61.24 A2.06 2.06 0 0 0 49.01 62.19 L51.68 52.03 A2.34 2.34 0 0 0 47.13 50.96 Z"/></g></g></g><g class="rstand"><g class="s0"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.26 61.74 L46.00 76.26 A3.00 3.00 0 0 0 51.98 76.67 L53.74 62.26 A3.75 3.75 0 0 0 46.26 61.74 Z"/><path d="M46.01 76.10 L44.54 90.53 A2.70 2.70 0 0 0 49.90 91.19 L51.97 76.83 A3.00 3.00 0 0 0 46.01 76.10 Z"/><rect x="43.65" y="89.18" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.26 40.24 L47.67 51.66 A2.34 2.34 0 0 0 52.33 51.25 L51.74 39.76 A2.75 2.75 0 0 0 46.26 40.24 Z"/><path d="M47.72 50.97 L45.80 61.30 A2.06 2.06 0 0 0 49.84 62.16 L52.29 51.94 A2.34 2.34 0 0 0 47.72 50.97 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.26 62.26 L48.02 76.67 A3.00 3.00 0 0 0 54.00 76.26 L53.74 61.74 A3.75 3.75 0 0 0 46.26 62.26 Z"/><path d="M48.01 76.52 L48.56 91.01 A2.70 2.70 0 0 0 53.96 90.92 L54.01 76.41 A3.00 3.00 0 0 0 48.01 76.52 Z"/><rect x="47.69" y="89.28" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.26 39.76 L45.67 51.25 A2.34 2.34 0 0 0 50.33 51.66 L51.74 40.24 A2.75 2.75 0 0 0 46.26 39.76 Z"/><path d="M45.75 50.81 L43.12 60.98 A2.06 2.06 0 0 0 47.09 62.12 L50.24 52.10 A2.34 2.34 0 0 0 45.75 50.81 Z"/></g></g></g></svg></span></div>
+      <div class="follow f3"><i class="puff"><b>Antigravity</b><b>Antigravity</b><b>Antigravity</b><b>Antigravity</b><b>Antigravity</b></i><span><svg class="bot" viewBox="28 0 44 100" aria-hidden="true"><g class="rcyc"><g class="r0"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.43 60.84 L42.67 74.86 A3.00 3.00 0 0 0 48.37 76.72 L53.57 63.16 A3.75 3.75 0 0 0 46.43 60.84 Z"/><path d="M42.87 74.38 L36.33 87.33 A2.70 2.70 0 0 0 41.10 89.86 L48.17 77.20 A3.00 3.00 0 0 0 42.87 74.38 Z"/><rect x="35.14" y="86.91" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.34 40.71 L49.72 51.71 A2.34 2.34 0 0 0 54.23 50.50 L51.66 39.29 A2.75 2.75 0 0 0 46.34 40.71 Z"/><path d="M49.66 50.78 L48.47 61.22 A2.06 2.06 0 0 0 52.56 61.79 L54.29 51.43 A2.34 2.34 0 0 0 49.66 50.78 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.48 63.28 L52.14 76.65 A3.00 3.00 0 0 0 57.78 74.60 L53.52 60.72 A3.75 3.75 0 0 0 46.48 63.28 Z"/><path d="M52.05 76.35 L55.85 90.35 A2.70 2.70 0 0 0 61.09 89.04 L57.87 74.90 A3.00 3.00 0 0 0 52.05 76.35 Z"/><rect x="54.90" y="88.01" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.36 39.24 L43.58 50.41 A2.34 2.34 0 0 0 48.08 51.70 L51.64 40.76 A2.75 2.75 0 0 0 46.36 39.24 Z"/><path d="M43.64 50.24 L40.24 60.18 A2.06 2.06 0 0 0 44.10 61.61 L48.02 51.87 A2.34 2.34 0 0 0 43.64 50.24 Z"/></g></g><g class="r1"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.96 74.90 L40.53 87.36 A2.70 2.70 0 0 0 45.11 90.22 L53.05 78.08 A3.00 3.00 0 0 0 47.96 74.90 Z"/><rect x="39.25" y="87.11" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.25 40.10 L47.07 51.57 A2.34 2.34 0 0 0 51.74 51.41 L51.75 39.90 A2.75 2.75 0 0 0 46.25 40.10 Z"/><path d="M47.13 50.96 L45.00 61.24 A2.06 2.06 0 0 0 49.01 62.19 L51.68 52.03 A2.34 2.34 0 0 0 47.13 50.96 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.51 76.39 L47.30 90.89 A2.70 2.70 0 0 0 52.70 91.08 L53.50 76.60 A3.00 3.00 0 0 0 47.51 76.39 Z"/><rect x="46.43" y="89.30" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.25 39.90 L46.26 51.41 A2.34 2.34 0 0 0 50.93 51.57 L51.75 40.10 A2.75 2.75 0 0 0 46.25 39.90 Z"/><path d="M46.34 50.90 L43.92 61.12 A2.06 2.06 0 0 0 47.91 62.17 L50.86 52.09 A2.34 2.34 0 0 0 46.34 50.90 Z"/></g></g><g class="r2"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.48 63.28 L52.14 76.65 A3.00 3.00 0 0 0 57.78 74.60 L53.52 60.72 A3.75 3.75 0 0 0 46.48 63.28 Z"/><path d="M52.05 76.35 L55.85 90.35 A2.70 2.70 0 0 0 61.09 89.04 L57.87 74.90 A3.00 3.00 0 0 0 52.05 76.35 Z"/><rect x="54.90" y="88.01" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.36 39.24 L43.58 50.41 A2.34 2.34 0 0 0 48.08 51.70 L51.64 40.76 A2.75 2.75 0 0 0 46.36 39.24 Z"/><path d="M43.64 50.24 L40.24 60.18 A2.06 2.06 0 0 0 44.10 61.61 L48.02 51.87 A2.34 2.34 0 0 0 43.64 50.24 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.43 60.84 L42.67 74.86 A3.00 3.00 0 0 0 48.37 76.72 L53.57 63.16 A3.75 3.75 0 0 0 46.43 60.84 Z"/><path d="M42.87 74.38 L36.33 87.33 A2.70 2.70 0 0 0 41.10 89.86 L48.17 77.20 A3.00 3.00 0 0 0 42.87 74.38 Z"/><rect x="35.14" y="86.91" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.34 40.71 L49.72 51.71 A2.34 2.34 0 0 0 54.23 50.50 L51.66 39.29 A2.75 2.75 0 0 0 46.34 40.71 Z"/><path d="M49.66 50.78 L48.47 61.22 A2.06 2.06 0 0 0 52.56 61.79 L54.29 51.43 A2.34 2.34 0 0 0 49.66 50.78 Z"/></g></g><g class="r3"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.51 76.39 L47.30 90.89 A2.70 2.70 0 0 0 52.70 91.08 L53.50 76.60 A3.00 3.00 0 0 0 47.51 76.39 Z"/><rect x="46.43" y="89.30" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.25 39.90 L46.26 51.41 A2.34 2.34 0 0 0 50.93 51.57 L51.75 40.10 A2.75 2.75 0 0 0 46.25 39.90 Z"/><path d="M46.34 50.90 L43.92 61.12 A2.06 2.06 0 0 0 47.91 62.17 L50.86 52.09 A2.34 2.34 0 0 0 46.34 50.90 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.96 74.90 L40.53 87.36 A2.70 2.70 0 0 0 45.11 90.22 L53.05 78.08 A3.00 3.00 0 0 0 47.96 74.90 Z"/><rect x="39.25" y="87.11" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.25 40.10 L47.07 51.57 A2.34 2.34 0 0 0 51.74 51.41 L51.75 39.90 A2.75 2.75 0 0 0 46.25 40.10 Z"/><path d="M47.13 50.96 L45.00 61.24 A2.06 2.06 0 0 0 49.01 62.19 L51.68 52.03 A2.34 2.34 0 0 0 47.13 50.96 Z"/></g></g></g><g class="rstand"><g class="s0"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.26 61.74 L46.00 76.26 A3.00 3.00 0 0 0 51.98 76.67 L53.74 62.26 A3.75 3.75 0 0 0 46.26 61.74 Z"/><path d="M46.01 76.10 L44.54 90.53 A2.70 2.70 0 0 0 49.90 91.19 L51.97 76.83 A3.00 3.00 0 0 0 46.01 76.10 Z"/><rect x="43.65" y="89.18" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.26 40.24 L47.67 51.66 A2.34 2.34 0 0 0 52.33 51.25 L51.74 39.76 A2.75 2.75 0 0 0 46.26 40.24 Z"/><path d="M47.72 50.97 L45.80 61.30 A2.06 2.06 0 0 0 49.84 62.16 L52.29 51.94 A2.34 2.34 0 0 0 47.72 50.97 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.26 62.26 L48.02 76.67 A3.00 3.00 0 0 0 54.00 76.26 L53.74 61.74 A3.75 3.75 0 0 0 46.26 62.26 Z"/><path d="M48.01 76.52 L48.56 91.01 A2.70 2.70 0 0 0 53.96 90.92 L54.01 76.41 A3.00 3.00 0 0 0 48.01 76.52 Z"/><rect x="47.69" y="89.28" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.26 39.76 L45.67 51.25 A2.34 2.34 0 0 0 50.33 51.66 L51.74 40.24 A2.75 2.75 0 0 0 46.26 39.76 Z"/><path d="M45.75 50.81 L43.12 60.98 A2.06 2.06 0 0 0 47.09 62.12 L50.24 52.10 A2.34 2.34 0 0 0 45.75 50.81 Z"/></g></g></g></svg></span></div>
+      <div class="follow f4"><i class="puff"><b>Kiro</b><b>Claude Code</b></i><span><svg class="bot" viewBox="28 0 44 100" aria-hidden="true"><g class="rcyc"><g class="r0"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.43 60.84 L42.67 74.86 A3.00 3.00 0 0 0 48.37 76.72 L53.57 63.16 A3.75 3.75 0 0 0 46.43 60.84 Z"/><path d="M42.87 74.38 L36.33 87.33 A2.70 2.70 0 0 0 41.10 89.86 L48.17 77.20 A3.00 3.00 0 0 0 42.87 74.38 Z"/><rect x="35.14" y="86.91" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.34 40.71 L49.72 51.71 A2.34 2.34 0 0 0 54.23 50.50 L51.66 39.29 A2.75 2.75 0 0 0 46.34 40.71 Z"/><path d="M49.66 50.78 L48.47 61.22 A2.06 2.06 0 0 0 52.56 61.79 L54.29 51.43 A2.34 2.34 0 0 0 49.66 50.78 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.48 63.28 L52.14 76.65 A3.00 3.00 0 0 0 57.78 74.60 L53.52 60.72 A3.75 3.75 0 0 0 46.48 63.28 Z"/><path d="M52.05 76.35 L55.85 90.35 A2.70 2.70 0 0 0 61.09 89.04 L57.87 74.90 A3.00 3.00 0 0 0 52.05 76.35 Z"/><rect x="54.90" y="88.01" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.36 39.24 L43.58 50.41 A2.34 2.34 0 0 0 48.08 51.70 L51.64 40.76 A2.75 2.75 0 0 0 46.36 39.24 Z"/><path d="M43.64 50.24 L40.24 60.18 A2.06 2.06 0 0 0 44.10 61.61 L48.02 51.87 A2.34 2.34 0 0 0 43.64 50.24 Z"/></g></g><g class="r1"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.96 74.90 L40.53 87.36 A2.70 2.70 0 0 0 45.11 90.22 L53.05 78.08 A3.00 3.00 0 0 0 47.96 74.90 Z"/><rect x="39.25" y="87.11" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.25 40.10 L47.07 51.57 A2.34 2.34 0 0 0 51.74 51.41 L51.75 39.90 A2.75 2.75 0 0 0 46.25 40.10 Z"/><path d="M47.13 50.96 L45.00 61.24 A2.06 2.06 0 0 0 49.01 62.19 L51.68 52.03 A2.34 2.34 0 0 0 47.13 50.96 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.51 76.39 L47.30 90.89 A2.70 2.70 0 0 0 52.70 91.08 L53.50 76.60 A3.00 3.00 0 0 0 47.51 76.39 Z"/><rect x="46.43" y="89.30" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.25 39.90 L46.26 51.41 A2.34 2.34 0 0 0 50.93 51.57 L51.75 40.10 A2.75 2.75 0 0 0 46.25 39.90 Z"/><path d="M46.34 50.90 L43.92 61.12 A2.06 2.06 0 0 0 47.91 62.17 L50.86 52.09 A2.34 2.34 0 0 0 46.34 50.90 Z"/></g></g><g class="r2"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.48 63.28 L52.14 76.65 A3.00 3.00 0 0 0 57.78 74.60 L53.52 60.72 A3.75 3.75 0 0 0 46.48 63.28 Z"/><path d="M52.05 76.35 L55.85 90.35 A2.70 2.70 0 0 0 61.09 89.04 L57.87 74.90 A3.00 3.00 0 0 0 52.05 76.35 Z"/><rect x="54.90" y="88.01" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.36 39.24 L43.58 50.41 A2.34 2.34 0 0 0 48.08 51.70 L51.64 40.76 A2.75 2.75 0 0 0 46.36 39.24 Z"/><path d="M43.64 50.24 L40.24 60.18 A2.06 2.06 0 0 0 44.10 61.61 L48.02 51.87 A2.34 2.34 0 0 0 43.64 50.24 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.43 60.84 L42.67 74.86 A3.00 3.00 0 0 0 48.37 76.72 L53.57 63.16 A3.75 3.75 0 0 0 46.43 60.84 Z"/><path d="M42.87 74.38 L36.33 87.33 A2.70 2.70 0 0 0 41.10 89.86 L48.17 77.20 A3.00 3.00 0 0 0 42.87 74.38 Z"/><rect x="35.14" y="86.91" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.34 40.71 L49.72 51.71 A2.34 2.34 0 0 0 54.23 50.50 L51.66 39.29 A2.75 2.75 0 0 0 46.34 40.71 Z"/><path d="M49.66 50.78 L48.47 61.22 A2.06 2.06 0 0 0 52.56 61.79 L54.29 51.43 A2.34 2.34 0 0 0 49.66 50.78 Z"/></g></g><g class="r3"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.51 76.39 L47.30 90.89 A2.70 2.70 0 0 0 52.70 91.08 L53.50 76.60 A3.00 3.00 0 0 0 47.51 76.39 Z"/><rect x="46.43" y="89.30" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.25 39.90 L46.26 51.41 A2.34 2.34 0 0 0 50.93 51.57 L51.75 40.10 A2.75 2.75 0 0 0 46.25 39.90 Z"/><path d="M46.34 50.90 L43.92 61.12 A2.06 2.06 0 0 0 47.91 62.17 L50.86 52.09 A2.34 2.34 0 0 0 46.34 50.90 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.96 74.90 L40.53 87.36 A2.70 2.70 0 0 0 45.11 90.22 L53.05 78.08 A3.00 3.00 0 0 0 47.96 74.90 Z"/><rect x="39.25" y="87.11" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.25 40.10 L47.07 51.57 A2.34 2.34 0 0 0 51.74 51.41 L51.75 39.90 A2.75 2.75 0 0 0 46.25 40.10 Z"/><path d="M47.13 50.96 L45.00 61.24 A2.06 2.06 0 0 0 49.01 62.19 L51.68 52.03 A2.34 2.34 0 0 0 47.13 50.96 Z"/></g></g></g><g class="rstand"><g class="s0"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.26 61.74 L46.00 76.26 A3.00 3.00 0 0 0 51.98 76.67 L53.74 62.26 A3.75 3.75 0 0 0 46.26 61.74 Z"/><path d="M46.01 76.10 L44.54 90.53 A2.70 2.70 0 0 0 49.90 91.19 L51.97 76.83 A3.00 3.00 0 0 0 46.01 76.10 Z"/><rect x="43.65" y="89.18" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.26 40.24 L47.67 51.66 A2.34 2.34 0 0 0 52.33 51.25 L51.74 39.76 A2.75 2.75 0 0 0 46.26 40.24 Z"/><path d="M47.72 50.97 L45.80 61.30 A2.06 2.06 0 0 0 49.84 62.16 L52.29 51.94 A2.34 2.34 0 0 0 47.72 50.97 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.26 62.26 L48.02 76.67 A3.00 3.00 0 0 0 54.00 76.26 L53.74 61.74 A3.75 3.75 0 0 0 46.26 62.26 Z"/><path d="M48.01 76.52 L48.56 91.01 A2.70 2.70 0 0 0 53.96 90.92 L54.01 76.41 A3.00 3.00 0 0 0 48.01 76.52 Z"/><rect x="47.69" y="89.28" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.26 39.76 L45.67 51.25 A2.34 2.34 0 0 0 50.33 51.66 L51.74 40.24 A2.75 2.75 0 0 0 46.26 39.76 Z"/><path d="M45.75 50.81 L43.12 60.98 A2.06 2.06 0 0 0 47.09 62.12 L50.24 52.10 A2.34 2.34 0 0 0 45.75 50.81 Z"/></g></g></g></svg></span></div>
+      <div class="follow f5"><i class="puff"><b>Bedrock Agents</b><b>Codex</b></i><span><svg class="bot" viewBox="28 0 44 100" aria-hidden="true"><g class="rcyc"><g class="r0"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.43 60.84 L42.67 74.86 A3.00 3.00 0 0 0 48.37 76.72 L53.57 63.16 A3.75 3.75 0 0 0 46.43 60.84 Z"/><path d="M42.87 74.38 L36.33 87.33 A2.70 2.70 0 0 0 41.10 89.86 L48.17 77.20 A3.00 3.00 0 0 0 42.87 74.38 Z"/><rect x="35.14" y="86.91" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.34 40.71 L49.72 51.71 A2.34 2.34 0 0 0 54.23 50.50 L51.66 39.29 A2.75 2.75 0 0 0 46.34 40.71 Z"/><path d="M49.66 50.78 L48.47 61.22 A2.06 2.06 0 0 0 52.56 61.79 L54.29 51.43 A2.34 2.34 0 0 0 49.66 50.78 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.48 63.28 L52.14 76.65 A3.00 3.00 0 0 0 57.78 74.60 L53.52 60.72 A3.75 3.75 0 0 0 46.48 63.28 Z"/><path d="M52.05 76.35 L55.85 90.35 A2.70 2.70 0 0 0 61.09 89.04 L57.87 74.90 A3.00 3.00 0 0 0 52.05 76.35 Z"/><rect x="54.90" y="88.01" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.36 39.24 L43.58 50.41 A2.34 2.34 0 0 0 48.08 51.70 L51.64 40.76 A2.75 2.75 0 0 0 46.36 39.24 Z"/><path d="M43.64 50.24 L40.24 60.18 A2.06 2.06 0 0 0 44.10 61.61 L48.02 51.87 A2.34 2.34 0 0 0 43.64 50.24 Z"/></g></g><g class="r1"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.96 74.90 L40.53 87.36 A2.70 2.70 0 0 0 45.11 90.22 L53.05 78.08 A3.00 3.00 0 0 0 47.96 74.90 Z"/><rect x="39.25" y="87.11" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.25 40.10 L47.07 51.57 A2.34 2.34 0 0 0 51.74 51.41 L51.75 39.90 A2.75 2.75 0 0 0 46.25 40.10 Z"/><path d="M47.13 50.96 L45.00 61.24 A2.06 2.06 0 0 0 49.01 62.19 L51.68 52.03 A2.34 2.34 0 0 0 47.13 50.96 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.51 76.39 L47.30 90.89 A2.70 2.70 0 0 0 52.70 91.08 L53.50 76.60 A3.00 3.00 0 0 0 47.51 76.39 Z"/><rect x="46.43" y="89.30" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.25 39.90 L46.26 51.41 A2.34 2.34 0 0 0 50.93 51.57 L51.75 40.10 A2.75 2.75 0 0 0 46.25 39.90 Z"/><path d="M46.34 50.90 L43.92 61.12 A2.06 2.06 0 0 0 47.91 62.17 L50.86 52.09 A2.34 2.34 0 0 0 46.34 50.90 Z"/></g></g><g class="r2"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.48 63.28 L52.14 76.65 A3.00 3.00 0 0 0 57.78 74.60 L53.52 60.72 A3.75 3.75 0 0 0 46.48 63.28 Z"/><path d="M52.05 76.35 L55.85 90.35 A2.70 2.70 0 0 0 61.09 89.04 L57.87 74.90 A3.00 3.00 0 0 0 52.05 76.35 Z"/><rect x="54.90" y="88.01" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.36 39.24 L43.58 50.41 A2.34 2.34 0 0 0 48.08 51.70 L51.64 40.76 A2.75 2.75 0 0 0 46.36 39.24 Z"/><path d="M43.64 50.24 L40.24 60.18 A2.06 2.06 0 0 0 44.10 61.61 L48.02 51.87 A2.34 2.34 0 0 0 43.64 50.24 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.43 60.84 L42.67 74.86 A3.00 3.00 0 0 0 48.37 76.72 L53.57 63.16 A3.75 3.75 0 0 0 46.43 60.84 Z"/><path d="M42.87 74.38 L36.33 87.33 A2.70 2.70 0 0 0 41.10 89.86 L48.17 77.20 A3.00 3.00 0 0 0 42.87 74.38 Z"/><rect x="35.14" y="86.91" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.34 40.71 L49.72 51.71 A2.34 2.34 0 0 0 54.23 50.50 L51.66 39.29 A2.75 2.75 0 0 0 46.34 40.71 Z"/><path d="M49.66 50.78 L48.47 61.22 A2.06 2.06 0 0 0 52.56 61.79 L54.29 51.43 A2.34 2.34 0 0 0 49.66 50.78 Z"/></g></g><g class="r3"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.51 76.39 L47.30 90.89 A2.70 2.70 0 0 0 52.70 91.08 L53.50 76.60 A3.00 3.00 0 0 0 47.51 76.39 Z"/><rect x="46.43" y="89.30" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.25 39.90 L46.26 51.41 A2.34 2.34 0 0 0 50.93 51.57 L51.75 40.10 A2.75 2.75 0 0 0 46.25 39.90 Z"/><path d="M46.34 50.90 L43.92 61.12 A2.06 2.06 0 0 0 47.91 62.17 L50.86 52.09 A2.34 2.34 0 0 0 46.34 50.90 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.96 74.90 L40.53 87.36 A2.70 2.70 0 0 0 45.11 90.22 L53.05 78.08 A3.00 3.00 0 0 0 47.96 74.90 Z"/><rect x="39.25" y="87.11" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.25 40.10 L47.07 51.57 A2.34 2.34 0 0 0 51.74 51.41 L51.75 39.90 A2.75 2.75 0 0 0 46.25 40.10 Z"/><path d="M47.13 50.96 L45.00 61.24 A2.06 2.06 0 0 0 49.01 62.19 L51.68 52.03 A2.34 2.34 0 0 0 47.13 50.96 Z"/></g></g></g><g class="rstand"><g class="s0"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.26 61.74 L46.00 76.26 A3.00 3.00 0 0 0 51.98 76.67 L53.74 62.26 A3.75 3.75 0 0 0 46.26 61.74 Z"/><path d="M46.01 76.10 L44.54 90.53 A2.70 2.70 0 0 0 49.90 91.19 L51.97 76.83 A3.00 3.00 0 0 0 46.01 76.10 Z"/><rect x="43.65" y="89.18" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.26 40.24 L47.67 51.66 A2.34 2.34 0 0 0 52.33 51.25 L51.74 39.76 A2.75 2.75 0 0 0 46.26 40.24 Z"/><path d="M47.72 50.97 L45.80 61.30 A2.06 2.06 0 0 0 49.84 62.16 L52.29 51.94 A2.34 2.34 0 0 0 47.72 50.97 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.26 62.26 L48.02 76.67 A3.00 3.00 0 0 0 54.00 76.26 L53.74 61.74 A3.75 3.75 0 0 0 46.26 62.26 Z"/><path d="M48.01 76.52 L48.56 91.01 A2.70 2.70 0 0 0 53.96 90.92 L54.01 76.41 A3.00 3.00 0 0 0 48.01 76.52 Z"/><rect x="47.69" y="89.28" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.26 39.76 L45.67 51.25 A2.34 2.34 0 0 0 50.33 51.66 L51.74 40.24 A2.75 2.75 0 0 0 46.26 39.76 Z"/><path d="M45.75 50.81 L43.12 60.98 A2.06 2.06 0 0 0 47.09 62.12 L50.24 52.10 A2.34 2.34 0 0 0 45.75 50.81 Z"/></g></g></g></svg></span></div>
+      <div class="follow f6"><i class="puff"><b>Grok bot</b></i><span><svg class="bot" viewBox="28 0 44 100" aria-hidden="true"><g class="rcyc"><g class="r0"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.43 60.84 L42.67 74.86 A3.00 3.00 0 0 0 48.37 76.72 L53.57 63.16 A3.75 3.75 0 0 0 46.43 60.84 Z"/><path d="M42.87 74.38 L36.33 87.33 A2.70 2.70 0 0 0 41.10 89.86 L48.17 77.20 A3.00 3.00 0 0 0 42.87 74.38 Z"/><rect x="35.14" y="86.91" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.34 40.71 L49.72 51.71 A2.34 2.34 0 0 0 54.23 50.50 L51.66 39.29 A2.75 2.75 0 0 0 46.34 40.71 Z"/><path d="M49.66 50.78 L48.47 61.22 A2.06 2.06 0 0 0 52.56 61.79 L54.29 51.43 A2.34 2.34 0 0 0 49.66 50.78 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.48 63.28 L52.14 76.65 A3.00 3.00 0 0 0 57.78 74.60 L53.52 60.72 A3.75 3.75 0 0 0 46.48 63.28 Z"/><path d="M52.05 76.35 L55.85 90.35 A2.70 2.70 0 0 0 61.09 89.04 L57.87 74.90 A3.00 3.00 0 0 0 52.05 76.35 Z"/><rect x="54.90" y="88.01" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.36 39.24 L43.58 50.41 A2.34 2.34 0 0 0 48.08 51.70 L51.64 40.76 A2.75 2.75 0 0 0 46.36 39.24 Z"/><path d="M43.64 50.24 L40.24 60.18 A2.06 2.06 0 0 0 44.10 61.61 L48.02 51.87 A2.34 2.34 0 0 0 43.64 50.24 Z"/></g></g><g class="r1"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.96 74.90 L40.53 87.36 A2.70 2.70 0 0 0 45.11 90.22 L53.05 78.08 A3.00 3.00 0 0 0 47.96 74.90 Z"/><rect x="39.25" y="87.11" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.25 40.10 L47.07 51.57 A2.34 2.34 0 0 0 51.74 51.41 L51.75 39.90 A2.75 2.75 0 0 0 46.25 40.10 Z"/><path d="M47.13 50.96 L45.00 61.24 A2.06 2.06 0 0 0 49.01 62.19 L51.68 52.03 A2.34 2.34 0 0 0 47.13 50.96 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.51 76.39 L47.30 90.89 A2.70 2.70 0 0 0 52.70 91.08 L53.50 76.60 A3.00 3.00 0 0 0 47.51 76.39 Z"/><rect x="46.43" y="89.30" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.25 39.90 L46.26 51.41 A2.34 2.34 0 0 0 50.93 51.57 L51.75 40.10 A2.75 2.75 0 0 0 46.25 39.90 Z"/><path d="M46.34 50.90 L43.92 61.12 A2.06 2.06 0 0 0 47.91 62.17 L50.86 52.09 A2.34 2.34 0 0 0 46.34 50.90 Z"/></g></g><g class="r2"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.48 63.28 L52.14 76.65 A3.00 3.00 0 0 0 57.78 74.60 L53.52 60.72 A3.75 3.75 0 0 0 46.48 63.28 Z"/><path d="M52.05 76.35 L55.85 90.35 A2.70 2.70 0 0 0 61.09 89.04 L57.87 74.90 A3.00 3.00 0 0 0 52.05 76.35 Z"/><rect x="54.90" y="88.01" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.36 39.24 L43.58 50.41 A2.34 2.34 0 0 0 48.08 51.70 L51.64 40.76 A2.75 2.75 0 0 0 46.36 39.24 Z"/><path d="M43.64 50.24 L40.24 60.18 A2.06 2.06 0 0 0 44.10 61.61 L48.02 51.87 A2.34 2.34 0 0 0 43.64 50.24 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.43 60.84 L42.67 74.86 A3.00 3.00 0 0 0 48.37 76.72 L53.57 63.16 A3.75 3.75 0 0 0 46.43 60.84 Z"/><path d="M42.87 74.38 L36.33 87.33 A2.70 2.70 0 0 0 41.10 89.86 L48.17 77.20 A3.00 3.00 0 0 0 42.87 74.38 Z"/><rect x="35.14" y="86.91" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.34 40.71 L49.72 51.71 A2.34 2.34 0 0 0 54.23 50.50 L51.66 39.29 A2.75 2.75 0 0 0 46.34 40.71 Z"/><path d="M49.66 50.78 L48.47 61.22 A2.06 2.06 0 0 0 52.56 61.79 L54.29 51.43 A2.34 2.34 0 0 0 49.66 50.78 Z"/></g></g><g class="r3"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.51 76.39 L47.30 90.89 A2.70 2.70 0 0 0 52.70 91.08 L53.50 76.60 A3.00 3.00 0 0 0 47.51 76.39 Z"/><rect x="46.43" y="89.30" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.25 39.90 L46.26 51.41 A2.34 2.34 0 0 0 50.93 51.57 L51.75 40.10 A2.75 2.75 0 0 0 46.25 39.90 Z"/><path d="M46.34 50.90 L43.92 61.12 A2.06 2.06 0 0 0 47.91 62.17 L50.86 52.09 A2.34 2.34 0 0 0 46.34 50.90 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.25 62.13 L47.51 76.60 A3.00 3.00 0 0 0 53.50 76.39 L53.75 61.87 A3.75 3.75 0 0 0 46.25 62.13 Z"/><path d="M47.96 74.90 L40.53 87.36 A2.70 2.70 0 0 0 45.11 90.22 L53.05 78.08 A3.00 3.00 0 0 0 47.96 74.90 Z"/><rect x="39.25" y="87.11" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.25 40.10 L47.07 51.57 A2.34 2.34 0 0 0 51.74 51.41 L51.75 39.90 A2.75 2.75 0 0 0 46.25 40.10 Z"/><path d="M47.13 50.96 L45.00 61.24 A2.06 2.06 0 0 0 49.01 62.19 L51.68 52.03 A2.34 2.34 0 0 0 47.13 50.96 Z"/></g></g></g><g class="rstand"><g class="s0"><path d="M53.50 5.00 L53.10 -2.50 A1.10 1.10 0 0 0 50.90 -2.50 L50.50 5.00 A1.50 1.50 0 0 0 53.50 5.00 Z"/><circle cx="52.00" cy="-3.70" r="3.80"/><g class="far"><path d="M46.26 61.74 L46.00 76.26 A3.00 3.00 0 0 0 51.98 76.67 L53.74 62.26 A3.75 3.75 0 0 0 46.26 61.74 Z"/><path d="M46.01 76.10 L44.54 90.53 A2.70 2.70 0 0 0 49.90 91.19 L51.97 76.83 A3.00 3.00 0 0 0 46.01 76.10 Z"/><rect x="43.65" y="89.18" width="10.50" height="4.20" rx="1.60"/></g><g class="far"><path d="M46.26 40.24 L47.67 51.66 A2.34 2.34 0 0 0 52.33 51.25 L51.74 39.76 A2.75 2.75 0 0 0 46.26 40.24 Z"/><path d="M47.72 50.97 L45.80 61.30 A2.06 2.06 0 0 0 49.84 62.16 L52.29 51.94 A2.34 2.34 0 0 0 47.72 50.97 Z"/></g><rect x="36.50" y="32.50" width="27.00" height="29.50" rx="5.50"/><rect x="36.50" y="5.00" width="30.00" height="25.00" rx="7.00"/><rect x="35.50" y="12.50" width="32.50" height="5.00" rx="1.80"/><g><path d="M46.26 62.26 L48.02 76.67 A3.00 3.00 0 0 0 54.00 76.26 L53.74 61.74 A3.75 3.75 0 0 0 46.26 62.26 Z"/><path d="M48.01 76.52 L48.56 91.01 A2.70 2.70 0 0 0 53.96 90.92 L54.01 76.41 A3.00 3.00 0 0 0 48.01 76.52 Z"/><rect x="47.69" y="89.28" width="10.50" height="4.20" rx="1.60"/></g><g><path d="M46.26 39.76 L45.67 51.25 A2.34 2.34 0 0 0 50.33 51.66 L51.74 40.24 A2.75 2.75 0 0 0 46.26 39.76 Z"/><path d="M45.75 50.81 L43.12 60.98 A2.06 2.06 0 0 0 47.09 62.12 L50.24 52.10 A2.34 2.34 0 0 0 45.75 50.81 Z"/></g></g></g></svg></span></div>
+      <div class="hiker"><span class="jump"><svg class="walker" viewBox="18 -20 64 122" aria-hidden="true"><g class="wcyc"><g class="k0"><g class="pack"><path d="M38.72 22.59 L32.89 42.47 A10.75 10.75 0 0 0 53.91 47.00 L56.80 26.50 A9.25 9.25 0 0 0 38.72 22.59 Z"/></g><g class="far"><path d="M46.10 44.75 L35.42 66.06 A3.10 3.10 0 0 0 40.78 69.16 L53.90 49.25 A4.50 4.50 0 0 0 46.10 44.75 Z"/><path d="M35.73 65.62 L21.50 83.97 A2.20 2.20 0 0 0 24.87 86.80 L40.47 69.60 A3.10 3.10 0 0 0 35.73 65.62 Z"/><path d="M20.64 87.04 L30.23 88.08 Q31.43 86.24 30.23 84.40 L20.64 83.04 Q19.04 85.04 20.64 87.04 Z"/></g><g class="far"><path d="M49.93 23.30 L60.08 36.07 A2.20 2.20 0 0 0 63.64 33.49 L54.63 19.89 A2.90 2.90 0 0 0 49.93 23.30 Z"/><path d="M59.85 35.67 L66.41 49.17 A1.70 1.70 0 0 0 69.52 47.79 L63.87 33.88 A2.20 2.20 0 0 0 59.85 35.67 Z"/></g><path d="M56.89 48.22 L58.91 33.34 A6.40 6.40 0 0 0 46.30 31.12 L43.11 45.78 A7.00 7.00 0 0 0 56.89 48.22 Z"/><path d="M58.91 33.34 L63.33 18.89 A8.25 8.25 0 0 0 47.08 16.02 L46.30 31.12 A6.40 6.40 0 0 0 58.91 33.34 Z"/><g><path d="M46.27 49.52 L60.74 68.46 A3.10 3.10 0 0 0 65.88 65.00 L53.73 44.48 A4.50 4.50 0 0 0 46.27 49.52 Z"/><path d="M60.62 68.28 L73.00 87.92 A2.20 2.20 0 0 0 76.81 85.72 L65.99 65.18 A3.10 3.10 0 0 0 60.62 68.28 Z"/><path d="M72.34 89.43 L82.02 86.90 Q83.22 85.06 82.02 83.22 L72.34 85.43 Q70.74 87.43 72.34 89.43 Z"/></g><g><path d="M52.19 19.81 L42.71 33.08 A2.20 2.20 0 0 0 46.18 35.79 L56.77 23.38 A2.90 2.90 0 0 0 52.19 19.81 Z"/><path d="M43.15 32.66 L31.31 41.88 A1.70 1.70 0 0 0 33.31 44.63 L45.74 36.22 A2.20 2.20 0 0 0 43.15 32.66 Z"/></g><circle cx="56.57" cy="9.77" r="6.40"/><ellipse cx="53.36" cy="6.45" rx="6.72" ry="3.97" transform="rotate(20.0 53.36 6.45)"/><ellipse cx="56.03" cy="4.67" rx="6.53" ry="3.71" transform="rotate(-2.0 56.03 4.67)"/><ellipse cx="59.86" cy="6.36" rx="4.22" ry="2.94" transform="rotate(-40.0 59.86 6.36)"/></g><g class="k1"><g class="pack"><path d="M38.72 22.59 L32.89 42.47 A10.75 10.75 0 0 0 53.91 47.00 L56.80 26.50 A9.25 9.25 0 0 0 38.72 22.59 Z"/></g><g class="far"><path d="M45.77 45.46 L38.95 68.30 A3.10 3.10 0 0 0 44.77 70.42 L54.23 48.54 A4.50 4.50 0 0 0 45.77 45.46 Z"/><path d="M40.22 66.74 L21.02 79.79 A2.20 2.20 0 0 0 23.35 83.52 L43.50 71.99 A3.10 3.10 0 0 0 40.22 66.74 Z"/><path d="M19.70 83.08 L29.06 85.01 Q30.26 83.17 29.06 81.33 L19.70 79.08 Q18.10 81.08 19.70 83.08 Z"/></g><g class="far"><path d="M49.63 22.77 L56.90 37.38 A2.20 2.20 0 0 0 60.92 35.59 L54.93 20.41 A2.90 2.90 0 0 0 49.63 22.77 Z"/><path d="M56.73 36.79 L59.31 51.57 A1.70 1.70 0 0 0 62.68 51.10 L61.09 36.18 A2.20 2.20 0 0 0 56.73 36.79 Z"/></g><path d="M56.89 48.22 L58.91 33.34 A6.40 6.40 0 0 0 46.30 31.12 L43.11 45.78 A7.00 7.00 0 0 0 56.89 48.22 Z"/><path d="M58.91 33.34 L63.33 18.89 A8.25 8.25 0 0 0 47.08 16.02 L46.30 31.12 A6.40 6.40 0 0 0 58.91 33.34 Z"/><g><path d="M45.72 48.39 L54.41 70.59 A3.10 3.10 0 0 0 60.30 68.68 L54.28 45.61 A4.50 4.50 0 0 0 45.72 48.39 Z"/><path d="M54.26 69.53 L54.35 92.74 A2.20 2.20 0 0 0 58.74 92.90 L60.45 69.74 A3.10 3.10 0 0 0 54.26 69.53 Z"/><path d="M53.95 94.99 L63.74 94.10 Q64.94 92.26 63.74 90.42 L53.95 90.99 Q52.35 92.99 53.95 94.99 Z"/></g><g><path d="M51.79 20.51 L46.33 35.88 A2.20 2.20 0 0 0 50.41 37.53 L57.17 22.68 A2.90 2.90 0 0 0 51.79 20.51 Z"/><path d="M46.96 35.02 L35.79 45.04 A1.70 1.70 0 0 0 37.98 47.65 L49.79 38.39 A2.20 2.20 0 0 0 46.96 35.02 Z"/></g><circle cx="56.57" cy="9.77" r="6.40"/><ellipse cx="53.36" cy="6.45" rx="6.72" ry="3.97" transform="rotate(20.0 53.36 6.45)"/><ellipse cx="56.03" cy="4.67" rx="6.53" ry="3.71" transform="rotate(-2.0 56.03 4.67)"/><ellipse cx="59.86" cy="6.36" rx="4.22" ry="2.94" transform="rotate(-40.0 59.86 6.36)"/></g><g class="k2"><g class="pack"><path d="M38.72 22.59 L32.89 42.47 A10.75 10.75 0 0 0 53.91 47.00 L56.80 26.50 A9.25 9.25 0 0 0 38.72 22.59 Z"/></g><g class="far"><path d="M45.50 46.84 L46.07 70.68 A3.10 3.10 0 0 0 52.27 70.89 L54.50 47.16 A4.50 4.50 0 0 0 45.50 46.84 Z"/><path d="M47.91 67.95 L27.08 78.21 A2.20 2.20 0 0 0 28.87 82.23 L50.43 73.62 A3.10 3.10 0 0 0 47.91 67.95 Z"/><path d="M25.53 81.54 L34.75 83.86 Q35.95 82.02 34.75 80.18 L25.53 77.54 Q23.93 79.54 25.53 81.54 Z"/></g><g class="far"><path d="M49.40 21.90 L51.80 38.03 A2.20 2.20 0 0 0 56.17 37.57 L55.16 21.29 A2.90 2.90 0 0 0 49.40 21.90 Z"/><path d="M51.97 36.91 L46.33 50.81 A1.70 1.70 0 0 0 49.44 52.20 L55.99 38.70 A2.20 2.20 0 0 0 51.97 36.91 Z"/></g><path d="M56.89 48.22 L58.91 33.34 A6.40 6.40 0 0 0 46.30 31.12 L43.11 45.78 A7.00 7.00 0 0 0 56.89 48.22 Z"/><path d="M58.91 33.34 L63.33 18.89 A8.25 8.25 0 0 0 47.08 16.02 L46.30 31.12 A6.40 6.40 0 0 0 58.91 33.34 Z"/><g><path d="M45.51 47.31 L48.57 70.96 A3.10 3.10 0 0 0 54.75 70.53 L54.49 46.69 A4.50 4.50 0 0 0 45.51 47.31 Z"/><path d="M48.59 70.31 L46.25 93.41 A2.20 2.20 0 0 0 50.61 94.02 L54.73 71.17 A3.10 3.10 0 0 0 48.59 70.31 Z"/><path d="M45.83 95.81 L55.63 95.22 Q56.83 93.38 55.63 91.54 L45.83 91.81 Q44.23 93.81 45.83 95.81 Z"/></g><g><path d="M51.59 21.34 L50.87 37.64 A2.20 2.20 0 0 0 55.25 38.02 L57.37 21.84 A2.90 2.90 0 0 0 51.59 21.34 Z"/><path d="M51.10 36.83 L44.73 50.42 A1.70 1.70 0 0 0 47.76 51.97 L55.02 38.83 A2.20 2.20 0 0 0 51.10 36.83 Z"/></g><circle cx="56.57" cy="9.77" r="6.40"/><ellipse cx="53.36" cy="6.45" rx="6.72" ry="3.97" transform="rotate(20.0 53.36 6.45)"/><ellipse cx="56.03" cy="4.67" rx="6.53" ry="3.71" transform="rotate(-2.0 56.03 4.67)"/><ellipse cx="59.86" cy="6.36" rx="4.22" ry="2.94" transform="rotate(-40.0 59.86 6.36)"/></g><g class="k3"><g class="pack"><path d="M38.72 22.59 L32.89 42.47 A10.75 10.75 0 0 0 53.91 47.00 L56.80 26.50 A9.25 9.25 0 0 0 38.72 22.59 Z"/></g><g class="far"><path d="M45.89 48.83 L56.85 70.00 A3.10 3.10 0 0 0 62.51 67.48 L54.11 45.17 A4.50 4.50 0 0 0 45.89 48.83 Z"/><path d="M56.73 67.78 L50.42 90.13 A2.20 2.20 0 0 0 54.60 91.49 L62.63 69.70 A3.10 3.10 0 0 0 56.73 67.78 Z"/><path d="M49.92 92.76 L59.68 92.68 Q60.88 90.84 59.68 89.00 L49.92 88.76 Q48.32 90.76 49.92 92.76 Z"/></g><g class="far"><path d="M49.56 20.60 L44.64 36.16 A2.20 2.20 0 0 0 48.77 37.66 L55.01 22.58 A2.90 2.90 0 0 0 49.56 20.60 Z"/><path d="M45.12 35.38 L35.06 46.52 A1.70 1.70 0 0 0 37.51 48.88 L48.29 38.44 A2.20 2.20 0 0 0 45.12 35.38 Z"/></g><path d="M56.89 48.22 L58.91 33.34 A6.40 6.40 0 0 0 46.30 31.12 L43.11 45.78 A7.00 7.00 0 0 0 56.89 48.22 Z"/><path d="M58.91 33.34 L63.33 18.89 A8.25 8.25 0 0 0 47.08 16.02 L46.30 31.12 A6.40 6.40 0 0 0 58.91 33.34 Z"/><g><path d="M45.67 45.76 L40.46 69.02 A3.10 3.10 0 0 0 46.42 70.73 L54.33 48.24 A4.50 4.50 0 0 0 45.67 45.76 Z"/><path d="M40.57 68.72 L32.71 90.56 A2.20 2.20 0 0 0 36.79 92.21 L46.31 71.04 A3.10 3.10 0 0 0 40.57 68.72 Z"/><path d="M32.17 93.29 L41.90 93.42 Q43.10 91.58 41.90 89.74 L32.17 89.29 Q30.57 91.29 32.17 93.29 Z"/></g><g><path d="M51.79 22.68 L58.55 37.53 A2.20 2.20 0 0 0 62.63 35.88 L57.17 20.51 A2.90 2.90 0 0 0 51.79 22.68 Z"/><path d="M58.41 37.01 L60.99 51.80 A1.70 1.70 0 0 0 64.36 51.32 L62.76 36.40 A2.20 2.20 0 0 0 58.41 37.01 Z"/></g><circle cx="56.57" cy="9.77" r="6.40"/><ellipse cx="53.36" cy="6.45" rx="6.72" ry="3.97" transform="rotate(20.0 53.36 6.45)"/><ellipse cx="56.03" cy="4.67" rx="6.53" ry="3.71" transform="rotate(-2.0 56.03 4.67)"/><ellipse cx="59.86" cy="6.36" rx="4.22" ry="2.94" transform="rotate(-40.0 59.86 6.36)"/></g><g class="k4"><g class="pack"><path d="M38.72 22.59 L32.89 42.47 A10.75 10.75 0 0 0 53.91 47.00 L56.80 26.50 A9.25 9.25 0 0 0 38.72 22.59 Z"/></g><g class="far"><path d="M46.27 49.52 L60.74 68.46 A3.10 3.10 0 0 0 65.88 65.00 L53.73 44.48 A4.50 4.50 0 0 0 46.27 49.52 Z"/><path d="M60.62 68.28 L73.00 87.92 A2.20 2.20 0 0 0 76.81 85.72 L65.99 65.18 A3.10 3.10 0 0 0 60.62 68.28 Z"/><path d="M72.34 89.43 L82.02 86.90 Q83.22 85.06 82.02 83.22 L72.34 85.43 Q70.74 87.43 72.34 89.43 Z"/></g><g class="far"><path d="M49.99 19.81 L40.51 33.08 A2.20 2.20 0 0 0 43.98 35.79 L54.57 23.38 A2.90 2.90 0 0 0 49.99 19.81 Z"/><path d="M40.95 32.66 L29.11 41.88 A1.70 1.70 0 0 0 31.11 44.63 L43.54 36.22 A2.20 2.20 0 0 0 40.95 32.66 Z"/></g><path d="M56.89 48.22 L58.91 33.34 A6.40 6.40 0 0 0 46.30 31.12 L43.11 45.78 A7.00 7.00 0 0 0 56.89 48.22 Z"/><path d="M58.91 33.34 L63.33 18.89 A8.25 8.25 0 0 0 47.08 16.02 L46.30 31.12 A6.40 6.40 0 0 0 58.91 33.34 Z"/><g><path d="M46.10 44.75 L35.42 66.06 A3.10 3.10 0 0 0 40.78 69.16 L53.90 49.25 A4.50 4.50 0 0 0 46.10 44.75 Z"/><path d="M35.73 65.62 L21.50 83.97 A2.20 2.20 0 0 0 24.87 86.80 L40.47 69.60 A3.10 3.10 0 0 0 35.73 65.62 Z"/><path d="M20.64 87.04 L30.23 88.08 Q31.43 86.24 30.23 84.40 L20.64 83.04 Q19.04 85.04 20.64 87.04 Z"/></g><g><path d="M52.13 23.30 L62.28 36.07 A2.20 2.20 0 0 0 65.84 33.49 L56.83 19.89 A2.90 2.90 0 0 0 52.13 23.30 Z"/><path d="M62.05 35.67 L68.61 49.17 A1.70 1.70 0 0 0 71.72 47.79 L66.07 33.88 A2.20 2.20 0 0 0 62.05 35.67 Z"/></g><circle cx="56.57" cy="9.77" r="6.40"/><ellipse cx="53.36" cy="6.45" rx="6.72" ry="3.97" transform="rotate(20.0 53.36 6.45)"/><ellipse cx="56.03" cy="4.67" rx="6.53" ry="3.71" transform="rotate(-2.0 56.03 4.67)"/><ellipse cx="59.86" cy="6.36" rx="4.22" ry="2.94" transform="rotate(-40.0 59.86 6.36)"/></g><g class="k5"><g class="pack"><path d="M38.72 22.59 L32.89 42.47 A10.75 10.75 0 0 0 53.91 47.00 L56.80 26.50 A9.25 9.25 0 0 0 38.72 22.59 Z"/></g><g class="far"><path d="M45.72 48.39 L54.41 70.59 A3.10 3.10 0 0 0 60.30 68.68 L54.28 45.61 A4.50 4.50 0 0 0 45.72 48.39 Z"/><path d="M54.26 69.53 L54.35 92.74 A2.20 2.20 0 0 0 58.74 92.90 L60.45 69.74 A3.10 3.10 0 0 0 54.26 69.53 Z"/><path d="M53.95 94.99 L63.74 94.10 Q64.94 92.26 63.74 90.42 L53.95 90.99 Q52.35 92.99 53.95 94.99 Z"/></g><g class="far"><path d="M49.59 20.51 L44.13 35.88 A2.20 2.20 0 0 0 48.21 37.53 L54.97 22.68 A2.90 2.90 0 0 0 49.59 20.51 Z"/><path d="M44.76 35.02 L33.59 45.04 A1.70 1.70 0 0 0 35.78 47.65 L47.59 38.39 A2.20 2.20 0 0 0 44.76 35.02 Z"/></g><path d="M56.89 48.22 L58.91 33.34 A6.40 6.40 0 0 0 46.30 31.12 L43.11 45.78 A7.00 7.00 0 0 0 56.89 48.22 Z"/><path d="M58.91 33.34 L63.33 18.89 A8.25 8.25 0 0 0 47.08 16.02 L46.30 31.12 A6.40 6.40 0 0 0 58.91 33.34 Z"/><g><path d="M45.77 45.46 L38.95 68.30 A3.10 3.10 0 0 0 44.77 70.42 L54.23 48.54 A4.50 4.50 0 0 0 45.77 45.46 Z"/><path d="M40.22 66.74 L21.02 79.79 A2.20 2.20 0 0 0 23.35 83.52 L43.50 71.99 A3.10 3.10 0 0 0 40.22 66.74 Z"/><path d="M19.70 83.08 L29.06 85.01 Q30.26 83.17 29.06 81.33 L19.70 79.08 Q18.10 81.08 19.70 83.08 Z"/></g><g><path d="M51.83 22.77 L59.10 37.38 A2.20 2.20 0 0 0 63.12 35.59 L57.13 20.41 A2.90 2.90 0 0 0 51.83 22.77 Z"/><path d="M58.93 36.79 L61.51 51.57 A1.70 1.70 0 0 0 64.88 51.10 L63.29 36.18 A2.20 2.20 0 0 0 58.93 36.79 Z"/></g><circle cx="56.57" cy="9.77" r="6.40"/><ellipse cx="53.36" cy="6.45" rx="6.72" ry="3.97" transform="rotate(20.0 53.36 6.45)"/><ellipse cx="56.03" cy="4.67" rx="6.53" ry="3.71" transform="rotate(-2.0 56.03 4.67)"/><ellipse cx="59.86" cy="6.36" rx="4.22" ry="2.94" transform="rotate(-40.0 59.86 6.36)"/></g><g class="k6"><g class="pack"><path d="M38.72 22.59 L32.89 42.47 A10.75 10.75 0 0 0 53.91 47.00 L56.80 26.50 A9.25 9.25 0 0 0 38.72 22.59 Z"/></g><g class="far"><path d="M45.51 47.31 L48.57 70.96 A3.10 3.10 0 0 0 54.75 70.53 L54.49 46.69 A4.50 4.50 0 0 0 45.51 47.31 Z"/><path d="M48.59 70.31 L46.25 93.41 A2.20 2.20 0 0 0 50.61 94.02 L54.73 71.17 A3.10 3.10 0 0 0 48.59 70.31 Z"/><path d="M45.83 95.81 L55.63 95.22 Q56.83 93.38 55.63 91.54 L45.83 91.81 Q44.23 93.81 45.83 95.81 Z"/></g><g class="far"><path d="M49.39 21.34 L48.67 37.64 A2.20 2.20 0 0 0 53.05 38.02 L55.17 21.84 A2.90 2.90 0 0 0 49.39 21.34 Z"/><path d="M48.90 36.83 L42.53 50.42 A1.70 1.70 0 0 0 45.56 51.97 L52.82 38.83 A2.20 2.20 0 0 0 48.90 36.83 Z"/></g><path d="M56.89 48.22 L58.91 33.34 A6.40 6.40 0 0 0 46.30 31.12 L43.11 45.78 A7.00 7.00 0 0 0 56.89 48.22 Z"/><path d="M58.91 33.34 L63.33 18.89 A8.25 8.25 0 0 0 47.08 16.02 L46.30 31.12 A6.40 6.40 0 0 0 58.91 33.34 Z"/><g><path d="M45.50 46.84 L46.07 70.68 A3.10 3.10 0 0 0 52.27 70.89 L54.50 47.16 A4.50 4.50 0 0 0 45.50 46.84 Z"/><path d="M47.91 67.95 L27.08 78.21 A2.20 2.20 0 0 0 28.87 82.23 L50.43 73.62 A3.10 3.10 0 0 0 47.91 67.95 Z"/><path d="M25.53 81.54 L34.75 83.86 Q35.95 82.02 34.75 80.18 L25.53 77.54 Q23.93 79.54 25.53 81.54 Z"/></g><g><path d="M51.60 21.90 L54.00 38.03 A2.20 2.20 0 0 0 58.37 37.57 L57.36 21.29 A2.90 2.90 0 0 0 51.60 21.90 Z"/><path d="M54.17 36.91 L48.53 50.81 A1.70 1.70 0 0 0 51.64 52.20 L58.19 38.70 A2.20 2.20 0 0 0 54.17 36.91 Z"/></g><circle cx="56.57" cy="9.77" r="6.40"/><ellipse cx="53.36" cy="6.45" rx="6.72" ry="3.97" transform="rotate(20.0 53.36 6.45)"/><ellipse cx="56.03" cy="4.67" rx="6.53" ry="3.71" transform="rotate(-2.0 56.03 4.67)"/><ellipse cx="59.86" cy="6.36" rx="4.22" ry="2.94" transform="rotate(-40.0 59.86 6.36)"/></g><g class="k7"><g class="pack"><path d="M38.72 22.59 L32.89 42.47 A10.75 10.75 0 0 0 53.91 47.00 L56.80 26.50 A9.25 9.25 0 0 0 38.72 22.59 Z"/></g><g class="far"><path d="M45.67 45.76 L40.46 69.02 A3.10 3.10 0 0 0 46.42 70.73 L54.33 48.24 A4.50 4.50 0 0 0 45.67 45.76 Z"/><path d="M40.57 68.72 L32.71 90.56 A2.20 2.20 0 0 0 36.79 92.21 L46.31 71.04 A3.10 3.10 0 0 0 40.57 68.72 Z"/><path d="M32.17 93.29 L41.90 93.42 Q43.10 91.58 41.90 89.74 L32.17 89.29 Q30.57 91.29 32.17 93.29 Z"/></g><g class="far"><path d="M49.59 22.68 L56.35 37.53 A2.20 2.20 0 0 0 60.43 35.88 L54.97 20.51 A2.90 2.90 0 0 0 49.59 22.68 Z"/><path d="M56.21 37.01 L58.79 51.80 A1.70 1.70 0 0 0 62.16 51.32 L60.56 36.40 A2.20 2.20 0 0 0 56.21 37.01 Z"/></g><path d="M56.89 48.22 L58.91 33.34 A6.40 6.40 0 0 0 46.30 31.12 L43.11 45.78 A7.00 7.00 0 0 0 56.89 48.22 Z"/><path d="M58.91 33.34 L63.33 18.89 A8.25 8.25 0 0 0 47.08 16.02 L46.30 31.12 A6.40 6.40 0 0 0 58.91 33.34 Z"/><g><path d="M45.89 48.83 L56.85 70.00 A3.10 3.10 0 0 0 62.51 67.48 L54.11 45.17 A4.50 4.50 0 0 0 45.89 48.83 Z"/><path d="M56.73 67.78 L50.42 90.13 A2.20 2.20 0 0 0 54.60 91.49 L62.63 69.70 A3.10 3.10 0 0 0 56.73 67.78 Z"/><path d="M49.92 92.76 L59.68 92.68 Q60.88 90.84 59.68 89.00 L49.92 88.76 Q48.32 90.76 49.92 92.76 Z"/></g><g><path d="M51.76 20.60 L46.84 36.16 A2.20 2.20 0 0 0 50.97 37.66 L57.21 22.58 A2.90 2.90 0 0 0 51.76 20.60 Z"/><path d="M47.32 35.38 L37.26 46.52 A1.70 1.70 0 0 0 39.71 48.88 L50.49 38.44 A2.20 2.20 0 0 0 47.32 35.38 Z"/></g><circle cx="56.57" cy="9.77" r="6.40"/><ellipse cx="53.36" cy="6.45" rx="6.72" ry="3.97" transform="rotate(20.0 53.36 6.45)"/><ellipse cx="56.03" cy="4.67" rx="6.53" ry="3.71" transform="rotate(-2.0 56.03 4.67)"/><ellipse cx="59.86" cy="6.36" rx="4.22" ry="2.94" transform="rotate(-40.0 59.86 6.36)"/></g></g><g class="wstand"><g class="s0"><g class="pack"><path d="M38.72 22.59 L32.89 42.47 A10.75 10.75 0 0 0 53.91 47.00 L56.80 26.50 A9.25 9.25 0 0 0 38.72 22.59 Z"/></g><g class="far"><path d="M45.52 46.61 L44.84 70.44 A3.10 3.10 0 0 0 51.01 70.98 L54.48 47.39 A4.50 4.50 0 0 0 45.52 46.61 Z"/><path d="M44.86 70.28 L42.52 93.38 A2.20 2.20 0 0 0 46.88 93.99 L51.00 71.14 A3.10 3.10 0 0 0 44.86 70.28 Z"/><path d="M42.10 95.77 L51.89 95.19 Q53.09 93.35 51.89 91.51 L42.10 91.77 Q40.50 93.77 42.10 95.77 Z"/></g><g class="far"><path d="M49.40 21.95 L52.08 38.04 A2.20 2.20 0 0 0 56.45 37.50 L55.16 21.24 A2.90 2.90 0 0 0 49.40 21.95 Z"/><path d="M52.07 37.85 L53.09 52.82 A1.70 1.70 0 0 0 56.49 52.70 L56.47 37.69 A2.20 2.20 0 0 0 52.07 37.85 Z"/></g><path d="M56.89 48.22 L58.91 33.34 A6.40 6.40 0 0 0 46.30 31.12 L43.11 45.78 A7.00 7.00 0 0 0 56.89 48.22 Z"/><path d="M58.91 33.34 L63.33 18.89 A8.25 8.25 0 0 0 47.08 16.02 L46.30 31.12 A6.40 6.40 0 0 0 58.91 33.34 Z"/><g><path d="M45.52 47.39 L48.99 70.98 A3.10 3.10 0 0 0 55.16 70.44 L54.48 46.61 A4.50 4.50 0 0 0 45.52 47.39 Z"/><path d="M48.98 70.82 L50.69 93.97 A2.20 2.20 0 0 0 55.08 93.82 L55.17 70.60 A3.10 3.10 0 0 0 48.98 70.82 Z"/><path d="M50.28 96.12 L60.08 95.02 Q61.28 93.18 60.08 91.34 L50.28 92.12 Q48.68 94.12 50.28 96.12 Z"/></g><g><path d="M51.60 21.24 L50.31 37.50 A2.20 2.20 0 0 0 54.68 38.04 L57.36 21.95 A2.90 2.90 0 0 0 51.60 21.24 Z"/><path d="M50.34 37.31 L47.71 52.09 A1.70 1.70 0 0 0 51.04 52.80 L54.65 38.23 A2.20 2.20 0 0 0 50.34 37.31 Z"/></g><circle cx="56.57" cy="9.77" r="6.40"/><ellipse cx="53.36" cy="6.45" rx="6.72" ry="3.97" transform="rotate(20.0 53.36 6.45)"/><ellipse cx="56.03" cy="4.67" rx="6.53" ry="3.71" transform="rotate(-2.0 56.03 4.67)"/><ellipse cx="59.86" cy="6.36" rx="4.22" ry="2.94" transform="rotate(-40.0 59.86 6.36)"/></g></g><g class="wcheer"><g class="c0"><g class="pack"><path d="M40.86 26.25 L33.32 45.61 A10.75 10.75 0 0 0 53.87 51.95 L58.54 31.70 A9.25 9.25 0 0 0 40.86 26.25 Z"/></g><g class="far"><path d="M45.63 49.91 L41.23 73.34 A3.10 3.10 0 0 0 47.25 74.84 L54.37 52.09 A4.50 4.50 0 0 0 45.63 49.91 Z"/><path d="M42.98 71.26 L22.15 81.52 A2.20 2.20 0 0 0 23.94 85.54 L45.50 76.93 A3.10 3.10 0 0 0 42.98 71.26 Z"/><path d="M20.52 85.11 L30.04 86.45 Q31.24 84.61 30.04 82.77 L20.52 81.11 Q18.92 83.11 20.52 85.11 Z"/></g><g class="far"><path d="M52.46 23.99 L41.22 35.82 A2.20 2.20 0 0 0 44.28 38.98 L56.49 28.17 A2.90 2.90 0 0 0 52.46 23.99 Z"/><path d="M41.93 35.36 L28.21 41.44 A1.70 1.70 0 0 0 29.48 44.60 L43.58 39.44 A2.20 2.20 0 0 0 41.93 35.36 Z"/></g><path d="M56.76 52.81 L60.06 38.17 A6.40 6.40 0 0 0 47.70 34.85 L43.24 49.19 A7.00 7.00 0 0 0 56.76 52.81 Z"/><path d="M60.06 38.17 L65.73 24.16 A8.25 8.25 0 0 0 49.80 19.89 L47.70 34.85 A6.40 6.40 0 0 0 60.06 38.17 Z"/><g><path d="M45.57 51.78 L51.08 74.98 A3.10 3.10 0 0 0 57.19 73.90 L54.43 50.22 A4.50 4.50 0 0 0 45.57 51.78 Z"/><path d="M51.69 72.53 L38.12 91.37 A2.20 2.20 0 0 0 41.58 94.07 L56.58 76.35 A3.10 3.10 0 0 0 51.69 72.53 Z"/><path d="M37.26 94.68 L47.02 94.60 Q48.22 92.76 47.02 90.92 L37.26 90.68 Q35.66 92.68 37.26 94.68 Z"/></g><g><path d="M54.39 24.29 L44.91 37.57 A2.20 2.20 0 0 0 48.38 40.28 L58.96 27.86 A2.90 2.90 0 0 0 54.39 24.29 Z"/><path d="M45.54 37.02 L32.80 44.95 A1.70 1.70 0 0 0 34.50 47.90 L47.74 40.83 A2.20 2.20 0 0 0 45.54 37.02 Z"/></g><circle cx="59.79" cy="14.48" r="6.40"/><ellipse cx="56.89" cy="10.90" rx="6.72" ry="3.97" transform="rotate(15.0 56.89 10.90)"/><ellipse cx="59.70" cy="9.36" rx="6.53" ry="3.71" transform="rotate(-7.0 59.70 9.36)"/><ellipse cx="63.36" cy="11.37" rx="4.22" ry="2.94" transform="rotate(-45.0 63.36 11.37)"/></g><g class="c1"><g class="pack"><path d="M34.96 22.68 L32.31 43.09 A10.75 10.75 0 0 0 53.77 44.31 L53.43 23.73 A9.25 9.25 0 0 0 34.96 22.68 Z"/></g><g class="far"><path d="M45.67 44.76 L40.46 68.02 A3.10 3.10 0 0 0 46.42 69.73 L54.33 47.24 A4.50 4.50 0 0 0 45.67 44.76 Z"/><path d="M41.98 66.14 L21.92 77.83 A2.20 2.20 0 0 0 23.99 81.71 L44.90 71.62 A3.10 3.10 0 0 0 41.98 66.14 Z"/><path d="M20.36 81.85 L30.15 81.30 Q31.35 79.46 30.15 77.62 L20.36 77.85 Q18.76 79.85 20.36 81.85 Z"/></g><g class="far"><path d="M50.71 18.67 L41.48 5.21 A2.20 2.20 0 0 0 37.75 7.55 L45.79 21.74 A2.90 2.90 0 0 0 50.71 18.67 Z"/><path d="M41.65 5.56 L35.57 -8.16 A1.70 1.70 0 0 0 32.42 -6.89 L37.57 7.20 A2.20 2.20 0 0 0 41.65 5.56 Z"/></g><path d="M57.00 46.12 L56.66 31.11 A6.40 6.40 0 0 0 43.86 30.89 L43.00 45.88 A7.00 7.00 0 0 0 57.00 46.12 Z"/><path d="M56.66 31.11 L58.77 16.15 A8.25 8.25 0 0 0 42.27 15.86 L43.86 30.89 A6.40 6.40 0 0 0 56.66 31.11 Z"/><g><path d="M45.63 47.09 L52.75 69.84 A3.10 3.10 0 0 0 58.77 68.34 L54.37 44.91 A4.50 4.50 0 0 0 45.63 47.09 Z"/><path d="M53.02 67.64 L42.92 88.54 A2.20 2.20 0 0 0 46.81 90.61 L58.49 70.55 A3.10 3.10 0 0 0 53.02 67.64 Z"/><path d="M42.29 92.12 L52.00 89.83 Q53.20 87.99 52.00 86.15 L42.29 88.12 Q40.69 90.12 42.29 92.12 Z"/></g><g><path d="M52.96 21.65 L60.51 7.19 A2.20 2.20 0 0 0 56.70 4.99 L47.94 18.75 A2.90 2.90 0 0 0 52.96 21.65 Z"/><path d="M60.67 6.84 L65.33 -7.43 A1.70 1.70 0 0 0 62.13 -8.59 L56.53 5.34 A2.20 2.20 0 0 0 60.67 6.84 Z"/></g><circle cx="50.66" cy="8.20" r="6.40"/><ellipse cx="46.98" cy="5.42" rx="6.72" ry="3.97" transform="rotate(29.0 46.98 5.42)"/><ellipse cx="49.33" cy="3.25" rx="6.53" ry="3.71" transform="rotate(7.0 49.33 3.25)"/><ellipse cx="53.38" cy="4.32" rx="4.22" ry="2.94" transform="rotate(-31.0 53.38 4.32)"/></g></g></svg></span></div>
+      <span class="sign g-azu" style="--at:20%"><span class="plate"><svg class="pin" viewBox="0 0 24 24" aria-hidden="true"><path d="M12.4 2.6 2.8 21.6 8.2 21.6 12.4 11.6Z" stroke="none"/><path d="M12.4 2.6 22.0 21.6 16.6 21.6 12.4 11.6Z" stroke="none" opacity=".72"/><path d="M9.7 15.4h5.4l1.5 3.4H8.2Z" stroke="none" opacity=".72"/></svg><b>Azure</b></span><i class="drop"></i></span>
+      <span class="sign g-aws" style="--at:50%"><span class="plate"><svg class="pin" viewBox="0 0 24 24" aria-hidden="true"><g transform="translate(0,-3.2)"><path d="M2.6 13.4c5.9 4.6 13.1 4.6 19 0.2" fill="none" stroke-width="2.7" stroke-linecap="round"/><path d="M17.3 11.9l4.6 1.5-1.2 4.5" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></g></svg><b>AWS</b></span><i class="drop"></i></span>
+      <span class="sign g-gcp" style="--at:80%"><span class="plate"><svg class="pin" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke-width="2.6" stroke-linecap="round"><path d="M5.1 17.7A5.3 5.3 0 0 1 4.2 9" stroke="var(--g-blue,#4285f4)"/><path d="M4.2 9a6 6 0 0 1 5.2-4.6" stroke="var(--g-red,#ea4335)"/><path d="M9.4 4.4a6 6 0 0 1 7.6 3.1" stroke="var(--g-yellow,#fbbc04)"/><path d="M17 7.5a5.3 5.3 0 0 1 1.5 10.2H5.1" stroke="var(--g-green,#34a853)"/></g></svg><b>GCP</b></span><i class="drop"></i></span>
+      <svg class="shops small" style="--at:20%;--shift:8.7px" viewBox="0 0 38 22" aria-hidden="true"><path d="M5.0 2.5h7v4h-7Z"/><path d="M27.0 2.5h7v4h-7Z"/><path d="M0 6.5h38.0v15.5H0Z"/><rect class="win" x="3.5" y="10" width="2.6" height="5.5"/><rect class="win" x="12.9" y="10" width="2.6" height="5.5"/><rect class="win" x="22.4" y="10" width="2.6" height="5.5"/><rect class="win" x="31.9" y="10" width="2.6" height="5.5"/><rect class="win" x="16.5" y="16.5" width="5" height="5.5"/></svg>
+      <svg class="shops wide" style="--at:50%;--shift:16px" viewBox="0 0 68 22" aria-hidden="true"><path d="M5.0 2.5h7v4h-7Z"/><path d="M31.0 2.5h7v4h-7Z"/><path d="M57.0 2.5h7v4h-7Z"/><path d="M0 6.5h68.0v15.5H0Z"/><rect class="win" x="3.0" y="10" width="2.6" height="5.5"/><rect class="win" x="11.4" y="10" width="2.6" height="5.5"/><rect class="win" x="19.9" y="10" width="2.6" height="5.5"/><rect class="win" x="28.4" y="10" width="2.6" height="5.5"/><rect class="win" x="37.0" y="10" width="2.6" height="5.5"/><rect class="win" x="45.5" y="10" width="2.6" height="5.5"/><rect class="win" x="54.0" y="10" width="2.6" height="5.5"/><rect class="win" x="62.5" y="10" width="2.6" height="5.5"/><rect class="win" x="31.5" y="16.5" width="5" height="5.5"/></svg>
+      <svg class="shops small" style="--at:80%;--shift:8.8px" viewBox="0 0 38 22" aria-hidden="true"><path d="M5.0 2.5h7v4h-7Z"/><path d="M27.0 2.5h7v4h-7Z"/><path d="M0 6.5h38.0v15.5H0Z"/><rect class="win" x="3.5" y="10" width="2.6" height="5.5"/><rect class="win" x="12.9" y="10" width="2.6" height="5.5"/><rect class="win" x="22.4" y="10" width="2.6" height="5.5"/><rect class="win" x="31.9" y="10" width="2.6" height="5.5"/><rect class="win" x="16.5" y="16.5" width="5" height="5.5"/></svg>
+      <i class="svcs s-azu" style="--svcx:48px"><b>Blob Storage</b><b>Azure Functions</b><b>AKS</b><b>Entra ID</b><b>Virtual Machines</b><b>VNet</b><b>Azure SQL</b><b>Cosmos DB</b><b>Synapse</b><b>Key Vault</b><b>Front Door</b><b>Azure DNS</b><b>Azure Monitor</b><b>Event Grid</b><b>Service Bus</b><b>Container Apps</b><b>Azure Pipelines</b><b>Container Registry</b><b>Bicep</b><b>Activity Log</b><b>Data Factory</b><b>Azure OpenAI</b><b>Load Balancer</b><b>Management Groups</b><b>Logic Apps</b><b>HDInsight</b></i>
+      <i class="svcs s-aws" style="--svcx:121px"><b>S3</b><b>Lambda</b><b>EKS</b><b>IAM</b><b>EC2</b><b>VPC</b><b>RDS</b><b>DynamoDB</b><b>Redshift</b><b>Secrets Manager</b><b>CloudFront</b><b>Route 53</b><b>CloudWatch</b><b>SNS</b><b>SQS</b><b>Fargate</b><b>CodeBuild</b><b>ECR</b><b>CloudFormation</b><b>CloudTrail</b><b>Glue</b><b>Bedrock</b><b>ELB</b><b>Organizations</b><b>Step Functions</b><b>EMR</b></i>
+      <i class="svcs s-gcp" style="--svcx:194.5px"><b>Cloud Storage</b><b>Cloud Functions</b><b>GKE</b><b>Cloud IAM</b><b>Compute Engine</b><b>VPC</b><b>Cloud SQL</b><b>Firestore</b><b>BigQuery</b><b>Secret Manager</b><b>Cloud CDN</b><b>Cloud DNS</b><b>Cloud Monitoring</b><b>Pub/Sub</b><b>Cloud Tasks</b><b>Cloud Run</b><b>Cloud Build</b><b>Artifact Registry</b><b>Deployment Manager</b><b>Cloud Audit Logs</b><b>Dataflow</b><b>Vertex AI</b><b>Cloud Load Balancing</b><b>Resource Manager</b><b>Workflows</b><b>Dataproc</b></i>
+    </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="rise d3">
+    <p class="creedo">More than cloud,<br><em>a curious mind.</em></p>
+    <p class="mark">
+      <span class="brush" aria-hidden="true"></span>
+      <img class="seal" src="/connect/ink-seal.webp?v=61de7ab8" width="162" height="232"
+           alt="Seal reading keizoku &mdash; keep going" loading="lazy"
+           decoding="async">
+    </p>
+  </div>
+
+  <div class="grow" aria-hidden="true"></div>
+  <div class="bottom">
+  <div class="hero" aria-hidden="true"></div>
+  <nav class="acts" aria-label="Ways to connect">
+    <a class="act act-main rise d4" href="https://www.linkedin.com/in/jayanthkatta" target="_blank" rel="noopener noreferrer">
+      <span class="li" aria-hidden="true">in</span>Connect on LinkedIn<span class="go" aria-hidden="true">&#8599;</span>
+    </a>
+    <div class="pair rise d5">
+      <a class="act" href="/connect/jayanth-katta.vcf" type="text/vcard">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m-4-4 4 4 4-4M5 18v2h14v-2"/></svg>Save Contact
+      </a>
+      <a class="act" href="/">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/></svg>View Website
+      </a>
+      <a class="act" href="https://github.com/katta698" target="_blank" rel="noopener noreferrer">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19c-4 1.4-4-1.9-5.6-2.3m11.6 4.3v-3.6a3.2 3.2 0 0 0-.9-2.5c2.9-.3 5.9-1.4 5.9-6.3a4.9 4.9 0 0 0-1.4-3.4 4.5 4.5 0 0 0-.1-3.4s-1.1-.3-3.7 1.4a12.3 12.3 0 0 0-6 0C5.2 2 4.1 2.3 4.1 2.3a4.5 4.5 0 0 0-.1 3.4A4.9 4.9 0 0 0 2.6 9.1c0 4.9 3 6 5.9 6.3a3.2 3.2 0 0 0-.9 2.5V22"/></svg>GitHub
+      </a>
+      <a class="act" href="mailto:katta.jayant@gmail.com">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7.5 8.5 5.6 8.5-5.6"/></svg>Email Me
+      </a>
+    </div>
+  </nav>
+
+  <!-- Hidden until the script has a true thing to say, so a reader with
+       no JavaScript sees the card without a blank promise on it. -->
+  <a class="rein rise d5" id="rein" href="/reinvent-2026/" hidden>
+    <span class="rein-n" id="rein-n"></span>
+    <span class="rein-x"><b id="rein-t"></b><em id="rein-s"><span
+      class="rein-dot" aria-hidden="true"></span><span id="rein-w"></span></em></span>
+    <span class="go" aria-hidden="true">&#8599;</span>
+  </a>
+
+
+  <footer class="foot rise d5">
+    <span>Tech people &middot; Ideas &middot; A kinder cloud</span>
+  </footer>
+  </div>
+</main>
+<script>
+/* The lamp. One tap, two states, remembered -- and the browser's own
+   bands follow it, because theme-color is part of the card (see the note
+   on the meta tags above). Nothing here runs before the boot script has
+   already settled the sheet. */
+(function () {
+  var root = document.documentElement;
+  var btn = document.getElementById("lamp");
+  if (!btn) return;
+  var BANDS = { light: "#e5d3be", dark: "#1E231C" };
+  var metas = [].slice.call(
+    document.querySelectorAll('meta[name="theme-color"]'));
+
+  function paint(t) {
+    root.setAttribute("data-theme", t);
+    btn.setAttribute("aria-pressed", t === "dark" ? "true" : "false");
+    metas.forEach(function (m) { m.setAttribute("content", BANDS[t]); });
+  }
+  paint(root.getAttribute("data-theme") === "dark" ? "dark" : "light");
+
+  btn.addEventListener("click", function () {
+    var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    paint(next);
+    /* The choice is kept, full stop -- no expiry. A tap is a decision, and
+       a decision that quietly reverts at sunset is a worse surprise than
+       one that holds. The sun only decides for readers who never touch
+       it; anyone who does gets what they chose until they choose again.
+       (It was the other way round for a day: kept until the next solar
+       change. Asked for, and changed.) */
+    try {
+      localStorage.setItem("connect.theme",
+                           JSON.stringify({ t: next, until: null }));
+    } catch (e) {}
+  });
+
+  /* And while the page is open, it keeps watch. Checked every five minutes
+     rather than scheduled once, because a phone that sleeps through the
+     moment would wake with a stale sheet either way, and five minutes of a
+     timer costs nothing. */
+  function follow() {
+    var choice = null;
+    try {
+      choice = JSON.parse(localStorage.getItem("connect.theme") || "null");
+    } catch (e) {}
+    if (choice && choice.until && Date.now() < choice.until) return;
+    if (choice && choice.until === null && choice.t) return;
+    var solar = window.JKSolar ? window.JKSolar() : null;
+    if (solar && solar.theme !== root.getAttribute("data-theme")) {
+      paint(solar.theme);
+    }
+  }
+  setInterval(follow, 300000);
+})();
+</script>
+<script>
+/* The same countdown the planner carries, in the fifteen lines this page
+   needs rather than by loading that page's app. The dates are AWS's, fixed
+   and published; the NUMBER is always computed here, so this card can sit
+   in someone's phone for two months and still be right the day they open
+   it. Four states, because a countdown that only counts down is wrong for
+   a week either side of the thing it counts to. */
+(function () {
+  var START = "2026-11-30", END = "2026-12-04", DAYS = 5;
+  var box = document.getElementById("rein");
+  if (!box) return;
+  var d = new Date();
+  var today = d.getFullYear() + "-"
+            + String(d.getMonth() + 1).padStart(2, "0") + "-"
+            + String(d.getDate()).padStart(2, "0");
+  // Both ends parsed at UTC noon: a difference taken between local
+  // midnights is off by one across a daylight-saving change.
+  var days = function (a, b) {
+    return Math.round((Date.parse(b + "T12:00:00Z")
+                     - Date.parse(a + "T12:00:00Z")) / 86400000);
+  };
+  var n = document.getElementById("rein-n"),
+      t = document.getElementById("rein-t"),
+      s = document.getElementById("rein-w");
+  if (today >= START && today <= END) {
+    n.textContent = days(START, today) + 1;
+    box.className += " is-live";
+    t.textContent = "of " + DAYS + " at AWS re:Invent";
+    s.textContent = "happening now — my planner";
+  } else if (today > END) {
+    n.textContent = "—";
+    t.textContent = "AWS re:Invent 2026";
+    s.textContent = "every session, still browsable";
+  } else {
+    var to = days(today, START);
+    n.textContent = to;
+    t.textContent = to === 1 ? "day to AWS re:Invent" : "days to AWS re:Invent";
+    s.textContent = "my session planner";
+  }
+  box.hidden = false;
+})();
+</script>
+</body>
+</html>
