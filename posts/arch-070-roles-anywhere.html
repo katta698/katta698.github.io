@@ -1,0 +1,419 @@
+---
+title: "AWS Architecture Series #70 — The trust anchor is not the boundary"
+date: '2026-10-02T09:00:00'
+slug: aws-architecture-roles-anywhere
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-10-02'
+verified_claims:
+  - claim: "Certificates issued by any trust anchor in the account can be used to assume any target role in that same account, unless you specify conditions in the role's trust policy, and there is no automatic integration with organization-wide controls"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html
+  - claim: "For IAM Roles Anywhere the trust boundary is established at the account level"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html
+  - claim: "A trust anchor is a reference to either AWS Private CA or an external CA certificate, and there can be several trust anchors in one AWS account"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html
+  - claim: "A profile can have many IAM roles, but only one session policy, and any session returned by a CreateSession call that references the profile will have its permissions limited by the session policy"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html
+  - claim: "All IAM Roles Anywhere resources are regional and they must be created in the same account and region to be used together"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html
+  - claim: "A trust anchor is tied to the IAM role via the aws:SourceArn condition key that uses the trust anchor's ARN as its value in the role's trust policy"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html
+  - claim: "The role trust policy must grant the permissions sts:AssumeRole, sts:SetSourceIdentity and sts:TagSession to the IAM Roles Anywhere service principal rolesanywhere.amazonaws.com"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "IAM Roles Anywhere extracts values from the subject, issuer, and Subject Alternative Name (SAN) fields of the authenticating certificate and makes them available for policy evaluation via the sourceIdentity and principal tags"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "IAM Roles Anywhere sets the Session Name property automatically, using the hex-encoded serial number of the authenticating certificate"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "The source identity prefix is CN= when the common name of the subject in the certificate is set and less than or equal to 61 characters, ID= when the common name is not set, and an empty string when the common name is set and has a length from 62 to 256 characters"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "IAM Roles Anywhere does not support subject common names longer than 256 characters, and the CreateSession request fails"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "Decimal serial number 291 converts to hex 123, which becomes ID=0123, and decimal serial number 17767 converts to hex 4567, which becomes ID=4567"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "IAM Roles Anywhere will map the first value of the following types, DNS Names, Directory Name (DN), and URI Names, and the resulting tags will be prefixed with x509SAN with a corresponding type code of DNS, URI or Name"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "Because principal tags do not support multiple values, IAM Roles Anywhere combines multiple values into a single string, separating them with forward slashes in the order they appear in the certificate, so a subject with OU=Security, OU=Engineering, OU=Research produces the principal tag value Security/Engineering/Research"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "Certificate revocation is supported through the use of imported certificate revocation lists, and callbacks to CRL Distribution Points (CDPs) or Online Certificate Status Protocol (OCSP) endpoints are not supported"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "End entity certificates must be X.509v3, if the CA field is present in the basic constraints extension its value must be false, the key usage must include Digital Signature, and the signing algorithm must include SHA256 or stronger with MD5 and SHA1 signing algorithms rejected"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "Certificates used as trust anchors must include the key usage Certificate Sign and may include CRL Sign, and basic constraints must include CA true"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "For AWS Private CA trust anchors only the validity period can be modified after creation, you must call UpdateTrustAnchor to register this change, and IAM Roles Anywhere honors certificates based on the validity period found during the most recent TrustAnchor Create/Update event"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "AWS strongly recommends using the aws:SourceArn or aws:SourceAccount global condition keys or the sts:SourceIdentity condition key in role trust policies because this combination implements least privilege permissions and prevents IAM Roles Anywhere from acting as a potential confused deputy"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "When a client obtains temporary security credentials from IAM Roles Anywhere, the aws:SourceArn and aws:SourceAccount will be set based on the ARN of the trust anchor specified in the call to CreateSession"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "Certificates with empty subjects are not yet supported, since IAM Roles Anywhere uses the certificate subject as the key of the Subject resource to visualize and audit activities"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html
+  - claim: "Using IAM Roles Anywhere means you do not need to manage long-term AWS credentials for workloads running outside of AWS, and workloads must use X.509 certificates issued by your certificate authority"
+    source: https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html
+problem: "Long-lived access keys on machines outside AWS are the credential nobody can rotate and everybody has. IAM Roles Anywhere removes them by exchanging an X.509 certificate for a temporary session, which is the right trade — and it moves the authorisation decision into your PKI, where AWS cannot see most of it."
+builds: "A reading of the documented trust model: what the trust anchor actually constrains, which certificate fields become policy inputs, and which of them change value or disappear without the certificate looking any different."
+catch: "The trust boundary is the account, not the trust anchor. AWS states it plainly: 'Certificates issued by any trust anchor in the account can be used to assume any target role in that same account, unless you specify conditions in the role's trust policy.' A second CA registered for an unrelated team can reach the first team's roles, and the trust policy that would have stopped it is the one AWS only recommends."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #070 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">The trust anchor is not the boundary</h1>
+  <p class="post-subtitle">Roles Anywhere exchanges a certificate for a session. What decides which roles that certificate can reach is not the trust anchor you registered it under &mdash; it is whatever conditions you remembered to write.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The problem Roles Anywhere solves is real and worth solving.
+      <em>&ldquo;Using IAM Roles Anywhere means you don't need to manage long-term AWS credentials for
+      workloads running outside of AWS.&rdquo;</em> A build agent, an on-premises job server, a VM in another
+      cloud &mdash; instead of an access key pair that lives until somebody remembers it, the workload presents
+      an X.509 certificate and receives a temporary session.
+    </p>
+    <p>
+      The mechanism is a <em>trust anchor</em>:
+      <em>&ldquo;A trust anchor is a reference to either AWS Private CA or an external CA certificate&hellip;
+      There can be several trust anchors in one AWS account.&rdquo;</em>
+    </p>
+    <p>
+      Register the CA, point a role at the service, and you are done. The word "anchor" does a lot of work in
+      that sentence, and it is the wrong word for what the object does.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Any trust anchor in the account can reach any Roles Anywhere role in it</strong></div>
+      <div class="challenge-body">
+        <p>
+          AWS puts this under a heading called <em>Account trust boundary</em>, and the heading is the answer:
+          <em>&ldquo;For IAM Roles Anywhere, the trust boundary is established at the <strong>account
+          level</strong>.&rdquo;</em>
+        </p>
+        <p>
+          What that means in practice:
+          <em>&ldquo;Certificates issued by <strong>any</strong> trust anchor in the account can be used to
+          assume <strong>any</strong> target role in that same account, <strong>unless you specify conditions in
+          the role's trust policy</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So two teams, two CAs, two trust anchors, two roles in one account is not two isolated paths. It is
+          four, and the two you did not intend are indistinguishable from the two you did. Registering a CA for
+          one purpose grants it the union of everything Roles Anywhere can reach in that account.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Every Roles Anywhere role gets an <code class="inline">aws:SourceArn</code> condition naming its trust anchor. Without it the anchor is decorative.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>And nothing above the account constrains it</strong></div>
+      <div class="challenge-body">
+        <p>
+          The second bullet under that heading is one sentence and it is the one worth carrying away:
+          <em>&ldquo;There is <strong>no automatic integration</strong> with organization-wide
+          controls.&rdquo;</em>
+        </p>
+        <p>
+          An organisation that governs identity centrally &mdash; and
+          <a href="/blog/aws-daily-intelligence-guardduty-declarative-policies/">today's daily</a> is about
+          exactly that machinery &mdash; does not get Roles Anywhere governance for free. The trust decision
+          lives in the account, in a role's trust policy, written by whoever created the role.
+        </p>
+        <p>
+          That is a governance surface in the one place org-level tooling does not look, and it is created by a
+          team solving a credential-hygiene problem, usually quickly, usually with the console's default.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat <code class="inline">rolesanywhere:CreateTrustAnchor</code> as a privileged action and deny it outside a reviewed path.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Revoking the certificate in your PKI does not revoke AWS access</strong></div>
+      <div class="challenge-body">
+        <p>
+          Revocation exists, and it is pull-only:
+          <em>&ldquo;Certificate revocation is supported through the use of <strong>imported</strong> certificate
+          revocation lists (CRLs)&hellip; You can import a CRL that is generated from your CA using
+          <code class="inline">ImportCrl</code>&hellip;&rdquo;</em>
+        </p>
+        <p>
+          And then the sentence that decides your incident response:
+          <em>&ldquo;Callbacks to CRL Distribution Points (CDPs) or Online Certificate Status Protocol (OCSP)
+          endpoints are <strong>not supported</strong>.&rdquo;</em>
+        </p>
+        <p>
+          AWS never asks your PKI whether a certificate is still good. It knows only what you last imported. So
+          a certificate revoked in your CA keeps working until somebody runs
+          <code class="inline">ImportCrl</code> &mdash; and the gap between those two events is not visible from
+          either side.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Make CRL import part of the revocation procedure itself, not a scheduled job that runs afterwards.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The exchange is: certificate &rarr; <code class="inline">CreateSession</code> &rarr; temporary
+      credentials, with the role's trust policy as the only gate.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-070-roles-anywhere.svg" alt="Diagram: how IAM Roles Anywhere turns an X.509 certificate into an AWS session, and the four places the mapping is lossier than it looks. A workload outside AWS holds a certificate issued by a certificate authority, which is registered in the account as a trust anchor; a reference to either AWS Private CA or an external CA certificate, and there can be several trust anchors in one account. The workload calls CreateSession. IAM Roles Anywhere validates the signature using the algorithm required by the key type, then checks the certificate was issued by a CA configured as a trust anchor in the account. End entity certificates must be X.509v3, must have basic constraints CA false if that field is present, must include the Digital Signature key usage, and must be signed with SHA256 or stronger because MD5 and SHA1 are rejected; trust anchor certificates must instead include Certificate Sign key usage and basic constraints CA true. The role being assumed must have a trust policy granting the IAM Roles Anywhere service principal three actions: sts AssumeRole, sts SetSourceIdentity and sts TagSession. The central warning is the account trust boundary: certificates issued by any trust anchor in the account can be used to assume any target role in that same account unless conditions are specified in the role trust policy, and there is no automatic integration with organization-wide controls, so the aws SourceArn condition naming the expected trust anchor is what actually scopes the anchor. AWS recommends aws SourceArn, aws SourceAccount or sts SourceIdentity conditions to prevent Roles Anywhere acting as a confused deputy. The certificate fields become policy inputs as principal tags: subject, issuer, and subject alternative name, exposed as aws PrincipalTag x509Subject, x509Issuer and x509SAN keys. Four lossy mappings are recorded. First, the source identity prefix changes with the length of the common name: CN= when the common name is set and 61 characters or fewer, an empty string when it is 62 to 256 characters, and ID= when no common name is set, while a common name over 256 characters makes CreateSession fail outright, so a condition written against the CN= prefix silently stops matching when a name crosses 61 characters. Second, only the first value of each subject alternative name type is mapped, for DNS names, directory names and URI names, so a condition on a second DNS entry never matches. Third, repeated relative distinguished names are flattened into one slash-separated string in certificate order, so three organizational unit values become Security slash Engineering slash Research and a condition depends on the order the certificate happens to use. Fourth, the session name is set automatically to the hex-encoded serial number of the certificate, so CloudTrail shows serial numbers while source identity carries the common name. A closing panel notes that revocation is import-only because callbacks to CRL distribution points and OCSP endpoints are not supported, that a profile may hold many roles but only one session policy, and that all Roles Anywhere resources are regional and must be created in the same account and Region to be used together." />
+      <figcaption>One gate, and four places the certificate's identity changes shape on the way through it.</figcaption>
+    </figure>
+
+    <h3>What the trust policy has to say</h3>
+    <p>
+      Three actions, not one:
+      <em>&ldquo;The policy must grant the permissions: <code class="inline">sts:AssumeRole</code>,
+      <code class="inline">sts:SetSourceIdentity</code>, <code class="inline">sts:TagSession</code>.&rdquo;</em>
+    </p>
+    <p>
+      The second and third are what make the certificate's contents available as policy inputs, which is the
+      part worth understanding:
+      <em>&ldquo;IAM Roles Anywhere extracts values from the subject, issuer, and Subject Alternative Name (SAN)
+      fields of the authenticating certificate and makes them available for policy evaluation via the
+      sourceIdentity and principal tags.&rdquo;</em>
+    </p>
+    <p>
+      So a trust policy can condition on <code class="inline">aws:PrincipalTag/x509Subject/CN</code>,
+      <code class="inline">aws:PrincipalTag/x509Issuer/CN</code>,
+      <code class="inline">aws:PrincipalTag/x509SAN/DNS</code> and the rest. That is a genuinely good design
+      &mdash; your PKI's naming becomes your authorisation vocabulary, and it composes with everything
+      <a href="/blog/aws-architecture-role-trust-policy/">#37</a> covers about trust policies generally.
+    </p>
+    <p>
+      The scoping condition is separate and it is the one from the challenge above:
+      <em>&ldquo;When a client obtains temporary security credentials from IAM Roles Anywhere, the
+      <code class="inline">aws:SourceArn</code> and <code class="inline">aws:SourceAccount</code> will be set
+      based on the ARN of the trust anchor specified in the call to
+      <code class="inline">CreateSession</code>.&rdquo;</em> AWS's reason for insisting on it is named:
+      it <em>&ldquo;prevents IAM Roles Anywhere from acting as a potential confused deputy.&rdquo;</em>
+    </p>
+
+    <h3>Four places the certificate's identity changes shape</h3>
+    <p>
+      This is the half that will cost someone an afternoon, because in each case the certificate is valid, the
+      session is issued, and a condition that reads correctly does not fire.
+    </p>
+
+    <p>
+      <strong>The source identity prefix depends on the length of the common name.</strong> Three rules:
+      <em>&ldquo;<code class="inline">&quot;CN=&quot;</code>: the common name of the subject in the certificate
+      is set and less than or equal to <strong>61 characters</strong>&hellip;
+      <code class="inline">&quot;ID=&quot;</code>: the common name of the subject in the certificate is not
+      set&hellip; <code class="inline">&quot;&quot;</code> (empty string): the common name of the subject in the
+      certificate is set and has a length from <strong>62 to 256 characters</strong>.&rdquo;</em>
+    </p>
+    <p>
+      A condition written as <code class="inline">StringEquals sts:SourceIdentity "CN=buildagent-..."</code>
+      works for every certificate until one is issued with a 62-character CN, at which point the prefix is gone
+      and the condition fails. Past 256 the call does not degrade, it stops:
+      <em>&ldquo;IAM Roles Anywhere does not support subject common names longer than 256 characters, and the
+      <code class="inline">CreateSession</code> request fails.&rdquo;</em>
+    </p>
+
+    <p>
+      <strong>Only the first SAN value of each type is mapped.</strong>
+      <em>&ldquo;IAM Roles Anywhere will map the <strong>first</strong> value of the following types:
+      <code class="inline">DNS Names</code>, <code class="inline">Directory Name (DN)</code>, and
+      <code class="inline">URI Names</code>.&rdquo;</em> A certificate carrying two DNS SANs exposes one. A
+      condition on the second never matches, and the certificate contains it.
+    </p>
+
+    <p>
+      <strong>Repeated RDNs are flattened into one string, in certificate order.</strong>
+      <em>&ldquo;Because principal tags do not support multiple values, IAM Roles Anywhere combines multiple
+      values into a single string, separating them with forward slashes (/) in the order they appear in the
+      certificate.&rdquo;</em> So <code class="inline">CN=alice, OU=Security, OU=Engineering, OU=Research</code>
+      becomes one tag with the value <code class="inline">Security/Engineering/Research</code>.
+    </p>
+    <p>
+      An equality condition on that tag is an assertion about the order your CA happens to emit OUs in. Reissue
+      with the same three OUs in a different order and the policy stops matching.
+    </p>
+
+    <p>
+      <strong>The session name is the serial number, not the name.</strong>
+      <em>&ldquo;IAM Roles Anywhere sets this automatically, using the <strong>hex-encoded serial
+      number</strong> of the authenticating certificate.&rdquo;</em> So the assumed-role ARN in CloudTrail
+      identifies the certificate, not the workload; the human-readable identity is in source identity instead.
+      AWS's own worked conversions:
+      <em>&ldquo;Decimal serial number 291 converts to hex 123, which becomes
+      <code class="inline">ID=0123</code>&hellip; Decimal serial number 17767 converts to hex 4567, which
+      becomes <code class="inline">ID=4567</code>.&rdquo;</em>
+    </p>
+
+    <div class="callout amber">
+      <strong>Read the principal-tag caveat carefully, because its subject is easy to misread</strong>
+      <p>The trust policy section says the extracted values <em>&ldquo;need to match the pattern defined in STS session tags. The service ignores values that do not match this pattern. You cannot use these values in policy conditions.&rdquo;</em> Read in isolation that last sentence appears to forbid the very thing every example on the page does. It does not: its subject is the <em>ignored</em> values — the ones that failed the session-tag pattern. The tags that do match are usable, which is why the page then says they are <em>&ldquo;also available to be used in conditions in the identity-based policy attached to the role&rdquo;</em> and shows five policies conditioning on them. Worth knowing because the practical consequence is real: a certificate field containing characters the session-tag pattern rejects is dropped silently, and a condition on it fails closed with nothing to show you why.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The certificate requirements are strict, and that is load-bearing</h3>
+    <p>
+      For end-entity certificates:
+      <em>&ldquo;The certificates MUST be X.509v3&hellip; If the <code class="inline">CA</code> field is present
+      in the basic constraints extension, its value MUST be <code class="inline">false</code>. The key usage
+      MUST include <code class="inline">Digital Signature</code>. The signing algorithm MUST include
+      <code class="inline">SHA256</code> or stronger. <code class="inline">MD5</code> and
+      <code class="inline">SHA1</code> signing algorithms are rejected.&rdquo;</em>
+    </p>
+    <p>
+      The <code class="inline">CA: false</code> requirement is the interesting one &mdash; it stops an
+      intermediate CA certificate being used as a workload identity, which would otherwise let anything that
+      could issue certificates also authenticate as one.
+    </p>
+
+    <div class="callout red">
+      <strong>And the trust anchor's validity window is a snapshot, not a subscription</strong>
+      <p><em>&ldquo;For AWS Private CA trust anchors, only the validity period can be modified after creation. When the validity period changes, you must call <code class="inline">UpdateTrustAnchor</code> to register this change. IAM Roles Anywhere honors certificates based on the validity period found during the <strong>most recent TrustAnchor Create/Update event</strong>.&rdquo;</em> So the validity AWS enforces is the one it read when you last created or updated the anchor. Change it in Private CA and nothing takes effect until <code class="inline">UpdateTrustAnchor</code> runs. This is the same shape as the CRL behaviour: Roles Anywhere holds a copy of your PKI's state and does not refresh it on its own.</p>
+    </div>
+
+    <h3>The profile is the second gate, and it has one slot</h3>
+    <p>
+      <em>&ldquo;A profile can have many IAM roles, but <strong>only one session policy</strong>. Any session
+      returned by a <code class="inline">CreateSession</code> call that references the profile will have its
+      permissions limited by the session policy.&rdquo;</em>
+    </p>
+    <p>
+      That shapes how you lay profiles out: a profile is the unit of session-policy granularity, so roles whose
+      sessions need different ceilings belong in different profiles regardless of how convenient one profile
+      would be. And a session policy only subtracts &mdash; it is the seventh gate from
+      <a href="/blog/aws-architecture-iam-policy-evaluation/">#35</a>, in a place you may not have expected to
+      find it.
+    </p>
+
+    <h3>Everything is Regional, including the pairing</h3>
+    <p>
+      <em>&ldquo;All IAM Roles Anywhere resources are regional and they must be created in the same account and
+      region to be used together.&rdquo;</em> A trust anchor and a profile in different Regions are not a
+      configuration, and the multi-Region story is replication of the whole set rather than one anchor serving
+      many Regions.
+    </p>
+    <p>
+      That cuts both ways and the good side is worth naming: because the account is the trust boundary and
+      resources are Regional, a per-workload account remains the cleanest isolation available. The documented
+      multi-account guidance is an onward pointer rather than a feature, which is itself informative &mdash;
+      there is no org-level construct here to reach for.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Scoping a role to its CA</td>
+        <td><code class="inline">aws:SourceArn</code> on the trust anchor ARN, always</td>
+        <td>Without it, any trust anchor in the account can assume the role.</td>
+      </tr>
+      <tr>
+        <td>Isolating two workloads</td>
+        <td>Separate accounts, not separate trust anchors</td>
+        <td>The trust boundary is the account; anchors do not partition it.</td>
+      </tr>
+      <tr>
+        <td>Creating trust anchors</td>
+        <td>Privileged, reviewed action</td>
+        <td>A new anchor widens what can reach every existing Roles Anywhere role.</td>
+      </tr>
+      <tr>
+        <td>Identity conditions</td>
+        <td><code class="inline">x509Issuer</code> and SAN, over bare subject CN</td>
+        <td>The CN also drives the source-identity prefix, which changes at 61 characters.</td>
+      </tr>
+      <tr>
+        <td>Conditioning on OU</td>
+        <td>Avoid equality on multi-valued RDNs</td>
+        <td>They flatten to one slash-joined string in certificate order.</td>
+      </tr>
+      <tr>
+        <td>Revocation</td>
+        <td><code class="inline">ImportCrl</code> inside the revocation runbook</td>
+        <td>No CDP or OCSP callbacks; AWS knows only what was imported.</td>
+      </tr>
+      <tr>
+        <td>Private CA validity changes</td>
+        <td>Always follow with <code class="inline">UpdateTrustAnchor</code></td>
+        <td>The enforced window is the one read at the last create or update.</td>
+      </tr>
+      <tr>
+        <td>Session ceilings</td>
+        <td>One profile per distinct ceiling</td>
+        <td>A profile carries many roles but only one session policy.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit that finds the open path</h3>
+    <p>
+      One query, and it is cheap: list every role in the account whose trust policy names
+      <code class="inline">rolesanywhere.amazonaws.com</code>, and check each for an
+      <code class="inline">aws:SourceArn</code> or <code class="inline">aws:SourceAccount</code> condition. Every
+      role without one is reachable by every certificate every registered CA has ever issued.
+    </p>
+    <p>
+      Then count trust anchors. One is a design. Several, created at different times by different teams, is the
+      case the account trust boundary was written to warn about.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Roles Anywhere is a good trade. Exchanging a certificate for a fifteen-minute session is strictly better
+      than an access key with no expiry, and the mechanism does what it says. The thing to notice is where it
+      moved the decision to.
+    </p>
+    <p>
+      With an access key, the authorisation story is entirely inside AWS and entirely visible to AWS tooling.
+      With Roles Anywhere, half of it is in your PKI: which CA signs, what goes in the CN, how many OUs a
+      certificate carries and in what order, when a revocation list was last exported. None of those are IAM
+      changes, none of them appear in an IAM diff, and three of them can silently stop a condition from
+      matching.
+    </p>
+    <p>
+      That makes the certificate template a security control, which is not where most organisations keep their
+      security controls. The practical consequence is small and specific: write the
+      <code class="inline">aws:SourceArn</code> condition on day one, and treat the certificate profile your CA
+      issues from as part of the policy, because that is what it is.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; AWS Private CA: what a private CA costs to operate rather than to create, why the hierarchy you choose is close to permanent, and where certificate lifetime stops being a security parameter and becomes an availability one.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/rolesanywhere/latest/userguide/trust-model.html" target="_blank" rel="noopener">The IAM Roles Anywhere trust model &#8212; required trust-policy actions, certificate field mapping, source-identity rules, signature validation and revocation</a></li>
+      <li><a href="https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html" target="_blank" rel="noopener">What is IAM Roles Anywhere &#8212; trust anchors, profiles, and the account trust boundary</a></li>
+      <li><a href="https://docs.aws.amazon.com/privateca/latest/userguide/PcaWelcome.html" target="_blank" rel="noopener">AWS Private CA &#8212; further reading on operating the CA behind a trust anchor; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

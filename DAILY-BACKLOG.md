@@ -92,6 +92,46 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 1 October 2026 — covered by post #45
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Centralized management using AWS Organizations declarative policies — one `GUARDDUTY_POLICY` governing the foundational detector plus all seven protection plans, all commercial Regions and GovCloud (US). The finding is in the syntax: a Region block "fully replaces the default for that Region", so an override written to disable one feature drops every feature it did not re-list, and detaching departs from the general declarative-policy rollback rule | GuardDuty | **#45** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/guardduty-org-enablement-policies/) |
+| Security Hub introduces remediation plans to prioritize and fix security exposures | Security Hub | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-security-hub-remediation-plans/) |
+| Actionable secrets security posture recommendations in the Secrets Manager console | Secrets Manager | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-secrets-manager-security-posture-recommendations) |
+| IAM Identity Center extends multi-Region support to more Regions | IAM Identity Center | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-iam-identity-center-extends-multi-region-support-to-more-aws-regions) |
+| Filtered export from DynamoDB to S3 — export a subset rather than the whole table | DynamoDB | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-dynamodb-introduces-filtered-export/) |
+| Cross-Region queries for your data lake | Redshift | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/redshift-cross-Region-queries-for-data-lake) |
+| DNS analytics and insights for Route 53 Global Resolver and DNS Firewall | Route 53 | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/route-53-dns-analytics-insights/) |
+| Glue Data Catalog supports table optimization, statistics and crawlers for Apache Iceberg V3 | Glue | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-glue-iceberg-v3-optimization/) |
+| Well-Architected Agent in **preview** — AI-powered review of a cloud environment | Well-Architected Tool | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-well-architected-agent/) |
+| Serverless Storage on EMR Serverless supports terabyte-scale shuffle | EMR Serverless | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/emr-serverless-terabyte-scale-shuffle/) |
+| S3 Tables support up to 100 table buckets per Region per account | S3 Tables | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-s3-tables-table-bucket-increase) |
+| Transfer Family supports custom CloudWatch log groups for managed workflows | Transfer Family | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/transfer-family-custom-cloudwatch-log-groups/) |
+| Budgets supports email verification for notification subscribers | Budgets | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-budgets/) |
+| S3 Object Lock variable retention with event holds reaches GovCloud (US) | S3 | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/s3-object-lock-variable-retention-event-holds-aws-govcloud/) |
+| DAX available in additional Regions | DynamoDB | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-dynamodb-accelerator/) |
+| Corretto 8 September 2026 patch updates | Corretto | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/amazon-corretto-8-sept-2026-updates/) |
+
+GuardDuty won on depth rather than on headline: the announcement is a one-line
+capability, and the syntax page underneath it carries a replacement-not-merge
+rule that costs coverage silently. It also pairs with Architecture #70, published
+the same day — declarative policies enforce configuration where SCPs and RCPs
+deny permissions, and both fail on what was left out rather than on what was
+written.
+
+A strong security cluster is held: Security Hub remediation plans, Secrets
+Manager posture recommendations and IAM Identity Center multi-Region all landed
+the same day and all three are worth a slot. DynamoDB filtered export is the
+strongest non-security held item.
+
+Three security bulletins the same day, noted here because they are the kind that
+age out unread: CVE-2026-104002, fail-open error handling in the data masking
+utility in Powertools for AWS Lambda (Python) — a masking utility that fails open
+is the exact shape this series keeps finding; CVE-2026-97662, argument injection
+in the `security-agent-mcp-server` diff scan; and CVE-2026-104020, uncontrolled
+recursion in the Ion reader in Amazon Ion Python.
+
 ## 30 September 2026 — covered by post #44
 
 | Item | Service | Status | Importance | Reference |
