@@ -1368,6 +1368,15 @@ a { color: inherit; text-decoration: none; -webkit-tap-highlight-color: transpar
      visibility:visible. */
   .walker > g > g, .bot > g > g { display: inline; visibility: hidden; }
 
+  /* Zoomed in, the scene is snapshotted and its animations REMOVED --
+     see the script at the foot of the page. Removed rather than paused:
+     a paused animation keeps its compositing layer, so pausing freed
+     nothing and the renderer still died. Bisected on an iPhone: with
+     every animation disabled the page survives zoom; with the figures
+     removed instead it does not. */
+  .road.zfrozen, .road.zfrozen * { animation: none !important; }
+
+
 
   .wcyc > g { animation: cyc .72s steps(1) infinite; }
   .bot .rcyc > g { animation: rcyc .48s steps(1) infinite; }
@@ -2007,6 +2016,78 @@ a { color: inherit; text-decoration: none; -webkit-tap-highlight-color: transpar
     s.textContent = "my session planner";
   }
   box.hidden = false;
+})();
+</script>
+<script>
+/* The scene is snapshotted while the page is zoomed.
+   -----------------------------------------------------------------------
+   Bisected on an iPhone, which is the only device that reproduces this.
+   Four copies of this page, each missing one thing: with the figures gone
+   it still crashed, with the artwork gone it still crashed, with every
+   animation disabled it did NOT. Animation is the cost.
+
+   An earlier attempt paused the animations instead, and that changed
+   nothing -- a paused animation keeps its compositing layer and its
+   texture, so zoom still re-rasters all of it. Only removing the
+   animation releases the layer.
+
+   But removing it outright would wreck the scene: the poses are hidden by
+   default and revealed by their own keyframes, so every figure would snap
+   to its base state and vanish, and the walker would teleport back to the
+   start of his trek. So each animated element's current transform,
+   opacity and visibility are written inline FIRST, and the animations are
+   removed after. The scene stops looking exactly as it looked.
+
+   Unzooming removes the inline styles and the animations pick up again.
+
+   visualViewport.scale is the pinch zoom specifically; it stays at 1 for
+   ordinary scrolling. Without the API nothing happens, which is the
+   behaviour every desktop browser already had. */
+(function () {
+  var vv = window.visualViewport;
+  var road = document.querySelector('.road');
+  if (!vv || !road) return;
+  var pinned = [];
+  var frozen = false;
+
+  function snapshot() {
+    var seen = [];
+    var running = document.getAnimations ? document.getAnimations() : [];
+    for (var i = 0; i < running.length; i++) {
+      var t = running[i].effect && running[i].effect.target;
+      if (!t || !t.style || !road.contains(t)) continue;
+      if (seen.indexOf(t) !== -1) continue;
+      seen.push(t);
+      var cs = getComputedStyle(t);
+      /* Only what the keyframes animate. Writing every property would
+         fight the stylesheet on unzoom. */
+      t.style.transform = cs.transform === 'none' ? '' : cs.transform;
+      t.style.opacity = cs.opacity;
+      t.style.visibility = cs.visibility;
+      pinned.push(t);
+    }
+    road.classList.add('zfrozen');
+  }
+
+  function release() {
+    road.classList.remove('zfrozen');
+    for (var i = 0; i < pinned.length; i++) {
+      pinned[i].style.transform = '';
+      pinned[i].style.opacity = '';
+      pinned[i].style.visibility = '';
+    }
+    pinned = [];
+  }
+
+  function settle() {
+    var z = vv.scale > 1.05;
+    if (z === frozen) return;
+    frozen = z;
+    if (z) { snapshot(); } else { release(); }
+  }
+  vv.addEventListener('resize', settle, { passive: true });
+  vv.addEventListener('scroll', settle, { passive: true });
+  settle();
 })();
 </script>
 </body>
