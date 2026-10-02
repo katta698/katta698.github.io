@@ -1,0 +1,340 @@
+---
+title: "GCP Architecture Series #50 — Directory Synchronisation from On-Premises"
+date: '2026-10-02T09:00:00'
+slug: gcp-architecture-directory-sync
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-10-02'
+verified_claims:
+  - claim: "Acting as a go-between for the LDAP server and Cloud Identity or Google Workspace, GCDS queries the LDAP directory to retrieve the necessary information from the directory and uses the Directory API to add, modify, or delete users in your Cloud Identity or Google Workspace account"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "The default behavior of GCDS is to delete these users in Cloud Identity or Google Workspace"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "any users that have been disabled or deleted in Active Directory since the last provisioning was performed will be included in this list"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "(!(userAccountControl:1.2.840.113556.1.4.803:=2))"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "Google Domain Users Deletion/Suspension Policy"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "suspend or delete Google domain admins not found in LDAP"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "By default, users in Cloud Identity or Google Workspace that have been provisioned from a different source will wrongly be identified in Active Directory as having been deleted"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "but will instead report which changes it would perform during a regular provision run"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "verify that there are no unwanted changes such as deleting or suspending any users or groups"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "you can run GCDS either on-premises or on a Compute Engine virtual machine in Google Cloud"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "By default, Active Directory uses unencrypted LDAP"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "best to run GCDS on a separate machine"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "intend to provision more than 50 users, request an increase of the total number of free Cloud Identity users"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "If you suspect that any of the domains you plan to use for Cloud Identity could have been used by employees to register consumer accounts, consider migrating these user accounts first"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "Before connecting your production Active Directory to Google Cloud, consider using an Active Directory test environment for setting up and testing user provisioning"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "userPrincipalName"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts
+  - claim: "Provisioning works one way, which means changes in Active Directory are replicated to Google Cloud but not the other way around"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-introduction
+  - claim: "Also, provisioning does not include passwords"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-introduction
+  - claim: "In a federated setup, Active Directory remains the only system that manages these credentials"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-introduction
+  - claim: "This process ensures that when you create a new user in Active Directory, it can be referenced in Google Cloud even before the associated user has logged in for the first time"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-introduction
+  - claim: "This process also ensures that user deletions are being propagated"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-introduction
+  - claim: "use Active Directory as IdP and authoritative source"
+    source: https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-introduction
+  - claim: "Synchronization is one-way so that Active Directory remains the source of truth"
+    source: https://docs.cloud.google.com/architecture/identity/reference-architectures
+  - claim: "Google Cloud Directory Sync is a free Google-provided tool that implements the synchronization process and can be run either on Google Cloud or in your on-premises environment"
+    source: https://docs.cloud.google.com/architecture/identity/reference-architectures
+  - claim: "An authoritative source for identities that is the sole system that you use to create, manage, and delete identities for your employees"
+    source: https://docs.cloud.google.com/architecture/identity/reference-architectures
+problem: "#49 established that an IAM binding names an identity resolved in Cloud Identity. This post is about the machinery that fills Cloud Identity from an on-premises directory — and about the fact that its documented default, when a user is missing from the LDAP query results, is to delete the Cloud Identity account."
+builds: "How GCDS actually works, why a disabled Active Directory account arrives as an absent one, the two-instance default that makes two syncs delete each other accounts, and why re-running the sync does not restore the access it removed."
+catch: "Deletion is driven by absence from a query result, so a filter typo or an OU move is indistinguishable from a wave of leavers. And recovery is not a re-sync: a recreated account with the same address is a separate identity that inherits none of its roles."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #050 &middot; IAM</div>
+  <h1 class="post-title">Directory Synchronisation from On-Premises</h1>
+  <p class="post-subtitle">An LDAP query that returns fewer results looks exactly like people leaving, and the default response is deletion.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>Google Cloud &middot; IAM &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #49 established that an IAM binding names an identity, and that the account behind it is resolved in Cloud Identity. This post is about how accounts get into Cloud Identity at scale, which for most organisations means Google Cloud Directory Sync reading an on-premises directory. The tool is free, well documented, and does what it says. The thing worth a careful read is what it does when it finds less than it expected.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"Sync is read-only from our side, so it cannot do damage"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It is read-only against the directory, not against Google. Acting as a go-between, GCDS queries the LDAP directory and <em>uses the Directory API to add, modify, or delete users in your Cloud Identity or Google Workspace account</em>. One-way means Active Directory is never written to. It does not mean nothing gets written.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat the sync as a privileged writer against Cloud Identity, and review its configuration with the same care as an IAM change.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"Only accounts actually deleted in Active Directory get removed"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Removal is driven by absence from a query result, not by a deletion event. GCDS lists the Cloud Identity users with no corresponding match in the LDAP results, and because the query carries <code>(!(userAccountControl:1.2.840.113556.1.4.803:=2))</code>, any users that have been <strong>disabled or deleted</strong> in Active Directory since the last provisioning was performed will be included in that list. Disabled and deleted are the same input.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Know that the signal is "not in the result set". Anything that shrinks the result set &mdash; a filter change, an OU move, a partially answered query &mdash; produces the same list.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"The default is surely to suspend, not delete"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It is not. <em>The default behavior of GCDS is to delete these users in Cloud Identity or Google Workspace</em>, and it is a setting you change rather than one you opt into &mdash; under <strong>Google Domain Users Deletion/Suspension Policy</strong> in Configuration Manager.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Change the policy for non-administrator users to suspend, and confirm the option not to suspend or delete Google domain admins not found in LDAP is checked, so a bad run cannot take the super admin with it.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"If a sync deletes accounts by mistake, we re-run it and they come back"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          The accounts come back. The access does not. From #49: a recreated account with the same name is a separate identity and inherits none of the roles granted to the deleted one. From #48: after 30 days IAM permanently removes the account, so even undelete has a deadline.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat an erroneous sync deletion as an access-loss incident with a 30-day clock, not a provisioning hiccup. Undelete the original accounts; do not recreate them.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The premise is a governance one before it is a technical one. A reference architecture starts from the idea of an authoritative source for identities &mdash; <em>the sole system that you use to create, manage, and delete identities for your employees</em> &mdash; and the Active Directory pattern is to use Active Directory as IdP and authoritative source. Synchronization is one-way so that Active Directory remains the source of truth.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-050-directory-sync.svg" alt="Diagram: how Google Cloud Directory Sync provisions one way from Active Directory, why the default action for a user missing from the LDAP query results is deletion, how two sync instances delete each other accounts by default, and why re-running the sync does not restore the lost IAM access" />
+      <figcaption>One-way means Active Directory is never written to. It does not mean Cloud Identity is never written to.</figcaption>
+    </figure>
+
+    <h3>What actually moves, and what does not</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Thing</th><th>Direction</th><th>Note</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Users and groups</td>
+          <td>Active Directory &rarr; Cloud Identity</td>
+          <td>Via the Directory API &mdash; add, modify, <strong>or delete</strong>.</td>
+        </tr>
+        <tr>
+          <td>Any change made in Cloud Identity</td>
+          <td><strong>Nowhere</strong></td>
+          <td>Changes in Active Directory are replicated to Google Cloud but not the other way around.</td>
+        </tr>
+        <tr>
+          <td>Passwords</td>
+          <td><strong>Never</strong></td>
+          <td>Provisioning does not include passwords; Active Directory remains the only system that manages these credentials.</td>
+        </tr>
+        <tr>
+          <td>Authentication</td>
+          <td>Delegated by SAML</td>
+          <td>A separate mechanism from provisioning &mdash; that is #51.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      The reason provisioning exists at all, separately from sign-on, is the sequencing constraint from #49. Provisioning ensures that when you create a new user in Active Directory, it can be referenced in Google Cloud <em>even before the associated user has logged in for the first time</em> &mdash; which is exactly what a binding written in advance needs, and exactly what federation alone cannot provide.
+    </p>
+
+    <h3>Where it runs, and why on-premises is usually right</h3>
+    <p>
+      You can run GCDS either on-premises or on a Compute Engine virtual machine in Google Cloud, and the guidance leans on-premises for a reason that is easy to skip: by default, Active Directory uses unencrypted LDAP. Reaching it from inside Google Cloud means either LDAPS or Cloud VPN, whereas the GCDS-to-Google leg is HTTPS and needs little firewall work. It is also best to run GCDS on a separate machine rather than on the domain controller.
+    </p>
+    <p>
+      Two smaller planning notes worth catching before they cost a weekend. If you intend to provision more than 50 users on the free edition, you request an increase of the total number of free Cloud Identity users through your support contact. And the documentation says to consider using an Active Directory test environment before connecting production &mdash; which, given the deletion behaviour below, reads less like boilerplate than it first appears.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Deletion Is Driven by Absence, Not by an Event</h2>
+
+    <p>
+      This is the part that deserves to be understood precisely, because the mechanism is simpler than people assume and that simplicity is the hazard.
+    </p>
+
+    <p>
+      GCDS does not consume a change feed. On each run it builds the list of Cloud Identity users that have no corresponding match in the Active Directory LDAP query results, and acts on that list. So the input is not "who was deleted" but "who is missing from what the query returned this time".
+    </p>
+
+    <div class="callout amber">
+      <strong>Three different events that produce one identical list</strong>
+      <p>A person leaves and their account is deleted. A person is disabled pending an investigation &mdash; and because the query carries <code>(!(userAccountControl:1.2.840.113556.1.4.803:=2))</code>, disabled accounts are filtered out, so they arrive as absent. Or nobody left at all and the query itself changed: a base DN edited, an OU restructured, a filter tightened, a search returning partial results. All three produce a list of Cloud Identity users with no match, and <em>the default behavior of GCDS is to delete these users in Cloud Identity or Google Workspace</em>. The tool cannot distinguish between them, because from where it stands there is nothing to distinguish &mdash; the query returned what it returned.</p>
+    </div>
+
+    <h3>The two-instance default, which is the one I did not expect</h3>
+    <p>
+      Organisations with more than one forest or domain commonly run more than one GCDS instance against a single Cloud Identity account. The documentation is direct about what happens if you do that without extra configuration: <em>by default, users in Cloud Identity or Google Workspace that have been provisioned from a different source will wrongly be identified in Active Directory as having been deleted</em>.
+    </p>
+    <p>
+      Read that with the deletion default alongside it. Instance A queries forest A, finds the accounts provisioned by instance B absent from its results, and concludes they were deleted. Instance B does the same in reverse. Two correctly-installed, individually-correct syncs will remove each other&#8217;s users, on a schedule, because neither has been told the other exists.
+    </p>
+    <p>
+      The remedy is scoping, done explicitly: move all users beyond the scope of the forest you are provisioning into a single organizational unit and add an exclusion rule for it, or exclude by user email address with a regular expression on the UPN suffix. Either way the point is the same &mdash; each instance has to be told which accounts are none of its business, and the default is that everything is.
+    </p>
+
+    <h3>The control that matters is the one that changes nothing</h3>
+    <p>
+      GCDS has a simulation mode, and in a system whose destructive action is triggered by absence it is the single most valuable feature. During simulation GCDS performs no changes to your account, <em>but will instead report which changes it would perform during a regular provision run</em>. The instruction that goes with it is explicit about what you are looking for: review the proposed changes and <em>verify that there are no unwanted changes such as deleting or suspending any users or groups</em>.
+    </p>
+
+    <div class="callout">
+      <strong>What this implies for how a sync should be operated</strong>
+      <p>A simulation before the first run is in the setup guide. The argument of this post is that it belongs before <em>every</em> configuration change, because the configuration is a query and a query is exactly as reviewable &mdash; and as easy to get subtly wrong &mdash; as any other code. A base DN edit has no visible blast radius until the run. The proposed-changes list is the blast radius, printed, for free, before anything happens. In practice that means treating a deletion count above your expected leaver rate as a stop condition, not a surprise to work through afterwards.</p>
+    </div>
+
+    <h3>And one piece of sequencing that connects straight back to #49</h3>
+    <p>
+      The setup guide carries a prerequisite that is really a reference to the previous post: <em>if you suspect that any of the domains you plan to use for Cloud Identity could have been used by employees to register consumer accounts, consider migrating these user accounts first</em>. Those are #49&#8217;s unmanaged accounts, and the ordering matters because sync is the thing that will collide with them. Provisioning a managed account at an address an unmanaged account already holds is the conflict case, and it is better met deliberately before a scheduled task meets it at 02:00.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Deletion policy for non-admins</td>
+          <td>Suspend rather than delete</td>
+          <td>The default is delete, and deletion loses the role bindings.</td>
+        </tr>
+        <tr>
+          <td>Protecting the super admin</td>
+          <td>Keep the admins-not-in-LDAP exclusion checked</td>
+          <td>Otherwise a bad run can remove the account you administer with.</td>
+        </tr>
+        <tr>
+          <td>Any change to the LDAP query</td>
+          <td>Simulate first, every time</td>
+          <td>Simulation reports what it would do without changing anything.</td>
+        </tr>
+        <tr>
+          <td>A simulation proposing mass deletions</td>
+          <td>Stop and investigate the query</td>
+          <td>Absence from the results is indistinguishable from departure.</td>
+        </tr>
+        <tr>
+          <td>More than one forest or domain</td>
+          <td>Exclusion rules on every instance</td>
+          <td>By default each instance treats the others accounts as deleted.</td>
+        </tr>
+        <tr>
+          <td>Where to run GCDS</td>
+          <td>On-premises, on a separate machine</td>
+          <td>Active Directory uses unencrypted LDAP by default.</td>
+        </tr>
+        <tr>
+          <td>Before connecting production</td>
+          <td>A test Active Directory environment</td>
+          <td>The destructive default is easier to discover there.</td>
+        </tr>
+        <tr>
+          <td>Domains that may hold consumer accounts</td>
+          <td>Migrate those accounts before syncing</td>
+          <td>Provisioning into an occupied address is the conflict case.</td>
+        </tr>
+        <tr>
+          <td>Recovering from an erroneous deletion</td>
+          <td>Undelete, never recreate</td>
+          <td>A same-named new account is a separate identity with no roles.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      Open your sync configuration and read two things: the deletion policy, and whether exclusion rules exist for every account your instance does not own. If the policy says delete and there are no exclusions, you have a scheduled task whose failure mode is the permanent removal of IAM access for everyone it cannot see &mdash; and whose trigger is an LDAP query that no review process is currently looking at. Then run a simulation and read the proposed-changes count. If it is not approximately your leaver rate, the query is telling you something.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      None of this is a flaw in the tool. A sync that refused to delete would leave departed employees holding accounts, which is the failure #49 spent its length on. Propagating deletions is the point, and GCDS does it with a free tool, a documented default, a protected-admins option, a configurable policy and a simulation mode that will show you the whole run before it happens. Everything needed to operate it safely is in the box and in the documentation.
+    </p>
+    <p>
+      What the series has accumulated is a chain rather than three separate facts. #48 found the allow policy has an author you cannot see. #49 found it has a referent you cannot name, joined to the policy by a mapping an administrator can move. #50 is where that referent acquires a delete capability, and the trigger is not an intention recorded anywhere but the shape of a query result on a machine in another building. The policy document stays unchanged throughout. Which is the uncomfortable part: by this point in the series, the allow policy has become one of the less informative places to look for who can do what.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#51 takes the other half of the Active Directory pattern: single sign-on with a third-party identity provider &mdash; what SAML actually asserts, what it does not, and why provisioning had to come first.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-synchronizing-user-accounts" target="_blank" rel="noopener">Active Directory user account provisioning</a></li>
+      <li><a href="https://docs.cloud.google.com/architecture/identity/federating-gcp-with-active-directory-introduction" target="_blank" rel="noopener">Federate Google Cloud with Active Directory</a></li>
+      <li><a href="https://docs.cloud.google.com/architecture/identity/reference-architectures" target="_blank" rel="noopener">Reference architectures for corporate identity</a></li>
+      <li><a href="https://docs.cloud.google.com/architecture/identity/assessing-existing-user-accounts" target="_blank" rel="noopener">Assess existing user accounts</a></li>
+      <li><a href="https://docs.cloud.google.com/architecture/identity/federating-gcp-with-azure-active-directory" target="_blank" rel="noopener">Federate Google Cloud with Microsoft Entra ID</a></li>
+      <li><a href="https://docs.cloud.google.com/identity/docs/how-to/verify-domain" target="_blank" rel="noopener">Verifying your domain</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
