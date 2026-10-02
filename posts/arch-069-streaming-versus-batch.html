@@ -1,5 +1,5 @@
 ---
-title: "AWS Architecture Series #69 — Small records cost more, and the cheap path starts at 60 seconds"
+title: "AWS Architecture Series #69 — Small records cost more, and the managed path goes down to zero seconds"
 date: '2026-10-01T09:00:00'
 slug: aws-architecture-streaming-versus-batch
 labels: [AWS, "AWS Architecture Series"]
@@ -13,8 +13,12 @@ verified_claims:
     derive: "5120 / 100"
     expect: "51.2"
     source: https://docs.aws.amazon.com/firehose/latest/dev/limits.html
-  - claim: "The Firehose buffer interval hints range from 60 seconds to 900 seconds"
-    source: https://docs.aws.amazon.com/firehose/latest/dev/limits.html
+  - claim: "The Firehose BufferingHints IntervalInSeconds parameter has a valid range of minimum value of 0 and maximum value of 900, and the default value is 300"
+    source: https://docs.aws.amazon.com/firehose/latest/APIReference/API_BufferingHints.html
+  - claim: "You can configure the values for S3 buffer size (1 MB to 128 MB) or buffer interval (0 to 900 seconds), and the condition satisfied first triggers data delivery to Amazon S3"
+    source: https://aws.amazon.com/firehose/faqs/
+  - claim: "The HttpEndpointBufferingHints IntervalInSeconds parameter has a valid range of minimum value of 0 and maximum value of 900, with a default value of 300"
+    source: https://docs.aws.amazon.com/firehose/latest/APIReference/API_HttpEndpointBufferingHints.html
   - claim: "Amazon Data Firehose buffers incoming streaming data to a certain size or for a certain period of time before delivering it to destinations, where Buffer Size is in MBs and Buffer Interval is in seconds"
     source: https://docs.aws.amazon.com/firehose/latest/dev/what-is-this-service.html
   - claim: "If the increased Firehose quota is much higher than the running traffic it causes small delivery batches to destinations, which is inefficient and can result in higher costs at the destination services"
@@ -51,7 +55,7 @@ verified_claims:
     source: https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html
   - claim: "For each data stream you can switch between the on-demand and provisioned modes twice within 24 hours, and switching doesn't cause any disruptions to applications using the data stream"
     source: https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html
-problem: "Streaming versus batch gets argued as a latency question, and the cost side is assumed to follow from volume. It does not. The cheap managed path bills per record rounded up to 5 KB and cannot deliver faster than 60 seconds, so the two axes are set by record size and buffer interval rather than by how much data you move."
+problem: "Streaming versus batch gets argued as a latency question, and the cost side is assumed to follow from volume. It does not. The managed path bills per record rounded up to 5 KB, and its buffering range is set by the destination rather than by the service, so the decision turns on record size and on whether anything but the destination needs to read the stream."
 builds: "A reading of the latency and cost curve from the documented quotas: where the floor is, what the rounding unit does to small events, and what the cheapest streaming mode actually commits you to."
 catch: "Firehose bills records rounded up to 5,120 bytes. A 100-byte telemetry event is charged for over fifty times its own size, so halving your event size changes nothing and halving your event count halves the bill. AWS's own example: 5 MiB sent as 5,000 records costs more than the same 5 MiB sent as 1,000."
 ---
@@ -60,7 +64,7 @@ catch: "Firehose bills records rounded up to 5,120 bytes. A 100-byte telemetry e
 
 <div class="post-header">
   <div class="post-eyebrow">AWS Architecture Series &middot; #069 &middot; Data &amp; Analytics</div>
-  <h1 class="post-title">Small records cost more, and the cheap path starts at 60 seconds</h1>
+  <h1 class="post-title">Small records cost more, and the managed path goes down to zero seconds</h1>
   <p class="post-subtitle">The streaming-versus-batch curve is not drawn by data volume. It is drawn by record count and buffer interval, and both are documented.</p>
   <div class="post-meta">
     <span>Jayanth Katta</span>
@@ -75,9 +79,17 @@ catch: "Firehose bills records rounded up to 5,120 bytes. A 100-byte telemetry e
     <h2>Business Challenge</h2>
     <p>
       <a href="/blog/aws-architecture-kinesis-msk-firehose/">#60</a> covered which streaming service to pick.
-      This is the cost lens on the same ground: what the choice actually bills for, and where the latency
-      floor sits.
+      This is the cost lens on the same ground: what the choice actually bills for, and what the buffering
+      range does and does not decide.
     </p>
+    <div class="callout">
+      <strong>Corrected 1 October 2026</strong>
+      <p>The first version of this post treated 60 seconds as Firehose's minimum buffer interval across the
+      board, on the strength of a single sentence in the quota page, and built the architecture argument on
+      that floor. That is wrong. The buffer interval is destination-specific, and is documented as 0 to 900
+      seconds for Amazon S3, Apache Iceberg tables, Redshift, OpenSearch and several HTTP destinations. The
+      sections below are the corrected argument.</p>
+    </div>
     <p>
       The usual framing is a trade between latency and cost, with volume as the driver. Two documented facts
       change the shape of it.
@@ -106,24 +118,32 @@ catch: "Firehose bills records rounded up to 5,120 bytes. A 100-byte telemetry e
     </div>
 
     <div class="challenge-card">
-      <div class="challenge-header"><span class="num">2</span><strong>The managed path cannot go below 60 seconds</strong></div>
+      <div class="challenge-header"><span class="num">2</span><strong>The buffering range belongs to the destination, not to Firehose</strong></div>
       <div class="challenge-body">
         <p>
-          Firehose buffers before delivering, and the dial has a documented floor:
+          Firehose buffers before delivering, and the quota page carries one flat sentence about it:
           <em>&ldquo;The buffer interval hints range from <strong>60 seconds</strong> to <strong>900
-          seconds</strong>.&rdquo;</em>
+          seconds</strong>.&rdquo;</em> Read on its own, that looks like a service-wide floor. It is not one,
+          and treating it as one is how this decision gets made wrongly.
         </p>
         <p>
-          One minute to fifteen. If your requirement is sub-minute, Firehose is not a slow option to tune
-          &mdash; it is unavailable, and you are running Kinesis Data Streams with a consumer application you
-          operate yourself.
+          The API reference is the authority on the range, and it gives
+          <code>BufferingHints.IntervalInSeconds</code> a valid range of <em>&ldquo;Minimum value of
+          <strong>0</strong>. Maximum value of <strong>900</strong>&rdquo;</em>, with a default of 300. The same
+          0-to-900 range is documented for OpenSearch, for HTTP endpoints, and for Snowflake &mdash; whose
+          default is zero. The FAQ states it per destination in the same terms: <em>&ldquo;You can configure
+          the values for S3 buffer size (1 MB to 128 MB) or buffer interval (<strong>0 to 900
+          seconds</strong>).&rdquo;</em>
         </p>
         <p>
-          That is the real step in the curve. It is not gradual: there is a managed, cheap, 60-second-minimum
-          tier, and below it a tier where you own the consumer.
+          So sub-minute delivery is a supported configuration on the managed path &mdash; for Amazon S3,
+          Apache Iceberg tables, Redshift, OpenSearch and several HTTP destinations &mdash; rather than a
+          reason to leave it. It is not free: below a 60-second interval Firehose uses multipart upload to S3
+          to get the latency, and that arrives as additional S3 PUT requests on the bill. A cost, not a wall.
         </p>
         <span class="fix-label">Fix</span>
-        <p>Write the latency requirement down in seconds first. Sixty is the line that decides the architecture.</p>
+        <p>Look up the buffering range for the destination you are actually writing to. Reach for Data Streams
+          because the application needs to consume the stream itself, not because of a floor.</p>
       </div>
     </div>
 
@@ -155,11 +175,13 @@ catch: "Firehose bills records rounded up to 5,120 bytes. A 100-byte telemetry e
   <div class="section" id="architecture">
     <h2>Architecture</h2>
     <p>
-      The curve has a step in it, and the step is at sixty seconds.
+      The curve has two axes and only one of them has a step in it. Cost steps hard, at 5,120 bytes per
+      record. Latency does not: on the managed path it runs down to zero, and what takes you off that path is
+      needing to consume the records yourself rather than have them delivered somewhere.
     </p>
 
     <figure class="screenshot">
-      <img src="/blog/assets/diagrams/arch-069-streaming-versus-batch.svg" alt="Diagram: the latency and cost curve between streaming and batch on AWS, drawn from documented quotas rather than from data volume. At the low-latency end sits Kinesis Data Streams with a consumer application you operate yourself, reaching sub-second delivery. It offers three modes. On-demand Standard requires no capacity planning and accommodates up to double the peak write throughput observed in the previous thirty days, with write throttling possible if traffic more than doubles the previous peak within fifteen minutes. On-demand Advantage is an account-level mode where ingest, retrieval and extended retention are at least sixty percent lower than Standard and the per-stream fixed charge disappears, but enabling it commits the account to at least twenty-five mebibytes per second of ingest and twenty-five of retrieval, bills any shortfall at the discounted rate, and cannot be disabled for twenty-four hours; it also raises enhanced fan-out consumers from twenty to fifty per stream with no price premium. Provisioned mode requires specifying shards, sized by the formula ceiling of the maximum of incoming write bandwidth in kibibytes divided by 1024 and outgoing read bandwidth divided by 2048. A panel notes that on-demand splits shards evenly when traffic rises but explicitly does not detect or isolate hot hash keys, so AWS recommends provisioned mode for granular shard splits, and that a single partition key exceeding one megabyte per second or one thousand records per second will still throttle. At the managed end sits Amazon Data Firehose, whose buffer interval hints range from sixty seconds to nine hundred seconds, making sixty seconds the floor for the managed path. Firehose ingestion is billed by the number of records times each record's size rounded up to the nearest five kilobytes, which is 5,120 bytes, so a hundred-byte event is charged for more than fifty times its own size, and AWS's own example shows five mebibytes sent as five thousand records costing more than the same five mebibytes sent as one thousand records. A closing panel records the design consequence: optimise record count rather than payload size, write the latency requirement in seconds because sixty is the line that decides the architecture, and measure sustained throughput against the twenty-five mebibyte commitment before enabling the discount." />
+      <img src="/blog/assets/diagrams/arch-069-streaming-versus-batch.svg" alt="Diagram: the latency and cost curve between streaming and batch on AWS, drawn from documented quotas rather than from data volume. At the low-latency end sits Kinesis Data Streams with a consumer application you operate yourself, reaching sub-second delivery. It offers three modes. On-demand Standard requires no capacity planning and accommodates up to double the peak write throughput observed in the previous thirty days, with write throttling possible if traffic more than doubles the previous peak within fifteen minutes. On-demand Advantage is an account-level mode where ingest, retrieval and extended retention are at least sixty percent lower than Standard and the per-stream fixed charge disappears, but enabling it commits the account to at least twenty-five mebibytes per second of ingest and twenty-five of retrieval, bills any shortfall at the discounted rate, and cannot be disabled for twenty-four hours; it also raises enhanced fan-out consumers from twenty to fifty per stream with no price premium. Provisioned mode requires specifying shards, sized by the formula ceiling of the maximum of incoming write bandwidth in kibibytes divided by 1024 and outgoing read bandwidth divided by 2048. A panel notes that on-demand splits shards evenly when traffic rises but explicitly does not detect or isolate hot hash keys, so AWS recommends provisioned mode for granular shard splits, and that a single partition key exceeding one megabyte per second or one thousand records per second will still throttle. At the managed end sits Amazon Data Firehose, whose buffer interval is documented as zero to nine hundred seconds with a default of three hundred, so the floor belongs to the destination rather than to the service and sub-minute delivery stays on the managed path at the cost of multipart uploads and extra S3 PUT requests. Firehose ingestion is billed by the number of records times each record's size rounded up to the nearest five kilobytes, which is 5,120 bytes, so a hundred-byte event is charged for more than fifty times its own size, and AWS's own example shows five mebibytes sent as five thousand records costing more than the same five mebibytes sent as one thousand records. A closing panel records the design consequence: optimise record count rather than payload size, check the buffering range for the destination you are writing to rather than assuming a service-wide floor, and measure sustained throughput against the twenty-five mebibyte commitment before enabling the discount." />
       <figcaption>Two axes, both documented: record count sets the bill, buffer interval sets the floor.</figcaption>
     </figure>
 
@@ -280,14 +302,19 @@ catch: "Firehose bills records rounded up to 5,120 bytes. A 100-byte telemetry e
         <td>Billing rounds each record up to 5,120 bytes.</td>
       </tr>
       <tr>
-        <td>Sub-minute latency</td>
-        <td>Data Streams with your own consumer</td>
-        <td>Firehose's buffer interval floor is 60 seconds.</td>
+        <td>Sub-minute delivery to a supported destination</td>
+        <td>Firehose, buffer interval under 60s</td>
+        <td>The documented range is 0 to 900 seconds; the cost is multipart upload and more S3 PUTs.</td>
       </tr>
       <tr>
-        <td>60 seconds to 15 minutes</td>
+        <td>Up to 15 minutes</td>
         <td>Firehose, buffer tuned</td>
         <td>The managed path, and the whole documented interval range.</td>
+      </tr>
+      <tr>
+        <td>The application must consume the stream itself</td>
+        <td>Data Streams with your own consumer</td>
+        <td>Firehose delivers to destinations; it is not a consumer API, at any interval.</td>
       </tr>
       <tr>
         <td>On-demand Advantage</td>
@@ -324,8 +351,10 @@ catch: "Firehose bills records rounded up to 5,120 bytes. A 100-byte telemetry e
     </p>
     <p>
       Under 5 KB per record, your bill is a function of how many records you emit, so aggregation upstream is
-      the highest-leverage change available &mdash; and it is free. Under 60 seconds of required latency, the
-      managed path is not an option at any price. Everything else is tuning.
+      the highest-leverage change available &mdash; and it is free. The latency number then places you
+      <em>within</em> the managed path's range rather than outside it, because for the common destinations that
+      range starts at zero; going under 60 seconds costs extra PUT requests, not a different architecture. What
+      genuinely moves you to Data Streams is a consumer, not a number.
     </p>
   </div>
 
@@ -342,9 +371,12 @@ catch: "Firehose bills records rounded up to 5,120 bytes. A 100-byte telemetry e
       is usually a batching change in the producer rather than anything in the pipeline.
     </p>
     <p>
-      The latency floor has the same quality. Sixty seconds is not a performance characteristic to be tuned
-      around; it is the boundary between a service you configure and a service you operate. Knowing which side
-      of it you are on is a one-sentence answer, and it decides most of the rest.
+      The latency side turned out to be the opposite kind of lesson, and a useful one about reading
+      documentation. One sentence in the quota page gives a 60-to-900-second range with no destination
+      attached to it, and it is an easy sentence to promote into a property of the service. The API reference
+      and the FAQ both document the range starting at zero. So the boundary between a service you configure
+      and a service you operate is not a number at all &mdash; it is whether anything besides the destination
+      needs to see the records.
     </p>
 
     <div class="callout">
@@ -356,7 +388,11 @@ catch: "Firehose bills records rounded up to 5,120 bytes. A 100-byte telemetry e
   <div class="section" id="reference">
     <h2>Official AWS Reference</h2>
     <ul>
-      <li><a href="https://docs.aws.amazon.com/firehose/latest/dev/limits.html" target="_blank" rel="noopener">Amazon Data Firehose quota &#8212; the 5 KB rounding unit, the 60-to-900-second buffer interval range, Direct PUT quotas and the 24-hour retention guarantee</a></li>
+      <li><a href="https://docs.aws.amazon.com/firehose/latest/dev/limits.html" target="_blank" rel="noopener">Amazon Data Firehose quota &#8212; the 5 KB rounding unit, Direct PUT quotas, the dynamic partitioning limits and the 24-hour retention guarantee</a></li>
+      <li><a href="https://docs.aws.amazon.com/firehose/latest/APIReference/API_BufferingHints.html" target="_blank" rel="noopener">BufferingHints &#8212; the authoritative valid range for the buffer interval: minimum 0, maximum 900, default 300</a></li>
+      <li><a href="https://aws.amazon.com/firehose/faqs/" target="_blank" rel="noopener">Amazon Data Firehose FAQs &#8212; the buffering ranges stated per destination, 1 MB to 128 MB and 0 to 900 seconds for Amazon S3</a></li>
+      <li><a href="https://docs.aws.amazon.com/firehose/latest/APIReference/API_HttpEndpointBufferingHints.html" target="_blank" rel="noopener">HttpEndpointBufferingHints &#8212; the same 0-to-900-second range on an HTTP destination</a></li>
+      <li><a href="https://docs.aws.amazon.com/firehose/latest/dev/buffering-hints.html" target="_blank" rel="noopener">Configure buffering hints &#8212; zero buffering, and the multipart upload behaviour that raises S3 PUT costs below a 60-second interval</a></li>
       <li><a href="https://docs.aws.amazon.com/streams/latest/dev/how-do-i-size-a-stream.html" target="_blank" rel="noopener">Choose the right mode to stream in &#8212; the three Kinesis modes, the On-demand Advantage commitment, the shard formula, and why on-demand cannot isolate a hot key</a></li>
       <li><a href="https://docs.aws.amazon.com/firehose/latest/dev/what-is-this-service.html" target="_blank" rel="noopener">What is Amazon Data Firehose &#8212; buffer size and buffer interval as the two delivery controls</a></li>
     </ul>
