@@ -59,8 +59,14 @@ verified_claims:
     source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-hierarchy.html
   - claim: "AWS recommends that you include a CA generation identifier in the names of CAs as needed, so that a second generation CA is named Corporate Root CA G2"
     source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "UpdateCertificateAuthority updates the status or configuration of a private certificate authority, accepts a RevocationConfiguration, and requires that your private CA must be in the ACTIVE or DISABLED state before you can update it"
+    source: https://docs.aws.amazon.com/privateca/latest/APIReference/API_UpdateCertificateAuthority.html
+  - claim: "If you update the S3BucketName of CrlConfiguration you can break revocation for existing certificates, because AWS Private CA only writes CRLs to the new S3 bucket and certificates issued prior to this point will have the old S3 bucket name in your CRL Distribution Point (CDP) extension, essentially breaking revocation, so you will need to reissue old certificates to keep the revocation working"
+    source: https://docs.aws.amazon.com/privateca/latest/APIReference/API_UpdateCertificateAuthority.html
+  - claim: "AWS states you can use a CustomCname in your CRL configuration if you might need to change the S3 bucket name in the future"
+    source: https://docs.aws.amazon.com/privateca/latest/APIReference/API_UpdateCertificateAuthority.html
 problem: "A private CA is created in an afternoon and lived with for a decade. The default root validity is ten years, which reads like a sensible number and is actually a date on which every certificate beneath it stops working — and the mitigation requires updating a trust store on every machine that trusts it."
-builds: "A reading of the lifecycle and hierarchy rules against the pricing page, to establish what a private CA costs to operate rather than to create, and which of its creation-time choices cannot be changed afterwards."
+builds: "A reading of the lifecycle and hierarchy rules against the pricing page, to establish what a private CA costs to operate rather than to create, and which of its creation-time choices are hard to reverse afterwards."
 catch: "The succession method AWS recommends and the renewal AWS manages are mutually exclusive. It recommends replacing an expiring CA rather than reissuing it, 'because of the security advantages gained by rotating to a new key pair' — then notes that 'private certificates issued through ACM cannot be renewed if you replace the CA.' Choose ACM-managed renewal and you are committed to the method AWS advises against."
 ---
 <div id="jk-post">
@@ -168,8 +174,16 @@ catch: "The succession method AWS recommends and the renewal AWS manages are mut
           General-purpose mode is described as issuing certificates <em>&ldquo;that typically require a
           revocation mechanism&rdquo;</em>. Typically requiring one is not the same as having one.
         </p>
+        <p>
+          It is fixable afterwards &mdash; <code class="inline">UpdateCertificateAuthority</code>
+          <em>&ldquo;Updates the status or configuration of a private certificate authority (CA)&rdquo;</em> and
+          takes a <code class="inline">RevocationConfiguration</code>, provided the CA
+          <em>&ldquo;must be in the <code class="inline">ACTIVE</code> or <code class="inline">DISABLED</code>
+          state&rdquo;</em>. What is not fixable is the certificates you already issued, which is the subject of
+          the next section.
+        </p>
         <span class="fix-label">Fix</span>
-        <p>Configure CRL, OCSP or both in the create call &mdash; or choose short-lived mode and let expiry do the work, which is what it is for.</p>
+        <p>Configure CRL, OCSP or both in the create call where you can &mdash; or choose short-lived mode and let expiry do the work, which is what it is for.</p>
       </div>
     </div>
   </div>
@@ -275,6 +289,33 @@ catch: "The succession method AWS recommends and the renewal AWS manages are mut
       <p>Replacing a CA properly keeps the old one alive: <em>&ldquo;While disabled, the old CA supports revocation for old certificates issued from the CA&hellip; <strong>When the last certificate issued from the old CA expires, you can delete the old CA.</strong>&rdquo;</em> And the pricing page ties the end of charges to deletion rather than to disabling — <em>&ldquo;You are not charged for a private CA after you <strong>delete</strong> it&rdquo;</em>, with operation <em>&ldquo;pro-rated for partial months based on when you <strong>create and delete</strong> the CA.&rdquo;</em> With 395-day ACM certificates outstanding, that overlap runs about thirteen months, so one clean generational rotation of one general-purpose CA carries on the order of <strong>$5,200</strong> of double-running on top of the new CA. That is the cost of doing it the recommended way, and it belongs in the plan rather than in a bill.</p>
     </div>
 
+    <h3>Revocation is updatable; the certificates already issued are not</h3>
+    <p>
+      The revocation configuration can be changed on a live CA. What cannot be changed is the distribution point
+      written into every certificate issued before the change, and AWS spells out the consequence:
+    </p>
+    <p>
+      <em>&ldquo;If you update the <code class="inline">S3BucketName</code> of CrlConfiguration, you can
+      <strong>break revocation for existing certificates</strong>&hellip; AWS Private CA only writes CRLs to the
+      new S3 bucket. Certificates issued prior to this point will have the old S3 bucket name in your CRL
+      Distribution Point (CDP) extension, <strong>essentially breaking revocation</strong>. If you must update
+      the S3 bucket, you'll need to <strong>reissue old certificates</strong> to keep the revocation
+      working.&rdquo;</em>
+    </p>
+    <p>
+      So turning revocation on later is a real option, and moving it later is a trap: the CDP is baked into each
+      certificate at issuance, so the population that most needs revoking &mdash; the old one &mdash; is exactly
+      the population pointed at a bucket you no longer publish to. And nothing fails loudly. The CRL is being
+      written; it is just being written somewhere no existing certificate names.
+    </p>
+    <p>
+      AWS gives the create-time remedy in the same paragraph:
+      <em>&ldquo;Alternatively, you can use a <code class="inline">CustomCname</code> in your CRL configuration
+      if you might need to change the S3 bucket name in the future.&rdquo;</em> A CNAME in the CDP means the
+      bucket behind it can move without invalidating anything. That is a one-line decision at creation that buys
+      you the ability to change your mind, which is rare in this service.
+    </p>
+
     <h3>Deleting is not a safety valve either</h3>
     <p>
       <em>&ldquo;If you <strong>restore</strong> a deleted CA, you are charged for the time between deleting it
@@ -354,7 +395,12 @@ catch: "The succession method AWS recommends and the renewal AWS manages are mut
       <tr>
         <td>Revocation</td>
         <td>Configure CRL or OCSP in the create call</td>
-        <td>By default both are disabled, so certificates ship with no way to revoke them.</td>
+        <td>By default both are disabled, so certificates ship with no way to revoke them. Updatable later, but already-issued certificates keep the old distribution point.</td>
+      </tr>
+      <tr>
+        <td>CRL distribution point</td>
+        <td><code class="inline">CustomCname</code> rather than a bare bucket name</td>
+        <td>The CDP is written into each certificate at issuance; a CNAME lets the bucket move later without breaking revocation for existing certificates.</td>
       </tr>
       <tr>
         <td>Root validity</td>
@@ -409,17 +455,28 @@ catch: "The succession method AWS recommends and the renewal AWS manages are mut
     <p>
       A private CA is unusual among AWS resources in how much of it is settled by the
       <code class="inline">CreateCertificateAuthority</code> call. Usage mode sets the bill for its whole life.
-      The revocation block decides whether its certificates can ever be revoked. Path length decides how deep
-      the hierarchy can grow. Validity sets a date on which everything beneath it stops working. None of those
-      can be changed later without replacing the CA &mdash; and replacing a CA is the procedure that costs about
-      thirteen months of double-running and, if ACM is in the issuance path, cannot be done at all.
+      Path length decides how deep the hierarchy can grow. Validity sets a date on which everything beneath it
+      stops working. Those three need replacing the CA to change.
+    </p>
+    <p>
+      Revocation is the one that is genuinely updatable, and it still rewards getting right first time, because
+      what <code class="inline">UpdateCertificateAuthority</code> cannot reach is the distribution point already
+      written into every certificate you issued.
+    </p>
+    <p>
+      And replacing a CA is a planned migration rather than an impossibility: the cost is roughly thirteen
+      months of double-running while the old CA stays disabled for revocation, plus the fact that private
+      certificates previously issued through ACM cannot continue ACM-managed renewal from a replaced CA. Where
+      that continued renewal matters, AWS's instruction is to reissue the CA certificate instead &mdash; which
+      preserves the keys, and so forgoes the rotation that was the reason to replace it.
     </p>
     <p>
       The pattern across this block is consistent by now.
       <a href="/blog/aws-architecture-permissions-boundaries/">#36</a> was a boundary that bounds one of two
       paths. <a href="/blog/aws-architecture-roles-anywhere/">#70</a> was a trust anchor that anchors nothing
       without a condition. This one is a set of defaults that are each defensible and collectively expensive:
-      general-purpose mode, no revocation, a ten-year root.
+      general-purpose mode, no revocation, a ten-year root, and a distribution point that cannot be moved once
+      the certificates naming it exist.
     </p>
     <p>
       So it is the same rule in a different costume &mdash; read what the default does before accepting it. And
@@ -440,6 +497,7 @@ catch: "The succession method AWS recommends and the renewal AWS manages are mut
       <li><a href="https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html" target="_blank" rel="noopener">Manage the private CA lifecycle &#8212; the expiry cascade, validity nesting and defaults, and the replace-versus-reissue succession methods</a></li>
       <li><a href="https://aws.amazon.com/private-ca/pricing/" target="_blank" rel="noopener">AWS Private CA pricing &#8212; monthly charges per mode, per-certificate tiers, and what deletion and restoration do to the bill</a></li>
       <li><a href="https://docs.aws.amazon.com/privateca/latest/APIReference/API_CreateCertificateAuthority.html" target="_blank" rel="noopener">CreateCertificateAuthority &#8212; UsageMode and its default, the revocation configuration default, and the Region-dependent key storage standard</a></li>
+      <li><a href="https://docs.aws.amazon.com/privateca/latest/APIReference/API_UpdateCertificateAuthority.html" target="_blank" rel="noopener">UpdateCertificateAuthority &#8212; what can be changed on a live CA, and why moving a CRL bucket breaks revocation for certificates already issued</a></li>
       <li><a href="https://docs.aws.amazon.com/privateca/latest/userguide/ca-hierarchy.html" target="_blank" rel="noopener">Design a CA hierarchy &#8212; the five-level limit, path length constraints, trust stores and certificate templates</a></li>
     </ul>
   </div>
