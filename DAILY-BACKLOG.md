@@ -92,6 +92,37 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 2 October 2026 — covered by post #46
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| VPC Lattice support for blue/green, linear and canary deployments — target group, listener and rule are each "an Elastic Load Balancing or VPC Lattice resource", so the managed strategies now work without adding a load balancer. The finding is in the limits: `stepPercent` goes down to 3.0 and `stepBakeTimeInMinutes` up to 1440, which multiply to 33 days against a documented 30-day overall deployment timeout, and CloudFormation caps the whole deployment at 36 hours | ECS | **#46** | High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-ecs-vpc-lattice-blue-green-deployments) |
+| GuardDuty Runtime Monitoring is now included in the Security Hub Threat Analytics plan | GuardDuty, Security Hub | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-security-hub-runtime-monitoring/) |
+| AgentCore Gateway supports private TLS certificates for VPC endpoints | Bedrock AgentCore | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/agentcore-gateway-private-tls-vpc/) |
+| AWS Health introduces the version catalog for software lifecycle management | AWS Health | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-health-introduces-version-catalog-software-lifecycle-management) |
+| Aurora DSQL now supports partial indexes | Aurora DSQL | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aurora-dsql-partial-indexes/) |
+| EKS and EKS Distro support Kubernetes version 1.37 | EKS | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-eks-distro-kubernetes-version-1-37) |
+| ElastiCache for Valkey supports OpenTelemetry metrics and detailed monitoring | ElastiCache | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-elasticache-valkey-opentelemetry-metrics-detailed-monitoring) |
+| The AWS MCP Server is available in six additional Regions | AWS MCP Server | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-mcp-server-six-additional-regions/) |
+| AWS Brazil automates distribution of non-Brazilian software product licenses to Brazilian customers | AWS Marketplace | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-brazil-software-license-distribution/) |
+
+A nine-item day, and ECS won on depth. The announcement is a capability line;
+the linear deployment page underneath it documents two dials and three timeouts
+whose product does not fit, which is the same shape as the week's other
+findings. It also follows #37 cleanly — that post covered the deployment
+timeline and circuit-breaker rollback, and this one covers the traffic-shifting
+strategies the circuit breaker explicitly does not serve.
+
+AgentCore Gateway private TLS certificates is the strongest held item by
+adjacency: Architecture #71 published the same morning is about AWS Private CA,
+and a gateway that accepts private certificates for VPC endpoints is a direct
+consumer of one. Worth writing while #71 is recent.
+
+GuardDuty Runtime Monitoring moving into the Security Hub Threat Analytics plan
+is a packaging change with a cost question attached, and it interacts with #45:
+`runtime_monitoring` is one of the eight keys a GuardDuty declarative policy
+governs, so enablement and billing now arrive from two different directions.
+
 ## 1 October 2026 — covered by post #45
 
 | Item | Service | Status | Importance | Reference |

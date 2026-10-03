@@ -1,0 +1,347 @@
+---
+title: 'AWS Daily Intelligence #46 - The most cautious deployment the API accepts cannot finish'
+date: '2026-10-03T10:00:00'
+slug: aws-daily-intelligence-ecs-lattice-deployments
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-10-03'
+verified_claims:
+  - claim: "Amazon ECS adds Amazon VPC Lattice support for blue/green, linear, and canary deployments, enabled for both new and existing ECS services in all AWS Regions where VPC Lattice is available"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-ecs-vpc-lattice-blue-green-deployments
+  - claim: "Step percent is the percentage of traffic to shift in each increment during a linear deployment, this field takes Double for value, and valid values are from 3.0 to 100.0"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "Step bake time is the duration to wait between each traffic shift increment during a linear deployment, and valid values are from 0 - 1440 minutes"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "Each lifecycle stage can last up to 24 hours and in addition each traffic shift step in PRODUCTION_TRAFFIC_SHIFT can last up to 24 hours, and the system times out, fails the deployment, and then initiates a rollback after a stage reaches 24 hours"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "For pause hooks you can configure the timeout up to 20,160 minutes (14 days) and the overall deployment timeout is 30 days"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "While the 24-hour stage limit remains in effect, CloudFormation enforces a 36-hour limit on the entire deployment, and CloudFormation fails the deployment and then initiates a rollback if the process doesn't complete within 36 hours"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "A linear deployment configured at the documented extremes of a 3.0 percent step and a 1440 minute step bake time needs more total bake time than the 30 day overall deployment timeout allows"
+    derive: "33 * 1440"
+    expect: "47520"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "Under the CloudFormation 36 hour limit on the entire deployment, a 3.0 percent linear step leaves only a small fraction of the documented 1440 minute maximum available as step bake time per increment"
+    derive: "36 * 60 / 33"
+    expect: "65.45"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "Note that last step bake time is skipped once traffic is shifted 100.0 percent"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "Hooks configured for PRODUCTION_TRAFFIC_SHIFT or PRE_PRODUCTION_TRAFFIC_SHIFT are invoked at every production traffic shift step"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "The TEST_TRAFFIC_SHIFT and PRODUCTION_TRAFFIC_SHIFT lifecycle stages support lifecycle hooks for Lambda only, while SCALE_UP, BAKE_TIME and CLEAN_UP support no lifecycle hooks at all"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "A lifecycle hook is a Lambda function or pause point at a specific lifecycle stage, and pause hooks pause the deployment and wait for you to call ContinueServiceDeployment to proceed"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "A target group is an Elastic Load Balancing or VPC Lattice resource used to route requests to one or more registered targets, and a listener and a rule are likewise each an Elastic Load Balancing or VPC Lattice resource"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "The traffic-shifting resource can be an Application Load Balancer, Network Load Balancer, Service Connect, or VPC Lattice, and it directs test requests to the green environment while production traffic remains on blue"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "Linear deployments temporarily run both the blue and green service revisions simultaneously, which may double your resource usage during deployments"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html
+  - claim: "The ECS deployment strategy valid values are ROLLING, BLUE_GREEN, LINEAR and CANARY"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_DeploymentConfiguration.html
+  - claim: "A canary deployment strategy shifts a small percentage of traffic to the new service revision first, then shifts the remaining traffic all at once after a specified time period"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_DeploymentConfiguration.html
+  - claim: "The deployment circuit breaker can only be used for services using the rolling update ECS deployment type"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_DeploymentConfiguration.html
+  - claim: "You must provide the bakeTimeInMinutes parameter when you use the BLUE_GREEN deployment strategy"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_DeploymentConfiguration.html
+  - claim: "The canaryConfiguration is only valid when the deployment strategy is CANARY and the linearConfiguration is only valid when the deployment strategy is LINEAR"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_DeploymentConfiguration.html
+problem: "ECS gained real traffic-shifting strategies, and now they work with VPC Lattice, which is where cross-VPC and cross-account service traffic already lives. The strategies are configured by two numbers whose documented ranges are independent — and multiplying them out lands outside a third limit documented on the same page."
+builds: "A reading of the linear deployment mechanics against the stated stage, CloudFormation and overall deployment timeouts, to find the step configurations the API accepts and the deployment cannot survive."
+catch: "Step percent goes down to 3.0 and step bake time goes up to 1440 minutes, and both are valid. Together they are 33 bake periods of 24 hours — 33 days — against a documented overall deployment timeout of 30 days. Under CloudFormation the ceiling is 36 hours for the whole deployment, which at 3% steps is about 65 minutes per increment."
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      ECS now offers <strong>blue/green, linear and canary</strong> deployments for services using
+      <strong>VPC Lattice</strong>, <em>&ldquo;enabled for both new and existing ECS services in all AWS Regions
+      where VPC Lattice is available.&rdquo;</em>
+    </p>
+    <p>
+      The capability itself is unsurprising and welcome: Lattice joins ALB, NLB and Service Connect as a
+      traffic-shifting resource, so the same three primitives apply &mdash; a target group, a listener and a
+      rule are each <em>&ldquo;an Elastic Load Balancing <strong>or VPC Lattice</strong> resource&rdquo;</em>.
+      If your service-to-service traffic already runs through Lattice, you no longer have to put a load balancer
+      in front of it just to deploy safely.
+    </p>
+    <p>
+      What is worth the post is the configuration surface underneath, because two of its documented ranges
+      multiply into a third documented limit and overshoot it.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>
+      Four strategies now, <em>&ldquo;ROLLING | BLUE_GREEN | LINEAR | CANARY&rdquo;</em>, with the newer three
+      differing only in how traffic moves:
+    </p>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Strategy</th><th>Traffic movement</th><th>Config object</th></tr>
+      <tr>
+        <td><code class="inline">BLUE_GREEN</code></td>
+        <td>All at once, after a bake</td>
+        <td><code class="inline">bakeTimeInMinutes</code> &mdash; <em>&ldquo;You must provide this parameter&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td><code class="inline">LINEAR</code></td>
+        <td>Equal increments with a wait between each</td>
+        <td><code class="inline">linearConfiguration</code> &mdash; only valid for <code class="inline">LINEAR</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">CANARY</code></td>
+        <td><em>&ldquo;a small percentage&hellip; then shifts the remaining traffic all at once&rdquo;</em></td>
+        <td><code class="inline">canaryConfiguration</code> &mdash; only valid for <code class="inline">CANARY</code></td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      And Lattice slots in at the testing phase as well as the shifting phase:
+      <em>&ldquo;Your traffic-shifting resource (an Application Load Balancer, Network Load Balancer, Service
+      Connect, or VPC Lattice) directs <strong>test requests</strong> to the green environment while production
+      traffic remains on blue.&rdquo;</em> The test-traffic path is the part people under-use, and it is
+      available before a single production request moves.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-046-ecs-lattice-deployments.svg" alt="Diagram: how an ECS linear deployment moves traffic, and the three timeouts that bound it. Amazon ECS now supports blue/green, linear and canary deployment strategies for services using Amazon VPC Lattice, enabled for both new and existing services in all Regions where VPC Lattice is available, with the valid strategy values being ROLLING, BLUE_GREEN, LINEAR and CANARY. The traffic-shifting resource can be an Application Load Balancer, a Network Load Balancer, Service Connect, or VPC Lattice, and a target group, a listener and a rule are each either an Elastic Load Balancing or a VPC Lattice resource. A linear deployment runs through eleven lifecycle stages: RECONCILE_SERVICE, PRE_SCALE_UP, SCALE_UP, POST_SCALE_UP, TEST_TRAFFIC_SHIFT, POST_TEST_TRAFFIC_SHIFT, PRE_PRODUCTION_TRAFFIC_SHIFT, PRODUCTION_TRAFFIC_SHIFT, POST_PRODUCTION_TRAFFIC_SHIFT, BAKE_TIME and CLEAN_UP. Hook support is uneven: SCALE_UP, BAKE_TIME and CLEAN_UP support no lifecycle hooks at all, while TEST_TRAFFIC_SHIFT and PRODUCTION_TRAFFIC_SHIFT support Lambda hooks only and therefore cannot take a pause hook, which means the moment traffic is actually moving cannot be gated on a human. Hooks configured for PRODUCTION_TRAFFIC_SHIFT or PRE_PRODUCTION_TRAFFIC_SHIFT are invoked at every production traffic shift step. The configuration has two independent dials: step percent, which takes a Double with valid values from three point zero to one hundred, and step bake time, with valid values from zero to one thousand four hundred and forty minutes; the last step bake time is skipped once traffic has shifted one hundred percent. Three timeouts bound the result: each lifecycle stage and each traffic shift step may last up to twenty-four hours before the system times out, fails the deployment and initiates a rollback; CloudFormation enforces a thirty-six hour limit on the entire deployment; and the overall deployment timeout is thirty days, with pause hooks configurable up to twenty thousand one hundred and sixty minutes or fourteen days. The central finding is that the two dials at their documented extremes exceed the third limit: a three percent step needs thirty-four steps and therefore thirty-three bake periods, and thirty-three periods of one thousand four hundred and forty minutes is forty-seven thousand five hundred and twenty minutes, or thirty-three days, against a thirty day overall deployment timeout, so the most cautious linear deployment the API accepts times out before it completes. Working backwards, thirty days across thirty-three bakes allows about one thousand three hundred and nine minutes per step rather than the documented one thousand four hundred and forty, and CloudFormation's thirty-six hours across thirty-three bakes allows only about sixty-five minutes per step. A closing note records that the deployment circuit breaker can only be used for services using the rolling update ECS deployment type, so rollback for these strategies comes from CloudWatch alarms and from the stage timeouts rather than from the circuit breaker, and that linear deployments temporarily run both revisions simultaneously, which may double resource usage during a deployment." />
+      <figcaption>Two independent dials, three timeouts, and one combination the API accepts but cannot complete.</figcaption>
+    </figure>
+
+    <h3>Two dials, documented independently</h3>
+    <p>
+      <em>&ldquo;Step percent &mdash; The percentage of traffic to shift in each increment during a linear
+      deployment. This field takes Double for value, and valid values are from <strong>3.0 to
+      100.0</strong>.&rdquo;</em>
+    </p>
+    <p>
+      <em>&ldquo;Step bake time &mdash; The duration to wait between each traffic shift increment during a
+      linear deployment. Valid values are from <strong>0 - 1440 minutes</strong>.&rdquo;</em>
+    </p>
+    <p>
+      Both are legitimate. A 3% step is the most gradual shift the API will take, and 1,440 minutes is a full
+      day of observation between increments &mdash; which is exactly what someone deploying something
+      frightening would reach for.
+    </p>
+
+    <h3>And three timeouts, on the same page</h3>
+    <p>
+      <em>&ldquo;Each lifecycle stage can last up to <strong>24 hours</strong> and in addition each traffic
+      shift step in <code class="inline">PRODUCTION_TRAFFIC_SHIFT</code> can last upto 24 hours&hellip; The
+      system <strong>times out, fails the deployment, and then initiates a rollback</strong> after a stage
+      reaches 24 hours.&rdquo;</em>
+    </p>
+    <p>
+      <em>&ldquo;While the 24-hour stage limit remains in effect, CloudFormation enforces a <strong>36-hour
+      limit on the entire deployment</strong>.&rdquo;</em>
+    </p>
+    <p>
+      <em>&ldquo;For pause hooks, you can configure the timeout up to 20,160 minutes (14 days). The
+      <strong>overall deployment timeout is 30 days</strong>.&rdquo;</em>
+    </p>
+
+    <h3>Multiply the dials and you land outside the third limit</h3>
+    <p>
+      A 3% step needs 34 increments to reach 100%, and the waits sit between them &mdash;
+      <em>&ldquo;Note, that last step bake time is skipped once traffic is shifted 100.0%&rdquo;</em> &mdash; so
+      <strong>33</strong> bake periods.
+    </p>
+    <p>
+      At the maximum step bake time that is 33 &times; 1,440 = <strong>47,520 minutes</strong>, which is
+      <strong>33 days</strong>. The overall deployment timeout is <strong>30 days</strong>.
+    </p>
+    <p>
+      So the most cautious linear deployment the API will accept cannot complete. Every individual value is
+      inside its documented range, each stage is inside its 24-hour cap, and the deployment still dies three
+      days short of the end &mdash; and what it does on timeout is roll back, which at that point means
+      discarding a revision that has been serving a majority of production traffic for weeks.
+    </p>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Constraint</th><th>Bake periods</th><th>Max step bake time that fits</th></tr>
+      <tr><td>Documented range</td><td>33</td><td>1,440 min &mdash; <strong>does not fit</strong></td></tr>
+      <tr><td>30-day overall timeout</td><td>33</td><td>~1,309 min (21.8 h)</td></tr>
+      <tr><td>CloudFormation, 36 h total</td><td>33</td><td><strong>~65 min</strong></td></tr>
+    </table>
+    </div>
+
+    <p>
+      The CloudFormation row is the one that will actually bite, because most people deploy ECS services from a
+      template rather than from the API. Thirty-six hours for the entire deployment, spread across 33
+      increments, is about <strong>65 minutes</strong> of observation per step. Set 1,440 and not even two
+      increments fit inside the limit.
+    </p>
+  </div>
+
+  <div class="section" id="hooks">
+    <h2>Lifecycle hooks are uneven, and unevenly in the places you want them</h2>
+    <p>
+      Eleven stages, and the hook support column is the thing to read before designing a gate:
+    </p>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Stage</th><th>Hook support</th><th>What it means</th></tr>
+      <tr><td><code class="inline">PRE_SCALE_UP</code>, <code class="inline">POST_SCALE_UP</code></td><td>Yes</td><td>Lambda or pause, before any traffic moves</td></tr>
+      <tr><td><code class="inline">SCALE_UP</code></td><td><strong>No</strong></td><td>Green launching tasks; nothing can gate it</td></tr>
+      <tr><td><code class="inline">TEST_TRAFFIC_SHIFT</code></td><td>Lambda only</td><td>No pause hook while test traffic migrates</td></tr>
+      <tr><td><code class="inline">PRE_PRODUCTION_TRAFFIC_SHIFT</code></td><td>Yes</td><td><em>&ldquo;invoked at every traffic shift step&rdquo;</em></td></tr>
+      <tr><td><code class="inline">PRODUCTION_TRAFFIC_SHIFT</code></td><td>Lambda only</td><td>No pause hook while production traffic moves</td></tr>
+      <tr><td><code class="inline">BAKE_TIME</code>, <code class="inline">CLEAN_UP</code></td><td><strong>No</strong></td><td>No gate before the blue revision is torn down</td></tr>
+    </table>
+    </div>
+
+    <p>
+      The pattern is consistent: you can gate <em>around</em> a traffic shift but not <em>during</em> one. A
+      pause hook &mdash; which <em>&ldquo;pause[s] the deployment and wait[s] for you to call
+      <code class="inline">ContinueServiceDeployment</code> to proceed&rdquo;</em> &mdash; belongs on
+      <code class="inline">PRE_PRODUCTION_TRAFFIC_SHIFT</code>, and that one fires
+      <em>&ldquo;at every production traffic shift step&rdquo;</em>.
+    </p>
+    <p>
+      Which is worth doing the arithmetic on too: a pause hook on that stage at 3% steps means <strong>34
+      manual approvals</strong> for one deployment. It is a per-step hook, not a per-deployment one.
+    </p>
+    <p>
+      And <code class="inline">BAKE_TIME</code> and <code class="inline">CLEAN_UP</code> supporting no hooks
+      means there is no programmatic last look before the old revision scales to zero. The bake time itself is
+      the only thing standing between a bad release and an irreversible one.
+    </p>
+  </div>
+
+  <div class="section" id="rollback">
+    <h2>What rolls this back is not the circuit breaker</h2>
+    <p>
+      The announcement mentions circuit-breaker integration, and the API reference is narrower about where the
+      circuit breaker applies: <em>&ldquo;The deployment circuit breaker can only be used for services using
+      the rolling update (<code class="inline">ECS</code>) deployment type.&rdquo;</em>
+    </p>
+    <p>
+      For the three traffic-shifting strategies the rollback path is the <code class="inline">alarms</code>
+      configuration plus the stage timeouts &mdash; the monitoring phase is described as
+      <em>&ldquo;Monitor application health, performance metrics, and alarm states during the bake time period.
+      A rollback operation is initiated when issues are detected&rdquo;</em>, and the 24-hour stage cap
+      <em>&ldquo;times out, fails the deployment, and then initiates a rollback&rdquo;</em> on its own.
+    </p>
+    <p>
+      Worth being precise about, because the two mechanisms behave differently. The circuit breaker reacts to
+      tasks failing to reach steady state; CloudWatch alarms react to whatever you told them to watch. A linear
+      deployment with no alarms configured has no automatic failure detection during traffic shifting at all
+      &mdash; it will shift all the way to 100% on a revision that is serving errors, as long as its tasks are
+      healthy.
+    </p>
+    <p>
+      That is the same shape as <a href="/blog/aws-daily-intelligence-ecs-deployment-observability/">#37</a>,
+      which found that ECS rollback targets the most recent <code class="inline">COMPLETED</code> deployment and
+      can strand itself when there isn't one. Deployment safety here is a set of things you configure, not a
+      property you get.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      No charge is stated for the capability, and the real cost is capacity:
+      <em>&ldquo;Linear deployments temporarily run both the blue and green service revisions simultaneously,
+      which may <strong>double your resource usage</strong> during deployments.&rdquo;</em>
+    </p>
+    <p>
+      Combine that with the timing arithmetic and the bill becomes a function of your caution. A 3% step with a
+      one-hour bake is about 33 hours at double capacity. The same service deployed blue/green with a 30-minute
+      bake is about half an hour. Choosing the gentlest strategy is choosing to run two copies of production for
+      a day and a half.
+    </p>
+    <p>
+      That is the trade to state plainly rather than discover: linear deployments buy confidence with capacity
+      and wall-clock time, and both scale with the number of steps.
+    </p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      <strong>Pick the step percent from your traffic volume, not from your nerves.</strong> The point of a
+      small step is to expose the new revision to enough requests to see a problem. If 3% of your traffic is
+      forty requests a minute, a 3% step tells you almost nothing and costs you 33 waits.
+    </p>
+    <p>
+      <strong>Then check the product against your deployment path.</strong> Steps &times; step bake time has to
+      fit inside 36 hours if CloudFormation drives the deployment, and inside 30 days otherwise. There is
+      nothing that warns you at configuration time &mdash; both values are individually valid.
+    </p>
+    <p>
+      <strong>Configure <code class="inline">alarms</code>.</strong> Without them, traffic shifting has no
+      automatic abort, and the circuit breaker is not available for these strategies.
+    </p>
+    <p>
+      <strong>Put pause hooks on <code class="inline">PRE_PRODUCTION_TRAFFIC_SHIFT</code> only if you mean it
+      per step.</strong> For a single human gate, use <code class="inline">POST_TEST_TRAFFIC_SHIFT</code>
+      &mdash; after the green revision has taken 100% of test traffic and before any production request moves.
+    </p>
+    <p>
+      <strong>If you already run Lattice, drop the load balancer you added for deployments.</strong> That is the
+      actual win in this announcement: the traffic-shifting primitives are now the same three objects on either
+      substrate.
+    </p>
+  </div>
+
+  <div class="section" id="who">
+    <h2>Who should act on this</h2>
+    <p>
+      <strong>Anyone running ECS services behind VPC Lattice</strong> can now use the managed strategies
+      directly, on existing services, with no migration.
+    </p>
+    <p>
+      <strong>Anyone already using <code class="inline">LINEAR</code> with a small step and a long bake</strong>
+      should multiply the two numbers today and compare against 36 hours if the service is deployed by
+      CloudFormation. This is the item here that can already be configured wrong.
+    </p>
+    <p>
+      <strong>Anyone who added an ALB purely to get blue/green</strong> on a Lattice-fronted service can remove
+      it.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <p>
+      Lattice becoming a traffic-shifting resource is a clean, uncomplicated addition, and it removes a load
+      balancer that existed only to enable deployments.
+    </p>
+    <p>
+      The thing to carry away is about limits rather than about Lattice: <code class="inline">stepPercent</code>
+      and <code class="inline">stepBakeTimeInMinutes</code> are documented independently, and their product is
+      bounded by a third number documented further down the same page. At the extremes the API accepts a
+      configuration that runs 33 days against a 30-day ceiling, and under CloudFormation the real ceiling is 36
+      hours for everything.
+    </p>
+    <p>
+      Which is the same failure the last two posts found from different directions &mdash;
+      <a href="/blog/aws-architecture-private-ca/">today's #71</a> is about defaults that are individually
+      reasonable and collectively expensive. Here the values are individually valid and collectively impossible.
+      Nothing checks the combination but you.
+    </p>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-ecs-vpc-lattice-blue-green-deployments" target="_blank" rel="noopener">Amazon ECS adds Amazon VPC Lattice support for blue/green, linear, and canary deployments</a> &mdash; the announcement and Region availability</li>
+      <li><a href="https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-type-linear.html" target="_blank" rel="noopener">Amazon ECS linear deployments</a> &mdash; step percent and step bake time ranges, the eleven lifecycle stages and their hook support, and the stage, CloudFormation and overall timeouts</li>
+      <li><a href="https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_DeploymentConfiguration.html" target="_blank" rel="noopener">DeploymentConfiguration</a> &mdash; the four strategy values, the per-strategy configuration objects, and the circuit breaker restriction</li>
+    </ul>
+  </div>
+</div>

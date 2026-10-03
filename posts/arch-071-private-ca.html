@@ -1,0 +1,448 @@
+---
+title: "AWS Architecture Series #71 — Every CA certificate expiry is an outage with a date on it"
+date: '2026-10-03T09:00:00'
+slug: aws-architecture-private-ca
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-10-03'
+verified_claims:
+  - claim: "When a CA certificate expires, all of the certificates issued directly or indirectly by subordinate CAs below it in the CA hierarchy become invalid"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "A certificate managed by AWS Private CA must have a validity period shorter than or equal to the validity period of the CA that issued it, child CAs and end-entity certificates cannot outlive their parent certificates, and attempting to use the IssueCertificate API to issue a CA certificate with a validity period greater than or equal to the parent's CA fails"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "The AWS Private CA default for root certificates is ten years, three years is the default validity period for a subordinate CA certificate, and the default validity period for an end-entity certificate issued through ACM is 13 months (395 days)"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "A good range for a CA certificate's validity is two to five times the period of any child CA certificate or end-entity certificate it issues"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "Changes to a root CA certificate affect the entire PKI and require you to update all the dependent client operating system and browser trust stores, while subordinate CA certificates can be changed without replacing the root CA certificate"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "AWS recommends replacing an expiring CA rather than reissuing its certificate because of the security advantages gained by rotating to a new key pair"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "Private certificates issued through ACM cannot be renewed if you replace the CA, and if you use ACM for issuance and renewal you must re-issue the CA certificate to extend the lifetime of the CA"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "While disabled, the old CA supports revocation for old certificates issued from the CA, and when the last certificate issued from the old CA expires you can delete the old CA"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "If the old CA has subordinate CAs you must also replace them, because subordinate CAs expire at the same time or before their parent CA, starting with the highest CA in the hierarchy that needs to be replaced"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "Reissuance leaves all of the CA metadata in place and preserves the existing private and public keys, and the existing certificate chain and unexpired end-entity certificates issued by the CA remain valid until they expire"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "Revoking a CA by revoking its underlying certificate also effectively revokes all of the certificates issued by the CA"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "You can generate an audit report for all of the certificates issued from the CA to confirm that all of the certificates issued have expired"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "AWS Private CA costs $400 per private CA per month for general-purpose mode and $50 per private CA per month for short-lived certificate mode"
+    source: https://aws.amazon.com/private-ca/pricing/
+  - claim: "In general-purpose mode certificates 1 - 1,000 cost $0.75 each, 1,001 - 10,000 cost $0.35 each, and 10,001+ cost $0.001 each, while in short-lived certificate mode 1+ certificates cost $0.058 each"
+    source: https://aws.amazon.com/private-ca/pricing/
+  - claim: "At a thousand certificates a month general-purpose mode costs about ten times short-lived certificate mode"
+    derive: "(400 + 1000*0.75) / (50 + 1000*0.058)"
+    expect: "10.65"
+    source: https://aws.amazon.com/private-ca/pricing/
+  - claim: "General-purpose mode becomes cheaper than short-lived certificate mode only at the volume where its $0.001 per-certificate rate above 10,000 certificates outweighs its $400 monthly charge against $50, which is far above the volume of a typical private PKI"
+    derive: "(400 + 1000*0.75 + 9000*0.35 - 10000*0.001 - 50) / (0.058 - 0.001)"
+    expect: "74386"
+    source: https://aws.amazon.com/private-ca/pricing/
+  - claim: "You are not charged for a private CA after you delete it, but if you restore a deleted CA you are charged for the time between deleting it and restoring it, and private CA operation is pro-rated for partial months based on when you create and delete the CA"
+    source: https://aws.amazon.com/private-ca/pricing/
+  - claim: "There is no CA operation charge for the first 30 days for the first private CA created in the account in each Region"
+    source: https://aws.amazon.com/private-ca/pricing/
+  - claim: "The UsageMode parameter specifies whether the CA issues general-purpose certificates that typically require a revocation mechanism, or short-lived certificates that may optionally omit revocation because they expire quickly, short-lived certificate validity is limited to seven days, and the default value is GENERAL_PURPOSE"
+    source: https://docs.aws.amazon.com/privateca/latest/APIReference/API_CreateCertificateAuthority.html
+  - claim: "The RevocationConfiguration contains information to enable support for Online Certificate Status Protocol (OCSP), certificate revocation list (CRL), both protocols, or neither, and by default both certificate validation mechanisms are disabled"
+    source: https://docs.aws.amazon.com/privateca/latest/APIReference/API_CreateCertificateAuthority.html
+  - claim: "The KeyStorageSecurityStandard default is FIPS_140_2_LEVEL_3_OR_HIGHER, some AWS Regions don't support the default value, and when you create a CA in these Regions you must use CCPC_LEVEL_1_OR_HIGHER or the operation returns an InvalidArgsException"
+    source: https://docs.aws.amazon.com/privateca/latest/APIReference/API_CreateCertificateAuthority.html
+  - claim: "With AWS Private CA you can create a hierarchy of certificate authorities with up to five levels, and the root CA can have as many as four levels of subordinate CAs on each branch"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-hierarchy.html
+  - claim: "A root CA certificate needs maximum flexibility and does not include a path length constraint, and the IssueCertificate API will return an error if you attempt to create a CA with a path length greater than or equal to the path length of its issuing CA certificate"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-hierarchy.html
+  - claim: "For a private PKI your organization's IT must ensure that each browser or system has previously added the private root CA to its trust store, otherwise the certification path cannot be validated, resulting in client errors"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-hierarchy.html
+  - claim: "AWS recommends that you include a CA generation identifier in the names of CAs as needed, so that a second generation CA is named Corporate Root CA G2"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+problem: "A private CA is created in an afternoon and lived with for a decade. The default root validity is ten years, which reads like a sensible number and is actually a date on which every certificate beneath it stops working — and the mitigation requires updating a trust store on every machine that trusts it."
+builds: "A reading of the lifecycle and hierarchy rules against the pricing page, to establish what a private CA costs to operate rather than to create, and which of its creation-time choices cannot be changed afterwards."
+catch: "The succession method AWS recommends and the renewal AWS manages are mutually exclusive. It recommends replacing an expiring CA rather than reissuing it, 'because of the security advantages gained by rotating to a new key pair' — then notes that 'private certificates issued through ACM cannot be renewed if you replace the CA.' Choose ACM-managed renewal and you are committed to the method AWS advises against."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #071 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">Every CA certificate expiry is an outage with a date on it</h1>
+  <p class="post-subtitle">The expensive mode is the default, revocation is off unless you ask for it, and the succession procedure AWS recommends is incompatible with the renewal AWS manages.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Reliability &middot; Cost Optimization</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <a href="/blog/aws-architecture-roles-anywhere/">#70</a> closed by saying that Roles Anywhere moves half
+      your authorisation decision into your PKI. This is that PKI. And the thing about a private CA is that
+      creating one takes an afternoon while living with one takes years, so nearly every consequential decision
+      gets made before anybody has operated it.
+    </p>
+    <p>
+      Start with the sentence that defines the risk:
+      <em>&ldquo;When a CA certificate expires, <strong>all of the certificates issued directly or indirectly by
+      subordinate CAs below it</strong> in the CA hierarchy become invalid.&rdquo;</em>
+    </p>
+    <p>
+      Not "cannot be renewed". Invalid. Every certificate in the subtree, at once, on a date chosen years
+      earlier by whoever accepted a default.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The succession AWS recommends breaks the renewal AWS manages</strong></div>
+      <div class="challenge-body">
+        <p>
+          There are two ways to carry a CA past its expiry, and AWS states a preference:
+          <em>&ldquo;We recommend <strong>replacing</strong> an expiring CA rather than reissuing its
+          certificate because of the security advantages gained by rotating to a new key pair.&rdquo;</em>
+          Reissuance, by contrast, <em>&ldquo;leaves all of the CA metadata in place and <strong>preserves the
+          existing private and public keys</strong>.&rdquo;</em>
+        </p>
+        <p>
+          Then, a few paragraphs earlier, in a Note:
+          <em>&ldquo;Private certificates issued through ACM <strong>cannot be renewed if you replace the
+          CA</strong>. If you use ACM for issuance and renewal, you must <strong>re-issue</strong> the CA
+          certificate to extend the lifetime of the CA.&rdquo;</em>
+        </p>
+        <p>
+          Both are correct and they point opposite ways. ACM-managed renewal &mdash; the thing that makes
+          private certificates operationally tolerable at any scale &mdash; commits you to reissuance, which is
+          the method AWS tells you not to prefer. The CA key you were advised to rotate is the one you cannot
+          rotate without breaking renewal for everything that depends on it.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Decide at creation. If ACM renews your certificates, plan for reissuance, and get key rotation by standing up a new subordinate CA alongside rather than replacing the one ACM points at.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The expensive mode is the default</strong></div>
+      <div class="challenge-body">
+        <p>
+          Two modes, and the gap is not subtle:
+          <em>&ldquo;$400 per private CA per month for general-purpose mode&rdquo;</em> against
+          <em>&ldquo;$50 per private CA per month for short-lived certificate mode&rdquo;</em>. Per certificate
+          it is <code class="inline">$0.75</code> against <code class="inline">$0.058</code> at low volume.
+        </p>
+        <p>
+          And the API reference names which one you get by not choosing:
+          <em>&ldquo;The default value is <code class="inline">GENERAL_PURPOSE</code>.&rdquo;</em>
+        </p>
+        <p>
+          At a thousand certificates a month that is <strong>$1,150 against $108</strong> &mdash; a factor of
+          about <strong>ten</strong>. The restriction in exchange is real:
+          <em>&ldquo;Short-lived certificate validity is limited to <strong>seven days</strong>.&rdquo;</em> But
+          a seven-day certificate is exactly what a Roles Anywhere workload or a service mesh wants, and that is
+          a large share of what private CAs are actually used for.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Work out your longest required certificate lifetime before creating anything. Over seven days, buy general-purpose mode deliberately rather than by default.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>A new CA has no revocation at all</strong></div>
+      <div class="challenge-body">
+        <p>
+          The <code class="inline">RevocationConfiguration</code> parameter
+          <em>&ldquo;contains information to enable support for Online Certificate Status Protocol (OCSP),
+          certificate revocation list (CRL), both protocols, or neither. <strong>By default, both certificate
+          validation mechanisms are disabled</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So a CA created without that block issues certificates that cannot be revoked in any way a client can
+          discover. This is the gap <a href="/blog/aws-architecture-roles-anywhere/">#70</a> found, approached
+          from the other end: there, AWS never calls your CRL distribution point; here, there may be no CRL for
+          anything to call.
+        </p>
+        <p>
+          General-purpose mode is described as issuing certificates <em>&ldquo;that typically require a
+          revocation mechanism&rdquo;</em>. Typically requiring one is not the same as having one.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Configure CRL, OCSP or both in the create call &mdash; or choose short-lived mode and let expiry do the work, which is what it is for.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The hierarchy is the part that is close to permanent, because its shape is written into every certificate
+      it issues.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-071-private-ca.svg" alt="Diagram: what a private CA costs to operate rather than to create, and which choices cannot be changed afterwards. AWS Private CA supports a hierarchy of certificate authorities up to five levels deep, with the root CA able to have as many as four levels of subordinate CAs on each branch. Validity periods nest: a certificate must have a validity period shorter than or equal to the validity period of the CA that issued it, child CAs and end-entity certificates cannot outlive their parents, and the IssueCertificate API fails when asked to issue a CA certificate with a validity period greater than or equal to its parent's, so a subordinate must be strictly shorter than its parent rather than merely not longer. The defaults are ten years for a root certificate, three years for a subordinate CA certificate, and thirteen months or 395 days for an end-entity certificate issued through ACM, with AWS guidance that a CA certificate's validity should be two to five times that of the certificates it issues. The central warning is the expiry cascade: when a CA certificate expires, all of the certificates issued directly or indirectly by subordinate CAs below it become invalid, so the expiry date chosen at creation is a scheduled outage for the whole subtree, and revoking a CA has the same blast radius because it effectively revokes all of the certificates issued by that CA. The path structure is enforced by the basic constraints extension, where a root CA carries no pathLenConstraint while subordinate CAs carry values of zero or more, and the IssueCertificate API returns an error if a CA is created with a path length greater than or equal to that of its issuing CA. A succession panel records the contradiction: AWS recommends replacing an expiring CA rather than reissuing its certificate, because of the security advantages gained by rotating to a new key pair, but also notes that private certificates issued through ACM cannot be renewed if you replace the CA, so using ACM for issuance and renewal commits you to reissuing the CA certificate instead, which preserves the existing private and public keys. The replacement procedure keeps the old CA disabled, where it still supports revocation for the certificates it issued, until the last of those certificates expires, at which point the old CA can be deleted; and if the old CA has subordinate CAs they must be replaced too, starting with the highest CA in the hierarchy that needs replacing. A cost panel records that general-purpose mode costs four hundred dollars per private CA per month against fifty dollars for short-lived certificate mode, that per-certificate charges are seventy-five cents for the first thousand, thirty-five cents from one thousand and one to ten thousand, and a tenth of a cent above ten thousand in general-purpose mode against five point eight cents flat in short-lived mode, that general-purpose is the default usage mode, and that short-lived certificate validity is limited to seven days. At a thousand certificates a month general-purpose costs about ten times short-lived, and general-purpose only becomes cheaper above roughly seventy-four thousand four hundred certificates a month. Billing ends on deletion rather than on disabling, restoring a deleted CA charges for the intervening time, operation is pro-rated for partial months, and there is no CA operation charge for the first thirty days for the first private CA created in an account in each Region. A closing panel notes that by default both revocation mechanisms are disabled, that the key storage security standard default of FIPS 140-2 Level 3 or higher is unsupported in some Regions where CCPC Level 1 or higher must be used instead or the call returns an InvalidArgsException, and that changing a root CA certificate requires updating every dependent operating system and browser trust store because for a private PKI the organization's IT must ensure each browser or system has already added the private root CA to its trust store." />
+      <figcaption>Five levels, nested validity, and one expiry date that invalidates everything beneath it.</figcaption>
+    </figure>
+
+    <h3>The hierarchy, and what it fixes permanently</h3>
+    <p>
+      <em>&ldquo;With AWS Private CA, you can create a hierarchy of certificate authorities with up to five
+      levels&hellip; The root CA can have as many as four levels of subordinate CAs on each branch.&rdquo;</em>
+    </p>
+    <p>
+      The depth is enforced in the certificates themselves, through the basic constraints extension. A root
+      <em>&ldquo;needs maximum flexibility and does not include a path length constraint&rdquo;</em>, while
+      subordinates carry a <code class="inline">pathLenConstraint</code> that decrements down the tree. And the
+      enforcement happens at issuance:
+      <em>&ldquo;The <code class="inline">IssueCertificate</code> API will return an error if you attempt to
+      create a CA with a path length greater than or equal to the path length of its issuing CA
+      certificate.&rdquo;</em>
+    </p>
+    <p>
+      So the depth you can grow into later is decided by the constraint values you set now. An issuing CA minted
+      at <code class="inline">PathLen0</code> can sign end-entity certificates and never another CA &mdash;
+      correct for an issuing CA, and also a choice that cannot be relaxed without replacing that CA and
+      everything beneath it.
+    </p>
+
+    <h3>Validity nests, and for CA certificates the comparison is strict</h3>
+    <p>
+      <em>&ldquo;A certificate managed by AWS Private CA must have a validity period shorter than or equal to
+      the validity period of the CA that issued it. In other words, child CAs and end-entity certificates
+      cannot outlive their parent certificates.&rdquo;</em>
+    </p>
+    <p>
+      For end-entity certificates that bound is inclusive. For CA certificates it is not:
+      <em>&ldquo;Attempting to use the <code class="inline">IssueCertificate</code> API to issue a CA
+      certificate with a validity period <strong>greater than or equal to</strong> the parent's CA
+      fails.&rdquo;</em> A subordinate cannot even match its parent's expiry &mdash; it must be strictly
+      shorter. Worth knowing before writing a module that sets both from one variable.
+    </p>
+    <p>
+      The defaults stack accordingly: <strong>ten years</strong> for a root, <strong>three years</strong> for a
+      subordinate, <strong>13 months (395 days)</strong> for an ACM-issued end-entity certificate. AWS's sizing
+      rule is <em>&ldquo;two to five times the period of any child CA certificate or end-entity certificate it
+      issues&rdquo;</em>, worked backwards from the leaf rather than forwards from the root.
+    </p>
+
+    <div class="callout amber">
+      <strong>The root's expiry is not an AWS problem, it is a fleet problem</strong>
+      <p>Replacing a subordinate is routine — <em>&ldquo;Subordinate CA certificates can be changed without replacing the root CA certificate.&rdquo;</em> The root is not: <em>&ldquo;Changes to a root CA certificate affect the entire PKI&hellip; and <strong>require you to update all the dependent client operating system and browser trust stores</strong>.&rdquo;</em> That is because trust begins outside AWS entirely — <em>&ldquo;your organization's IT must ensure that each browser or system has previously added the private root CA to its trust store. Otherwise, the certification path cannot be validated, resulting in client errors.&rdquo;</em> Ten years is the default precisely so this becomes somebody else's problem, which is also why nobody will have rehearsed it.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>What it costs to operate, which is not what it costs to create</h3>
+    <p>
+      The monthly charge dominates at any volume a private PKI actually sees. From the published rates:
+    </p>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Certificates / month</th>
+        <th>General-purpose</th>
+        <th>Short-lived</th>
+        <th>Ratio</th>
+      </tr>
+      <tr><td>100</td><td>$475.00</td><td>$55.80</td><td>8.5&times;</td></tr>
+      <tr><td>1,000</td><td>$1,150.00</td><td>$108.00</td><td>10.6&times;</td></tr>
+      <tr><td>10,000</td><td>$4,300.00</td><td>$630.00</td><td>6.8&times;</td></tr>
+      <tr><td>50,000</td><td>$4,340.00</td><td>$2,950.00</td><td>1.5&times;</td></tr>
+      <tr><td><strong>~74,400</strong></td><td><strong>$4,364</strong></td><td><strong>$4,364</strong></td><td><strong>break-even</strong></td></tr>
+      <tr><td>100,000</td><td>$4,390.00</td><td>$5,850.00</td><td>0.75&times;</td></tr>
+    </table>
+    </div>
+
+    <p>
+      The crossover sits near <strong>74,400 certificates a month</strong>, where general-purpose mode's
+      <code class="inline">$0.001</code> tier above 10,000 finally outweighs its eight-times-higher monthly
+      charge. Below that &mdash; which is every private PKI not issuing certificates to a manufactured device
+      fleet &mdash; short-lived mode is cheaper, by an order of magnitude through the middle of the range.
+    </p>
+    <p>
+      And notice what that <code class="inline">$0.001</code> tier does to the general-purpose curve: past
+      10,000 certificates the bill barely moves. The decision is almost entirely about the fixed monthly charge
+      and almost not at all about volume.
+    </p>
+
+    <div class="callout red">
+      <strong>The correct succession procedure means paying for two CAs</strong>
+      <p>Replacing a CA properly keeps the old one alive: <em>&ldquo;While disabled, the old CA supports revocation for old certificates issued from the CA&hellip; <strong>When the last certificate issued from the old CA expires, you can delete the old CA.</strong>&rdquo;</em> And the pricing page ties the end of charges to deletion rather than to disabling — <em>&ldquo;You are not charged for a private CA after you <strong>delete</strong> it&rdquo;</em>, with operation <em>&ldquo;pro-rated for partial months based on when you <strong>create and delete</strong> the CA.&rdquo;</em> With 395-day ACM certificates outstanding, that overlap runs about thirteen months, so one clean generational rotation of one general-purpose CA carries on the order of <strong>$5,200</strong> of double-running on top of the new CA. That is the cost of doing it the recommended way, and it belongs in the plan rather than in a bill.</p>
+    </div>
+
+    <h3>Deleting is not a safety valve either</h3>
+    <p>
+      <em>&ldquo;If you <strong>restore</strong> a deleted CA, you are charged for the time between deleting it
+      and restoring it.&rdquo;</em> Deletion stops the meter only if it is permanent &mdash; a CA deleted during
+      a cost review and restored when somebody notices the outage is billed for the gap anyway. And the free
+      period is narrow and one-off: <em>&ldquo;no CA operation charge for the first 30 days for the first private
+      CA created in the account in each Region&rdquo;</em>, which is enough to evaluate and not enough to pilot.
+    </p>
+
+    <h3>Two creation-time choices that bite later</h3>
+    <p>
+      <code class="inline">UsageMode</code> is set in the create call and is what the pricing follows, so the
+      $400-versus-$50 decision is made in the same API call that creates the CA, by a parameter that is
+      <em>&ldquo;Required: No&rdquo;</em>.
+    </p>
+    <p>
+      And the key-storage standard has a default that does not work everywhere:
+      <em>&ldquo;Default: FIPS_140_2_LEVEL_3_OR_HIGHER&hellip; Some AWS Regions don't support the default value.
+      When you create a CA in these Regions, you must use
+      <code class="inline">CCPC_LEVEL_1_OR_HIGHER</code>&hellip; If you don't, the operation returns an
+      <code class="inline">InvalidArgsException</code>&hellip;&rdquo;</em> A module that works in one Region
+      fails in another on a parameter nobody set.
+    </p>
+
+    <h3>The naming convention is a real control</h3>
+    <p>
+      Small, and it prevents a specific confusion:
+      <em>&ldquo;AWS recommends that you include a CA generation identifier in the names of CAs as
+      needed&hellip; This simple naming convention can help avoid confusion when both CAs are
+      unexpired.&rdquo;</em> The worked example in the documentation is a first-generation
+      <code class="inline">Corporate Root CA</code> followed by a <code class="inline">Corporate Root CA G2</code>.
+    </p>
+    <p>
+      During a succession both generations are unexpired and both are valid, and the only thing distinguishing
+      them in a console list is a name you had to choose before you needed it.
+    </p>
+
+    <h3>Revocation has the same blast radius as expiry</h3>
+    <p>
+      <em>&ldquo;You revoke a CA by revoking its underlying certificate. This also effectively revokes all of
+      the certificates issued by the CA.&rdquo;</em>
+    </p>
+    <p>
+      So the two bad days have identical scope: everything beneath the CA. That is the argument for more
+      subordinates rather than fewer, each with a smaller population under it &mdash; the hierarchy is not an
+      org chart, it is a blast-radius diagram. AWS's own guidance pulls the other way on depth
+      (<em>&ldquo;Aim for a <em>path length</em>&hellip; no greater than necessary&rdquo;</em>, because each
+      level adds validation time), so the shape to aim for is wide and shallow, not deep.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Usage mode</td>
+        <td>Short-lived unless a certificate must outlive 7 days</td>
+        <td>$50 against $400 a month; general-purpose is only cheaper above ~74,400 certificates a month.</td>
+      </tr>
+      <tr>
+        <td>Renewal strategy</td>
+        <td>Pick ACM-managed or key-rotating succession, at creation</td>
+        <td>ACM-issued certificates cannot be renewed if you replace the CA, so ACM commits you to reissuance.</td>
+      </tr>
+      <tr>
+        <td>Key rotation under ACM</td>
+        <td>New subordinate alongside, not replacement underneath</td>
+        <td>Gets a fresh key pair without invalidating ACM's renewal path for existing certificates.</td>
+      </tr>
+      <tr>
+        <td>Revocation</td>
+        <td>Configure CRL or OCSP in the create call</td>
+        <td>By default both are disabled, so certificates ship with no way to revoke them.</td>
+      </tr>
+      <tr>
+        <td>Root validity</td>
+        <td>Long, and write the trust-store rollout plan now</td>
+        <td>Changing it requires updating every dependent OS and browser trust store.</td>
+      </tr>
+      <tr>
+        <td>Subordinate validity</td>
+        <td>Strictly shorter than the parent, 2&ndash;5&times; the leaf</td>
+        <td>A CA certificate equal to its parent's validity fails at <code class="inline">IssueCertificate</code>.</td>
+      </tr>
+      <tr>
+        <td>Path length</td>
+        <td><code class="inline">PathLen0</code> for issuing CAs</td>
+        <td>They cannot then mint further CAs; relaxing it later means replacing the CA.</td>
+      </tr>
+      <tr>
+        <td>Hierarchy shape</td>
+        <td>Wide and shallow &mdash; more subordinates, smaller populations</td>
+        <td>Expiry and revocation both take out the whole subtree; extra depth only adds validation time.</td>
+      </tr>
+      <tr>
+        <td>Naming</td>
+        <td>Generation suffix from the first CA onward</td>
+        <td>Both generations are unexpired and valid during a succession.</td>
+      </tr>
+      <tr>
+        <td>Key storage standard</td>
+        <td>Set explicitly in every module</td>
+        <td>The default is unsupported in some Regions and fails with <code class="inline">InvalidArgsException</code>.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The two dates worth putting in a calendar</h3>
+    <p>
+      Not the root's expiry &mdash; that one is ten years out and will be somebody else's job. The two that
+      matter are <strong>each subordinate's expiry minus the longest certificate lifetime it issues</strong>,
+      because that is the last moment a replacement can start without leaving a gap, and <strong>the date the
+      last certificate from a retired CA expires</strong>, because that is when the old CA can finally be
+      deleted and the double billing stops.
+    </p>
+    <p>
+      AWS names the instrument for the second one: <em>&ldquo;You can generate an audit report for all of the
+      certificates issued from the CA to confirm that all of the certificates issued have expired.&rdquo;</em>
+      Nothing tells you the first one; it is arithmetic you have to do.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      A private CA is unusual among AWS resources in how much of it is settled by the
+      <code class="inline">CreateCertificateAuthority</code> call. Usage mode sets the bill for its whole life.
+      The revocation block decides whether its certificates can ever be revoked. Path length decides how deep
+      the hierarchy can grow. Validity sets a date on which everything beneath it stops working. None of those
+      can be changed later without replacing the CA &mdash; and replacing a CA is the procedure that costs about
+      thirteen months of double-running and, if ACM is in the issuance path, cannot be done at all.
+    </p>
+    <p>
+      The pattern across this block is consistent by now.
+      <a href="/blog/aws-architecture-permissions-boundaries/">#36</a> was a boundary that bounds one of two
+      paths. <a href="/blog/aws-architecture-roles-anywhere/">#70</a> was a trust anchor that anchors nothing
+      without a condition. This one is a set of defaults that are each defensible and collectively expensive:
+      general-purpose mode, no revocation, a ten-year root.
+    </p>
+    <p>
+      So it is the same rule in a different costume &mdash; read what the default does before accepting it. And
+      here, specifically: write down the longest certificate lifetime you need before you create anything,
+      because that one number picks your mode, your price, your revocation story and your succession plan all at
+      once.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; KMS key policies and grants: why a grant is not a policy statement, what a grant can be created and retired by, and why the key policy is the one policy type that cannot be fixed from outside the key.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html" target="_blank" rel="noopener">Manage the private CA lifecycle &#8212; the expiry cascade, validity nesting and defaults, and the replace-versus-reissue succession methods</a></li>
+      <li><a href="https://aws.amazon.com/private-ca/pricing/" target="_blank" rel="noopener">AWS Private CA pricing &#8212; monthly charges per mode, per-certificate tiers, and what deletion and restoration do to the bill</a></li>
+      <li><a href="https://docs.aws.amazon.com/privateca/latest/APIReference/API_CreateCertificateAuthority.html" target="_blank" rel="noopener">CreateCertificateAuthority &#8212; UsageMode and its default, the revocation configuration default, and the Region-dependent key storage standard</a></li>
+      <li><a href="https://docs.aws.amazon.com/privateca/latest/userguide/ca-hierarchy.html" target="_blank" rel="noopener">Design a CA hierarchy &#8212; the five-level limit, path length constraints, trust stores and certificate templates</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
