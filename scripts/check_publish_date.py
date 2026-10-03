@@ -37,6 +37,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATE_RE = re.compile(r"^date:\s*'?([0-9]{4}-[0-9]{2}-[0-9]{2})", re.M)
 SLUG_RE = re.compile(r"^slug:\s*([A-Za-z0-9._-]+)", re.M)
 DRAFT_RE = re.compile(r"^draft:\s*true\s*$", re.M | re.I)
+VERIFIED_RE = re.compile(r"^verified:\s*'?([0-9]{4}-[0-9]{2}-[0-9]{2})", re.M)
 
 
 def verdict(front_matter, built_page_in_head, today):
@@ -55,6 +56,22 @@ def verdict(front_matter, built_page_in_head, today):
     if m.group(1) != today:
         return ("going live today (%s) but dated %s -- a first publish must carry "
                 "the date it actually publishes" % (today, m.group(1)))
+
+    # The verified badge tells a reader how fresh the facts are. If the post
+    # publishes today, the facts were confirmed today -- not on whichever day
+    # the lab happened to be built.
+    #
+    # Jay, 2026-10-03: "When you publish a post that day, the verification has
+    # to happen that day itself. No matter when I started working on the lab."
+    # Week 21 published on the 3rd carrying "verified 29 September", a 4-day
+    # gap and the largest in 257 posts. Nothing was wrong in it -- the prices
+    # had not moved -- but nobody had looked.
+    v = VERIFIED_RE.search(front_matter)
+    if not v:
+        return "no verified date in front matter"
+    if v.group(1) != today:
+        return ("publishing today (%s) but verified %s -- re-check the vendor "
+                "facts and bump it, or the badge dates itself" % (today, v.group(1)))
     return None
 
 
@@ -76,8 +93,14 @@ def self_test():
          verdict("date: '2026-09-24T18:00:00'\nslug: week-20\n", False, TODAY) is not None),
         ("a missing date is caught",
          verdict("slug: x\ntitle: y\n", False, TODAY) is not None),
-        ("today's date on a first publish passes",
-         verdict("date: '2026-09-26T14:00:00'\n", False, TODAY) is None),
+        ("a stale verified date on a first publish is caught",
+         verdict("date: '2026-09-26T14:00:00'\nverified: '2026-09-24'\n", False, TODAY) is not None),
+        ("the real Week 21 case: published 3 Oct, verified 29 Sep",
+         verdict("date: '2026-09-26T14:00:00'\nverified: '2026-09-22'\n", False, TODAY) is not None),
+        ("a missing verified date is caught",
+         verdict("date: '2026-09-26T14:00:00'\n", False, TODAY) is not None),
+        ("date and verified both today passes",
+         verdict("date: '2026-09-26T14:00:00'\nverified: '2026-09-26'\n", False, TODAY) is None),
         ("a draft is exempt",
          verdict("date: '2026-09-24T18:00:00'\ndraft: true\n", False, TODAY) is None),
         ("an already-published post is not re-dated",
