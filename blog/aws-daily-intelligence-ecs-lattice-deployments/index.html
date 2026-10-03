@@ -169,7 +169,7 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
       <div class="post-info">
         <span>Oct 3, 2026</span>
         <span class="post-info-dot"></span>
-        <span>9 min read</span>
+        <span>13 min read</span>
       </div>
     </header>
     <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 3 October 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
@@ -437,6 +437,44 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
       increments fit inside the limit.
     </p>
 </div>
+<div class="section" id="business-value">
+<h2>Business value</h2>
+<p>
+      Two things, and the smaller one is the cleaner win. If your service-to-service traffic already runs
+      through Lattice, you have until now needed a load balancer in front of it purely to get a managed
+      deployment strategy — an extra resource, an extra hop and an extra bill that existed for the benefit
+      of the deploy rather than the request path. That resource can go.
+    </p>
+<p>
+      The larger one is that traffic shifting becomes available on the substrate where cross-VPC and
+      cross-account calls already live. The strategies are the same ones ECS offers elsewhere, so this is not a
+      new capability to learn — it is an existing capability reaching the place a service mesh put your
+      traffic.
+    </p>
+</div>
+<div class="section" id="security">
+<h2>Security considerations</h2>
+<p>
+      Nothing here changes who can call what; the authorisation model for Lattice is unchanged. What changes is
+      the exposure window during a release, and it changes in a good direction: the test-traffic path runs first
+      and separately, so a new revision can be exercised end-to-end before a single production request reaches
+      it. <em>“Your traffic-shifting resource… directs test requests to the green environment while
+      production traffic remains on blue.”</em>
+</p>
+<p>
+      The thing worth gating deliberately is the pause hook. A pause hook is a human holding a deployment open,
+      and it waits for someone to call <code class="inline">ContinueServiceDeployment</code> — so whoever
+      holds that permission decides when a release proceeds. Scope
+      <code class="inline">ecs:ContinueServiceDeployment</code> like the approval step it is, not like a
+      read-only deployment action.
+    </p>
+<p>
+      And one failure mode is a security matter rather than a reliability one: a linear deployment with no
+      <code class="inline">alarms</code> configured will shift to 100% on a revision that is serving errors, so
+      long as its tasks are healthy. If the new revision has a broken authorisation path, task health will not
+      notice.
+    </p>
+</div>
 <div class="section" id="hooks">
 <h2>Lifecycle hooks are uneven, and unevenly in the places you want them</h2>
 <p>
@@ -516,6 +554,65 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
       and wall-clock time, and both scale with the number of steps.
     </p>
 </div>
+<div class="section" id="operations">
+<h2>Operational considerations</h2>
+<p>
+<strong>The deployment now has a duration you have to plan around.</strong> A rolling update finishes in
+      minutes. A linear deployment with 33 increments and an hour between each runs for a day and a half, with
+      both revisions live throughout. That changes what a change-freeze window means and what "deploy on Friday"
+      costs.
+    </p>
+<p>
+<strong>Stage timeouts fail closed, and they fail late.</strong> Each stage caps at 24 hours and
+      <em>“times out, fails the deployment, and then initiates a rollback”</em>. A pause hook nobody
+      answers therefore does not sit there indefinitely — it burns a day and then reverts, which is the
+      right default and a surprising one if you expected it to wait.
+    </p>
+<p>
+<strong>Know which path deploys the service.</strong> CloudFormation's 36-hour ceiling on the whole
+      deployment is far tighter than the 30-day API ceiling, so the same configuration behaves differently
+      depending on whether a template or a direct API call drove it. That is the single most important
+      operational fact in this release.
+    </p>
+<p>
+<strong>Pause-hook timeouts are generous enough to be dangerous.</strong> Configurable
+      <em>“up to 20,160 minutes (14 days)”</em> against a 24-hour stage cap — so a pause hook
+      can be configured to wait far longer than the stage it sits in will survive.
+    </p>
+</div>
+<div class="section" id="tradeoffs">
+<h2>Tradeoffs</h2>
+<div class="table-scroll">
+<table>
+<tr><th>Strategy</th><th>Buys you</th><th>Costs you</th></tr>
+<tr>
+<td><code class="inline">ROLLING</code></td>
+<td>Speed, and the deployment circuit breaker</td>
+<td>No traffic-percentage control; no test-traffic phase</td>
+</tr>
+<tr>
+<td><code class="inline">BLUE_GREEN</code></td>
+<td>One bake, one cutover, fast rollback</td>
+<td>Full exposure the moment traffic moves</td>
+</tr>
+<tr>
+<td><code class="inline">CANARY</code></td>
+<td>A small exposed population, then one cutover</td>
+<td>Only two exposure levels, so a problem that scales with load may not appear in the canary</td>
+</tr>
+<tr>
+<td><code class="inline">LINEAR</code></td>
+<td>Graduated exposure with a gate between each step</td>
+<td>Double capacity for the whole run, wall-clock measured in hours or days, and a product that has to fit inside three timeouts</td>
+</tr>
+</table>
+</div>
+<p>
+      The axis nobody states is that <strong>caution costs capacity multiplied by time</strong>, and linear
+      deployments scale both with the number of steps. A 3% step is not 33 times safer than a 100% step; it is
+      33 times longer and twice as expensive throughout.
+    </p>
+</div>
 <div class="section" id="implementation">
 <h2>Implementation guidance</h2>
 <p>
@@ -543,8 +640,41 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
       substrate.
     </p>
 </div>
+<div class="section" id="best-practices">
+<h2>Best practices</h2>
+<p>
+<strong>Derive the step percent from request volume, not from anxiety.</strong> A step is only a test if
+      enough traffic crosses it to surface a fault. Below a few hundred requests per increment you are paying in
+      hours for a sample that cannot tell you anything.
+    </p>
+<p>
+<strong>Compute steps × step bake time and compare it against your deployment path's ceiling</strong>
+      — 36 hours under CloudFormation, 30 days otherwise. Make it a check in CI if you template ECS
+      services, because nothing in the API will do it for you.
+    </p>
+<p>
+<strong>Always configure <code class="inline">alarms</code>.</strong> For these strategies they are the
+      only automatic abort; the circuit breaker is not available. An alarm on target-group 5xx and on the
+      service's own error metric is the minimum that makes graduated exposure mean anything.
+    </p>
+<p>
+<strong>Put the human gate at <code class="inline">POST_TEST_TRAFFIC_SHIFT</code>, not at
+      <code class="inline">PRE_PRODUCTION_TRAFFIC_SHIFT</code>.</strong> The first is one approval after the
+      green revision has taken all test traffic; the second fires at every step.
+    </p>
+<p>
+<strong>Use Lambda hooks for the per-step checks and keep them fast.</strong>
+<code class="inline">TEST_TRAFFIC_SHIFT</code> and <code class="inline">PRODUCTION_TRAFFIC_SHIFT</code>
+      accept Lambda only, so automated validation is the only thing that can run while traffic is actually
+      moving.
+    </p>
+<p>
+<strong>Drop the load balancer you added only to enable deployments</strong> once the Lattice path is
+      proven. That is the concrete saving in this release.
+    </p>
+</div>
 <div class="section" id="who">
-<h2>Who should act on this</h2>
+<h2>Who should adopt this</h2>
 <p>
 <strong>Anyone running ECS services behind VPC Lattice</strong> can now use the managed strategies
       directly, on existing services, with no migration.
