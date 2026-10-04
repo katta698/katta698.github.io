@@ -1,0 +1,396 @@
+---
+title: "GCP Architecture Series #52 — Google Groups as the Unit of Access"
+date: '2026-10-04T09:00:00'
+slug: gcp-architecture-groups-as-unit-of-access
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-10-04'
+verified_claims:
+  - claim: "In IAM, access changes, such as granting a role or denying a permission, are eventually consistent"
+    source: https://docs.cloud.google.com/iam/docs/access-change-propagation
+  - claim: "principals might still be able to use a recently revoked role or a recently denied permission"
+    source: https://docs.cloud.google.com/iam/docs/access-change-propagation
+  - claim: "Typically 2 minutes, potentially 7 minutes or longer"
+    source: https://docs.cloud.google.com/iam/docs/access-change-propagation
+  - claim: "Typically several minutes, potentially hours or longer"
+    source: https://docs.cloud.google.com/iam/docs/access-change-propagation
+  - claim: "In general, adding a principal to a group propagates faster than removing a principal from a group"
+    source: https://docs.cloud.google.com/iam/docs/access-change-propagation
+  - claim: "In general, group membership changes propagate faster than nested group membership changes"
+    source: https://docs.cloud.google.com/iam/docs/access-change-propagation
+  - claim: "Access groups are used for the sole purpose of providing access"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "used to enforce access restriction policies rather than providing access"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "Avoid using organizational groups to provide access to resources"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "All users in an organizational group rarely need the same level of access to resources"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "there can be a delay between when changes are made in an external IdP and when they are propagated to Cloud Identity, based on the synchronization frequency from the external IdP to Cloud Identity"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "This delay can lead to the proliferation of excess permissions"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "Nesting access groups can make it difficult to determine who has access to what resources"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "nesting access groups with different access policies might let principals bypass strict access group membership policies"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "Nesting enforcement groups can make it difficult to determine why a principal is being denied access"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "Because domain-restricted sharing (DRS) policy constraints apply to groups, but not to group members, access groups that allow external members can create a loophole that undermines DRS"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "whoCanLeaveGroup"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "NONE_CAN_LEAVE"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "Allowing users to leave an enforcement group goes against the principles of mandatory access control"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "Enforcement groups are also used to apply authentication controls such as SAML profile assignment or 2-Step Verification (2SV)"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "It can take up to several hours for changes made in the external IdP to be reflected in the access group"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "this naming collision could be exploited by a bad actor to create security groups that masquerade as another, less scrutinized group type"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "The Groups Admin role authorizes group creation, but it also lets any principal with that role manage all groups in the Cloud Identity account"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "Require users to re-join an access group or extend their membership after a period of time"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "This best practice is critical for achieving the goal of Zero Standing Privileges (ZSP)"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "because removing service accounts from an access group can result in service interruptions"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "allow only group members the ability to see who else is a member"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "Reusing access groups for multiple workloads leads to excessive permissioning and administration complexity"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "These features are only available to Google Workspace Enterprise Standard, Enterprise Plus, and Enterprise for Education, and Cloud Identity Premium accounts"
+    source: https://docs.cloud.google.com/identity/docs/how-to/query-memberships
+  - claim: "The user or service account that is making the query must have permission to view the memberships of all groups that are part of the query, otherwise the request will fail"
+    source: https://docs.cloud.google.com/identity/docs/how-to/query-memberships
+  - claim: "especially if one of them is a group owned by another organization"
+    source: https://docs.cloud.google.com/identity/docs/how-to/query-memberships
+  - claim: "Security auditors can assess the security risk of a member by viewing all of their direct and indirect group memberships"
+    source: https://docs.cloud.google.com/identity/docs/how-to/query-memberships
+  - claim: "A group membership can belong to an individual, a service account, or another group"
+    source: https://docs.cloud.google.com/identity/docs/how-to/query-memberships
+problem: "Google recommends groups as the unit of access, and the recommendation is right. What the guidance also states, in a different document, is the cost: editing a policy directly propagates in about 2 minutes, while a group membership change takes several minutes and potentially hours or longer — and removal propagates more slowly than addition."
+builds: "The four group types and why mixing them is the real pitfall, the propagation numbers side by side, two documented gaps in domain-restricted sharing and enforcement group membership, and why auditing effective membership is licence-gated."
+catch: "The mechanism you are told to use for day-to-day access is the slowest one for the case that matters most. An urgent revocation done by removing somebody from a group is the slowest direction of the slowest method, and an external IdP adds hours on top."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #052 &middot; IAM</div>
+  <h1 class="post-title">Google Groups as the Unit of Access</h1>
+  <p class="post-subtitle">The right unit for steady-state access, and the slowest one to revoke. Both facts are documented; they are on different pages.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>Google Cloud &middot; IAM &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Twenty-one posts have been building toward this one. #49 recommended groups over direct bindings, #51 noted that a group in a binding can contain people you do not control, and the guidance throughout is consistent: grant roles to a group and manage membership. That advice is correct. This post is about what it costs and what it moves out of view.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"Removing somebody from the group revokes their access"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Eventually. Access changes are eventually consistent, which means <em>principals might still be able to use a recently revoked role or a recently denied permission</em>. A group membership change is <em>typically several minutes, potentially hours or longer</em> &mdash; and <em>in general, adding a principal to a group propagates faster than removing a principal from a group</em>.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          For an urgent revocation, edit the policy or use a deny policy directly. Keep group removal for routine change, and never report an incident closed on the strength of a group edit alone.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"We grant to our HR-sourced groups, so access tracks the org chart"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          The guidance explicitly advises against it: <em>avoid using organizational groups to provide access to resources</em>, because <em>all users in an organizational group rarely need the same level of access to resources</em>. Granting to <code>org.engineering-all</code> is the single most common version of this.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Put the organizational group inside an access group rather than granting to it, and keep the roles granted that way narrow.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"Nesting groups keeps the model tidy"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It depends entirely on the type. For access groups, <em>nesting access groups can make it difficult to determine who has access to what resources</em>, and worse, <em>nesting access groups with different access policies might let principals bypass strict access group membership policies</em>. For enforcement groups, <em>nesting enforcement groups can make it difficult to determine why a principal is being denied access</em>.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Nest organizational groups freely, nest collaboration groups only where membership policies match, and do not nest access or enforcement groups.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"Domain-restricted sharing stops external principals getting access"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Not through a group. The documentation names it as a loophole: <em>because domain-restricted sharing (DRS) policy constraints apply to groups, but not to group members, access groups that allow external members can create a loophole that undermines DRS</em>.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Use Cloud Identity security groups and group restrictions to disallow external members on access groups, and name the exceptions distinctly so they are visible.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      The useful part of the guidance is a taxonomy, and it is worth adopting because it turns a vague instruction into four different things with four different rules. None of these types is a Google Groups attribute &mdash; they are a discipline you impose, which is why naming them is part of the advice.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-052-groups-as-unit-of-access.svg" alt="Diagram: how long IAM access changes take to propagate when made by editing a policy versus by changing group membership, why the recommended unit of access is the slowest to revoke, the four group types and the rules against mixing or nesting them, and two concrete gaps involving domain-restricted sharing and enforcement group membership" />
+      <figcaption>Four types with four sets of rules, and a propagation cost that only appears on a different page.</figcaption>
+    </figure>
+
+    <h3>The four types</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Type</th><th>Purpose</th><th>Membership driven by</th><th>Nesting</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Organizational</strong></td>
+          <td>Communication, and structure</td>
+          <td>HR data, or an external source of truth</td>
+          <td>Nest freely; mirror the org chart</td>
+        </tr>
+        <tr>
+          <td><strong>Collaboration</strong></td>
+          <td>Workgroups and topics</td>
+          <td>Self-service, often unrestricted</td>
+          <td>Only where membership policies match</td>
+        </tr>
+        <tr>
+          <td><strong>Access</strong></td>
+          <td><em>Used for the sole purpose of providing access</em></td>
+          <td>Group owners, approval or request</td>
+          <td><strong>Do not nest</strong></td>
+        </tr>
+        <tr>
+          <td><strong>Enforcement</strong></td>
+          <td>Restriction &mdash; <em>used to enforce access restriction policies rather than providing access</em></td>
+          <td>Rules on clearance, location, role</td>
+          <td><strong>Do not nest</strong></td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      The one directional rule to remember: organizational groups can be members of the other three types, and nothing should be a member of an organizational group. That keeps the HR-sourced structure clean and lets you reuse it without granting through it.
+    </p>
+
+    <h3>Enforcement groups are the half people forget</h3>
+    <p>
+      An access group grants; an enforcement group takes away. The second kind carries more weight than it appears to, because it is how several controls get targeted: <em>enforcement groups are also used to apply authentication controls such as SAML profile assignment or 2-Step Verification (2SV)</em>, alongside deny policies, principal access boundary policies and Chrome Enterprise Premium access bindings.
+    </p>
+
+    <div class="callout amber">
+      <strong>Which means group membership can be the thing holding your MFA on</strong>
+      <p>#51 ended on enforcing Google 2-step verification for super admins, because the external IdP cannot reach accounts that bypass single sign-on. If that enforcement is targeted at a group, then the control is only as strong as the membership &mdash; and by default a member can walk out. The guidance is blunt that this defeats the point: <em>allowing users to leave an enforcement group goes against the principles of mandatory access control.</em> The fix is a specific, non-default setting: use the Groups Settings API to set the <code>whoCanLeaveGroup</code> property to <code>NONE_CAN_LEAVE</code>. Worth checking on any group that carries a 2SV or SAML profile assignment, because an opt-out MFA policy is not an MFA policy.</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>The Cost Nobody Puts on the Same Page</h2>
+
+    <p>
+      Here is the comparison that makes this post worth writing. The groups guidance and the propagation guidance are separate documents, and the second one prices the first.
+    </p>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>How you change access</th><th>Typically</th><th>Potentially</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Edit an allow or deny policy directly</td>
+          <td>2 minutes</td>
+          <td><strong>7 minutes or longer</strong></td>
+        </tr>
+        <tr>
+          <td>Add or remove somebody from a group in a policy</td>
+          <td>several minutes</td>
+          <td><strong>hours or longer</strong></td>
+        </tr>
+        <tr>
+          <td>Add or remove somebody from a <em>nested</em> group</td>
+          <td>several minutes</td>
+          <td><strong>hours or longer</strong></td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      Then two asymmetries on top, both stated as general rules rather than guarantees. <em>In general, adding a principal to a group propagates faster than removing a principal from a group.</em> And <em>in general, group membership changes propagate faster than nested group membership changes.</em>
+    </p>
+
+    <div class="callout">
+      <strong>So the slow direction of the slow method is the one you need in a hurry</strong>
+      <p>Granting access &mdash; the non-urgent operation, where a few minutes of delay costs somebody a coffee break &mdash; is the fast direction. Revoking access, which is the operation with a clock on it when somebody is dismissed or an account is compromised, is the slow direction of the slower mechanism. And if the group is populated from an external IdP, that delay stacks: <em>it can take up to several hours for changes made in the external IdP to be reflected in the access group</em>, before IAM propagation even starts. None of this is hidden, but it is on a page most people reach only after something has gone wrong.</p>
+    </div>
+
+    <h3>What to do about it, which is not "stop using groups"</h3>
+    <p>
+      Groups remain right for steady state: they are what makes a job function reviewable instead of a hundred individual bindings. The adjustment is to stop treating group membership as the only lever.
+    </p>
+    <ul>
+      <li><strong>Urgent revocation goes through the policy, or a deny policy, not the group.</strong> Two minutes beats hours, and a deny policy overrides the grant rather than waiting for it to drain.</li>
+      <li><strong>Suspending the account is faster than any of this</strong> for a leaver, and is the lever #50 was really about.</li>
+      <li><strong>Do not nest the groups that carry access or enforcement.</strong> The nested case is slower as well as less legible.</li>
+      <li><strong>Prefer expiry to removal.</strong> The guidance recommends you <em>require users to re-join an access group or extend their membership after a period of time</em>, and says <em>this best practice is critical for achieving the goal of Zero Standing Privileges (ZSP)</em>. Expiry turns revocation from an urgent action into a default.</li>
+    </ul>
+    <p>
+      One exception the guidance is careful about, and it matters given #46 through #48: do not auto-expire service accounts out of access groups, <em>because removing service accounts from an access group can result in service interruptions</em>. A machine identity has no renewal ritual to perform.
+    </p>
+
+    <h3>Auditing it is where the licence shows up</h3>
+    <p>
+      A group model is only as good as your ability to answer "who is actually in this". Transitive queries do exactly that &mdash; <em>security auditors can assess the security risk of a member by viewing all of their direct and indirect group memberships</em> &mdash; with the useful reminder that <em>a group membership can belong to an individual, a service account, or another group</em>.
+    </p>
+    <p>
+      Two caveats sit on that capability. It is tiered: <em>these features are only available to Google Workspace Enterprise Standard, Enterprise Plus, and Enterprise for Education, and Cloud Identity Premium accounts</em>. And it can fail outright, because <em>the user or service account that is making the query must have permission to view the memberships of all groups that are part of the query, otherwise the request will fail</em> &mdash; <em>especially if one of them is a group owned by another organization</em>. A single externally-owned nested group can make the effective membership of your access group unanswerable, which is a second, independent reason not to nest.
+    </p>
+
+    <h3>Two smaller things worth carrying away</h3>
+    <p>
+      On naming, there is a real attack rather than a tidiness argument. Where groups are mapped from an IdP by a derived pseudo-email address, collisions are possible, and <em>this naming collision could be exploited by a bad actor to create security groups that masquerade as another, less scrutinized group type</em>. A dedicated secondary domain for provisioned groups removes the ambiguity.
+    </p>
+    <p>
+      And on pipelines, an echo of #48&#8217;s warning about borrowing powerful roles: <em>the Groups Admin role authorizes group creation, but it also lets any principal with that role manage all groups in the Cloud Identity account.</em> If Terraform needs to create groups, give it a service account with the one permission, not the role.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Urgent revocation</td>
+          <td>Policy edit, deny policy, or suspend the account</td>
+          <td>Group removal is the slow direction of the slow method.</td>
+        </tr>
+        <tr>
+          <td>Routine access management</td>
+          <td>Access groups per job function</td>
+          <td>It is what makes access reviewable at all.</td>
+        </tr>
+        <tr>
+          <td>Granting to an HR-sourced group</td>
+          <td>Do not; nest it inside an access group</td>
+          <td>Its members rarely all need the same access.</td>
+        </tr>
+        <tr>
+          <td>Nesting access or enforcement groups</td>
+          <td>Do not</td>
+          <td>It hides who has access, and can bypass membership policy.</td>
+        </tr>
+        <tr>
+          <td>External members on access groups</td>
+          <td>Disallow, and name any exceptions</td>
+          <td>DRS applies to the group, not to its members.</td>
+        </tr>
+        <tr>
+          <td>Groups carrying 2SV or SAML assignment</td>
+          <td>Set whoCanLeaveGroup to NONE_CAN_LEAVE</td>
+          <td>By default a member can leave and shed the control.</td>
+        </tr>
+        <tr>
+          <td>Standing membership</td>
+          <td>Auto-expiry, with re-join</td>
+          <td>It is called critical for Zero Standing Privileges.</td>
+        </tr>
+        <tr>
+          <td>Service accounts in access groups</td>
+          <td>Exempt from auto-expiry</td>
+          <td>Removing them can cause service interruptions.</td>
+        </tr>
+        <tr>
+          <td>Where access groups are managed</td>
+          <td>In Cloud Identity, not the external IdP</td>
+          <td>IdP changes can take hours to reach the group.</td>
+        </tr>
+        <tr>
+          <td>Terraform that creates groups</td>
+          <td>One permission, not Groups Admin</td>
+          <td>That role manages every group in the account.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      Find every group named in an IAM binding at organisation or folder scope, and ask two questions of each: is it an access group, or is it an HR or communication group that acquired a role because it already existed; and can its members leave it. The first question finds over-granting that no policy review will show, because the binding looks deliberate and the membership is somewhere else. The second finds any enforcement that is really opt-in. Both are answerable in an afternoon and neither requires changing anything to learn the answer.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Groups are the right answer and this post is not an argument against them. Without them, least privilege at organisational scale is a filing exercise that nobody completes; with them, a job function becomes a thing you can name, own, review and expire. The four-type taxonomy is genuinely good advice, and the enforcement-group half of it is the part most estates have not built at all.
+    </p>
+    <p>
+      What is worth holding onto is the shape of the trade. Twenty-two posts in, every layer of this system has turned out to answer a slightly narrower question than its name implies. The allow policy has an author you cannot see, a referent you cannot name directly, a deletion path driven by the shape of an LDAP result, and an authentication gate with a deliberate exemption. Groups add the last piece: the membership that actually decides access does not live in the policy, and when you change it, the change arrives on a timescale measured in hours. None of that makes the model wrong. It does mean the honest answer to "who can do what here" is assembled from five systems and is accurate as of several minutes ago &mdash; and that the first person to say so out loud in a review is doing everyone a favour.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#53 moves from who the principal is to the conditions under which it may act: context-aware access &mdash; device posture, location and the difference between authenticating and being allowed in from here.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/iam/docs/groups-best-practices" target="_blank" rel="noopener">Best practices for using Google groups</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/access-change-propagation" target="_blank" rel="noopener">Access change propagation</a></li>
+      <li><a href="https://docs.cloud.google.com/identity/docs/how-to/query-memberships" target="_blank" rel="noopener">Querying group memberships</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/deny-overview" target="_blank" rel="noopener">Deny policies overview</a></li>
+      <li><a href="https://docs.cloud.google.com/organization-policy/restrict-domains" target="_blank" rel="noopener">Restricting identities by domain</a></li>
+      <li><a href="https://docs.cloud.google.com/architecture/identity/best-practices-for-federating" target="_blank" rel="noopener">Best practices for federating with an external identity provider</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
