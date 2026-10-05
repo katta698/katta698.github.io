@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #73 — The label that stops every rotation after it | Jayanth Katta Blog</title>
+<meta name="description" content="Rotation gets configured once, reports success, and is then assumed to be self-maintaining. It is a four-step state machine whose entire state is a staging label on a secret version — and the failure mode is not a broken credential, it is a label left in the wrong place, after which every subsequent rotation returns an error instead of running."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="The label that stops every rotation after it"/>
+<meta property="og:description" content="Rotation gets configured once, reports success, and is then assumed to be self-maintaining. It is a four-step state machine whose entire state is a staging label on a secret version — and the failure mode is not a broken credential, it is a label left in the wrong place, after which every subsequent rotation returns an error instead of running."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-secrets-rotation/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="The label that stops every rotation after it"/>
+<meta name="twitter:description" content="Rotation gets configured once, reports success, and is then assumed to be self-maintaining. It is a four-step state machine whose entire state is a staging label on a secret version — and the failure mode is not a broken credential, it is a label left in the wrong place, after which every subsequent rotation returns an error instead of running."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-secrets-rotation/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=f612e7fb"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=cbabd103" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=cbabd103">
+<script src="/blog/assets/site-footer.js?v=cbabd103" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #73 — The label that stops every rotation after it…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #73 — The label that stops every rotation after it</h1>
+      <p class="post-description">Rotation gets configured once, reports success, and is then assumed to be self-maintaining. It is a four-step state machine whose entire state is a staging label on a secret version — and the failure mode is not a broken credential, it is a label left in the wrong place, after which every subsequent rotation returns an error instead of running.</p>
+      <div class="post-info">
+        <span>Oct 5, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>15 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 5 October 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-secrets-rotation" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <a href="/blog/aws-architecture-secrets-manager-parameter-store/">#16</a> answered the placement question
+      &mdash; when a value belongs in Secrets Manager rather than Parameter Store &mdash; and concluded that
+      rotation is the capability you cannot retrofit cheaply. This is what you bought.
+    </p>
+    <p>
+      Four steps, invoked separately:
+      <em>&ldquo;During rotation, Secrets Manager calls the same function several times, each time with
+      different parameters&rdquo;</em>, with <code class="inline">Step</code> set to
+      <em>&ldquo;<code class="inline">create_secret</code>, <code class="inline">set_secret</code>,
+      <code class="inline">test_secret</code>, or <code class="inline">finish_secret</code>&rdquo;</em>.
+    </p>
+    <p>
+      The steps are not the interesting part. The labels they move are.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>A stray <code class="inline">AWSPENDING</code> label stops all future rotations</strong></div>
+      <div class="challenge-body">
+        <p>
+          The paragraph that should be on a wall somewhere:
+          <em>&ldquo;When rotation is successful, the <code class="inline">AWSPENDING</code> staging label
+          might be attached to the same version as the <code class="inline">AWSCURRENT</code> version, or it
+          might not be attached to any version. <strong>If the <code class="inline">AWSPENDING</code> staging
+          label is present but not attached to the same version as <code class="inline">AWSCURRENT</code>, then
+          any later invocation of rotation assumes that a previous rotation request is still in progress and
+          returns an error.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Read what that describes. Nothing has expired. No credential is wrong. The secret is serving a valid
+          <code class="inline">AWSCURRENT</code> version and applications are fine. And rotation has stopped
+          &mdash; not failed once, stopped &mdash; because a label sits on a version it should not be on, and
+          every subsequent attempt interprets it as a rotation still running.
+        </p>
+        <p>
+          It gets quieter still when the rotation that left it behind had already failed:
+          <em>&ldquo;When rotation is unsuccessful, the <code class="inline">AWSPENDING</code> staging label
+          might be attached to an <strong>empty secret version</strong>.&rdquo;</em> A label on an empty
+          version, blocking a schedule, on a secret whose credentials work.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Alarm on rotation not happening, not on rotation failing. The state to watch is <code class="inline">VersionIdsToStages</code> &mdash; AWS suggests <em>&ldquo;call <code class="inline">describe-secret</code> and look at <code class="inline">VersionIdsToStages</code>&rdquo;</em> &mdash; and the condition is <code class="inline">AWSPENDING</code> present on a version that is not <code class="inline">AWSCURRENT</code>.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The retry is of the whole rotation, not the step that failed</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;If any rotation step fails, Secrets Manager retries <strong>the entire rotation
+          process</strong> multiple times during the open rotation windows on the secret.&rdquo;</em>
+        </p>
+        <p>
+          So a function that fails in <code class="inline">test_secret</code> will be called again from
+          <code class="inline">create_secret</code>. Every step has to tolerate being run against state a
+          previous attempt already created, which is why the design puts the new value in a label rather than in
+          a variable:
+          <em>&ldquo;Storing the new secret value in <code class="inline">AWSPENDING</code> helps ensure
+          idempotency. If rotation fails for any reason, you can refer to that secret value in subsequent
+          calls.&rdquo;</em>
+        </p>
+        <p>
+          That is the whole reason <code class="inline">create_secret</code> begins by looking for a secret that
+          might already exist. The idempotency is not a nicety bolted on; it is the contract.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Write every step to be re-runnable from a partial previous attempt, and test by failing the function deliberately at each of the four steps.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The function is a privileged deputy, and the template's guards are load-bearing</strong></div>
+      <div class="challenge-body">
+        <p>
+          AWS's own characterisation:
+          <em>&ldquo;The rotation function is a <strong>privileged deputy</strong> that has the authorization to
+          access and modify customer credentials in both the Secrets Manager secret and the target
+          resource.&rdquo;</em>
+        </p>
+        <p>
+          And three checks it advises before <code class="inline">set_secret</code> changes anything:
+          <em>&ldquo;Check that the credential in the <code class="inline">AWSCURRENT</code> version of the
+          secret is valid. If the <code class="inline">AWSCURRENT</code> credential isn't valid, abandon the
+          rotation attempt&hellip; Check that the <code class="inline">AWSCURRENT</code> and
+          <code class="inline">AWSPENDING</code> secret values are for the same resource&hellip; Check that the
+          destination service resource is the same. For a database, check that the
+          <code class="inline">AWSCURRENT</code> and <code class="inline">AWSPENDING</code> host names are the
+          same.&rdquo;</em>
+        </p>
+        <p>
+          Those exist because anyone who can write to the secret can redirect the deputy. Edit
+          <code class="inline">AWSPENDING</code> to name a different host and an unguarded function will
+          obligingly set a password you chose on a database you chose, using credentials it holds and you do
+          not.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>If you wrote the function yourself, implement all three checks. AWS also notes that <em>&ldquo;Secrets Manager only allows a Lambda rotation function to rotate the secret directly. The rotation function can't call another Lambda function to rotate the secret&rdquo;</em>, so the deputy cannot be chained.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Three labels and four steps. Each step owns one transition.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-073-secrets-rotation.svg" alt="Diagram: the four-step Secrets Manager rotation contract, the three staging labels it moves, and the label state that stops every future rotation. Secrets Manager invokes one Lambda function several times with different parameters, passing Step, SecretId, ClientRequestToken and RotationToken, where ClientRequestToken identifies the new secret version and helps ensure idempotency and RotationToken is required for assumed-role or cross-account rotation. The four steps are create_secret, set_secret, test_secret and finish_secret. In create_secret the function checks whether a secret already exists for the passed-in token by calling get_secret_value, generates a value with get_random_password, and calls put_secret_value to store it under the AWSPENDING staging label; AWS notes that storing the value in AWSPENDING is what makes the process idempotent, because a later attempt can refer to the same value. In set_secret the function changes the credential in the database or service to match the AWSPENDING value, and AWS advises three confused-deputy checks first, because the rotation function is a privileged deputy with authority over both the secret and the target resource: confirm the AWSCURRENT credential is valid and abandon the attempt if it is not, confirm the AWSCURRENT and AWSPENDING usernames match, and confirm the host names match. In test_secret the function uses the AWSPENDING version to access the database or service, and template-based functions test with read access. In finish_secret the function calls update_secret_version_stage to move AWSCURRENT from the previous version to the new one, which removes AWSPENDING in the same API call, and Secrets Manager adds AWSPREVIOUS to the previous version so the last known good value is retained. A central warning records the wedge condition: when rotation succeeds AWSPENDING may be on the same version as AWSCURRENT or on no version at all, but if AWSPENDING is present on a version that is not AWSCURRENT then any later invocation of rotation assumes a previous rotation is still in progress and returns an error, and when rotation is unsuccessful AWSPENDING may be attached to an empty secret version. So the failure is not a bad credential but a stalled schedule on a secret whose credentials still work. A panel distinguishes two pieces of AWS guidance about removing AWSPENDING that apply at different moments: within a rotation the function should not remove AWSPENDING before finish_secret nor by a separate API call, because that can indicate the rotation did not complete successfully, whereas the troubleshooting guidance for a rotation that consistently fails is to clear the AWSPENDING staging label and retry. Another panel contrasts the two strategies: single user updates one user in one secret, is described as the simplest and appropriate for most use cases and recommended for one-time or interactive users, does not drop open connections, but has a short window between the database password changing and the secret updating during which there is a low risk of denied calls; alternating users updates two users in one secret by cloning the first, requires a superuser secret because most users cannot clone themselves, is described as appropriate for applications requiring high availability because an application retrieving the secret mid-rotation still gets valid credentials, and carries the standing obligation that the clone is created with the original's permissions and must be updated by hand whenever the original's permissions change. A closing panel records the operational traps: the entire rotation is retried rather than the failed step, so all four must be idempotent; reserved concurrency should be at least ten and provisioned concurrency below ten can cause throttling, with the symptom being a function stuck in a loop between CreateSecret and SetSecret; mutating API calls on the secret during rotation risk a race with RotateSecret and PutSecretValue; a manual secret update counts as a valid rotation when the next rotation date is calculated; and for MySQL alternating users the clone name is capped at sixteen characters by default while MySQL 5.7 and later allow thirty-two, and because Secrets Manager appends the six-character suffix underscore clone the original username must stay at or below twenty-six characters." />
+      <figcaption>Four steps, three labels. The wedge is a label on the wrong version, not a bad credential.</figcaption>
+    </figure>
+
+    <h3>What each step owns</h3>
+    <p>
+      <strong><code class="inline">create_secret</code></strong> &mdash; checks for an existing version first,
+      then <em>&ldquo;generates a new secret value with
+      <code class="inline">get_random_password</code>&hellip; Next it calls
+      <code class="inline">put_secret_value</code> to store it with the staging label
+      <code class="inline">AWSPENDING</code>.&rdquo;</em> The new value exists only in the label from here on.
+    </p>
+    <p>
+      <strong><code class="inline">set_secret</code></strong> &mdash;
+      <em>&ldquo;changes the credential in the database or service to match the new secret value in the
+      <code class="inline">AWSPENDING</code> version of the secret.&rdquo;</em> This is the only step that
+      touches anything outside Secrets Manager, and it is the step the confused-deputy checks guard.
+    </p>
+    <p>
+      <strong><code class="inline">test_secret</code></strong> &mdash;
+      <em>&ldquo;tests the <code class="inline">AWSPENDING</code> version of the secret by using it to access
+      the database or service&rdquo;</em>, and note what the supplied templates settle for:
+      <em>&ldquo;Rotation functions based on Rotation function templates test the new secret by using
+      <strong>read access</strong>.&rdquo;</em> A credential that can read but has lost write permission passes
+      this step.
+    </p>
+    <p>
+      <strong><code class="inline">finish_secret</code></strong> &mdash; one call does three things:
+      <em>&ldquo;moves the label <code class="inline">AWSCURRENT</code> from the previous secret version to this
+      version, which <strong>also removes the <code class="inline">AWSPENDING</code> label in the same API
+      call</strong>. Secrets Manager adds the <code class="inline">AWSPREVIOUS</code> staging label to the
+      previous version, so that you retain the last known good version of the secret.&rdquo;</em>
+    </p>
+    <p>
+      One call does all of it, which is the design. The API reference describes the mechanism rather than
+      claiming instantaneity:
+      <em>&ldquo;Each staging label can be attached to only one version at a time. To add a staging label to a
+      version when it is already attached to another version, Secrets Manager first removes it from the other
+      version first and then attaches it to this one&hellip; Whenever you move
+      <code class="inline">AWSCURRENT</code>, Secrets Manager automatically moves the label
+      <code class="inline">AWSPREVIOUS</code> to the version that <code class="inline">AWSCURRENT</code> was
+      removed from.&rdquo;</em>
+    </p>
+    <p>
+      So what you get from a single call is that the promotion, the marker removal and the retention of the old
+      value are one request rather than three &mdash; not that no intermediate state exists inside it. The
+      window between the database changing and the secret changing is a different thing entirely, and it is
+      real; it is the subject of the single-user strategy below.
+    </p>
+    <p>
+      One consequence worth knowing before you prune versions:
+      <em>&ldquo;If this action results in the last label being removed from a version, then the version is
+      considered to be 'deprecated' and can be deleted by Secrets Manager.&rdquo;</em> A version with no labels
+      is not retained on your behalf.
+    </p>
+
+    <div class="callout amber">
+      <strong>Two pieces of guidance about clearing <code class="inline">AWSPENDING</code>, and they apply at different moments</strong>
+      <p>Inside a rotation, AWS advises against it: <em>&ldquo;Don't remove <code class="inline">AWSPENDING</code> before this point, and don't remove it by using a separate API call, because that can indicate to Secrets Manager that the rotation did not complete successfully.&rdquo;</em> That is addressed to your function, mid-rotation — the removal is supposed to happen as a side effect of promoting <code class="inline">AWSCURRENT</code>, not as its own step.</p>
+      <p>Afterwards, when rotation is wedged, clearing it is the documented remedy. Among the general troubleshooting steps: <em>&ldquo;Clear pending rotations: If rotation consistently fails, clear the <code class="inline">AWSPENDING</code> staging label and retry rotation.&rdquo;</em> The same action is wrong as part of a rotation and right as recovery from one, which is worth reading twice before an incident rather than during one.</p>
+      <p>The mechanism is the same API with one parameter left out: <code class="inline">UpdateSecretVersionStage</code> with <code class="inline">VersionStage</code> set to <code class="inline">AWSPENDING</code> and <code class="inline">RemoveFromVersionId</code> naming the stuck version &mdash; <em>&ldquo;To remove a label from a version, then do not specify this parameter&rdquo;</em>, meaning <code class="inline">MoveToVersionId</code>. And it is strict about the version you name: <em>&ldquo;If the label is attached and you either do not specify this parameter, or the version ID does not match, then the operation fails.&rdquo;</em></p>
+    </div>
+
+    <h3>Cross-account rotation needs a parameter most functions ignore</h3>
+    <p>
+      <code class="inline">RotationToken</code> is in the invocation payload and is
+      <em>&ldquo;Required for secret rotation using an assumed role or cross-account rotation, in which you
+      rotate a secret in one account by using a Lambda rotation function in another account. In both cases, the
+      rotation function assumes an IAM role to call Secrets Manager and then Secrets Manager uses the rotation
+      token to validate the IAM role identity.&rdquo;</em>
+    </p>
+    <p>
+      The symptom of omitting it is specific, and it names the wedge from challenge 1:
+      <em>&ldquo;Pending secret version&hellip; was not created by Lambda&hellip; Remove the
+      <code class="inline">AWSPENDING</code> staging label and restart rotation&rdquo;</em> &mdash; at which
+      point AWS's instruction is that <em>&ldquo;you need to update your Lambda function to use the
+      <code class="inline">RotationToken</code> parameter.&rdquo;</em> A function copied from a same-account
+      example will fail this way every time, and each failure leaves a label behind.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>The two strategies, and what each actually trades</h3>
+    <p>
+      <strong>Single user</strong> is AWS's default recommendation:
+      <em>&ldquo;This is the simplest rotation strategy, and it is appropriate for most use cases. In
+      particular, we recommend you use this strategy for credentials for one-time (ad hoc) or interactive
+      users.&rdquo;</em>
+    </p>
+    <p>
+      It is not seamless, and AWS says so plainly:
+      <em>&ldquo;open database connections are not dropped. While rotation is happening, there is a short period
+      of time between when the password in the database changes and when the secret is updated. During this
+      time, there is a <strong>low risk of the database denying calls</strong> that use the rotated
+      credentials.&rdquo;</em> That window is <code class="inline">set_secret</code> finishing before
+      <code class="inline">finish_secret</code> runs &mdash; the database has moved and the secret has not.
+    </p>
+    <p>
+      <strong>Alternating users</strong> closes that window, and AWS gives it two distinct uses:
+      <em>&ldquo;This strategy is appropriate for databases with permission models where one role owns the
+      database tables and a second role has permission to access the database tables. It is <strong>also</strong>
+      appropriate for applications that require high availability. If an application retrieves the secret during
+      rotation, the application still gets a valid set of credentials. After rotation, both
+      <code class="inline">user</code> and <code class="inline">user_clone</code> credentials are
+      valid.&rdquo;</em>
+    </p>
+    <p>
+      The first use is a schema-ownership pattern and the second is an availability one; they are independent
+      reasons to pick it, and only the second is about rotation windows at all.
+    </p>
+    <p>
+      What it costs is a second privileged secret &mdash;
+      <em>&ldquo;because most users don't have permission to clone themselves, you must provide the credentials
+      for a <code class="inline">superuser</code> in another secret&rdquo;</em> &mdash; and a maintenance
+      obligation with no enforcement behind it.
+    </p>
+
+    <div class="callout red">
+      <strong>The clone's permissions are a copy, not a link</strong>
+      <p><em>&ldquo;Secrets Manager creates the cloned user with the same permissions as the original user. If you change the original user's permissions after the clone is created, <strong>you must also change the cloned user's permissions</strong>.&rdquo;</em> So alternating-users rotation introduces a second database user whose grants drift from the first the moment anybody runs a <code class="inline">GRANT</code>, and the drift surfaces on whichever rotation happens to land on the stale user — which is every other one. Nothing compares them. If you adopt this strategy, the comparison is a job you now own.</p>
+      <p>AWS also points the other way for a specific case: <em>&ldquo;We recommend using the single-user rotation strategy when cloned users in your database don't have the same permissions as the original user.&rdquo;</em></p>
+    </div>
+
+    <h3>Concurrency has a floor, and the symptom looks like a logic bug</h3>
+    <p>
+      <em>&ldquo;Setting the provisioned concurrency parameter to a value lower than 10 can cause throttling
+      due to insufficient execution threads for the Lambda function.&rdquo;</em> And for reserved concurrency,
+      the troubleshooting guidance is to verify it <em>&ldquo;is not set too low (for example, 1)&rdquo;</em>
+      and <em>&ldquo;If using reserved concurrency, set it to at least 10&rdquo;</em>.
+    </p>
+    <p>
+      The symptom is worth memorising because it does not look like throttling:
+      <em>&ldquo;intermittent secret rotation failures with your Lambda function getting stuck in a loop of
+      sets, for example between <strong>CreateSecret</strong> and <strong>SetSecret</strong>&rdquo;</em>.
+      Anybody debugging that will read their own state machine first, which is the wrong place.
+    </p>
+    <p>
+      It is also a plausible default to have set by accident. A rotation function is low-volume, so
+      <code class="inline">reserved_concurrent_executions = 1</code> looks like good hygiene in a Terraform
+      module, and AWS's advice for provisioned concurrency is blunter: <em>&ldquo;Don't set the provisioned
+      concurrency parameter explicitly (for example, in Terraform).&rdquo;</em>
+    </p>
+
+    <h3>Two smaller things that bite</h3>
+    <p>
+      <strong>A manual update counts as a rotation.</strong>
+      <em>&ldquo;If you also manually update your secret value while automatic rotation is set up, then Secrets
+      Manager considers that a valid rotation when it calculates the next rotation date.&rdquo;</em> So an
+      emergency manual password change pushes the schedule out, and the age of a credential is not what the
+      schedule implies.
+    </p>
+    <p>
+      <strong>And touching the secret during rotation races it.</strong> The troubleshooting guidance is to
+      <em>&ldquo;Avoid making mutating API calls on the secret during Lambda rotation&rdquo;</em> and to
+      <em>&ldquo;Ensure there's no race condition between <strong>RotateSecret</strong> and
+      <strong>PutSecretValue</strong> calls&rdquo;</em> &mdash; which is exactly what a pipeline that
+      writes secrets on deploy will do, on whichever deploy coincides with a rotation window.
+    </p>
+
+    <h3>The MySQL username ceiling, which is arithmetic rather than a limit</h3>
+    <p>
+      <em>&ldquo;For Amazon RDS MySQL, in alternating users rotation, Secrets Manager creates a cloned user with
+      a name no longer than 16 characters. You can modify the rotation function to allow longer usernames. MySQL
+      version 5.7 and higher supports usernames up to 32 characters, however Secrets Manager appends
+      &lsquo;_clone&rsquo; (six characters) to the end of the username&hellip;&rdquo;</em>
+    </p>
+    <p>
+      So the original name has to fit in <strong>26</strong> characters for the clone to fit in 32, and the
+      default function caps it at 16 regardless. A service account named for a team and an environment reaches
+      16 easily, and the failure arrives on the first rotation rather than at creation.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>What to alarm on</td>
+        <td><code class="inline">AWSPENDING</code> present on a version that is not <code class="inline">AWSCURRENT</code></td>
+        <td>That state makes later rotations return an error instead of running, while credentials keep working.</td>
+      </tr>
+      <tr>
+        <td>Rotation strategy</td>
+        <td>Single user for most cases, per AWS's own recommendation</td>
+        <td>Described as the simplest and appropriate for most use cases; AWS recommends it for ad hoc or interactive users.</td>
+      </tr>
+      <tr>
+        <td>Strategy where a request must not be denied</td>
+        <td>Alternating users, accepting the clone-permissions obligation</td>
+        <td>An application retrieving the secret mid-rotation still gets a valid set of credentials.</td>
+      </tr>
+      <tr>
+        <td>Clone permission drift</td>
+        <td>A scheduled comparison of user and <code class="inline">user_clone</code> grants</td>
+        <td>The clone is created with the original's permissions, and changes to the original must be applied by hand.</td>
+      </tr>
+      <tr>
+        <td>Step idempotency</td>
+        <td>All four steps re-runnable; test by failing each one</td>
+        <td>A failure retries the entire rotation process, not the failed step.</td>
+      </tr>
+      <tr>
+        <td>Custom rotation functions</td>
+        <td>Implement the three confused-deputy checks</td>
+        <td>The function is a privileged deputy over both the secret and the target resource.</td>
+      </tr>
+      <tr>
+        <td><code class="inline">test_secret</code> depth</td>
+        <td>Exercise the access the application needs, not just read</td>
+        <td>Template-based functions test using read access.</td>
+      </tr>
+      <tr>
+        <td>Lambda concurrency</td>
+        <td>At least 10 reserved; don't set provisioned explicitly</td>
+        <td>Below 10 can cause throttling, and the symptom is a loop between <code class="inline">CreateSecret</code> and <code class="inline">SetSecret</code>.</td>
+      </tr>
+      <tr>
+        <td>Cross-account or assumed-role rotation</td>
+        <td>Pass <code class="inline">RotationToken</code> through to <code class="inline">put_secret_value</code></td>
+        <td>Required in those cases; omitting it fails and leaves <code class="inline">AWSPENDING</code> behind each time.</td>
+      </tr>
+      <tr>
+        <td>MySQL usernames under alternating users</td>
+        <td>26 characters or fewer, and raise the function's 16-character cap deliberately</td>
+        <td>Secrets Manager appends a six-character <code class="inline">_clone</code> suffix within MySQL's 32-character limit.</td>
+      </tr>
+      <tr>
+        <td>Pipelines that write secrets</td>
+        <td>Keep them out of rotation windows</td>
+        <td>AWS advises avoiding mutating API calls on the secret during rotation.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <code class="inline">describe-secret</code> across every rotating secret, reading
+      <code class="inline">VersionIdsToStages</code>, and one question: is
+      <code class="inline">AWSPENDING</code> attached to anything that is not the
+      <code class="inline">AWSCURRENT</code> version? Each hit is a secret whose rotation has stopped and whose
+      monitoring says nothing, because the credential in use is valid.
+    </p>
+    <p>
+      Then compare <code class="inline">LastRotatedDate</code> against the configured schedule. A secret that
+      reports rotation enabled and last rotated months ago is the same condition seen from the other side, and
+      it is the one a compliance review will eventually find for you.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The four-step contract is a good design, and <code class="inline">finish_secret</code> is the best part
+      of it: one call promotes the new version, clears the in-progress marker and preserves the old value,
+      rather than three calls that can each fail separately. Almost everything that goes wrong is a consequence
+      of that marker being durable. It has to be, for the retry to
+      work &mdash; and because it is durable, a rotation that dies before
+      <code class="inline">finish_secret</code> leaves a flag that reads as "still running" to everything that
+      comes after.
+    </p>
+    <p>
+      That makes this a monitoring problem more than an engineering one. The thing to watch is not whether
+      rotation failed, because it will have reported that once, months ago, into a log nobody reads. The thing
+      to watch is whether rotation is <em>happening</em> &mdash; and the signal is a label on the wrong version,
+      which no dashboard shows you by default.
+    </p>
+    <p>
+      Which is the same shape as the rest of this block, one more time.
+      <a href="/blog/aws-architecture-permissions-boundaries/">#36</a> was a permission absent rather than
+      denied. <a href="/blog/aws-architecture-kms-grants/">#72</a> was a resource quietly accumulating against
+      a ceiling. This one is a schedule quietly not running. In each case the system is behaving exactly as
+      documented, the credential or the request still works, and the absence is what nobody is looking at.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; GuardDuty finding triage: what a finding's severity actually encodes, why the same finding type arrives with different severities, and how to tell a finding that needs a human from one that needs a suppression rule.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/secretsmanager/latest/userguide/rotate-secrets_lambda-functions.html" target="_blank" rel="noopener">Lambda rotation functions &#8212; the four steps, the staging-label transitions, the privileged-deputy checks, and the wedge condition</a></li>
+      <li><a href="https://docs.aws.amazon.com/secretsmanager/latest/userguide/rotate-secrets_lambda.html" target="_blank" rel="noopener">Rotation by Lambda function &#8212; the invocation payload, RotationToken, and the whole-rotation retry</a></li>
+      <li><a href="https://docs.aws.amazon.com/secretsmanager/latest/userguide/rotation-strategy.html" target="_blank" rel="noopener">Lambda function rotation strategies &#8212; single user against alternating users, and the clone-permissions obligation</a></li>
+      <li><a href="https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_UpdateSecretVersionStage.html" target="_blank" rel="noopener">UpdateSecretVersionStage &#8212; how a staging label moves, the AWSPREVIOUS side effect, and how to clear a label from a version</a></li>
+      <li><a href="https://docs.aws.amazon.com/secretsmanager/latest/userguide/troubleshoot_rotation.html" target="_blank" rel="noopener">Troubleshoot rotation &#8212; clearing a stuck AWSPENDING label, the cross-account RotationToken failure, and the concurrency floor</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/gcp-architecture-groups-as-unit-of-access/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">GCP Architecture Series #52 — Google Groups as the Unit of Access</span></a><a href="/blog/azure-architecture-b2b-guest-access/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">Azure Architecture Series #53 — B2B Collaboration: What a Guest Is Before You Grant Anything</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-secrets-rotation/';
+      this.page.identifier = 'aws-architecture-secrets-rotation';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=cbabd103"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
