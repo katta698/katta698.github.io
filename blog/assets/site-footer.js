@@ -1844,12 +1844,27 @@
   var STATUS = '/intelligence/status.json';
   var HREF = '/intelligence/status/';
 
+  // The same rule the status page applies, and it has to stay the same rule.
+  // A vendor leaves a resolved incident in its feed with the word in the
+  // title rather than an end time, so array length is not a count of what is
+  // open -- it counted a "[RESOLVED] Elevated packet loss" and the light said
+  // 3 open while the page it links to listed 2. The note above promises "the
+  // light and the page it points at cannot disagree"; this is what makes that
+  // true rather than merely stated. Mirrors stillOpen() in
+  // intelligence/status/pm.js -- change both, or neither.
+  function stillOpen(i) {
+    if (i && i.end) { return false; }
+    var t = ((i && i.title) || '').replace(/^\s+/, '').toUpperCase();
+    return t.indexOf('[RESOLVED]') !== 0;
+  }
+
   function count(data) {
     var clouds = data && data.clouds;
     if (!clouds) return 0;
     var n = 0;
     Object.keys(clouds).forEach(function (c) {
-      if (Array.isArray(clouds[c])) n += clouds[c].length;
+      if (!Array.isArray(clouds[c])) return;
+      clouds[c].forEach(function (i) { if (stillOpen(i)) n += 1; });
     });
     return n;
   }

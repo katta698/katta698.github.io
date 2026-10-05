@@ -243,6 +243,70 @@ def main():
                 b.close()
         except Exception as exc:                                # noqa: BLE001
             problems.append("the map check could not run: %s" % str(exc)[:90])
+
+        # --- the nav light must count what the page counts -------------------
+        #
+        # Asked as: "in the blog page in the cloud status, why AWS still shows
+        # three incidents when the live status page just shows two? So are
+        # these two not in sync?" They were not. The light in the bar summed
+        # clouds[*].length, which counts a "[RESOLVED]" entry the page filters
+        # out, so it read 3 open while the page it links to listed 2.
+        #
+        # This is the SECOND place that bug has been fixed -- the map had it
+        # too -- so the rule now has a test rather than only a comment asking
+        # two files to agree. The payload carries one resolved and one open
+        # incident, and the only correct answer is 1.
+        #
+        # Measured on /blog/ rather than the status page: the widget
+        # deliberately skips the page you are already on, so asserting it
+        # there would test nothing.
+        try:
+            with sync_playwright() as pw:
+                b = pw.chromium.launch()
+                ctx = b.new_context(viewport={"width": 1280, "height": 1000})
+                pg = ctx.new_page()
+                pg.route("**/intelligence/status.json", lambda route: route.fulfill(
+                    status=200, content_type="application/json",
+                    body=json.dumps({
+                        "checked": "2026-01-01T00:00:00Z",
+                        "clouds": {"aws": [
+                            {"title": "[RESOLVED] Synthetic packet loss",
+                             "service": "Internet Connectivity",
+                             "region": "Spain", "region_code": "eu-south-2",
+                             "url": "", "update": "closed before this ran"},
+                            {"title": "Synthetic region availability",
+                             "service": "EC2",
+                             "region": "Ohio", "region_code": "us-east-2",
+                             "url": "", "update": "genuinely open"},
+                        ], "azure": [], "gcp": []},
+                        "sources": {}, "history_count": 0,
+                    })))
+                pg.goto(base + "/blog/", wait_until="domcontentloaded",
+                        timeout=60000)
+                pg.wait_for_timeout(3000)
+                said = pg.evaluate(
+                    """() => {
+                       const a = document.querySelector(
+                         'a[href="/intelligence/status/"].is-live');
+                       return a ? (a.getAttribute('title') || '') : null; }""")
+                if said is None:
+                    problems.append(
+                        "the nav status light never lit with an open incident "
+                        "in the feed, so its count was not tested -- a check "
+                        "that cannot reach its subject passes for the wrong "
+                        "reason")
+                elif "1 open incident" not in said:
+                    problems.append(
+                        "the nav status light says %r while the page it links "
+                        "to lists 1 open -- the light counted a resolved "
+                        "incident, so the bar and the page disagree" % said)
+                else:
+                    print("  nav light: counts 1 open, not the resolved one")
+                ctx.close()
+                b.close()
+        except Exception as exc:                                # noqa: BLE001
+            problems.append("the nav light check could not run: %s"
+                            % str(exc)[:90])
     finally:
         if srv:
             srv.shutdown()
