@@ -67,9 +67,13 @@ verified_claims:
     source: https://docs.aws.amazon.com/kms/latest/developerguide/grants.html
   - claim: "The CreateGrant operation requires the kms:CreateGrant permission in the key policy, and supports cross-account use by specifying the key ARN in the KeyId parameter"
     source: https://docs.aws.amazon.com/kms/latest/APIReference/API_CreateGrant.html
+  - claim: "The AWS account that owns the KMS key can delegate the kms:RetireGrant permission to an IAM principal in the account"
+    source: https://docs.aws.amazon.com/kms/latest/developerguide/grant-delete.html
+  - claim: "If the retiring principal is a different AWS account, administrators in the other account can use kms:RetireGrant to delegate permission to retire the grant to an IAM principal in that account"
+    source: https://docs.aws.amazon.com/kms/latest/developerguide/grant-delete.html
 problem: "A KMS grant looks like a policy statement with a shorter lifetime, so it gets treated like one: written, forgotten, and assumed to be governed by the same policies as everything else on the key. It is not a statement. It is a resource with a per-key ceiling, no edit operation, eventual consistency in both directions, and a delete rule written inside the grant rather than in any policy you control."
 builds: "A reading of the grant lifecycle against the key policy that is supposed to govern it, to establish who can actually delete a grant, what the per-key quota really limits, and which permission on the key is equivalent to rewriting its policy."
-catch: "The grant decides who can retire it, and the permission that looks like it controls that does almost nothing. AWS states that kms:RetireGrant 'has limited utility', that principals specified in the grant 'can retire a grant without the kms:RetireGrant permission', that 'the kms:RetireGrant permission alone does not allow principals to retire a grant', and that it 'is not effective in a key policy or resource control policy'. It works as a Deny in an IAM policy and essentially nowhere else."
+catch: "The grant decides who can retire it, and the permission that looks like it controls that does almost nothing. AWS states that kms:RetireGrant 'has limited utility', that principals specified in the grant 'can retire a grant without the kms:RetireGrant permission', that 'the kms:RetireGrant permission alone does not allow principals to retire a grant', and that it 'is not effective in a key policy or resource control policy'. It is effective only in IAM policies, where it does three jobs: denying retirement, and letting an account that already holds the authority delegate it to its own principals -- the key's account, or the retiring principal's account. It never confers standing an account did not already have."
 ---
 <div id="jk-post">
 <style>#jk-post{}</style>
@@ -158,14 +162,28 @@ catch: "The grant decides who can retire it, and the permission that looks like 
           <strong>not effective in a key policy or resource control policy</strong>.&rdquo;</em>
         </p>
         <p>
-          Read that as a set. The permission does not confer the ability; the ability does not require the
-          permission; and the key policy &mdash; the authoritative control for everything else on this key
-          &mdash; cannot express it at all. What remains is one use:
+          Read that as a set. The permission does not confer the ability on its own; the ability does not
+          require the permission; and the key policy &mdash; the authoritative control for everything else on
+          this key &mdash; cannot express it at all.
+        </p>
+        <p>
+          What the permission <em>is</em> for is three things, and AWS lists them immediately afterwards:
           <em>&ldquo;To deny permission to retire a grant, you can use a <code class="inline">Deny</code> action
-          with the <code class="inline">kms:RetireGrant</code> permission in your IAM policies.&rdquo;</em>
+          with the <code class="inline">kms:RetireGrant</code> permission in your IAM policies&hellip; The AWS
+          account that owns the KMS key <strong>can delegate</strong> the
+          <code class="inline">kms:RetireGrant</code> permission to an IAM principal in the account&hellip; If
+          the retiring principal is a different AWS account, administrators in the other account can use
+          <code class="inline">kms:RetireGrant</code> to <strong>delegate permission to retire the grant</strong>
+          to an IAM principal in that account.&rdquo;</em>
+        </p>
+        <p>
+          So the shape is delegation within an account that already holds the authority, not conferral of it. An
+          account that can retire a grant &mdash; because it created the grant, or because it is named as the
+          retiring principal &mdash; can hand that down to its own IAM principals. What nobody can do is use
+          <code class="inline">kms:RetireGrant</code> to reach a grant their account had no standing in.
         </p>
         <span class="fix-label">Fix</span>
-        <p>Decide retirement at <code class="inline">CreateGrant</code> time, via <code class="inline">RetiringPrincipal</code>. It cannot be corrected from a policy afterwards.</p>
+        <p>Name a <code class="inline">RetiringPrincipal</code> at <code class="inline">CreateGrant</code> time when you want a designated owner for the grant's lifecycle. The field itself cannot be added later, because grants have no modify operation &mdash; but retirement authority also reaches the grantee (where the grant allows <code class="inline">RetireGrant</code>), the creating account, and whoever those accounts delegate to in IAM.</p>
       </div>
     </div>
 
@@ -203,7 +221,7 @@ catch: "The grant decides who can retire it, and the permission that looks like 
     </p>
 
     <figure class="screenshot">
-      <img src="/blog/assets/diagrams/arch-072-kms-grants.svg" alt="Diagram: how a KMS grant differs from a key policy statement, and what each difference costs. A grant is described by AWS as a policy instrument allowing AWS principals or service principals to use KMS keys in cryptographic operations, and grants are considered alongside key policies and IAM policies when authorizing access. Five structural differences are set out. First, a grant is a resource with a quota: each customer managed key can have up to fifty thousand grants including those created by AWS services integrated with KMS, the quota is adjustable, and it does not apply to AWS managed or AWS owned keys. That quota is a concurrency limit rather than a configuration limit, because AWS states you cannot perform more than fifty thousand grant-authorized operations using the same key at the same time, and after reaching it new grants can only be created when an active grant is retired or revoked; AWS's worked example is that EBS creates a grant for each volume attachment, so if every volume uses the same key you cannot attach more than fifty thousand volumes at once. Second, a grant has no modify operation: the enumerated grant operations are the cryptographic operations plus CreateGrant, DescribeKey, GetPublicKey and RetireGrant, so changing a grant means deleting it and creating another. Third, a grant is eventually consistent in both directions: creating, retiring or revoking may take up to about five minutes to propagate, a grant token returned only by CreateGrant lets the new permissions be used immediately, and on deletion the grantee principal might still be able to use the permissions for a brief period until the grant is fully deleted. A grant token can retire a grant but cannot revoke one. Fourth, the grant decides who may delete it: revoking is a normal key-policy and IAM-policy permission held by key administrators, while retiring is determined by the retiring principal or retiring service principal named in the grant, by the grantee if the grant includes the RetireGrant operation, or by the account where the grant was created. AWS states the kms RetireGrant permission has limited utility, that principals named in the grant can retire without it, that the permission alone does not allow retiring, and that it is not effective in a key policy or a resource control policy, leaving only its use as a Deny in an IAM policy. Fifth, kms CreateGrant is a privilege escalation primitive: AWS compares it to kms PutKeyPolicy and states that principals who get the permission from a policy can create grants for any grant operation and are not required to hold the permission they are granting, though principals who get CreateGrant from a grant can only delegate what they themselves were granted. A panel records the retry trap: without the Name parameter every CreateGrant call produces a new grant with a unique grant identifier even when all parameters are identical, so a retry loop creates duplicates against the fifty thousand ceiling, while supplying Name makes the call idempotent and returns the original grant identifier. A closing panel records the grant constraints: EncryptionContextEquals and EncryptionContextSubset, limited to eight encryption context pairs and three hundred and eighty four characters per constraint value and unsupported on asymmetric and HMAC keys, and SourceArn which works on all key types; both carve out RetireGrant, to which the constraints do not apply, and constraint and name fields may appear in plaintext in CloudTrail." />
+      <img src="/blog/assets/diagrams/arch-072-kms-grants.svg" alt="Diagram: how a KMS grant differs from a key policy statement, and what each difference costs. A grant is described by AWS as a policy instrument allowing AWS principals or service principals to use KMS keys in cryptographic operations, and grants are considered alongside key policies and IAM policies when authorizing access. Five structural differences are set out. First, a grant is a resource with a quota: each customer managed key can have up to fifty thousand grants including those created by AWS services integrated with KMS, the quota is adjustable, and it does not apply to AWS managed or AWS owned keys. That quota is a concurrency limit rather than a configuration limit, because AWS states you cannot perform more than fifty thousand grant-authorized operations using the same key at the same time, and after reaching it new grants can only be created when an active grant is retired or revoked; AWS's worked example is that EBS creates a grant for each volume attachment, so if every volume uses the same key you cannot attach more than fifty thousand volumes at once. Second, a grant has no modify operation: the enumerated grant operations are the cryptographic operations plus CreateGrant, DescribeKey, GetPublicKey and RetireGrant, so changing a grant means deleting it and creating another. Third, a grant is eventually consistent in both directions: creating, retiring or revoking may take up to about five minutes to propagate, a grant token returned only by CreateGrant lets the new permissions be used immediately, and on deletion the grantee principal might still be able to use the permissions for a brief period until the grant is fully deleted. A grant token can retire a grant but cannot revoke one. Fourth, the grant decides who may delete it: revoking is a normal key-policy and IAM-policy permission held by key administrators, while retiring is determined by the retiring principal or retiring service principal named in the grant, by the grantee if the grant includes the RetireGrant operation, or by the account where the grant was created. AWS states the kms RetireGrant permission has limited utility, that principals named in the grant can retire without it, that the permission alone does not allow retiring, and that it is not effective in a key policy or a resource control policy. Its effect is confined to IAM policies, where it does three things: denying retirement, letting the account that owns the key delegate retirement to an IAM principal in that account, and letting administrators in a different account that is named as the retiring principal delegate retirement to an IAM principal in that account; it never confers standing an account did not already hold. Fifth, kms CreateGrant is a privilege escalation primitive: AWS compares it to kms PutKeyPolicy and states that principals who get the permission from a policy can create grants for any grant operation and are not required to hold the permission they are granting, though principals who get CreateGrant from a grant can only delegate what they themselves were granted. A panel records the retry trap: without the Name parameter every CreateGrant call produces a new grant with a unique grant identifier even when all parameters are identical, so a retry loop creates duplicates against the fifty thousand ceiling, while supplying Name makes the call idempotent and returns the original grant identifier. A closing panel records the grant constraints: EncryptionContextEquals and EncryptionContextSubset, limited to eight encryption context pairs and three hundred and eighty four characters per constraint value and unsupported on asymmetric and HMAC keys, and SourceArn which works on all key types; both carve out RetireGrant, to which the constraints do not apply, and constraint and name fields may appear in plaintext in CloudTrail." />
       <figcaption>Five differences from a policy statement. Each one is a different failure.</figcaption>
     </figure>
 
@@ -389,14 +407,14 @@ catch: "The grant decides who can retire it, and the permission that looks like 
         <td>Without it, an identical retry creates a duplicate grant and consumes another slot.</td>
       </tr>
       <tr>
-        <td>Retirement</td>
-        <td>Set <code class="inline">RetiringPrincipal</code> at creation</td>
-        <td>The grant determines who can retire it, and no policy can add that later.</td>
+        <td>Retirement owner</td>
+        <td>Name <code class="inline">RetiringPrincipal</code> at creation</td>
+        <td>The field cannot be added later, because grants have no modify operation. Authority also reaches the grantee, the creating account, and IAM delegates of either.</td>
       </tr>
       <tr>
-        <td>Blocking retirement</td>
-        <td><code class="inline">Deny</code> on <code class="inline">kms:RetireGrant</code> in an IAM policy</td>
-        <td>It is the only place that permission is effective &mdash; not a key policy, not an RCP.</td>
+        <td>Blocking or delegating retirement</td>
+        <td>IAM policy only &mdash; <code class="inline">Deny</code>, or delegation inside an account that already holds the authority</td>
+        <td><code class="inline">kms:RetireGrant</code> is not effective in a key policy or an RCP, and alone it confers nothing.</td>
       </tr>
       <tr>
         <td>Emergency removal</td>
@@ -436,8 +454,10 @@ catch: "The grant decides who can retire it, and the permission that looks like 
       <code class="inline">ListGrants</code> on every customer managed key, and two questions of the output.
       <strong>How many</strong> &mdash; because that number is capacity, and because a count climbing without a
       matching workload is a retry loop with no <code class="inline">Name</code>. And <strong>how many have no
-      retiring principal</strong> &mdash; because those are the grants nobody is designated to remove, on which
-      your only instrument is <code class="inline">RevokeGrant</code> by a key administrator.
+      retiring principal</strong> &mdash; because those are the grants nobody is <em>designated</em> to
+      remove. They are not unreachable: the account that created the grant can still retire it, and can
+      delegate that to one of its IAM principals. But with no named owner the instrument is account-level
+      rather than role-level, which is a different conversation during an incident.
     </p>
     <p>
       Then <code class="inline">ListRetirableGrants</code> from the other direction, for the grants your
@@ -466,9 +486,10 @@ catch: "The grant decides who can retire it, and the permission that looks like 
       shows up in an incident rather than in an audit.
     </p>
     <p>
-      So the rule is short. Supply <code class="inline">Name</code> on every call, set
-      <code class="inline">RetiringPrincipal</code> at creation because nothing can add it later, and count your
-      grants &mdash; they are a resource, and the thing about resources is that you can run out.
+      So the rule is short. Supply <code class="inline">Name</code> on every call, name a
+      <code class="inline">RetiringPrincipal</code> at creation because the field cannot be added afterwards,
+      and count your grants &mdash; they are a resource, and the thing about resources is that you can run
+      out.
     </p>
 
     <div class="callout">
