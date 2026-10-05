@@ -495,6 +495,18 @@
     // The archive has its own copy; this block is a separate scope.
     var CLOUD = { aws: 'AWS', azure: 'Azure', gcp: 'Google Cloud' };
     var mapLive = [], placeOf = {}, footMeta = null;
+
+    /* Is this incident still open? Mirrors resolved_at() in
+       build_status_page.py: an end timestamp closes it, and so does a
+       title the vendor has prefixed [RESOLVED]. Anything else is taken as
+       open, which is the safe direction -- a closed incident shown as
+       closed costs nothing, one shown as current is a false alarm. */
+    function stillOpen(i) {
+      if (i && i.end) { return false; }
+      var t = ((i && i.title) || '').replace(/^\s+/, '').toUpperCase();
+      return t.indexOf('[RESOLVED]') !== 0;
+    }
+
     // The regions the vendors publish but do not locate, under whichever cloud
     // filter is showing. The search reads this so it can tell "we have never
     // heard of that" apart from "we carry it and cannot place it".
@@ -1354,6 +1366,14 @@
       if (st && st.clouds) {
         Object.keys(st.clouds).forEach(function (c) {
           (st.clouds[c] || []).forEach(function (i) {
+            /* clouds[] carries everything the vendor still lists, open and
+               closed alike -- the cards above filter it with is_open() and
+               the map did not, so a resolved incident lit a dot and was
+               announced under "Open right now" while its own title began
+               "[RESOLVED]". Same rule as resolved_at() in
+               build_status_page.py, kept identical on purpose: two rules
+               that drift are how the map came to disagree with the cards. */
+            if (!stillOpen(i)) { return; }
             mapLive.push({
               cloud: c, title: i.title || '', service: i.service || '',
               region: i.region || '', region_code: i.region_code || '',

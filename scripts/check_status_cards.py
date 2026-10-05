@@ -36,6 +36,8 @@ Three things have to hold, and two of them failed once already:
 import argparse
 import http.server
 import os
+import re
+import json
 import socketserver
 import sys
 import threading
@@ -173,11 +175,78 @@ def main():
                         problems.append(
                             "%s with scripts off: the card does not link to "
                             "the incidents (href %r)" % (label, href))
+
                 ctx.close()
                 b.close()
+
+        # --- the map must not call a resolved incident open ------------------
+        #
+        # Reported: a region panel headed "Open right now" whose first line
+        # began "[RESOLVED]". status.json's clouds[] carries open and closed
+        # incidents alike; the cards filter it with is_open() and the map took
+        # the list whole.
+        #
+        # Its own desktop context, because the dots are not reachable at phone
+        # size -- run inside the iPhone loop this reported "no dot to click"
+        # on both engines and passed without testing anything.
+        #
+        # The store is replaced rather than waited for, so it fires on every
+        # run instead of only during an outage.
+        try:
+            with sync_playwright() as pw:
+                b = pw.chromium.launch()
+                ctx = b.new_context(viewport={"width": 1280, "height": 1000})
+                pg = ctx.new_page()
+                pg.route("**/intelligence/status.json", lambda route: route.fulfill(
+                    status=200, content_type="application/json",
+                    body=json.dumps({
+                        "checked": "2026-01-01T00:00:00Z",
+                        "clouds": {"aws": [{
+                            "title": "[RESOLVED] Synthetic packet loss",
+                            "service": "Internet Connectivity",
+                            "region": "Spain", "region_code": "eu-south-2",
+                            "url": "", "update": "closed before this ran",
+                        }], "azure": [], "gcp": []},
+                        "sources": {}, "history_count": 0,
+                    })))
+                pg.goto(base + PATH, wait_until="domcontentloaded", timeout=60000)
+                pg.wait_for_timeout(6000)
+                clicked = pg.evaluate(
+                    """() => {
+                       const all = [...document.querySelectorAll(
+                         'svg [data-code], svg [data-r], svg circle, svg g')];
+                       const hit = all.find(e => /eu-south-2|Spain/i.test(
+                         (e.getAttribute('data-code') || '') + ' ' +
+                         (e.getAttribute('data-r') || '') + ' ' +
+                         (e.getAttribute('aria-label') || '')));
+                       if (!hit) { return false; }
+                       hit.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                       return true; }""")
+                if not clicked:
+                    problems.append(
+                        "the map check could not find a Spain dot to open, so it "
+                        "tested nothing -- a check that cannot reach its subject "
+                        "passes for the wrong reason")
+                else:
+                    pg.wait_for_timeout(800)
+                    body = pg.evaluate("() => document.body.innerText")
+                    m = re.search(r"Open right now([\s\S]{0,400})", body)
+                    bad = bool(m and "[RESOLVED]" in m.group(1))
+                    if bad:
+                        problems.append(
+                            "the map lists a resolved incident under \"Open right "
+                            "now\" -- the heading is the strongest claim on the "
+                            "page and the title beneath it says the opposite")
+                    print("  map panel: a resolved incident is %s"
+                          % ("STILL SHOWN as open" if bad else "kept out of it"))
+                ctx.close()
+                b.close()
+        except Exception as exc:                                # noqa: BLE001
+            problems.append("the map check could not run: %s" % str(exc)[:90])
     finally:
         if srv:
             srv.shutdown()
+
 
     print()
     if problems:
