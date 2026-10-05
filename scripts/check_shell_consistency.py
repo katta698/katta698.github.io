@@ -113,6 +113,14 @@ PROBE = r"""() => {
     linkFont: font(link),
     hasHero: !!hero,
     hasVideo: !!video,
+    /* Where the page's first heading lands. The chrome above was
+       already identical on every page while the content below it
+       started as much as 26px apart, which is the jump a reader
+       sees moving between tabs. */
+    h1Y: (function () {
+      var h = document.querySelector('h1');
+      return h ? Math.round(h.getBoundingClientRect().top) : null;
+    })(),
     videoSrc: video ? (video.currentSrc || '').split('/').pop() : null,
     videoPoster: video ? (video.poster || '').split('/').pop() : null,
     bodyFont: font(document.body),
@@ -200,6 +208,17 @@ def serve():
         except OSError:
             continue
     raise SystemExit("no free port")
+
+
+# The portfolio is a full-screen hero with the name and the road, and is
+# meant to sit differently from the four tabs. Exempt from h1Y only --
+# every other measurement here still applies to it.
+H1Y_EXEMPT = {"/"}
+
+# Four different heading sizes will never land on exactly the same pixel.
+# 8px is below what a reader notices moving between tabs and above what
+# font metrics vary by; they currently sit within 4px.
+H1Y_TOLERANCE = 8
 
 
 def compare(w, ref_page, ref, page, cur, problems):
@@ -295,6 +314,25 @@ def main():
                 before = len(problems)
                 for p in PAGES[1:]:
                     compare(w, ref_page, ref, p, rows[p], problems)
+
+                # Where the content begins -- the jump a reader sees when
+                # switching tabs, and the one thing the chrome comparison
+                # above cannot see. Compared among the TABS, not against
+                # the portfolio: that page is a full-screen hero and is
+                # meant to sit differently, so using it as the yardstick
+                # here made the assertion unable to fire at all.
+                tabs = [q for q in PAGES if q not in H1Y_EXEMPT]
+                ys = [(q, rows[q].get("h1Y")) for q in tabs]
+                ys = [(q, y) for q, y in ys if y is not None]
+                if len(ys) > 1:
+                    lo = min(ys, key=lambda x: x[1])
+                    hi = max(ys, key=lambda x: x[1])
+                    if hi[1] - lo[1] > H1Y_TOLERANCE:
+                        problems.append(
+                            "%dpx  %-32s %s starts at %dpx, %s at %dpx -- "
+                            "%dpx apart, so the page jumps between tabs"
+                            % (w, "first heading", hi[0], hi[1], lo[0], lo[1],
+                               hi[1] - lo[1]))
                 print("    %4dpx %-5s nav %.0fpx, mark %.0fpx, banner %s, "
                       "hero %s  -- %d difference(s)"
                       % (w, theme, ref["navH"] or 0,
