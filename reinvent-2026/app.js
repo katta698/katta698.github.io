@@ -1291,10 +1291,18 @@
   function clampView(v) {
     if (!baseView) return v;
     var maxW = baseView.w, maxH = baseView.h;
-    if (v.w > maxW) { var f = maxW / v.w; v.w = maxW; v.h *= f; }
-    if (v.w < MIN_SPAN_M) {
-      var g = MIN_SPAN_M / v.w; v.w = MIN_SPAN_M; v.h *= g;
+    /* Rescaling has to keep the CENTRE. x and y are a viewBox's top-left
+       corner, so changing w and h while holding them pins that corner and
+       drags the rest of the map towards it -- which is what made zooming
+       out slide right and down, and zooming in slide up and left. */
+    function span(nw) {
+      var cx = v.x + v.w / 2, cy = v.y + v.h / 2;
+      var f = nw / v.w;
+      v.w = nw; v.h *= f;
+      v.x = cx - v.w / 2; v.y = cy - v.h / 2;
     }
+    if (v.w > maxW) { span(maxW); }
+    if (v.w < MIN_SPAN_M) { span(MIN_SPAN_M); }
     // Keep at least a corner of the map on screen rather than letting it
     // be dragged into empty space and lost.
     var slackX = v.w * 0.5, slackY = v.h * 0.5;
@@ -1313,7 +1321,17 @@
     var fx = (clientX - r.left) / r.width;
     var fy = (clientY - r.top) / r.height;
     var mx = cam.x + fx * cam.w, my = cam.y + fy * cam.h;
-    var nw = cam.w / factor, nh = cam.h / factor;
+
+    /* Clamp the SPAN first, then anchor to the span actually being used.
+       Anchoring to the requested span and letting clampView override it
+       afterwards is what put the anchor in the wrong place at both limits:
+       the maths was right for a width the view never adopted. */
+    var nw = cam.w / factor;
+    if (baseView) {
+      nw = Math.min(baseView.w, Math.max(MIN_SPAN_M, nw));
+    }
+    var nh = cam.h * (nw / cam.w);
+
     cam = clampView({ x: mx - fx * nw, y: my - fy * nh, w: nw, h: nh });
     applyView();
   }
