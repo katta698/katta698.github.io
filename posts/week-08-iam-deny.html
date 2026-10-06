@@ -1,0 +1,388 @@
+---
+title: 'Week 8 — Taking Back a Permission I Had to Give Away'
+date: '2026-10-05T22:00:00'
+draft: true
+labels:
+- GCP
+- Terraform
+- GCP Weekly Lab
+slug: week-08-iam-deny
+verified: '2026-10-05'
+verified_claims:
+  - claim: "IAM deny policies are managed through the IAM v2 API, each attached to one resource, and principals in a deny policy are prevented from using the specified permissions on that resource and its descendants"
+    source: https://docs.cloud.google.com/iam/docs/deny-overview
+  - claim: "Condition expressions in deny policies can only use functions for resource tags; other functions and operators are not supported"
+    source: https://docs.cloud.google.com/iam/docs/deny-overview
+  - claim: "Deny policies use principal identifiers of the form principal://iam.googleapis.com/projects/-/serviceAccounts/EMAIL for service accounts and principalSet://goog/public:all for all principals"
+    source: https://docs.cloud.google.com/iam/docs/deny-access
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Platform Engineering Lab &middot; Week 8 of 58</div>
+  <div class="post-title">Taking back a permission I had to give away</div>
+  <div class="post-subtitle">Last week the read-only half of my CI pipeline had to be given a role that can delete things, because Google offers no smaller one. This week it gets a custom role with exactly two permissions and a deny policy behind it &mdash; and the tool everyone reaches for to check deny policies turns out to be unable to see them.</div>
+  <div class="post-meta">
+    <span>5 October 2026</span>
+    <span>Cloud IAM &middot; Custom roles &middot; Deny policies</span>
+    <span>$0</span>
+  </div>
+</div>
+
+<div class="toc">
+  <h3>&#128203; In This Post</h3>
+  <ol>
+    <li><a href="#why">Why — The Problem This Solves</a></li>
+    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
+    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
+    <li><a href="#build">How We Built It — Step by Step</a></li>
+    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
+    <li><a href="#security">Security — Controls at Every Layer</a></li>
+    <li><a href="#cost">Cost</a></li>
+    <li><a href="#cleanup">Cleanup</a></li>
+    <li><a href="#references">References</a></li>
+    <li><a href="#takeaways">Key Takeaways</a></li>
+  </ol>
+</div>
+
+<div class="section" id="why">
+<h2>Why — The Problem This Solves</h2>
+
+<p>This lab's CI runs as two separate identities. <code>tf-plan</code> is used
+during <code>terraform plan</code> and is supposed to be able to read and
+nothing else; <code>tf-apply</code> is used during <code>terraform apply</code>
+and can change things. The split is enforced by Google at token exchange, not by
+convention.</p>
+
+<p>Week 7 broke it. Reading a Cloud Asset Inventory feed needs
+<code>cloudasset.feeds.get</code>, and <strong>no predefined role carries that
+permission without also carrying create, update and delete.</strong> The only
+role that works is <code>roles/cloudasset.owner</code>. So the read-only identity
+was given it, the hole was written down, and the week shipped.</p>
+
+<p>A read-only identity that can delete things is not read-only. This week closes
+it.</p>
+</div>
+
+<div class="section" id="skills">
+<h2>What You Need to Know — Skills &amp; Tools</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <h3>Google Cloud</h3>
+    <ul>
+      <li><strong>Custom roles</strong> — your own list of permissions, when no predefined role fits</li>
+      <li><strong>Deny policies</strong> — refuse a permission regardless of any role</li>
+      <li><strong>Policy Troubleshooter</strong> — ask what a principal can actually do</li>
+      <li><strong>Principals</strong> — the IAM word for any identity: person, group or service account</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Tooling</h3>
+    <ul>
+      <li><strong>Terraform</strong> — <code>google_organization_iam_custom_role</code>, <code>google_iam_deny_policy</code></li>
+      <li><strong>HCP Terraform</strong> — remote runs, Workload Identity Federation</li>
+      <li><strong>curl and an access token</strong> — the Troubleshooter v3 API, which gcloud does not call</li>
+    </ul>
+  </div>
+</div>
+
+<h3>Concepts to understand before starting</h3>
+
+<div class="tag-grid">
+  <span>Deny beats allow</span>
+  <span>A role is all-or-nothing</span>
+  <span>Fix at source, then guard</span>
+  <span>Never ship a deny without a break-glass</span>
+</div>
+</div>
+
+<div class="section" id="architecture">
+<h2>Architecture — How It Fits Together</h2>
+
+<svg viewBox="0 0 880 320" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="A request from tf-plan to delete an asset feed passes through two controls. First the allow policy, which after this week grants only a custom role with two read permissions. Second the deny policy, which refuses feeds.delete to every principal except tf-apply and a break-glass human."
+     style="width:100%;height:auto;border:1px solid #e4e7ec;border-radius:8px">
+  <rect x="0" y="0" width="880" height="320" fill="#ffffff"/>
+  <defs>
+    <marker id="w8a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="28" font-family="Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#202124">Two controls, and the request has to survive both</text>
+
+  <rect x="24" y="110" width="150" height="76" rx="7" fill="#ffffff" stroke="#5f6368" stroke-width="1.3"/>
+  <text x="40" y="140" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="700" fill="#202124">tf-plan</text>
+  <text x="40" y="160" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">asks to delete</text>
+  <text x="40" y="176" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">an asset feed</text>
+
+  <path d="M 174 148 L 262 148" fill="none" stroke="#5f6368" stroke-width="1.4" marker-end="url(#w8a)"/>
+
+  <rect x="268" y="96" width="250" height="104" rx="7" fill="#e6f4ea" stroke="#0F9D58" stroke-width="1.2"/>
+  <text x="284" y="122" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">1 &#183; allow policy</text>
+  <text x="284" y="142" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">before: roles/cloudasset.owner</text>
+  <text x="284" y="160" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">after: tfPlanAssetReader</text>
+  <text x="284" y="180" font-family="Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#0F9D58">feeds.get + feeds.list only</text>
+
+  <path d="M 518 148 L 606 148" fill="none" stroke="#5f6368" stroke-width="1.4" marker-end="url(#w8a)"/>
+
+  <rect x="612" y="96" width="244" height="104" rx="7" fill="#fce8e6" stroke="#DB4437" stroke-width="1.2"/>
+  <text x="628" y="122" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">2 &#183; deny policy</text>
+  <text x="628" y="142" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">refuses feeds.delete</text>
+  <text x="628" y="160" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">to every principal, except</text>
+  <text x="628" y="180" font-family="Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#DB4437">tf-apply &#183; one break-glass human</text>
+
+  <text x="268" y="236" font-family="Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#202124">The fix</text>
+  <text x="268" y="252" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">removes the permission at source</text>
+  <text x="612" y="236" font-family="Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#202124">The guardrail</text>
+  <text x="612" y="252" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">survives someone undoing the fix</text>
+
+  <text x="20" y="298" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">Deny is evaluated after allow and wins. A principal granted Organization Admin is still refused.</text>
+</svg>
+
+<p>Only the first box actually fires today &mdash; after the custom role swap the
+permission is not granted at all, so the request never reaches the deny. The
+second box exists for the day someone re-grants a broad role. Which is also why
+it had to be tested separately.</p>
+</div>
+
+<div class="section" id="build">
+<h2>How We Built It — Step by Step</h2>
+
+<h3>1. Measure the problem before touching anything</h3>
+
+<p>Policy Troubleshooter answers "can this principal do this thing?" without
+needing to impersonate anyone &mdash; which matters here, because
+<code>tf-plan</code> can only be assumed by HCP Terraform, never by a person.</p>
+
+<pre><code>principal:  tf-plan@…
+permission: cloudasset.feeds.delete
+access:     GRANTED</code></pre>
+
+<p>This step is the one people skip, and skipping it is what turns a
+demonstration into a claim. Without it, a refusal at the end could be a typo, a
+wrong permission name, anything.</p>
+
+<figure class="screenshot" data-prereq>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-08-iam-deny/docs/blog/screenshots/05-terraform-layout.png"
+       alt="The Terraform file tree for Week 8: terraform/ with versions.tf, variables.tf and a 102-line main.tf holding three resources, and scripts/ with a 103-line validate.sh"/>
+  <figcaption><strong>Every file, and what it is for.</strong> Three resource
+  blocks in 102 lines &mdash; and <code>validate.sh</code> is the longest file in
+  the week. That is the right shape here: a guardrail nobody tested is a guess.</figcaption>
+</figure>
+
+<h3>2. The fix — a role that carries only what a plan reads</h3>
+
+<pre><code>resource "google_organization_iam_custom_role" "plan_asset_reader" {
+  org_id  = var.org_id
+  role_id = "tfPlanAssetReader"
+  title   = "Terraform Plan - Asset Reader"
+
+  permissions = [
+    "cloudasset.feeds.get",
+    "cloudasset.feeds.list",
+  ]
+}</code></pre>
+
+<p>Two permissions. Everything else in <code>roles/cloudasset.owner</code> was a
+side-effect of there being no smaller predefined role.</p>
+
+<p><strong>The honest trade-off:</strong> a custom role does not track Google. A
+predefined role picks up new permissions automatically as a service evolves;
+this one will fail a plan until someone adds them by hand. That maintenance is
+the real price of least privilege, and it is why predefined roles still exist.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-08-iam-deny/docs/blog/screenshots/02-custom-role.png"
+       alt="The Custom tab of IAM Roles showing Terraform Plan - Asset Reader, tfPlanAssetReader, Enabled"/>
+  <figcaption>The role, after the apply. The console opens on
+  <em>Predefined</em> &mdash; hundreds of Google's roles and none of yours
+  &mdash; so the Custom tab is where to look.</figcaption>
+</figure>
+
+<h3>3. The guardrail — a deny policy with two exceptions</h3>
+
+<pre><code>rules {
+  deny_rule {
+    denied_principals  = ["principalSet://goog/public:all"]
+    denied_permissions = ["cloudasset.googleapis.com/feeds.delete"]
+
+    exception_principals = [
+      "principal://iam.googleapis.com/projects/-/serviceAccounts/${var.apply_service_account}",
+      "principal://goog/subject/${var.break_glass_principal}",
+    ]
+  }
+}</code></pre>
+
+<p>Scoped wider than the identity we just fixed, on purpose: denying only
+<code>tf-plan</code> would protect against the problem already solved and
+nothing else. The useful guardrail is "nobody deletes an asset feed by hand".</p>
+
+<p><strong>The break-glass exception is not optional.</strong> A deny with no way
+out is an outage waiting for the day you genuinely need the denied action, and
+the usual fix under pressure is to delete the entire policy &mdash; which removes
+the control completely instead of using it once. One named human is safer than a
+guardrail people learn to switch off.</p>
+
+<p>Note the principal format. It is not the <code>serviceAccount:</code> string
+Terraform uses everywhere else, and using that spelling fails with
+<em>"invalid principal ... as part of the exempted principals list"</em>.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-08-iam-deny/docs/blog/screenshots/03-deny-policy.png"
+       alt="The Deny tab of the IAM page showing the deny-asset-feed-deletion policy at the organization"/>
+  <figcaption>Deny policies live on their own tab, at
+  <code>/iam-admin/iam/deny</code>. The more obvious
+  <code>/iam-admin/denypolicies</code> is a 404.</figcaption>
+</figure>
+
+<h3>4. Swap the binding, in the layer CI does not control</h3>
+
+<p>The custom role is created by <code>tf-apply</code>, but the binding that puts
+it on <code>tf-plan</code> is not: an identity must not manage its own grants. It
+lives in the hand-applied Week 2 configuration, same as every other CI grant in
+this lab.</p>
+
+<h3>5. Test the fix</h3>
+
+<pre><code>tf-plan  / feeds.delete   ->  CANNOT_ACCESS     (was GRANTED)
+tf-plan  / feeds.get      ->  CAN_ACCESS        (still works)
+tf-apply / feeds.delete   ->  CAN_ACCESS        (exempted)</code></pre>
+
+<p>Three calls, because "we removed a permission" is only half an answer. The
+second line is what proves we did not simply break the plan identity.</p>
+
+<h3>6. Test the guardrail, which the fix was hiding</h3>
+
+<p><code>CANNOT_ACCESS</code> above is the <em>custom role</em> doing the work.
+The permission is not granted at all, so the request never reaches the deny
+policy &mdash; meaning the guardrail was completely untested.</p>
+
+<p>So simulate the future mistake. Re-grant <code>roles/cloudasset.owner</code>
+to <code>tf-plan</code> and ask again:</p>
+
+<pre><code>allow policies say:  ALLOW_ACCESS_STATE_GRANTED
+deny policies say:   DENY_ACCESS_STATE_DENIED
+overall:             CANNOT_ACCESS
+matched policy:      deny-asset-feed-deletion</code></pre>
+
+<p>Deny beats allow, and the policy names itself. The over-grant was removed
+immediately afterwards.</p>
+</div>
+
+<div class="section" id="challenges">
+<h2>Challenges — What Actually Went Wrong</h2>
+
+<div class="challenge-card">
+  <h3>1. The tool for checking deny policies cannot see deny policies</h3>
+  <p>With the deny actively blocking, Policy Troubleshooter <strong>v1</strong>
+  answered <code>GRANTED</code> and <strong>v3</strong> answered
+  <code>CANNOT_ACCESS</code>. Same question, same minute. v1 evaluates allow
+  policies only.</p>
+  <p><code>gcloud policy-troubleshoot iam</code> calls v1. Had I trusted it I
+  would have concluded the guardrail was broken and gone looking for a fault
+  that did not exist. Name your instrument and know what it cannot see.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>2. Creating a custom role requires permission to read one</h3>
+  <p>The failure was not "cannot create" but <em>"Unable to verify whether custom
+  org role ... already exists and must be undeleted"</em>. Deleted custom roles
+  are recoverable for seven days, so the provider reads before it writes and a
+  create needs the get.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>3. "Access denied" that was not a denial</h3>
+  <p>The first after-state probes returned <code>UNKNOWN_INFO_DENIED</code>,
+  which reads like a refusal and is not one &mdash; it means the <em>caller</em>
+  cannot read the policies the troubleshooter would have to explain. It cleared
+  once my own account held the two read-only roles. Second week running that
+  running the validator needed its own grants.</p>
+</div>
+</div>
+
+<div class="section" id="security">
+<h2>Security — Controls at Every Layer</h2>
+
+<p><strong>Fix at source, then guard.</strong> A deny policy on top of an
+unnecessary role is a compensating control for a problem you could simply
+remove. The custom role is the fix; the deny exists for the day someone undoes
+it.</p>
+
+<p><strong>The guardrail is deliberately wider than the bug.</strong> It denies
+everyone, not just the identity that had the problem, because the next
+over-grant will not be the same one.</p>
+
+<p><strong>Break-glass is part of the control, not an exception to it.</strong>
+Policies without a documented way out get deleted in an incident, and deleting
+one removes it for everybody, permanently.</p>
+
+<p><strong>The rollback was written before the apply.</strong> Deny policies beat
+every role including Organization Admin, so "how do I undo this" is not a
+question to start answering afterwards.</p>
+</div>
+
+<div class="section" id="cost">
+<h2>Cost</h2>
+
+<p><strong>$0.</strong> Custom roles, deny policies and Policy Troubleshooter are
+free. No project was created; nothing here runs.</p>
+
+<p>The real cost is maintenance. A custom role is a promise to keep it current as
+Google adds permissions, and nothing reminds you &mdash; it surfaces as a plan
+failing months later. Budget for that before choosing a custom role over a
+predefined one.</p>
+</div>
+
+<div class="section" id="cleanup">
+<h2>Cleanup</h2>
+
+<p>This week is <strong>exempt from teardown</strong>: removing the controls
+restores the hole Week 7 documented.</p>
+
+<p>If you do need to lift the deny, use the break-glass exception rather than
+deleting the policy. Deleting it removes the control for every principal and
+nothing will tell you it is gone &mdash; the next over-grant simply works.</p>
+
+<p>If you remove the custom role, put <code>roles/cloudasset.owner</code> back
+first, or the next <code>terraform plan</code> touching an asset feed fails on a
+permission it no longer has.</p>
+</div>
+
+<div class="section" id="references">
+<h2>References</h2>
+
+<ul>
+  <li><a href="https://docs.cloud.google.com/iam/docs/deny-overview">Deny policies</a> &mdash; the v2 API, 500 per resource, and that conditions may use tag functions only.</li>
+  <li><a href="https://docs.cloud.google.com/iam/docs/deny-access">Deny access to resources</a> &mdash; the principal identifier formats, which are this week's sharpest edge.</li>
+  <li><a href="https://docs.cloud.google.com/iam/docs/policy-types">IAM policy types</a> &mdash; how allow, deny and principal access boundary policies are evaluated together.</li>
+</ul>
+
+<p><strong>Not answered anywhere I looked, and measured instead:</strong> that
+Policy Troubleshooter v1 cannot see deny policies; that creating a custom role
+needs permission to read one; and that <code>UNKNOWN_INFO_DENIED</code> describes
+the caller, not the principal being asked about.</p>
+</div>
+
+<div class="section" id="takeaways">
+<h2>Key Takeaways</h2>
+
+<ul>
+  <li><strong>Measure before you build.</strong> A refusal at the end proves
+  nothing unless you showed the same command succeeding first.</li>
+  <li><strong>A guardrail you have not triggered is a guess.</strong> The fix hid
+  the deny policy completely; testing it meant deliberately recreating the
+  mistake it exists for.</li>
+  <li><strong>Know what your instrument cannot see.</strong> The default tool
+  reported the opposite of the truth, confidently.</li>
+  <li><strong>Never ship a deny without a break-glass.</strong> The alternative
+  is someone deleting the whole policy at 2am.</li>
+</ul>
+
+<p>Next week: service account lifecycle &mdash; short-lived tokens, impersonation
+chains, and what happens to an identity nobody owns.</p>
+</div>
+
+</div>
