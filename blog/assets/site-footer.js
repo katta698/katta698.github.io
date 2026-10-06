@@ -1891,10 +1891,61 @@
     return seen.length;
   }
 
+  /* The blog sidebar's Cloud status card, refreshed from the same fetch.
+   * -------------------------------------------------------------------------
+   * Reported as "three incidents still shows in the blog page" when the status
+   * page said two. Two faults, not one: the card counted a [RESOLVED] entry as
+   * open, and it is written into blog/index.html at BUILD time -- so it froze
+   * at whatever was true the last time the blog was synced and could not
+   * correct itself however many times the vendor feed moved on.
+   *
+   * Fixing only the count would have left a card that is right at build time
+   * and drifts from that moment, which is the fault that produced the report
+   * in the first place. The page already fetches status.json for the nav
+   * light, so the card costs no extra request -- it is the same response,
+   * applied to the markup sync_blog.py emitted.
+   *
+   * The build-time render stays as the no-JavaScript fallback. It is honest
+   * about being a snapshot, and now it counts the same way this does.
+   */
+  function refreshCard(data) {
+    var card = document.querySelector('.cloud-status-card');
+    if (!card) { return; }
+    var clouds = (data && data.clouds) || {};
+    var sources = (data && data.sources) || {};
+    [].forEach.call(card.querySelectorAll('.cs-row'), function (row) {
+      var nameEl = row.querySelector('.cs-n');
+      var dot = row.querySelector('.cs-dot');
+      var val = row.querySelector('.cs-v');
+      if (!nameEl || !dot || !val) { return; }
+      var key = (nameEl.textContent || '').trim().toLowerCase();
+      if (!Object.prototype.hasOwnProperty.call(clouds, key)) { return; }
+      var list = Array.isArray(clouds[key]) ? clouds[key] : [];
+      var n = 0;
+      list.forEach(function (i) { if (stillOpen(i)) n += 1; });
+      var cls, txt;
+      if (!(sources[key] && sources[key].ok)) {
+        cls = 'err'; txt = 'unknown';
+      } else if (n) {
+        cls = 'bad'; txt = n + ' incident' + (n === 1 ? '' : 's');
+      } else {
+        cls = 'ok'; txt = 'operational';
+      }
+      dot.className = 'cs-dot ' + cls;
+      val.textContent = txt;
+    });
+    var foot = card.querySelector('.svc-foot');
+    if (foot) {
+      // It is no longer a build-time snapshot once this has run, and saying so
+      // would be the "presenting a snapshot as live" lie inverted.
+      foot.childNodes[0].nodeValue = 'Live now. ';
+    }
+  }
+
   function start() {
     fetch(STATUS, { cache: 'no-cache' })
       .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (d) { if (d) mark(count(d)); })
+      .then(function (d) { if (d) { mark(count(d)); refreshCard(d); } })
       .catch(function () { /* silence, deliberately -- see the note above */ });
   }
 

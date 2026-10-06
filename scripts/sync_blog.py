@@ -2738,6 +2738,17 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     # says whether anything was wrong at build time and sends the reader to
     # the page that is actually current. Presenting a build-time snapshot as
     # live is the same lie the status page itself refuses to tell.
+    # The same rule the status page and the nav light apply. A vendor leaves a
+    # resolved incident in its feed with the word in the title rather than an
+    # end time, so len() is not a count of what is open -- this counted a
+    # "[RESOLVED] Elevated packet loss" and the card read "3 incidents" while
+    # the page it links to listed 2. Third place this has been fixed; see
+    # stillOpen() in intelligence/status/pm.js and in site-footer.js.
+    def _still_open(_i):
+        if _i.get("end"):
+            return False
+        return not (_i.get("title") or "").lstrip().upper().startswith("[RESOLVED]")
+
     status_widget = ""
     try:
         _sp = REPO_ROOT / "intelligence" / "status.json"
@@ -2746,7 +2757,8 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
             _rows = []
             for _c, _lbl in (("aws", "AWS"), ("azure", "Azure"), ("gcp", "GCP")):
                 _src = (_sd.get("sources") or {}).get(_c, {})
-                _n = len((_sd.get("clouds") or {}).get(_c, []))
+                _n = sum(1 for _i in (_sd.get("clouds") or {}).get(_c, [])
+                         if _still_open(_i))
                 if not _src.get("ok"):
                     _cls, _txt = "err", "unknown"
                 elif _n:

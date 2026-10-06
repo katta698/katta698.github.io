@@ -195,7 +195,17 @@ def main():
         try:
             with sync_playwright() as pw:
                 b = pw.chromium.launch()
-                ctx = b.new_context(viewport={"width": 1280, "height": 1000})
+                # service_workers="block" is load-bearing, not hygiene.
+                # page.route() does NOT intercept a request made BY a service
+                # worker, and this site registers one. The widget fetches
+                # status.json twice -- once on DOMContentLoaded and again 400ms
+                # after load -- so with the worker active the second fetch went
+                # around the mock and returned the REAL file. The assertion
+                # then compared live data against a synthetic expectation and
+                # failed on correct code. Blocking the worker is what makes
+                # the payload below the one actually under test.
+                ctx = b.new_context(viewport={"width": 1280, "height": 1000},
+                                    service_workers="block")
                 pg = ctx.new_page()
                 pg.route("**/intelligence/status.json", lambda route: route.fulfill(
                     status=200, content_type="application/json",
@@ -263,7 +273,17 @@ def main():
         try:
             with sync_playwright() as pw:
                 b = pw.chromium.launch()
-                ctx = b.new_context(viewport={"width": 1280, "height": 1000})
+                # service_workers="block" is load-bearing, not hygiene.
+                # page.route() does NOT intercept a request made BY a service
+                # worker, and this site registers one. The widget fetches
+                # status.json twice -- once on DOMContentLoaded and again 400ms
+                # after load -- so with the worker active the second fetch went
+                # around the mock and returned the REAL file. The assertion
+                # then compared live data against a synthetic expectation and
+                # failed on correct code. Blocking the worker is what makes
+                # the payload below the one actually under test.
+                ctx = b.new_context(viewport={"width": 1280, "height": 1000},
+                                    service_workers="block")
                 pg = ctx.new_page()
                 pg.route("**/intelligence/status.json", lambda route: route.fulfill(
                     status=200, content_type="application/json",
@@ -279,7 +299,13 @@ def main():
                              "region": "Ohio", "region_code": "us-east-2",
                              "url": "", "update": "genuinely open"},
                         ], "azure": [], "gcp": []},
-                        "sources": {}, "history_count": 0,
+                        # The card reports "unknown" for a cloud whose source
+                        # did not fetch, which is correct and is not what this
+                        # is testing -- so the sources have to say ok here or
+                        # the assertion never reaches the count.
+                        "sources": {"aws": {"ok": True}, "azure": {"ok": True},
+                                    "gcp": {"ok": True}},
+                        "history_count": 0,
                     })))
                 pg.goto(base + "/blog/", wait_until="domcontentloaded",
                         timeout=60000)
@@ -302,6 +328,35 @@ def main():
                         "incident, so the bar and the page disagree" % said)
                 else:
                     print("  nav light: counts 1 open, not the resolved one")
+
+                # The sidebar Cloud status card, same payload. It is rendered
+                # at BUILD time by sync_blog.py and refreshed from this fetch,
+                # so both halves have to agree with the page: the card must
+                # read "1 incident", never 2. Reported as "three incidents
+                # still shows in the blog page" when the status page said two.
+                card = pg.evaluate(
+                    """() => {
+                       const c = document.querySelector('.cloud-status-card');
+                       if (!c) { return null; }
+                       const row = [...c.querySelectorAll('.cs-row')].find(
+                         r => (r.querySelector('.cs-n') || {}).textContent
+                              === 'AWS');
+                       if (!row) { return null; }
+                       return (row.querySelector('.cs-v') || {}).textContent
+                              || ''; }""")
+                if card is None:
+                    problems.append(
+                        "the blog sidebar has no Cloud status card with an AWS "
+                        "row, so its count was not tested -- a check that "
+                        "cannot reach its subject passes for the wrong reason")
+                elif card.strip() != "1 incident":
+                    problems.append(
+                        "the Cloud status card says %r while the page it links "
+                        "to lists 1 open -- the card counted a resolved "
+                        "incident, or never refreshed off the build-time "
+                        "snapshot" % card.strip())
+                else:
+                    print("  status card: reads 1 incident, live off the feed")
                 ctx.close()
                 b.close()
         except Exception as exc:                                # noqa: BLE001
