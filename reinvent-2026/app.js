@@ -3253,10 +3253,25 @@
     window.addEventListener(ev, function () { userMoved = true; }, true);
   });
 
+  /* How much of the top of the viewport the site chrome owns.
+     Measured, not assumed: the nav is 64px, the banner is 33px wide-screen
+     and 50px on a phone where its text wraps, and on most days there is no
+     banner at all. A constant would be wrong in two of those three cases. */
+  function chromeTop() {
+    var n = 0;
+    var nav = document.querySelector("nav");
+    if (nav) { n += nav.getBoundingClientRect().height; }
+    var ban = document.getElementById("occasion-banner");
+    if (ban && getComputedStyle(ban).display !== "none") {
+      n += ban.getBoundingClientRect().height;
+    }
+    return n;
+  }
+
   function scrollToTabs() {
     var bar = document.querySelector(".resultbar");
     if (!bar) return;
-    var y = bar.getBoundingClientRect().top + window.scrollY - 8;
+    var y = bar.getBoundingClientRect().top + window.scrollY - 8 - chromeTop();
 
     /* INSTANT, not smooth. A smooth scroll here animated for about a
        second -- measured at 31 steps from 2200 down to 606 -- and the
@@ -3298,7 +3313,12 @@
       if (userMoved) return;
       if (Math.abs(Math.round(window.scrollY) - scrollExpect) > 4) return;
       var top = bar.getBoundingClientRect().top;
-      if (top < -4 || top > 40) scrollToTabs();
+      /* Measured against where the bar SHOULD sit, which is just below
+         the chrome, not at the top of the viewport. Left at 0 this
+         correction fought the fix above and pulled the tabs back under
+         the nav. */
+      var want = chromeTop();
+      if (top < want - 4 || top > want + 44) scrollToTabs();
     }, 450);
   }
 

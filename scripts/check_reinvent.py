@@ -411,6 +411,31 @@ def main():
         css = io.open(css_path, encoding="utf-8").read()
         js = io.open(js_path, encoding="utf-8").read()
 
+        # The page carries three stylesheets now, not one: its own page.css,
+        # the shared head's style block, and site-footer.css. Checking only
+        # page.css reported 25 classes as unstyled that are styled perfectly
+        # well by the other two -- the nav's brand mark, the theme and audio
+        # controls, the whole feedback widget.
+        #
+        # Widening the exempt list instead would have blunted the check. The
+        # fault worth catching is a class styled NOWHERE, so look everywhere
+        # the page actually loads CSS from.
+        shared = ""
+        foot = os.path.join(ROOT, "blog", "assets", "site-footer.css")
+        if os.path.exists(foot):
+            shared += io.open(foot, encoding="utf-8").read()
+        try:
+            import sys as _sys
+            _sys.path.insert(0, os.path.join(ROOT, "scripts"))
+            import build_events_page as _bep
+            shared += _bep.head_html("0")
+        except Exception:                                   # noqa: BLE001
+            # If the head cannot be read, fall back to the served page: it
+            # carries the same block inline. Reporting a class as unstyled
+            # because an import failed would be the check crying wolf.
+            shared += html
+        css = css + "\n" + shared
+
         # Classes handed to the el()/svgEl() helpers, plus class="..." in
         # the served HTML. Only the first token of each, since the rest are
         # state modifiers that ride on the base rule.

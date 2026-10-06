@@ -223,6 +223,11 @@
       snowContainer.style.overflow = 'hidden';
       snowContainer.style.pointerEvents = 'none';
       snowContainer.style.zIndex = '999';
+      // Decoration must never break the page. If this runs before the
+      // body exists -- which it can, because site-footer.js injects
+      // this file and a deferred script can get there first -- there is
+      // nothing to attach to and nothing worth throwing over.
+      if (!document.body) { return; }
       document.body.appendChild(snowContainer);
 
       var FLAKE_COUNT = 40;
