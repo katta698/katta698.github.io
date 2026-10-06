@@ -67,7 +67,7 @@ PLAN = [
         ("CMP328-R",  "2026-11-30", 720,  "MGM Grand",
          "Agent sandboxes on EC2 — the agentic angle on your own estate."),
         ("CMP409-R",  "2026-11-30", 780,  "MGM Grand",
-         "Launch APIs and capacity: the mechanics behind a 7,000-instance fleet."),
+         "Launch APIs and capacity: the mechanics behind a large fleet."),
         ("STG357-R",  "2026-11-30", 870,  "MGM Grand",
          "EBS snapshots for protection and testing."),
         ("CMP203",    "2026-11-30", 990,  "MGM Grand",
@@ -94,7 +94,7 @@ PLAN = [
         ("COP329-R1", "2026-12-02", 990,  "MGM Grand",
          "Automating savings in Billing and Cost Management."),
     ]),
-    ("2026-12-03", "Thursday", "EBS and capacity, then the airport", "MGM Grand", (510, 630), [
+    ("2026-12-03", "Thursday", "EBS and capacity", "MGM Grand", (510, 630), [
         ("IND3348",   "2026-12-03", 630,  "Caesars Forum",
          "Bedrock and Kiro on a real incident-command workflow, built on "
          "AgentCore. Open seating, six minutes from the hotel, and it is the "
@@ -102,7 +102,7 @@ PLAN = [
         ("CMP320",    "2026-12-03", 780,  "MGM Grand",
          "Choosing the right instance, deliberately."),
         ("STG408",    "2026-12-03", 930,  "MGM Grand",
-         "Mission-critical on EBS. Ends 5:30pm; MGM is the closest venue to LAS."),
+         "Mission-critical on EBS, and the latest finish of the four days."),
     ]),
 ]
 
@@ -274,8 +274,8 @@ def build():
     body = ['<body>', bep.nav_html(), '<main class="pl">',
             '<h1>re:Invent 2026 &mdash; the four days</h1>',
             '<p class="pl-lede">Monday 30 November to Thursday 3 December, '
-            'staying at Harrah\'s. Built for an estate of about 7,000 EC2 '
-            'instances: fleet and capacity, EBS and snapshots, observability '
+            'from a mid-Strip hotel. Built for a large EC2 estate: '
+            'fleet and capacity, EBS and snapshots, observability '
             'and log analytics, FinOps, and where agents genuinely help with '
             'any of it. <a href="/reinvent-2026/planner/">Build your own plan '
             '&rarr;</a> &middot; <a href="/reinvent-2026/">all 2,177 sessions '
@@ -291,8 +291,8 @@ def build():
         body.append('<div class="pl-h"><h2>%s</h2>'
                     '<span class="pl-when">%s &middot; %s</span></div>'
                     % (dayname, day, esc(theme)))
-        body.append('<p class="pl-anchor">Anchored at %s. '
-                    'From Harrah\'s that is about %d minutes.</p>'
+        body.append('<p class="pl-anchor">Anchored at %s \u2014 about %d '
+                    'minutes from the middle of the Strip.</p>'
                     % (esc(anchor), dict(TRAVEL).get(anchor, 30)))
         if keyblock:
             body.append('<p class="pl-key"><b>%s &ndash; %s &nbsp;keynote</b> '
