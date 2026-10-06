@@ -52,8 +52,20 @@ LANDED = """() => {
      page went as far towards the target as it could. */
   const bar = document.querySelector('.resultbar');
   const docTop = bar.getBoundingClientRect().top + window.scrollY;
+  /* The page stops short of the bar by however much chrome is pinned above
+     the fold, so the bar lands below it rather than under it. Measured the
+     same way scrollToTabs measures it: the nav is 64px, the banner is 33px
+     wide-screen and 50px on a phone where its text wraps, and on most days
+     there is no banner at all. */
+  let chrome = 0;
+  const nav = document.querySelector('nav');
+  if (nav) { chrome += nav.getBoundingClientRect().height; }
+  const ban = document.getElementById('occasion-banner');
+  if (ban && getComputedStyle(ban).display !== 'none') {
+    chrome += ban.getBoundingClientRect().height;
+  }
   return {y: Math.round(window.scrollY),
-          want: Math.round(Math.max(0, docTop - 8)),
+          want: Math.round(Math.max(0, docTop - 8 - chrome)),
           max: Math.round(document.documentElement.scrollHeight
                           - window.innerHeight),
           top: Math.round(bar.getBoundingClientRect().top)};
