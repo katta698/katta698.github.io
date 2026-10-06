@@ -83,6 +83,13 @@ body.light .pq-key b{color:#7A5C3C}
 .pq-title{margin:0 0 .25rem;line-height:1.45}
 .pq-meta{color:var(--text-muted);font-size:.8rem;line-height:1.6}
 .pq-why{color:var(--text-muted);font-size:.8rem;margin:.25rem 0 0;font-style:italic}
+/* Whether a session runs again is the most actionable line on the page at
+   reservation time: a missed 50-seat builders' session is only lost if it
+   never repeats, and most do. The one-shots are called out, not the repeats,
+   because the exception is what changes a decision. */
+.pq-again{font-size:.8rem;margin:.25rem 0 0;color:var(--text-muted)}
+.pq-once{color:#D08A7E;font-weight:600}
+body.light .pq-once{color:#99453B}
 .pq-tag{display:inline-block;font-size:.67rem;letter-spacing:.06em;text-transform:uppercase;
         padding:1px 6px;border-radius:4px;border:1px solid var(--border);margin-right:.4rem}
 .pq-res{color:#D08A7E}

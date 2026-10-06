@@ -146,6 +146,11 @@
            (m < 720 ? 'am' : 'pm');
   }
   function baseCode(c) { return c.replace(/-R\d*$/, ''); }
+  function dayShort(d) {
+    var m = {'2026-11-30': 'Mon', '2026-12-01': 'Tue', '2026-12-02': 'Wed',
+             '2026-12-03': 'Thu', '2026-12-04': 'Fri'};
+    return m[d] || d;
+  }
 
   function arr(v) {
     if (v == null) { return []; }
@@ -153,6 +158,13 @@
   }
 
   /* ------------------------------------------------------------------ data */
+
+  // Every slot a given session runs in, keyed by base code. Most sessions
+  // repeat -- across a typical plan 11 of 15 run again later in the week --
+  // and a reader who misses a 50-seat builders' session has no way to know
+  // that from the catalogue page. At reservation time this is the most
+  // useful fact on the page: it turns a lost seat into a rescheduled one.
+  var RUNS = {};
 
   function flatten() {
     var F = store.facets, V = store.venues;
@@ -175,11 +187,14 @@
       var w = x.when || [];
       for (var j = 0; j < w.length; j++) {
         if (w[j].e == null) { continue; }   // unknown end: cannot be scheduled
-        flat.push({
+        var slot = {
           s: rec, d: w[j].d, b: w[j].b, e: w[j].e,
           v: V[w[j].v], room: store.rooms ? store.rooms[w[j].r] : '',
           cap: w[j].cap
-        });
+        };
+        flat.push(slot);
+        var bc = baseCode(x.c);
+        (RUNS[bc] = RUNS[bc] || []).push(slot);
       }
     }
   }
@@ -281,11 +296,25 @@
     var cap = f.cap ? (f.cap + ' seats') : 'capacity not published';
     var why = f.why && f.why.length
       ? '<p class="pq-why">Matched: ' + esc(f.why.join(', ')) + '</p>' : '';
+
+    // Does it run again? Only the OTHER slots count, and only ones that have
+    // not already happened relative to this booking.
+    var others = (RUNS[baseCode(s.c)] || []).filter(function (o) {
+      return !(o.d === f.d && o.b === f.b && o.v === f.v);
+    }).sort(function (a, b) {
+      return a.d === b.d ? a.b - b.b : (a.d < b.d ? -1 : 1);
+    });
+    var again = others.length
+      ? '<p class="pq-again">Runs again: ' + others.slice(0, 2).map(function (o) {
+          return esc(dayShort(o.d) + ' ' + hm(o.b) + ', ' + o.v);
+        }).join('; ') + (others.length > 2 ? ' and ' + (others.length - 2) +
+          ' more' : '') + '</p>'
+      : '<p class="pq-again pq-once">Runs once — no second chance</p>';
     return '<div class="pq-row"><div class="pq-t">' + hm(f.b) + '<br>' + hm(f.e) +
       '</div><div><p class="pq-title"><b>' + esc(s.c) + '</b> &mdash; ' +
       esc(s.t) + '</p><div class="pq-meta">' + tag + esc(s.ty) +
       (s.lv ? ' &middot; level ' + esc(s.lv) : '') + ' &middot; ' + esc(f.v) +
-      ' &middot; ' + cap + '</div>' + why + '</div></div>';
+      ' &middot; ' + cap + '</div>' + why + again + '</div></div>';
   }
 
   function render(result, opts) {
