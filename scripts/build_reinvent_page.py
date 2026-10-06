@@ -463,6 +463,39 @@ def build():
     }
 
     html = PAGE.replace("__CONFIG__", json.dumps(config, separators=(",", ":")))
+    # The countdown, rendered for first paint. Mirrors the "days to go"
+    # branch of renderCountdown() in app.js; the script overwrites it on
+    # load, so the only thing this has to get right is the SHAPE.
+    import datetime as _dt
+    _cd_num, _cd_unit, _cd_note, _cd_marks = "&nbsp;", "", "", ""
+    try:
+        _first = _dt.date(*[int(x) for x in days[0].split("-")])
+        _to = (_first - _dt.date.today()).days
+        if _to > 0:
+            _cd_num = "{:,}".format(_to)
+            _cd_unit = "day to go" if _to == 1 else "days to go"
+            if _to <= 14:
+                _shape, _n = "", _to
+            else:
+                _w, _r = divmod(_to, 7)
+                _shape = ("%d %s%s. " % (_w, "week" if _w == 1 else "weeks",
+                          (" and %d %s" % (_r, "day" if _r == 1 else "days"))
+                          if _r else ""))
+                _n = _w
+            _lab = _first.strftime("%A, %B ") + str(_first.day)
+            _cd_note = (_shape + "Doors open " + _lab + ", and the catalog is "
+                        "still filling &mdash; a plan made today is a first "
+                        "draft.")
+            _cd_marks = "".join('<i></i>' for _ in range(min(_n, 30)))
+    except Exception:                                       # noqa: BLE001
+        # A countdown that cannot be computed must not stop the page being
+        # built; the script fills it a moment later either way.
+        pass
+    html = html.replace("__CDNUM__", _cd_num)
+    html = html.replace("__CDUNIT__", _cd_unit)
+    html = html.replace("__CDNOTE__", _cd_note)
+    html = html.replace("__CDMARKS__", _cd_marks)
+
     html = html.replace("__TOTAL__", "{:,}".format(len(sessions)))
     html = html.replace("__SCHEDULED__", "{:,}".format(scheduled))
     html = html.replace("__CAPTURED__", esc(store.get("captured", "")))
@@ -605,12 +638,19 @@ __SHAREDNAV__
        by one the next morning, which is the one number a reader checks
        against their own calendar. Hidden until it has something true to
        say. -->
-  <section id="countdown" class="cd" aria-live="polite" hidden>
-   <p class="cd-n"><b id="cd-num">&nbsp;</b><span id="cd-unit"><span
-     class="cd-live" aria-hidden="true"></span></span></p>
+  <!-- Rendered at build time and NOT hidden. It used to ship hidden and
+       be revealed by renderCountdown(), which runs only after the 2 MB
+       catalog has loaded -- so the box arrived late and pushed the page
+       down, which is what read as a blink on refresh. The script still
+       owns the truth and overwrites all of this on load; this is here so
+       the box is the right size in the right place at first paint. -->
+  <section id="countdown" class="cd" aria-live="polite">
+   <p class="cd-n"><b id="cd-num">__CDNUM__</b><span id="cd-unit"><span
+     class="cd-live" aria-hidden="true"></span><span
+     class="cd-words">__CDUNIT__</span></span></p>
    <div class="cd-side">
-    <div id="cd-marks" class="cd-marks" aria-hidden="true"></div>
-    <p id="cd-note" class="cd-note"></p>
+    <div id="cd-marks" class="cd-marks" aria-hidden="true">__CDMARKS__</div>
+    <p id="cd-note" class="cd-note">__CDNOTE__</p>
    </div>
   </section>
  </header>
