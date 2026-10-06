@@ -1,0 +1,385 @@
+---
+title: 'Week 22 - Container Image Security: A Signature Says Who, Not Whether'
+date: '2026-10-06T15:00:00'
+draft: true
+labels:
+- AWS
+- Terraform
+- AWS Weekly Lab
+slug: week-22-container-image-security
+verified: '2026-10-06'
+verified_claims:
+  - claim: "Amazon ECR managed container image signing launched on 21 November 2025; it signs images automatically on push using a registry-level signing configuration that references an AWS Signer profile"
+    source: https://docs.aws.amazon.com/AmazonECR/latest/userguide/managed-signing.html
+  - claim: "There is no aws_ecr_signing_configuration resource in the Terraform AWS provider as of version 6.67.0, the latest release on 2026-10-05; the pull request adding it, hashicorp/terraform-provider-aws#47527, was still open"
+    source: "terraform validate against hashicorp/aws 6.67.0 returned 'Invalid resource type', and https://github.com/hashicorp/terraform-provider-aws/pull/47527"
+  - claim: "CloudFormation and Cloud Control expose AWS::ECR::SigningConfiguration, so managed signing can be declared through the awscc provider; awscc_ecr_signing_configuration validates on awscc 1.104.0"
+    source: "aws cloudformation describe-type --type-name AWS::ECR::SigningConfiguration, and terraform validate against hashicorp/awscc 1.104.0"
+  - claim: "AWS Signer signing profile names accept only the characters [a-zA-Z0-9_]; hyphens are rejected"
+    source: "The AWS::ECR::SigningConfiguration resource schema, pattern ^arn:aws(-[a-z]+)*:signer:[a-z0-9-]+:[0-9]{12}:\\/signing-profiles\\/[a-zA-Z0-9_]{2,}$"
+  - claim: "A Signer signing profile accepts no KMS key: its parameters are profileName, signingMaterial.certificateArn, signatureValidityPeriod, platformId, overrides, signingParameters and tags. For container signing AWS Signer holds the key material"
+    source: "aws signer put-signing-profile --generate-cli-skeleton, 2026-10-05"
+  - claim: "Notation-OCI-SHA384-ECDSA is the only OCI-targeted signing platform AWS Signer offers, and its category is External"
+    source: "aws signer list-signing-platforms, 2026-10-05"
+  - claim: "There is no additional charge for AWS Signer when used with Amazon ECR, Amazon EKS, AWS Lambda or AWS IoT Device Management"
+    source: https://docs.aws.amazon.com/signer/latest/developerguide/whatis-pricing.html
+  - claim: "Amazon Inspector enhanced scanning for Amazon ECR is billed at $0.09 per initial image scan and $0.01 per rescan, and accounts new to Inspector get a 15-day free trial"
+    source: https://aws.amazon.com/inspector/pricing/
+  - claim: "Clair-based ECR basic scanning was deprecated on 2 February 2026 and all accounts were migrated to AWS native basic scanning"
+    source: https://docs.aws.amazon.com/AmazonECR/latest/userguide/doc-history.html
+  - claim: "Amazon Inspector emits an EventBridge event with detail-type 'Inspector2 Scan' and detail.scan-status INITIAL_SCAN_COMPLETE, carrying finding-severity-counts, image-digest and image-tags"
+    source: https://docs.aws.amazon.com/inspector/latest/user/eventbridge-integration.html
+  - claim: "In the real event the detail.repository-name field contains a full ECR ARN with the image digest appended, such as arn:aws:ecr:us-east-1:<account>:repository/wk22-app/sha256:1a62..., whereas the documented example shows repository/inspector2 with no digest"
+    source: "The gate Lambda's own CloudWatch log of the received event, 2026-10-06, compared against the documented example at https://docs.aws.amazon.com/inspector/latest/user/eventbridge-integration.html"
+  - claim: "Inspector emits INITIAL_SCAN_COMPLETE only the first time it encounters an image digest; re-pushing an identical digest, even after deleting the image from ECR, produces no further scan event"
+    source: "Observed 2026-10-06: vuln-os rebuilt to the identical digest sha256:fc5422c6..., was deleted and re-pushed, and no Inspector2 Scan event was delivered while 47 existing findings remained on that digest"
+  - claim: "ECR managed signing stores each signature as a separate untagged artifact of media type application/vnd.cncf.notary.signature, and Amazon Inspector reports those artifacts as UNSUPPORTED_MEDIA_TYPE rather than scanning them"
+    source: "aws ecr describe-images --query imageDetails[].artifactMediaType and aws inspector2 list-coverage, 2026-10-06"
+  - claim: "An ECR lifecycle rule expiring untagged images does not delete signature artifacts while their subject image exists; the lifecycle policy preview reported expiringImageTotalCount 0 with three untagged signatures present"
+    source: "aws ecr start-lifecycle-policy-preview and get-lifecycle-policy-preview on wk22-app, 2026-10-06"
+  - claim: "Amazon Inspector reports the package manager for a Python dependency inside a container image as PYTHON, not PIP"
+    source: "aws inspector2 list-findings on the vuln-lib image digest, 2026-10-06"
+  - claim: "The deliberately outdated image, built on a current Python base with flask 2.0.0 pinned, produced 16 findings of which 12 were PYTHON package findings and 4 were OS package findings, including CVE-2023-30861 on flask with a fix in 2.3.2"
+    source: "aws inspector2 list-findings --filter-criteria ecrImageHash, 2026-10-06"
+---
+
+  <div class="section" id="why">
+    <h2>Why &mdash; The Problem This Solves</h2>
+
+    <p>Someone on your team ships a new version of an app. It runs. A month later a question
+    comes up in a review: <em>who built that exact image, and did anyone check what was inside
+    it?</em></p>
+
+    <p>Most teams cannot answer either. The image is just a tag in a registry. AWS now has a
+    managed answer to both questions: ECR can sign every image as it arrives, and Amazon Inspector
+    can scan it for known flaws. Both are close to one click.</p>
+
+    <p>Neither of them stops anything.</p>
+
+    <p>That is the whole of this week. Signing writes a signature. Scanning writes a finding. If
+    nothing reads them and acts, a flawed image is signed, scanned, documented &mdash; and still
+    deployable.</p>
+  </div>
+
+  <div class="section" id="skills">
+    <h2>What You Need to Know &mdash; Skills &amp; Tools</h2>
+
+    <p>A container image is a packaged snapshot of a filesystem — OS libraries,
+    language runtime and your code — built once and run identically everywhere. ECR
+    stores them.</p>
+
+    <p><strong>Amazon Inspector is a separate AWS service with its own bill.</strong> ECR offers
+    "basic" and "enhanced" scanning as if they were two settings of one feature. Basic is ECR's own
+    scanner, free. Enhanced hands the work to Inspector at $0.09 per first scan. You switch it on in
+    the ECR console and the charges appear under a service you never opened.</p>
+
+    <p>The difference is worth the money for one reason: basic scanning reads OS packages only.
+    Enhanced reads your <em>language</em> dependencies too &mdash; the pinned versions in
+    <code>requirements.txt</code> or <code>package-lock.json</code>.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture &mdash; How It Fits Together</h2>
+
+<svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="A build pushes an image to ECR. ECR signs it via AWS Signer and Inspector scans it. Both emit events to EventBridge, which invokes a Lambda gate that either allows the image or removes its deployable tags and notifies SNS."
+     style="width:100%;height:auto;background:#fff;border:1px solid #e6e8eb;border-radius:8px">
+  <defs>
+    <marker id="a22" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8a94a0"/>
+    </marker>
+  </defs>
+  <style>
+    .b{fill:#fff;stroke:#d5dbe1;stroke-width:1.4;rx:7}
+    .t{font:600 13px "Segoe UI",Arial,sans-serif;fill:#16191f}
+    .s{font:11.5px "Segoe UI",Arial,sans-serif;fill:#6c757d}
+    .l{stroke:#8a94a0;stroke-width:1.4;fill:none;marker-end:url(#a22)}
+    .k{font:700 10px "Segoe UI",Arial,sans-serif;letter-spacing:.08em;fill:#8a94a0}
+  </style>
+
+  <rect class="b" x="24" y="110" width="138" height="60"/>
+  <text class="t" x="40" y="136">CodeBuild</text>
+  <text class="s" x="40" y="154">pushes the image</text>
+
+  <rect class="b" x="212" y="110" width="150" height="60" style="stroke:#FF9900;stroke-width:1.8"/>
+  <text class="t" x="228" y="136">Amazon ECR</text>
+  <text class="s" x="228" y="154">repository + filter</text>
+
+  <rect class="b" x="212" y="24" width="150" height="54"/>
+  <text class="t" x="228" y="46">AWS Signer</text>
+  <text class="s" x="228" y="64">provenance</text>
+
+  <rect class="b" x="212" y="202" width="150" height="54"/>
+  <text class="t" x="228" y="224">Amazon Inspector</text>
+  <text class="s" x="228" y="242">known flaws</text>
+
+  <rect class="b" x="420" y="110" width="146" height="60"/>
+  <text class="t" x="436" y="136">EventBridge</text>
+  <text class="s" x="436" y="154">scan done, or push</text>
+
+  <rect class="b" x="618" y="110" width="150" height="60" style="stroke:#cc0c39;stroke-width:1.8"/>
+  <text class="t" x="634" y="136">Lambda gate</text>
+  <text class="s" x="634" y="154">the only enforcer</text>
+
+  <rect class="b" x="618" y="206" width="150" height="48"/>
+  <text class="t" x="634" y="228">SNS</text>
+  <text class="s" x="634" y="246">quarantine notice</text>
+
+  <path class="l" d="M162 140 H206"/>
+  <path class="l" d="M287 110 V84"/>
+  <path class="l" d="M287 170 V196"/>
+  <path class="l" d="M362 140 H414"/>
+  <path class="l" d="M566 140 H612"/>
+  <path class="l" d="M693 170 V200"/>
+
+  <text class="k" x="24" y="98">BUILD</text>
+  <text class="k" x="212" y="98">STORE, SIGN, SCAN</text>
+  <text class="k" x="618" y="98">ENFORCE</text>
+</svg>
+
+    <p>Two managed features produce evidence. One function acts on it. Only the box on the right
+    can stop a deployment, and it is the only box that is not a managed feature.</p>
+  </div>
+
+  <div class="section" id="built">
+    <h2>How We Built It &mdash; Step by Step</h2>
+
+    <h3>What we deployed</h3>
+
+    <table>
+      <thead><tr><th>What</th><th>Count</th><th>Its job</th></tr></thead>
+      <tbody>
+        <tr><td>ECR repositories</td><td>2</td><td>One protected, one deliberately outside the filter as a control</td></tr>
+        <tr><td>Signer profile + signing configuration</td><td>2</td><td>Signs matching repositories on push</td></tr>
+        <tr><td>Inspector enabler + scanning configuration</td><td>2</td><td>Enhanced scanning, scoped to one prefix</td></tr>
+        <tr><td>Lambda, IAM role, policy, log group</td><td>4</td><td>The gate &mdash; the only part that enforces</td></tr>
+        <tr><td>EventBridge rules, targets, permissions</td><td>6</td><td>Two triggers: scan finished, and image pushed</td></tr>
+        <tr><td>SNS topic + subscription, alarm</td><td>3</td><td>Tells you when the gate fires, or fails</td></tr>
+        <tr><td>CodeBuild project, role, policy, log group</td><td>4</td><td>Builds and pushes &mdash; and therefore signs</td></tr>
+        <tr><td>Lifecycle policy</td><td>1</td><td>Expires untagged images so they stop being rescanned</td></tr>
+      </tbody>
+    </table>
+
+    <p>Twenty-four resources. Only four of them &mdash; the signing profile, the signing
+    configuration, the Inspector enabler and the scanning configuration &mdash; exist because of
+    signing and scanning. The rest is the enforcement nobody writes about.</p>
+
+    <h3>Where we started</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-22-container-image-security/docs/blog/screenshots/01-before-state.png" alt="The ECR private registry settings page before any changes, showing Managed signing with no signing rules configured and Scanning with scan type Basic">
+      <figcaption><strong>Before anything.</strong> No signing rules, scan type Basic. Worth
+      capturing: a walkthrough that only shows the end state cannot be followed.</figcaption>
+    </figure>
+
+    <h3>How we wrote it</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-22-container-image-security/docs/blog/screenshots/02-terraform-layout.png" alt="The file tree for week 22, showing the dev environment, the image_pipeline module at 321 lines, the gate Lambda at 164 lines, three Dockerfiles and three scripts, each annotated with its job and line count">
+      <figcaption><strong>The gate is 164 lines.</strong> Everything else is declaration.</figcaption>
+    </figure>
+
+    <p>One surprise shapes the whole file. ECR managed signing shipped in November 2025 and
+    <strong>still has no resource in the Terraform AWS provider</strong> &mdash; the pull request
+    adding it was open against 6.67.0, the latest release. Confirm it yourself rather than
+    trusting me:</p>
+
+    <pre><code>terraform validate
+# Error: Invalid resource type ... does not support "aws_ecr_signing_configuration"</code></pre>
+
+    <p>Cloud Control carries <code>AWS::ECR::SigningConfiguration</code>, so the feature is
+    manageable declaratively today through the <code>awscc</code> provider:</p>
+
+    <pre><code>resource "awscc_ecr_signing_configuration" "registry" {
+  rules = [{
+    signing_profile_arn = aws_signer_signing_profile.images.arn
+    repository_filters  = [{ filter = "wk22-*", filter_type = "WILDCARD_MATCH" }]
+  }]
+}</code></pre>
+
+    <p>Two traps sit in the schemas. Signing profile names accept
+    <code>[a-zA-Z0-9_]</code> only, so <code>wk22-signer</code> is rejected and
+    <code>wk22_signer</code> is not. And the scanning filter type is <code>WILDCARD</code> while
+    the signing filter type is <code>WILDCARD_MATCH</code> &mdash; two strings for one idea.</p>
+
+    <h3>How we deployed it</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-22-container-image-security/docs/blog/screenshots/03-hcp-workspace-vars.png" alt="The HCP Terraform workspace variables page for week-22-dev showing TFC_AWS_PROVIDER_AUTH and a sensitive TFC_AWS_RUN_ROLE_ARN, with no static access keys">
+      <figcaption>OIDC, not access keys. HCP assumes a role per run.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-22-container-image-security/docs/blog/screenshots/04-hcp-plan.png" alt="The HCP Terraform plan for week-22-dev showing 17 resources to add, 0 to change, 0 to destroy">
+      <figcaption><strong>Read the plan.</strong> The thing to look for is a filter wider than you
+      meant &mdash; a registry-wide scanning rule bills for every repository in the account.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-22-container-image-security/docs/blog/screenshots/05-hcp-applied.png" alt="The applied HCP Terraform run for week-22-dev showing plus 17 resources and the module resource list">
+      <figcaption>Applied. The builder was added in a later run.</figcaption>
+    </figure>
+
+    <h3>What appeared in the console</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-22-container-image-security/docs/blog/screenshots/06-ecr-signing-rule.png" alt="The ECR managed signing rules page showing one rule with signing profile wk22_4739d091f26b94721bddec3e9f and repository filter wk22-star">
+      <figcaption>The console states the key fact outright: <em>"ECR will sign the image using the
+      IAM credentials of the entity that pushed the image."</em></figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-22-container-image-security/docs/blog/screenshots/07-ecr-scanning-enhanced.png" alt="The ECR registry scanning configuration page showing enhanced scanning with a scan-on-push rule filtered to repositories beginning wk22">
+      <figcaption>Enhanced, scoped to one prefix. Code applying is not the same as a control being
+      on, so look.</figcaption>
+    </figure>
+
+    <h3>How we tested it</h3>
+
+    <p>Three images, each isolating one variable: a clean current base, an end-of-life Ubuntu, and
+    a <em>current</em> base carrying <code>flask==2.0.0</code>. All pinned by digest, because
+    <code>alpine:3.22</code> is whatever was published this morning.</p>
+
+    <p>They are built in CodeBuild, not on a laptop, and that is not convenience: signing follows
+    whoever pushed, so a laptop push produces a signature attesting to a laptop &mdash; the exact
+    thing signing exists to replace.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-22-container-image-security/docs/blog/screenshots/08-push-signed.png" alt="Terminal output showing the CodeBuild push of three images, describe-image-signing-status returning COMPLETE, the untagged notary signature artifacts, and the lifecycle policy preview reporting zero expiring images">
+      <figcaption><strong>The signature is a separate untagged artifact</strong> in the same
+      repository. It counts against the image quota, and a lifecycle rule expiring untagged images
+      does <em>not</em> delete it.</figcaption>
+    </figure>
+  </div>
+
+  <div class="section" id="challenges">
+    <h2>Challenges &mdash; What Actually Went Wrong</h2>
+
+    <h3>A valid signature on an image we refused to deploy</h3>
+
+    <p>The headline test: an image with a complete, valid AWS Signer signature, quarantined anyway
+    on 16 findings. Twelve of those were Python package findings &mdash; including
+    <code>CVE-2023-30861</code> on Flask &mdash; against four OS findings. Basic scanning would
+    have reported the four and stopped.</p>
+
+    <p><strong>A signature tells you who built an image. It tells you nothing about whether the
+    image is safe to run.</strong> Those are different questions, and only one of them is answered
+    by the feature with "signing" in the name.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-22-container-image-security/docs/blog/screenshots/09-inspector-language-finding.png" alt="The Amazon Inspector findings list showing 95 active findings ranked by severity, with every impacted resource already carrying a quarantined tag">
+      <figcaption>Ninety-five findings &mdash; and every impacted resource is already a
+      <code>quarantined-*</code> image.</figcaption>
+    </figure>
+
+    <h3>The gate missed the case that matters most</h3>
+
+    <p>Inspector emits its scan-complete event <strong>only the first time it sees a digest</strong>.
+    One image rebuilt byte-identically, so the push attached a new tag to content Inspector already
+    knew. No new scan, no event, no evaluation &mdash; and the image sat deployable with seven
+    critical findings. Deleting it from ECR first did not help; Inspector still remembered.</p>
+
+    <p>This is not an edge case. Promoting an image by re-tagging it, <code>v1.2.3</code> becomes
+    <code>prod</code>, is how images normally reach production, and it pushes no new bytes. A gate
+    that only reacts to first scans protects only images nobody has pushed before. The fix was a
+    second trigger on ECR's own push event, deciding from findings Inspector already holds.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-22-container-image-security/docs/blog/screenshots/10-quarantine-email.png" alt="The quarantine notification email showing the repository, image digest, tags removed, the new quarantined tag and the finding severity counts">
+      <figcaption>The notice for exactly that case &mdash; an image caught only by the push event.</figcaption>
+    </figure>
+
+    <h3>Three smaller ones, all found by tests</h3>
+
+    <ul>
+      <li>The scan event's <code>repository-name</code> field holds an ARN <em>with the image digest
+      appended</em>. The documented example shows no digest, so code written from the docs produces
+      an invalid repository name and every quarantine fails.</li>
+      <li>Quarantine removed only the tag named in the event. An image carrying two tags &mdash;
+      the normal state of anything promoted &mdash; stayed pullable by the other one.</li>
+      <li>Inspector reports a Python dependency's package manager as <code>PYTHON</code>, not
+      <code>PIP</code>. A check looking for the wrong token does not fail loudly; it reports nothing
+      found, which reads like a clean result.</li>
+    </ul>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-22-container-image-security/docs/blog/screenshots/11-test-results.png" alt="A card listing the six tests with pass and fail markers, the Python versus OS finding split, and the five defects the tests found">
+      <figcaption><strong>Signing and scanning were correct on the first apply. The enforcement took
+      five attempts.</strong></figcaption>
+    </figure>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security &mdash; Controls at Every Layer</h2>
+
+    <ul>
+      <li><strong>Immutable tags.</strong> With mutable tags an image approved as
+      <code>v1.2.3</code> can be quietly repointed after review, and the signature and scan result
+      then describe something that is no longer there.</li>
+      <li><strong>The gate quarantines, never deletes.</strong> Only the deployable tags go.
+      Deleting the image would destroy the evidence needed to answer "what shipped, and when did we
+      know".</li>
+      <li><strong>It fails closed</strong>, and alarms on its own errors. We saw this for real: when
+      the gate broke, it raised rather than returning an allow.</li>
+      <li><strong>Least privilege.</strong> The build role needs <code>signer:SignPayload</code> as
+      well as the ECR push actions. Without it the push succeeds and the image is simply never
+      signed &mdash; no error anywhere.</li>
+      <li><strong>The signing key is not yours.</strong> A Signer profile takes a platform, a
+      validity period and tags, and no key of any kind. For container signing AWS generates and
+      holds the key material. You control who may ask it to sign; you never touch the key. That is
+      a trust decision, not an absence of one.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost</h2>
+
+    <p>AWS Signer adds no charge for ECR. Inspector enhanced scanning is $0.09 per first scan and
+    $0.01 per rescan, with a 15-day free trial for accounts new to Inspector &mdash; so the scanning
+    in this build was free, once. ECR storage, Lambda, EventBridge and a few CodeBuild minutes round
+    to nothing.</p>
+
+    <p>Two controls matter more than the rates. Scanning and signing are scoped by repository
+    filter, not registry-wide, so unrelated repositories are never pulled in. And a lifecycle policy
+    expires untagged images: under continuous scanning every retained image is rescanned whenever the
+    vulnerability database updates, so an image nobody can deploy is a recurring charge.</p>
+  </div>
+
+  <div class="section" id="cleanup">
+    <h2>Cleanup</h2>
+
+    <p><strong>Inspector is enabled per account, not per stack.</strong> No Terraform resource owns
+    it in the way you would hope, so the teardown script disables it explicitly and checks all five
+    scan types afterwards, rather than trusting <code>terraform destroy</code> to have done it. The
+    same script resets registry scanning to basic and cancels the signing profile &mdash; Signer
+    profiles cannot be deleted, only cancelled, which is the documented end state rather than a
+    leftover.</p>
+  </div>
+
+  <div class="section" id="references">
+    <h2>References</h2>
+
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonECR/latest/userguide/managed-signing.html">ECR managed signing</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-scanning-enhanced.html">ECR enhanced scanning</a></li>
+      <li><a href="https://docs.aws.amazon.com/inspector/latest/user/eventbridge-integration.html">Inspector EventBridge event schema</a></li>
+      <li><a href="https://docs.aws.amazon.com/signer/latest/developerguide/whatis-pricing.html">AWS Signer pricing</a></li>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/week-22-container-image-security">The code for this week</a></li>
+    </ul>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key Takeaways</h2>
+
+    <ul>
+      <li><strong>A signature says who, not whether.</strong> A valid signature on a vulnerable
+      image is the most comfortable false assurance in this whole area.</li>
+      <li><strong>Signing and scanning stop nothing.</strong> They produce evidence. Something has
+      to read it and act, and that something is yours to build and yours to get wrong.</li>
+      <li><strong>Enforcement keyed on "newly scanned" misses the normal case.</strong> Promoting an
+      existing image pushes no new bytes and triggers no scan.</li>
+      <li><strong>Test the enforcement, not the features.</strong> The managed parts worked on the
+      first apply. The part that actually stops a bad image took five attempts, and every fault was
+      found by a test rather than by reading the code.</li>
+    </ul>
+  </div>
