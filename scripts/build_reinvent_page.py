@@ -857,10 +857,15 @@ __SHAREDNAV__
    not here.</p>
  </details>
 
- <footer class="footer">
+ <!-- A NOTE, not a <footer>. site-footer.js adopts the first <footer> on
+      the page rather than creating its own, so while this was one it got
+      adopted, restyled, refilled with the shared content -- and the
+      disclaimer below was overwritten and stopped rendering. As a div the
+      shared footer is built against <body> instead, full width like every
+      other page, and this keeps saying what it has to say. -->
+ <div class="pagenote">
   <p>Not affiliated with Amazon Web Services. Session data belongs to AWS.</p>
-  <p><a href="/">jayanthkatta.com</a></p>
- </footer>
+ </div>
 </main>
 __TOP__
 
@@ -1478,9 +1483,10 @@ table.mx td.self{color:var(--ri-faint)}
 .md{display:block; color:var(--ri-faint); font-size:11px}
 .about .src{font-size:13px; color:var(--ri-faint); border-top:1px solid var(--ri-line); padding-top:12px}
 
-.footer{margin-top:34px; padding-top:16px; border-top:1px solid var(--ri-line);
+.pagenote{margin-top:34px; padding-top:16px;
+  border-top:1px solid var(--ri-line);
   font-size:13px; color:var(--ri-faint)}
-.footer p{margin:.3em 0}
+.pagenote p{margin:.3em 0}
 
 @media (max-width:560px){
   .page{padding:20px 13px 52px}
