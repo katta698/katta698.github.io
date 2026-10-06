@@ -1,0 +1,269 @@
+---
+title: 'Week 12 — The Cheapest Log Is the One You Never Ingested'
+date: '2026-10-06T10:00:00'
+labels:
+- Azure
+- Terraform
+- Azure Weekly Lab
+slug: week-12-log-analytics
+draft: true
+---
+<div id="jk-post">
+
+<div class="meta">
+  <span class="stack-badge">Log Analytics</span>
+  <span class="stack-badge">Azure Monitor</span>
+  <span class="stack-badge">Data Collection Rules</span>
+  <span class="stack-badge">KQL</span>
+  <span class="stack-badge">Terraform</span>
+</div>
+
+<div class="post-eyebrow">Azure Platform Engineering Lab · Week 12 of 52</div>
+
+<h1>Week 12 — The Cheapest Log Is the One You Never Ingested</h1>
+
+<p class="post-subtitle">Ingestion is the biggest surprise bill in Azure. Most
+workspaces get created with defaults and never looked at again. This one makes
+every cost decision explicit — and measures what they're worth.</p>
+
+<div class="post-meta">
+  <span>6 October 2026</span>
+  <span>Terraform + azapi · HCP Terraform, local execution</span>
+  <span>$0.00 measured · stays running</span>
+</div>
+
+<h2 id="why">Why — The Problem This Solves</h2>
+
+<p>A Log Analytics workspace costs nothing to own. It costs money the moment
+something sends it data, and by then the decisions that set the price — which
+table, which plan, what gets filtered — have already been made for you by
+defaults.</p>
+
+<p>This week builds the workspace every later week in the lab reports into, and
+makes those three decisions on purpose.</p>
+
+<h2 id="skills">What You Need to Know — Skills &amp; Tools</h2>
+
+<ul>
+  <li><strong>Table plans</strong> — Analytics, Basic and Auxiliary, and that they
+  differ in how you are charged to <em>query</em>, not just to ingest.</li>
+  <li><strong>Data collection rules</strong>, and that a DCR can transform data
+  <em>before</em> it is stored.</li>
+  <li><strong>KQL</strong>, enough to write one <code>where</code> clause.</li>
+  <li><strong>The daily cap</strong>, and why it is not a cost strategy.</li>
+</ul>
+
+<h2 id="architecture">Architecture — How It Fits Together</h2>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-12-log-analytics/docs/blog/diagrams/week-12-architecture.svg" alt="Diagram: 100 rows are sent to a data collection endpoint. The collection rule applies a KQL transformation keeping only Warning and above, so 20 rows reach the workspace and 80 are dropped before billing. The workspace holds two custom tables on different plans: PlatformLogs_CL on Analytics and PlatformVerbose_CL on Basic. A daily cap sits behind it as a backstop with an alert." style="width:100%;max-width:900px" /></p>
+
+<h2 id="build">How We Built It — In Deployment Order</h2>
+
+<h3>1. The HCP workspace, created first and deliberately</h3>
+
+<p>This is a step, not a side effect. Creating it explicitly means setting its
+execution mode at birth:</p>
+
+<pre><code>POST /api/v2/organizations/Katta/workspaces
+{ "name": "azure-week-12-dev", "execution-mode": "local" }
+
+created: azure-week-12-dev | execution-mode: local</code></pre>
+
+<p>Week 7 let <code>terraform init</code> create the workspace instead, and HCP
+defaulted it to <strong>remote</strong> execution. The plan then ran on HCP's
+servers, where there is no Azure CLI and no credentials, and failed with
+<code>az: executable file not found in $PATH</code> — an error that sends you
+debugging the wrong machine entirely.</p>
+
+<h3>2. The Terraform</h3>
+
+<figure class="screenshot" data-prereq>
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-12-log-analytics/docs/blog/screenshots/03-terraform-layout.png" alt="The Terraform file tree for this week: terraform/ with versions.tf, variables.tf, a 144-line main.tf holding the workspace and two custom tables, a 120-line ingestion.tf holding the endpoint, collection rule and transform, and outputs.tf; plus three scripts, each annotated with its job and line count">
+  <figcaption><strong>Every file, and what it is for.</strong>
+  <code>main.tf</code> answers "where does the data land, and how is it priced".
+  <code>ingestion.tf</code> answers "what gets in". Changing what data costs and
+  changing what arrives are rarely the same decision, so they are rarely the same
+  file.</figcaption>
+</figure>
+
+<p><strong>Decision one: table plans follow how data is used, not how big it
+is.</strong> These are the prices Azure quotes for this workspace:</p>
+
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr><th>Plan</th><th>Per GB ingested</th><th>Queries</th><th>Interactive window</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>Analytics</strong></td><td><strong>$2.76</strong></td><td>free to run</td><td>up to 2 years</td></tr>
+    <tr><td><strong>Basic</strong></td><td><strong>$0.60</strong></td><td>bill per GB scanned</td><td>fixed 30 days</td></tr>
+    <tr><td><strong>Auxiliary / Lake</strong></td><td><strong>$0.06</strong></td><td>bill per GB scanned</td><td>full retention</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>A <strong>46× spread</strong> — and queries are where it gets interesting.
+Analytics costs the most to ingest and nothing to query. Basic and Auxiliary are
+cheap to ingest and <em>bill per GB scanned</em>. So a cheap table queried often
+can cost more than an expensive one queried rarely.</p>
+
+<pre><code>resource "azapi_resource" "alerts_table" {      # the alerting path
+  name = "PlatformLogs_CL"
+  body = { properties = { plan = "Analytics",   # queried constantly
+                          retentionInDays = 30,
+                          totalRetentionInDays = 90, ... } }
+}
+
+resource "azapi_resource" "verbose_table" {     # the incident path
+  name = "PlatformVerbose_CL"
+  body = { properties = { plan = "Basic",       # read when something breaks
+                          totalRetentionInDays = 365, ... } }
+}</code></pre>
+
+<p><strong>Decision two: the daily cap is a backstop, not a strategy.</strong>
+Microsoft's own guidance says it "should not be used as a primary mechanism to
+filter or reduce data" — when a cap trips, collection <em>stops</em>. The money
+is already spent and now you have lost the logs as well. It is set at 1 GB/day,
+far above anything this lab sends: a cap set near normal volume trips on a normal
+busy day.</p>
+
+<p><strong>Decision three: the transformation is the actual control.</strong> One
+line of KQL, applied at ingest:</p>
+
+<pre><code>transform_kql = "source | where Level in ('Warning','Error','Critical')"</code></pre>
+
+<p>Rows below Warning are never written, never stored and never billed. The cap
+never has to count them, because as far as the bill is concerned they never
+arrived.</p>
+
+<h3>3. Deploying it</h3>
+
+<pre><code>./scripts/deploy.sh      # registers two providers, then applies
+./scripts/validate.sh    # 5 checks; #4 sends 100 rows and counts survivors
+./scripts/cleanup.sh     # refuses - this week stays up. --force to mean it</code></pre>
+
+<h3>4. What appeared in the portal</h3>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-12-log-analytics/docs/blog/screenshots/02-table-plans.png" alt="Azure portal Tables blade showing PlatformLogs_CL as a custom table on the Analytics plan with 30 days interactive and 90 days total retention, PlatformVerbose_CL as a custom table on the Basic plan with no interactive retention and 1 year total, and six built-in Azure tables all on the Analytics default" style="width:100%" /></p>
+
+<p>This is the design in one screen. Two custom tables on deliberately different
+plans — and note <code>PlatformVerbose_CL</code> shows <strong>no interactive
+retention at all</strong>, because Basic fixes the query window at 30 days. Every
+built-in table sits on the Analytics default beside them, which is what you get
+if you never make the decision.</p>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-12-log-analytics/docs/blog/screenshots/04-daily-cap.png" alt="Azure portal Usage and estimated costs blade showing pay-as-you-go as the current pricing tier with Analytics at 2.76 dollars per GB, Basic at 0.60 and Auxiliary at 0.06, a note that the workspace has a daily cap configured, and the 100 GB per day commitment tier at 20 percent discount" style="width:100%" /></p>
+
+<p>Azure's own numbers, and a note confirming the cap is configured. The
+commitment tier below is worth reading too: <strong>100 GB/day for 20% off</strong>.
+A lab never reaches that, so pay-as-you-go is the honest choice here and the
+discount is not claimed.</p>
+
+<h2 id="testing">How It's Tested</h2>
+
+<p>A transformation that filters nothing looks identical in the portal to one
+that filters everything. The only way to know is to send known data and count
+what survived:</p>
+
+<pre><code>4. The transformation drops rows BEFORE they are billed
+   sending 100 rows, 20 of them Warning or above
+   ingestion API returned HTTP 204
+   rows stored: 20 of 100 sent
+   RESULT: 20 stored, 80 dropped at ingest and never billed
+
+── 5 passed, 0 failed ──</code></pre>
+
+<p>The two levers compound. Drop 80% at ingest, then put what survives on the
+right plan, and the difference is between paying $2.76 a GB for everything and
+paying it for the fifth you actually query.</p>
+
+<h2 id="challenges">Challenges — What Actually Went Wrong</h2>
+
+<p><strong>You cannot set a plan on a table that does not exist.</strong> The
+first attempt put <code>AzureDiagnostics</code> on Basic and got
+<code>ResourceNotFound</code>. A new workspace has <em>no built-in tables</em> —
+they materialise the first time data of that type arrives, which is precisely
+after the point you would want the cheap plan in place. Hence custom tables,
+created with <code>azapi</code>, because
+<code>azurerm_log_analytics_workspace_table</code> takes a name and a plan and
+has nowhere to put a schema.</p>
+
+<p><strong>The collection rule failed with a bare <code>InvalidPayload</code></strong>
+naming nothing at all. Same root cause — its destination tables did not exist
+yet. A <code>depends_on</code> fixed it.</p>
+
+<p><strong>Ingestion returns 403 until RBAC propagates.</strong> Posting needs
+<code>Monitoring Metrics Publisher</code> <em>on the DCR</em>, and granting it is
+not instant. Measured: ten attempts over <strong>five minutes</strong>, then 204.
+Nothing in the deploy hints that waiting is part of it.</p>
+
+<p><strong>An <code>az</code> extension prompt corrupted a check.</strong>
+<code>az monitor log-analytics query</code> lives in an extension; without it, az
+asks "Do you want to install it now? (Y/n)" and in a non-interactive shell the
+<em>prompt text</em> lands in the variable — so the check compared a question to
+a number. Week 5 lost a teardown to the identical trap.</p>
+
+<h2 id="security">Security — Controls at Every Layer</h2>
+
+<ul>
+  <li><strong>Resource-only permissions.</strong> Reading a resource's logs needs
+  no grant on the workspace. The alternative — workspace Reader — hands over every
+  log from every subscription at once.</li>
+  <li><strong>Shared keys off.</strong> The workspace ID and key pair is a password
+  that never expires, gets copied into config files, and records nothing about who
+  used it. Callers use Entra tokens instead.</li>
+  <li><strong>Monitoring Metrics Publisher scoped to the DCR</strong>, not the
+  resource group. Getting that role wrong means someone forging logs, so it is
+  granted exactly where it is used.</li>
+  <li><strong>The cap has an alarm.</strong> A cap that trips in silence is a
+  data-loss incident nobody noticed.</li>
+</ul>
+
+<h2 id="cost">Cost</h2>
+
+<p>The workspace costs nothing to own — you pay for ingestion and for retention
+beyond the included 30 days. This week ingested under 1 MB, so the
+<strong>measured cost is $0.00</strong>.</p>
+
+<p>That is the honest number, and it is also the point: at lab volume none of
+this matters. The design matters at production volume, which is why the week
+measures the <em>ratio</em> — 80% dropped, a 46× spread between plans — rather
+than a dollar figure that would be meaningless at this scale.</p>
+
+<h2 id="cleanup">Cleanup</h2>
+
+<p>This week <strong>stays up</strong>. Weeks 13 to 16 send their data here and an
+idle workspace costs nothing, so <code>cleanup.sh</code> refuses without
+<code>--force</code>.</p>
+
+<p>When it does run, the workspace is <strong>soft-deleted for 14 days</strong>
+and its name stays reserved — so rebuilding inside that window fails on a name
+conflict unless you recover it rather than create a new one.</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li><a href="https://learn.microsoft.com/en-us/azure/azure-monitor/logs/logs-table-plans" target="_blank" rel="noopener">Configure a table plan in a Log Analytics workspace</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/azure-monitor/logs/cost-logs" target="_blank" rel="noopener">Azure Monitor Logs cost calculations and options</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/azure-monitor/logs/daily-cap" target="_blank" rel="noopener">Set a daily cap on a Log Analytics workspace</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/well-architected/service-guides/azure-log-analytics" target="_blank" rel="noopener">Well-Architected: Log Analytics</a></li>
+  <li><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-12-log-analytics" target="_blank" rel="noopener">Week 12 code in the lab repository</a></li>
+</ul>
+
+<h2 id="takeaways">Key Takeaways</h2>
+
+<ul>
+  <li><strong>Filter at ingest, not with a cap.</strong> A cap stops collection
+  after the money is spent. A transformation means the rows never arrive.</li>
+  <li><strong>Pick the plan by how the data is queried.</strong> Analytics is free
+  to query; Basic and Auxiliary bill per GB scanned. Cheap-to-ingest and
+  cheap-to-use are different properties.</li>
+  <li><strong>Set the table plan before data arrives</strong> — if you can. Built-in
+  tables do not exist until their first row does, which is the one moment you
+  cannot act in advance.</li>
+  <li><strong>Create the HCP workspace deliberately.</strong> Letting
+  <code>terraform init</code> do it hands you remote execution and an error about
+  a missing CLI on a machine you have never seen.</li>
+</ul>
+
+</div>
