@@ -32,6 +32,7 @@ import subprocess
 import sys
 import threading
 import xml.etree.ElementTree as ET
+from status_open import still_open
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -138,10 +139,16 @@ def main():
                                                 "status.json"), encoding="utf-8"))
     except Exception:                                           # noqa: BLE001
         status = {}
-    open_now = []
+    # open_only, not the raw list. This asserted that EVERY row in clouds[]
+    # must appear in the feed marked "open" -- so while the feed shipped
+    # resolved incidents as open, this check was not merely blind to it, it
+    # required it. Fixing the builder without fixing this would have turned
+    # the correct feed into a check failure.
+    open_now, resolved_now = [], []
     for cloud, rows in (status.get("clouds") or {}).items():
         for i in rows or []:
-            open_now.append((cloud, i.get("id") or (i.get("title") or "")[:80]))
+            ident = i.get("id") or (i.get("title") or "")[:80]
+            (open_now if still_open(i) else resolved_now).append((cloud, ident))
 
     if os.path.exists(os.path.join(DIR, "feed.xml")):
         root = ET.parse(os.path.join(DIR, "feed.xml")).getroot()
@@ -160,8 +167,20 @@ def main():
                 problems.append("%s incident %s is open but the feed does not "
                                 "say so" % (NAMES.get(cloud, cloud),
                                             str(ident)[:40]))
-        print("  %d incident(s) open on the page, all present and marked"
-              % len(open_now) if not problems else
+        # The inverse, which is the half that was missing. Asserting only
+        # that open incidents ARE in the feed can never catch a resolved one
+        # being published as open -- that is exactly how the feed shipped
+        # them for as long as it did.
+        for cloud, ident in resolved_now:
+            key = "tag:jayanthkatta.com,2026:incident:%s:%s" % (cloud, ident)
+            if listed.get(key):
+                problems.append(
+                    "%s incident %s is RESOLVED and the feed publishes it as "
+                    "open -- a subscriber is notified about an outage that is "
+                    "over" % (NAMES.get(cloud, cloud), str(ident)[:40]))
+
+        print("  %d open, %d resolved; feed agrees on both"
+              % (len(open_now), len(resolved_now)) if not problems else
               "  %d incident(s) open on the page" % len(open_now))
 
     # QUIET: rebuilding with nothing changed must not change a single byte.
@@ -222,6 +241,43 @@ def main():
             srv2.shutdown()
     except Exception as exc:                                    # noqa: BLE001
         print("  could not check how the feeds render (%s)" % str(exc)[:50])
+
+    # CANARY: the resolved assertion above only bites when the live file
+    # actually carries a resolved incident, and most of the time it does not
+    # -- today it reported "0 resolved", which means it tested nothing. A
+    # check that can only fail in the right weather is the fault this repo
+    # has already paid for twice. So the builder is run here against a
+    # payload that definitely contains one, in-process, touching no files.
+    try:
+        import build_status_feed as _bsf
+        _real = _bsf.load
+        _B = "1759680000"
+        _payload = {"clouds": {"aws": [
+            {"id": "canary-resolved", "title": "[RESOLVED] Canary", "begin": _B},
+            {"id": "canary-open", "title": "Canary open", "begin": _B}],
+            "azure": [], "gcp": []},
+            "sources": {"aws": {"ok": True}},
+            "checked": "2026-01-01T00:00:00Z"}
+        try:
+            _bsf.load = lambda _p: _payload if _p.endswith("status.json") else {}
+            _open = [r.get("id") for r in _bsf.entries() if r.get("open")]
+        finally:
+            _bsf.load = _real
+        if "canary-resolved" in _open:
+            problems.append(
+                "CANARY: the feed builder publishes a [RESOLVED] incident as "
+                "open -- subscribers would be notified about an outage that "
+                "is over")
+        elif "canary-open" not in _open:
+            problems.append(
+                "CANARY: the feed builder dropped a genuinely open incident, "
+                "so the filter is now too aggressive")
+        else:
+            print("  canary: a resolved incident is kept out of the feed, an "
+                  "open one is kept in")
+    except Exception as exc:                                    # noqa: BLE001
+        problems.append("CANARY could not run (%s) -- the resolved assertion "
+                        "is unproven" % str(exc)[:60])
 
     print()
     if problems:

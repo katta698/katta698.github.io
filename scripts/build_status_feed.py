@@ -51,6 +51,7 @@ import json
 import os
 import sys
 from xml.sax.saxutils import escape
+from status_open import open_only
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -108,7 +109,13 @@ def entries():
 
     status = load("intelligence/status.json")
     for cloud, items in (status.get("clouds") or {}).items():
-        for i in items or []:
+        # open_only, not the raw list. Every row here is published with
+        # "open": True below, so an unfiltered list told Atom subscribers a
+        # resolved incident was live -- and the feed is a notification, which
+        # makes it the most expensive place to get this wrong. The timeline
+        # half further down already knew about the [resolved] prefix; this
+        # half did not.
+        for i in open_only(items):
             ident = i.get("id") or (i.get("title") or "")[:80]
             if not ident or (cloud, ident) in seen:
                 continue

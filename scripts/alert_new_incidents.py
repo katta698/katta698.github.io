@@ -32,6 +32,7 @@ import json
 import os
 import subprocess
 import sys
+from status_open import open_only
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -49,10 +50,17 @@ def load(path, default):
 
 
 def open_now(status):
-    """Every open incident, keyed the way the vendor identifies it."""
+    """Every open incident, keyed the way the vendor identifies it.
+
+    "Open" is the question status_open answers, not "is in the file".
+    Without that filter this announced a resolved incident as a NEW one --
+    opening a GitHub issue titled "[RESOLVED] ..." -- and then announced it
+    "cleared" when the vendor finally dropped it. Both notifications were
+    about something that was never open while this was watching.
+    """
     out = {}
     for cloud, rows in (status.get("clouds") or {}).items():
-        for i in rows or []:
+        for i in open_only(rows):
             ident = i.get("id") or (i.get("title") or "")[:80]
             out["%s:%s" % (cloud, ident)] = {
                 "cloud": cloud,
