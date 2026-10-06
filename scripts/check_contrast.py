@@ -52,6 +52,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGES = [
     "/", "/blog/", "/now.html",
     "/intelligence/", "/intelligence/whats-new/", "/intelligence/status/",
+    "/reinvent-2026/plan/",
 ]
 
 # Pages that are clean TODAY, and must stay clean. A finding on one of these
@@ -70,7 +71,8 @@ PAGES = [
 # which is the only form that can block without crying wolf. The backlog on
 # /, /blog/ and /now.html stays advisory; when one of those is cleaned, add
 # it here and it can never regress.
-STRICT = {"/intelligence/", "/intelligence/whats-new/", "/intelligence/status/"}
+STRICT = {"/intelligence/", "/intelligence/whats-new/",
+          "/intelligence/status/", "/reinvent-2026/plan/"}
 
 # Elements with no text of their own. Kept deliberately short: every entry is
 # a place a real failure could hide.

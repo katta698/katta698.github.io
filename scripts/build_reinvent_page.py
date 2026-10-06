@@ -583,6 +583,9 @@ PAGE = """<!DOCTYPE html>
    and grouped the way our teams actually split &mdash; with one thing the
    catalog will not do for you: tell you when two sessions you picked are at
    opposite ends of the Strip.</p>
+  <p class="lede"><a href="/reinvent-2026/plan/">My own four days, as booked
+   &rarr;</a> &mdash; venue-anchored, and which formats can actually be
+   reserved.</p>
   <ul class="facts">
    <li><span>When</span><strong>Nov 30 &ndash; Dec 4, 2026</strong></li>
    <li><span>Where</span><strong>Las Vegas, NV</strong></li>
