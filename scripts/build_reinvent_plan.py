@@ -264,7 +264,11 @@ def build():
                   '<link rel="canonical" '
                   'href="https://jayanthkatta.com/reinvent-2026/plan/">',
                   head, count=1, flags=re.S)
-    head += "<style>%s</style>\n</head>\n" % CSS
+    # Not indexed while the event is ahead. The page is a named person's
+    # movements for four specific days; it goes back in the index after
+    # 4 December as a retrospective, when it is history rather than a plan.
+    head += ('<meta name="robots" content="noindex,follow">\n'
+             "<style>%s</style>\n</head>\n" % CSS)
 
     reserve_n = open_n = 0
     # The bar, from the same helper the events page uses. The first build

@@ -592,8 +592,7 @@ __SHAREDNAV__
    catalog will not do for you: tell you when two sessions you picked are at
    opposite ends of the Strip.</p>
   <p class="lede"><a href="/reinvent-2026/planner/">Build a plan from your own
-   interests &rarr;</a> &middot; <a href="/reinvent-2026/plan/">my own four
-   days, as booked &rarr;</a></p>
+   interests &rarr;</a></p>
   <ul class="facts">
    <li><span>When</span><strong>Nov 30 &ndash; Dec 4, 2026</strong></li>
    <li><span>Where</span><strong>Las Vegas, NV</strong></li>
