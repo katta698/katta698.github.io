@@ -1,0 +1,416 @@
+---
+title: 'AWS Daily Intelligence #47 - The failures were the part that was not logged'
+date: '2026-10-06T10:00:00'
+slug: aws-daily-intelligence-private-ca-issuance-logs
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-10-06'
+verified_claims:
+  - claim: "AWS Private CA announces detailed certificate issuance logs, a new AWS CloudTrail service event that records the complete certificate content, issuing CA information, requester identity, and signing status for every issuance"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/aws-private-ca-certificate-issuance-logs/
+  - claim: "AWS states you can use these events for compliance auditing, certificate inventory, algorithm migration tracking, and failed-issuance monitoring"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/aws-private-ca-certificate-issuance-logs/
+  - claim: "Previously the CloudTrail management event for the IssueCertificate API confirmed that the API call succeeded by providing a certificate ARN but did not capture the certificate content, information about the CA that signed it, or issuances that failed before signing"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/aws-private-ca-certificate-issuance-logs/
+  - claim: "The new IssueCertificateDetails event captures the complete to-be-signed (TBS) certificate with all X.509 fields and extensions, plus convenience fields for the subject, issuer, serial number, validity period, template, and signing algorithm"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/aws-private-ca-certificate-issuance-logs/
+  - claim: "Events are emitted for both successful and failed issuance, so pre-signing failures such as name constraints violations now produce a record with a failure explanation"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/aws-private-ca-certificate-issuance-logs/
+  - claim: "Each event identifies the requester: the account and IAM principal for direct API callers, or the service principal for certificates issued through AWS Private CA connectors or integrated AWS services"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/aws-private-ca-certificate-issuance-logs/
+  - claim: "In cross-account configurations, the IssueCertificateDetails event is delivered to the CA owner account"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/aws-private-ca-certificate-issuance-logs/
+  - claim: "The event is delivered automatically as a CloudTrail management event, with no configuration or opt-in required and no additional cost beyond standard AWS CloudTrail pricing"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/aws-private-ca-certificate-issuance-logs/
+  - claim: "Because it flows through CloudTrail, you can act on it in real time with Amazon EventBridge or query it in batch with Amazon Athena for certificate auditing, inventory, tracking, and monitoring"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/aws-private-ca-certificate-issuance-logs/
+  - claim: "This feature is available in all AWS Regions where AWS Private CA is offered"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/aws-private-ca-certificate-issuance-logs/
+  - claim: "CloudTrail logs management events across AWS services by default and is available for no charge, and you can deliver one copy of your ongoing management events to your Amazon S3 bucket for free by creating trails"
+    source: https://aws.amazon.com/cloudtrail/pricing/
+  - claim: "Management events delivered to Amazon S3 cost $2.00 per 100,000 management events delivered, after the first free copy"
+    source: https://aws.amazon.com/cloudtrail/pricing/
+  - claim: "At ten thousand workloads each rotating a seven-day certificate weekly, a second copy of management events priced at $2.00 per 100,000 events costs about ten dollars a year, so the volume is not a material cost"
+    derive: "(10000 * 52) / 100000 * 2.00"
+    expect: "10.4"
+    source: https://aws.amazon.com/cloudtrail/pricing/
+  - claim: "Attempting to use the IssueCertificate API to issue a CA certificate with a validity period greater than or equal to the parent's CA fails"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "The IssueCertificate API will return an error if you attempt to create a CA with a path length greater than or equal to the path length of its issuing CA certificate"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-hierarchy.html
+  - claim: "AWS Private CA provides certificate templates including RootCACertificate/V1, SubordinateCACertificate_PathLen0/V1 through PathLen3/V1, and EndEntityCertificate/V1, which encapsulate best practices for the basic constraints values including path length"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-hierarchy.html
+  - claim: "A certificate managed by AWS Private CA must have a validity period shorter than or equal to the validity period of the CA that issued it, so child CAs and end-entity certificates cannot outlive their parent certificates"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "You can generate an audit report for all of the certificates issued from the CA to confirm that all of the certificates issued have expired"
+    source: https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html
+  - claim: "Short-lived certificate mode in AWS Private CA limits certificate validity to seven days, and the UsageMode default value is GENERAL_PURPOSE"
+    source: https://docs.aws.amazon.com/privateca/latest/APIReference/API_CreateCertificateAuthority.html
+problem: "A private CA's issuance record was a success log. The CloudTrail event 'confirmed that the API call succeeded by providing a certificate ARN' and no more — no certificate content, no identity for the CA that signed it, and nothing about issuances that failed before signing. So the rejections a private CA uses to enforce its own rules left no evidence behind."
+builds: "A reading of what the new IssueCertificateDetails event contains against what the old IssueCertificate event did not, and what that makes detectable in a hierarchy whose constraints are otherwise settled at issuance."
+catch: "The previous event 'did not capture the certificate content, information about the CA that signed it, or issuances that failed before signing'. So a rejected IssueCertificate call left no trace in the trail at all. The new event covers pre-signing failures specifically — AWS's named example is name constraints violations — which is a narrower promise than 'failed issuances' and worth reading as written."
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      AWS Private CA now emits <code class="inline">IssueCertificateDetails</code>, described as
+      <em>&ldquo;a new AWS CloudTrail service event that records the complete certificate content, issuing CA
+      information, requester identity, and signing status for <strong>every</strong> issuance.&rdquo;</em>
+      Every Region where Private CA is offered, no opt-in, no cost beyond standard CloudTrail pricing.
+    </p>
+    <p>
+      The field list is the announcement. What makes it worth a post is the sentence describing what came
+      before:
+      <em>&ldquo;Previously, the CloudTrail management event for the
+      <code class="inline">IssueCertificate</code> API confirmed that the API call succeeded by providing a
+      certificate ARN but <strong>did not capture</strong> the certificate content, information about the CA
+      that signed it, or <strong>issuances that failed before signing</strong>.&rdquo;</em>
+    </p>
+    <p>
+      A private CA enforces several of its own rules by rejecting the call &mdash;
+      <a href="/blog/aws-architecture-private-ca/">#71</a> covered two of them three days ago, where a child
+      CA's validity must be strictly shorter than its parent's and a path length strictly less than its
+      issuer's. Rejections were the one outcome the trail did not record at all.
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Before</th><th>Now</th></tr>
+      <tr>
+        <td>Event</td>
+        <td><code class="inline">IssueCertificate</code> API event</td>
+        <td>Plus <code class="inline">IssueCertificateDetails</code> service event</td>
+      </tr>
+      <tr>
+        <td>Certificate content</td>
+        <td>None &mdash; it <em>&ldquo;confirmed that the API call succeeded by providing a certificate ARN&rdquo;</em></td>
+        <td>The full TBS certificate, <em>&ldquo;all X.509 fields and extensions&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Which CA signed it</td>
+        <td>Not captured</td>
+        <td>Issuer, among the convenience fields</td>
+      </tr>
+      <tr>
+        <td>Issuances that failed <em>before signing</em></td>
+        <td><strong>Not captured</strong></td>
+        <td>A record <em>&ldquo;with a failure explanation&rdquo;</em> &mdash; AWS's example is name constraints violations</td>
+      </tr>
+      <tr>
+        <td>Who asked</td>
+        <td>CloudTrail's <code class="inline">userIdentity</code> for the call</td>
+        <td>Plus <em>&ldquo;the account and IAM principal for direct API callers, or the service principal&rdquo;</em> for integrated services</td>
+      </tr>
+      <tr>
+        <td>Setup</td>
+        <td>&mdash;</td>
+        <td><em>&ldquo;no configuration or opt-in required&rdquo;</em>; cross-account, it goes to the CA owner account</td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      The convenience fields are the ones a query will actually use:
+      <em>&ldquo;subject, issuer, serial number, validity period, template, and signing algorithm&rdquo;</em>
+      &mdash; so you do not have to parse a DER blob to ask the questions below.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-047-private-ca-issuance-logs.svg" alt="Diagram: what the new AWS Private CA IssueCertificateDetails CloudTrail event records, and what the previous event did not. Before this change the IssueCertificate API CloudTrail event only confirmed successful calls via certificate ARN, and did not capture certificate content, CA information, or failed issuances. The new IssueCertificateDetails service event is delivered automatically as a CloudTrail management event with no configuration required, in every Region where AWS Private CA is offered, at no additional cost beyond standard CloudTrail pricing, and flows through CloudTrail for real-time action via Amazon EventBridge or batch querying through Amazon Athena. It carries the complete to-be-signed certificate with all X.509 fields and extensions, convenience fields comprising subject, issuer, serial number, validity period, template and signing algorithm, the requester identity which may be an account, an IAM principal or a service principal, and the issuance success or failure status including explanations for pre-signing failures. The central point is that the failures were the previously unlogged part, and Private CA enforces two rules by rejecting the call: a certificate must have a validity period shorter than or equal to the validity period of the CA that issued it, with the IssueCertificate API failing when a CA certificate's validity is greater than or equal to its parent's, and the IssueCertificate API returning an error when a CA is created with a path length greater than or equal to the path length of its issuing CA certificate. Those two rejections previously produced no CloudTrail evidence, so a template that violated either failed silently from an auditing point of view. The new event records them with explanations. Four queries the event newly makes possible are listed: finding issuance failures and their explanations, which were previously invisible; finding certificates whose validity exceeds a policy ceiling, by reading the validity period field rather than inspecting certificates after the fact; finding which template was used, so that a subordinate CA issued from an end-entity template or a path-length template more permissive than intended becomes visible at issuance; and attributing issuance to a requester, distinguishing a service principal acting on your behalf from a human or a role. A cost panel records that CloudTrail logs management events across AWS services by default at no charge, that one copy of ongoing management events can be delivered to an S3 bucket for free by creating trails, and that additional copies cost two dollars per one hundred thousand management events delivered, so at ten thousand workloads each rotating a seven-day short-lived certificate weekly, a second copy costs about ten dollars a year and the volume is therefore not a material cost. A security panel notes that the to-be-signed certificate contains no private key but does contain subject and subject alternative name values, which in a private PKI commonly carry internal host names, workload identifiers and SPIFFE URIs, so this content now lands wherever CloudTrail lands and the read access to a trail is worth reviewing on that basis. A closing panel contrasts this with the per-CA audit report, which confirms whether certificates issued from a CA have expired, and notes that the new event is per-issuance, includes failures, and arrives in time to act on rather than being generated on request." />
+      <figcaption>The event adds content, the issuer, the requester — and the failures, which is the part nothing recorded.</figcaption>
+    </figure>
+
+    <h3>What a rejection looked like in a log, until today</h3>
+    <p>
+      AWS's own example of the newly-recorded case is a specific one:
+      <em>&ldquo;Events are emitted for both successful and failed issuance, so <strong>pre-signing failures
+      such as name constraints violations</strong> now produce a record with a failure
+      explanation.&rdquo;</em>
+    </p>
+    <p>
+      Note the wording: <strong>pre-signing</strong> failures, with name constraints as the named instance.
+      That is narrower than "failed issuances", and worth reading as written rather than as the general promise
+      it is easy to hear.
+    </p>
+    <p>
+      Which raises a fair question about the two rules
+      <a href="/blog/aws-architecture-private-ca/">#71</a> documented, both of which are also rejections:
+    </p>
+    <p>
+      <em>&ldquo;Attempting to use the <code class="inline">IssueCertificate</code> API to issue a CA
+      certificate with a validity period greater than or equal to the parent's CA fails.&rdquo;</em>
+    </p>
+    <p>
+      <em>&ldquo;The <code class="inline">IssueCertificate</code> API will return an error if you attempt to
+      create a CA with a path length greater than or equal to the path length of its issuing CA
+      certificate.&rdquo;</em>
+    </p>
+    <p>
+      Both happen before anything is signed, so they look like the category AWS describes. I am not going to
+      state that as fact, because AWS names name constraints and not these &mdash; the honest position is that
+      this is the first release in which a rejected <code class="inline">IssueCertificate</code> call can appear
+      in a trail at all, and confirming exactly which rejections emit an event is a ten-minute experiment in
+      your own account rather than something to take on trust.
+    </p>
+    <p>
+      What is certain either way is the shape of the old gap. A module that set a subordinate's validity from
+      the same variable as its parent's would fail every time it ran, and the trail would contain nothing. The
+      error reached the caller and whatever captured the caller's output &mdash; a pipeline log, rather than the
+      trail a security team queries.
+    </p>
+
+    <h3>Four questions the event newly answers</h3>
+    <p>
+      <strong>Which issuances failed before signing, and why.</strong> The headline change. Previously not
+      captured; now they <em>&ldquo;produce a record with a failure explanation&rdquo;</em>.
+    </p>
+    <p>
+      <strong>Which certificates exceed a validity policy.</strong> The <code class="inline">validity
+      period</code> convenience field makes this a query rather than a certificate-inspection exercise. #71's
+      point was that validity nesting is fixed at issuance; this makes a violation of your own policy &mdash;
+      as opposed to AWS's rule &mdash; detectable when it happens.
+    </p>
+    <p>
+      <strong>Which template was used.</strong> <code class="inline">template</code> is a convenience field, and
+      Private CA's templates encode the path-length decision &mdash;
+      <code class="inline">SubordinateCACertificate_PathLen0/V1</code> through
+      <code class="inline">PathLen3/V1</code>, plus
+      <code class="inline">EndEntityCertificate/V1</code>. A subordinate issued from a more permissive template
+      than intended is now visible at issuance rather than at the next audit.
+    </p>
+    <p>
+      <strong>Who asked, and in what capacity.</strong> The event is specific:
+      <em>&ldquo;Each event identifies the requester: the account and IAM principal for direct API callers, or
+      the <strong>service principal</strong> for certificates issued through AWS Private CA connectors or
+      integrated AWS services.&rdquo;</em> That second half is the useful one &mdash; it distinguishes a
+      certificate your pipeline asked for from one an integrated service asked for on your behalf.
+    </p>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      The value is auditability of a resource whose decisions are close to permanent. #71's argument was that
+      almost everything about a private CA is settled by the call that creates it or the call that issues from
+      it, and that changing any of it means replacing the CA. An issuance log does not make those decisions
+      reversible, but it makes them reviewable while the certificates are still short-lived enough to reissue.
+    </p>
+    <p>
+      The failure half has a second, more mundane value: it turns a class of deployment error into something a
+      platform team can see without being told. A module that cannot issue a subordinate CA currently fails in
+      somebody's pipeline output. Now it fails in the trail everybody already queries.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      <strong>Failed issuance attempts are a signal, and this is the first time they exist.</strong> A sequence
+      of rejected <code class="inline">IssueCertificate</code> calls from an unexpected principal is exactly
+      the shape of somebody probing what a CA will sign. Previously unobservable; now an EventBridge pattern.
+    </p>
+    <p>
+      <strong>And the certificate content now lands wherever CloudTrail lands.</strong> A to-be-signed
+      certificate contains no private key, so this is not key exposure. It does contain the subject and the
+      subject alternative names, and in a private PKI those routinely carry internal host names, workload
+      identifiers and SPIFFE URIs &mdash;
+      <a href="/blog/aws-architecture-roles-anywhere/">#70</a> was about exactly those fields being used as
+      authorisation inputs.
+    </p>
+    <p>
+      That is a consideration rather than a defect: the data is already in certificates that your workloads
+      hold. What changes is that a reasonably complete map of internal naming becomes queryable by anyone with
+      read access to the trail, which is usually a wider group than the people who can call
+      <code class="inline">IssueCertificate</code>. Worth a look at who reads the trail, on the same reasoning
+      that <a href="/blog/aws-architecture-kms-grants/">#72</a> applied to grant constraints appearing in
+      CloudTrail in plaintext.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      <em>&ldquo;no additional cost beyond standard AWS CloudTrail pricing&rdquo;</em>, and the relevant part
+      of that pricing is the management-event tier:
+      <em>&ldquo;CloudTrail logs management events across AWS services by default and is available for no
+      charge&hellip; You can deliver one copy of your ongoing management events to your Amazon Simple Storage
+      Service (S3) bucket for free by creating trails.&rdquo;</em> Beyond that,
+      <em>&ldquo;$2.00 per 100,000 management events delivered (after first free copy)&rdquo;</em>.
+    </p>
+    <p>
+      So the only exposure is organisations running more than one trail copy, and it is worth doing the
+      arithmetic before worrying about it. #71 established that short-lived certificate mode caps validity at
+      seven days, so a workload on that mode reissues roughly weekly. Ten thousand such workloads is about
+      520,000 issuances a year, which on a second copy is <strong>about $10</strong>.
+    </p>
+    <p>
+      That is not a cost consideration, and saying so is more useful than implying there is one. The volume
+      conversation only becomes real at a scale where issuance is itself a major line item.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      <strong>It arrives whether you want it or not.</strong> The event is
+      <em>&ldquo;delivered automatically as a CloudTrail management event, with <strong>no configuration or
+      opt-in required</strong>&rdquo;</em> &mdash; so existing trails, organisation trails included, start
+      carrying it without a change on your side. Anything doing exact-match assertions on management event
+      names will see new ones.
+    </p>
+    <p>
+      <strong>And in a shared-CA setup it lands somewhere you may not be looking.</strong>
+      <em>&ldquo;In cross-account configurations, the event is delivered to the <strong>CA owner
+      account</strong>.&rdquo;</em> So where a platform team owns the CA and application accounts request
+      certificates from it, the issuance record &mdash; including the failure record &mdash; sits in the
+      platform account's trail rather than the requester's. The team that caused the failure is not the team
+      that can see it.
+    </p>
+    <p>
+      <strong>Two consumption paths, both named.</strong>
+      <em>&ldquo;Because it flows through CloudTrail, you can act on it in real time with Amazon EventBridge or
+      query it in batch with Amazon Athena for certificate auditing, inventory, tracking, and
+      monitoring.&rdquo;</em> The failure signal belongs on the first; the conformance queries on the second.
+    </p>
+    <p>
+      <strong>It does not replace the audit report.</strong> #71's audit instrument was the per-CA report
+      &mdash; <em>&ldquo;You can generate an audit report for all of the certificates issued from the CA to
+      confirm that all of the certificates issued have expired&rdquo;</em> &mdash; which answers a retention
+      question about a CA you are retiring. This answers a different question, per issuance, including
+      failures, in time to act on. Keep both.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Choice</th><th>You get</th><th>You accept</th></tr>
+      <tr>
+        <td>Do nothing</td>
+        <td>The events exist and are queryable later</td>
+        <td>No alerting; the failure signal sits unread in a trail</td>
+      </tr>
+      <tr>
+        <td>EventBridge rule on failures</td>
+        <td>The one genuinely new security signal, in real time</td>
+        <td>Tuning, because a failing deployment pipeline will generate them in bursts</td>
+      </tr>
+      <tr>
+        <td>Athena queries on validity and template</td>
+        <td>Policy conformance on a resource whose settings are otherwise fixed at issuance</td>
+        <td>Query cost, and a policy you have to write down first</td>
+      </tr>
+      <tr>
+        <td>Broad read access to the trail</td>
+        <td>Easier investigation</td>
+        <td>Subject and SAN values are a map of internal naming</td>
+      </tr>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      <strong>Start with the failures, because they are the part that did not exist.</strong> An EventBridge
+      rule on <code class="inline">IssueCertificateDetails</code> where the status is a failure gives you a
+      signal with no prior baseline to compare against, which also means no prior noise to migrate.
+    </p>
+    <p>
+      <strong>Then write the two queries #71 implies.</strong> Certificates whose
+      <code class="inline">validity period</code> exceeds your policy, and subordinate CAs whose
+      <code class="inline">template</code> is more permissive than
+      <code class="inline">PathLen0</code> where you intended an issuing CA. Both are convenience fields, so
+      neither needs certificate parsing.
+    </p>
+    <p>
+      <strong>Check who reads the trail before you widen anything.</strong> The subject and SAN content is new
+      to the trail even though it is old to your PKI.
+    </p>
+    <p>
+      <strong>And leave the audit report in the runbook.</strong> It answers the retirement question that this
+      event does not.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <p>
+      <strong>Treat a run of issuance failures from one principal as a probe until proven otherwise.</strong>
+      The benign explanation &mdash; a broken module &mdash; is also worth knowing about, so the alert is
+      useful either way.
+    </p>
+    <p>
+      <strong>Alert on template, not only on validity.</strong> Validity violations are a policy matter;
+      template violations change what a certificate can go on to sign, which is the thing #71 said could not be
+      relaxed afterwards.
+    </p>
+    <p>
+      <strong>Record the requester classification in whatever you build.</strong> It is what makes a shared CA
+      auditable without inferring the caller's nature from an identity block.
+    </p>
+    <p>
+      <strong>Do not build a cost control for this.</strong> The arithmetic above puts it in single-digit
+      dollars for a large fleet; the effort is better spent on the failure rule.
+    </p>
+  </div>
+
+  <div class="section" id="who">
+    <h2>Who should adopt this</h2>
+    <p>
+      <strong>Anyone operating a private CA</strong> gets the events without acting, so the question is only
+      whether to consume them. The failure rule is a small piece of work with no equivalent before today.
+    </p>
+    <p>
+      <strong>Anyone who has a CA shared across teams</strong> should wire up requester-identity attribution,
+      because that is the gap the certificate ARN alone left.
+    </p>
+    <p>
+      <strong>Anyone whose CA hierarchy was built by a module</strong> should look for historical failures the
+      moment there are enough events to look at &mdash; a module that has been failing one of the two issuance
+      rules has been doing so silently.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <p>
+      The field list is the announcement; the admission is the news. An issuance log that recorded only
+      successes meant the two rules Private CA enforces by rejecting calls &mdash; validity nesting and path
+      length &mdash; generated errors that reached a pipeline and nothing else.
+    </p>
+    <p>
+      That is the same shape as <a href="/blog/aws-architecture-guardduty-triage/">today's #74</a>, from the
+      other direction. There, a detection capability is quietly reduced by a configuration change nobody sees
+      on a dashboard. Here, a detection capability quietly did not exist, and its absence was equally invisible
+      &mdash; because an absent log entry looks exactly like an event that did not happen.
+    </p>
+    <p>
+      Worth doing today, for the same reason: the new signal has no history, so there is nothing to migrate and
+      nothing to tune against. One EventBridge rule on failures, and two Athena queries on fields that are
+      already parsed for you.
+    </p>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/10/aws-private-ca-certificate-issuance-logs/" target="_blank" rel="noopener">AWS Private CA now provides detailed certificate issuance logs</a> &mdash; the event contents, what the previous event omitted, availability and cost</li>
+      <li><a href="https://aws.amazon.com/cloudtrail/pricing/" target="_blank" rel="noopener">AWS CloudTrail pricing</a> &mdash; the free management-event tier and the per-100,000 rate for additional copies</li>
+      <li><a href="https://docs.aws.amazon.com/privateca/latest/userguide/ca-lifecycle.html" target="_blank" rel="noopener">Manage the private CA lifecycle</a> &mdash; the validity nesting rule enforced at issuance, and the per-CA audit report</li>
+      <li><a href="https://docs.aws.amazon.com/privateca/latest/userguide/ca-hierarchy.html" target="_blank" rel="noopener">Design a CA hierarchy</a> &mdash; the path-length rule enforced at issuance, and the certificate templates</li>
+      <li><a href="https://docs.aws.amazon.com/privateca/latest/APIReference/API_CreateCertificateAuthority.html" target="_blank" rel="noopener">CreateCertificateAuthority</a> &mdash; short-lived certificate mode and its seven-day validity cap</li>
+    </ul>
+  </div>
+</div>

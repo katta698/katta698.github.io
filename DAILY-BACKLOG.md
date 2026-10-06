@@ -92,6 +92,44 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 5 October 2026 — covered by post #47
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Detailed certificate issuance logs — a new `IssueCertificateDetails` CloudTrail service event carrying the complete to-be-signed certificate, the issuing CA, the requester and the signing status. The finding is what the old event omitted: it "did not capture the certificate content, information about the CA that signed it, or issuances that failed before signing", so a rejected `IssueCertificate` call left no trace. Note the narrowing — pre-signing failures specifically, with name constraints as the named example — and that cross-account, the event goes to the CA owner account | AWS Private CA | **#47** | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-private-ca-certificate-issuance-logs/) |
+| IAM Identity Center supports network access controls for Identity Store | IAM Identity Center | open | **Med-High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-identity-store-network-controls/) |
+| Client VPN supports device posture assessment | Client VPN | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-client-vpn-device-posture/) |
+| Continuum for Penetration Testing supports continuous testing integrated into a CI/CD pipeline | AWS Continuum | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-continuum-penetration-testing/) |
+| Batch supports Amazon EKS access entry authentication | AWS Batch | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-batch-access-entries/) |
+| Control Tower AFT supports plan-only customization runs | Control Tower | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/09/aws-control-tower-aft/) |
+| Redshift supports creating and refreshing Apache Iceberg materialized views | Redshift | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/redshift-iceberg-materialized-views) |
+| EC2 introduces shared tags for Amazon Machine Images | EC2 | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/ec2-ami-shared-tags) |
+| Nova 2.5 Sonic with improved reasoning for voice agents | Amazon Nova | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-nova-2.5-sonic/) |
+| GLM 5.3 by Z.ai generally available on Bedrock | Bedrock | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-bedrock-glm-5-3/) |
+| AWS Advanced Ruby Driver Wrapper generally available | AWS SDKs | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-ruby-driver-wrapper-available/) |
+
+Private CA won on adjacency as much as importance: Architecture #71 published
+three days earlier is about Private CA, and #71's audit advice was the per-CA
+audit report, which answers a retirement question rather than a per-issuance
+one. This fills that gap and adds the thing nothing had — a record of rejected
+issuances.
+
+Two held security items are stronger on raw importance and are worth slots:
+**IAM Identity Center network access controls for Identity Store** is the
+strongest held item in the file right now, and Client VPN device posture
+assessment is close behind. Both are access-control capabilities rather than
+observability ones.
+
+A process note worth recording, because it cost real time today. The What's New
+page for the Private CA item was fetched via a summarising fetch, and the
+summary's phrasing was not the page's wording. Ten of nineteen quoted passages
+in the draft failed the verbatim check, four of them because they were the
+summariser's sentences rather than AWS's — including the one the post's thesis
+rested on. Scraping the page body directly also surfaced two facts the summary
+had dropped entirely: the cross-account delivery rule, and algorithm migration
+tracking as a stated use case. For announcement pages, scrape the body and
+quote from that.
+
 ## 2 October 2026 — covered by post #46
 
 | Item | Service | Status | Importance | Reference |
