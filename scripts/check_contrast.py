@@ -54,6 +54,24 @@ PAGES = [
     "/intelligence/", "/intelligence/whats-new/", "/intelligence/status/",
 ]
 
+# Pages that are clean TODAY, and must stay clean. A finding on one of these
+# fails the run; a finding anywhere else is reported and does not.
+#
+# This check was already advisory in prepublish for a reason written down
+# there: ~40 pre-existing findings on the older pages, and a gate that fails
+# from day one is a gate people learn to skip. The cost of that showed up on
+# 2026-10-05, when the GitHub incident badges shipped at 1.05:1 in light mode
+# -- "they are too dark, I really cannot see anything, it is just covered
+# with colour". THIS CHECK CAUGHT IT. It printed 1.05:1 and 1.51:1 and
+# nothing stopped, because every run prints findings and this one looked
+# like the rest.
+#
+# So the gate moves from "all pages" to "pages with nothing to forgive",
+# which is the only form that can block without crying wolf. The backlog on
+# /, /blog/ and /now.html stays advisory; when one of those is cleaned, add
+# it here and it can never regress.
+STRICT = {"/intelligence/", "/intelligence/whats-new/", "/intelligence/status/"}
+
 # Elements with no text of their own. Kept deliberately short: every entry is
 # a place a real failure could hide.
 SKIP = {"pill", "dot", "cs-dot", "pal-nav-dot", "sc-i", "diya"}
@@ -288,10 +306,22 @@ def main():
             print("  %-28s %-5s .%-18s %5.2f:1  (needs %.1f)"
                   % (path, theme, cls[:18], c, need))
             print("  %-28s %-5s   %s" % ("", "", txt))
+        strict_hits = sorted({(pp, tt, cc) for pp, tt, cc, _c, _n, _x in failures
+                              if pp in STRICT})
         print("\n  %d element(s) below the threshold, %d checked." % (len(seen), checked))
         print("  Almost always: a rule set a background for one theme and left")
         print("  the colour that sits on it alone.")
-        return 1
+        if strict_hits:
+            print()
+            print("  %d of them are on a page that was clean and must "
+                  "stay clean:" % len(strict_hits))
+            for pp, tt, cc in strict_hits:
+                print("    %-28s %-5s .%s" % (pp, tt, cc))
+            return 1
+        print()
+        print("  None are on a page held clean.")
+        print("  Reported, not blocking -- this is the known backlog.")
+        return 0
 
     # A check that measured nothing must not report success. Running this
     # under Git Bash rewrote "/intelligence/status/" into a Windows path, every

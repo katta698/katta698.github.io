@@ -125,13 +125,22 @@ CHECKS = [
     # 2026-08-28. Nothing caught it because every other check reads posts and
     # this lived in blog.css.
     ("check_dark_theme.py",     True,  False, True,  True),
-    # Text that cannot be read against what is behind it. Advisory, not
-    # blocking: it currently reports 40 pre-existing findings on the older
-    # pages, and a gate that fails every run from day one is a gate people
-    # learn to skip. It blocks nothing while that backlog is worked down, and
-    # it already earns its place by catching new ones -- four shipped
-    # unreadable on 2026-09-08 before it existed.
-    ("check_contrast.py",       False, False, False, False),
+    # Text that cannot be read against what is behind it. BLOCKING as of
+    # 2026-10-05, and the change is narrow: the checker itself now fails only
+    # on pages that are currently clean (STRICT in check_contrast.py), while
+    # still reporting the ~40 pre-existing findings on /, /blog/ and
+    # /now.html without stopping anything. The original reasoning for
+    # advisory -- a gate that fails every run from day one is a gate people
+    # learn to skip -- still holds and is what the page list protects.
+    #
+    # What changed is that advisory was measured and found insufficient. The
+    # GitHub incident badges shipped at 1.05:1 in light mode and were
+    # reported by a reader, not by a check. This check HAD caught them: it
+    # printed 1.05:1 and 1.51:1 on that page, in that run, and the push went
+    # out anyway because findings print on every run and these looked like
+    # the backlog. A finding nobody can distinguish from noise is not a
+    # finding.
+    ("check_contrast.py",       True,  False, False, False),
     # Whether links actually go anywhere. Blocking, because the structural mode
     # runs offline and a malformed host is always a bug in this repo -- never
     # the network. Every Google incident link on the status page pointed at
