@@ -44,7 +44,12 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGES = ["/", "/blog/", "/intelligence/", "/intelligence/whats-new/",
-         "/intelligence/status/"]
+         "/intelligence/status/",
+         # The three re:Invent pages. The catalog page is here because it
+         # drifted precisely while nothing watched it: no shared bar at all,
+         # a 118px header of its own, no theme class, no day palette.
+         "/reinvent-2026/", "/reinvent-2026/plan/",
+         "/reinvent-2026/planner/"]
 WIDTHS = [390, 1024, 1440]
 # Both, not just the default.
 #
@@ -213,7 +218,19 @@ def serve():
 # The portfolio is a full-screen hero with the name and the road, and is
 # meant to sit differently from the four tabs. Exempt from h1Y only --
 # every other measurement here still applies to it.
-H1Y_EXEMPT = {"/"}
+# Where the first heading lands is only comparable between pages built the
+# same way. The four TABS each open with a hero and then a heading, and
+# keeping those four level is what this assertion was added for -- it came
+# from "when I click blog it goes up and intelligence comes down". The
+# portfolio is a full-screen hero, and the three re:Invent pages have no
+# hero at all, so their heading sits directly under the bar: 97px against
+# the tabs' 192px. That is a different layout, not a drifting one.
+H1Y_EXEMPT = {"/", "/reinvent-2026/", "/reinvent-2026/plan/",
+              "/reinvent-2026/planner/"}
+
+# Pages that deliberately open without a hero.
+HERO_EXEMPT = {"/reinvent-2026/", "/reinvent-2026/plan/",
+               "/reinvent-2026/planner/"}
 
 # Four different heading sizes will never land on exactly the same pixel.
 # 8px is below what a reader notices moving between tabs and above what
@@ -245,7 +262,16 @@ def compare(w, ref_page, ref, page, cur, problems):
             if abs(a[f] - b[f]) > TOL:
                 note("%s %s" % (label, f), "%.1f" % a[f], "%.1f" % b[f])
 
+    # The hero is page CONTENT, not shell. The four tabs and the portfolio all
+    # open with one; the three re:Invent pages open with a title block and a
+    # stat row instead, which is a deliberate difference and not drift. Only
+    # the hero keys are skipped for them -- nav height, position, colours,
+    # border, wordmark, banner, fonts and controls all still apply, which is
+    # the half that was actually wrong.
+    hero_keys = {"hasHero", "hasVideo", "videoSrc", "videoPoster"}
     for key, label in EXACT:
+        if key in hero_keys and page in HERO_EXEMPT:
+            continue
         if cur.get(key) != ref.get(key):
             note(label, repr(cur.get(key)), repr(ref.get(key)))
 
