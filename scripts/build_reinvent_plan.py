@@ -277,7 +277,8 @@ def build():
             'staying at Harrah\'s. Built for an estate of about 7,000 EC2 '
             'instances: fleet and capacity, EBS and snapshots, observability '
             'and log analytics, FinOps, and where agents genuinely help with '
-            'any of it. <a href="/reinvent-2026/">All 2,177 sessions, searchable '
+            'any of it. <a href="/reinvent-2026/planner/">Build your own plan '
+            '&rarr;</a> &middot; <a href="/reinvent-2026/">all 2,177 sessions '
             '&rarr;</a></p>',
             '<p class="pl-lede">Every time, room and seat count on this page '
             'is read from the session catalogue when the page is built, not '

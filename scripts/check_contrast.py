@@ -52,7 +52,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGES = [
     "/", "/blog/", "/now.html",
     "/intelligence/", "/intelligence/whats-new/", "/intelligence/status/",
-    "/reinvent-2026/plan/",
+    "/reinvent-2026/plan/", "/reinvent-2026/planner/",
 ]
 
 # Pages that are clean TODAY, and must stay clean. A finding on one of these
@@ -72,7 +72,8 @@ PAGES = [
 # /, /blog/ and /now.html stays advisory; when one of those is cleaned, add
 # it here and it can never regress.
 STRICT = {"/intelligence/", "/intelligence/whats-new/",
-          "/intelligence/status/", "/reinvent-2026/plan/"}
+          "/intelligence/status/", "/reinvent-2026/plan/",
+          "/reinvent-2026/planner/"}
 
 # Elements with no text of their own. Kept deliberately short: every entry is
 # a place a real failure could hide.

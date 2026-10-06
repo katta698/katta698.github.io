@@ -47,6 +47,8 @@ CLAIMS = {
     "build_ai_page.py": "scripts/build_ai_page.py",
     "reinvent2026.json": "intelligence/reinvent2026.json",
     "build_reinvent_page.py": "scripts/build_reinvent_page.py",
+    "build_reinvent_plan.py": "scripts/build_reinvent_plan.py",
+    "build_reinvent_planner.py": "scripts/build_reinvent_planner.py",
     ".github/workflows": ".github/workflows",
     "sitemap.xml": "sitemap.xml",
     "robots.txt": "robots.txt",
@@ -55,7 +57,7 @@ CLAIMS = {
 ARCHITECTURE = """
 <svg viewBox="%s" preserveAspectRatio="xMidYMid meet" class="cf-arch-svg"
      role="img" aria-label="How the site fits together: hand-written posts and
-     five JSON data stores feed eight Python builders; the builders write every
+     five JSON data stores feed a column of Python builders; the builders write every
      published page and the sitemap; all pages share one stylesheet and one script; a
      pre-push gate of {{GATE}} browser checks stands between the builders and
      GitHub Pages; and {{JOBS}} scheduled jobs re-read the clouds' own feeds to
@@ -150,9 +152,9 @@ ARCHITECTURE = """
   </g>
   <g class="ab bld">
     <rect x="236" y="296" width="176" height="46" rx="6"/>
-    <text class="at" x="250" y="314">build_reinvent_page.py</text>
-    <text class="as" x="250" y="327">the session catalog,</text>
-    <text class="as" x="250" y="338">fetched by hand</text>
+    <text class="at" x="250" y="312">build_reinvent_page.py</text>
+    <text class="as" x="250" y="325">build_reinvent_plan.py</text>
+    <text class="as" x="250" y="337">build_reinvent_planner.py</text>
   </g>
 
   <path class="aa a1" d="M 156 65H 236"/>

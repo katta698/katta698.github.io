@@ -1600,7 +1600,7 @@
       if (state.day) planner.day = state.day;
       if (state.venue) planner.at = state.venue;
       if (state.lane && state.lane !== "all") planner.lane = state.lane;
-      if (state.service !== "") planner.service = state.service;
+      if (state.service !== "") planner.service = [state.service];
       save("ri2026.planner", planner);
       /* Through view(), like every other way of opening a panel. This
          used to open the view and then scrollTo(0), which is the exact
@@ -2407,7 +2407,30 @@
   var planner = load("ri2026.planner", null) || {
     day: "", at: "", lane: "", service: "", pace: "standard",
     sponsored: false };
-  if (planner.service === undefined) planner.service = "";
+  if (planner.service === undefined) planner.service = [];
+
+  /* Services are a LIST, not one value.
+     Reported as: "when I choose service I only have option to choose one,
+     but there might be sessions related to multiple topics in the same day
+     in the same venue -- it is good to have option to choose multiple."
+     Right, and the single value was the odd one out anyway: day, venue and
+     lane each describe a whole day, while a service is the one axis where a
+     real attendee has several.
+     Anything already in localStorage is a bare string, so it is widened on
+     read rather than discarded -- a returning reader keeps their choice. */
+  if (typeof planner.service === "string") {
+    planner.service = planner.service === "" ? [] : [planner.service];
+  }
+  if (!planner.service || !planner.service.length) planner.service = [];
+
+  function plannerSvc() {
+    var out = [];
+    for (var i = 0; i < planner.service.length; i++) {
+      var v = +planner.service[i];
+      if (!isNaN(v)) out.push(v);
+    }
+    return out;
+  }
 
   /* A chosen service is a strong PREFERENCE, never a hard filter, and
      that is a measurement rather than a nicety: 102 of the 169 services
@@ -2424,9 +2447,13 @@
     var v = SESSION_VALUE[ty];
     if (v == null) v = 2;
     if (/-S$/.test(sn.c)) v *= 0.45;          // sponsored
-    if (planner.service !== "" && planner.service != null) {
-      var want1 = +planner.service;
-      v *= (sn.sv.indexOf(want1) !== -1) ? 3.0 : 0.22;
+    var svcSel = plannerSvc();
+    if (svcSel.length) {
+      // Any ONE of the chosen services is enough. A session carrying two of
+      // them is not scored twice: the reader asked for a day about these
+      // things, not for whichever session name-checks the most of them.
+      var hitAny = sn.sv.some(function (i) { return svcSel.indexOf(i) !== -1; });
+      v *= hitAny ? 3.0 : 0.22;
     } else if (planner.lane && planner.lane !== "all") {
       var want = laneServices(planner.lane) || [];
       var hit = sn.sv.some(function (i) { return want.indexOf(i) !== -1; });
@@ -2525,7 +2552,8 @@
   var rangeCache = {};
 
   function feasibleRange(day) {
-    var key = [day, planner.pace, planner.lane, planner.service,
+    var key = [day, planner.pace, planner.lane,
+               plannerSvc().slice().sort().join(","),
                planner.sponsored ? 1 : 0].join("|");
     if (rangeCache[key]) return rangeCache[key];
     var lo = null, hi = null;
@@ -2575,14 +2603,18 @@
        + "which is not a day anybody finishes." });
 
     // how much of the day is actually the thing you asked for
-    if (planner.service !== "" && planner.service != null) {
-      var svcIdx = +planner.service;
-      var nm = serviceName(svcIdx);
+    var svcSel2 = plannerSvc();
+    if (svcSel2.length) {
+      var nm = svcSel2.length === 1 ? serviceName(svcSel2[0])
+        : andList(svcSel2.map(function (i) { return serviceName(i); }));
       var got = chain.filter(function (x) {
-        return x.s.sv.indexOf(svcIdx) !== -1; }).length;
-      var avail = serviceSlotsOn(day, svcIdx);
+        return x.s.sv.some(function (i) { return svcSel2.indexOf(i) !== -1; });
+      }).length;
+      var avail = svcSel2.reduce(function (t, i) {
+        return t + serviceSlotsOn(day, i); }, 0);
       var elsewhere = CFG.days.map(function (dd) {
-        return { d: dd, n: serviceSlotsOn(dd, svcIdx) };
+        return { d: dd, n: svcSel2.reduce(function (t, i) {
+          return t + serviceSlotsOn(dd, i); }, 0) };
       }).filter(function (r) { return r.n > 0 && r.d !== day; })
         .sort(function (a, b) { return b.n - a.n; });
       var alt = elsewhere.length
@@ -2812,14 +2844,19 @@
 
          So every card says which it is. A page that explains itself only
          at the top explains itself only to people who start at the top. */
-      if (planner.service !== "" && planner.service != null) {
-        var si = +planner.service;
-        var hit = x.s.sv.indexOf(si) !== -1;
+      var svcSel3 = plannerSvc();
+      if (svcSel3.length) {
+        var matched = x.s.sv.filter(function (i) {
+          return svcSel3.indexOf(i) !== -1; });
+        var hit = matched.length > 0;
         var tag = el("div", hit ? "svmark hit" : "svmark fill");
+        // Name the one it actually covers, not the whole selection: the card
+        // is answering "why is this here", and the answer is one of them.
         tag.textContent = hit
-          ? "✓ covers " + serviceName(si)
-          : "Fills a gap — nothing on " + serviceName(si)
-            + " fitted this slot";
+          ? "✓ covers " + andList(matched.map(function (i) {
+              return serviceName(i); }))
+          : "Fills a gap — nothing on " + andList(svcSel3.map(function (i) {
+              return serviceName(i); })) + " fitted this slot";
         c.appendChild(tag);
       }
       list.appendChild(c);
@@ -2881,7 +2918,7 @@
   function showReset() {
     var rb = $("#pl-reset");
     if (!rb) return;
-    rb.hidden = !(planner.day || planner.at || planner.service
+    rb.hidden = !(planner.day || planner.at || plannerSvc().length
                   || (planner.lane && planner.lane !== "all")
                   || planner.pace !== "standard" || planner.sponsored);
   }
@@ -2923,11 +2960,17 @@
     function change() {
       planner.day = d.value; planner.at = a.value;
       planner.lane = l.value; planner.pace = pc.value;
-      planner.service = sv.value; planner.sponsored = sp.checked;
+      planner.service = [];
+      for (var oi = 0; oi < sv.options.length; oi++) {
+        if (sv.options[oi].selected && sv.options[oi].value !== "") {
+          planner.service.push(sv.options[oi].value);
+        }
+      }
+      planner.sponsored = sp.checked;
       showReset();
       // A named service is more specific than a lane, so it wins and the
       // lane is greyed rather than silently ignored.
-      l.disabled = !!planner.service;
+      l.disabled = plannerSvc().length > 0;
       save("ri2026.planner", planner);
       showCta();
       renderPlanner();
@@ -2952,9 +2995,16 @@
 
     d.value = planner.day; a.value = planner.at;
     l.value = planner.lane || "all"; pc.value = planner.pace;
-    sv.value = planner.service || "";
+    // A multi-select cannot be restored with .value -- that sets ONE option
+    // and silently clears the rest, which would have made a saved multi-
+    // service plan come back as a single-service one.
+    var savedSvc = planner.service || [];
+    for (var si2 = 0; si2 < sv.options.length; si2++) {
+      sv.options[si2].selected =
+        savedSvc.indexOf(sv.options[si2].value) !== -1;
+    }
     sp.checked = !!planner.sponsored;
-    l.disabled = !!planner.service;
+    l.disabled = plannerSvc().length > 0;
     showReset();
   }
 
