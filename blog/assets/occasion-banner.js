@@ -125,6 +125,23 @@
       return 1 + ((weekday - first.getDay() + 7) % 7) + (nth - 1) * 7;
     }
 
+    /* Date-ranged events, with a link. Months are 0-based, like the
+       tables above. `to` is the last day the banner shows. */
+    var EVENTS = [
+      { from: [2026, 9, 6], to: [2026, 11, 4],
+        html: '\u26A1 AWS re:Invent 2026 is coming \u2014 ' +
+              '<a href="/reinvent-2026/planner/">plan your days</a> ' +
+              'from the full session catalog',
+        gradient: 'linear-gradient(90deg,#3A4A3F 0%,#8B6A43 100%)' }
+    ];
+
+    function inRange(e, y2, mo2, dy2) {
+      var t = y2 * 10000 + mo2 * 100 + dy2;
+      var a = e.from[0] * 10000 + e.from[1] * 100 + e.from[2];
+      var b = e.to[0] * 10000 + e.to[1] * 100 + e.to[2];
+      return t >= a && t <= b;
+    }
+
     var today = new Date();
     var y = today.getFullYear(), mo = today.getMonth(), dy = today.getDate();
 
@@ -147,11 +164,36 @@
       });
     }
 
+    // Festivals win. A greeting on somebody's festival should not be
+    // replaced by a conference link, and this event overlaps Thanksgiving
+    // and the first days of the Christmas run.
+    if (!match) {
+      match = EVENTS.find(function (e) { return inRange(e, y, mo, dy); });
+    }
+
     if (match) {
       var banner = document.getElementById('occasion-banner');
       banner.style.background = match.gradient;
       banner.style.color = '#F5F5F3';
-      banner.textContent = match.text;
+      // An event carries markup because it carries a link; a festival is a
+      // greeting and stays textContent, which is the safer default and is
+      // what every entry above relies on.
+      if (match.html) {
+        banner.innerHTML = match.html;
+        // The div's colour does not reach the anchor: an <a> with no colour
+        // of its own renders the browser default blue, which on this
+        // gradient is both ugly and barely readable. Underlined so it still
+        // reads as a link once it is the same colour as the text.
+        var link = banner.querySelector('a');
+        if (link) {
+          link.style.color = 'inherit';
+          link.style.textDecoration = 'underline';
+          link.style.textUnderlineOffset = '2px';
+          link.style.fontWeight = '600';
+        }
+      } else {
+        banner.textContent = match.text;
+      }
       banner.style.display = 'block';
       var setOffset = function () {
         document.documentElement.style.setProperty('--occasion-banner-h', banner.offsetHeight + 'px');
