@@ -594,7 +594,12 @@ def fetch_github():
             # twice, which is what it did.
             if i.get("id") in open_ids:
                 continue
-            past.append({"name": i.get("name", ""),
+            # id is carried for the same reason the live half carries it:
+            # it is what builds the canonical githubstatus.com/incidents/<id>
+            # URL. shortlink is kept as the fallback for records written
+            # before this, and because it is what the API calls canonical.
+            past.append({"id": i.get("id", ""),
+                         "name": i.get("name", ""),
                          "impact": i.get("impact", ""),
                          "began": i.get("created_at", ""),
                          "ended": i.get("resolved_at", "") or "",

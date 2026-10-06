@@ -154,6 +154,11 @@ def main():
         rows += list((blob.get("incidents") or {}).values())
         for v in (blob.get("clouds") or {}).values():
             rows += v
+        # The GitHub block was not collected here, so when the incident rows
+        # became links their URLs were the only ones on the page nothing
+        # validated. Both halves: an open incident and the recent ones.
+        _gh = blob.get("github") or {}
+        rows += (_gh.get("open") or []) + (_gh.get("past") or [])
         for r in rows:
             u = (r or {}).get("url") or ""
             if u.startswith(("http://", "https://")):

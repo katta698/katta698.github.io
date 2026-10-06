@@ -91,7 +91,47 @@ def main():
         print("  One of the two has stopped being applied to this field.")
         return 1
 
+    # --- every GitHub incident must reach its own page --------------------
+    #
+    # Asked as: "why do those incidents not point to any URLs from GitHub?
+    # It's good to have those links on each incident so we can directly open
+    # it." The data had carried a per-incident URL all along -- the fetcher
+    # stored a shortlink from the first version -- and the renderer printed
+    # the name as plain text, so the only way out of that list was the one
+    # githubstatus.com link at the foot.
+    #
+    # This asserts the rendered result rather than the builder's intent: a
+    # row that silently loses its anchor looks exactly like a row that never
+    # had one.
+    rows = re.findall(r'<li class="gh-i[^"]*">.*?</li>', html, re.S)
+    if rows:
+        linkless = [r for r in rows if 'class="gh-l"' not in r]
+        if linkless:
+            print("  %d OF %d GITHUB INCIDENT(S) DO NOT LINK ANYWHERE"
+                  % (len(linkless), len(rows)))
+            for r in linkless[:5]:
+                txt = re.sub(r"<[^>]+>", " ", r)
+                print("    %s" % " ".join(txt.split())[:68])
+            print()
+            print("  gh_link() in build_status_page.py builds the canonical")
+            print("  githubstatus.com/incidents/<id> URL and falls back to the")
+            print("  stored shortlink. A row with neither means the record")
+            print("  carries no id and no url, or named() stopped wrapping it.")
+            return 1
+
+        # CANARY: the pattern above is a regex over generated markup, which is
+        # the shape that quietly stops matching. Prove it can still see a
+        # linkless row before trusting that it found none.
+        fake = '<li class="gh-i"><span class="gh-imp warn">Minor</span> x</li>'
+        if 'class="gh-l"' in fake or not re.findall(
+                r'<li class="gh-i[^"]*">.*?</li>', fake, re.S):
+            print("  CANARY FAILED: the incident-row pattern no longer matches")
+            print("  a row, so 'all rows link' was not actually measured.")
+            return 1
+
     print("  no vendor markup renders as text on the status page")
+    print("  every GitHub incident row (%d) links to its own incident"
+          % len(rows))
     print("  (%d chars checked, %d incident card(s))"
           % (len(html), html.count('class="inc"')))
     return 0

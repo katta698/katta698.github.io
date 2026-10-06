@@ -1507,6 +1507,29 @@ GH_WORD = {
 
 GH_IMPACT = {"none": "ok", "minor": "warn", "major": "bad", "critical": "bad"}
 
+# Where a reader goes to read the incident itself.
+#
+# Asked as: "why do those incidents not point to any URLs from GitHub? At the
+# bottom we have githubstatus.com, but it's good to have those links on each
+# incident so we can directly open it." The data always carried one -- the
+# fetcher has stored a shortlink per incident from the start -- and the page
+# simply never rendered it, printing the name as plain text.
+#
+# Canonical URL first, shortlink second. Both resolve: stspg.io/<code>
+# 302s to githubstatus.com/incidents/<id>, verified against three live
+# incidents. The canonical form is preferred anyway because a reader can see
+# where a link goes before clicking it, and "stspg.io" reads like a tracker
+# on a page whose whole claim is that its figures can be checked.
+GH_INCIDENT = "https://www.githubstatus.com/incidents/%s"
+
+
+def gh_link(i):
+    """The incident's own page, or "" when the record carries no way there."""
+    ident = (i.get("id") or "").strip()
+    if ident:
+        return GH_INCIDENT % ident
+    return (i.get("url") or "").strip()
+
 
 
 # The two components this site actually runs on. Named in the strip
@@ -1615,17 +1638,30 @@ def github_block(gh, source):
            GH_WORD.get(c.get("status", ""), ("warn", "Unknown"))[1])
         for c in gh.get("components", []))
 
+    def named(i):
+        """The incident name, linked to its own page when we have one.
+
+        Not linked when we do not: a link that goes nowhere useful is worse
+        than plain text, and older stored records predate the id being kept.
+        """
+        name = e(i.get("name", ""))
+        href = gh_link(i)
+        if not href:
+            return name
+        return ('<a class="gh-l" href="%s" target="_blank" rel="noopener">%s</a>'
+                % (e(href), name))
+
     rows = ""
     for i in (gh.get("open") or []):
         rows += ('<li class="gh-i gh-open"><b>Open</b> %s<span class="gh-when">'
                  'since %s</span></li>'
-                 % (e(i.get("name", "")), e((i.get("began") or "")[:10])))
+                 % (named(i), e((i.get("began") or "")[:10])))
     for i in (gh.get("past") or []):
         rows += ('<li class="gh-i"><span class="gh-imp %s">%s</span> %s'
                  '<span class="gh-when">%s</span></li>'
                  % (GH_IMPACT.get(i.get("impact", ""), "warn"),
                     e((i.get("impact") or "").title()),
-                    e(i.get("name", "")),
+                    named(i),
                     e((i.get("began") or "")[:10])))
 
     return (head +
