@@ -52,7 +52,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGES = [
     "/", "/blog/", "/now.html",
     "/intelligence/", "/intelligence/whats-new/", "/intelligence/status/",
-    "/reinvent-2026/plan/", "/reinvent-2026/planner/",
+    "/reinvent-2026/", "/reinvent-2026/plan/", "/reinvent-2026/planner/",
 ]
 
 # Pages that are clean TODAY, and must stay clean. A finding on one of these
@@ -72,8 +72,8 @@ PAGES = [
 # /, /blog/ and /now.html stays advisory; when one of those is cleaned, add
 # it here and it can never regress.
 STRICT = {"/intelligence/", "/intelligence/whats-new/",
-          "/intelligence/status/", "/reinvent-2026/plan/",
-          "/reinvent-2026/planner/"}
+          "/intelligence/status/", "/reinvent-2026/",
+          "/reinvent-2026/plan/", "/reinvent-2026/planner/"}
 
 # Elements with no text of their own. Kept deliberately short: every entry is
 # a place a real failure could hide.
@@ -224,6 +224,18 @@ OPEN = r"""() => {
   let n = 0;
   for (const el of document.querySelectorAll('[aria-expanded="false"]')) {
     try { el.click(); n++; } catch (e) {}
+  }
+  /* Conditionally shown panels, revealed before measuring.
+     The re:Invent call-to-action carries `hidden` until the planner has
+     been used, so on a fresh load it is display:none and this check skipped
+     it -- correctly, since measuring an invisible element measures nothing.
+     The consequence was that a whole class of UI could never be checked,
+     and it shipped at 1.09:1 in light mode: a heading the reader could not
+     see at all, on the busiest page on the site.
+     Anything the page can show, this now sees. Something hidden that is
+     never shown is dead markup, and worth surfacing either way. */
+  for (const el of document.querySelectorAll('[hidden]')) {
+    try { el.hidden = false; n++; } catch (e) {}
   }
   return n;
 }"""
