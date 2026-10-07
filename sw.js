@@ -28,7 +28,7 @@
  */
 
 const VERSION = '47fbff8d';
-const JS_VERSION = '40448263';
+const JS_VERSION = '3cd0cc28';
 const CACHE = 'jk-site-' + VERSION;
 const OFFLINE_URL = '/offline.html';
 
