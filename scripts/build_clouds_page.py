@@ -154,16 +154,36 @@ def money_section(econ):
                    esc(c.get("form", "")), esc(c.get("filed", ""))))
         else:
             g = c.get("growth") or {}
+            enc = c.get("enclosing_segment") or {}
+            ceiling = ""
+            if enc.get("revenue"):
+                # Deliberately NOT formatted like the two cards beside it.
+                # It is a yearly figure for a wider segment; made to look the
+                # same it would be read as Azure's quarter, which is the one
+                # misreading this whole page exists to prevent.
+                yearly = ("year to %s" % enc["end"]) if enc.get("days", 0) > 300                     else ("period to %s" % enc["end"])
+                ceiling = (
+                    '<p class="cl-ceiling"><b>Upper bound:</b> %s, the segment '
+                    'Azure sits inside, reported <b>%s</b> revenue and %s '
+                    'operating income for the %s. It also contains Windows '
+                    'Server, SQL Server, Visual Studio and Enterprise '
+                    'Services &mdash; so it is a ceiling on Azure, not a '
+                    'measure of it, and it is a year where the other two '
+                    'cards are a quarter.</p>'
+                    % (esc(enc.get("segment", "the enclosing segment")),
+                       usd(enc["revenue"]),
+                       usd(enc.get("operating_income", 0)), esc(yearly)))
             cards.append(
                 '<div class="cl-card cl-gap">'
                 '<div class="cl-bar" style="background:%s"></div><h3>%s</h3>'
                 '<p class="cl-big cl-none">not disclosed</p>'
                 '<p class="cl-meta">Microsoft publishes a growth rate, not a '
                 'figure</p>'
-                '<p class="cl-quote">&ldquo;%s&rdquo;</p>'
+                '<p class="cl-quote">&ldquo;%s&rdquo;</p>%s'
                 '<p class="cl-src">%s, filed %s</p></div>'
                 % (colour, esc(name),
                    esc(g.get("sentence", "no Azure line found in the filing")),
+                   ceiling,
                    esc(c.get("form", "")), esc(c.get("filed", ""))))
     return "".join(cards)
 
@@ -302,7 +322,10 @@ def build():
         '<li><b>How many customers each has, or of what kind.</b> None of '
         'the three publishes it. Vendors cite selected logos, never totals.</li>'
         '<li><b>Azure&rsquo;s revenue.</b> It is not that this page has not '
-        'found it. Microsoft does not publish it.</li>'
+        'found it. Microsoft does not publish it. The Intelligent Cloud '
+        'figure above is the audited segment Azure sits inside &mdash; a '
+        'ceiling, and an annual one. Subtracting your way from it to Azure '
+        'requires numbers Microsoft does not file either.</li>'
         '<li><b>Market capitalisation is not on this page on purpose.</b> It '
         'measures Amazon-the-retailer, Microsoft-including-Office and '
         'Alphabet-including-ads. It moves on holiday retail. It says nothing '
@@ -341,6 +364,10 @@ CSS = """
 .cl-op{margin:.2rem 0 0;font-size:.95rem}
 .cl-sub,.cl-growth{display:block;color:var(--text-muted);font-size:.78rem;margin-top:.15rem}
 .cl-quote{font-size:.84rem;line-height:1.6;margin:.5rem 0 0;color:var(--text)}
+.cl-ceiling{font-size:.8rem;line-height:1.6;margin:.7rem 0 0;padding-top:.6rem;
+            border-top:1px dashed var(--border);color:var(--text-muted)}
+.cl-ceiling b{color:var(--text)}
+body.light .cl-card .cl-ceiling{color:#605F5B}
 .cl-src{color:var(--text-muted);font-size:.72rem;margin:.7rem 0 0;font-family:var(--mono)}
 /* These sit on the CARD, which is lighter than the page, so the shared
    --text-muted lands at 4.35:1 there while passing on the page itself.

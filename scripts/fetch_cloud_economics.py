@@ -71,6 +71,12 @@ COMPANIES = [
     ("Google Cloud", "Alphabet", "0001652044", "goog:GoogleCloudMember"),
 ]
 MICROSOFT = ("Azure", "Microsoft", "0000789019")
+# The reportable segment Azure sits INSIDE. Microsoft does tag this one, so
+# there is a real audited number here -- but it also contains Windows Server,
+# SQL Server, Visual Studio and Enterprise Services, so it is an upper bound
+# on Azure and not a measure of it. Captured because "we cannot know anything
+# about Azure's size" would be a worse answer than "here is the ceiling".
+MSFT_SEGMENT = "msft:IntelligentCloudMember"
 
 CONCEPTS = {
     "RevenueFromContractWithCustomerExcludingAssessedTax": "revenue",
@@ -164,6 +170,42 @@ def segment_facts(instance_url, member):
     return found
 
 
+def segment_facts_any(instance_url, member):
+    """Like segment_facts, but keeps whatever period the filing reports.
+
+    segment_facts() throws away anything that is not a quarter, which is
+    right for comparing AWS with Google Cloud. Microsoft's latest filing is
+    typically its 10-K, so insisting on a quarter would return nothing at
+    all. The span is kept so the caller can say "year" rather than implying
+    these are the same shape of number.
+    """
+    root = ET.fromstring(get(instance_url))
+    ctx = {}
+    for c in root.iter(X + "context"):
+        members = [e.text.strip() for e in c.iter()
+                   if e.tag.endswith("explicitMember") and e.text]
+        if members != [member]:
+            continue
+        per = c.find(X + "period")
+        s, e = per.findtext(X + "startDate"), per.findtext(X + "endDate")
+        if s and e:
+            ctx[c.get("id")] = (s, e)
+    out = {}
+    for el in root:
+        tag = el.tag.split("}")[-1]
+        if tag not in CONCEPTS or el.get("contextRef") not in ctx:
+            continue
+        s, e = ctx[el.get("contextRef")]
+        try:
+            val = int(el.text)
+        except (TypeError, ValueError):
+            continue
+        row = out.setdefault(e, {"start": s, "end": e,
+                                 "days": days_between(s, e)})
+        row[CONCEPTS[tag]] = val
+    return out
+
+
 def azure_growth(primary_url):
     """Microsoft's Azure line: a growth rate against an undisclosed base.
 
@@ -233,12 +275,24 @@ def main():
     print("  %s (%s)" % (label, company))
     f = latest_filing(cik)
     g = azure_growth(f["primary"]) if f else None
+    # The enclosing segment, with its period kept. Microsoft's latest filing
+    # is usually a 10-K, so this is ANNUAL while AWS and Google Cloud are
+    # quarterly -- the period travels with the number so the page cannot put
+    # them in a row as though they were comparable.
+    enclosing = None
+    if f:
+        facts = segment_facts_any(f["instance"], MSFT_SEGMENT)
+        if facts:
+            end = sorted(facts)[-1]
+            enclosing = facts[end]
+            enclosing["segment"] = "Intelligent Cloud"
     out["clouds"][label] = {
         "company": company, "cik": cik, "disclosed": False,
         "form": f["form"] if f else None,
         "filed": f["filed"] if f else None,
         "accession": f["accession"] if f else None,
         "growth": g,
+        "enclosing_segment": enclosing,
         "why": ("Microsoft reports Azure as a growth rate only. Its "
                 "'Microsoft Cloud' figure bundles Office 365, Dynamics and "
                 "LinkedIn and is not comparable to AWS or Google Cloud."),
