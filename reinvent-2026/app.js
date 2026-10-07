@@ -881,6 +881,15 @@
       box.appendChild(el("span", "livenote",
         " (Could not reach AWS to confirm just now; showing the stored "
         + "copy.)"));
+    } else {
+      /* Still in flight. This branch used to be absent, so the line said
+         nothing until the check landed and then grew by two lines --
+         42px of the page moving under the reader, which is what a blink
+         on this page was. Deliberately close in length to the sentences
+         above so that landing does not change the wrap. Kept in step with
+         LIVE_PENDING in the builder, which ships the same words. */
+      box.appendChild(el("span", "livenote",
+        " Checking this copy against the AWS catalog just now…"));
     }
   }
 
