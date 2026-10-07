@@ -57,6 +57,9 @@ SCRIPTS = os.path.join(ROOT, "scripts")
 # reader sees, so --fast names them rather than guessing.
 BROWSER = {
     "check_brand", "check_shell_consistency", "check_page_settle",
+    # Sits beside check_page_settle deliberately: that one watches the page's
+    # shape, this one its visibility. See the note in its docstring.
+    "check_entrance_blink",
     "check_sticky_clear", "check_occasion_banner", "check_status_cards",
     "check_music", "check_post_controls", "check_nav", "check_contrast",
     "check_bar_settle", "check_feed_theme", "check_sheet_align",

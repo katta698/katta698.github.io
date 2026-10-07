@@ -388,19 +388,15 @@ document.documentElement.setAttribute('data-palette',p);})();
     0%,100%{opacity:.35;box-shadow:0 0 0 0 rgba(196,164,132,.45)}
     50%    {opacity:1;  box-shadow:0 0 0 4px rgba(196,164,132,0)}
   }
-  /* One sweep, on load, then it stops. A looping shimmer on a heading reads as
-     a broken gradient after the second pass; a single pass reads as arrival. */
-  .eyebrow .label{background:linear-gradient(90deg,
-      var(--accent) 0%, var(--accent) 40%, #FFF3E0 50%, var(--accent) 60%, var(--accent) 100%);
-    background-size:250% 100%;background-position:100% 0;
-    -webkit-background-clip:text;background-clip:text;color:transparent;
-    animation:eyebrowSweep 1.5s ease-out .25s 1 forwards}
-  @keyframes eyebrowSweep{to{background-position:0 0}}
-  /* Everything above is ornament. Under reduced-motion it all resolves to the
-     finished state rather than a slower version of itself. */
+  /* Static, as on /intelligence/status/. This was a one-shot gradient sweep
+     over the label on every load. It is the state the reduced-motion branch
+     below always resolved to, made unconditional: see the note on the header
+     above for why this page no longer animates itself into place.
+     The dot still pulses -- that is continuous and identical to the one on
+     the status page, so it is not something a refresh reveals. */
+  .eyebrow .label{color:var(--accent)}
   @media(prefers-reduced-motion:reduce){
     .eyebrow .live{animation:none;opacity:.85}
-    .eyebrow .label{animation:none;background:none;-webkit-text-fill-color:var(--accent);color:var(--accent)}
   }
   h1{font-family:var(--serif);font-size:2.1rem;line-height:1.16;margin:0 0 1.4rem;font-weight:600}
   .lede-links{margin:.85rem 0 0;display:flex;flex-wrap:wrap;align-items:center;
@@ -425,18 +421,14 @@ document.documentElement.setAttribute('data-palette',p);})();
     .tally .n{font-size:2.5rem}
   }
 
-  /* Staggered arrival. Each element starts 14px low and transparent, and the
-     delay is set per element rather than by nth-child so the order stays
-     obvious when the markup moves. */
-  .rise{opacity:0;transform:translateY(14px);
-        animation:riseIn .7s cubic-bezier(.22,.61,.36,1) forwards}
-  .rise-1{animation-delay:.05s} .rise-2{animation-delay:.18s} .rise-3{animation-delay:.31s}
-  @keyframes riseIn{to{opacity:1;transform:translateY(0)}}
-  /* Reduced motion resolves everything to its finished state. Not a slower
-     version of the same movement -- no movement at all. */
-  @media(prefers-reduced-motion:reduce){
-    .rise{opacity:1;transform:none;animation:none}
-  }
+  /* There was a staggered arrival here: the heading, the count, the lede and
+     the lede links each started transparent and 14px low, with delays of
+     .05s, .18s and .31s on top of a .7s animation. Reported from a phone as
+     the header blinking on every refresh, and it is -- the last element did
+     not settle until a full second after the page was otherwise readable.
+     /intelligence/status/ never had it, which is why that page was the one
+     that "doesn't blink". The header is now final at first paint, as it is
+     there. check_entrance_blink.py keeps it that way.*/
 
   main{max-width:1000px;margin:0 auto;padding:1.6rem 2rem 4rem}
   @media(max-width:640px){main{padding:1.2rem 1.1rem 3rem}}
@@ -853,12 +845,12 @@ a:active,button:active{opacity:.72}
   <div class="hero-overlay"></div>
   <div class="inner">
     <p class="eyebrow"><span class="live" aria-hidden="true"></span><span class="label">What's new</span></p>
-    <h1 class="rise rise-1">Every announcement from all three clouds</h1>
-    <div class="tally rise rise-2">
+    <h1>Every announcement from all three clouds</h1>
+    <div class="tally">
       <span class="n" id="news-count" data-n="__COUNT__">__COUNT_FMT__</span>
       <span class="of">announcements from AWS, Azure and Google Cloud</span>
     </div>
-    <p class="lede rise rise-3">__LEDE__</p>
+    <p class="lede">__LEDE__</p>
     <!-- The two links sat at the end of the sentence above, 4px apart, in the
          same colour and weight and both underlined -- so they read as one long
          link, "Anything broken right now? -> Where this comes from", tacked
@@ -868,7 +860,7 @@ a:active,button:active{opacity:.72}
          visible enough to do that work.
          Measured across the site: this was the only place where two links sat
          closer than 12px on the same line. -->
-    <p class="lede-links rise rise-3">
+    <p class="lede-links">
       <a class="lede-go" href="/intelligence/status/">Anything broken right now? &rarr;</a>
       <span class="lede-sep" aria-hidden="true">&middot;</span>
       <a class="lede-go" href="#sources">Where this comes from &darr;</a>
@@ -894,39 +886,12 @@ a:active,button:active{opacity:.72}
 </main>
 
 <script>
-/* Count the headline number up on load.
-   The element already contains the correct, formatted number when it ships --
-   this only replaces it if the animation can actually run. So JS off, an error
-   here, or prefers-reduced-motion all leave the real figure on screen rather
-   than a zero that never moves, which is the usual way this effect fails. */
-(function(){
-  var el = document.getElementById('news-count');
-  if(!el) return;
-  if(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  var target = parseInt(el.getAttribute('data-n'), 10);
-  if(!isFinite(target) || target <= 0) return;
-  var DUR = 1100, t0 = null;
-  /* Start from ~55% rather than 0. Counting 1,375 numbers from zero spends
-     most of the animation on figures that are not the answer; starting close
-     reads as the number settling rather than as a slot machine. */
-  var from = Math.round(target * 0.55);
-  function frame(ts){
-    if(t0 === null) t0 = ts;
-    var p = Math.min((ts - t0) / DUR, 1);
-    var eased = 1 - Math.pow(1 - p, 3);
-    el.textContent = Math.round(from + (target - from) * eased).toLocaleString();
-    if(p < 1) requestAnimationFrame(frame);
-    else el.textContent = target.toLocaleString();
-  }
-  el.textContent = from.toLocaleString();
-  requestAnimationFrame(frame);
-  /* Hard backstop. requestAnimationFrame is not guaranteed to run to
-     completion -- a backgrounded tab pauses it, and headless Chrome under a
-     virtual-time budget stalls it partway. Either way the element would be
-     left showing a number that is not the count, which is worse than showing
-     no animation at all. This lands the true value regardless. */
-  setTimeout(function(){ el.textContent = target.toLocaleString(); }, DUR + 400);
-})();
+/* The headline number used to count up from 55% of itself over 1.1s on
+   every load, so a refresh showed 1,900 and then 2,216. The figure ships
+   correct and formatted in the HTML; nothing now overwrites it, so what you
+   read first is the answer. Removed with the header's arrival animation --
+   same report, same reason: a page that assembles itself in front of the
+   reader reads as a blink, and /intelligence/status/ does not do it. */
 
 function applyTheme(dark){
   document.body.classList.toggle('light', !dark);
@@ -1240,10 +1205,10 @@ def build():
                         "items": payload},
                        ensure_ascii=False, separators=(",", ":")))
 
-    # The count is wrapped so it can animate up on load. data-n carries the
-    # real value and the element ships with the final text already in it, so a
-    # reader with JS off, or with reduced motion, sees the correct number and
-    # never a zero.
+    # data-n carries the raw value beside the formatted text. It is no longer
+    # read by this page -- the count-up that used it is gone -- but
+    # health_report.py parses it out of the served HTML to check the page
+    # against the store, so it is load-bearing and must keep shipping.
     # The count moved into its own element above this, so the sentence no
     # longer opens with it.
     lede = ("Filterable by service and date. Each one links to the vendor's "

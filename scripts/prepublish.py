@@ -141,6 +141,13 @@ CHECKS = [
     # the backlog. A finding nobody can distinguish from noise is not a
     # finding.
     ("check_contrast.py",       True,  False, False, False),
+    # Nothing arrives after first paint. Blocking, and offline: it was
+    # reported by a reader from a phone three times before it was checked
+    # once, each time on a different page, and each time it was fixed in
+    # isolation because nothing held the pages to one another. Browser-based
+    # and so not cheap, but it runs at one width on sixteen pages -- the
+    # alternative is a fourth report.
+    ("check_entrance_blink.py", True,  False, False, False),
     # Whether links actually go anywhere. Blocking, because the structural mode
     # runs offline and a malformed host is always a bug in this repo -- never
     # the network. Every Google incident link on the status page pointed at
