@@ -44,7 +44,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGES = ["/", "/blog/", "/intelligence/", "/intelligence/whats-new/",
-         "/intelligence/status/",
+         "/intelligence/status/", "/intelligence/clouds/",
          # The three re:Invent pages. The catalog page is here because it
          # drifted precisely while nothing watched it: no shared bar at all,
          # a 118px header of its own, no theme class, no day palette.
@@ -225,11 +225,13 @@ def serve():
 # portfolio is a full-screen hero, and the three re:Invent pages have no
 # hero at all, so their heading sits directly under the bar: 97px against
 # the tabs' 192px. That is a different layout, not a drifting one.
-H1Y_EXEMPT = {"/", "/reinvent-2026/", "/reinvent-2026/plan/",
+H1Y_EXEMPT = {"/", "/intelligence/clouds/",
+              "/reinvent-2026/", "/reinvent-2026/plan/",
               "/reinvent-2026/planner/"}
 
 # Pages that deliberately open without a hero.
-HERO_EXEMPT = {"/reinvent-2026/", "/reinvent-2026/plan/",
+HERO_EXEMPT = {"/intelligence/clouds/",
+               "/reinvent-2026/", "/reinvent-2026/plan/",
                "/reinvent-2026/planner/"}
 
 # Four different heading sizes will never land on exactly the same pixel.
