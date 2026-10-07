@@ -111,6 +111,12 @@ BOX_NOTES = {
                          "from the official catalog by hand rather than on a "
                          "clock, because the catalog needs a browser to hand "
                          "out its API credentials.",
+    "SEC filings": "Each company's own 10-Q or 10-K, from SEC EDGAR. The "
+                   "segment figures are parsed out of the XBRL instance the "
+                   "filing ships, not read from the convenient API: that API "
+                   "strips the dimensions and returns consolidated totals, "
+                   "so asking it for Amazon's revenue gives the whole "
+                   "company, retail included.",
     "AWS · Azure · GCP": "The vendors' own feeds. Nothing here is "
                                    "summarised by a model: the raw RSS and "
                                    "sitemaps are parsed, because a summary "
@@ -127,7 +133,7 @@ BOX_NOTES = {
                  "from the same files the blog is built from.",
     "Blog": "The index, the paged archive, the filter pills and the RSS "
             "feed. All of it is regenerated from posts/ on every sync.",
-    "Intelligence": "The hub for the four data-driven pages below it.",
+    "Intelligence": "The hub for the data-driven pages below it.",
     "What’s new": "Cloud announcements, ranked, from news.json.",
     "Live status": "Current vendor health, from status.json.",
     "Cloud events": "Conferences and end-of-life dates, from events.json.",
@@ -139,6 +145,14 @@ BOX_NOTES = {
                       "official catalog will not do &mdash; a check on "
                       "whether two sessions you picked are far enough apart "
                       "in time to actually get between the venues.",
+    "The three clouds": "What AWS, Azure and Google Cloud disclose about "
+                        "themselves, from their filings rather than from "
+                        "analyst estimates &mdash; and the gap where one of "
+                        "them discloses nothing. Microsoft reports Azure as "
+                        "a growth rate against an undisclosed base, so a "
+                        "like-for-like three-way revenue table cannot be "
+                        "built from public filings. The page says so instead "
+                        "of filling it in.",
     "GitHub Pages": "Static hosting. There is no server and no database, so "
                     "there is nothing to restart and nothing to patch.",
     "site-footer.css": "One stylesheet and one script shared by every page "
