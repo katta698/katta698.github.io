@@ -92,6 +92,40 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 6 October 2026 — covered by post #48
+
+A two-item day, the thinnest since this series started. Both are listed; the
+ACM item had enough underneath it to carry a post on its own.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| ACME issuance through AWS PrivateLink — a managed ACME endpoint plus a standard VPC interface endpoint, and private DNS resolves the existing directory URL inside the VPC so there are "no changes to your ACME clients". The finding is what that transparency costs: with identical client config on both paths, which route a certificate took is a property of the VPC that resolved the name, not of anything the client records. Also that an endpoint created without private DNS leaves clients on the public path, successfully and silently | AWS Certificate Manager | **#48** | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/AWS-Certificate-Manager-ACME-Privatelink) |
+| Batch now publishes job metrics to Amazon CloudWatch | AWS Batch | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-batch-job-cloudwatch-metrics/) |
+
+Note the scope: this is ACM **public** certificate issuance, not AWS Private CA.
+#71 and #47 earlier this week were both Private CA, and conflating the two would
+be easy — different trust store, different billing.
+
+**Held items are now the stronger half of this file.** Still open and worth
+slots, oldest first:
+
+- **IAM Identity Center network access controls for Identity Store** (5 Oct) —
+  the strongest held item, and now two days old.
+- **Client VPN device posture assessment** (5 Oct).
+- **Security Hub remediation plans** and **Secrets Manager posture
+  recommendations** (1 Oct) — both a week old, so both approaching the point
+  where the What's New feed no longer carries them. Their links are recorded
+  here, so they are not lost, but they will stop being "news".
+- **GuardDuty Runtime Monitoring in the Security Hub Threat Analytics plan**
+  (2 Oct) — interacts with #45 and #75, and still deliberately unrushed because
+  the cost question depends on which plan you are already on.
+- **DynamoDB filtered export to S3** (1 Oct) — strongest held non-security item.
+
+On a two-item day the case for taking a held item instead was real. ACM won
+because the announcement had a mechanism worth examining rather than a
+capability to summarise, and because the private-DNS behaviour produces a
+failure mode that looks like success.
+
 ## 5 October 2026 — covered by post #47
 
 | Item | Service | Status | Importance | Reference |

@@ -1,0 +1,340 @@
+---
+title: 'AWS Daily Intelligence #48 - The client cannot tell which path it took'
+date: '2026-10-07T10:00:00'
+slug: aws-daily-intelligence-acm-acme-privatelink
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-10-07'
+verified_claims:
+  - claim: "AWS Certificate Manager now supports AWS PrivateLink for ACME public certificate issuance, allowing you to request and renew public TLS certificates over a private network path that stays within the AWS network"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/AWS-Certificate-Manager-ACME-Privatelink
+  - claim: "You can now create a VPC interface endpoint to the ACM ACME service and route issuance traffic from any ACMEv2-compatible client through your VPC"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/AWS-Certificate-Manager-ACME-Privatelink
+  - claim: "If you're already using ACME with ACM, setup requires no changes to your ACME clients"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/AWS-Certificate-Manager-ACME-Privatelink
+  - claim: "After you create your managed ACME endpoint in ACM, you create a standard VPC interface endpoint using the VPC console, AWS CLI, or AWS CloudFormation"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/AWS-Certificate-Manager-ACME-Privatelink
+  - claim: "Private DNS resolves your existing ACME directory URL to the interface endpoint inside your VPC automatically, so the same client configuration and directory URL continue to work with no reconfiguration"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/AWS-Certificate-Manager-ACME-Privatelink
+  - claim: "The issuance operations that flow over PrivateLink are account creation, order creation, domain validation, finalization, and certificate retrieval"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/AWS-Certificate-Manager-ACME-Privatelink
+  - claim: "All activity remains visible in the ACM console with AWS CloudTrail logging and Amazon CloudWatch metrics for auditability"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/AWS-Certificate-Manager-ACME-Privatelink
+  - claim: "AWS PrivateLink support for ACME certificate issuance is available in all commercial AWS Regions"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/AWS-Certificate-Manager-ACME-Privatelink
+  - claim: "Standard AWS PrivateLink charges apply for interface endpoints"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/AWS-Certificate-Manager-ACME-Privatelink
+  - claim: "AWS states you will be billed for each hour that your VPC endpoint remains provisioned in each Availability Zone, and a worked example on the PrivateLink pricing page states you will be charged $0.01 per hour for each endpoint ENI"
+    source: https://aws.amazon.com/privatelink/pricing/
+  - claim: "PrivateLink data processing is tiered, with the first 1 PB charged at $0.01, the next 4 PB at $0.006, and anything over 5 PB at $0.004"
+    source: https://aws.amazon.com/privatelink/pricing/
+  - claim: "At the pricing page's stated $0.01 per hour per endpoint ENI, billed per Availability Zone, an interface endpoint spanning three Availability Zones costs three cents an hour before data processing"
+    derive: "3 * 0.01 * 730"
+    expect: "21.9"
+    source: https://aws.amazon.com/privatelink/pricing/
+  - claim: "AWS states NAT Gateway is charged on an hourly basis and that for the region in its example the rate is $0.045 per hour, with a NAT Gateway Data Processing Charge of $0.045 per GB"
+    source: https://aws.amazon.com/vpc/pricing/
+  - claim: "AWS states that for a Regional NAT Gateway provisioned across three Availability Zones the hourly charges amount to $0.045 times 3, which is $0.135 per hour"
+    source: https://aws.amazon.com/vpc/pricing/
+  - claim: "A three-Availability-Zone NAT gateway at $0.135 per hour costs about four and a half times a three-Availability-Zone interface endpoint at $0.03 per hour, before either service's data processing charge"
+    derive: "0.135 / 0.03"
+    expect: "4.5"
+    source: https://aws.amazon.com/vpc/pricing/
+problem: "ACME issuance from a VPC meant egress to a public endpoint, which is a NAT gateway or an internet gateway and a hole in an otherwise private network. The fix routes the same traffic through an interface endpoint — and does it by resolving the same directory URL to a different address, so nothing in the client records which path a certificate took."
+builds: "A reading of what the private path actually covers, what the unchanged client configuration means for auditability, and what the endpoint costs against an issuance flow that previously needed none."
+catch: "The transparency is the feature and the thing to plan around. 'Private DNS resolves your existing ACME directory URL to the interface endpoint inside your VPC automatically, so the same client configuration and directory URL continue to work with no reconfiguration.' The client is identical either way, so which path issuance took is a property of the VPC that resolved the name, not of anything the client can report."
+---
+
+<div class="container">
+  <div class="section">
+    <h2>Executive summary</h2>
+    <p>
+      ACM now supports <em>&ldquo;AWS PrivateLink for ACME <strong>public</strong> certificate issuance,
+      allowing you to request and renew public TLS certificates over a private network path that stays within
+      the AWS network.&rdquo;</em> All commercial Regions. Standard PrivateLink charges.
+    </p>
+    <p>
+      Worth being precise about the scope immediately, because this week has had two Private CA posts next to
+      it: this is the <strong>public</strong> certificate path, not
+      <a href="/blog/aws-architecture-private-ca/">#71</a>'s private CA. Same protocol family, different
+      trust store, different bill.
+    </p>
+    <p>
+      The mechanism is the interesting part. You create a managed ACME endpoint, then a standard interface
+      endpoint, and then nothing else happens &mdash; because
+      <em>&ldquo;Private DNS resolves your existing ACME directory URL to the interface endpoint inside your
+      VPC automatically.&rdquo;</em>
+    </p>
+  </div>
+
+  <div class="section" id="what-changed">
+    <h2>What changed</h2>
+    <p>
+      Before: an ACMEv2 client in a private subnet reached ACM's public ACME directory, which needed a NAT
+      gateway or an internet gateway. After: the same client reaches an ENI in your VPC.
+    </p>
+    <p>
+      Five operations are named as moving onto the private path:
+      <em>&ldquo;Issuance operations&mdash;<strong>account creation, order creation, domain validation,
+      finalization, and certificate retrieval</strong>&mdash;then flow over PrivateLink.&rdquo;</em>
+    </p>
+    <p>
+      And the client side is explicitly untouched:
+      <em>&ldquo;If you're already using ACME with ACM, setup requires <strong>no changes to your ACME
+      clients</strong>&hellip; the same client configuration and directory URL continue to work with no
+      reconfiguration.&rdquo;</em> Any ACMEv2-compatible client works, so this reaches cert-manager, certbot
+      and anything else speaking the protocol without a plugin.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/daily-048-acm-acme-privatelink.svg" alt="Diagram: how AWS Certificate Manager routes ACME public certificate issuance over AWS PrivateLink, and what the unchanged client configuration means. ACM now supports PrivateLink for ACME public certificate issuance, letting you request and renew public TLS certificates over a private network path that stays within the AWS network, in all commercial AWS Regions, with standard PrivateLink charges for interface endpoints. Setup has two steps: you create a managed ACME endpoint in ACM, then a standard VPC interface endpoint using the VPC console, the AWS CLI or CloudFormation. From then on, private DNS resolves the existing ACME directory URL to the interface endpoint inside the VPC automatically, so the same client configuration and the same directory URL continue to work with no reconfiguration, and any ACMEv2-compatible client is supported with no changes required if ACME with ACM is already in use. Five issuance operations flow over PrivateLink: account creation, order creation, domain validation, finalization, and certificate retrieval. The central observation is that because the client configuration and the directory URL are identical on both paths, nothing in the client records which path a given certificate took; whether issuance traversed the internet or the interface endpoint is a property of the VPC that resolved the name rather than of anything the client reports, which is good for migration and a question for auditing. The announcement states that all activity remains visible in the ACM console with AWS CloudTrail logging and Amazon CloudWatch metrics for auditability, so the service side retains a record even though the client side does not distinguish the paths. A scope note records that this is the public certificate path rather than AWS Private CA, which two earlier posts in the same week covered, so the trust store and the billing differ. A cost panel notes that the certificates themselves are issued by ACM while the private path adds an interface endpoint: AWS states you are billed for each hour that a VPC endpoint remains provisioned in each Availability Zone, a worked example on the PrivateLink pricing page gives one cent per hour for each endpoint network interface, and data processing is tiered from one cent per gigabyte for the first petabyte, so an endpoint spanning three Availability Zones is on the order of twenty-two dollars a month before data processing, set against an issuance flow that previously required no endpoint but did require a NAT gateway or internet gateway for egress. A closing note records an open question worth confirming rather than assuming: domain validation is listed among the operations flowing over PrivateLink, which covers the client's exchange with ACM about validation, while the separate matter of how the certificate authority performs the challenge check for a publicly trusted certificate is not addressed by the announcement." />
+      <figcaption>Two steps to set up, then the same URL resolves to a different address depending on where you are.</figcaption>
+    </figure>
+
+    <h3>The transparency is the design, and the thing to plan around</h3>
+    <p>
+      Private DNS resolution means the directory URL is unchanged, the client config is unchanged, and the path
+      is different. That is excellent for adoption &mdash; nobody edits a cert-manager
+      <code class="inline">ClusterIssuer</code> &mdash; and it has one consequence worth naming.
+    </p>
+    <p>
+      Which path a certificate took is not recorded anywhere on the client. It is a property of the VPC that
+      resolved the name. The same manifest deployed into a VPC with the endpoint and a VPC without it produces
+      certificates that are identical and journeys that are not.
+    </p>
+    <p>
+      The service side does keep a record &mdash;
+      <em>&ldquo;All activity remains visible in the ACM console with AWS CloudTrail logging and Amazon
+      CloudWatch metrics for auditability&rdquo;</em> &mdash; so the information exists. It is just not where
+      somebody debugging a cluster would look, and "did this renewal leave the VPC?" is answered by VPC
+      configuration rather than by the client.
+    </p>
+
+    <div class="callout amber">
+      <strong>One thing the announcement does not address, worth confirming rather than assuming</strong>
+      <p>Domain validation is listed among the operations that flow over PrivateLink, and for a client that means its exchange with ACM about the challenge moves onto the private path. How the certificate authority performs the actual challenge check for a <em>publicly trusted</em> certificate is a separate question, and the announcement does not speak to it. If your validation method matters to a network design — an HTTP-01 challenge has to be reachable from somewhere — that is worth establishing in a test account rather than inferring from this sentence.</p>
+    </div>
+  </div>
+
+  <div class="section" id="business-value">
+    <h2>Business value</h2>
+    <p>
+      The concrete win is removing a reason for egress. A private subnet that needed a NAT gateway only so that
+      certbot could reach a public directory URL now does not, and the general case &mdash; "this workload has
+      no business talking to the internet, except for this one thing" &mdash; is the shape that produces
+      permanent exceptions in a network design.
+    </p>
+    <p>
+      The second win is the one that does not show up on a diagram: it is adoptable without touching workloads.
+      Zero client changes means the migration is a VPC change, which is a different team, a different change
+      window and a different risk profile from editing issuance config across a fleet.
+    </p>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security considerations</h2>
+    <p>
+      <strong>The traffic staying inside the AWS network is the stated benefit</strong>, and the practical
+      effect is that certificate issuance stops being a reason to keep an egress path open. Where that was the
+      last such reason, the NAT gateway can go, which removes an exfiltration path rather than just a line
+      item.
+    </p>
+    <p>
+      <strong>An interface endpoint is a resource with a policy</strong>, which is a gain over an egress route
+      that has none. Standard VPC endpoint controls apply, so issuance becomes something you can constrain at
+      the network layer rather than only at the IAM layer.
+    </p>
+    <p>
+      <strong>And the auditability claim is about the service, not the client.</strong> CloudTrail and
+      CloudWatch carry the record. If an investigation needs to establish that a given certificate was issued
+      over the private path, that evidence is on the AWS side, and it is worth confirming you can actually
+      produce it before you need it.
+    </p>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost considerations</h2>
+    <p>
+      <em>&ldquo;Standard AWS PrivateLink charges apply for interface endpoints&rdquo;</em>, and the pricing
+      page is clear about the billing unit:
+      <em>&ldquo;You will be billed for each hour that your VPC endpoint remains provisioned in
+      <strong>each Availability Zone</strong>.&rdquo;</em> A worked example on that page states
+      <em>&ldquo;you will be charged <strong>$0.01 per hour for each endpoint ENI</strong>&rdquo;</em>, and data
+      processing is tiered from <em>&ldquo;First 1 PB $0.01&rdquo;</em> per GB.
+    </p>
+    <p>
+      At that rate an endpoint across three Availability Zones is about <strong>$22 a month</strong> before data
+      processing &mdash; and certificate issuance is not a high-volume data flow, so the hourly charge is
+      essentially the whole bill.
+    </p>
+    <p>
+      Worth putting next to what it replaces rather than next to zero. A NAT gateway is
+      <em>&ldquo;charged on an hourly basis&rdquo;</em> and AWS's example rate is
+      <em>&ldquo;$0.045 per hour&rdquo;</em>, with the same per-AZ multiplication &mdash;
+      <em>&ldquo;hourly charges will amount to $0.045 x 3 = <strong>$0.135 per hour</strong>&hellip; provisioned
+      across three AZs&rdquo;</em>. Against three endpoint ENIs at $0.03 an hour, that is roughly
+      <strong>four and a half times</strong> the hourly charge, and the data processing rates differ the same
+      way: $0.045 per GB for the NAT gateway against $0.01 for PrivateLink.
+    </p>
+    <p>
+      So if the endpoint lets you remove a NAT gateway that existed for this traffic, the swap is clearly
+      cost-negative &mdash; on the order of seventy-five dollars a month saved across three AZs, before any
+      data. If the NAT gateway stays for other reasons, this is about twenty-two dollars a month for a network
+      property rather than a capability.
+    </p>
+    <p>
+      One caveat on that figure: the per-ENI rate appears in a worked example on the pricing page rather than in
+      a headline rate table, so it is worth checking against your Region before putting it in a plan.
+    </p>
+  </div>
+
+  <div class="section" id="operations">
+    <h2>Operational considerations</h2>
+    <p>
+      <strong>The setup is two resources, in order.</strong>
+      <em>&ldquo;After you create your managed ACME endpoint in ACM, you create a standard VPC interface
+      endpoint using the VPC console, AWS CLI, or AWS CloudFormation.&rdquo;</em> The ACM-side endpoint comes
+      first; the VPC-side one is ordinary.
+    </p>
+    <p>
+      <strong>Private DNS must be on for the redirect to happen.</strong> The behaviour described depends on
+      private DNS resolving the existing directory URL inside the VPC, which is a setting on the interface
+      endpoint. An endpoint created without it leaves clients resolving the public name and taking the old
+      path &mdash; successfully, and silently.
+    </p>
+    <p>
+      <strong>Rollback is a DNS property too.</strong> Because nothing in the client points at the endpoint,
+      removing or disabling the endpoint returns issuance to the public path without a client change &mdash;
+      provided the egress route still exists. If you removed the NAT gateway, it does not, and the failure
+      appears at renewal rather than at the change.
+    </p>
+    <p>
+      <strong>Test renewal, not issuance.</strong> First issuance is what gets verified during a migration;
+      renewal is what happens sixty days later, often from a different code path, and it is the one that
+      discovers a missing egress route.
+    </p>
+  </div>
+
+  <div class="section" id="tradeoffs">
+    <h2>Tradeoffs</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Choice</th><th>You get</th><th>You accept</th></tr>
+      <tr>
+        <td>Public path (today's default)</td>
+        <td>No endpoint, no endpoint cost</td>
+        <td>An egress route maintained partly for certificate issuance</td>
+      </tr>
+      <tr>
+        <td>PrivateLink endpoint, keep NAT</td>
+        <td>Issuance traffic off the internet; an endpoint policy to constrain it</td>
+        <td>About $22 a month across three AZs, for a network property</td>
+      </tr>
+      <tr>
+        <td>PrivateLink endpoint, remove NAT</td>
+        <td>The same, and likely cost-negative</td>
+        <td>Renewal now depends on the endpoint; rollback is no longer free</td>
+      </tr>
+      <tr>
+        <td>Endpoint without private DNS</td>
+        <td>Nothing, in practice</td>
+        <td>Clients keep taking the public path, and it still works, so nothing reports the mistake</td>
+      </tr>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation guidance</h2>
+    <p>
+      <strong>Enable private DNS on the interface endpoint, and verify resolution from inside the VPC</strong>
+      rather than inferring it from the endpoint existing. Resolving the directory hostname from a workload
+      subnet and checking it returns a VPC address is the one test that distinguishes a working setup from a
+      setup that looks identical and is not.
+    </p>
+    <p>
+      <strong>Decide about the NAT gateway deliberately and separately.</strong> Removing it is where the money
+      is and where the rollback path goes.
+    </p>
+    <p>
+      <strong>Attach an endpoint policy when you create it</strong>, while the endpoint is new and nothing
+      depends on it.
+    </p>
+    <p>
+      <strong>Then force a renewal in a test account</strong> and confirm it completes over the endpoint,
+      because renewal is the operation that runs unattended.
+    </p>
+  </div>
+
+  <div class="section" id="best-practices">
+    <h2>Best practices</h2>
+    <p>
+      <strong>Record which VPCs have the endpoint, because the clients will not.</strong> With identical client
+      configuration on both paths, your endpoint inventory is what answers "which workloads issue privately?"
+      from your own side. The service-side record exists in CloudTrail, but reconstructing a fleet-wide answer
+      from it is an investigation rather than a lookup.
+    </p>
+    <p>
+      <strong>Treat the endpoint as part of the certificate's availability chain.</strong> Once the NAT gateway
+      is gone, an endpoint problem is a renewal outage with a sixty-day fuse.
+    </p>
+    <p>
+      <strong>Alarm on renewal failures rather than on endpoint health.</strong> The thing you care about is a
+      certificate that did not renew; endpoint health is a cause, not the symptom.
+    </p>
+    <p>
+      <strong>Keep the scope distinction visible in your own docs.</strong> This is ACM public certificates.
+      Private CA issuance is a different service with a different trust store, and the two now have similarly
+      shaped network stories.
+    </p>
+  </div>
+
+  <div class="section" id="who">
+    <h2>Who should adopt this</h2>
+    <p>
+      <strong>Anyone running ACMEv2 clients in private subnets</strong> gets the clearest benefit, because the
+      change is a VPC addition with no workload edit.
+    </p>
+    <p>
+      <strong>Anyone whose NAT gateway exists substantially for this traffic</strong> should price the swap. It
+      is the case where the endpoint pays for itself.
+    </p>
+    <p>
+      <strong>Anyone with a no-egress requirement</strong> who had carved an exception for certificate issuance
+      can now close it, which is worth doing while the exception is still documented as an exception.
+    </p>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key takeaways</h2>
+    <p>
+      A managed ACME endpoint plus an interface endpoint, and private DNS does the rest. No client changes, all
+      commercial Regions, about $22 a month across three AZs.
+    </p>
+    <p>
+      The thing to carry away is that the path is invisible from the client by design. That makes adoption easy
+      and makes "which workloads issue privately?" a question about VPC inventory rather than about
+      configuration &mdash; so the answer has to be maintained somewhere other than the thing doing the
+      issuing.
+    </p>
+    <p>
+      Which rhymes with <a href="/blog/aws-architecture-security-hub-controls/">today's #75</a>, where a score
+      is computed from a population you cannot see from the number. Here the number is fine and it is the route
+      that is unobservable from one end. In both cases the fact exists in AWS's records and not in the place
+      the reader is standing.
+    </p>
+  </div>
+
+  <div class="section" id="references">
+    <h2>Official AWS references</h2>
+    <ul>
+      <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/10/AWS-Certificate-Manager-ACME-Privatelink" target="_blank" rel="noopener">AWS Certificate Manager now supports ACME issuance through AWS PrivateLink</a> &mdash; the setup steps, the operations that move onto the private path, Region availability and the private DNS behaviour</li>
+      <li><a href="https://aws.amazon.com/vpc/pricing/" target="_blank" rel="noopener">Amazon VPC pricing &#8212; the NAT gateway hourly and data processing rates this endpoint is weighed against</a></li>
+      <li><a href="https://aws.amazon.com/privatelink/pricing/" target="_blank" rel="noopener">AWS PrivateLink pricing</a> &mdash; per-AZ hourly billing for interface endpoints and the data processing tiers</li>
+    </ul>
+  </div>
+</div>
