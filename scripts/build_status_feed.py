@@ -267,7 +267,13 @@ XSL = """<?xml version="1.0" encoding="utf-8"?>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title><xsl:value-of select="atom:feed/atom:title"/></title>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&amp;family=Playfair+Display:wght@600&amp;family=DM+Mono:wght@400&amp;display=swap" rel="stylesheet"/>
+  <link rel="preload" as="font" type="font/woff2" crossorigin="anonymous"
+        href="/blog/assets/fonts/dm-sans-latin.woff2"/>
+  <link rel="preload" as="font" type="font/woff2" crossorigin="anonymous"
+        href="/blog/assets/fonts/playfair-latin.woff2"/>
+  <link rel="preload" as="font" type="font/woff2" crossorigin="anonymous"
+        href="/blog/assets/fonts/dm-mono-400-latin.woff2"/>
+  <link rel="stylesheet" href="/blog/assets/fonts.css"/>
   <!-- The site's own stylesheet, not a copy of its colours. That is what makes
        the ground, the type and the weekday palette the same here as on the
        page this was linked from; a second set of hex values would drift from

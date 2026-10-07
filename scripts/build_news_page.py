@@ -222,8 +222,10 @@ PAGE = """<!DOCTYPE html>
 <link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
 <link rel="manifest" href="/manifest.webmanifest"/>
 <meta name="theme-color" content="#1D2322"/>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/blog/assets/fonts/dm-mono-400-latin.woff2">
+<link rel="stylesheet" href="/blog/assets/fonts.css">
 <script>
 /* Byte-identical to the setter in index.html, now.html and ../index.html. */
 (function(){var D=['sun','mon','tue','wed','thu','fri','sat'],p;

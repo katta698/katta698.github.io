@@ -46,21 +46,37 @@ import threading
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# The five this started with, plus the five that later moved while it was
+# watching the other five. /now.html shifted 129px, /intelligence/events/
+# 65px, /reinvent-2026/plan/ 28px, /resume.html 25px and
+# /intelligence/clouds/ 3px -- all of it the webfont arriving after first
+# paint and rewrapping text, and none of it on a page this check looked at.
 PAGES = ["/", "/blog/", "/intelligence/", "/intelligence/whats-new/",
-         "/intelligence/status/"]
+         "/intelligence/status/", "/now.html", "/resume.html",
+         "/intelligence/events/", "/intelligence/clouds/",
+         "/reinvent-2026/plan/"]
 WIDTHS = [390, 1024, 1440]
 # What the budget actually contains today, measured rather than guessed:
 #
-#   0px   portfolio, Intelligence
+#   0px   everything except the blog
 #   3px   blog
-#   18px  Live status
-#   31px  What's New, releasing its row-height reservation at 390px
 #
 # It was 80 while the occasion banner still arrived after paint and cost every
 # page ~37px; that banner is a blocking script in the head now and costs
-# nothing. 50 leaves room for the one real settle that remains without leaving
-# room for a new fault -- the bug this exists for moved the blog 666px.
-BUDGET = 50
+# nothing. Then 50, which left room for the two real settles that remained:
+# 18px on Live status and 31px on What's New.
+#
+# Both are 0 now. They were never "one real settle" -- they were the webfont
+# swapping and rewrapping the text under it, and the fonts are self-hosted and
+# preloaded with font-display:optional, so no swap happens at all. See
+# scripts/fetch_fonts.py.
+#
+# So the budget comes down to 12. At 50 the worst page on the site used 6% of
+# it, which is not a budget, it is a check that cannot fail: /now.html could
+# move 129px -- and did -- on a page this did not look at, and would have been
+# passed at 50 even if it had. 12 is four times the worst measured value,
+# which leaves room for wrap noise and none for a returning fault.
+BUDGET = 12
 
 # An explicit anchor per page, and the shell on top of that.
 #

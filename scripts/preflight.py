@@ -181,6 +181,10 @@ HOOK_BROWSER = {
     "check_audio_glyph",         # ...once, and keeps playing across tabs
     "check_post_controls",       # ask, arrow and star not swallowed
     "check_page_settle",         # the page not rebuilding itself
+    "check_entrance_blink",      # ...nor fading itself in, which is the half
+                                 # of it page_settle cannot see: an element
+                                 # going 0 -> 1 opacity in place displaces
+                                 # nothing and blinks all the same
     "check_sticky_clear",        # nothing hiding under the header
     "check_reinvent_fits",       # the page fits the phone, and every tab
                                  # can still be tapped -- it shipped 72px

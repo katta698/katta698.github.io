@@ -42,6 +42,16 @@ const PRECACHE = [
   '/blog/assets/blog.js?v=' + JS_VERSION,
   '/blog/assets/site-footer.js?v=' + JS_VERSION,
   '/blog/assets/site-footer.css?v=' + JS_VERSION,
+  // The typefaces, now that they are same-origin and therefore cacheable at
+  // all -- under Google Fonts they were cross-origin and fell through the
+  // passthrough below, so the site had no offline typography. Only the three
+  // latin romans are precached: latin-ext and the italics are real files but
+  // most pages never ask for them, and isAsset() already catches every woff2
+  // cache-first on first use.
+  '/blog/assets/fonts.css',
+  '/blog/assets/fonts/dm-sans-latin.woff2',
+  '/blog/assets/fonts/playfair-latin.woff2',
+  '/blog/assets/fonts/dm-mono-400-latin.woff2',
   '/blog/assets/icons/icon-192.png',
   // The 30px brand mark in the bar. A separate file from the favicon: the
   // bar used to point at favicon-transparent.png, which is 512x512 and
