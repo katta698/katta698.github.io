@@ -38,7 +38,12 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STORE = os.path.join(ROOT, "intelligence", "events.json")
-TOUR = "https://aitour.microsoft.com/"
+# The city list, not the home page. The home page stopped listing cities when
+# Microsoft moved to the 2027 tour: 8 links, none of them a city. This page
+# carries one citylanding anchor per stop, which is what SCRAPE below reads.
+# The year is in the path, so the 2028 tour will need this updated -- the
+# floor in check_events_coverage.py is what will report it.
+TOUR = "https://aitour.microsoft.com/flow/microsoft/aitour27/citydirectory"
 
 # The slug is the only reliable name for the twenty-five "notify me" stops --
 # those cards carry a date and a button, and no city text of their own. These
@@ -72,6 +77,10 @@ PLACE = {
     "Milan": ("Italy", "europe"),
     "Stockholm": ("Sweden", "europe"),
     "New York": ("United States", "north-america"),
+    # The 2027 directory writes it out in full on the card, while the
+    # slug map above resolves "nyc" to the short form. Both spellings
+    # are here so the stop is imported whichever one the page gives.
+    "New York City": ("United States", "north-america"),
     "São Paulo": ("Brazil", "latam"),
     "Riyadh": ("Saudi Arabia", "middle-east"),
     "Seoul": ("South Korea", "apac"),

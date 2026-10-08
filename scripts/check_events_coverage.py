@@ -75,13 +75,15 @@ def aws_upcoming(today):
 def aitour_upcoming(today):
     """What the AI Tour index still lists as ahead."""
     from playwright.sync_api import sync_playwright
-    from import_aitour import SCRAPE, iso, city_from
+    from import_aitour import SCRAPE, TOUR, iso, city_from
     with sync_playwright() as pw:
         b = pw.chromium.launch()
         ctx = b.new_context(viewport={"width": 1440, "height": 1600})
         pg = ctx.new_page()
-        pg.goto("https://aitour.microsoft.com/", wait_until="load",
-                timeout=90000)
+        # The same URL the importer reads, so the two cannot disagree about
+        # where the cities live. import_aitour.TOUR is already imported
+        # below for SCRAPE; take the address from there too.
+        pg.goto(TOUR, wait_until="load", timeout=90000)
         pg.wait_for_timeout(7000)
         found = pg.evaluate(SCRAPE)
         ctx.close()
