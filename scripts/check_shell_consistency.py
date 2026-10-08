@@ -235,9 +235,26 @@ HERO_EXEMPT = {"/intelligence/clouds/",
                "/reinvent-2026/planner/"}
 
 # Four different heading sizes will never land on exactly the same pixel.
-# 8px is below what a reader notices moving between tabs and above what
-# font metrics vary by; they currently sit within 4px.
-H1Y_TOLERANCE = 8
+#
+# This was 8, on the stated reasoning that "8px is below what a reader notices
+# moving between tabs". That reasoning was wrong, and the same reader reported
+# the same thing a second time: Live status sat 3.6px below What's new and it
+# was visible -- "if I click on what's new and then life status, the screen
+# goes up". The check passed throughout, because 3.6 is less than 8.
+#
+# A tolerance set above what someone can see is a check that cannot fail for
+# the thing it was written for. The four tabs now land within 0.4px of each
+# other at every width this measures, so 2 is the slack that is actually
+# needed -- enough for four heading sizes to round differently, not enough to
+# hide a drift.
+#
+# Known and not covered: at 430, 640 and 768 the tabs still differ, by 10.9,
+# 47.8 and 3.4px. /blog/ sizes its hero type fluidly while the three
+# Intelligence pages use fixed steps, so they track differently between the
+# breakpoints. Aligning that means giving all four the same type scale, which
+# is a design decision rather than a bug fix. The widths below are the ones
+# actually reported from -- a desktop and a phone.
+H1Y_TOLERANCE = 2
 
 
 def compare(w, ref_page, ref, page, cur, problems):
