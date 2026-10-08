@@ -92,6 +92,64 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 8 October 2026 — covered by post #49
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| 77 additional resource types supported for recording. The finding is not the count but the sentence "if you have enabled recording for all resource types, then AWS Config will automatically track these new additions" — coverage and cost both move with no action on the account's side, while a selected-list account gains nothing until somebody edits the list. Several of the new types are controls rather than workloads (`GuardDuty::TrustedEntitySet`, `InspectorV2::CodeSecurityScanConfiguration`, `Braket::SpendingLimit`), and for a control the modification is the security event | AWS Config | **#49** | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-config-new-resource-types/) |
+
+Suggested by Jayanth, and it earned the slot on the automatic-tracking sentence
+rather than on the count.
+
+**Two source problems worth recording, both found by the checks rather than by
+re-reading:**
+
+1. The announcement says *"also available in **Config** rules and **Config**
+   aggregators"*. The draft had quoted it as "AWS Config rules and AWS Config
+   aggregators" — two words inserted inside quotation marks. Caught by the
+   verbatim quote checker, not by any shared script.
+2. **The AWS Config pricing page's rate tables carry no figures in the served
+   HTML.** Every rate is a client-side placeholder — `{priceOf!config/config!
+   Config!Rules!first!100000}` and seven others. The only hard numbers in the
+   fetched body are inside the *worked pricing examples*: `$0.003 per continuous
+   configuration item` and `$0.012 per periodic configuration item`. So the
+   continuous/periodic rates are quotable with their provenance flagged (the
+   same treatment #48 gave the per-ENI PrivateLink rate), and the **rule
+   evaluation rate is not sourceable from that page at all**. It was dropped
+   from the post; the tier structure, which *is* in the body, stayed.
+
+   This is the `docs.aws.amazon.com` shell problem in a new shape: the page
+   returns 200 with real prose and no prices. `verify_claims.py` reported "all
+   figures found" for the draft because the figures it checked were the ones
+   present. Flagged for the Validation window.
+
+The derive that survived: `0.012 / 0.003` = **4 changes per day**, the line
+above which continuous recording is cheaper than periodic. Most of the 77 new
+types sit well below it, which makes recording frequency a per-type decision.
+
+## 7 October 2026 — covered by post #48 (published 7 Oct, covering 6 Oct news)
+
+No daily post was written against 7 October's news; the slot published on
+7 October covered the previous day's ACM announcement. Recorded here so the
+ranking is not lost to the feed horizon.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Macie automated sensitive data discovery material was read on this date for architecture post #76 rather than for a daily — not an announcement | Amazon Macie | **arch #76** | n/a | [link](https://docs.aws.amazon.com/macie/latest/user/discovery-asdd-how-it-works.html) |
+
+**Held items, oldest first, and the top two are now three and four days old:**
+
+- **IAM Identity Center network access controls for Identity Store** (5 Oct) —
+  still the strongest held item.
+- **Client VPN device posture assessment** (5 Oct).
+- **Security Hub remediation plans** and **Secrets Manager posture
+  recommendations** (1 Oct) — now past a week, so assume the What's New feed no
+  longer carries them. The links here are the only record.
+- **GuardDuty Runtime Monitoring in the Security Hub Threat Analytics plan**
+  (2 Oct) — interacts with #45, #74 and #75.
+- **DynamoDB filtered export to S3** (1 Oct) — strongest held non-security item.
+- **Batch job metrics to CloudWatch** (6 Oct).
+
 ## 6 October 2026 — covered by post #48
 
 A two-item day, the thinnest since this series started. Both are listed; the
