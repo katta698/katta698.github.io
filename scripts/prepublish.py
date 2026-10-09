@@ -156,6 +156,14 @@ CHECKS = [
     # and nothing failed -- a dropped field looks exactly like "the vendor did
     # not say" unless something compares the two.
     ("check_status_fields.py",  True,  False, False, False),
+    # The generalisation of the one above. Every cosmetic defect a reader has
+    # found on this site has had the same shape: three vendors describe one
+    # thing differently, a reader takes one shape, and the rest is dropped
+    # silently -- an absent field renders exactly like "the vendor did not
+    # say". This prints the per-vendor fill rate for every field in every
+    # store and fails on an asymmetry nobody has written a reason for. Both
+    # answers are legitimate; what is not legitimate is not knowing which.
+    ("check_vendor_shapes.py",  True,  False, False, False),
     # Whether links actually go anywhere. Blocking, because the structural mode
     # runs offline and a malformed host is always a bug in this repo -- never
     # the network. Every Google incident link on the status page pointed at
