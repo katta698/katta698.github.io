@@ -42,6 +42,7 @@ as three countries -- the last of which is Taiwan, which AWS files under
 """
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -192,6 +193,136 @@ def normalise(name):
     return COUNTRY.get(name, name)
 
 
+def _rob_inverse(px, py):
+    """Robinson pixel in the 720x360 world.json frame -> (lat, lon).
+
+    Robinson is defined by a table and has no closed form inverse, so the
+    latitude is a binary search on the same ROB_Y this file projects with and
+    the longitude follows from ROB_X at that latitude. Exact to the precision
+    of the table: measured 0.000000 degrees over a 5-degree grid.
+    """
+    x = (px - W / 2.0) / (W / 2.0) * (0.8487 * math.pi)
+    y = (H / 2.0 - py) / (H / 2.0) * 1.3523
+    sign = 1.0 if y >= 0 else -1.0
+    target = abs(y) / 1.3523
+    lo, hi = 0.0, 90.0
+    for _ in range(36):
+        mid = (lo + hi) / 2.0
+        a = mid / 5.0
+        i = min(int(a), len(ROB_Y) - 2)
+        t = a - i
+        if ROB_Y[i] + (ROB_Y[i + 1] - ROB_Y[i]) * t < target:
+            lo = mid
+        else:
+            hi = mid
+    lat = sign * (lo + hi) / 2.0
+    a = abs(lat) / 5.0
+    i = min(int(a), len(ROB_X) - 2)
+    t = a - i
+    xf = ROB_X[i] + (ROB_X[i + 1] - ROB_X[i]) * t
+    lon = math.degrees(x / (0.8487 * xf)) if xf else 0.0
+    return lat, max(-180.0, min(180.0, lon))
+
+
+# A point every 3.6 Robinson units, and rings smaller than 11 square units
+# dropped. Both are below a pixel at the size this is drawn.
+#
+# The number was chosen by measuring, not by eye. Profiled at 4x CPU
+# throttling -- roughly a mid-range phone -- a frame of land cost 11.16ms at
+# 4,256 points and 4.60ms at half that, against a 16.7ms budget for 60fps.
+# Point count dominates: dropping the country borders entirely only saved
+# 2.5ms of the same frame, so the detail stays and the density goes.
+#
+# The full source set is 10,587 points and 138KB, which is detail no screen
+# resolves on a 440px globe and three times the frame cost.
+GLOBE_STEP, GLOBE_MIN_AREA = 3.6, 11.0
+
+
+def globe_rings():
+    """The same coastlines as the flat map, as latitude and longitude."""
+    world = load(WORLD)
+    out = []
+    for c in world["countries"]:
+        for sub in c["d"].split("M"):
+            nums = [float(n) for n in re.findall(r"-?\d+\.?\d*", sub)]
+            if len(nums) < 6:
+                continue
+            pts = list(zip(nums[0::2], nums[1::2]))
+            xs = [q[0] for q in pts]
+            ys = [q[1] for q in pts]
+            if (max(xs) - min(xs)) * (max(ys) - min(ys)) < GLOBE_MIN_AREA:
+                continue
+            ring, last = [], None
+            for px, py in pts:
+                if last and (abs(px - last[0]) < GLOBE_STEP
+                             and abs(py - last[1]) < GLOBE_STEP):
+                    continue
+                last = (px, py)
+                lat, lon = _rob_inverse(px, py)
+                ring.append([round(lon, 1), round(lat, 1)])
+            if len(ring) >= 4:
+                out.append(ring)
+    return out
+
+
+def globe_points(regions):
+    """Every region with a published location, for the globe.
+
+    [cloud, lon, lat, label] -- the same records the flat map plots, so the
+    two cannot disagree about where a region is or whose it is.
+    """
+    pts = []
+    for r in regions:
+        if not r.get("p"):
+            continue
+        pts.append([r.get("cloud"), round(r["p"][1], 2), round(r["p"][0], 2),
+                    (r.get("name") or r.get("code") or "")[:40]])
+    return pts
+
+
+def globe_html(regions, plotted):
+    """A globe you can turn, and the same facts in text underneath it.
+
+    Canvas rather than SVG. Every frame of a drag redraws 219 coastline rings
+    and 144 points; as DOM that is 363 nodes rewritten per frame, which is how
+    a globe comes to stutter on a phone. On a canvas it is one clear and a few
+    thousand lineTo calls.
+
+    The list below it is not a fallback bolted on. A canvas is a single
+    element with no text in it, so without this the page would say "where
+    they are" to a screen reader and then show it nothing. It is also what
+    renders if the script never runs.
+    """
+    rings = json.dumps(globe_rings(), separators=(",", ":"))
+    pts = json.dumps(globe_points(regions), separators=(",", ":"))
+    by = collections.defaultdict(list)
+    for cloud, _lon, _lat, label in globe_points(regions):
+        by[cloud].append(label)
+    lists = []
+    for cloud, label, _c, _dx, _dy in CLOUDS:
+        names = sorted(by.get(cloud) or [])
+        if not names:
+            continue
+        lists.append('<p class="cl-globe-row"><b>%s</b> &mdash; %s</p>'
+                     % (esc(label), esc(", ".join(names))))
+    return (
+        '<figure class="cl-globe-fig">'
+        '<div class="cl-globe-box">'
+        '<canvas id="cl-globe" class="cl-globe" width="900" height="900"'
+        ' aria-label="A globe showing where AWS, Azure and Google Cloud have'
+        ' regions. Drag to turn it. Every region is also listed below."'
+        ' role="img"></canvas>'
+        '</div>'
+        '<figcaption class="cl-globe-cap">%d regions, on their published '
+        'coordinates. Drag to turn; it turns by itself when left alone.'
+        '</figcaption>'
+        '<details class="cl-globe-list"><summary>Every region, as text'
+        '</summary>%s</details>'
+        '<script id="cl-globe-land" type="application/json">%s</script>'
+        '<script id="cl-globe-pts" type="application/json">%s</script>'
+        '</figure>' % (plotted, "".join(lists), rings, pts))
+
+
 def map_svg(regions):
     world = load(WORLD)
     land = "".join('<path d="%s"/>' % c["d"] for c in world["countries"])
@@ -291,14 +422,17 @@ def build():
 
         '<section class="cl-sec"><h2>Where they are</h2>',
         '<p class="cl-note">%d of the %d regions the three publish. '
-        'Robinson projection, same basemap and same maths as the incident '
-        'map. The other %d carry no published coordinates &mdash; they are '
+        'Drag it to turn the earth. Same basemap and the same published '
+        'coordinates as the incident map, read back to latitude and '
+        'longitude and drawn on a sphere &mdash; a flat map stretches the '
+        'high latitudes, which is where a good deal of this infrastructure '
+        'is. The other %d carry no published coordinates &mdash; they are '
         'almost all government and sovereign regions (us-gov, us-dod, '
         'eusc-de) plus a few announced since the geo data was last '
         'refreshed, so they are counted everywhere else on this page but '
         'cannot be drawn.</p>' % (plotted, len(regions), len(regions) - plotted),
         '<p class="cl-legend">%s</p>' % legend,
-        svg,
+        globe_html(regions, plotted),
         "</section>",
 
         '<section class="cl-sec"><h2>Where one cloud is alone</h2>',
@@ -332,6 +466,7 @@ def build():
         'about who leads in cloud.</li></ul>',
         "</section>",
         "</main>",
+        "<script>%s</script>" % GLOBE_JS,
         bep.tail_html(jsv, "intelligence-clouds"),
     ]
 
@@ -345,6 +480,260 @@ def build():
           % (len(html) / 1024.0))
     return 0
 
+
+GLOBE_JS = r"""
+/* An orthographic globe, drawn on its own published coordinates.
+   -------------------------------------------------------------------------
+   The colours are READ FROM THE PAGE rather than written in here. This site
+   rotates its palette by day of the week and flips dark/light, and a canvas
+   carrying its own hex values is the one element that would ignore both --
+   the same class of bug that had /reinvent-2026/ stuck on a Tuesday.
+
+   Why there is no trigonometry in the draw loop
+   -----------------------------------------------------------------------
+   Nothing about a point on the earth changes when the earth turns; only the
+   viewer moves. So every coastline point, graticule point and region becomes
+   a unit vector once, at load, and a frame is six multiplies and a compare
+   per point. The first version called sin and cos five times per point per
+   frame -- about 28,000 trig operations a frame, 1.7 million a second, to
+   draw a shape that never changes.
+*/
+(function () {
+  var cv = document.getElementById('cl-globe');
+  if (!cv || !cv.getContext) { return; }
+  var rawLand, rawPts;
+  try {
+    rawLand = JSON.parse(document.getElementById('cl-globe-land').textContent);
+    rawPts = JSON.parse(document.getElementById('cl-globe-pts').textContent);
+  } catch (e) { return; }
+
+  var ctx = cv.getContext('2d', { alpha: true });
+  var RAD = Math.PI / 180;
+  var lam = -15, phi = 20;
+  var drag = null, idleUntil = 0, size = 0, last = 0;
+  var still = window.matchMedia &&
+              window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function vec(lon, lat) {
+    var a = lat * RAD, b = lon * RAD, c = Math.cos(a);
+    return [c * Math.sin(b), Math.sin(a), c * Math.cos(b)];
+  }
+
+  /* Each ring as a flat Float32Array of xyz, plus a bounding cap: the mean
+     direction of its points and the angle to the furthest one. One dot
+     product against the view axis then rejects a whole ring. */
+  function pack(rings) {
+    var out = [];
+    for (var i = 0; i < rings.length; i++) {
+      var r = rings[i], n = r.length;
+      var buf = new Float32Array(n * 3);
+      var sx = 0, sy = 0, sz = 0;
+      for (var j = 0; j < n; j++) {
+        var v = vec(r[j][0], r[j][1]);
+        buf[j * 3] = v[0]; buf[j * 3 + 1] = v[1]; buf[j * 3 + 2] = v[2];
+        sx += v[0]; sy += v[1]; sz += v[2];
+      }
+      var m = Math.sqrt(sx * sx + sy * sy + sz * sz) || 1;
+      sx /= m; sy /= m; sz /= m;
+      var worst = 1;
+      for (var k = 0; k < n; k++) {
+        var d = sx * buf[k * 3] + sy * buf[k * 3 + 1] + sz * buf[k * 3 + 2];
+        if (d < worst) { worst = d; }
+      }
+      out.push({ v: buf, n: n, cx: sx, cy: sy, cz: sz,
+                 cap: Math.acos(Math.max(-1, Math.min(1, worst))) });
+    }
+    return out;
+  }
+
+  var land = pack(rawLand);
+
+  var grat = [];
+  for (var la = -60; la <= 60; la += 30) {
+    var row = [];
+    for (var lo = -180; lo <= 180; lo += 6) { row.push([lo, la]); }
+    grat.push(row);
+  }
+  for (var lo2 = -180; lo2 < 180; lo2 += 30) {
+    var col = [];
+    for (var la2 = -90; la2 <= 90; la2 += 6) { col.push([lo2, la2]); }
+    grat.push(col);
+  }
+  grat = pack(grat);
+
+  var regions = [];
+  for (var q = 0; q < rawPts.length; q++) {
+    var pt = rawPts[q], v = vec(pt[1], pt[2]);
+    regions.push({ cloud: pt[0], x: v[0], y: v[1], z: v[2] });
+  }
+
+  function css(name, dflt) {
+    var v = getComputedStyle(document.body).getPropertyValue(name).trim();
+    return v || dflt;
+  }
+  var pal = {};
+  function repalette() {
+    var lt = document.body.classList.contains('light');
+    pal = {
+      sea:  css('--card', lt ? '#E4E7E2' : '#171C1B'),
+      land: css('--border', lt ? '#CBCFC6' : '#2B312F'),
+      edge: lt ? 'rgba(0,0,0,.18)' : 'rgba(255,255,255,.14)',
+      grid: lt ? 'rgba(0,0,0,.07)' : 'rgba(255,255,255,.055)',
+      limb: lt ? 'rgba(0,0,0,.25)' : 'rgba(255,255,255,.22)',
+      aws:  lt ? '#7A5C3C' : '#C4A484',
+      azure: lt ? '#3F5970' : '#5B7B9A',
+      gcp:  lt ? '#4C6340' : '#8A9A5B'
+    };
+  }
+
+  function resize() {
+    var r = cv.getBoundingClientRect();
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var want = Math.max(1, Math.round(r.width * dpr));
+    if (want !== size) { size = want; cv.width = size; cv.height = size; }
+  }
+
+  /* The rotation, as four numbers reused by every point in the frame. */
+  var sl = 0, cl = 1, sp = 0, cp = 1, R = 1, CX = 0, CY = 0;
+  function setView() {
+    var l = lam * RAD, p = phi * RAD;
+    sl = Math.sin(l); cl = Math.cos(l);
+    sp = Math.sin(p); cp = Math.cos(p);
+    R = size * 0.46; CX = size / 2; CY = size / 2;
+  }
+
+  /* The view axis in world space -- the direction pointing at the viewer.
+     A ring whose cap lies entirely on the far side of this is skipped. */
+  function axis() {
+    return [-cp * sl, sp, cp * cl];
+  }
+
+  function ringPath(r, ax, ay, az) {
+    var d = ax * r.cx + ay * r.cy + az * r.cz;
+    /* acos of the dot is the angle between the ring's centre and the
+       viewer; anything further than 90 degrees plus its own radius cannot
+       show a single point. */
+    if (d < Math.cos(Math.min(Math.PI, r.cap + Math.PI / 2))) { return false; }
+    var v = r.v, n = r.n, on = false, any = false;
+    for (var i = 0; i < n; i++) {
+      var x = v[i * 3], y = v[i * 3 + 1], z = v[i * 3 + 2];
+      var x1 = x * cl - z * sl;
+      var z1 = x * sl + z * cl;
+      var y2 = y * cp - z1 * sp;
+      var z2 = y * sp + z1 * cp;
+      if (z2 < 0) { on = false; continue; }
+      var px = CX + R * x1, py = CY - R * y2;
+      if (on) { ctx.lineTo(px, py); } else { ctx.moveTo(px, py); on = true; }
+      any = true;
+    }
+    return any;
+  }
+
+  function draw() {
+    setView();
+    var a = axis(), ax = a[0], ay = a[1], az = a[2];
+    ctx.clearRect(0, 0, size, size);
+
+    ctx.beginPath(); ctx.arc(CX, CY, R, 0, 6.283185);
+    ctx.fillStyle = pal.sea; ctx.fill();
+
+    /* One path for the whole graticule, one stroke. */
+    ctx.lineWidth = Math.max(1, size / 900);
+    ctx.strokeStyle = pal.grid;
+    ctx.beginPath();
+    for (var g = 0; g < grat.length; g++) { ringPath(grat[g], ax, ay, az); }
+    ctx.stroke();
+
+    /* One path for every visible landmass, one fill and one stroke. */
+    ctx.beginPath();
+    for (var i = 0; i < land.length; i++) {
+      if (ringPath(land[i], ax, ay, az)) { ctx.closePath(); }
+    }
+    ctx.fillStyle = pal.land; ctx.fill();
+    ctx.strokeStyle = pal.edge; ctx.stroke();
+
+    ctx.beginPath(); ctx.arc(CX, CY, R, 0, 6.283185);
+    ctx.strokeStyle = pal.limb;
+    ctx.lineWidth = Math.max(1, size / 700); ctx.stroke();
+
+    /* Regions last, so a dot is never buried under a coastline. Three
+       clouds share a city often enough that an offset is needed -- the flat
+       map nudges them apart the same way, by a triangle rather than a line,
+       so a stack of three reads as three and not one fat dot.
+       Grouped by cloud so the fill colour is set three times, not 147. */
+    var off = { aws: [-1.6, -1.0], azure: [1.6, -1.0], gcp: [0, 1.7] };
+    var rad = Math.max(2.2, size / 190);
+    var order = ['aws', 'azure', 'gcp'];
+    ctx.globalAlpha = 0.92;
+    for (var c = 0; c < order.length; c++) {
+      var key = order[c], o = off[key] || [0, 0], sc = rad * 0.9;
+      ctx.fillStyle = pal[key] || pal.limb;
+      ctx.beginPath();
+      for (var k = 0; k < regions.length; k++) {
+        var rg = regions[k];
+        if (rg.cloud !== key) { continue; }
+        var x1 = rg.x * cl - rg.z * sl;
+        var z1 = rg.x * sl + rg.z * cl;
+        var y2 = rg.y * cp - z1 * sp;
+        var z2 = rg.y * sp + z1 * cp;
+        if (z2 < 0) { continue; }
+        var px = CX + R * x1 + o[0] * sc, py = CY - R * y2 + o[1] * sc;
+        ctx.moveTo(px + rad, py);
+        ctx.arc(px, py, rad, 0, 6.283185);
+      }
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /* Time, not frames. A 120Hz display span this at double speed when the
+     step was a constant per frame. */
+  var DEG_PER_SEC = 3.2;
+  function frame(now) {
+    if (!last) { last = now; }
+    var dt = Math.min(now - last, 50) / 1000;
+    last = now;
+    if (!drag && now > idleUntil && !still) { lam += DEG_PER_SEC * dt; }
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  cv.addEventListener('pointerdown', function (e) {
+    drag = { x: e.clientX, y: e.clientY, lam: lam, phi: phi };
+    try { cv.setPointerCapture(e.pointerId); } catch (ex) { /* older engines */ }
+  });
+  cv.addEventListener('pointermove', function (e) {
+    if (!drag) { return; }
+    lam = drag.lam + (e.clientX - drag.x) * 0.32;
+    phi = Math.max(-78, Math.min(78, drag.phi - (e.clientY - drag.y) * 0.32));
+  });
+  function release() {
+    if (drag) { drag = null; idleUntil = performance.now() + 2500; }
+  }
+  cv.addEventListener('pointerup', release);
+  cv.addEventListener('pointercancel', release);
+
+  cv.setAttribute('tabindex', '0');
+  cv.addEventListener('keydown', function (e) {
+    var k = e.key, step = e.shiftKey ? 15 : 5, hit = true;
+    if (k === 'ArrowLeft') { lam -= step; }
+    else if (k === 'ArrowRight') { lam += step; }
+    else if (k === 'ArrowUp') { phi = Math.min(78, phi + step); }
+    else if (k === 'ArrowDown') { phi = Math.max(-78, phi - step); }
+    else { hit = false; }
+    if (hit) { idleUntil = performance.now() + 2500; e.preventDefault(); }
+  });
+
+  window.addEventListener('resize', resize);
+  if (window.MutationObserver) {
+    new MutationObserver(repalette).observe(document.body,
+      { attributes: true, attributeFilter: ['class'] });
+  }
+  repalette();
+  resize();
+  requestAnimationFrame(frame);
+})();
+"""
 
 CSS = """
 .cl{max-width:900px;margin:0 auto;padding:0 1.2rem 4rem}
@@ -380,6 +769,33 @@ body.light .cl-card .cl-growth{color:#605F5B}
 .cl-legend{display:flex;flex-wrap:wrap;gap:1rem;margin:0 0 .6rem;font-size:.85rem}
 .cl-key{display:inline-flex;align-items:center;gap:.4rem}
 .cl-dot{display:inline-block;width:10px;height:10px;border-radius:50%;flex:none}
+/* ---- the globe ---------------------------------------------------------
+   A square box with its height reserved by aspect-ratio, so the canvas
+   cannot change the page's shape when the script sizes it. check_page_settle
+   holds this page to 12px and a canvas that reflows on load spends all of
+   it. */
+.cl-globe-fig{margin:1.1rem 0 0}
+.cl-globe-box{position:relative;width:100%;max-width:520px;margin:0 auto;
+  aspect-ratio:1/1}
+.cl-globe{width:100%;height:100%;display:block;border-radius:50%;
+  touch-action:none;cursor:grab}
+.cl-globe:active{cursor:grabbing}
+.cl-globe:focus-visible{outline:2px solid var(--accent, #C4A484);
+  outline-offset:6px}
+.cl-globe-cap{margin:.75rem auto 0;max-width:520px;text-align:center;
+  font-size:.78rem;color:var(--text-muted)}
+body.light .cl-globe-cap{color:#605F5B}
+/* The text the canvas cannot give a screen reader, and what shows when the
+   script does not run. Closed by default -- it is 144 names, and it is an
+   alternative to the picture rather than a second copy of the page. */
+.cl-globe-list{margin:.9rem auto 0;max-width:720px;font-size:.8rem}
+.cl-globe-list summary{cursor:pointer;color:var(--text-muted);
+  font-family:var(--mono, ui-monospace, monospace);font-size:.72rem;
+  letter-spacing:.06em;text-transform:uppercase}
+body.light .cl-globe-list summary{color:#605F5B}
+.cl-globe-row{margin:.5rem 0 0;line-height:1.6;color:var(--text-muted)}
+.cl-globe-row b{color:var(--text)}
+body.light .cl-globe-row{color:#4A4945}
 .cl-map{width:100%;height:auto;display:block;background:var(--card);
         border:1px solid var(--border);border-radius:10px}
 .cl-land{fill:var(--border);stroke:none}

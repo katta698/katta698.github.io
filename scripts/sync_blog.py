@@ -468,15 +468,27 @@ def write_sitemap():
     files were returning 404 until this existed.
     """
     import subprocess
+    # 300s was not enough once the site passed ~500 pages: on 2026-10-09 the
+    # sitemap build took almost exactly five minutes and timed out here, so the
+    # Week 22 post was built, listed and RSS'd while the sitemap still predated
+    # it. The failure is deliberately non-fatal, which is what made it easy to
+    # miss -- the old message truncated the exception to 50 characters and cut
+    # off the words "timed out after 300 seconds".
     try:
         out = subprocess.run(
             [sys.executable, str(REPO_ROOT / "scripts" / "build_sitemap.py")],
-            capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=300,
+            capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=900,
             encoding="utf-8", errors="replace")
         for line in (out.stdout or "").strip().splitlines()[-2:]:
             print(line)
+        if out.returncode:
+            print("  SITEMAP BUILD FAILED rc=%s" % out.returncode)
+            for line in (out.stderr or "").strip().splitlines()[-3:]:
+                print("    " + line)
     except Exception as exc:                                    # noqa: BLE001
-        print(f"  sitemap not regenerated ({str(exc)[:50]})")
+        # Print the whole exception. A truncated one hid this very bug.
+        print("  SITEMAP NOT REGENERATED -- the sitemap on disk is now STALE")
+        print("    %s: %s" % (type(exc).__name__, exc))
 
 
 def write_colophon():
