@@ -92,6 +92,43 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 9 October 2026 — covered by post #50
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Cost Explorer, Budgets and Dashboards gain an Amazon Bedrock **product attributes** dimension — model, model provider, inference type, feature. The finding is the verb asymmetry in one sentence: "In Cost Explorer and Dashboards, you can **group and filter** costs by these attributes. In Budgets, you can **filter** budgets by the same attributes." Grouping covers values that appear later; filtering does not. So per-model alerting is one budget per model, and a model a team adopts next week sits outside every per-model budget while the budgets keep passing | AWS Cost Management / Amazon Bedrock | **#50** | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-bedrock-attributes-in-cost-explorer/) |
+
+Suggested by Jayanth. The attribute worth more than the headline is **inference
+type** — "input tokens or output tokens" — because it is the only one of the
+four that points at a change rather than at a culprit: input spend is context
+and prompt size, output spend is generation length, and the two have opposite
+remedies.
+
+**One thing deliberately left unclaimed:** the announcement does not say
+whether the dimension applies to spend from before the launch. Cost allocation
+tags are not retroactive and AWS-supplied dimensions generally behave
+differently, but the page is silent, so the post says to check the console
+rather than asserting either way. Same discipline as #48's open question on how
+the CA performs the ACME challenge check.
+
+Also recorded: the dimension is free, and excluded from "the AWS GovCloud (US)
+Regions and the China (Beijing) and China (Ningxia) Regions".
+
+**Held items, oldest first. The top two are now four days old and the 1 October
+pair should be treated as past the feed horizon:**
+
+- **IAM Identity Center network access controls for Identity Store** (5 Oct) —
+  still the strongest held item, and the one most likely to be regretted.
+- **Client VPN device posture assessment** (5 Oct).
+- **Security Hub remediation plans** and **Secrets Manager posture
+  recommendations** (1 Oct) — past a week. The links in this file are now the
+  only record; assume the What's New feed has dropped them.
+- **GuardDuty Runtime Monitoring in the Security Hub Threat Analytics plan**
+  (2 Oct) — interacts with #45, #74, #75 and now #77, since Inspector findings
+  reach Security Hub too.
+- **DynamoDB filtered export to S3** (1 Oct) — strongest held non-security item.
+- **Batch job metrics to CloudWatch** (6 Oct).
+
 ## 8 October 2026 — covered by post #49
 
 | Item | Service | Status | Importance | Reference |
