@@ -148,6 +148,14 @@ CHECKS = [
     # and so not cheap, but it runs at one width on sixteen pages -- the
     # alternative is a fourth report.
     ("check_entrance_blink.py", True,  False, False, False),
+    # Whether the page knows everything the vendor told it. Blocking, and
+    # offline. Every other check here asks whether what is ON the page is
+    # correct; this asks whether anything is MISSING, which is a different
+    # question and the one nothing was asking. Five Google incidents reached
+    # the page with no region while the store held regions: ["us-central1"],
+    # and nothing failed -- a dropped field looks exactly like "the vendor did
+    # not say" unless something compares the two.
+    ("check_status_fields.py",  True,  False, False, False),
     # Whether links actually go anywhere. Blocking, because the structural mode
     # runs offline and a malformed host is always a bug in this repo -- never
     # the network. Every Google incident link on the status page pointed at
