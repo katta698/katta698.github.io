@@ -213,7 +213,9 @@ def incident_payload():
             "c": cloud,
             "t": detag(i.get("title"))[:240],
             "s": (i.get("service") or "")[:120],
-            "r": i.get("region_code") or i.get("region") or "",
+            # Every region, not just a singular field two of the three
+            # clouds happen to use. See inc_regions().
+            "r": ", ".join(inc_regions(i, cloud)),
             "b": str(i.get("begin") or ""),
             "e": str(i.get("end") or ""),
             "u": "" if generic else url,
@@ -224,6 +226,33 @@ def incident_payload():
 
 
 INDEX_OUT = os.path.join(ROOT, "intelligence", "timeline-index.json")
+
+
+def inc_regions(i, cloud=None):
+    """Every region an incident names, whichever way its vendor names them.
+
+    AWS and Azure publish one region per incident and set `region` /
+    `region_code`. Google publishes `regions`, a list, because one incident
+    routinely spans several -- and when a reader asks "where did this happen"
+    that list is the answer. Reading only the singular field dropped the
+    location from every Google incident on the page, on the map, and in the
+    archive, while the data sat in the store the whole time.
+
+    The title is the last resort, not the first: a vendor that writes the
+    region code into its own headline is doing us a favour, not meeting a
+    standard. Google's 8 October storage incident names no region in its
+    title and `regions: ["us-central1"]` in its body.
+    """
+    regs = [x for x in (i.get("regions") or []) if x]
+    if regs:
+        return regs
+    one = i.get("region_code") or i.get("region")
+    if one:
+        return [one]
+    cloud = cloud or i.get("cloud")
+    if cloud:
+        return region_map.regions_in(cloud, i.get("title") or "")
+    return []
 
 
 def region_payload(history, live):
@@ -252,12 +281,7 @@ def region_payload(history, live):
         cloud = i.get("cloud")
         if cloud not in ORDER:
             continue
-        regs = [x for x in (i.get("regions") or []) if x]
-        if not regs:
-            one = i.get("region_code") or i.get("region")
-            regs = [one] if one else []
-        if not regs:
-            regs = region_map.regions_in(cloud, i.get("title") or "")
+        regs = inc_regions(i, cloud)
         b = (aws_begin if cloud == "aws" else t)(i.get("begin"))
         for r in regs:
             rec = seen.setdefault(r, {"r": r, "n": 0, "n90": 0, "by": {},
@@ -326,6 +350,11 @@ def write_timeline_index(history, live):
             # strip drawn tomorrow does not quietly claim it ended yesterday.
             "e": end.date().isoformat() if end else None,
             "t": detag(i.get("title"))[:110],
+            # The regions, structurally. Without this the map had nothing to
+            # match on but the title text, so an incident whose headline did
+            # not happen to contain its own region code was invisible at the
+            # place it actually happened.
+            "r": inc_regions(i, cloud),
             "u": i.get("url") or "",
         })
     # Flag the ones with a published write-up, and add write-ups that have no

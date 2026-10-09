@@ -1835,6 +1835,17 @@
         return i < 0 ? k : k.slice(i + 1);
       });
       var rows = (mapIdx.incidents || []).filter(function (r) {
+        // The structured region list first. The title is a fallback, and it
+        // was the only test here: an incident matched a place only if its
+        // headline happened to contain the region code. Google's 8 October
+        // storage incident says "Google Cloud Storage customers are
+        // experiencing elevated latencies" and names us-central1 only in its
+        // body, so Iowa listed 1 September and December 2024 and skipped
+        // yesterday. The index carries r now.
+        var rr = r.r;
+        if (rr && rr.length) {
+          if (names.some(function (n) { return rr.indexOf(n) >= 0; })) return true;
+        }
         var hay = (r.t || '');
         return names.some(function (n) { return hay.indexOf(n) >= 0; });
       }).slice(0, 40);
@@ -1856,8 +1867,16 @@
         (byCloud[r.cloud] = byCloud[r.cloud] || []).push(r);
       });
       var openNow = mapLive.filter(function (i) {
-        return keys.indexOf(i.cloud + ':' + i.region_code) >= 0 ||
-               keys.indexOf(i.cloud + ':' + i.region) >= 0;
+        if (keys.indexOf(i.cloud + ':' + i.region_code) >= 0 ||
+            keys.indexOf(i.cloud + ':' + i.region) >= 0) return true;
+        // Google names regions as a list, so the two singular fields above
+        // never matched one of its incidents and a Google outage open right
+        // now was not reported as open at the place it was happening.
+        var rs = i.regions || [];
+        for (var k = 0; k < rs.length; k++) {
+          if (keys.indexOf(i.cloud + ':' + rs[k]) >= 0) return true;
+        }
+        return false;
       });
 
       var pt = here.length && here[0].p ? here[0].p : null;
