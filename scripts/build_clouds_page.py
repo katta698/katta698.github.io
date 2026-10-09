@@ -268,15 +268,27 @@ def globe_rings():
 def globe_points(regions):
     """Every region with a published location, for the globe.
 
-    [cloud, lon, lat, label] -- the same records the flat map plots, so the
-    two cannot disagree about where a region is or whose it is.
+    [cloud, lon, lat, name, code, city, country, zones] -- the same records
+    the flat map plots, so the two cannot disagree about where a region is or
+    whose it is. The zone count is the vendor's own az_n, which regions.json
+    has always carried and this page had never shown.
     """
     pts = []
     for r in regions:
         if not r.get("p"):
             continue
         pts.append([r.get("cloud"), round(r["p"][1], 2), round(r["p"][0], 2),
-                    (r.get("name") or r.get("code") or "")[:40]])
+                    (r.get("name") or r.get("code") or "")[:46],
+                    r.get("code") or "",
+                    r.get("city") or "", r.get("country") or "",
+                    # az_n OR the length of the zones list. AWS publishes a
+                    # count; Google publishes the zone NAMES and no count;
+                    # Azure publishes neither. Reading only az_n is the same
+                    # singular-vs-list mistake that dropped Google's incident
+                    # regions, in a different field -- it would have shown
+                    # "zone count not published" for 43 regions whose zones
+                    # are listed by name in the same record.
+                    (r.get("az_n") or len(r.get("zones") or []) or 0)])
     return pts
 
 
@@ -296,8 +308,9 @@ def globe_html(regions, plotted):
     rings = json.dumps(globe_rings(), separators=(",", ":"))
     pts = json.dumps(globe_points(regions), separators=(",", ":"))
     by = collections.defaultdict(list)
-    for cloud, _lon, _lat, label in globe_points(regions):
-        by[cloud].append(label)
+    for row in globe_points(regions):
+        # [cloud, lon, lat, name, code, city, country, zones]
+        by[row[0]].append(row[3])
     lists = []
     for cloud, label, _c, _dx, _dy in CLOUDS:
         names = sorted(by.get(cloud) or [])
@@ -314,8 +327,11 @@ def globe_html(regions, plotted):
         ' role="img"></canvas>'
         '</div>'
         '<figcaption class="cl-globe-cap">%d regions, on their published '
-        'coordinates. Drag to turn; it turns by itself when left alone.'
-        '</figcaption>'
+        'coordinates. Drag to turn; it turns by itself when left alone. '
+        'The lit half is the lit half &mdash; the daylight follows real '
+        'time.</figcaption>'
+        '<p id="cl-globe-say" class="cl-globe-say" role="status" '
+        'aria-live="polite"></p>'
         '<details class="cl-globe-list"><summary>Every region, as text'
         '</summary>%s</details>'
         '<script id="cl-globe-land" type="application/json">%s</script>'
@@ -564,8 +580,29 @@ GLOBE_JS = r"""
   var regions = [];
   for (var q = 0; q < rawPts.length; q++) {
     var pt = rawPts[q], v = vec(pt[1], pt[2]);
-    regions.push({ cloud: pt[0], x: v[0], y: v[1], z: v[2] });
+    regions.push({ cloud: pt[0], x: v[0], y: v[1], z: v[2],
+                   name: pt[3], code: pt[4], city: pt[5],
+                   country: pt[6], zones: pt[7] });
   }
+
+  /* Where the sun is overhead, right now.
+     Declination from the day of the year, subsolar meridian from UTC. Both
+     are first-order: good to a fraction of a degree, which is nothing beside
+     the width of the dusk band they are used to draw. */
+  function subsolar() {
+    var now = new Date();
+    var start = Date.UTC(now.getUTCFullYear(), 0, 1);
+    var day = (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(),
+                        now.getUTCDate()) - start) / 86400000;
+    var dec = -23.44 * Math.cos((360 / 365.24) * (day + 10) * RAD);
+    var utcH = now.getUTCHours() + now.getUTCMinutes() / 60;
+    var lon = 180 - utcH * 15;
+    return vec(lon, dec);
+  }
+  var sun = subsolar();
+  /* It moves 15 degrees an hour; recomputing once a minute is 0.25 degrees
+     of error at worst and costs nothing. */
+  setInterval(function () { sun = subsolar(); }, 60000);
 
   function css(name, dflt) {
     var v = getComputedStyle(document.body).getPropertyValue(name).trim();
@@ -580,6 +617,12 @@ GLOBE_JS = r"""
       edge: lt ? 'rgba(0,0,0,.18)' : 'rgba(255,255,255,.14)',
       grid: lt ? 'rgba(0,0,0,.07)' : 'rgba(255,255,255,.055)',
       limb: lt ? 'rgba(0,0,0,.25)' : 'rgba(255,255,255,.22)',
+      /* Night is warm, not black -- a deep umber rather than a shadow, so
+         the dark half still reads as earth. Dawn is almost nothing: a hint
+         of warmth on the lit side rather than a brightening, which would
+         fight the page. */
+      night: lt ? 'rgba(58,48,38,0.30)' : 'rgba(10,9,8,0.62)',
+      dawn:  lt ? 'rgba(196,164,132,0.00)' : 'rgba(196,164,132,0.045)',
       aws:  lt ? '#7A5C3C' : '#C4A484',
       azure: lt ? '#3F5970' : '#5B7B9A',
       gcp:  lt ? '#4C6340' : '#8A9A5B'
@@ -609,6 +652,14 @@ GLOBE_JS = r"""
      A ring whose cap lies entirely on the far side of this is skipped. */
   function axis() {
     return [-cp * sl, sp, cp * cl];
+  }
+
+  /* Any world vector, into view space. The same four numbers every point
+     uses, so this costs no trigonometry either. */
+  function toView(v) {
+    var x1 = v[0] * cl - v[2] * sl;
+    var z1 = v[0] * sl + v[2] * cl;
+    return [x1, v[1] * cp - z1 * sp, v[1] * sp + z1 * cp];
   }
 
   function ringPath(r, ax, ay, az) {
@@ -662,6 +713,36 @@ GLOBE_JS = r"""
     ctx.fillStyle = pal.land; ctx.fill();
     ctx.strokeStyle = pal.edge; ctx.stroke();
 
+    /* Night, as a band rather than an edge.
+       The gradient runs along the projected direction of the sun, and its
+       midpoint is pushed along that axis by the sun's z -- the first-order
+       correction for the fact that the near side of a sphere leans toward
+       or away from the light. The softness is the atmosphere: the real
+       terminator is hundreds of kilometres wide, and a hard line would be a
+       precise drawing of something that is not precise. */
+    var sv = toView(sun);
+    var m = Math.sqrt(sv[0] * sv[0] + sv[1] * sv[1]);
+    ctx.save();
+    ctx.beginPath(); ctx.arc(CX, CY, R, 0, 6.283185); ctx.clip();
+    if (m > 0.02) {
+      var ux = sv[0] / m, uy = -sv[1] / m;          /* screen-space sunward */
+      var g = ctx.createLinearGradient(CX - ux * R, CY - uy * R,
+                                       CX + ux * R, CY + uy * R);
+      var mid = Math.max(0.12, Math.min(0.88, 0.5 + sv[2] * 0.42));
+      var soft = 0.17;
+      g.addColorStop(0, pal.night);
+      g.addColorStop(Math.max(0, mid - soft), pal.night);
+      g.addColorStop(Math.min(1, mid + soft), pal.dawn);
+      g.addColorStop(1, pal.dawn);
+      ctx.fillStyle = g;
+    } else {
+      /* The sun is straight through the globe or straight at the viewer;
+         the axis is degenerate, so shade the whole disc evenly. */
+      ctx.fillStyle = sv[2] > 0 ? pal.dawn : pal.night;
+    }
+    ctx.fillRect(CX - R, CY - R, R * 2, R * 2);
+    ctx.restore();
+
     ctx.beginPath(); ctx.arc(CX, CY, R, 0, 6.283185);
     ctx.strokeStyle = pal.limb;
     ctx.lineWidth = Math.max(1, size / 700); ctx.stroke();
@@ -686,14 +767,67 @@ GLOBE_JS = r"""
         var z1 = rg.x * sl + rg.z * cl;
         var y2 = rg.y * cp - z1 * sp;
         var z2 = rg.y * sp + z1 * cp;
-        if (z2 < 0) { continue; }
+        if (z2 < 0) { rg.on = false; continue; }
         var px = CX + R * x1 + o[0] * sc, py = CY - R * y2 + o[1] * sc;
+        /* Kept for the hit test: the position actually drawn, not one
+           re-projected a frame later while the earth has moved on. */
+        rg.sx = px; rg.sy = py; rg.on = true;
         ctx.moveTo(px + rad, py);
         ctx.arc(px, py, rad, 0, 6.283185);
       }
       ctx.fill();
     }
     ctx.globalAlpha = 1;
+
+    if (picked && picked.on) {
+      ctx.beginPath();
+      ctx.arc(picked.sx, picked.sy, rad * 2.6, 0, 6.283185);
+      ctx.strokeStyle = pal[picked.cloud] || pal.limb;
+      ctx.lineWidth = Math.max(1.2, size / 440);
+      ctx.stroke();
+    }
+  }
+
+  /* What the reader last asked about. Drawn with a ring so the panel below
+     and the dot above are obviously the same thing. */
+  var picked = null;
+  var panel = document.getElementById('cl-globe-say');
+
+  var CLOUD_NAME = { aws: 'AWS', azure: 'Azure', gcp: 'Google Cloud' };
+  function say(r) {
+    if (!panel) { return; }
+    if (!r) {
+      panel.innerHTML = '<span class="cl-say-idle">Click a dot for the '
+        + 'region, where it is, and how many availability zones it has.'
+        + '</span>';
+      return;
+    }
+    var where = [r.city, r.country].filter(Boolean).join(', ');
+    /* Zone counts are the vendor's own az_n. Where a vendor does not
+       publish one it says so rather than printing a zero, which would read
+       as a region with no zones. */
+    var z = r.zones > 0
+      ? (r.zones + ' availability zone' + (r.zones === 1 ? '' : 's'))
+      : 'zone count not published';
+    panel.innerHTML =
+      '<b class="cl-say-' + r.cloud + '">' + CLOUD_NAME[r.cloud] + '</b> '
+      + '<span class="cl-say-name"></span>'
+      + '<span class="cl-say-meta"></span>';
+    panel.querySelector('.cl-say-name').textContent = r.name;
+    panel.querySelector('.cl-say-meta').textContent =
+      (r.code ? r.code + ' \u00b7 ' : '') + (where ? where + ' \u00b7 ' : '')
+      + z;
+  }
+
+  function pick(mx, my) {
+    var best = null, bestD = 18 * 18;
+    for (var i = 0; i < regions.length; i++) {
+      var r = regions[i];
+      if (!r.on) { continue; }
+      var dx = r.sx - mx, dy = r.sy - my, d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = r; }
+    }
+    return best;
   }
 
   /* Time, not frames. A 120Hz display span this at double speed when the
@@ -745,8 +879,21 @@ GLOBE_JS = r"""
     lam = drag.lam + (e.clientX - drag.x) * 0.32;
     phi = Math.max(-78, Math.min(78, drag.phi - (e.clientY - drag.y) * 0.32));
   });
-  function release() {
-    if (drag) { drag = null; idleUntil = performance.now() + 2500; }
+  function release(e) {
+    if (!drag) { return; }
+    var moved = Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y);
+    drag = null;
+    idleUntil = performance.now() + 2500;
+    /* A drag is a drag and a tap is a question. Four pixels of slop, because
+       a finger never lands perfectly still. */
+    if (moved <= 4) {
+      var b = cv.getBoundingClientRect();
+      var scale = size / b.width;
+      var hit = pick((e.clientX - b.left) * scale, (e.clientY - b.top) * scale);
+      picked = hit;
+      say(hit);
+      if (hit) { idleUntil = performance.now() + 6000; }
+    }
   }
   cv.addEventListener('pointerup', release);
   cv.addEventListener('pointercancel', release);
@@ -758,6 +905,18 @@ GLOBE_JS = r"""
     else if (k === 'ArrowRight') { lam += step; }
     else if (k === 'ArrowUp') { phi = Math.min(78, phi + step); }
     else if (k === 'ArrowDown') { phi = Math.max(-78, phi - step); }
+    else if (k === 'Enter' || k === ' ') {
+      /* Step through the regions currently facing the reader, so the panel
+         is reachable without a pointer. */
+      var vis = regions.filter(function (r) { return r.on; });
+      if (vis.length) {
+        var at = vis.indexOf(picked);
+        picked = vis[(at + 1) % vis.length];
+        say(picked);
+        idleUntil = performance.now() + 6000;
+      }
+      e.preventDefault(); return;
+    }
     else { hit = false; }
     if (hit) { idleUntil = performance.now() + 2500; e.preventDefault(); }
   });
@@ -769,6 +928,7 @@ GLOBE_JS = r"""
   }
   repalette();
   resize();
+  say(null);
   requestAnimationFrame(frame);
 })();
 """
@@ -826,6 +986,18 @@ body.light .cl-globe-cap{color:#605F5B}
 /* The text the canvas cannot give a screen reader, and what shows when the
    script does not run. Closed by default -- it is 144 names, and it is an
    alternative to the picture rather than a second copy of the page. */
+.cl-globe-say{margin:.6rem auto 0;max-width:520px;min-height:3.1em;
+  text-align:center;font-size:.82rem;line-height:1.55}
+.cl-say-idle{color:var(--text-muted)}
+body.light .cl-say-idle{color:#605F5B}
+.cl-globe-say b{display:block;font-size:.7rem;letter-spacing:.08em;
+  text-transform:uppercase;font-family:var(--mono, ui-monospace, monospace)}
+.cl-say-aws{color:#C4A484}   body.light .cl-say-aws{color:#7A5C3C}
+.cl-say-azure{color:#8FB0C9} body.light .cl-say-azure{color:#3F5970}
+.cl-say-gcp{color:#A8BA77}   body.light .cl-say-gcp{color:#4C6340}
+.cl-say-name{display:block;color:var(--text)}
+.cl-say-meta{display:block;color:var(--text-muted);font-size:.76rem}
+body.light .cl-say-meta{color:#605F5B}
 .cl-globe-list{margin:.9rem auto 0;max-width:720px;font-size:.8rem}
 .cl-globe-list summary{cursor:pointer;color:var(--text-muted);
   font-family:var(--mono, ui-monospace, monospace);font-size:.72rem;

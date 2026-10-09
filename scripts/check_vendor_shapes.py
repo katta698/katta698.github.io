@@ -58,6 +58,11 @@ STORES = [
     ("announcements", "intelligence/news.json", "items", "c"),
     ("events", "intelligence/events.json", "events", "cloud"),
     ("status history", "intelligence/status-history.json", "incidents", "cloud"),
+    # The region footprint. Added after az_n turned out to be an AWS-only
+    # field while Google published the zone NAMES instead -- the same
+    # singular-versus-list split as the incident regions, in a store this
+    # check was not looking at.
+    ("regions", "intelligence/status/regions.json", "regions", "cloud"),
 ]
 
 # Asymmetries that are facts about the vendors, not defects in the readers.
@@ -117,6 +122,13 @@ KNOWN = {
         "the schema change carry the full text, which is the 7. Enriching the "
         "788 means re-fetching Google's archive, which is a separate job and "
         "not a bug in the page.",
+    ("regions", "az_n"):
+        "AWS publishes a zone COUNT; Google publishes the zone NAMES and no "
+        "count; Azure publishes neither in this feed. build_clouds_page "
+        "reads az_n or the length of the zones list, so Google's 43 are not "
+        "lost -- which they were until this row was examined.",
+    ("regions", "zones"):
+        "The other half of the same split: Google only.",
     ("status history", "tracking"):
         "Azure's own tracking id. The other two have no equivalent.",
     ("status history", "duration"):
