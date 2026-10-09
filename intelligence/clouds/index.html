@@ -866,7 +866,10 @@ body.light .cl-gcp{fill:#515C32}
 
   function resize() {
     var r = cv.getBoundingClientRect();
-    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    /* Tier 3 draws at one device pixel per CSS pixel and lets the browser
+       scale it up. On a 3x phone that is a ninth of the fill. */
+    var cap = tier >= 3 ? 1 : 2;
+    var dpr = Math.min(window.devicePixelRatio || 1, cap);
     var want = Math.max(1, Math.round(r.width * dpr));
     if (want !== size) { size = want; cv.width = size; cv.height = size; }
   }
@@ -893,7 +896,10 @@ body.light .cl-gcp{fill:#515C32}
        show a single point. */
     if (d < Math.cos(Math.min(Math.PI, r.cap + Math.PI / 2))) { return false; }
     var v = r.v, n = r.n, on = false, any = false;
-    for (var i = 0; i < n; i++) {
+    /* Tier 2 takes every second point. A coastline at 440px is already
+       finer than a pixel, so what goes is detail nothing resolves. */
+    var step = tier >= 2 ? 2 : 1;
+    for (var i = 0; i < n; i += step) {
       var x = v[i * 3], y = v[i * 3 + 1], z = v[i * 3 + 2];
       var x1 = x * cl - z * sl;
       var z1 = x * sl + z * cl;
@@ -915,12 +921,16 @@ body.light .cl-gcp{fill:#515C32}
     ctx.beginPath(); ctx.arc(CX, CY, R, 0, 6.283185);
     ctx.fillStyle = pal.sea; ctx.fill();
 
-    /* One path for the whole graticule, one stroke. */
-    ctx.lineWidth = Math.max(1, size / 900);
-    ctx.strokeStyle = pal.grid;
-    ctx.beginPath();
-    for (var g = 0; g < grat.length; g++) { ringPath(grat[g], ax, ay, az); }
-    ctx.stroke();
+    /* One path for the whole graticule, one stroke. First thing dropped
+       when the frame is running long: it is scaffolding, and the globe
+       still reads as a globe without it. */
+    if (tier < 1) {
+      ctx.lineWidth = Math.max(1, size / 900);
+      ctx.strokeStyle = pal.grid;
+      ctx.beginPath();
+      for (var g = 0; g < grat.length; g++) { ringPath(grat[g], ax, ay, az); }
+      ctx.stroke();
+    }
 
     /* One path for every visible landmass, one fill and one stroke. */
     ctx.beginPath();
@@ -967,12 +977,40 @@ body.light .cl-gcp{fill:#515C32}
   /* Time, not frames. A 120Hz display span this at double speed when the
      step was a constant per frame. */
   var DEG_PER_SEC = 3.2;
+
+  /* Spend detail to hold the frame rate.
+     -----------------------------------------------------------------------
+     Measured at 4x CPU throttling the full-detail globe runs at 20fps while
+     the rest of the site holds 60. Rather than pick one quality and be wrong
+     on half the devices, the globe watches its own cost and steps down --
+     graticule first, because it is scaffolding; then coastline density,
+     because the silhouette survives it; then resolution. It climbs back as
+     soon as it can.
+
+     Twelve frames have to agree before the tier moves. One slow frame is a
+     garbage collection or another tab waking up, and reacting to it would
+     make the picture flicker between levels, which is worse than the
+     stutter it was trying to cure. */
+  var tier = 0, budget = 0, overCount = 0, underCount = 0;
+  function spend(cost) {
+    if (cost > 20) {
+      overCount++; underCount = 0;
+      if (overCount >= 12 && tier < 3) { tier++; overCount = 0; resize(); }
+    } else if (cost < 9) {
+      underCount++; overCount = 0;
+      if (underCount >= 12 && tier > 0) { tier--; underCount = 0; resize(); }
+    } else { overCount = 0; underCount = 0; }
+  }
+
   function frame(now) {
     if (!last) { last = now; }
     var dt = Math.min(now - last, 50) / 1000;
     last = now;
     if (!drag && now > idleUntil && !still) { lam += DEG_PER_SEC * dt; }
+    var t0 = performance.now();
     draw();
+    budget = budget * 0.85 + (performance.now() - t0) * 0.15;
+    spend(budget);
     requestAnimationFrame(frame);
   }
 
