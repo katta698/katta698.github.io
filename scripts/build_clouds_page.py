@@ -467,9 +467,14 @@ def build():
                   head, count=1, flags=re.S)
     head += "<style>%s</style>\n</head>\n" % CSS
 
+    # A button rather than a span, and aria-pressed rather than a class,
+    # so the state is the real one a screen reader reads out. It is inert
+    # until the globe's script claims it.
     legend = " ".join(
-        '<span class="cl-key"><span class="cl-dot" style="background:%s">'
-        '</span>%s %d</span>' % (col, esc(label), counts.get(k, 0))
+        '<button type="button" class="cl-key" data-cloud="%s" '
+        'aria-pressed="false">'
+        '<span class="cl-dot" style="background:%s"></span>%s %d</button>'
+        % (k, col, esc(label), counts.get(k, 0))
         for k, label, col, _dx, _dy in CLOUDS)
 
     body = [
@@ -1147,6 +1152,7 @@ GLOBE_JS = r"""
       for (var k = 0; k < regions.length; k++) {
         var rg = regions[k];
         if (rg.cloud !== key) { continue; }
+        if (onlyCloud && rg.cloud !== onlyCloud) { rg.on = false; continue; }
         var x1 = rg.x * cl - rg.z * sl;
         var z1 = rg.x * sl + rg.z * cl;
         var y2 = rg.y * cp - z1 * sp;
@@ -1248,6 +1254,7 @@ GLOBE_JS = r"""
       for (i = 0; i < regions.length; i++) {
         r = regions[i];
         if (!r.on || !r.code) { continue; }
+        if (onlyCloud && r.cloud !== onlyCloud) { continue; }
         /* Clear of the dot's own reservation, not inside it. Placed at
            1.6x the radius against a box reserved to 2x, every region code
            collided with its own dot and was dropped -- so not one of them
@@ -1342,6 +1349,10 @@ GLOBE_JS = r"""
     for (var i = 0; i < regions.length; i++) {
       var r = regions[i];
       if (!r.on) { continue; }
+      /* A hidden dot must not be clickable. Filtering the drawing alone
+         would leave a region you cannot see but can still select, and the
+         panel would name something that is not on screen. */
+      if (onlyCloud && r.cloud !== onlyCloud) { continue; }
       var dx = r.sx - mx, dy = r.sy - my, d = dx * dx + dy * dy;
       if (d < bestD) { bestD = d; best = r; }
     }
@@ -1456,6 +1467,9 @@ GLOBE_JS = r"""
      so; so does zooming. Until then a vertical swipe belongs to the page,
      because the globe is 45% of a phone screen and trapping the scroll was
      the first thing reported about it. */
+  /* null means all three. Set to a cloud key, the globe shows only that
+     one -- dots, region codes and the hit test together. */
+  var onlyCloud = null;
   var engaged = false;
   var gbox = cv.parentNode;
   var rel = null;
@@ -1709,6 +1723,36 @@ GLOBE_JS = r"""
     new MutationObserver(repalette).observe(document.body,
       { attributes: true, attributeFilter: ['class'] });
   }
+  (function () {
+    var row = document.querySelector('.cl-legend');
+    if (!row) { return; }
+    var keys = row.querySelectorAll('.cl-key');
+    if (!keys.length) { return; }
+    row.parentNode.classList.add('cl-can-filter');
+
+    function apply(next) {
+      onlyCloud = next;
+      row.classList.toggle('cl-filtered', !!next);
+      for (var i = 0; i < keys.length; i++) {
+        keys[i].setAttribute('aria-pressed',
+          next && keys[i].getAttribute('data-cloud') === next ? 'true' : 'false');
+      }
+      /* A region that has just been hidden cannot stay selected: its ring
+         would be drawn round nothing and the panel would describe a dot that
+         is no longer there. */
+      if (picked && next && picked.cloud !== next) { picked = null; say(null); }
+    }
+
+    for (var i = 0; i < keys.length; i++) {
+      (function (b) {
+        b.addEventListener('click', function () {
+          var k = b.getAttribute('data-cloud');
+          apply(onlyCloud === k ? null : k);
+        });
+      })(keys[i]);
+    }
+  })();
+
   glInit();
   repalette();
   resize();
@@ -1749,7 +1793,18 @@ body.light .cl-card .cl-src,
 body.light .cl-card .cl-sub,
 body.light .cl-card .cl-growth{color:#605F5B}
 .cl-legend{display:flex;flex-wrap:wrap;gap:1rem;margin:0 0 .6rem;font-size:.85rem}
-.cl-key{display:inline-flex;align-items:center;gap:.4rem}
+.cl-key{display:inline-flex;align-items:center;gap:.4rem;font:inherit;
+  color:inherit;background:none;border:1px solid transparent;
+  border-radius:999px;padding:.15rem .5rem;margin:-.15rem -.1rem;
+  cursor:default}
+/* Only looks pressable once the script has made it so. */
+.cl-can-filter .cl-key{cursor:pointer}
+.cl-can-filter .cl-key:hover{border-color:rgba(196,164,132,.45)}
+.cl-can-filter .cl-key[aria-pressed="true"]{border-color:rgba(196,164,132,.75);
+  background:rgba(196,164,132,.12)}
+/* Dimmed, not hidden: the count of the clouds you are not looking at is
+   still part of the answer to "how many are there". */
+.cl-legend.cl-filtered .cl-key[aria-pressed="false"]{opacity:.42}
 .cl-dot{display:inline-block;width:10px;height:10px;border-radius:50%;flex:none}
 /* ---- the globe ---------------------------------------------------------
    A square box with its height reserved by aspect-ratio, so the canvas
