@@ -802,7 +802,12 @@ GLOBE_JS = r"""
         + '</span>';
       return;
     }
-    var where = [r.city, r.country].filter(Boolean).join(', ');
+    /* Some regions name a country as their city -- eu-west-1 is "Ireland,
+       Ireland" and europe-west is "Netherlands, Netherlands". The vendor
+       publishes it that way; repeating it is ours. */
+    var where = r.city && r.city !== r.country
+      ? r.city + ', ' + r.country
+      : (r.city || r.country || '');
     /* Zone counts are the vendor's own az_n. Where a vendor does not
        publish one it says so rather than printing a zero, which would read
        as a region with no zones. */
