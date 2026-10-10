@@ -329,8 +329,9 @@ def globe_html(regions, plotted):
         '</div>'
         '<figcaption class="cl-globe-cap">%d regions, on their published '
         'coordinates. Drag to turn, pinch or ctrl+scroll to zoom, '
-        'double-tap a dot to go to it. The lit half is the lit half '
-        '&mdash; the daylight follows real time.'
+        'double-tap a dot to go to it. Zoomed in it takes the whole '
+        'gesture; reset to scroll past it again. The lit half is the lit '
+        'half &mdash; the daylight follows real time.'
         '<button type="button" id="cl-globe-reset" class="cl-globe-reset" '
         'hidden>Reset view</button></figcaption>'
         '<p id="cl-globe-say" class="cl-globe-say" role="status" '
@@ -649,9 +650,9 @@ GLOBE_JS = r"""
      a region's dot and its neighbours are clearly separate; past that the
      coastline data itself runs out of detail. */
   var ZMIN = 1, ZMAX = 6, zoom = 1;
-  /* Cached so the reset button's hidden flag is written on the frame it
-     changes rather than on all sixty of them. */
-  var rstHome = null;
+  /* Cached so the reset button's hidden flag and the canvas's touch-action
+     are written on the frame they change rather than on all sixty of them. */
+  var rstHome = null, cvOwns = null;
   function setView() {
     var l = lam * RAD, p = phi * RAD;
     sl = Math.sin(l); cl = Math.cos(l);
@@ -932,6 +933,22 @@ GLOBE_JS = r"""
     }
     var home = zoom <= ZMIN + 0.01 && Math.abs(phi - 20) < 0.5;
     if (rst && home !== rstHome) { rstHome = home; rst.hidden = home; }
+
+    /* Who gets a vertical swipe, decided by whether the reader has zoomed in.
+       pan-y at rest means the page scrolls past the globe -- it is 45% of a
+       phone screen, and trapping that was the first complaint. none once
+       zoomed means the globe holds still under your finger while you work
+       it, which was the second.
+
+       Only ever changed between gestures. Rewriting touch-action in the
+       middle of a pinch makes the browser reconsider the gesture it is
+       already delivering, and it cancels the pointers -- so the zoom that
+       triggered the change would kill the pinch that caused it. */
+    var owns = zoom > ZMIN + 0.01;
+    if (owns !== cvOwns && live.length === 0) {
+      cvOwns = owns;
+      cv.style.touchAction = owns ? 'none' : 'pan-y';
+    }
     var t0 = performance.now();
     draw();
     budget = budget * 0.85 + (performance.now() - t0) * 0.15;
@@ -947,7 +964,7 @@ GLOBE_JS = r"""
 
      One pointer turns the globe. Two pinch to zoom, and their midpoint pans,
      which is how you reach a place rather than only the centre. */
-  var live = [], pinch = null, lock = null, ease = null;
+  var live = [], pinch = null, ease = null;
 
   function at(id) {
     for (var i = 0; i < live.length; i++) {
@@ -971,7 +988,6 @@ GLOBE_JS = r"""
     ease = null;
     if (live.length === 1) {
       drag = { x: e.clientX, y: e.clientY, lam: lam, phi: phi };
-      lock = null;
     } else if (live.length === 2) {
       var m = mid();
       pinch = { d: gap(), z: zoom, mx: m[0], my: m[1], lam: lam, phi: phi };
@@ -1000,15 +1016,24 @@ GLOBE_JS = r"""
        keep the opposite sense on purpose -- they move the viewpoint, which is
        why ArrowRight still looks further east. */
     var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-    if (p.touch) {
+    if (p.touch && zoom <= ZMIN + 0.01) {
       /* A thumb never swipes straight, and the two axes shared one gain, so
          a 300px swipe left with 40px of drift also tilted the globe 13
          degrees -- "my finger says left and it goes up or down". The first
-         10px of travel pick the axis and the rest of the gesture keeps it. */
-      if (!lock && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
-        lock = Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y';
-      }
-      if (lock === 'x') { dy = 0; } else if (lock === 'y') { dx = 0; }
+         10px of travel pick the axis and the rest of the gesture keeps it.
+
+         Only while the globe is at rest. Then vertical belongs to the page,
+         so a vertical component is drift by definition and throwing it away
+         costs nothing. Zoomed in the globe owns both axes, a vertical swipe
+         is a real instruction, and locking it out would be the second half
+         of the same bug. */
+      /* Discarded outright rather than locked to whichever axis dominates.
+         At rest the vertical gesture is the page's, so the globe has no use
+         for a vertical component under any circumstances -- and choosing an
+         axis would leave the globe tilting on a device or engine that
+         delivers the gesture instead of cancelling it for the scroll. One
+         rule, no dependence on who cancels what. */
+      dy = 0;
     }
     /* Divided by the zoom, or one pixel of finger sweeps six times as far
        when you are six times closer. */
@@ -1065,7 +1090,7 @@ GLOBE_JS = r"""
     if (live.length < 2) { pinch = null; }
 
     if (live.length === 0) {
-      drag = null; lock = null;
+      drag = null;
       idleUntil = performance.now() + 2500;
       /* A tap is a question, a drag is a drag, and a gesture the browser took
          over to scroll the page is neither -- pointercancel must not read as
@@ -1079,7 +1104,6 @@ GLOBE_JS = r"""
       /* A finger lifted off a pinch: carry on turning from where the
          remaining one actually is, not from where the first one landed. */
       drag = { x: live[0].x, y: live[0].y, lam: lam, phi: phi };
-      lock = null;
     }
   }
   cv.addEventListener('pointerup', function (e) { release(e, false); });
