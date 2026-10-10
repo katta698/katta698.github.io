@@ -377,7 +377,8 @@ def globe_html(regions, plotted):
         '<button type="button" id="cl-globe-reset" class="cl-globe-reset" '
         'hidden>Reset view</button>'
         '<button type="button" id="cl-globe-release" '
-        'class="cl-globe-reset cl-globe-release" hidden>Release</button>'
+        'class="cl-globe-reset cl-globe-release" hidden>Release globe'
+        '</button>'
         '</figcaption>'
         '<p id="cl-globe-say" class="cl-globe-say" role="status" '
         'aria-live="polite"></p>'
@@ -1784,11 +1785,16 @@ body.light .cl-card .cl-growth{color:#605F5B}
   cursor:pointer}
 .cl-globe-reset:hover{color:#C4A484;border-color:#C4A484}
 .cl-globe-release{color:#C4A484;border-color:rgba(196,164,132,.45)}
-/* The ring is the whole affordance: without it "the globe has the gesture"
-   is a state the reader can only discover by swiping and being surprised. */
-.cl-globe-box.cl-on::after{content:"";position:absolute;left:-6px;top:-6px;
-  right:-6px;bottom:-6px;border-radius:50%;pointer-events:none;
-  border:1px solid rgba(196,164,132,.55)}
+/* The ring says "the globe has your gestures", which is a state the reader
+   would otherwise discover by swiping and being surprised. It hugs the limb
+   rather than floating six pixels off it: at a distance it read as a second
+   circle drawn around the globe for no reason, and was asked about as one.
+   Touching the edge, it reads as the globe being lit up, which is what it
+   means -- and the Release control appears with it to say what to do. */
+.cl-globe-box.cl-on::after{content:"";position:absolute;left:-1px;top:-1px;
+  right:-1px;bottom:-1px;border-radius:50%;pointer-events:none;
+  border:2px solid rgba(196,164,132,.70);
+  box-shadow:0 0 0 4px rgba(196,164,132,.10)}
 .cl-globe:active{cursor:grabbing}
 .cl-globe:focus-visible{outline:2px solid var(--accent, #C4A484);
   outline-offset:6px}
