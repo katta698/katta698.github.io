@@ -2866,6 +2866,12 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     # to fill rather than one to insert.
     index_month_row = ('<div class="filters month-filters" style="display:none">'
                        '</div>') if index_year_row else ""
+    # And the day row, for the same reason. blog.js builds Today/Yesterday
+    # and the month calendar into it; shipping the empty container means it
+    # fills one that is already in the stack rather than inserting a second
+    # element after paint, which is what check_page_settle exists to catch.
+    index_day_row = ('<div class="filters day-filters" style="display:none">'
+                     '</div>') if index_year_row else ""
 
     # ── Pagination nav ────────────────────────────────────────
     # Hidden by blog.js the moment a filter or search is active, because those
@@ -3410,6 +3416,7 @@ document.documentElement.setAttribute('data-palette',p);}})();</script>
   </div>
   {index_year_row}
   {index_month_row}
+  {index_day_row}
 </div>
 <!-- A news crawl, not a carousel. The sidebar card carrying the same link
      sits ELEVEN screens down on a 390px phone -- measured 2026-09-04, y=9251 of

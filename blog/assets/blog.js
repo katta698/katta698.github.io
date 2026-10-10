@@ -402,6 +402,7 @@
         // that a restored ?month= comes back -- a parameter that, before
         // this, no reader could ever have set.
         rebuildMonthRow();
+        rebuildDayRow();
         applyFilters();
       })
       .catch(() => {
@@ -417,6 +418,8 @@
   let activeTag = 'all';
   let activeYear = 'all';
   let activeMonth = 'all';
+  // A single day, as YYYY-MM-DD. 'all' when the reader has not picked one.
+  let activeDay = 'all';
   let activeService = 'all';
   let activeTopic = 'all';
   let searchTerm = '';
@@ -445,7 +448,7 @@
     // shows the newest 24; re-ordering those and calling it "Oldest" showed the
     // oldest post *on page 1* -- 4 August -- while the archive goes back to
     // 2023. Any non-default view drops pagination and shows the whole set.
-    return activeTag !== 'all' || activeYear !== 'all' || activeMonth !== 'all' ||
+    return activeTag !== 'all' || activeYear !== 'all' || activeMonth !== 'all' || activeDay !== 'all' ||
            activeService !== 'all' || activeTopic !== 'all' || !!searchTerm ||
            sortAsc === true;
   }
@@ -479,8 +482,12 @@
         (card.dataset.topics || '').includes('|' + activeTopic + '|');
       const yearMatch = activeYear === 'all' || d.startsWith(activeYear);
       const monthMatch = activeMonth === 'all' || d.slice(5, 7) === activeMonth;
+      // A day is the whole date, so it stands on its own: picking one from
+      // the Today pill does not require the year and month to be set too.
+      const dayMatch = activeDay === 'all' || d.slice(0, 10) === activeDay;
       const searchMatch = matchSearch(card, normalize(searchTerm));
-      const show = tagMatch && svcMatch && topicMatch && yearMatch && monthMatch && searchMatch;
+      const show = tagMatch && svcMatch && topicMatch && yearMatch
+        && monthMatch && dayMatch && searchMatch;
       card.style.display = show ? '' : 'none';
       if (show) visible++;
     });
@@ -517,6 +524,7 @@
     if (activeTag !== 'all') q.push('tag=' + encodeURIComponent(activeTag));
     if (activeYear !== 'all') q.push('year=' + encodeURIComponent(activeYear));
     if (activeMonth !== 'all') q.push('month=' + encodeURIComponent(activeMonth));
+    if (activeDay !== 'all') q.push('day=' + encodeURIComponent(activeDay));
     if (activeService && activeService !== 'all')
       q.push('service=' + encodeURIComponent(activeService));
     if (sortAsc) q.push('sort=oldest');
@@ -596,15 +604,27 @@
   }
 
   function setYear(year) {
+    if (activeDay !== 'all' && !activeDay.startsWith(year)) { activeDay = 'all'; }
     activeYear = year;
     activeMonth = 'all';
     yearPills.forEach(p => p.classList.toggle('active', p.dataset.year === year));
     rebuildMonthRow();
+    rebuildDayRow();
+    applyFilters();
+  }
+
+  function setDay(day) {
+    activeDay = (activeDay === day && day !== 'all') ? 'all' : day;
+    rebuildDayRow();
     applyFilters();
   }
 
   function setMonth(month) {
     activeMonth = month;
+    // A day inside a month you have just left cannot stay chosen.
+    if (activeDay !== 'all' && activeDay.slice(5, 7) !== month) {
+      activeDay = 'all';
+    }
     monthPills.forEach(p => p.classList.toggle('active', p.dataset.month === month));
     applyFilters();
   }
@@ -673,6 +693,120 @@
     monthRow.style.display = '';
   }
 
+  /* The day row: Today and Yesterday always, a calendar once a month is
+     chosen.
+     -----------------------------------------------------------------------
+     Counts come from the same `cards` the filters read, so the calendar and
+     the list it filters cannot disagree. A day with nothing on it is not a
+     button: a control whose only possible outcome is an empty page is a
+     control that lies about what it does.
+
+     Before the archive arrives `cards` is the 24 posts this page ships, so
+     the counts would be wrong for anything but the newest week. The row is
+     built then and rebuilt on hydration -- same as the month row above, and
+     for the same reason. */
+  var dayRow = document.querySelector('.day-filters');
+  if (!dayRow) {
+    dayRow = document.createElement('div');
+    dayRow.className = 'filters day-filters';
+  }
+
+  function isoLocal(d) {
+    return d.getFullYear() + '-'
+      + String(d.getMonth() + 1).padStart(2, '0') + '-'
+      + String(d.getDate()).padStart(2, '0');
+  }
+
+  function dayCounts() {
+    var n = {};
+    cards.forEach(function (c) {
+      var d = (c.dataset.date || '').slice(0, 10);
+      if (d) { n[d] = (n[d] || 0) + 1; }
+    });
+    return n;
+  }
+
+  function rebuildDayRow() {
+    dayRow.innerHTML = '';
+    var counts = dayCounts();
+    var today = isoLocal(new Date());
+    var yest = isoLocal(new Date(Date.now() - 86400000));
+
+    /* The two shortcuts. Shown with their count, and absent when there is
+       nothing to show -- "Today (0)" is a button that does nothing. */
+    [['Today', today], ['Yesterday', yest]].forEach(function (pair) {
+      var n = counts[pair[1]] || 0;
+      if (!n) { return; }
+      var b = document.createElement('button');
+      b.className = 'filter-pill' + (activeDay === pair[1] ? ' active' : '');
+      b.dataset.day = pair[1];
+      b.textContent = pair[0] + ' (' + n + ')';
+      b.addEventListener('click', function () { setDay(pair[1]); });
+      dayRow.appendChild(b);
+    });
+
+    if (activeDay !== 'all') {
+      var clear = document.createElement('button');
+      clear.className = 'filter-pill day-clear';
+      clear.textContent = 'Clear day';
+      clear.addEventListener('click', function () { setDay('all'); });
+      dayRow.appendChild(clear);
+    }
+
+    /* The calendar, once a month is actually chosen. A grid for a whole
+       year would be a different thing -- useful, but not what "which posts
+       went out on the 3rd" is asking. */
+    if (activeYear !== 'all' && activeMonth !== 'all') {
+      var y = parseInt(activeYear, 10), mo = parseInt(activeMonth, 10);
+      var first = new Date(y, mo - 1, 1);
+      var days = new Date(y, mo, 0).getDate();
+      /* Monday-first, which is what the rest of this site uses. */
+      var lead = (first.getDay() + 6) % 7;
+      var cal = document.createElement('div');
+      cal.className = 'post-cal';
+      ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (d, i) {
+        var h = document.createElement('span');
+        h.className = 'post-cal-h';
+        h.textContent = d;
+        h.setAttribute('aria-hidden', 'true');
+        cal.appendChild(h);
+      });
+      for (var i = 0; i < lead; i++) {
+        var pad = document.createElement('span');
+        pad.className = 'post-cal-pad';
+        cal.appendChild(pad);
+      }
+      for (var dnum = 1; dnum <= days; dnum++) {
+        var iso = activeYear + '-' + activeMonth + '-'
+          + String(dnum).padStart(2, '0');
+        var n2 = counts[iso] || 0;
+        if (!n2) {
+          var empty = document.createElement('span');
+          empty.className = 'post-cal-d post-cal-none';
+          empty.textContent = dnum;
+          cal.appendChild(empty);
+          continue;
+        }
+        var cell = document.createElement('button');
+        cell.type = 'button';
+        cell.className = 'post-cal-d has'
+          + (n2 > 3 ? ' busy' : '') + (activeDay === iso ? ' on' : '');
+        cell.dataset.day = iso;
+        cell.textContent = dnum;
+        cell.title = n2 + (n2 === 1 ? ' post' : ' posts') + ' on ' + iso;
+        cell.setAttribute('aria-label',
+          n2 + (n2 === 1 ? ' post' : ' posts') + ' on ' + iso);
+        (function (d) {
+          cell.addEventListener('click', function () { setDay(d); });
+        })(iso);
+        cal.appendChild(cell);
+      }
+      dayRow.appendChild(cal);
+    }
+
+    dayRow.style.display = dayRow.children.length ? '' : 'none';
+  }
+
   // Year pills come from the server, not from the cards on screen: this runs
   // before cards.json arrives, so scanning the DOM would offer only the years
   // this page's 24 posts happen to cover. Falls back to the DOM scan for any
@@ -724,6 +858,16 @@
     stack.appendChild(filtersEl);
     stack.appendChild(yearRow);
     stack.appendChild(monthRow);
+    stack.appendChild(dayRow);
+  }
+  // The stack is usually the server's, in which case the block above never
+  // runs. The month row is in that markup already; the day row is too, on
+  // pages built since it existed -- but a page built before that has no
+  // .day-filters to find, so put ours in rather than silently offering no
+  // day filter on the older paged views.
+  var builtStack = document.querySelector('.filter-stack');
+  if (builtStack && dayRow.parentNode !== builtStack) {
+    builtStack.appendChild(dayRow);
   }
 
   var yearPills = Array.from(yearRow.querySelectorAll('.filter-pill'));
@@ -825,6 +969,7 @@
   var tagParam = urlParams.get('tag');
   var yearParam = urlParams.get('year');
   var monthParam = urlParams.get('month');
+  var dayParam = urlParams.get('day');
 
   if (urlParams.get('sort') === 'oldest' && sortBtn) {
     sortAsc = true;
@@ -844,6 +989,7 @@
     if (monthParam && /^[01][0-9]$/.test(monthParam)) {
       activeMonth = monthParam;
       rebuildMonthRow();
+      rebuildDayRow();
     }
   }
   if (tagParam) {
@@ -856,6 +1002,15 @@
   // Set after the restore so that re-applying the state cannot rewrite the
   // URL it was just read from -- which on a half-applied restore would mean
   // saving a state the reader never chose.
+  // A day, last, because it is the narrowest. Only a real date in the
+  // shape the cards carry -- a hand-edited ?day=banana should show the
+  // archive rather than an empty grid under a lit pill, same rule as the
+  // year and month above.
+  if (dayParam && /^\d{4}-\d{2}-\d{2}$/.test(dayParam)) {
+    activeDay = dayParam;
+    rebuildDayRow();
+    applyFilters();
+  }
   urlReady = true;
   writeUrl();
 
