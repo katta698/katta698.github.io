@@ -293,6 +293,19 @@ def globe_points(regions):
     return pts
 
 
+def places_json():
+    """The label list, built by build_globe_texture.py and committed.
+
+    Read from disk rather than fetched, so the daily rebuild of this page
+    never depends on a CDN being up -- same reason the texture is committed.
+    """
+    path = os.path.join(ROOT, "scripts", "globe-places.json")
+    if not os.path.exists(path):
+        return "[]"
+    with io.open(path, encoding="utf-8") as fh:
+        return fh.read().strip() or "[]"
+
+
 def earth_src():
     """The texture URL, carrying its own content hash.
 
@@ -358,7 +371,9 @@ def globe_html(regions, plotted):
         '</summary>%s</details>'
         '<script id="cl-globe-land" type="application/json">%s</script>'
         '<script id="cl-globe-pts" type="application/json">%s</script>'
-        '</figure>' % (earth_src(), plotted, "".join(lists), rings, pts))
+        '<script id="cl-globe-places" type="application/json">%s</script>'
+        '</figure>' % (earth_src(), plotted, "".join(lists), rings, pts,
+                       places_json()))
 
 
 def map_svg(regions):
@@ -608,6 +623,27 @@ GLOBE_JS = r"""
                    country: pt[6], zones: pt[7] });
   }
 
+  /* Named places: oceans and seas, capitals, state capitals, cities.
+     Stored as unit vectors for the same reason the regions are -- nothing
+     about a place changes when the earth turns, only the viewer. */
+  var places = [];
+  (function () {
+    var el = document.getElementById('cl-globe-places');
+    if (!el) { return; }
+    var raw;
+    try { raw = JSON.parse(el.textContent || '[]'); } catch (e) { return; }
+    for (var i = 0; i < raw.length; i++) {
+      var q = raw[i], v = vec(q[0], q[1]);
+      places.push({ x: v[0], y: v[1], z: v[2],
+                    n: q[2], t: q[3], sea: q[4] === 1, w: 0, wf: 0 });
+    }
+  })();
+
+  /* The zoom each tier earns its place at. Oceans and capitals from the
+     start; a sea once you have closed in a little; state capitals and
+     ordinary cities only when the view is actually about that country. */
+  var TIER_ZOOM = [0, 0, 1.4, 2.0, 2.9];
+
   /* Where the sun is overhead, right now.
      Declination from the day of the year, subsolar meridian from UTC. Both
      are first-order: good to a fraction of a degree, which is nothing beside
@@ -632,6 +668,13 @@ GLOBE_JS = r"""
     return v || dflt;
   }
   var pal = {};
+  /* Taken from the page rather than hardcoded, so the globe's labels are
+     set in the same face as everything else. */
+  var LAB_FONT = 'system-ui, sans-serif';
+  try {
+    LAB_FONT = getComputedStyle(document.body).fontFamily || LAB_FONT;
+  } catch (e) { /* older engines */ }
+
   function repalette() {
     var lt = document.body.classList.contains('light');
     pal = {
@@ -654,7 +697,16 @@ GLOBE_JS = r"""
       aws:  lt ? '#A5561F' : '#E09244',
       azure: lt ? '#2F5A7E' : '#7FB6E0',
       gcp:  lt ? '#4A6B23' : '#A6CC5C',
-      halo: lt ? 'rgba(42,36,28,0.55)' : 'rgba(12,10,9,0.70)'
+      halo: lt ? 'rgba(42,36,28,0.55)' : 'rgba(12,10,9,0.70)',
+      /* Label colours answer to the MAP, not to the page: the texture is the
+         same in light mode and dark, so these do not flip with the theme.
+         Dark text with a pale halo reads on warm sand and on dark water
+         alike -- one colour cannot, which is what the halo is for. */
+      lab: '#241F19',
+      labHalo: 'rgba(238,233,223,0.72)',
+      sealab: '#D6DEE4',
+      sealabHalo: 'rgba(10,14,18,0.78)',
+      codeHalo: 'rgba(12,10,9,0.82)'
     };
   }
 
@@ -1022,12 +1074,130 @@ GLOBE_JS = r"""
     }
     ctx.globalAlpha = 1;
 
+    drawLabels(rad);
+
     if (picked && picked.on) {
       ctx.beginPath();
       ctx.arc(picked.sx, picked.sy, rad * 2.6, 0, 6.283185);
       ctx.strokeStyle = pal[picked.cloud] || pal.limb;
       ctx.lineWidth = Math.max(1.2, size / 440);
       ctx.stroke();
+    }
+  }
+
+  function hits(b, boxes) {
+    for (var i = 0; i < boxes.length; i++) {
+      var o = boxes[i];
+      if (b[0] < o[0] + o[2] && b[0] + b[2] > o[0]
+          && b[1] < o[1] + o[3] && b[1] + b[3] > o[1]) { return true; }
+    }
+    return false;
+  }
+
+  function label(txt, px, py, fs, centred, fill, halo, boxes) {
+    var w = ctx.measureText(txt).width;
+    var bx = centred ? px - w / 2 - 2 : px + 2;
+    var box = [bx - 1, py - fs * 0.62, w + 6, fs * 1.24];
+    /* Inside the DISC, not merely inside the canvas. A name near the limb
+       whose box fits the canvas still hangs off the edge of the globe and
+       onto the page behind it, which is where "Baghdad" was ending up. Both
+       far corners are tested, so a wide name at the edge is dropped rather
+       than half-drawn. */
+    if (box[0] < 2 || box[0] + box[2] > size - 2
+        || box[1] < 2 || box[1] + box[3] > size - 2) { return false; }
+    /* The visible area is the SMALLER of two circles: the sphere's disc, and
+       the canvas itself, which CSS clips to a circle with border-radius.
+       Zoomed in, R is several times the canvas, so testing against R alone
+       let names run under the mask and come out sliced. */
+    var lim = Math.min(R, size * 0.5) * 0.985;
+    var c1x = box[0] - CX, c2x = box[0] + box[2] - CX;
+    var c1y = box[1] - CY, c2y = box[1] + box[3] - CY;
+    var far = Math.max(Math.abs(c1x), Math.abs(c2x));
+    var fay = Math.max(Math.abs(c1y), Math.abs(c2y));
+    if (far * far + fay * fay > lim * lim) { return false; }
+    if (hits(box, boxes)) { return false; }
+    boxes.push(box);
+    /* Stroked first, then filled. The halo is what makes one colour work on
+       warm sand and on dark water, which no single text colour does. */
+    ctx.strokeStyle = halo;
+    ctx.lineWidth = Math.max(1.8, fs * 0.22);
+    ctx.lineJoin = 'round';
+    ctx.strokeText(txt, bx + 1, py);
+    ctx.fillStyle = fill;
+    ctx.fillText(txt, bx + 1, py);
+    return true;
+  }
+
+  function drawLabels(rad) {
+    var fs = Math.max(9, size / 64);
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+
+    /* The dots reserve their ground before any name is placed, so a label
+       never lands on the thing the page is actually about. */
+    var boxes = [];
+    var i, r;
+    for (i = 0; i < regions.length; i++) {
+      r = regions[i];
+      if (r.on) {
+        boxes.push([r.sx - rad * 1.5, r.sy - rad * 1.5, rad * 3, rad * 3]);
+      }
+    }
+
+    /* The region's own code, once there is room for it. This is the "instead
+       of clicking it, at least we know" part -- us-east-1 beside the dot. */
+    if (zoom >= 1.7) {
+      ctx.font = '600 ' + Math.round(fs * 0.92) + 'px ' + LAB_FONT;
+      for (i = 0; i < regions.length; i++) {
+        r = regions[i];
+        if (!r.on || !r.code) { continue; }
+        /* Clear of the dot's own reservation, not inside it. Placed at
+           1.6x the radius against a box reserved to 2x, every region code
+           collided with its own dot and was dropped -- so not one of them
+           ever drew, which is the half of "at least we know what it is"
+           that matters most. */
+        label(r.code, r.sx + rad * 1.9, r.sy, fs * 0.92, false,
+              pal[r.cloud] || pal.lab, pal.codeHalo, boxes);
+      }
+    }
+
+    /* Density rises with the zoom but more slowly than the room does: at 6x
+       the view holds a country, and forty names on one country is a list,
+       not a map. */
+    var cap = Math.round(10 + 6 * zoom), placed = 0;
+    ctx.font = Math.round(fs) + 'px ' + LAB_FONT;
+    var lastSea = null;
+    for (i = 0; i < places.length && placed < cap; i++) {
+      var q = places[i];
+      if (zoom < TIER_ZOOM[q.t]) { continue; }
+      var x1 = q.x * cl - q.z * sl;
+      var z1 = q.x * sl + q.z * cl;
+      var y2 = q.y * cp - z1 * sp;
+      var z2 = q.y * sp + z1 * cp;
+      /* Not merely on the near side: far enough round that the text is not
+         sitting edge-on at the limb, where it would read as noise. */
+      if (z2 < 0.18) { continue; }
+      var px = CX + R * x1, py = CY - R * y2;
+      if (px < -40 || px > size + 40 || py < -40 || py > size + 40) { continue; }
+
+      if (q.sea !== lastSea) {
+        ctx.font = (q.sea ? 'italic ' : '') + Math.round(fs) + 'px ' + LAB_FONT;
+        lastSea = q.sea;
+      }
+      var ok;
+      if (q.sea) {
+        ok = label(q.n, px, py, fs, true, pal.sealab, pal.sealabHalo, boxes);
+      } else {
+        ok = label(q.n, px + 3, py, fs, false, pal.lab, pal.labHalo, boxes);
+        if (ok) {
+          /* A city is a point, and a name with no anchor floats. */
+          ctx.beginPath();
+          ctx.arc(px, py, Math.max(1.1, fs * 0.13), 0, 6.283185);
+          ctx.fillStyle = pal.lab;
+          ctx.fill();
+        }
+      }
+      if (ok) { placed++; }
     }
   }
 
@@ -1224,7 +1394,7 @@ GLOBE_JS = r"""
       zoom = Math.max(ZMIN, Math.min(ZMAX, pinch.z * (gap() / pinch.d)));
       var m2 = mid(), gz = 0.32 / zoom;
       lam = pinch.lam - (m2[0] - pinch.mx) * gz;
-      phi = Math.max(-78, Math.min(78, pinch.phi + (m2[1] - pinch.my) * gz));
+      phi = Math.max(-90, Math.min(90, pinch.phi + (m2[1] - pinch.my) * gz));
       return;
     }
     if (!drag) { return; }
@@ -1259,7 +1429,14 @@ GLOBE_JS = r"""
        when you are six times closer. */
     var g = 0.32 / zoom;
     lam = drag.lam - dx * g;
-    phi = Math.max(-78, Math.min(78, drag.phi + dy * g));
+    /* +-90, not +-78. The old clamp stopped 12 degrees short of the pole,
+       so the Arctic and the Antarctic could not be looked at directly. At
+       exactly 90 the pole sits at the centre of the disc and lam turns the
+       map in its own plane, which is the right behaviour there and not a
+       degenerate case. North stays up by design: the globe can bring any
+       point on earth to the centre, but it will not tip past the pole and
+       hang upside down, because a map that does that is unreadable. */
+    phi = Math.max(-90, Math.min(90, drag.phi + dy * g));
     if (Math.abs(dx) + Math.abs(dy) > 6) { p.gest = true; }
   });
 
@@ -1293,7 +1470,7 @@ GLOBE_JS = r"""
        which place. */
     if (dbl) {
       if (hit) {
-        ease = { lam: hit.lon, phi: Math.max(-78, Math.min(78, hit.lat)),
+        ease = { lam: hit.lon, phi: Math.max(-90, Math.min(90, hit.lat)),
                  zoom: Math.min(ZMAX, Math.max(2.6, zoom * 1.9)) };
       } else if (zoom > ZMIN + 0.01) {
         ease = { lam: lam, phi: 20, zoom: ZMIN };
@@ -1355,8 +1532,8 @@ GLOBE_JS = r"""
     var k = e.key, step = e.shiftKey ? 15 : 5, hit = true;
     if (k === 'ArrowLeft') { lam -= step; }
     else if (k === 'ArrowRight') { lam += step; }
-    else if (k === 'ArrowUp') { phi = Math.min(78, phi + step); }
-    else if (k === 'ArrowDown') { phi = Math.max(-78, phi - step); }
+    else if (k === 'ArrowUp') { phi = Math.min(90, phi + step); }
+    else if (k === 'ArrowDown') { phi = Math.max(-90, phi - step); }
     else if (k === 'Enter' || k === ' ') {
       /* Step through the regions currently facing the reader, so the panel
          is reachable without a pointer. */
