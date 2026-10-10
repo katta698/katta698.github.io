@@ -40,6 +40,7 @@ store treats "China", "People's Republic of China" and "Republic of China"
 as three countries -- the last of which is Taiwan, which AWS files under
 "Taiwan". Counting without fixing that produces a confident wrong answer.
 """
+import hashlib
 import io
 import json
 import math
@@ -292,6 +293,21 @@ def globe_points(regions):
     return pts
 
 
+def earth_src():
+    """The texture URL, carrying its own content hash.
+
+    Hashed rather than versioned by hand for the same reason blog.css is: a
+    token someone has to remember to bump is a token that goes stale, and a
+    stale globe texture looks like a globe that was never updated.
+    """
+    path = os.path.join(ROOT, "blog", "assets", "earth.webp")
+    if not os.path.exists(path):
+        return ""
+    with open(path, "rb") as fh:
+        h = hashlib.md5(fh.read()).hexdigest()[:8]
+    return "/blog/assets/earth.webp?v=%s" % h
+
+
 def globe_html(regions, plotted):
     """A globe you can turn, and the same facts in text underneath it.
 
@@ -321,6 +337,8 @@ def globe_html(regions, plotted):
     return (
         '<figure class="cl-globe-fig">'
         '<div class="cl-globe-box">'
+        '<canvas id="cl-globe-earth" class="cl-globe-earth" width="900"'
+        ' height="900" aria-hidden="true" data-src="%s"></canvas>'
         '<canvas id="cl-globe" class="cl-globe" width="900" height="900"'
         ' aria-label="A globe showing where AWS, Azure and Google Cloud have'
         ' regions. Drag to turn it, pinch to zoom, double-tap a region to go'
@@ -340,7 +358,7 @@ def globe_html(regions, plotted):
         '</summary>%s</details>'
         '<script id="cl-globe-land" type="application/json">%s</script>'
         '<script id="cl-globe-pts" type="application/json">%s</script>'
-        '</figure>' % (plotted, "".join(lists), rings, pts))
+        '</figure>' % (earth_src(), plotted, "".join(lists), rings, pts))
 
 
 def map_svg(regions):
@@ -628,9 +646,15 @@ GLOBE_JS = r"""
          fight the page. */
       night: lt ? 'rgba(58,48,38,0.30)' : 'rgba(10,9,8,0.62)',
       dawn:  lt ? 'rgba(196,164,132,0.00)' : 'rgba(196,164,132,0.045)',
-      aws:  lt ? '#7A5C3C' : '#C4A484',
-      azure: lt ? '#3F5970' : '#5B7B9A',
-      gcp:  lt ? '#4C6340' : '#8A9A5B'
+      /* More saturated than the card accents they come from, and
+         deliberately so: the land is warm sand now, and #C4A484 on sand is
+         #C4A484 on #C9B59A -- the same colour, so AWS simply disappeared
+         over Africa. Same hue families, enough chroma to separate, and a
+         dark ring under them so they still read on the ocean. */
+      aws:  lt ? '#A5561F' : '#E09244',
+      azure: lt ? '#2F5A7E' : '#7FB6E0',
+      gcp:  lt ? '#4A6B23' : '#A6CC5C',
+      halo: lt ? 'rgba(42,36,28,0.55)' : 'rgba(12,10,9,0.70)'
     };
   }
 
@@ -642,6 +666,178 @@ GLOBE_JS = r"""
     var dpr = Math.min(window.devicePixelRatio || 1, cap);
     var want = Math.max(1, Math.round(r.width * dpr));
     if (want !== size) { size = want; cv.width = size; cv.height = size; }
+  }
+
+  /* ---- the earth, on the GPU ----------------------------------------
+     A single quad, with the sphere solved per pixel in the fragment shader.
+     Same orthographic projection as the 2D code below -- centre of the disc
+     is longitude lam, screen x is R*x1, screen y is R*y2 -- so the dots drawn
+     on the canvas above land exactly where the texture says they should. */
+  var ec = document.getElementById('cl-globe-earth');
+  var gl = null, glU = {}, glTex = null, glQuad = null, glOn = false;
+
+  var VERT =
+    '#version 300 es\n' +
+    'in vec2 a; void main(){ gl_Position = vec4(a, 0.0, 1.0); }';
+
+  var FRAG =
+    '#version 300 es\n' +
+    'precision highp float;\n' +
+    'uniform sampler2D uTex; uniform vec2 uC; uniform float uR;\n' +
+    'uniform mat3 uInv; uniform vec3 uSun; uniform float uGrat;\n' +
+    'uniform float uNight;\n' +
+    'out vec4 o;\n' +
+    'const float PI = 3.141592653589793;\n' +
+    'void main(){\n' +
+    '  vec2 p = (gl_FragCoord.xy - uC) / uR;\n' +
+    '  float r2 = dot(p, p);\n' +
+    '  if (r2 > 1.0) discard;\n' +
+    '  float z = sqrt(max(0.0, 1.0 - r2));\n' +
+    '  vec3 w = uInv * vec3(p, z);\n' +
+    '  float lat = asin(clamp(w.y, -1.0, 1.0));\n' +
+    '  float lon = atan(w.x, w.z);\n' +
+    '  vec2 uv = vec2(lon / (2.0 * PI) + 0.5, 0.5 - lat / PI);\n' +
+    /* The 180th meridian is a discontinuity in uv but not on the earth. Left
+       alone, the automatic derivative there is a whole texture wide, the
+       sampler picks the smallest mip, and a blurred seam runs pole to pole.
+       Taking the wrap out of the derivative is the whole fix. */
+    '  vec2 dx = dFdx(uv), dy = dFdy(uv);\n' +
+    '  dx.x -= round(dx.x); dy.x -= round(dy.x);\n' +
+    /* And cap it. Longitude is singular at the poles -- every meridian
+       meets there, so uv.x swings across the whole texture between
+       neighbouring pixels and the sampler drops to the smallest mip.
+       That drew a smeared dark band across the top of the globe. */
+    '  float m = max(max(abs(dx.x), abs(dx.y)), max(abs(dy.x), abs(dy.y)));\n' +
+    '  if (m > 0.012) { float k = 0.012 / m; dx *= k; dy *= k; }\n' +
+    '  vec3 albedo = textureGrad(uTex, uv, dx, dy).rgb;\n' +
+    /* Night is the same map held down and warmed, not a black mask: the
+       regions on the dark side still have to be findable, and a cold black
+       hemisphere would fight the rest of the page. */
+    '  float lt = dot(w, uSun);\n' +
+    '  float day = smoothstep(-0.10, 0.10, lt);\n' +
+    '  vec3 night = albedo * uNight * vec3(1.06, 0.94, 0.80);\n' +
+    '  vec3 col = mix(night, albedo, day);\n' +
+    '  float dusk = 1.0 - abs(day * 2.0 - 1.0);\n' +
+    '  col += vec3(0.20, 0.09, 0.02) * dusk * 0.55;\n' +
+    /* A graticule drawn in screen space: fwidth gives the line a constant
+       weight however far you have zoomed in, and the clamp keeps the seam
+       from drawing itself as a line. */
+    '  float a1 = lon * (180.0 / PI) / 30.0, a2 = lat * (180.0 / PI) / 30.0;\n' +
+    '  float w1 = min(fwidth(a1), 0.06), w2 = min(fwidth(a2), 0.06);\n' +
+    '  float d1 = abs(fract(a1 + 0.5) - 0.5), d2 = abs(fract(a2 + 0.5) - 0.5);\n' +
+    '  float g = 1.0 - min(smoothstep(0.0, w1, d1), smoothstep(0.0, w2, d2));\n' +
+    '  col = mix(col, col + vec3(0.05, 0.05, 0.04), g * uGrat);\n' +
+    /* Limb darkening, then a thin bright atmosphere just inside the edge.
+       Both are functions of z alone, which is what makes a flat disc read as
+       a ball rather than as a circle with a map on it. */
+    '  col *= 1.0 - 0.34 * pow(1.0 - z, 2.5);\n' +
+    '  col += vec3(0.10, 0.12, 0.13) * pow(1.0 - z, 7.0);\n' +
+    '  o = vec4(col, 1.0);\n' +
+    '}';
+
+  function shader(type, src) {
+    var sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) { return null; }
+    return sh;
+  }
+
+  function glInit() {
+    if (!ec || !ec.getContext) { return; }
+    var src = ec.getAttribute('data-src');
+    if (!src) { return; }
+    try {
+      gl = ec.getContext('webgl2', { antialias: false, alpha: true,
+                                     premultipliedAlpha: false });
+    } catch (e) { gl = null; }
+    if (!gl) { return; }               /* WebGL1 falls back to the 2D globe */
+
+    var vs = shader(gl.VERTEX_SHADER, VERT);
+    var fs = shader(gl.FRAGMENT_SHADER, FRAG);
+    if (!vs || !fs) { gl = null; return; }
+    var pr = gl.createProgram();
+    gl.attachShader(pr, vs); gl.attachShader(pr, fs); gl.linkProgram(pr);
+    if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) { gl = null; return; }
+    gl.useProgram(pr);
+
+    glQuad = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, glQuad);
+    gl.bufferData(gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    var loc = gl.getAttribLocation(pr, 'a');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+    glU = { C: gl.getUniformLocation(pr, 'uC'),
+            R: gl.getUniformLocation(pr, 'uR'),
+            inv: gl.getUniformLocation(pr, 'uInv'),
+            sun: gl.getUniformLocation(pr, 'uSun'),
+            grat: gl.getUniformLocation(pr, 'uGrat'),
+            night: gl.getUniformLocation(pr, 'uNight') };
+
+    glTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, glTex);
+    /* One opaque pixel until the real thing lands, so a slow connection
+       shows the 2D globe rather than a hole. */
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA,
+                  gl.UNSIGNED_BYTE, new Uint8Array([43, 55, 64, 255]));
+
+    var im = new Image();
+    im.decoding = 'async';
+    im.onload = function () {
+      gl.bindTexture(gl.TEXTURE_2D, glTex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, im);
+      /* REPEAT across longitude because the map wraps; clamp down latitude
+         because it does not -- wrapping there would show Antarctica at the
+         north pole. */
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER,
+                       gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      var ext = gl.getExtension('EXT_texture_filter_anisotropic');
+      if (ext) {
+        gl.texParameterf(gl.TEXTURE_2D, ext.TEXTURE_MAX_ANISOTROPY_EXT,
+          Math.min(4, gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+      }
+      glOn = true;
+      ec.style.opacity = '1';
+    };
+    im.onerror = function () { glOn = false; };
+    im.src = src;
+
+    ec.addEventListener('webglcontextlost', function (e) {
+      /* Preventing the default is what allows a restore; until then the 2D
+         globe takes over, so the page never goes blank. */
+      e.preventDefault(); glOn = false;
+    });
+    ec.addEventListener('webglcontextrestored', function () { glInit(); });
+  }
+
+  function glDraw() {
+    if (ec.width !== size) { ec.width = size; ec.height = size; }
+    gl.viewport(0, 0, size, size);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(glU.C, size / 2, size / 2);
+    gl.uniform1f(glU.R, R);
+    gl.uniform3f(glU.sun, sun[0], sun[1], sun[2]);
+    gl.uniform1f(glU.grat, 0.5);
+    /* A night side that works on a cream page is not the one that works on a
+       near-black page. The same map either way -- only how far it is held
+       down changes, so the terminator stays in the same place. */
+    gl.uniform1f(glU.night, document.body.classList.contains('light')
+      ? 0.56 : 0.31);
+    /* view -> world, which for an orthonormal rotation is its transpose.
+       Column-major, because that is how GL reads a mat3. */
+    gl.uniformMatrix3fv(glU.inv, false, new Float32Array([
+      cl, 0, -sl,
+      -sl * sp, cp, -cl * sp,
+      sl * cp, sp, cl * cp]));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
   /* The rotation, as four numbers reused by every point in the frame. */
@@ -718,6 +914,11 @@ GLOBE_JS = r"""
     var a = axis(), ax = a[0], ay = a[1], az = a[2];
     ctx.clearRect(0, 0, size, size);
 
+    if (glOn) {
+      /* The GPU has the earth; this canvas is only the dots from here on. */
+      glDraw();
+    } else {
+
     ctx.beginPath(); ctx.arc(CX, CY, R, 0, 6.283185);
     ctx.fillStyle = pal.sea; ctx.fill();
 
@@ -782,6 +983,7 @@ GLOBE_JS = r"""
     ctx.beginPath(); ctx.arc(CX, CY, R, 0, 6.283185);
     ctx.strokeStyle = pal.limb;
     ctx.lineWidth = Math.max(1, size / 700); ctx.stroke();
+    }
 
     /* Regions last, so a dot is never buried under a coastline. Three
        clouds share a city often enough that an offset is needed -- the flat
@@ -789,7 +991,7 @@ GLOBE_JS = r"""
        so a stack of three reads as three and not one fat dot.
        Grouped by cloud so the fill colour is set three times, not 147. */
     var off = { aws: [-1.6, -1.0], azure: [1.6, -1.0], gcp: [0, 1.7] };
-    var rad = Math.max(2.2, size / 190);
+    var rad = Math.max(2.8, size / 155);
     var order = ['aws', 'azure', 'gcp'];
     ctx.globalAlpha = 0.92;
     for (var c = 0; c < order.length; c++) {
@@ -811,6 +1013,11 @@ GLOBE_JS = r"""
         ctx.moveTo(px + rad, py);
         ctx.arc(px, py, rad, 0, 6.283185);
       }
+      /* Ringed before filling, so the dark edge sits under the colour
+         rather than over the next dot along. */
+      ctx.strokeStyle = pal.halo;
+      ctx.lineWidth = Math.max(1.1, size / 420);
+      ctx.stroke();
       ctx.fill();
     }
     ctx.globalAlpha = 1;
@@ -876,7 +1083,11 @@ GLOBE_JS = r"""
 
   /* Time, not frames. A 120Hz display span this at double speed when the
      step was a constant per frame. */
-  var DEG_PER_SEC = 3.2;
+  /* Doubled, because a full turn took nearly two minutes and read as
+     stalled. Divided by the square root of the zoom so that closing in does
+     not turn a slow drift into a blur: at 6x the ground is six times nearer
+     the eye, and the same angular rate would sweep past far too fast. */
+  var DEG_PER_SEC = 6.4;
 
   /* Spend detail to hold the frame rate.
      -----------------------------------------------------------------------
@@ -893,10 +1104,18 @@ GLOBE_JS = r"""
      stutter it was trying to cure. */
   var tier = 0, budget = 0, overCount = 0, underCount = 0;
   function spend(cost) {
-    if (cost > 20) {
+    /* cost is the frame INTERVAL, not the time spent in draw(). On the GPU
+       path draw() only queues commands and returns, so timing it would
+       report a comfortable millisecond on a device dropping half its frames.
+       The interval is also simply the better measurement: it is the thing a
+       reader can see.
+
+       26ms is about 38fps -- below that it reads as stutter. 18ms is a
+       whisker above a healthy 60Hz frame, so a steady 16.7 climbs back. */
+    if (cost > 26) {
       overCount++; underCount = 0;
       if (overCount >= 12 && tier < 3) { tier++; overCount = 0; resize(); }
-    } else if (cost < 9) {
+    } else if (cost < 18) {
       underCount++; overCount = 0;
       if (underCount >= 12 && tier > 0) { tier--; underCount = 0; resize(); }
     } else { overCount = 0; underCount = 0; }
@@ -929,7 +1148,7 @@ GLOBE_JS = r"""
       }
     }
     if (!drag && !ease && now > idleUntil && !still) {
-      lam -= DEG_PER_SEC * dt;
+      lam -= DEG_PER_SEC * dt / Math.sqrt(zoom);
     }
     var home = zoom <= ZMIN + 0.01 && Math.abs(phi - 20) < 0.5;
     if (rst && home !== rstHome) { rstHome = home; rst.hidden = home; }
@@ -949,9 +1168,10 @@ GLOBE_JS = r"""
       cvOwns = owns;
       cv.style.touchAction = owns ? 'none' : 'pan-y';
     }
-    var t0 = performance.now();
     draw();
-    budget = budget * 0.85 + (performance.now() - t0) * 0.15;
+    /* Seeded on the first frame rather than from zero, or the average spends
+       its first second climbing out of a value no frame ever had. */
+    budget = budget ? budget * 0.85 + (dt * 1000) * 0.15 : dt * 1000;
     spend(budget);
     requestAnimationFrame(frame);
   }
@@ -1161,6 +1381,7 @@ GLOBE_JS = r"""
     new MutationObserver(repalette).observe(document.body,
       { attributes: true, attributeFilter: ['class'] });
   }
+  glInit();
   repalette();
   resize();
   say(null);
@@ -1218,7 +1439,17 @@ body.light .cl-card .cl-growth{color:#605F5B}
    Vertical now belongs to the page and horizontal to the globe, which also
    settles "when I say left it has to go left". Tilting by touch moves to two
    fingers, where there is no scroll gesture to compete with. */
-.cl-globe{width:100%;height:100%;display:block;border-radius:50%;
+/* The earth sits behind the interactive canvas and takes no pointer
+   events, so every handler, the focus ring, touch-action and the hit test
+   stay attached to #cl-globe exactly as before. */
+.cl-globe-earth{position:absolute;left:0;top:0;width:100%;height:100%;
+  display:block;border-radius:50%;pointer-events:none;z-index:0}
+/* position+z-index on the dot layer, and not only on the earth. A positioned
+   element paints above a static one whatever the source order, so the earth
+   was covering every dot that fell inside the disc -- the only ones visible
+   were those near the limb, showing through where the shader discards. */
+.cl-globe{position:relative;z-index:1;
+  width:100%;height:100%;display:block;border-radius:50%;
   touch-action:pan-y;cursor:grab}
 .cl-globe-reset{display:inline-block;margin-left:.5rem;padding:.12rem .5rem;
   font:inherit;font-size:.72rem;color:var(--text-muted);background:none;
