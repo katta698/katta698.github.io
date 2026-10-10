@@ -960,10 +960,15 @@ body.light .cl-gcp{fill:#515C32}
          #C4A484 on #C9B59A -- the same colour, so AWS simply disappeared
          over Africa. Same hue families, enough chroma to separate, and a
          dark ring under them so they still read on the ocean. */
-      aws:  lt ? '#A5561F' : '#E09244',
-      azure: lt ? '#2F5A7E' : '#7FB6E0',
-      gcp:  lt ? '#4A6B23' : '#A6CC5C',
-      halo: lt ? 'rgba(42,36,28,0.55)' : 'rgba(12,10,9,0.70)',
+      /* NOT theme-dependent, and that was the bug. These sit on the
+         texture, which is the same map whichever way the page is set, so a
+         light-mode variant meant a dark dot and a dark region code on a dark
+         halo -- unreadable, and only in light mode, which is why it survived
+         every check run in the dark. */
+      aws:  '#E09244',
+      azure: '#7FB6E0',
+      gcp:  '#A6CC5C',
+      halo: 'rgba(12,10,9,0.70)',
       /* Label colours answer to the MAP, not to the page: the texture is the
          same in light mode and dark, so these do not flip with the theme.
          Dark text with a pale halo reads on warm sand and on dark water
@@ -978,12 +983,30 @@ body.light .cl-gcp{fill:#515C32}
 
   function resize() {
     var r = cv.getBoundingClientRect();
-    /* Tier 3 draws at one device pixel per CSS pixel and lets the browser
-       scale it up. On a 3x phone that is a ninth of the fill. */
-    var cap = tier >= 3 ? 1 : 2;
-    var dpr = Math.min(window.devicePixelRatio || 1, cap);
+    if (r.width <= 0) { return; }
+    var dpr = Math.min(window.devicePixelRatio || 1, 3);
+
+    /* The overlay -- dots and every label -- always at the device's own
+       density. Text is the one thing that must not be upscaled, and a few
+       dozen glyphs cost nothing worth measuring. */
     var want = Math.max(1, Math.round(r.width * dpr));
     if (want !== size) { size = want; cv.width = size; cv.height = size; }
+    /* How many canvas pixels to a CSS pixel. Anything meant to hold a fixed
+       apparent size -- type, dot radius, hit radius -- is written in CSS
+       pixels and multiplied by this, rather than taken as a fraction of the
+       canvas, which silently halves it on a dense screen. */
+    pxr = size / r.width;
+
+    /* The earth is the expensive canvas, so the ladder spends THIS one.
+       Tier 3 drops it to one device pixel per CSS pixel: a ninth of the fill
+       on a 3x phone, and the browser scales the result back up. Softer
+       coastlines under load is a fair trade; soft text was not. */
+    var ecap = tier >= 3 ? 1 : (tier >= 2 ? 1.5 : 2);
+    var ewant = Math.max(1, Math.round(r.width * Math.min(dpr, ecap)));
+    if (ewant !== esize) {
+      esize = ewant;
+      if (ec) { ec.width = esize; ec.height = esize; }
+    }
   }
 
   /* ---- the earth, on the GPU ----------------------------------------
@@ -1179,12 +1202,17 @@ body.light .cl-gcp{fill:#515C32}
   }
 
   function glDraw() {
-    if (ec.width !== size) { ec.width = size; ec.height = size; }
-    gl.viewport(0, 0, size, size);
+    if (!esize) { esize = size; ec.width = esize; ec.height = esize; }
+    gl.viewport(0, 0, esize, esize);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.uniform2f(glU.C, size / 2, size / 2);
-    gl.uniform1f(glU.R, R);
+    /* The earth's canvas may be smaller than the overlay's, so its geometry
+       is the same view expressed in its own pixels. One scale factor, applied
+       to the centre and the radius, keeps the two layers registered -- a dot
+       drawn on the overlay still lands on the country under it. */
+    var k = esize / size;
+    gl.uniform2f(glU.C, esize / 2, esize / 2);
+    gl.uniform1f(glU.R, R * k);
     gl.uniform3f(glU.sun, sun[0], sun[1], sun[2]);
     gl.uniform1f(glU.grat, 0.5);
     /* A night side that works on a cream page is not the one that works on a
@@ -1212,7 +1240,7 @@ body.light .cl-gcp{fill:#515C32}
      so the limit can be about what is useful to look at rather than about
      what the picture can stand. At 12x the view holds roughly nine degrees
      of longitude -- a country, not a continent. */
-  var ZMIN = 1, ZMAX = 12, zoom = 1;
+  var ZMIN = 1, ZMAX = 12, zoom = 1, pxr = 1, esize = 0;
   /* Cached so the reset button's hidden flag and the canvas's touch-action
      are written on the frame they change rather than on all sixty of them. */
   var rstHome = null, cvOwns = null;
@@ -1358,7 +1386,9 @@ body.light .cl-gcp{fill:#515C32}
        so a stack of three reads as three and not one fat dot.
        Grouped by cloud so the fill colour is set three times, not 147. */
     var off = { aws: [-1.6, -1.0], azure: [1.6, -1.0], gcp: [0, 1.7] };
-    var rad = Math.max(2.8, size / 155);
+    /* Just over four CSS pixels of radius. size/155 came out at 2.3 on a
+       phone, which is a four-pixel dot carrying the whole point of the page. */
+    var rad = Math.max(3.6 * pxr, size / 150);
     var order = ['aws', 'azure', 'gcp'];
     ctx.globalAlpha = 0.92;
     for (var c = 0; c < order.length; c++) {
@@ -1444,7 +1474,10 @@ body.light .cl-gcp{fill:#515C32}
   }
 
   function drawLabels(rad) {
-    var fs = Math.max(9, size / 64);
+    /* About 12 CSS pixels, with a little growth on a large globe. The
+       old size/64 was the CSS width over 64 once the device ratio cancelled
+       -- five and a half pixels on a phone. */
+    var fs = Math.max(10.5 * pxr, size / 58);
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
 
