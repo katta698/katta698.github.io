@@ -58,7 +58,17 @@ PLACES_OUT = os.path.join(ROOT, "scripts", "globe-places.json")
 # zoom the visible hemisphere spans roughly 2,900 device pixels, so the
 # texture is still ahead of the screen there; going to 8192 quadrupled the
 # file for detail nothing resolves.
-W, H = 4096, 2048
+# Drawn at 8192 and downsampled to 4096 for the base. The sharp copy is
+# the real render; the base is derived from it, which also antialiases it
+# better than drawing straight at 4096 does.
+#
+# The sharp copy is NOT shipped with the page. It is fetched only once the
+# reader zooms past the point where the base starts being magnified, so a
+# visit that never zooms pays nothing for it.
+W, H = 8192, 4096
+WB, HB = 4096, 2048
+OUT2 = os.path.join(ROOT, "blog", "assets", "earth-hi.webp")
+PX = W / 4096.0            # line weights follow the canvas
 
 # The daylight albedo only. Night is the shader's job -- it darkens and warms
 # this, rather than a second texture, which keeps one file and means the
@@ -395,7 +405,7 @@ def main():
     for pts in holes:
         for shift in (-360.0, 0.0, 360.0):
             mdr.polygon(to_px(pts, shift), fill=0)
-    shelf = mask.filter(ImageFilter.GaussianBlur(9))
+    shelf = mask.filter(ImageFilter.GaussianBlur(9 * PX))
     img = Image.composite(Image.new("RGB", (W, H), SHELF), img, shelf)
     img.paste(Image.new("RGB", (W, H), LAND), (0, 0), mask)
     dr = ImageDraw.Draw(img)
@@ -406,26 +416,32 @@ def main():
     for ls in states:
         pts = unwrap([(c[0], c[1]) for c in ls])
         for shift in (-360.0, 0.0, 360.0):
-            dr.line(to_px(pts, shift), fill=STATE, width=1, joint="curve")
+            dr.line(to_px(pts, shift), fill=STATE,
+                    width=int(round(1 * PX)), joint="curve")
     print("  %d state and province lines" % len(states))
 
     for _fill, stroke, closed in outers:
         for shift in (-360.0, 0.0, 360.0):
             px = to_px(stroke, shift)
             dr.line(px + ([px[0]] if closed else []),
-                    fill=COAST, width=2, joint="curve")
+                    fill=COAST, width=int(round(2 * PX)), joint="curve")
     for pts in holes:
         for shift in (-360.0, 0.0, 360.0):
             dr.line(to_px(pts, shift) + [to_px(pts, shift)[0]],
-                    fill=BORDER, width=2, joint="curve")
+                    fill=BORDER, width=int(round(2 * PX)), joint="curve")
 
     export_places(args.refetch)
 
+    img.save(OUT2, "WEBP", quality=86, method=6)
+    print("  %s  %dx%d  %.0fKB  (fetched only when zoomed in)"
+          % (os.path.relpath(OUT2, ROOT), W, H,
+             os.path.getsize(OUT2) / 1024.0))
+    img = img.resize((WB, HB), Image.LANCZOS)
     img.save(OUT, "WEBP", quality=88, method=6)
     size = os.path.getsize(OUT)
     h = hashlib.md5(io.open(OUT, "rb").read()).hexdigest()[:8]
     print("  %s  %dx%d  %.0fKB  hash %s"
-          % (os.path.relpath(OUT, ROOT), W, H, size / 1024.0, h))
+          % (os.path.relpath(OUT, ROOT), WB, HB, size / 1024.0, h))
     return 0
 
 

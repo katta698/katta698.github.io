@@ -306,6 +306,16 @@ def places_json():
         return fh.read().strip() or "[]"
 
 
+def earth_hi_src():
+    """The sharp texture, fetched on demand rather than shipped."""
+    path = os.path.join(ROOT, "blog", "assets", "earth-hi.webp")
+    if not os.path.exists(path):
+        return ""
+    with open(path, "rb") as fh:
+        h = hashlib.md5(fh.read()).hexdigest()[:8]
+    return "/blog/assets/earth-hi.webp?v=%s" % h
+
+
 def earth_src():
     """The texture URL, carrying its own content hash.
 
@@ -351,7 +361,8 @@ def globe_html(regions, plotted):
         '<figure class="cl-globe-fig">'
         '<div class="cl-globe-box">'
         '<canvas id="cl-globe-earth" class="cl-globe-earth" width="900"'
-        ' height="900" aria-hidden="true" data-src="%s"></canvas>'
+        ' height="900" aria-hidden="true" data-src="%s" data-hi="%s">'
+        '</canvas>'
         '<canvas id="cl-globe" class="cl-globe" width="900" height="900"'
         ' aria-label="A globe showing where AWS, Azure and Google Cloud have'
         ' regions. Drag to turn it, pinch to zoom, double-tap a region to go'
@@ -360,11 +371,14 @@ def globe_html(regions, plotted):
         '</div>'
         '<figcaption class="cl-globe-cap">%d regions, on their published '
         'coordinates. Drag to turn, pinch or ctrl+scroll to zoom, '
-        'double-tap a dot to go to it. Zoomed in it takes the whole '
-        'gesture; reset to scroll past it again. The lit half is the lit '
-        'half &mdash; the daylight follows real time.'
+        'double-tap a dot to go to it. Tap it and it takes the whole '
+        'gesture until you tap away. The lit half is the lit half '
+        '&mdash; the daylight follows real time.'
         '<button type="button" id="cl-globe-reset" class="cl-globe-reset" '
-        'hidden>Reset view</button></figcaption>'
+        'hidden>Reset view</button>'
+        '<button type="button" id="cl-globe-release" '
+        'class="cl-globe-reset cl-globe-release" hidden>Release</button>'
+        '</figcaption>'
         '<p id="cl-globe-say" class="cl-globe-say" role="status" '
         'aria-live="polite"></p>'
         '<details class="cl-globe-list"><summary>Every region, as text'
@@ -372,8 +386,8 @@ def globe_html(regions, plotted):
         '<script id="cl-globe-land" type="application/json">%s</script>'
         '<script id="cl-globe-pts" type="application/json">%s</script>'
         '<script id="cl-globe-places" type="application/json">%s</script>'
-        '</figure>' % (earth_src(), plotted, "".join(lists), rings, pts,
-                       places_json()))
+        '</figure>' % (earth_src(), earth_hi_src(), plotted,
+                       "".join(lists), rings, pts, places_json()))
 
 
 def map_svg(regions):
@@ -856,6 +870,7 @@ GLOBE_JS = r"""
           Math.min(4, gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
       }
       glOn = true;
+      ec.setAttribute('data-tex', 'base');
       ec.style.opacity = '1';
     };
     im.onerror = function () { glOn = false; };
@@ -867,6 +882,48 @@ GLOBE_JS = r"""
       e.preventDefault(); glOn = false;
     });
     ec.addEventListener('webglcontextrestored', function () { glInit(); });
+  }
+
+  var hiAsked = false;
+  function wantHi() {
+    /* Past this the base texture is being enlarged rather than reduced, so
+       this is the moment the extra 728KB starts buying something. */
+    if (hiAsked || !gl || zoom < 2.4) { return; }
+    var src = ec.getAttribute('data-hi');
+    if (!src) { return; }
+    /* 8192 needs 134MB of texture memory with its mipmaps. Most GPUs have
+       it; the ones that do not report a smaller maximum, and the upload is
+       checked for an error afterwards either way -- if it fails, the base
+       texture is still bound and the globe carries on softer rather than
+       blank. */
+    if (gl.getParameter(gl.MAX_TEXTURE_SIZE) < 8192) { hiAsked = true; return; }
+    hiAsked = true;
+    var im = new Image();
+    im.decoding = 'async';
+    im.onload = function () {
+      gl.bindTexture(gl.TEXTURE_2D, glTex);
+      while (gl.getError() !== gl.NO_ERROR) { /* drain */ }
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, im);
+      if (gl.getError() !== gl.NO_ERROR) {
+        var fb = new Image();
+        fb.onload = function () {
+          gl.bindTexture(gl.TEXTURE_2D, glTex);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,
+                        gl.UNSIGNED_BYTE, fb);
+          gl.generateMipmap(gl.TEXTURE_2D);
+        };
+        fb.src = ec.getAttribute('data-src');
+        ec.setAttribute('data-tex', 'base-after-hi-failed');
+        return;
+      }
+      gl.generateMipmap(gl.TEXTURE_2D);
+      /* Recorded on the element so the state is observable from outside.
+         Whether an 8192 upload succeeded is otherwise invisible: it either
+         silently works or silently falls back, and both look like a soft
+         globe. */
+      ec.setAttribute('data-tex', 'hi');
+    };
+    im.src = src;
   }
 
   function glDraw() {
@@ -890,6 +947,7 @@ GLOBE_JS = r"""
       -sl * sp, cp, -cl * sp,
       sl * cp, sp, cl * cp]));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    wantHi();
   }
 
   /* The rotation, as four numbers reused by every point in the frame. */
@@ -897,7 +955,12 @@ GLOBE_JS = r"""
   /* Zoom scales the sphere about the centre of the canvas. Six is about where
      a region's dot and its neighbours are clearly separate; past that the
      coastline data itself runs out of detail. */
-  var ZMIN = 1, ZMAX = 6, zoom = 1;
+  /* 12, not 6. The old ceiling was set when 4096 was the only texture and
+     everything past about 2x was magnification; the sharp copy lifts that,
+     so the limit can be about what is useful to look at rather than about
+     what the picture can stand. At 12x the view holds roughly nine degrees
+     of longitude -- a country, not a continent. */
+  var ZMIN = 1, ZMAX = 12, zoom = 1;
   /* Cached so the reset button's hidden flag and the canvas's touch-action
      are written on the frame they change rather than on all sixty of them. */
   var rstHome = null, cvOwns = null;
@@ -1333,7 +1396,7 @@ GLOBE_JS = r"""
        middle of a pinch makes the browser reconsider the gesture it is
        already delivering, and it cancels the pointers -- so the zoom that
        triggered the change would kill the pinch that caused it. */
-    var owns = zoom > ZMIN + 0.01;
+    var owns = engaged || zoom > ZMIN + 0.01;
     if (owns !== cvOwns && live.length === 0) {
       cvOwns = owns;
       cv.style.touchAction = owns ? 'none' : 'pan-y';
@@ -1355,6 +1418,19 @@ GLOBE_JS = r"""
      One pointer turns the globe. Two pinch to zoom, and their midpoint pans,
      which is how you reach a place rather than only the centre. */
   var live = [], pinch = null, ease = null;
+  /* Whether the reader has told the globe they are working it. Tapping says
+     so; so does zooming. Until then a vertical swipe belongs to the page,
+     because the globe is 45% of a phone screen and trapping the scroll was
+     the first thing reported about it. */
+  var engaged = false;
+  var gbox = cv.parentNode;
+  var rel = null;
+  function engage(v) {
+    if (engaged === v) { return; }
+    engaged = v;
+    if (gbox && gbox.classList) { gbox.classList.toggle('cl-on', v); }
+    if (rel) { rel.hidden = !v; }
+  }
 
   function at(id) {
     for (var i = 0; i < live.length; i++) {
@@ -1406,7 +1482,7 @@ GLOBE_JS = r"""
        keep the opposite sense on purpose -- they move the viewpoint, which is
        why ArrowRight still looks further east. */
     var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-    if (p.touch && zoom <= ZMIN + 0.01) {
+    if (p.touch && !engaged && zoom <= ZMIN + 0.01) {
       /* A thumb never swipes straight, and the two axes shared one gain, so
          a 300px swipe left with 40px of drift also tilted the globe 13
          degrees -- "my finger says left and it goes up or down". The first
@@ -1452,6 +1528,10 @@ GLOBE_JS = r"""
       && (Math.abs(cx - lastX) + Math.abs(cy - lastY) < 30);
     lastTap = now; lastX = cx; lastY = cy;
 
+    /* The tap that asks what a dot is, is also the tap that says "I am
+       working this". One gesture, both meanings, which is why it does not
+       need a separate control to arm it. */
+    engage(true);
     var c = toCanvas(cx, cy);
     var hit = pick(c[0], c[1], 22 * c[2]);
     /* The second tap has to land on the SAME region as the first, or
@@ -1524,8 +1604,24 @@ GLOBE_JS = r"""
       /* Longitude is kept: resetting the view should not also lose the part
          of the world you were looking at. */
       ease = { lam: lam, phi: 20, zoom: ZMIN };
+      engage(false);
     });
   }
+  rel = document.getElementById('cl-globe-release');
+  if (rel) {
+    rel.addEventListener('click', function () { engage(false); });
+  }
+  /* Tapping anywhere else is the plainest way to say you are done with it,
+     and it costs no chrome. Escape does the same for a keyboard. */
+  document.addEventListener('pointerdown', function (e) {
+    if (engaged && gbox && !gbox.contains(e.target)
+        && e.target !== rel && e.target !== rst) {
+      engage(false);
+    }
+  }, true);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && engaged) { engage(false); cv.blur(); }
+  });
 
   cv.setAttribute('tabindex', '0');
   cv.addEventListener('keydown', function (e) {
@@ -1633,6 +1729,12 @@ body.light .cl-card .cl-growth{color:#605F5B}
   border:1px solid var(--border, rgba(255,255,255,.16));border-radius:999px;
   cursor:pointer}
 .cl-globe-reset:hover{color:#C4A484;border-color:#C4A484}
+.cl-globe-release{color:#C4A484;border-color:rgba(196,164,132,.45)}
+/* The ring is the whole affordance: without it "the globe has the gesture"
+   is a state the reader can only discover by swiping and being surprised. */
+.cl-globe-box.cl-on::after{content:"";position:absolute;left:-6px;top:-6px;
+  right:-6px;bottom:-6px;border-radius:50%;pointer-events:none;
+  border:1px solid rgba(196,164,132,.55)}
 .cl-globe:active{cursor:grabbing}
 .cl-globe:focus-visible{outline:2px solid var(--accent, #C4A484);
   outline-offset:6px}
