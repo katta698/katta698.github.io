@@ -323,13 +323,16 @@ def globe_html(regions, plotted):
         '<div class="cl-globe-box">'
         '<canvas id="cl-globe" class="cl-globe" width="900" height="900"'
         ' aria-label="A globe showing where AWS, Azure and Google Cloud have'
-        ' regions. Drag to turn it. Every region is also listed below."'
+        ' regions. Drag to turn it, pinch to zoom, double-tap a region to go'
+        ' to it. Every region is also listed below."'
         ' role="img"></canvas>'
         '</div>'
         '<figcaption class="cl-globe-cap">%d regions, on their published '
-        'coordinates. Drag to turn; it turns by itself when left alone. '
-        'The lit half is the lit half &mdash; the daylight follows real '
-        'time.</figcaption>'
+        'coordinates. Drag to turn, pinch or ctrl+scroll to zoom, '
+        'double-tap a dot to go to it. The lit half is the lit half '
+        '&mdash; the daylight follows real time.'
+        '<button type="button" id="cl-globe-reset" class="cl-globe-reset" '
+        'hidden>Reset view</button></figcaption>'
         '<p id="cl-globe-say" class="cl-globe-say" role="status" '
         'aria-live="polite"></p>'
         '<details class="cl-globe-list"><summary>Every region, as text'
@@ -581,6 +584,7 @@ GLOBE_JS = r"""
   for (var q = 0; q < rawPts.length; q++) {
     var pt = rawPts[q], v = vec(pt[1], pt[2]);
     regions.push({ cloud: pt[0], x: v[0], y: v[1], z: v[2],
+                   lon: pt[1], lat: pt[2],
                    name: pt[3], code: pt[4], city: pt[5],
                    country: pt[6], zones: pt[7] });
   }
@@ -641,11 +645,18 @@ GLOBE_JS = r"""
 
   /* The rotation, as four numbers reused by every point in the frame. */
   var sl = 0, cl = 1, sp = 0, cp = 1, R = 1, CX = 0, CY = 0;
+  /* Zoom scales the sphere about the centre of the canvas. Six is about where
+     a region's dot and its neighbours are clearly separate; past that the
+     coastline data itself runs out of detail. */
+  var ZMIN = 1, ZMAX = 6, zoom = 1;
+  /* Cached so the reset button's hidden flag is written on the frame it
+     changes rather than on all sixty of them. */
+  var rstHome = null;
   function setView() {
     var l = lam * RAD, p = phi * RAD;
     sl = Math.sin(l); cl = Math.cos(l);
     sp = Math.sin(p); cp = Math.cos(p);
-    R = size * 0.46; CX = size / 2; CY = size / 2;
+    R = size * 0.46 * zoom; CX = size / 2; CY = size / 2;
   }
 
   /* The view axis in world space -- the direction pointing at the viewer.
@@ -743,7 +754,16 @@ GLOBE_JS = r"""
       var ux = sv[0] / m, uy = -sv[1] / m;          /* screen-space sunward */
       var g = ctx.createLinearGradient(CX - ux * R, CY - uy * R,
                                        CX + ux * R, CY + uy * R);
-      var mid = Math.max(0.12, Math.min(0.88, 0.5 + sv[2] * 0.42));
+      /* sv[2] is how far the sun lies toward the viewer, so it says how
+         much of the visible face is lit: the centre of an orthographic disc
+         is lit exactly when sv[2] > 0. More sun toward us therefore means
+         LESS night, so the night stop has to retreat -- and it was
+         advancing. The whole thing was inverted. Measured across twelve
+         rotations, eleven showed daylight where the sun was down and night
+         where it was up, which is the "every country is showing like day"
+         that was reported. The degenerate branch below always had the sign
+         right, which is part of why this read as plausible. */
+      var mid = Math.max(0.12, Math.min(0.88, 0.5 - sv[2] * 0.42));
       var soft = 0.17;
       g.addColorStop(0, pal.night);
       g.addColorStop(Math.max(0, mid - soft), pal.night);
@@ -839,8 +859,11 @@ GLOBE_JS = r"""
       + z;
   }
 
-  function pick(mx, my) {
-    var best = null, bestD = 18 * 18;
+  /* The radius is passed in rather than fixed, because 18 canvas pixels is
+     18 CSS pixels on a desktop and six on a 3x phone -- a touch target
+     smaller than the dot it is meant to catch. */
+  function pick(mx, my, rad) {
+    var best = null, bestD = rad * rad;
     for (var i = 0; i < regions.length; i++) {
       var r = regions[i];
       if (!r.on) { continue; }
@@ -890,7 +913,25 @@ GLOBE_JS = r"""
        The page already asserts this elsewhere -- subsolar() computes the
        sun's meridian as 180 - utcH * 15, which decreases through the day
        for the same reason. It spun backwards, and against its own sun. */
-    if (!drag && now > idleUntil && !still) { lam -= DEG_PER_SEC * dt; }
+    if (ease) {
+      /* Time-based, so it lands in the same third of a second on a 60Hz
+         panel and on a 120Hz one. */
+      var ek = 1 - Math.pow(0.0001, dt);
+      var ed = ((ease.lam - lam + 540) % 360) - 180;   /* the short way round */
+      lam += ed * ek;
+      phi += (ease.phi - phi) * ek;
+      zoom += (ease.zoom - zoom) * ek;
+      idleUntil = now + 2500;
+      if (Math.abs(ed) < 0.15 && Math.abs(ease.phi - phi) < 0.15
+          && Math.abs(ease.zoom - zoom) < 0.005) {
+        lam = ease.lam; phi = ease.phi; zoom = ease.zoom; ease = null;
+      }
+    }
+    if (!drag && !ease && now > idleUntil && !still) {
+      lam -= DEG_PER_SEC * dt;
+    }
+    var home = zoom <= ZMIN + 0.01 && Math.abs(phi - 20) < 0.5;
+    if (rst && home !== rstHome) { rstHome = home; rst.hidden = home; }
     var t0 = performance.now();
     draw();
     budget = budget * 0.85 + (performance.now() - t0) * 0.15;
@@ -898,45 +939,172 @@ GLOBE_JS = r"""
     requestAnimationFrame(frame);
   }
 
-  cv.addEventListener('pointerdown', function (e) {
-    drag = { x: e.clientX, y: e.clientY, lam: lam, phi: phi };
-    try { cv.setPointerCapture(e.pointerId); } catch (ex) { /* older engines */ }
-  });
-  cv.addEventListener('pointermove', function (e) {
-    if (!drag) { return; }
-    /* Both signs are negative because lam and phi describe where the
-       VIEWER is, not where the surface is, and dragging moves the surface.
-       A point sits at x1 = sin(lon - lam), so raising lam carries it left;
-       raising phi lifts the viewer north, which carries the surface down.
-       Dragging is direct manipulation -- the earth goes the way the finger
-       goes -- so both drag deltas subtract. Measured, not reasoned: a named
-       region tracked across a 60px drag right moved 54px LEFT before this.
+  /* ---- gestures -----------------------------------------------------
+     Every pointer is tracked, not only the latest one. The old code kept a
+     single `drag` and rewrote it on every pointerdown, so the second finger
+     of a pinch moved the rotation origin to itself and the globe lurched --
+     which is most of what "the scrolling is not seamless" was.
 
-       The arrow keys deliberately keep the opposite sense. They move the
-       viewpoint rather than the globe, which is why ArrowRight still looks
-       further east, the same split every map makes between dragging the
-       map and pressing a key. */
-    lam = drag.lam - (e.clientX - drag.x) * 0.32;
-    phi = Math.max(-78, Math.min(78, drag.phi + (e.clientY - drag.y) * 0.32));
+     One pointer turns the globe. Two pinch to zoom, and their midpoint pans,
+     which is how you reach a place rather than only the centre. */
+  var live = [], pinch = null, lock = null, ease = null;
+
+  function at(id) {
+    for (var i = 0; i < live.length; i++) {
+      if (live[i].id === id) { return live[i]; }
+    }
+    return null;
+  }
+  function gap() {
+    var dx = live[0].x - live[1].x, dy = live[0].y - live[1].y;
+    return Math.sqrt(dx * dx + dy * dy) || 1;
+  }
+  function mid() {
+    return [(live[0].x + live[1].x) / 2, (live[0].y + live[1].y) / 2];
+  }
+
+  cv.addEventListener('pointerdown', function (e) {
+    try { cv.setPointerCapture(e.pointerId); } catch (ex) { /* older engines */ }
+    live.push({ id: e.pointerId, x: e.clientX, y: e.clientY,
+                x0: e.clientX, y0: e.clientY,
+                touch: e.pointerType === 'touch' });
+    ease = null;
+    if (live.length === 1) {
+      drag = { x: e.clientX, y: e.clientY, lam: lam, phi: phi };
+      lock = null;
+    } else if (live.length === 2) {
+      var m = mid();
+      pinch = { d: gap(), z: zoom, mx: m[0], my: m[1], lam: lam, phi: phi };
+      live[0].gest = true; live[1].gest = true;
+    }
   });
-  function release(e) {
+
+  cv.addEventListener('pointermove', function (e) {
+    var p = at(e.pointerId);
+    if (!p) { return; }
+    p.x = e.clientX; p.y = e.clientY;
+
+    if (pinch && live.length >= 2) {
+      zoom = Math.max(ZMIN, Math.min(ZMAX, pinch.z * (gap() / pinch.d)));
+      var m2 = mid(), gz = 0.32 / zoom;
+      lam = pinch.lam - (m2[0] - pinch.mx) * gz;
+      phi = Math.max(-78, Math.min(78, pinch.phi + (m2[1] - pinch.my) * gz));
+      return;
+    }
     if (!drag) { return; }
-    var moved = Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y);
-    drag = null;
-    idleUntil = performance.now() + 2500;
-    /* A drag is a drag and a tap is a question. Four pixels of slop, because
-       a finger never lands perfectly still. */
-    if (moved <= 4) {
-      var b = cv.getBoundingClientRect();
-      var scale = size / b.width;
-      var hit = pick((e.clientX - b.left) * scale, (e.clientY - b.top) * scale);
-      picked = hit;
-      say(hit);
-      if (hit) { idleUntil = performance.now() + 6000; }
+
+    /* Both deltas subtract because lam and phi describe where the VIEWER is,
+       not where the surface is, and dragging moves the surface. A point sits
+       at x1 = sin(lon - lam), so raising lam carries it left; raising phi
+       lifts the viewer north, which carries the surface down. The arrow keys
+       keep the opposite sense on purpose -- they move the viewpoint, which is
+       why ArrowRight still looks further east. */
+    var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (p.touch) {
+      /* A thumb never swipes straight, and the two axes shared one gain, so
+         a 300px swipe left with 40px of drift also tilted the globe 13
+         degrees -- "my finger says left and it goes up or down". The first
+         10px of travel pick the axis and the rest of the gesture keeps it. */
+      if (!lock && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
+        lock = Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y';
+      }
+      if (lock === 'x') { dy = 0; } else if (lock === 'y') { dx = 0; }
+    }
+    /* Divided by the zoom, or one pixel of finger sweeps six times as far
+       when you are six times closer. */
+    var g = 0.32 / zoom;
+    lam = drag.lam - dx * g;
+    phi = Math.max(-78, Math.min(78, drag.phi + dy * g));
+    if (Math.abs(dx) + Math.abs(dy) > 6) { p.gest = true; }
+  });
+
+  function toCanvas(cx, cy) {
+    var b = cv.getBoundingClientRect(), k = size / b.width;
+    return [(cx - b.left) * k, (cy - b.top) * k, k];
+  }
+
+  var lastTap = 0, lastX = 0, lastY = 0, lastHit = null;
+  function tap(cx, cy) {
+    var now = performance.now();
+    var near = (now - lastTap < 330)
+      && (Math.abs(cx - lastX) + Math.abs(cy - lastY) < 30);
+    lastTap = now; lastX = cx; lastY = cy;
+
+    var c = toCanvas(cx, cy);
+    var hit = pick(c[0], c[1], 22 * c[2]);
+    /* The second tap has to land on the SAME region as the first, or
+       quickly inspecting two dots that sit beside each other reads as
+       "take me to this one" and the globe flies off mid-sentence. Time and
+       distance alone are not enough to tell a double-tap from two taps. */
+    var dbl = near && hit === lastHit;
+    lastHit = hit;
+    picked = hit;
+    say(hit);
+    if (hit) { idleUntil = performance.now() + 6000; }
+
+    /* Double-tap is "take me there": the region eases to the centre and the
+       view closes in on it. A single tap only answers what it is. "I can't
+       zoom to a location" was both halves -- no zoom, and no way to say
+       which place. */
+    if (dbl) {
+      if (hit) {
+        ease = { lam: hit.lon, phi: Math.max(-78, Math.min(78, hit.lat)),
+                 zoom: Math.min(ZMAX, Math.max(2.6, zoom * 1.9)) };
+      } else if (zoom > ZMIN + 0.01) {
+        ease = { lam: lam, phi: 20, zoom: ZMIN };
+      } else {
+        ease = { lam: lam, phi: phi, zoom: 2.6 };
+      }
     }
   }
-  cv.addEventListener('pointerup', release);
-  cv.addEventListener('pointercancel', release);
+  function release(e, cancelled) {
+    var p = at(e.pointerId);
+    for (var i = live.length - 1; i >= 0; i--) {
+      if (live[i].id === e.pointerId) { live.splice(i, 1); }
+    }
+    if (live.length < 2) { pinch = null; }
+
+    if (live.length === 0) {
+      drag = null; lock = null;
+      idleUntil = performance.now() + 2500;
+      /* A tap is a question, a drag is a drag, and a gesture the browser took
+         over to scroll the page is neither -- pointercancel must not read as
+         a tap, or scrolling past the globe would select a region on the way.
+         Six pixels of slop, because a finger never lands perfectly still. */
+      if (p && !cancelled && !p.gest) {
+        var moved = Math.abs(p.x - p.x0) + Math.abs(p.y - p.y0);
+        if (moved <= 6) { tap(p.x, p.y); }
+      }
+    } else if (live.length === 1) {
+      /* A finger lifted off a pinch: carry on turning from where the
+         remaining one actually is, not from where the first one landed. */
+      drag = { x: live[0].x, y: live[0].y, lam: lam, phi: phi };
+      lock = null;
+    }
+  }
+  cv.addEventListener('pointerup', function (e) { release(e, false); });
+  cv.addEventListener('pointercancel', function (e) { release(e, true); });
+
+  /* Ctrl+wheel, not plain wheel. A trackpad pinch arrives as ctrl+wheel, so
+     this is the gesture people already use to zoom -- and a plain wheel that
+     zoomed would have to preventDefault, which would trap the page scroll on
+     a desktop exactly as touch-action:none trapped it on a phone. */
+  cv.addEventListener('wheel', function (e) {
+    if (!e.ctrlKey) { return; }
+    e.preventDefault();
+    ease = null;
+    zoom = Math.max(ZMIN, Math.min(ZMAX, zoom * Math.exp(-e.deltaY * 0.0022)));
+    idleUntil = performance.now() + 2500;
+  }, { passive: false });
+
+  var rst = document.getElementById('cl-globe-reset');
+  if (rst) {
+    rst.addEventListener('click', function () {
+      /* Longitude is kept: resetting the view should not also lose the part
+         of the world you were looking at. */
+      ease = { lam: lam, phi: 20, zoom: ZMIN };
+    });
+  }
 
   cv.setAttribute('tabindex', '0');
   cv.addEventListener('keydown', function (e) {
@@ -957,6 +1125,9 @@ GLOBE_JS = r"""
       }
       e.preventDefault(); return;
     }
+    else if (k === '+' || k === '=') { zoom = Math.min(ZMAX, zoom * 1.3); }
+    else if (k === '-' || k === '_') { zoom = Math.max(ZMIN, zoom / 1.3); }
+    else if (k === '0') { ease = { lam: lam, phi: 20, zoom: ZMIN }; }
     else { hit = false; }
     if (hit) { idleUntil = performance.now() + 2500; e.preventDefault(); }
   });
@@ -1015,8 +1186,21 @@ body.light .cl-card .cl-growth{color:#605F5B}
 .cl-globe-fig{margin:1.1rem 0 0}
 .cl-globe-box{position:relative;width:100%;max-width:520px;margin:0 auto;
   aspect-ratio:1/1}
+/* pan-y, not none. The globe is 352px tall on a 390px phone -- 45% of the
+   screen -- and touch-action:none means the browser does no panning at all,
+   so a swipe that began on it could never scroll the page. Reported as "I
+   can't scroll easily", and it was not a matter of feel: it was impossible.
+
+   Vertical now belongs to the page and horizontal to the globe, which also
+   settles "when I say left it has to go left". Tilting by touch moves to two
+   fingers, where there is no scroll gesture to compete with. */
 .cl-globe{width:100%;height:100%;display:block;border-radius:50%;
-  touch-action:none;cursor:grab}
+  touch-action:pan-y;cursor:grab}
+.cl-globe-reset{display:inline-block;margin-left:.5rem;padding:.12rem .5rem;
+  font:inherit;font-size:.72rem;color:var(--text-muted);background:none;
+  border:1px solid var(--border, rgba(255,255,255,.16));border-radius:999px;
+  cursor:pointer}
+.cl-globe-reset:hover{color:#C4A484;border-color:#C4A484}
 .cl-globe:active{cursor:grabbing}
 .cl-globe:focus-visible{outline:2px solid var(--accent, #C4A484);
   outline-offset:6px}
