@@ -720,13 +720,47 @@
       + String(d.getDate()).padStart(2, '0');
   }
 
+  /* Posts per day, from data-days on the grid.
+     -----------------------------------------------------------------------
+     Counted from `cards` this would be one page of posts until the archive
+     fetch landed, so the calendar would show a short fortnight and the row
+     blog.js rebuilt would disagree with the row the server rendered -- which
+     arrives as a layout shift, not as a wrong number. The server counts
+     every post and writes the result onto the grid, so the two agree at
+     first paint and on every page. */
+  var dayCountCache = null;
   function dayCounts() {
+    if (dayCountCache) { return dayCountCache; }
     var n = {};
+    var raw = grid && grid.dataset ? grid.dataset.days : '';
+    if (raw) {
+      raw.split(',').forEach(function (bit) {
+        var i = bit.indexOf(':');
+        if (i > 0) { n[bit.slice(0, i)] = parseInt(bit.slice(i + 1), 10) || 0; }
+      });
+      dayCountCache = n;
+      return n;
+    }
+    /* No attribute: a page built before this existed. Scanning the cards is
+       wrong for the archive and right for this page, which is the better of
+       the two failures. */
     cards.forEach(function (c) {
       var d = (c.dataset.date || '').slice(0, 10);
       if (d) { n[d] = (n[d] || 0) + 1; }
     });
     return n;
+  }
+
+  var DAY_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  /* Relative where relative is true, a date otherwise. The server renders
+     the same two labels against the build date; on any day the site was
+     rebuilt they are identical, so the rebuild changes nothing visible. */
+  function dayLabel(iso, today, yest) {
+    if (iso === today) { return 'Today'; }
+    if (iso === yest) { return 'Yesterday'; }
+    var bits = iso.split('-');
+    return parseInt(bits[2], 10) + ' ' + DAY_MON[parseInt(bits[1], 10) - 1];
   }
 
   function rebuildDayRow() {
@@ -742,16 +776,18 @@
     var today = isoLocal(new Date());
     var yest = isoLocal(new Date(Date.now() - 86400000));
 
-    /* The two shortcuts. Shown with their count, and absent when there is
-       nothing to show -- "Today (0)" is a button that does nothing. */
-    [['Today', today], ['Yesterday', yest]].forEach(function (pair) {
-      var n = counts[pair[1]] || 0;
-      if (!n) { return; }
+    /* The two most recent days that actually have posts -- not "today and
+       yesterday" literally. A reader at 3am on a day with nothing published
+       yet would get an empty row, and an empty row has no height, so filling
+       it later moves the whole post list. The newest two days always exist.
+       This is the same rule the server renders, deliberately. */
+    var recent = Object.keys(counts).sort().reverse().slice(0, 2);
+    recent.forEach(function (iso) {
       var b = document.createElement('button');
-      b.className = 'filter-pill' + (activeDay === pair[1] ? ' active' : '');
-      b.dataset.day = pair[1];
-      b.textContent = pair[0] + ' (' + n + ')';
-      b.addEventListener('click', function () { setDay(pair[1]); });
+      b.className = 'filter-pill' + (activeDay === iso ? ' active' : '');
+      b.dataset.day = iso;
+      b.textContent = dayLabel(iso, today, yest) + ' (' + counts[iso] + ')';
+      b.addEventListener('click', function () { setDay(iso); });
       pillRow.appendChild(b);
     });
 
@@ -816,6 +852,8 @@
       dayRow.appendChild(cal);
     }
 
+    /* Never display:none while it has pills, and it always has pills: a row
+       that appears after paint is the shift this was all written to avoid. */
     dayRow.style.display = dayRow.children.length ? '' : 'none';
   }
 

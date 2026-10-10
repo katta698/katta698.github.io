@@ -14,7 +14,7 @@ import shutil
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import date as _date, datetime, timedelta as _timedelta
 from html import escape
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -2835,6 +2835,23 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     index_years = ",".join(sorted(
         {p["date"].strftime("%Y") for p in posts}, reverse=True))
 
+    # Posts per calendar day, for the day filter and its calendar.
+    #
+    # On the grid rather than counted from the cards in the DOM, because the
+    # cards in the DOM are one page of them. Counted from cards, the calendar
+    # on /blog/ would show the newest fortnight and nothing else until the
+    # archive fetch landed, and /blog/page/4/ would show a different
+    # fortnight -- so the row the server rendered and the row blog.js rebuilt
+    # would disagree, and the disagreement would arrive as a layout shift a
+    # few hundred milliseconds in. That is the failure the year and month
+    # rows above were moved server-side to stop.
+    _day_counts = {}
+    for _p in posts:
+        _k = _p["date"].strftime("%Y-%m-%d")
+        _day_counts[_k] = _day_counts.get(_k, 0) + 1
+    index_days = ",".join("%s:%d" % (k, _day_counts[k])
+                          for k in sorted(_day_counts, reverse=True))
+
     # The year and month rows, rendered here rather than built by blog.js.
     #
     # They used to be created after load, and they are two of the three rows in
@@ -2866,12 +2883,47 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     # to fill rather than one to insert.
     index_month_row = ('<div class="filters month-filters" style="display:none">'
                        '</div>') if index_year_row else ""
-    # And the day row, for the same reason. blog.js builds Today/Yesterday
-    # and the month calendar into it; shipping the empty container means it
-    # fills one that is already in the stack rather than inserting a second
-    # element after paint, which is what check_page_settle exists to catch.
-    index_day_row = ('<div class="filters day-filters" style="display:none">'
-                     '</div>') if index_year_row else ""
+    # And the day row -- with its pills in it, not merely a container for
+    # them.
+    #
+    # Shipping it empty was not enough and the comment above says why: an
+    # empty .day-filters is display:none and has no height, so when blog.js
+    # filled it the whole post list dropped. Measured by the pre-push hook at
+    # 75px on a 390px screen. The month row gets away with being empty
+    # because it stays empty until a year is picked; this row has something to
+    # say immediately, which is the entire point of it.
+    #
+    # Two pills: the two most recent days that actually have posts. Not
+    # "today and yesterday" literally -- a reader at 3am on a day with
+    # nothing published yet would get an empty row, which collapses to no
+    # height, which is the same shift again. The newest two days always
+    # exist.
+    #
+    # The labels are relative to the BUILD date and blog.js recomputes them
+    # against the reader's clock. On any day the site was rebuilt -- which is
+    # every day -- they agree exactly and nothing moves. On a stale page the
+    # text changes from "Today" to a date, which repaints a pill and shifts
+    # nothing above it.
+    _mon = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    _built = _date.today()
+
+    def _day_label(iso):
+        y, m, d = (int(x) for x in iso.split("-"))
+        delta = (_built - _date(y, m, d)).days
+        if delta == 0:
+            return "Today"
+        if delta == 1:
+            return "Yesterday"
+        return "%d %s" % (d, _mon[m - 1])
+
+    _recent = sorted(_day_counts, reverse=True)[:2]
+    _day_pills = "".join(
+        '<button class="filter-pill" data-day="%s">%s (%d)</button>'
+        % (iso, _day_label(iso), _day_counts[iso]) for iso in _recent)
+    index_day_row = ('<div class="filters day-filters">'
+                     '<div class="day-pills">%s</div></div>'
+                     % _day_pills) if (index_year_row and _day_pills) else ""
 
     # ── Pagination nav ────────────────────────────────────────
     # Hidden by blog.js the moment a filter or search is active, because those
@@ -3546,7 +3598,7 @@ document.documentElement.setAttribute('data-palette',p);}})();</script>
 
 <div class="layout">
   <div>
-    <div class="posts-grid" id="posts-grid" data-page="{page}" data-total-pages="{total_pages}" data-years="{index_years}">
+    <div class="posts-grid" id="posts-grid" data-page="{page}" data-total-pages="{total_pages}" data-years="{index_years}" data-days="{index_days}">
       {"".join(cards_html)}
       <div class="empty-state" id="empty-state" style="display:none">
         <h3>No posts found</h3><p>Try a different search term or topic filter.</p>
