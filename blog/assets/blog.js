@@ -626,6 +626,9 @@
       activeDay = 'all';
     }
     monthPills.forEach(p => p.classList.toggle('active', p.dataset.month === month));
+    // The calendar is a calendar of the chosen month, so choosing one is
+    // what brings it into existence.
+    rebuildDayRow();
     applyFilters();
   }
 
@@ -728,6 +731,13 @@
 
   function rebuildDayRow() {
     dayRow.innerHTML = '';
+    /* The shortcuts live in their own full-width row so the calendar is
+       always beneath them rather than beside them. A flex-basis of 100% on
+       the calendar cannot achieve that -- its max-width clamps the size the
+       flex line break is computed from, so on a wide screen it fitted on the
+       same line and the two ended up vertically centred against each other. */
+    var pillRow = document.createElement('div');
+    pillRow.className = 'day-pills';
     var counts = dayCounts();
     var today = isoLocal(new Date());
     var yest = isoLocal(new Date(Date.now() - 86400000));
@@ -742,7 +752,7 @@
       b.dataset.day = pair[1];
       b.textContent = pair[0] + ' (' + n + ')';
       b.addEventListener('click', function () { setDay(pair[1]); });
-      dayRow.appendChild(b);
+      pillRow.appendChild(b);
     });
 
     if (activeDay !== 'all') {
@@ -750,12 +760,14 @@
       clear.className = 'filter-pill day-clear';
       clear.textContent = 'Clear day';
       clear.addEventListener('click', function () { setDay('all'); });
-      dayRow.appendChild(clear);
+      pillRow.appendChild(clear);
     }
 
     /* The calendar, once a month is actually chosen. A grid for a whole
        year would be a different thing -- useful, but not what "which posts
        went out on the 3rd" is asking. */
+    if (pillRow.children.length) { dayRow.appendChild(pillRow); }
+
     if (activeYear !== 'all' && activeMonth !== 'all') {
       var y = parseInt(activeYear, 10), mo = parseInt(activeMonth, 10);
       var first = new Date(y, mo - 1, 1);
@@ -869,6 +881,11 @@
   if (builtStack && dayRow.parentNode !== builtStack) {
     builtStack.appendChild(dayRow);
   }
+  // Built now, not on first interaction. The month row is empty until a year
+  // is picked so it needs no startup call; this one carries Today and
+  // Yesterday from the moment the page loads, which is the whole question it
+  // was added to answer. Omitting this shipped an empty, display:none row.
+  rebuildDayRow();
 
   var yearPills = Array.from(yearRow.querySelectorAll('.filter-pill'));
   yearPills.forEach(function(p) { p.addEventListener('click', function() { setYear(p.dataset.year); }); });
@@ -1034,7 +1051,11 @@
     // posts, so every entry point waits for the full set first.
     if (searchInput) searchInput.addEventListener('focus', hydrate, { once: true });
     document.addEventListener('click', function (e) {
-      if (e.target.closest('.filter-pill, .sb-tag, .svc-name, .topic-chip')) hydrate();
+      // .post-cal-d is in this list because a calendar cell is a filter
+      // click that does not look like one: it carries no .filter-pill
+      // class, so without it picking the 3rd would filter the newest 24
+      // posts and present that as the day.
+      if (e.target.closest('.filter-pill, .sb-tag, .svc-name, .topic-chip, .post-cal-d')) hydrate();
     }, true);
 
     // Deep links are the exception: ?q=, ?tag=, ?service= and ?topic= all
@@ -1050,7 +1071,7 @@
     // about it looks broken.
     const dl = new URLSearchParams(window.location.search);
     if (dl.get('q') || dl.get('tag') || dl.get('service') || dl.get('topic') ||
-        dl.get('year') || dl.get('month') || dl.get('sort')) {
+        dl.get('year') || dl.get('month') || dl.get('day') || dl.get('sort')) {
       hydrate().then(function () {
         if (sortAsc) applySort();
         applyFilters();
