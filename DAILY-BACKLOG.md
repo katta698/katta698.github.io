@@ -92,6 +92,56 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 10 October 2026 — covered by post #51, plus weekly #10
+
+Saturday: three posts. Architecture #78 (Cognito tokens), daily #51, and the
+5-9 October roundup.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Findings export to S3 in CSV or JSON (OCSF), on demand, from any findings page. The finding is provenance: "An export captures the findings that match the filters on the page you start it from", the default CSV is **nine columns**, and none of them records which filters produced the file — for an artefact AWS positions as "a point in time record for audits". JSON (OCSF) "always contain the complete finding", so format is a completeness decision rather than a convenience one | AWS Security Hub | **#51** | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/security-hub-exports-s3-csv-json/) |
+| RDS Protection now detects data exfiltration and destruction in Aurora and RDS. **The week's most important security item and still unwritten.** A new detection class inside a plan many accounts enabled years ago, so nothing visibly changes until it fires — and it needs checking against suppression rules written before these finding types existed (see #74) | Amazon GuardDuty | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/guardduty-rds-data-exfiltration/) |
+
+**Weekly #10 numbers, for the record:** 36 announcements over 5-9 October,
+against 79 the week before. All 19 feeds healthy on the Saturday audit, no
+truncation warning — the What's New feed held 29 September to 9 October, so the
+window sat comfortably inside the 100-item cap. `build_weekly_inventory.py`
+validated 36 of 36 links at 200.
+
+**A clean reconciliation this week, the first of its kind:** every one of the
+five news days produced a daily deep-dive — #47 (5 Oct), #48 (6 Oct), #49
+(7 Oct), #50 (8 Oct), #51 (9 Oct). No orphaned posts and no uncovered days.
+
+**One quiet theme the roundup names:** sovereignty. EC2 R8gd and R8g both landed
+in the AWS European Sovereign Cloud (Germany) Region, S3 Vectors pre-filtering
+reached GovCloud, Claude models reached GovCloud twice, and the Architecture
+blog published a Digital Sovereignty Lens for the Well-Architected Framework.
+None is a headline alone.
+
+**Held items, oldest first. The 1 October pair is now past the feed horizon and
+should be treated as reference only:**
+
+- **IAM Identity Center network access controls for Identity Store** (5 Oct) —
+  five days old and *still* the strongest unwritten item. Flagged in the roundup
+  under "What I would act on". Next daily slot should probably take it.
+- **Client VPN device posture assessment** (5 Oct) — pairs naturally with the
+  item above; both answer "the credential was valid and the device should not
+  have been there".
+- **AWS Continuum for Penetration Testing in CI/CD** (5 Oct, new to this list) —
+  the unanswered question is what a failing result does to a deployment.
+- **Redshift Apache Iceberg materialized views** (5 Oct) — strongest held
+  non-security item, displacing DynamoDB filtered export.
+- **AWS Capabilities by Region availability notifications** (7 Oct) —
+  underrated; turns Regional feature checking from a chore into a subscription.
+- **Control Tower AFT plan-only customization runs** (5 Oct).
+- **Batch job metrics to CloudWatch** (6 Oct) and **Batch EKS access entry
+  authentication** (5 Oct).
+- **GuardDuty Runtime Monitoring in the Security Hub Threat Analytics plan**
+  (2 Oct) — now interacts with #45, #74, #75, #77 and the new RDS Protection
+  detections.
+- **Security Hub remediation plans** and **Secrets Manager posture
+  recommendations** (1 Oct) — past the feed horizon. Links here are the record.
+
 ## 9 October 2026 — covered by post #50
 
 | Item | Service | Status | Importance | Reference |
