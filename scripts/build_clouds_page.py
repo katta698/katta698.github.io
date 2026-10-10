@@ -649,9 +649,24 @@ GLOBE_JS = r"""
   }
 
   /* The view axis in world space -- the direction pointing at the viewer.
-     A ring whose cap lies entirely on the far side of this is skipped. */
+     A ring whose cap lies entirely on the far side of this is skipped.
+
+     It must be the same direction the exact per-point test uses, and it was
+     not: that test is z2 = y*sp + (x*sl + z*cl)*cp, which expands to a dot
+     product with [cp*sl, sp, cp*cl], and this returned the x term negated --
+     a mirrored axis, worst at 90 degrees from the start view and harmless at
+     0. Whether it ever dropped a ring a reader would have seen, I could not
+     measure: rendering the same frame with culling off, with this axis, and
+     with the corrected one produced differences the same size as the
+     run-to-run noise, because the adaptive detail tier and the clock-driven
+     terminator both move between runs. The cull threshold is generous
+     -- cos(cap + 90) = -sin(cap), so a ring goes only when it is clearly
+     behind -- which would explain a mirror rarely changing the answer.
+
+     Corrected regardless. The cheap test now agrees with the exact one, so
+     it can only cull more correctly than it did. */
   function axis() {
-    return [-cp * sl, sp, cp * cl];
+    return [cp * sl, sp, cp * cl];
   }
 
   /* Any world vector, into view space. The same four numbers every point
@@ -867,7 +882,15 @@ GLOBE_JS = r"""
     if (!last) { last = now; }
     var dt = Math.min(now - last, 50) / 1000;
     last = now;
-    if (!drag && now > idleUntil && !still) { lam += DEG_PER_SEC * dt; }
+    /* Earth turns east, so for a fixed viewer the longitude underneath
+       them runs west and the surface drifts to the RIGHT across the disc:
+       omega(north) x r(toward viewer) points screen-right. lam is that
+       viewer longitude, so it decreases.
+
+       The page already asserts this elsewhere -- subsolar() computes the
+       sun's meridian as 180 - utcH * 15, which decreases through the day
+       for the same reason. It spun backwards, and against its own sun. */
+    if (!drag && now > idleUntil && !still) { lam -= DEG_PER_SEC * dt; }
     var t0 = performance.now();
     draw();
     budget = budget * 0.85 + (performance.now() - t0) * 0.15;
@@ -881,8 +904,20 @@ GLOBE_JS = r"""
   });
   cv.addEventListener('pointermove', function (e) {
     if (!drag) { return; }
-    lam = drag.lam + (e.clientX - drag.x) * 0.32;
-    phi = Math.max(-78, Math.min(78, drag.phi - (e.clientY - drag.y) * 0.32));
+    /* Both signs are negative because lam and phi describe where the
+       VIEWER is, not where the surface is, and dragging moves the surface.
+       A point sits at x1 = sin(lon - lam), so raising lam carries it left;
+       raising phi lifts the viewer north, which carries the surface down.
+       Dragging is direct manipulation -- the earth goes the way the finger
+       goes -- so both drag deltas subtract. Measured, not reasoned: a named
+       region tracked across a 60px drag right moved 54px LEFT before this.
+
+       The arrow keys deliberately keep the opposite sense. They move the
+       viewpoint rather than the globe, which is why ArrowRight still looks
+       further east, the same split every map makes between dragging the
+       map and pressing a key. */
+    lam = drag.lam - (e.clientX - drag.x) * 0.32;
+    phi = Math.max(-78, Math.min(78, drag.phi + (e.clientY - drag.y) * 0.32));
   });
   function release(e) {
     if (!drag) { return; }
