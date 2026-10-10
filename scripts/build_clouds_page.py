@@ -1482,9 +1482,17 @@ GLOBE_JS = r"""
   cv.addEventListener('pointerdown', function (e) {
     try { cv.setPointerCapture(e.pointerId); } catch (ex) { /* older engines */ }
     live.push({ id: e.pointerId, x: e.clientX, y: e.clientY,
-                x0: e.clientX, y0: e.clientY,
-                touch: e.pointerType === 'touch' });
+                x0: e.clientX, y0: e.clientY, t0: performance.now(),
+                touch: e.pointerType === 'touch',
+                /* Remembered so pointercancel can put it back. Without this,
+                   a scroll that merely began on the globe would leave it
+                   engaged and the page unable to scroll from there again. */
+                wasEngaged: engaged });
     ease = null;
+    /* "As soon as I click on the globe" is pointerdown, not pointerup.
+       Waiting for the end of the gesture meant the first swipe after
+       touching it still belonged to the page. */
+    engage(true);
     if (live.length === 1) {
       drag = { x: e.clientX, y: e.clientY, lam: lam, phi: phi };
     } else if (live.length === 2) {
@@ -1546,7 +1554,7 @@ GLOBE_JS = r"""
        point on earth to the centre, but it will not tip past the pole and
        hang upside down, because a map that does that is unreadable. */
     phi = Math.max(-90, Math.min(90, drag.phi + dy * g));
-    if (Math.abs(dx) + Math.abs(dy) > 6) { p.gest = true; }
+    if (Math.abs(dx) + Math.abs(dy) > (p.touch ? 12 : 6)) { p.gest = true; }
   });
 
   function toCanvas(cx, cy) {
@@ -1602,13 +1610,26 @@ GLOBE_JS = r"""
     if (live.length === 0) {
       drag = null;
       idleUntil = performance.now() + 2500;
+      if (cancelled && p && !p.wasEngaged) {
+        /* pointercancel means the browser claimed this gesture to scroll the
+           page, which says the finger was scrolling and not working the
+           globe. Hand it straight back. */
+        engage(false);
+      }
       /* A tap is a question, a drag is a drag, and a gesture the browser took
          over to scroll the page is neither -- pointercancel must not read as
          a tap, or scrolling past the globe would select a region on the way.
          Six pixels of slop, because a finger never lands perfectly still. */
       if (p && !cancelled && !p.gest) {
         var moved = Math.abs(p.x - p.x0) + Math.abs(p.y - p.y0);
-        if (moved <= 6) { tap(p.x, p.y); }
+        /* Twelve pixels for a finger, six for a mouse, and under half a
+           second either way. Six was measured against a cursor and applied
+           to thumbs, which roll as they land -- so real taps were being
+           read as drags and the dot they were aimed at never answered. */
+        var slop = p.touch ? 12 : 6;
+        if (moved <= slop && performance.now() - p.t0 < 500) {
+          tap(p.x, p.y);
+        }
       }
     } else if (live.length === 1) {
       /* A finger lifted off a pinch: carry on turning from where the
