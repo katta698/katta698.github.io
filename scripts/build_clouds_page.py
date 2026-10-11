@@ -470,7 +470,15 @@ def build():
     # A button rather than a span, and aria-pressed rather than a class,
     # so the state is the real one a screen reader reads out. It is inert
     # until the globe's script claims it.
-    legend = " ".join(
+    # An explicit All, first and pressed by default, because "tap the
+    # selected one again" is a rule with nowhere to be written down -- it was
+    # asked about within an hour of shipping. One of the four is always
+    # pressed, so the state reads without instruction. It also matches the
+    # blog's own filter rows, which lead with All years.
+    legend = (
+        '<button type="button" class="cl-key cl-key-all" data-cloud="" '
+        'aria-pressed="true">All %d</button> '
+        % sum(counts.get(k, 0) for k, _l, _c, _dx, _dy in CLOUDS)) + " ".join(
         '<button type="button" class="cl-key" data-cloud="%s" '
         'aria-pressed="false">'
         '<span class="cl-dot" style="background:%s"></span>%s %d</button>'
@@ -1734,8 +1742,11 @@ GLOBE_JS = r"""
       onlyCloud = next;
       row.classList.toggle('cl-filtered', !!next);
       for (var i = 0; i < keys.length; i++) {
+        var kc = keys[i].getAttribute('data-cloud');
+        /* All carries an empty data-cloud, so it is pressed exactly when
+           nothing is filtered. One of the four is lit at all times. */
         keys[i].setAttribute('aria-pressed',
-          next && keys[i].getAttribute('data-cloud') === next ? 'true' : 'false');
+          (next ? kc === next : !kc) ? 'true' : 'false');
       }
       /* A region that has just been hidden cannot stay selected: its ring
          would be drawn round nothing and the panel would describe a dot that
@@ -1747,7 +1758,7 @@ GLOBE_JS = r"""
       (function (b) {
         b.addEventListener('click', function () {
           var k = b.getAttribute('data-cloud');
-          apply(onlyCloud === k ? null : k);
+          apply(!k || onlyCloud === k ? null : k);
         });
       })(keys[i]);
     }
@@ -1805,6 +1816,7 @@ body.light .cl-card .cl-growth{color:#605F5B}
 /* Dimmed, not hidden: the count of the clouds you are not looking at is
    still part of the answer to "how many are there". */
 .cl-legend.cl-filtered .cl-key[aria-pressed="false"]{opacity:.42}
+.cl-key-all{font-variant-numeric:tabular-nums}
 .cl-dot{display:inline-block;width:10px;height:10px;border-radius:50%;flex:none}
 /* ---- the globe ---------------------------------------------------------
    A square box with its height reserved by aspect-ratio, so the canvas
