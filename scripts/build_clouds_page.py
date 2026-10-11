@@ -374,6 +374,8 @@ def globe_html(regions, plotted):
         'double-tap a dot to go to it. Tap it and it takes the whole '
         'gesture until you tap away. The lit half is the lit half '
         '&mdash; the daylight follows real time.'
+        '<span id="cl-globe-mode" class="cl-globe-mode" hidden>'
+        'The globe is taking your swipes.</span>'
         '<button type="button" id="cl-globe-reset" class="cl-globe-reset" '
         'hidden>Reset view</button>'
         '<button type="button" id="cl-globe-release" '
@@ -1480,12 +1482,13 @@ GLOBE_JS = r"""
   var onlyCloud = null;
   var engaged = false;
   var gbox = cv.parentNode;
-  var rel = null;
+  var rel = null, mode = null;
   function engage(v) {
     if (engaged === v) { return; }
     engaged = v;
     if (gbox && gbox.classList) { gbox.classList.toggle('cl-on', v); }
     if (rel) { rel.hidden = !v; }
+    if (mode) { mode.hidden = !v; }
   }
 
   function at(id) {
@@ -1684,6 +1687,7 @@ GLOBE_JS = r"""
       engage(false);
     });
   }
+  mode = document.getElementById('cl-globe-mode');
   rel = document.getElementById('cl-globe-release');
   if (rel) {
     rel.addEventListener('click', function () { engage(false); });
@@ -1852,16 +1856,21 @@ body.light .cl-card .cl-growth{color:#605F5B}
   cursor:pointer}
 .cl-globe-reset:hover{color:#C4A484;border-color:#C4A484}
 .cl-globe-release{color:#C4A484;border-color:rgba(196,164,132,.45)}
-/* The ring says "the globe has your gestures", which is a state the reader
-   would otherwise discover by swiping and being surprised. It hugs the limb
-   rather than floating six pixels off it: at a distance it read as a second
-   circle drawn around the globe for no reason, and was asked about as one.
-   Touching the edge, it reads as the globe being lit up, which is what it
-   means -- and the Release control appears with it to say what to do. */
-.cl-globe-box.cl-on::after{content:"";position:absolute;left:-1px;top:-1px;
-  right:-1px;bottom:-1px;border-radius:50%;pointer-events:none;
-  border:2px solid rgba(196,164,132,.70);
-  box-shadow:0 0 0 4px rgba(196,164,132,.10)}
+/* Ahead of the controls, not wedged between them: it is the sentence the
+   buttons answer. */
+.cl-globe-mode{display:inline-block;margin-right:.5rem;color:#C4A484}
+/* There was a ring here and it is gone. It meant "the globe has your
+   gestures" and was asked about twice as "what is the circle?", which is the
+   answer about whether a bare circle can say that.
+
+   It could never have aligned either: the drawn globe is 0.46 of the canvas
+   width, so its limb is at 92% of the box, while a border-radius ring is at
+   100% of it. The ring sat fourteen pixels outside the globe on a phone --
+   a gap no offset tweak closes, because the mismatch is the radius, not the
+   inset. Tying it to the drawn radius would then have broken the moment you
+   zoomed, since past about 1.1x the limb leaves the canvas entirely.
+
+   The state is said in words now. Text cannot be misread as decoration. */
 .cl-globe:active{cursor:grabbing}
 .cl-globe:focus-visible{outline:2px solid var(--accent, #C4A484);
   outline-offset:6px}
