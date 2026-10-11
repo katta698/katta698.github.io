@@ -375,12 +375,12 @@ def globe_html(regions, plotted):
         'gesture until you tap away. The lit half is the lit half '
         '&mdash; the daylight follows real time.'
         '<span id="cl-globe-mode" class="cl-globe-mode" hidden>'
-        'The globe is taking your swipes.</span>'
+        'The globe has your swipes &mdash;</span>'
+        '<button type="button" id="cl-globe-release" '
+        'class="cl-globe-reset cl-globe-release" hidden>'
+        'Let the page scroll</button>'
         '<button type="button" id="cl-globe-reset" class="cl-globe-reset" '
         'hidden>Reset view</button>'
-        '<button type="button" id="cl-globe-release" '
-        'class="cl-globe-reset cl-globe-release" hidden>Release globe'
-        '</button>'
         '</figcaption>'
         '<p id="cl-globe-say" class="cl-globe-say" role="status" '
         'aria-live="polite"></p>'
@@ -1856,8 +1856,10 @@ body.light .cl-card .cl-growth{color:#605F5B}
   cursor:pointer}
 .cl-globe-reset:hover{color:#C4A484;border-color:#C4A484}
 .cl-globe-release{color:#C4A484;border-color:rgba(196,164,132,.45)}
-/* Ahead of the controls, not wedged between them: it is the sentence the
-   buttons answer. */
+/* Ahead of the controls, not wedged between them: it is the first half of a
+   sentence the button finishes. "Release globe" was asked about the same way
+   the ring it replaced was -- it named the mechanism rather than saying what
+   pressing it does for the reader, which is give scrolling back. */
 .cl-globe-mode{display:inline-block;margin-right:.5rem;color:#C4A484}
 /* There was a ring here and it is gone. It meant "the globe has your
    gestures" and was asked about twice as "what is the circle?", which is the
