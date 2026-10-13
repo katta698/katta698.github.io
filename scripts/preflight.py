@@ -60,6 +60,16 @@ BROWSER = {
     # Sits beside check_page_settle deliberately: that one watches the page's
     # shape, this one its visibility. See the note in its docstring.
     "check_entrance_blink",
+    # check_shift was missing here until 2026-10-13, and it drives a browser
+    # like the rest of them. It was in HOOK_BROWSER, so the push hook ran it,
+    # but absent from BROWSER, so --fast ran it too -- which is the one thing
+    # --fast exists to avoid. Measured cost of the omission: 198s of a 434s
+    # Azure push, on the first run after the hook moved to --fast, for a check
+    # no post can affect. The same class of defect as check_colophon_built
+    # noted below, in the opposite direction: that one was listed here and
+    # drove no browser, so it never ran; this one drove a browser and was not
+    # listed, so it always did.
+    "check_shift",
     "check_sticky_clear", "check_occasion_banner", "check_status_cards",
     "check_music", "check_post_controls", "check_nav", "check_contrast",
     "check_bar_settle", "check_feed_theme", "check_sheet_align",
@@ -392,7 +402,20 @@ HOOK = """#!/bin/sh
 # It exists because 41 checks lived in this repo and none of them ran unless
 # somebody remembered. Things reached the live site broken not because they
 # could not be caught, but because nothing forced the catch.
-exec python scripts/preflight.py --hook
+#
+# --fast rather than --hook since 2026-10-13. The browser checks moved to the
+# checks job in deploy-pages.yml, which the deploy now needs -- so they still
+# run, on the same pages, before anything is served. What changed is that they
+# run once per merged tree instead of once per window per push. Three windows
+# were each re-checking the same 439 pages, serialised on the lock in the
+# shared git directory, and a push cost 10-21 minutes of waiting for checks
+# that a post cannot affect: four of them were on the re:Invent page.
+#
+# This was always the plan. The note above ADVISORY says it in as many words:
+# "The real fix is moving the browser checks out of the push hook into CI --
+# preflight already has --fast for exactly this, and the installed hook does
+# not use it." It does now.
+exec python scripts/preflight.py --fast
 """
 
 
