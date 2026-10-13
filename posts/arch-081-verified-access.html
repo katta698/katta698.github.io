@@ -1,0 +1,397 @@
+---
+title: "AWS Architecture Series #81 — Asked again on every request"
+date: '2026-10-13T09:00:00'
+slug: aws-architecture-verified-access
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-10-13'
+verified_claims:
+  - claim: "With AWS Verified Access, you can provide secure access to your applications without requiring the use of a virtual private network (VPN)"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/what-is-verified-access.html
+  - claim: "Verified Access evaluates each application request and helps ensure that users can access each application only when they meet the specified security requirements"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/what-is-verified-access.html
+  - claim: "AWS states that a traditional security model evaluates access once and grants the user access to all applications, while Verified Access evaluates each application access request in real time, which makes it difficult for bad actors to move from one application to another"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/what-is-verified-access.html
+  - claim: "Verified Access logs all access attempts, providing centralized visibility into application access, to help you quickly respond to security incidents and audit requests"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/what-is-verified-access.html
+  - claim: "You are charged hourly for each application on Verified Access, and you are charged for the amount of data processed by Verified Access"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/what-is-verified-access.html
+  - claim: "AWS Verified Access evaluates each application request from your users and allows access based on trust data sent by your chosen trust provider and access policies that you create in Verified Access"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/how-it-works.html
+  - claim: "When a user tries to access an application, Verified Access gets their data from the trust provider and evaluates it against the policies that you set for the application"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/how-it-works.html
+  - claim: "All application requests are denied by default, until a policy is defined"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/how-it-works.html
+  - claim: "Verified Access evaluates the request against the access policy for the group and any application-specific endpoint policies"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/how-it-works.html
+  - claim: "You create a group access policy for each Verified Access group, which is inherited by all endpoints in the group, and you can optionally create application-specific policies and attach them to specific endpoints"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/how-it-works.html
+  - claim: "You must attach at least one trust provider to each Verified Access instance, and you can attach a single identity trust provider and multiple device trust providers to each Verified Access instance"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/how-it-works.html
+  - claim: "Trust data is the security-related data for users or devices that your trust provider sends to Verified Access, also referred to as user claims or trust context, for example the email address of a user or the operating system version of a device"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/how-it-works.html
+  - claim: "Verified Access evaluates trust data against your access policies when it receives each request to access an application"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/how-it-works.html
+  - claim: "A Verified Access group is a collection of Verified Access endpoints, and AWS recommends grouping the endpoints for applications with similar security requirements to simplify policy administration"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/how-it-works.html
+  - claim: "A trust provider is a service that sends information about users and devices to AWS Verified Access, and this information is called trust context"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/trust-providers.html
+  - claim: "Trust context can include attributes based on user identity, such as an email address or membership in the sales organization, or device information such as installed security patches or anti-virus software version"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/trust-providers.html
+  - claim: "Verified Access supports two categories of trust providers, user identity providers that store and manage digital identities for users, and device management systems for devices such as laptops, tablets, and smartphones"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/trust-providers.html
+  - claim: "A Verified Access endpoint represents an application, each endpoint is associated with a Verified Access group and inherits the access policy for the group, and you can optionally attach an application-specific endpoint policy to each endpoint"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/verified-access-endpoints.html
+  - claim: "The possible Verified Access endpoint types are load balancer, network interface, network CIDR, and Amazon Relational Database Service, where RDS requests are sent to an RDS instance, RDS cluster, or RDS DB proxy"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/verified-access-endpoints.html
+  - claim: "An AWS Verified Access instance is an AWS resource that helps you organize your trust providers and Verified Access groups, and an instance evaluates application requests and grants access only when your security requirements are met"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/verified-access-instances.html
+problem: "A VPN authenticates you once and then you are inside. Every application behind it trusts the network you are on, so a credential that worked at nine in the morning still works at five, and a laptop that fell out of compliance at lunchtime is still on the network."
+builds: "A reading of what Verified Access evaluates and when, where its policies live, and what it asks a trust provider for on each request."
+catch: "AWS states the contrast plainly: 'A traditional security model evaluates access once and grants the user access to all applications. Verified Access evaluates each application access request in real time.' Which makes this the architectural inverse of a bearer token - and the catch is in the plumbing: one instance accepts a single identity trust provider and multiple device trust providers, so your device signals can be plural while your identity source cannot."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #081 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">Asked again on every request</h1>
+  <p class="post-subtitle">A token answers once and keeps answering until it expires. Verified Access goes back to the trust provider each time &mdash; which fixes the staleness problem three posts in this series have been circling, and introduces a different one.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <a href="/blog/aws-architecture-cognito-tokens/">#78</a> ended on a token whose claims were fixed at
+      issuance: remove a user from a group and the token in their browser still says they are in it.
+      <a href="/blog/aws-architecture-verified-permissions/">#79</a> made a decision per request but from
+      attributes the caller supplied. This is the service that closes that loop, and AWS frames it as a
+      direct contrast with what came before:
+    </p>
+    <p>
+      <em>&ldquo;A traditional security model evaluates access <strong>once</strong> and grants the user access
+      to <strong>all applications</strong>. Verified Access evaluates <strong>each application access request
+      in real time</strong>. This makes it difficult for bad actors to move from one application to
+      another.&rdquo;</em>
+    </p>
+    <p>
+      The mechanism is the part worth reading twice:
+      <em>&ldquo;When a user tries to access an application, Verified Access <strong>gets their data from the
+      trust provider</strong> and evaluates it against the policies that you set for the application.&rdquo;</em>
+      Not reads a claim. Gets the data.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>One identity provider, many device providers</strong></div>
+      <div class="challenge-body">
+        <p>
+          The constraint is stated once and has structural consequences:
+          <em>&ldquo;You must attach <strong>at least one</strong> trust provider to each Verified Access
+          instance. You can attach a <strong>single identity trust provider</strong> and <strong>multiple device
+          trust providers</strong> to each Verified Access instance.&rdquo;</em>
+        </p>
+        <p>
+          So device signals are plural by design &mdash; you can combine an MDM and an EDR and have both
+          contribute &mdash; while identity is singular. An instance speaks to exactly one directory.
+        </p>
+        <p>
+          That is a sensible default and it decides your topology. Contractors in a separate directory from
+          employees, or an acquisition on its own tenant, cannot be served by one instance. You get a second
+          instance, with its own groups, its own endpoints and its own policies to keep in step &mdash; and each
+          application that must serve both populations needs an endpoint in each.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Settle the identity topology before the application topology. The number of directories you must satisfy is the number of Verified Access instances you will run, and that multiplies everything beneath it.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Two policies apply, and the group one is inherited</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;Verified Access evaluates the request against the access policy for the group
+          <strong>and</strong> any application-specific endpoint policies.&rdquo;</em>
+        </p>
+        <p>
+          And the inheritance is automatic:
+          <em>&ldquo;Each endpoint is associated with a Verified Access group and <strong>inherits the access
+          policy for the group</strong>. You can <strong>optionally</strong> attach an application-specific
+          endpoint policy to each endpoint.&rdquo;</em>
+        </p>
+        <p>
+          So an endpoint policy is additive rather than a replacement. Adding a stricter rule to one application
+          does not loosen the group's, and &mdash; more to the point &mdash; loosening one application means
+          editing the group, which reaches every endpoint in it. The grouping AWS recommends is
+          <em>&ldquo;endpoints for applications with <strong>similar security requirements</strong>&rdquo;</em>,
+          and that recommendation is load-bearing rather than cosmetic.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Group by the policy you want, not by team or environment. A group is the unit at which a rule is written once and applied to everything inside it, so an application with genuinely different requirements wants its own group rather than an exception.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>An endpoint with no policy denies everything</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;<strong>All application requests are denied by default, until a policy is
+          defined.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Which is the correct default and the one that produces a confusing first hour. Stand up an instance, a
+          group and an endpoint, point a browser at the application, and the answer is no &mdash; not because
+          anything is misconfigured, but because nothing has said yes yet.
+        </p>
+        <p>
+          It is the same shape as <a href="/blog/aws-architecture-verified-permissions/">#79</a>, where a DENY
+          with no determining policy means nobody granted rather than somebody forbade. Here the equivalent
+          question is whether the deny came from a policy you wrote or from the absence of one, and the
+          distinction matters in exactly the same way.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Use the logs. <em>&ldquo;Verified Access logs <strong>all</strong> access attempts&rdquo;</em>, so a denial during setup is visible rather than inferred &mdash; and knowing a default deny from an evaluated one is worth the time it takes to wire logging up first.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Five nouns, and the relationships between them decide everything else.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-081-verified-access.svg" alt="Diagram: how AWS Verified Access evaluates an application request, what it asks a trust provider for on each request, and where its policies live. AWS states that Verified Access provides secure access to applications without requiring the use of a virtual private network, and that it evaluates each application request to ensure users can access each application only when they meet the specified security requirements. The contrast AWS draws is that a traditional security model evaluates access once and grants the user access to all applications, whereas Verified Access evaluates each application access request in real time, which makes it difficult for bad actors to move from one application to another. The mechanism is that when a user tries to access an application, Verified Access gets their data from the trust provider and evaluates it against the policies set for that application, so the trust data is fetched rather than read from a previously issued credential. Five components make up the service. A Verified Access instance is the resource that organises trust providers and groups, and it evaluates application requests and grants access only when security requirements are met. A Verified Access endpoint represents an application, and the available endpoint types are load balancer, network interface, network CIDR, and Amazon Relational Database Service, where RDS requests go to an RDS instance, cluster or DB proxy. A Verified Access group is a collection of endpoints, and AWS recommends grouping endpoints for applications with similar security requirements to simplify policy administration. Access policies are user-defined rules determining whether to allow or deny access, and a group access policy is created for each group and inherited by all endpoints in that group, while application-specific policies may optionally be attached to individual endpoints, with the request evaluated against the group policy and any endpoint policies together, making an endpoint policy additive rather than a replacement. Trust providers are services that manage user identities or device security state, and the data they send is called trust data, also referred to as user claims or trust context, for example a user's email address or a device's operating system version. A critical plumbing asymmetry is that at least one trust provider must be attached to each instance, and an instance accepts a single identity trust provider but multiple device trust providers, so device signals can be plural while the identity source cannot, which means separate directories for contractors or an acquisition require separate instances with their own groups, endpoints and policies. Trust context can include attributes based on user identity such as an email address or membership in a sales organisation, or device information such as installed security patches or anti-virus software version, and Verified Access supports two categories of trust provider accordingly: user identity providers and device management systems for laptops, tablets and smartphones. On defaults, all application requests are denied by default until a policy is defined, so a newly created endpoint refuses everything until something grants access, and distinguishing a default denial from an evaluated one matters in the same way it does for an authorization decision with no determining policy. Verified Access logs all access attempts, providing centralised visibility into application access to help respond to security incidents and audit requests, which is what makes a setup-time denial visible rather than inferred. On cost, charging is hourly for each application on Verified Access plus the amount of data processed, so the per-application hourly component means the number of endpoints is a standing cost rather than a usage-driven one, and an endpoint created for a decommissioned application continues to charge." />
+      <figcaption>The trust data is fetched on each request, not carried by the request.</figcaption>
+    </figure>
+
+    <h3>The five components</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Component</th><th>What it is</th></tr>
+      <tr><td><strong>Instance</strong></td><td><em>&ldquo;an AWS resource that helps you organize your trust providers and Verified Access groups&rdquo;</em> &mdash; and the thing that evaluates</td></tr>
+      <tr><td><strong>Endpoint</strong></td><td><em>&ldquo;represents an application&rdquo;</em> &mdash; load balancer, network interface, network CIDR, or RDS</td></tr>
+      <tr><td><strong>Group</strong></td><td><em>&ldquo;A collection of Verified Access endpoints&rdquo;</em>, sharing one inherited policy</td></tr>
+      <tr><td><strong>Access policy</strong></td><td>Rules on <em>&ldquo;a combination of factors, including user identity and device security state&rdquo;</em></td></tr>
+      <tr><td><strong>Trust provider</strong></td><td><em>&ldquo;A service that manages user identities or device security state&rdquo;</em></td></tr>
+    </table>
+    </div>
+
+    <h3>What "trust data" actually is, and the word AWS uses for it</h3>
+    <p>
+      <em>&ldquo;Trust data &mdash; The security-related data for users or devices that your trust provider sends
+      to Verified Access. Also referred to as <strong>user claims</strong> or <strong>trust
+      context</strong>.&rdquo;</em>
+    </p>
+    <p>
+      <em>User claims</em> is the same word <a href="/blog/aws-architecture-cognito-tokens/">#78</a> was about,
+      and the difference is entirely in the timing. A Cognito claim is written into a token at issuance and
+      asserts what was true then. A Verified Access claim is fetched from the provider when the request arrives.
+      Same noun, opposite freshness guarantee.
+    </p>
+    <p>
+      The examples show the range:
+      <em>&ldquo;attributes based on user identity, such as an email address&rdquo;</em> or membership in a
+      named organisational group, or <em>&ldquo;device information such as <strong>installed security patches
+      or anti-virus software version</strong>&rdquo;</em>. The second half is the part a bearer token cannot
+      carry usefully, because a patch level at nine in the morning says nothing about the laptop at five.
+    </p>
+
+    <div class="callout amber">
+      <strong>The RDS endpoint type is the one to notice</strong>
+      <p>The endpoint types are <em>&ldquo;Load balancer&hellip; Network interface&hellip; Network CIDR&hellip; Amazon Relational Database Service (RDS) &mdash; Application requests are sent to an <strong>RDS instance, RDS cluster, or RDS DB proxy</strong>.&rdquo;</em></p>
+      <p>Everything else on that list is a way of reaching a web application. RDS is a database — so this is per-request, device-aware, identity-aware access control in front of a database, for the analyst connecting with a SQL client rather than a browser. That is a different problem from the one Verified Access is usually described as solving, and it is the one most organisations currently answer with a bastion host and a VPN.</p>
+    </div>
+
+    <h3>Where policy actually lives</h3>
+    <p>
+      Two levels, evaluated together:
+    </p>
+    <p>
+      <strong>Group policy</strong> &mdash; written once, <em>&ldquo;inherited by all endpoints in the
+      group&rdquo;</em>. This is where the rules that apply to a class of application belong: the device must be
+      managed, the user must be in the right directory group, the posture must be current.
+    </p>
+    <p>
+      <strong>Endpoint policy</strong> &mdash; <em>&ldquo;optionally&rdquo;</em> attached to one application.
+      This is for the requirement that genuinely differs: the finance application that additionally wants a
+      stronger authentication assurance, say.
+    </p>
+    <p>
+      Because both are evaluated, the group is a floor you cannot go below from an endpoint. Any argument that
+      ends with "but this one application needs to be more permissive" is an argument for a different group, not
+      for an endpoint policy.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Removing the VPN removes a class of problem rather than relocating it</h3>
+    <p>
+      <em>&ldquo;Verified Access removes the need for users to use a VPN to access your applications. This helps
+      reduce the number of support cases arising from VPN-related issues.&rdquo;</em>
+    </p>
+    <p>
+      The support-case framing undersells it. A VPN's real cost is architectural: it makes network position a
+      proxy for authorisation, so every application behind it inherits the same trust decision, made once at
+      connection time. The lateral movement AWS mentions &mdash; <em>&ldquo;difficult for bad actors to move
+      from one application to another&rdquo;</em> &mdash; is the direct consequence of per-application evaluation
+      replacing per-session admission.
+    </p>
+
+    <h3>Logging every attempt is what makes the model auditable</h3>
+    <p>
+      <em>&ldquo;Verified Access logs <strong>all</strong> access attempts, providing centralized visibility into
+      application access, to help you quickly respond to security incidents and audit requests.&rdquo;</em>
+    </p>
+    <p>
+      All attempts, not all grants. That is the difference between a log that answers "who used this
+      application" and one that answers "who tried". For a service whose default is deny, the denials are the
+      interesting half &mdash; they are where a failing device posture or a removed directory membership shows
+      up as behaviour rather than as a ticket.
+    </p>
+    <p>
+      It is also the answer to the setup confusion in card 3: a default deny and a policy-evaluated deny both
+      end a request, and the log is the only thing that distinguishes them.
+    </p>
+
+    <div class="callout red">
+      <strong>The hourly charge is per application, so unused endpoints cost money quietly</strong>
+      <p><em>&ldquo;You are charged <strong>hourly for each application</strong> on Verified Access, and you are charged for the <strong>amount of data processed</strong> by Verified Access.&rdquo;</em></p>
+      <p>Two components with different shapes. Data processing scales with use, which is the half people plan for. The per-application hourly charge does not — an endpoint for an application nobody has opened since March bills exactly like one carrying production traffic.</p>
+      <p>So the number of endpoints is a standing cost, and decommissioning an application means deleting its endpoint rather than merely pointing it nowhere. That belongs in the same checklist as <a href="/blog/aws-architecture-ram-resource-shares/">#80</a>'s point about share definitions in code: the resource outlives the thing it was created for unless something removes it.</p>
+    </div>
+
+    <h3>The device half is where this earns its place</h3>
+    <p>
+      Multiple device trust providers, evaluated per request, against data like
+      <em>&ldquo;installed security patches or anti-virus software version&rdquo;</em>. That is a control a
+      token-based model cannot express at all, because the facts change on a timescale shorter than any sensible
+      token lifetime.
+    </p>
+    <p>
+      It is also the connection to a backlog item from last week: Client VPN gained device posture assessment on
+      5 October. Both are answers to the same question &mdash; the credential was valid and the device should not
+      have been there &mdash; and the difference is where the check sits. Client VPN checks at admission to the
+      network; Verified Access checks at admission to each application.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Number of instances</td>
+        <td>One per identity source</td>
+        <td><em>&ldquo;a single identity trust provider&rdquo;</em> per instance is the hard constraint.</td>
+      </tr>
+      <tr>
+        <td>Device signals</td>
+        <td>Attach more than one where you have them</td>
+        <td><em>&ldquo;multiple device trust providers&rdquo;</em> are supported, and they answer different questions.</td>
+      </tr>
+      <tr>
+        <td>Grouping endpoints</td>
+        <td>By security requirement, not by team</td>
+        <td>The group policy is <em>&ldquo;inherited by all endpoints in the group&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>An application needing looser rules</td>
+        <td>Give it its own group</td>
+        <td>Endpoint policy is additive; it cannot relax the group's floor.</td>
+      </tr>
+      <tr>
+        <td>First deployment</td>
+        <td>Wire up logging before the first endpoint</td>
+        <td>Default deny means your first test fails, and the log is what tells you why.</td>
+      </tr>
+      <tr>
+        <td>Database access</td>
+        <td>Consider the RDS endpoint type</td>
+        <td>It reaches <em>&ldquo;an RDS instance, RDS cluster, or RDS DB proxy&rdquo;</em> — the bastion-host problem.</td>
+      </tr>
+      <tr>
+        <td>Decommissioning</td>
+        <td>Delete the endpoint</td>
+        <td>The hourly charge is <em>&ldquo;for each application&rdquo;</em> regardless of traffic.</td>
+      </tr>
+      <tr>
+        <td>Auditing access</td>
+        <td>Read denials as well as grants</td>
+        <td><em>&ldquo;logs all access attempts&rdquo;</em>, and for a default-deny service the denials carry the signal.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      Count your Verified Access endpoints and reconcile them against applications that still exist. Each one is
+      an hourly charge and a policy surface, and an endpoint whose application was retired is both a cost and a
+      row that makes the inventory harder to read.
+    </p>
+    <p>
+      Then look at which endpoints carry their own policy. Every endpoint policy is a statement that this
+      application differs from its group &mdash; which is sometimes true and is more often a sign that the
+      grouping was done by org chart rather than by requirement.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      This is the post that resolves something four others have been circling.
+      <a href="/blog/aws-architecture-cognito-tokens/">#78</a> showed a credential asserting what was true when
+      it was signed. <a href="/blog/aws-architecture-verified-permissions/">#79</a> showed a decision made per
+      request but from data the caller chose to send.
+      <a href="/blog/aws-architecture-ram-resource-shares/">#80</a> showed access whose other half was
+      administered elsewhere. Verified Access answers all three the same way: it goes and asks, every time,
+      and the asking is the product.
+    </p>
+    <p>
+      What it costs is a different kind of coupling. You are now live-dependent on a trust provider for every
+      request rather than once per session, your identity topology is pinned to one directory per instance, and
+      every application is an hourly line item whether anyone opens it or not. Those are real trades, and they
+      are the honest price of not having a network perimeter do your authorisation for you.
+    </p>
+    <p>
+      The sentence to carry away is AWS's own, because it is the whole design in one line:
+      <em>&ldquo;A traditional security model evaluates access once and grants the user access to all
+      applications.&rdquo;</em> Every bearer token, every VPN session and every long-lived credential in this
+      series has been a variation on that sentence. This is the first service in the block built to refuse it.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; Amazon Security Lake: what normalising to OCSF actually changes about a query, why subscriber access is not the same as bucket access, and what happens to data you were already collecting elsewhere.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/verified-access/latest/ug/what-is-verified-access.html" target="_blank" rel="noopener">What is AWS Verified Access &#8212; the per-request evaluation model, the contrast with evaluating access once, the logging guarantee, and the two-part pricing</a></li>
+      <li><a href="https://docs.aws.amazon.com/verified-access/latest/ug/how-it-works.html" target="_blank" rel="noopener">How Verified Access works &#8212; the five components, the default-deny rule, group policy inheritance alongside endpoint policies, the single-identity and multiple-device trust provider constraint, and the definition of trust data</a></li>
+      <li><a href="https://docs.aws.amazon.com/verified-access/latest/ug/trust-providers.html" target="_blank" rel="noopener">Trust providers for Verified Access &#8212; what trust context contains and the two supported provider categories</a></li>
+      <li><a href="https://docs.aws.amazon.com/verified-access/latest/ug/verified-access-endpoints.html" target="_blank" rel="noopener">Verified Access endpoints &#8212; that an endpoint represents an application and inherits its group's policy, and the four endpoint types including RDS</a></li>
+      <li><a href="https://docs.aws.amazon.com/verified-access/latest/ug/verified-access-instances.html" target="_blank" rel="noopener">Verified Access instances &#8212; what an instance organises and evaluates</a></li>
+      <li><a href="https://docs.aws.amazon.com/verified-access/latest/ug/verified-access-groups.html" target="_blank" rel="noopener">Verified Access groups &#8212; further reading on group management; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
