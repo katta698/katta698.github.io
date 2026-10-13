@@ -1,0 +1,356 @@
+---
+title: "GCP Architecture Series #61 — VPC Networks: Global Scope, Regional Subnets"
+date: '2026-10-13T09:00:00'
+slug: gcp-architecture-vpc-global-regional
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-10-13'
+verified_claims:
+  - claim: "A Virtual Private Cloud (VPC) network is a virtual version of a physical network that is implemented inside of Google"
+    source: https://docs.cloud.google.com/vpc/docs/vpc
+  - claim: "VPC networks, including their associated routes and firewall rules, are global resources"
+    source: https://docs.cloud.google.com/vpc/docs/vpc
+  - claim: "They are not associated with any particular region or zone"
+    source: https://docs.cloud.google.com/vpc/docs/vpc
+  - claim: "Subnets are regional resources"
+    source: https://docs.cloud.google.com/vpc/docs/vpc
+  - claim: "Rules are implemented on the VMs themselves, so traffic can only be controlled and logged as it leaves or arrives at a VM"
+    source: https://docs.cloud.google.com/vpc/docs/vpc
+  - claim: "VPC networks do not support broadcast or multicast addresses within the network"
+    source: https://docs.cloud.google.com/vpc/docs/vpc
+  - claim: "The terms subnet and subnetwork are synonymous"
+    source: https://docs.cloud.google.com/vpc/docs/vpc
+  - claim: "A subnet is not the same thing as a (VPC) network"
+    source: https://docs.cloud.google.com/vpc/docs/vpc
+  - claim: "Projects can contain multiple VPC networks"
+    source: https://docs.cloud.google.com/vpc/docs/vpc
+  - claim: "Subnet1 is defined as 10.240.0.0/24 in the us-west1 region"
+    source: https://docs.cloud.google.com/vpc/docs/vpc
+  - claim: "Subnet2 is defined as 192.168.1.0/24 in the us-east1 region"
+    source: https://docs.cloud.google.com/vpc/docs/vpc
+  - claim: "provide configuration or troubleshooting assistance for overlay networks"
+    source: https://docs.cloud.google.com/vpc/docs/vpc
+  - claim: "Legacy networks can no longer be created and are not recommended for production"
+    source: https://docs.cloud.google.com/vpc/docs/vpc
+  - claim: "Google Cloud uses the first two and last two IPv4 addresses in each subnet primary IPv4 address range to host the subnet"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "Google Cloud lets you use all addresses in secondary IPv4 ranges"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "This range is reserved by Google Cloud for potential future use"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "virtual gateways do not respond to ICMP traffic or decrement IP TTL headers"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "Tools that ping the gateway IP address as a connectivity test must be configured so that they"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "Each primary or secondary IPv4 range for all subnets in a VPC network must be a unique valid CIDR block"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "After you create a subnet, the primary IPv4 range for the subnet can be expanded but not replaced or shrunk"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "The minimum primary or secondary range size is eight IPv4 addresses"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "In other words, the longest subnet mask that you can use is /29"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "The shortest subnet mask that you can use is /4"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "we recommend that you limit your maximum subnet size to /8"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "secondary IPv4 address range only if no instances are using that range"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "Auto mode VPC networks always have a subnet in every region"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "This is the default subnet type"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "The purpose is displayed as None in the Google Cloud console"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "Hybrid Subnets logically extend to an on-premises or source network, letting you migrate workloads to Google Cloud without needing to change IP addresses"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "A single VPC network can contain any combination of these subnets"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+problem: "Thirty posts asked who may act. This block asks where packets may go, and the first thing to get right is that a VPC network is a global resource with no IP address range of its own — the subnets carry the ranges, and they need not relate to one another."
+builds: "What is global and what is regional, why there is no network-level CIDR to plan, the asymmetric rules governing subnet ranges and reserved addresses, and two documented behaviours that make a healthy network look broken."
+catch: "Firewall rules are global resources but are implemented on the VMs themselves, so there is no choke point between subnets to inspect. And the subnet gateway does not answer ping or appear in traceroute, so a gateway-ping health check reports failure on a working network."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #061 &middot; Networking</div>
+  <h1 class="post-title">VPC Networks: Global Scope, Regional Subnets</h1>
+  <p class="post-subtitle">The network is global and has no address range. Everything else in this block follows from that.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>Google Cloud &middot; Networking &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Thirty posts asked who may act. This one starts a block asking where packets may go. The structural fact to get right first is the one that determines every address-planning decision afterwards: <em>VPC networks, including their associated routes and firewall rules, are global resources</em>, and <em>subnets are regional resources</em>. A network spans every region at once, and holds no addresses itself.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"I need to choose the network's CIDR block before I create subnets"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          There is no network CIDR to choose. The network is a global container; the addresses live entirely in subnets, and the only constraint is uniqueness: <em>each primary or secondary IPv4 range for all subnets in a VPC network must be a unique valid CIDR block.</em> Nothing requires them to be contiguous or drawn from a common supernet.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Plan ranges per subnet, with whatever supernet discipline your own routing and on-premises connectivity need. That discipline is yours to impose; the platform does not require it.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"I will size subnets exactly and adjust them later"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          You can grow but never shrink. <em>After you create a subnet, the primary IPv4 range for the subnet can be expanded but not replaced or shrunk.</em> Secondary ranges are more forgiving &mdash; you can remove and replace a <em>secondary IPv4 address range only if no instances are using that range.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Size primary ranges for the growth you expect and leave adjacent space free, because expansion is the only correction available.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"Firewall rules sit between my subnets, so I can inspect traffic there"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          They do not sit between anything. Rules are global resources, but <em>rules are implemented on the VMs themselves, so traffic can only be controlled and logged as it leaves or arrives at a VM.</em> There is no inline device at a subnet edge to hang inspection off.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Design observation at the instance, and reach for Packet Mirroring or a load balancer if you genuinely need a traffic-inspection point. Do not assume a subnet boundary is one.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"Our connectivity check pings the subnet gateway"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          That check will fail on a perfectly healthy network. <em>Virtual gateways do not respond to ICMP traffic or decrement IP TTL headers</em>, so the gateway answers no ping and never appears in a traceroute. The documentation says it outright: <em>tools that ping the gateway IP address as a connectivity test must be configured so that they</em> do not treat that silence as a fault.
+          </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Health-check a real endpoint you control. Treat traceroute output with a missing first hop as normal rather than as evidence.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      <em>A Virtual Private Cloud (VPC) network is a virtual version of a physical network that is implemented inside of Google</em>&#8217;s production network using Andromeda. The useful way to hold it is as two layers with a sharp division of responsibility.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-061-vpc-global-regional.svg" alt="Diagram: which Google Cloud VPC resources are global and which are regional, why the network itself has no address range so subnet CIDRs need only be unique within it, the asymmetric subnet range rules including reserved addresses and expansion, and two operational behaviours that mislead operators" />
+      <figcaption>Global container, regional ranges, and no CIDR anywhere in between.</figcaption>
+    </figure>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Scope</th><th>Resources</th><th>What that buys you</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Global</strong></td>
+          <td>The VPC network, its routes, its firewall rules &mdash; <em>they are not associated with any particular region or zone</em></td>
+          <td>One rule set and one routing table cover every region; adding a region adds no policy surface</td>
+        </tr>
+        <tr>
+          <td><strong>Regional</strong></td>
+          <td>Subnets, and the IPv4 and IPv6 ranges they define</td>
+          <td>Addresses stay local to where the workload runs, and are chosen independently per region</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      Two pieces of vocabulary, because both cause confusion in review. <em>The terms subnet and subnetwork are synonymous</em>, used interchangeably across the console, the CLI and the API. And more importantly: <em>a subnet is not the same thing as a (VPC) network.</em> They are separate resource types, with separate scopes and separate permissions.
+    </p>
+
+    <h3>The consequence worth internalising: there is no supernet</h3>
+    <p>
+      Because the network holds no range, subnet ranges are independent of one another. The documentation&#8217;s own worked example demonstrates it rather than merely allowing it: <em>subnet1 is defined as 10.240.0.0/24 in the us-west1 region</em> and <em>subnet2 is defined as 192.168.1.0/24 in the us-east1 region.</em> Two unrelated private ranges, from different RFC 1918 blocks, in one network, presented as the normal case.
+    </p>
+    <p>
+      That is genuinely freeing and quietly dangerous. Freeing, because you can give a new region whatever range is actually available in your wider address plan without renumbering anything. Dangerous, because nothing stops an estate accumulating a scatter of unrelated ranges that cannot be summarised into a handful of routes for on-premises connectivity. The platform enforces uniqueness; it does not enforce aggregability, and aggregability is what your routers will want later.
+    </p>
+
+    <h3>Range rules, including one asymmetry</h3>
+    <ul>
+      <li><strong>Bounds.</strong> <em>The minimum primary or secondary range size is eight IPv4 addresses. In other words, the longest subnet mask that you can use is /29.</em> At the other end, <em>the shortest subnet mask that you can use is /4</em> &mdash; but additional validation blocks most ranges that large, and the advice is explicit: <em>we recommend that you limit your maximum subnet size to /8.</em></li>
+      <li><strong>Growth is one-way.</strong> Primary ranges expand, never shrink or move.</li>
+      <li><strong>Reserved addresses are asymmetric.</strong> <em>Google Cloud uses the first two and last two IPv4 addresses in each subnet primary IPv4 address range to host the subnet</em>, while <em>Google Cloud lets you use all addresses in secondary IPv4 ranges.</em></li>
+    </ul>
+    <p>
+      That last point is worth a moment because the usable-address arithmetic differs by range type. In a primary range four addresses go: the network address, the default gateway, the last address as broadcast, and the second-to-last, which <em>is reserved by Google Cloud for potential future use.</em> In a secondary range, none are reserved. So a <code>/29</code> primary range yields four usable addresses, and a <code>/29</code> secondary range yields eight &mdash; which matters most where secondary ranges carry the densest consumers, as they do for container networking.
+    </p>
+
+    <h3>Stack types and purposes, briefly</h3>
+    <p>
+      A subnet declares a stack type &mdash; IPv4-only, dual-stack, or IPv6-only &mdash; and <em>a single VPC network can contain any combination of these subnets.</em> It also declares a purpose. The default is a regular subnet, where <em>this is the default subnet type</em> and <em>the purpose is displayed as None in the Google Cloud console</em>, which is a small naming inconsistency worth knowing before you go looking for the word "regular" in the UI.
+    </p>
+    <p>
+      One purpose variant is worth flagging now because it solves a migration problem people otherwise design around: hybrid subnets, configured with overlapping CIDR routes allowed, which <em>logically extend to an on-premises or source network, letting you migrate workloads to Google Cloud without needing to change IP addresses.</em> Lifting a workload without renumbering it is usually the expensive part of a migration, and this is the mechanism for not doing that.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>What the Global Network Actually Changes</h2>
+
+    <p>
+      The global scope is not a trivia item; it changes the shape of several things you would otherwise expect to repeat per region.
+    </p>
+
+    <div class="callout">
+      <strong>One rule set, one routing table, any number of regions</strong>
+      <p>Because routes and firewall rules are properties of the network rather than of a region, adding a region to an existing network adds a subnet and nothing else. The policy surface does not grow: the same rules already apply, and instances in the new subnet can reach instances in existing subnets by internal address immediately, subject to those rules. For a platform team that is a real reduction in work, and it is the main practical argument for keeping a single network across regions rather than one per region.</p>
+    </div>
+
+    <p>
+      The flip side is blast radius, and it is the thing to weigh deliberately. A firewall rule mistake is global by construction; there is no regional boundary to contain it. The same property that removes per-region duplication removes per-region isolation, so the isolation you want has to come from somewhere else &mdash; separate networks, or the project and folder boundaries from #60.
+    </p>
+
+    <div class="callout amber">
+      <strong>And enforcement happens at the instance, not at a boundary</strong>
+      <p>This is the detail that most changes how you design observation. <em>Rules are implemented on the VMs themselves, so traffic can only be controlled and logged as it leaves or arrives at a VM.</em> There is no inline appliance between two subnets, because there is no device at a subnet edge at all &mdash; the subnet is an address range and a region, not a hop. Anything that assumes a transit point to tap, filter or count at will not find one. Combined with the gateway not answering ICMP or decrementing TTL, a network that is working correctly produces exactly the symptoms &mdash; silent gateway, no intermediate hop, no inspection point &mdash; that in a physical network would mean something was broken.</p>
+    </div>
+
+    <h3>Three constraints that are easier to learn now than later</h3>
+    <p>
+      <strong>No broadcast or multicast.</strong> <em>VPC networks do not support broadcast or multicast addresses within the network.</em> Software that discovers peers by broadcast will not work unmodified, and that includes a long tail of clustering and licensing agents.
+    </p>
+    <p>
+      <strong>Overlay networks are unsupported for help.</strong> Running your own overlay to get multicast or custom encapsulation is possible, and <em>Cloud Customer Care</em> does not <em>provide configuration or troubleshooting assistance for overlay networks.</em> That is a reasonable boundary, stated plainly, and worth knowing before the overlay becomes load-bearing.
+    </p>
+    <p>
+      <strong>Legacy networks are a dead end.</strong> <em>Legacy networks can no longer be created and are not recommended for production</em> because they lack the advanced features. If you inherit one, converting it is the path, not working around it.
+    </p>
+
+    <h3>One thing I am deferring</h3>
+    <p>
+      A new project normally starts with a default network that has a subnet in every region, and <em>auto mode VPC networks always have a subnet in every region.</em> Whether to keep that or build a custom-mode network with only the subnets you chose is the whole of tomorrow&#8217;s post, so I will leave it there rather than half-answer it here. For today the relevant point is only that the subnet-per-region behaviour is a property of a mode you can decline, not of VPC networks as such.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Planning the network range</td>
+          <td>There is none to plan</td>
+          <td>Only subnet ranges exist, and they need only be unique.</td>
+        </tr>
+        <tr>
+          <td>Keeping ranges summarisable</td>
+          <td>Impose your own supernet discipline</td>
+          <td>The platform enforces uniqueness, not aggregability.</td>
+        </tr>
+        <tr>
+          <td>Sizing a primary range</td>
+          <td>For expected growth, with adjacent space free</td>
+          <td>Primary ranges expand but never shrink or move.</td>
+        </tr>
+        <tr>
+          <td>Usable-address arithmetic</td>
+          <td>Subtract four for primary, nothing for secondary</td>
+          <td>Secondary ranges reserve no addresses.</td>
+        </tr>
+        <tr>
+          <td>Maximum subnet size</td>
+          <td>Cap at /8</td>
+          <td>It is the documented recommendation despite /4 being the limit.</td>
+        </tr>
+        <tr>
+          <td>Traffic inspection points</td>
+          <td>Design them explicitly</td>
+          <td>Rules run on the VM; a subnet edge is not a hop.</td>
+        </tr>
+        <tr>
+          <td>Connectivity health checks</td>
+          <td>Target a real endpoint, not the gateway</td>
+          <td>The gateway answers no ICMP and decrements no TTL.</td>
+        </tr>
+        <tr>
+          <td>Regional isolation</td>
+          <td>Separate networks or projects</td>
+          <td>Firewall rules and routes are global, so a mistake is too.</td>
+        </tr>
+        <tr>
+          <td>Broadcast-dependent software</td>
+          <td>Replace the discovery mechanism</td>
+          <td>Broadcast and multicast are unsupported in the network.</td>
+        </tr>
+        <tr>
+          <td>Migrating without renumbering</td>
+          <td>A hybrid subnet</td>
+          <td>It extends logically to the source network.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      List the subnet ranges in one network and ask whether they summarise. If they fall inside two or three supernets, your on-premises routing and future peering will be straightforward. If they are a scatter of unrelated blocks &mdash; which is entirely legal and exactly what the documentation&#8217;s own example shows &mdash; then you have a routing-table problem waiting rather than an addressing problem, and the cheapest moment to notice is before the next region is added.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The design is coherent and, on balance, generous. A global network with regional subnets means one firewall policy and one routing table rather than a set per region, and adding a region is an addressing decision rather than a policy project. The absence of a network-level range removes a planning step that exists mostly to be regretted later. Both are good choices.
+    </p>
+    <p>
+      What this block will have to keep in view is that the model removes some familiar landmarks along with the duplication. There is no supernet to reason from, no device at a subnet edge, and no gateway that answers when you ask it whether it is there. None of that is a fault; all of it means the mental model from a physical network transfers imperfectly, and the places it fails are exactly the places where a working system looks broken. Thirty posts on IAM ended on the value of reading the page rather than the name. The first networking post suggests the same habit, for a different reason: here the names are accurate and it is the intuitions that need checking.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#62 takes the decision this post deferred: auto mode versus custom mode networks &mdash; what the default actually creates, and what it costs to keep.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/vpc" target="_blank" rel="noopener">VPC networks</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/subnets" target="_blank" rel="noopener">Subnets</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/overview" target="_blank" rel="noopener">VPC overview</a></li>
+      <li><a href="https://docs.cloud.google.com/firewall/docs/firewalls" target="_blank" rel="noopener">VPC firewall rules</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/routes" target="_blank" rel="noopener">Routes</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/quota" target="_blank" rel="noopener">VPC quotas and limits</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
