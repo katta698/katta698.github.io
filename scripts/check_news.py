@@ -87,6 +87,67 @@ def check_freshness(data):
                          % (cloud, newest, age, "" if age == 1 else "s"))
 
 
+# One missed run is slop -- a cron can be late, and a window publishing
+# just after midnight sees yesterday's stamp. Two means nobody ingested for a
+# whole day, which is the thing that actually went wrong.
+MAX_INGEST_AGE_DAYS = 1
+
+
+def ingest_age_problem(generated, today):
+    """Shared by the check and its canary, so they cannot disagree.
+
+    Returns a message when the store has not been refreshed, or None.
+    """
+    if not generated:
+        return ("intelligence/news.json carries no `generated` stamp, so "
+                "there is no way to tell when the ingest last ran")
+    try:
+        when = datetime.date.fromisoformat(str(generated)[:10])
+    except ValueError:
+        return ("intelligence/news.json has an unreadable `generated` stamp: "
+                "%r" % generated)
+    age = (today - when).days
+    if age > MAX_INGEST_AGE_DAYS:
+        return ("the ingest last ran on %s, %d days ago (limit %d). The "
+                "announcements are not missing because the clouds were quiet "
+                "-- nothing has fetched them. Run: python "
+                "scripts/news_store.py ingest" % (when, age,
+                                                  MAX_INGEST_AGE_DAYS))
+    return None
+
+
+def check_ingest_ran():
+    """Did the ingest run at all? Not: did the clouds publish?
+
+    check_freshness cannot answer this. It measures the age of the newest
+    announcement against a six-day limit for AWS, and it has to be that slack
+    because a weekend plus a quiet Monday is a legitimate three-day gap. A
+    cron that stopped on Friday therefore looks healthy until Thursday. The
+    `generated` stamp has no such ambiguity: it moves every day the ingest
+    runs, whether or not anything was published.
+    """
+    path = os.path.join(ROOT, "intelligence", "news.json")
+    try:
+        with io.open(path, encoding="utf-8") as fh:
+            generated = json.load(fh).get("generated")
+    except Exception as exc:                                 # noqa: BLE001
+        problems.append("intelligence/news.json could not be read: %s" % exc)
+        return
+    msg = ingest_age_problem(generated, datetime.date.today())
+    if msg:
+        problems.append(msg)
+    else:
+        notes.append("ingest last ran %s" % generated)
+
+    # Canary. A check that cannot fail is worse than no check, and this one
+    # would pass forever if the comparison were ever inverted or the stamp
+    # silently renamed.
+    stale = datetime.date.today() - datetime.timedelta(days=9)
+    if not ingest_age_problem(stale.isoformat(), datetime.date.today()):
+        problems.append("check_ingest_ran is broken: it accepted a store "
+                        "that had not been ingested for nine days")
+
+
 def configured_feeds(cloud):
     """Feed names the fetcher is configured to read.
 
@@ -329,6 +390,7 @@ def main():
     check_no_empty_months(data)
     check_no_bad_lines(data)
     check_freshness(data)
+    check_ingest_ran()
     check_ids_unique(data)
     check_schema(data)
     check_dates_sane(data)

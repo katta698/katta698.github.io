@@ -454,6 +454,10 @@ document.documentElement.setAttribute('data-palette',p);})();
   .tally .n{font-family:var(--serif);font-size:3.1rem;line-height:1;font-weight:600;
             color:var(--accent);font-variant-numeric:tabular-nums;
             letter-spacing:-.01em}
+  /* Quiet: it is a provenance line, not a headline. But present, because its
+     absence is what turned "is there a delay?" into an investigation. */
+  .nw-fresh{margin:.35rem 0 0;font-size:.78rem;opacity:.72;
+    font-family:var(--mono, ui-monospace, monospace)}
   .tally .of{font-size:.95rem;color:rgba(237,235,230,.7);line-height:1.4;max-width:26ch}
   @media(max-width:640px){
     h1{font-size:1.65rem}header.hero{padding:2.5rem 1.2rem 1.8rem}
@@ -889,6 +893,7 @@ a:active,button:active{opacity:.72}
       <span class="n" id="news-count" data-n="__COUNT__">__COUNT_FMT__</span>
       <span class="of">announcements from AWS, Azure and Google Cloud</span>
     </div>
+    <p class="nw-fresh">__FRESH__</p>
     <p class="lede">__LEDE__</p>
     <!-- The two links sat at the end of the sentence above, 4px apart, in the
          same colour and weight and both underlined -- so they read as one long
@@ -1304,7 +1309,26 @@ def build():
     print("  holding %dpx (phone) / %dpx (wider) for %d opening row(s)"
           % (reserve_narrow, reserve_wide, len(opening)))
 
-    html = (PAGE.replace("__LEDE__", lede)
+    # When it was last fetched, and what the newest thing in it is. The two
+    # together separate the only two explanations for a quiet page: "fetched
+    # today, newest Friday" means the clouds were quiet, "fetched Friday"
+    # means nothing fetched. Without it, telling those apart took the vendor
+    # feed, the commit log and the cron schedule.
+    _newest = max((r["d"] for r in rows), default="")
+    def _pretty(iso):
+        try:
+            return datetime.date.fromisoformat(iso).strftime(
+                "%-d %b").replace(" 0", " ")
+        except (ValueError, TypeError):
+            try:
+                return datetime.date.fromisoformat(iso).strftime("%d %b")
+            except (ValueError, TypeError):
+                return iso or "unknown"
+    fresh = ("Fetched %s &middot; newest announcement %s"
+             % (_pretty(datetime.date.today().isoformat()), _pretty(_newest)))
+
+    html = (PAGE.replace("__FRESH__", fresh)
+                .replace("__LEDE__", lede)
                 .replace("__COUNT_FMT__", "{:,}".format(len(rows)))
                 .replace("__COUNT__", str(len(rows)))
                 .replace("__RESERVE_WIDE__", str(reserve_wide))
