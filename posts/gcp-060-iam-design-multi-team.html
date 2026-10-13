@@ -1,0 +1,370 @@
+---
+title: "GCP Architecture Series #60 — An IAM Design for a Multi-Team Organisation"
+date: '2026-10-12T09:00:00'
+slug: gcp-architecture-iam-design-multi-team
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-10-12'
+verified_claims:
+  - claim: "In Google Cloud, identity and access management is based on two pillars"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "A Cloud Identity or Google Workspace account denotes a directory of users, not an individual user account"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "Organizations are containers for projects and resources within Google Cloud"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "Use as few accounts as possible, but as many as necessary"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "manage all users through a single Cloud Identity or Google Workspace account and provide a single user account to each individual"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "Then use the smallest number of Cloud Identity or Google Workspace accounts that satisfies your requirements"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "Enabling single sign-on is a global setting that applies to all users other than super admins"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "An accidental misconfiguration in the external IdP might lead to users inadvertently being modified, suspended, or even deleted"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "have separate staging and production Cloud Identity or Google Workspace accounts"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "Create a few test users in the staging accounts that you and other administrators can use to verify configuration changes"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "To avoid these conflicts, prefer using disjoint domains for each account"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "Users with super admin privileges are implicitly granted permission to modify the Identity and Access Management (IAM) policy of the organization node"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "This permission enables super admins to assign themselves the organization administrators role or any other role in the Google Cloud organization"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "Having super admin access to a Cloud Identity or Google Workspace account also enables a user to delete the account, its associated Google Cloud organization, and all its resources"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "You therefore have to assume that super admins have full access to all resources within an organization"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "Separating Google Workspace and Google Cloud can have several unintended consequences"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "duplicating users negatively affects both user experience and administrative overhead"
+    source: https://docs.cloud.google.com/architecture/identity/best-practices-for-planning
+  - claim: "The resource hierarchy consists of folders, projects, and resources"
+    source: https://docs.cloud.google.com/architecture/blueprints/security-foundations/organization-structure
+  - claim: "Resources lower in the hierarchy inherit policies such as IAM allow policies and organization policies"
+    source: https://docs.cloud.google.com/architecture/blueprints/security-foundations/organization-structure
+  - claim: "All access permissions are denied by default, until you apply allow policies directly to a resource or the resource inherits the allow policies from a higher level in the resource hierarchy"
+    source: https://docs.cloud.google.com/architecture/blueprints/security-foundations/organization-structure
+  - claim: "The blueprint uses folders to group projects based on their environment"
+    source: https://docs.cloud.google.com/architecture/blueprints/security-foundations/organization-structure
+  - claim: "The blueprint uses projects to group individual resources based on their functionality and intended boundaries for access control"
+    source: https://docs.cloud.google.com/architecture/blueprints/security-foundations/organization-structure
+  - claim: "Contains the aggregated log sources for audit logs"
+    source: https://docs.cloud.google.com/architecture/blueprints/security-foundations/organization-structure
+  - claim: "Contains a copy of the production environment to let you test workloads before you promote them to production"
+    source: https://docs.cloud.google.com/architecture/blueprints/security-foundations/organization-structure
+  - claim: "Contains projects with resources that are shared by all environments"
+    source: https://docs.cloud.google.com/architecture/blueprints/security-foundations/organization-structure
+  - claim: "Contains the Terraform state of your infrastructure and the Terraform service account that is required to run the pipeline"
+    source: https://docs.cloud.google.com/architecture/blueprints/security-foundations/organization-structure
+  - claim: "To store log entries from a folder or organization for longer than 30 days, create a log sink and route those log entries to a log bucket in a project"
+    source: https://docs.cloud.google.com/logging/quotas
+  - claim: "we recommend a minimum of two and a maximum of five emergency access users for each Cloud Identity or Google Workspace account"
+    source: https://docs.cloud.google.com/docs/security/best-practices-continuous-access-to-google-cloud
+problem: "Twenty-nine posts have examined one IAM mechanism at a time. This one assembles them into a single set of decisions for a multi-team organisation — and in doing so turns up documentation that sharpens, rather than confirms, what #55 concluded about the super admin."
+builds: "The two pillars and how many of each you should have, the folder layout the security foundations blueprint actually uses and why it is environment-first rather than team-first, why single sign-on being a global setting forces a second directory account, and the whole design as one reviewable list."
+catch: "Google states that super admins are implicitly granted permission to modify the organization IAM policy and can assign themselves any role in it. #55 framed the super admin as living beside the IAM plane. It reaches into it, and the documented conclusion is to assume full access."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #060 &middot; IAM</div>
+  <h1 class="post-title">An IAM Design for a Multi-Team Organisation</h1>
+  <p class="post-subtitle">Twenty-nine posts assembled into one set of decisions &mdash; including a correction to what #55 concluded.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>Google Cloud &middot; IAM &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Every post from #31 onwards examined one mechanism. A design is not a list of mechanisms, and the questions a multi-team organisation actually has to answer first are structural: how many directories, how many organisations, what shape are the folders, and who is allowed to be above all of it. This post answers those, and one of the sources corrected something I wrote three posts ago.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"Each business unit should get its own Cloud Identity account for autonomy"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Start from the opposite default. The guidance is to <em>manage all users through a single Cloud Identity or Google Workspace account and provide a single user account to each individual</em>, because that is what makes password policy, single sign-on and two-step verification apply consistently. The rule is <em>use as few accounts as possible, but as many as necessary</em>, and then <em>use the smallest number of Cloud Identity or Google Workspace accounts that satisfies your requirements.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Collect the requirements that genuinely need a second directory, then count. Autonomy is usually an organisational-unit and group problem, not a directory problem.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"Folders should mirror the org chart, one per team"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          The security foundations blueprint does not. <em>The blueprint uses folders to group projects based on their environment</em> &mdash; bootstrap, common, networking, development, nonproduction, production &mdash; and <em>uses projects to group individual resources based on their functionality and intended boundaries for access control.</em> Teams live in projects inside environment folders, not in folders of their own.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Put the environment boundary where policy inheritance is, because that is what you most need to differ. Team identity belongs in project naming and in the access groups from #52.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"We will test the SSO change on a pilot group first"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          You cannot. <em>Enabling single sign-on is a global setting that applies to all users other than super admins</em> &mdash; unlike most Workspace settings, there is no per-user or per-OU staging of it. And the failure mode is not cosmetic: <em>an accidental misconfiguration in the external IdP might lead to users inadvertently being modified, suspended, or even deleted.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          <em>Have separate staging and production Cloud Identity or Google Workspace accounts</em>, each paired with the matching IdP instance. That is the only pilot available.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">4</div>
+        <strong>"We will put Google Cloud in its own directory so Workspace admins cannot reach it"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          A reasonable instinct that the guidance warns against: <em>separating Google Workspace and Google Cloud can have several unintended consequences.</em> Duplicate the users and <em>duplicating users negatively affects both user experience and administrative overhead</em> &mdash; and because the Cloud Identity domain must differ from the Workspace domain, it cannot route email, so you stop receiving Google Cloud notifications. Reference the Workspace users instead and the isolation you were buying is gone.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Keep one directory and solve the trust problem with who holds super admin, not with a second tenant.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      <em>In Google Cloud, identity and access management is based on two pillars.</em> The directory side: <em>a Cloud Identity or Google Workspace account denotes a directory of users, not an individual user account.</em> The resource side: <em>organizations are containers for projects and resources within Google Cloud.</em> Almost every design error in this series came from reasoning about one pillar while the answer lived in the other.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-060-iam-design-multi-team.svg" alt="Diagram: the two pillars of a Google Cloud IAM design and the environment-first folder layout the security foundations blueprint uses, the documented fact that super admins can implicitly modify the organization IAM policy, why single sign-on being a global setting requires a separate staging directory account, and the assembled design decisions with the post that established each" />
+      <figcaption>Two pillars, environment-first folders, and one account that sits above both.</figcaption>
+    </figure>
+
+    <h3>The hierarchy, and the one property that makes it worth using</h3>
+    <p>
+      <em>The resource hierarchy consists of folders, projects, and resources</em>, and <em>resources lower in the hierarchy inherit policies such as IAM allow policies and organization policies.</em> The starting position is the right one: <em>all access permissions are denied by default, until you apply allow policies directly to a resource or the resource inherits the allow policies from a higher level in the resource hierarchy.</em>
+    </p>
+    <p>
+      Inheritance is the whole reason to care about folder shape. A grant at a folder reaches everything beneath it, so the folder boundary should sit where you most want policy to differ &mdash; which for almost every organisation is the environment boundary, not the team boundary. Teams change; the difference between what is allowed in development and what is allowed in production does not.
+    </p>
+
+    <h3>The layout, concretely</h3>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Folder</th><th>Holds</th><th>Why it is its own folder</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>bootstrap</code></td>
+          <td>The CI/CD project, and the seed project that <em>contains the Terraform state of your infrastructure and the Terraform service account that is required to run the pipeline</em></td>
+          <td>It can rebuild everything else, so it needs the tightest policy</td>
+        </tr>
+        <tr>
+          <td><code>common</code></td>
+          <td><em>Projects with resources that are shared by all environments</em> &mdash; secrets, logging, Security Command Center, billing export, KMS</td>
+          <td>Shared services should not inherit any one environment policy</td>
+        </tr>
+        <tr>
+          <td><code>networking</code></td>
+          <td>Shared VPC hosts, hub, interconnect</td>
+          <td>Network administration is a distinct job function</td>
+        </tr>
+        <tr>
+          <td><code>development</code></td>
+          <td>Workload, secrets and KMS projects per team</td>
+          <td>Loosest policy, highest change rate</td>
+        </tr>
+        <tr>
+          <td><code>nonproduction</code></td>
+          <td><em>A copy of the production environment to let you test workloads before you promote them to production</em></td>
+          <td>It must resemble production closely enough to be a real test</td>
+        </tr>
+        <tr>
+          <td><code>production</code></td>
+          <td>The same project shapes, under the strictest policy</td>
+          <td>This is the boundary everything else exists to protect</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      One project in that list is this series closing a loop. In <code>common</code> sits a logging project that <em>contains the aggregated log sources for audit logs</em> &mdash; which is exactly the aggregated sink #59 concluded you must build, because folder and organisation <code>_Default</code> retention is thirty days and not configurable. The blueprint does not present it as an optional extra; it is a named project in the foundation.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>A Correction to #55, and What Follows From It</h2>
+
+    <p>
+      #55 argued that the super admin cannot be constrained by IAM because it lives in a different control plane &mdash; the directory &mdash; and that IAM deny policies, which cover Google Cloud permissions, do not reach the directory plane. That is accurate as far as it goes, and I verified it against the deny-policy support list. But I framed the super admin as sitting <em>beside</em> the IAM plane, and this page is more direct than that.
+    </p>
+
+    <div class="callout amber">
+      <strong>It reaches into the IAM plane, and Google says so plainly</strong>
+      <p><em>Users with super admin privileges are implicitly granted permission to modify the Identity and Access Management (IAM) policy of the organization node.</em> And then the consequence: <em>this permission enables super admins to assign themselves the organization administrators role or any other role in the Google Cloud organization.</em> Beyond that, <em>having super admin access to a Cloud Identity or Google Workspace account also enables a user to delete the account, its associated Google Cloud organization, and all its resources.</em> The documented conclusion is the sentence to carry into a design review: <em>you therefore have to assume that super admins have full access to all resources within an organization.</em></p>
+    </div>
+
+    <p>
+      So the sharper statement is not "super admin is outside IAM" but "super admin is implicitly at the top of IAM, by a grant you cannot see in the allow policy". That is worse than what #55 said, and better documented. It also explains, retroactively, every carve-out this block found: #51&#8217;s single sign-on bypass, #53&#8217;s recommended exclusion from access levels, #56&#8217;s emergency accounts. Those are not separate exceptions. They are one account whose authority the platform assumes, surfacing in each feature that tried to bound it.
+    </p>
+    <p>
+      The practical consequence is a change of question. "How do we restrict super admins" has no good answer. "How few super admins are there, who are they, and what would we see if one acted" has three, and they are #55&#8217;s hardware keys, #56&#8217;s two-to-five emergency accounts with split custody, and #59&#8217;s always-on Admin Activity log.
+    </p>
+
+    <h3>Why a second directory account is a security control, not a luxury</h3>
+    <p>
+      Put the single-sign-on fact next to the directory-sync fact and the staging account stops looking like tidiness. Enabling SSO is global and applies to everyone except super admins, so there is no cohort you can try it on. And the IdP integration that drives provisioning can, when misconfigured, leave <em>users inadvertently being modified, suspended, or even deleted</em> &mdash; which is #50&#8217;s delete-on-absence behaviour arriving at the directory rather than at a single project.
+    </p>
+    <p>
+      The recommended arrangement is specific: separate staging and production Cloud Identity accounts, each integrated with the matching staging or production IdP instance, with the same domain, user and group mapping approach applied to both pairs. And deliberately small: <em>create a few test users in the staging accounts that you and other administrators can use to verify configuration changes</em> &mdash; administrators only, not real users.
+    </p>
+    <p>
+      One trap when you do this. Domains must not nest: <em>to avoid these conflicts, prefer using disjoint domains for each account.</em> Subdomains added to a verified domain are not individually verified, so two accounts where one domain is a subdomain of the other will collide. Pick two unrelated domains rather than <code>example.com</code> and <code>staging.example.com</code>.
+    </p>
+
+    <h3>The design, as one list</h3>
+    <p>
+      Assembled, with the post that established each decision:
+    </p>
+    <ol>
+      <li><strong>One directory account</strong> &mdash; as few as possible, as many as necessary &mdash; plus a small staging account for IdP and SSO changes. (#49)</li>
+      <li><strong>Verify every domain your mail system accepts</strong>, using disjoint domains across accounts. (#49)</li>
+      <li><strong>Environment-first folders</strong>: bootstrap, common, networking, development, nonproduction, production. Teams get projects. (This post)</li>
+      <li><strong>Access groups per job function</strong>, never organisational groups, never nested, with external members disallowed. (#52)</li>
+      <li><strong>Post-SSO verification on</strong>, and Google 2-step verification enforced on every super admin. (#51, #56)</li>
+      <li><strong>Two to five break-glass accounts</strong> in their own OU, hardware keys, password and keys in different buildings, no automated rotation. (#56)</li>
+      <li><strong>Privileged Access Manager entitlements</strong> instead of standing administrative roles, and non-authoritative Terraform so it does not revoke live grants. (#54, #48)</li>
+      <li><strong>An aggregated audit sink</strong> into a dedicated logging project in <code>common</code>, with Data Access logging enabled narrowly for IAM. (#59)</li>
+      <li><strong>Alert on organisation policy writes</strong>, excluding the known machine writers rather than raising the threshold. (#55, #48)</li>
+      <li><strong>Review role recommendations weekly</strong>, starting with default service accounts. (#57)</li>
+    </ol>
+    <p>
+      Ten decisions. Nothing in that list is exotic, and the order matters more than the content: items 1 and 3 are expensive to change later because domains and folder structures acquire dependencies, while 9 and 10 can be added at any time.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Number of directory accounts</td>
+          <td>One, plus a small staging account</td>
+          <td>Consistent policy, and SSO cannot be piloted any other way.</td>
+        </tr>
+        <tr>
+          <td>Staging directory users</td>
+          <td>Administrators only</td>
+          <td>The guidance is a few test users, not real ones.</td>
+        </tr>
+        <tr>
+          <td>Domains across accounts</td>
+          <td>Disjoint, never nested</td>
+          <td>Unverified subdomains collide between accounts.</td>
+        </tr>
+        <tr>
+          <td>Folder shape</td>
+          <td>By environment</td>
+          <td>Inheritance should fall where policy most needs to differ.</td>
+        </tr>
+        <tr>
+          <td>Team boundaries</td>
+          <td>Projects and access groups</td>
+          <td>Projects are the intended access-control boundary.</td>
+        </tr>
+        <tr>
+          <td>Containing Workspace admins</td>
+          <td>Fewer super admins, not a second tenant</td>
+          <td>Separating the two has documented unintended consequences.</td>
+        </tr>
+        <tr>
+          <td>Reasoning about super admins</td>
+          <td>Assume full access to everything</td>
+          <td>They can implicitly modify the organisation IAM policy.</td>
+        </tr>
+        <tr>
+          <td>Audit retention</td>
+          <td>An aggregated sink into a logging project</td>
+          <td>It is a named project in the blueprint foundation.</td>
+        </tr>
+        <tr>
+          <td>The bootstrap folder</td>
+          <td>Tightest policy in the organisation</td>
+          <td>It holds the Terraform state and the pipeline service account.</td>
+        </tr>
+        <tr>
+          <td>Sequencing the work</td>
+          <td>Domains and folders first</td>
+          <td>Those two are the expensive ones to change later.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      Count your super admins, then count your folders and ask what each folder boundary is for. If the answer to the second is "one per team", you have put the inheritance boundary where your org chart is rather than where your risk is &mdash; which is survivable, and worth knowing before the next reorganisation moves half your projects. And if the answer to the first is more than a handful, nothing else in this post changes your actual exposure, because the documented position is that each of those accounts has full access to everything.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Thirty posts on IAM, and the design that falls out of them is unglamorous: one directory, six folders, groups per job function, a handful of break-glass accounts in a safe, temporary elevation instead of standing roles, and an audit sink. None of it is clever. All of it is in Google&#8217;s own documentation, scattered across perhaps forty pages, which is the only real reason it takes thirty posts to assemble.
+    </p>
+    <p>
+      The thing I am taking from the block is a reading habit rather than an architecture. Repeatedly the load-bearing sentence was not in the overview but in a limitations list, a note about audit logs, a page about propagation, or — as today — a paragraph explaining why not to do something that sounded sensible. And the most important correction came from a page I had cited in #49 as further reading without having fetched it: had I read it then, #55 would have been sharper. That is the lesson at the end of a block that spent thirty posts discovering that the architecture is usually sound and the documentation usually says so. The work is in the reading, and the only way to be caught out is to cite a page without opening it.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#61 leaves IAM for the network: VPC networks &mdash; global scope, regional subnets, and why that one design choice differs from every other cloud.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/architecture/identity/best-practices-for-planning" target="_blank" rel="noopener">Best practices for planning accounts and organizations</a></li>
+      <li><a href="https://docs.cloud.google.com/architecture/blueprints/security-foundations/organization-structure" target="_blank" rel="noopener">Enterprise foundations blueprint: organization structure</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/cloud-platform-resource-hierarchy" target="_blank" rel="noopener">Resource hierarchy</a></li>
+      <li><a href="https://docs.cloud.google.com/architecture/landing-zones/decide-how-to-onboard-identities" target="_blank" rel="noopener">Decide how to onboard identities to Google Cloud</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/groups-best-practices" target="_blank" rel="noopener">Best practices for using Google groups</a></li>
+      <li><a href="https://docs.cloud.google.com/docs/security/best-practices-continuous-access-to-google-cloud" target="_blank" rel="noopener">Ensure continuous access to Google Cloud</a></li>
+      <li><a href="https://docs.cloud.google.com/logging/quotas" target="_blank" rel="noopener">Cloud Logging quotas and limits</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
