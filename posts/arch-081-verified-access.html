@@ -1,5 +1,5 @@
 ---
-title: "AWS Architecture Series #81 — Asked again on every request"
+title: "AWS Architecture Series #81 — Evaluated per request, trusted per session"
 date: '2026-10-13T09:00:00'
 slug: aws-architecture-verified-access
 labels: [AWS, "AWS Architecture Series"]
@@ -45,17 +45,27 @@ verified_claims:
     source: https://docs.aws.amazon.com/verified-access/latest/ug/verified-access-endpoints.html
   - claim: "An AWS Verified Access instance is an AWS resource that helps you organize your trust providers and Verified Access groups, and an instance evaluates application requests and grants access only when your security requirements are met"
     source: https://docs.aws.amazon.com/verified-access/latest/ug/verified-access-instances.html
+  - claim: "With trust providers created as of February 24, 2025, the default session duration is one day, and with trust providers created before February 24, 2025, the default session duration is seven days"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/user-trust.html
+  - claim: "If a refresh token is specified, Verified Access uses the expiration of the refresh token as the session duration, and if there is no refresh token the default session duration is used"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/user-trust.html
+  - claim: "Verified Access obtains the trust data that it evaluates from the OIDC provider's UserInfo Endpoint, and the Scope parameter is used to determine which sets of trust data will be retrieved"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/user-trust.html
+  - claim: "With trust providers created before February 24, 2025, Verified Access does not use trust data from the ID token sent by the OIDC provider, and only trust data from the UserInfo Endpoint is evaluated against the policy"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/user-trust.html
+  - claim: "AWS states that due to the wide array of potential OIDC providers, AWS is not able to test each OIDC integration with Verified Access"
+    source: https://docs.aws.amazon.com/verified-access/latest/ug/user-trust.html
 problem: "A VPN authenticates you once and then you are inside. Every application behind it trusts the network you are on, so a credential that worked at nine in the morning still works at five, and a laptop that fell out of compliance at lunchtime is still on the network."
 builds: "A reading of what Verified Access evaluates and when, where its policies live, and what it asks a trust provider for on each request."
-catch: "AWS states the contrast plainly: 'A traditional security model evaluates access once and grants the user access to all applications. Verified Access evaluates each application access request in real time.' Which makes this the architectural inverse of a bearer token - and the catch is in the plumbing: one instance accepts a single identity trust provider and multiple device trust providers, so your device signals can be plural while your identity source cannot."
+catch: "Per-request authorisation and per-request freshness are different guarantees, and AWS documents only the first. Authorisation is evaluated on every request, but the trust data it reads arrives on a session: 'the default session duration is one day' for trust providers created from 24 February 2025, and 'seven days' for older ones, or the refresh token's expiry where one is specified. So a device or directory change is not necessarily visible to the next request."
 ---
 <div id="jk-post">
 <style>#jk-post{}</style>
 
 <div class="post-header">
   <div class="post-eyebrow">AWS Architecture Series &middot; #081 &middot; Security &amp; Identity</div>
-  <h1 class="post-title">Asked again on every request</h1>
-  <p class="post-subtitle">A token answers once and keeps answering until it expires. Verified Access goes back to the trust provider each time &mdash; which fixes the staleness problem three posts in this series have been circling, and introduces a different one.</p>
+  <h1 class="post-title">Evaluated per request, trusted per session</h1>
+  <p class="post-subtitle">Every request is authorised against policy. The trust data those policies read is a different matter &mdash; it arrives on a session, and the default session is a day.</p>
   <div class="post-meta">
     <span>Jayanth Katta</span>
     <span>Oct 2026</span>
@@ -84,7 +94,13 @@ catch: "AWS states the contrast plainly: 'A traditional security model evaluates
       The mechanism is the part worth reading twice:
       <em>&ldquo;When a user tries to access an application, Verified Access <strong>gets their data from the
       trust provider</strong> and evaluates it against the policies that you set for the application.&rdquo;</em>
-      Not reads a claim. Gets the data.
+    </p>
+    <p>
+      That describes the flow, and it is tempting to read it as a fresh fetch from your directory on every
+      request. It does not say that, and elsewhere AWS says otherwise: trust data arrives on a session whose
+      default is a day. <strong>Per-request authorisation and per-request freshness are different guarantees</strong>,
+      and only the first is documented. The session section below is the one that matters for how stale an
+      attribute can be.
     </p>
 
     <div class="challenge-card">
@@ -167,8 +183,8 @@ catch: "AWS states the contrast plainly: 'A traditional security model evaluates
     </p>
 
     <figure class="screenshot">
-      <img src="/blog/assets/diagrams/arch-081-verified-access.svg" alt="Diagram: how AWS Verified Access evaluates an application request, what it asks a trust provider for on each request, and where its policies live. AWS states that Verified Access provides secure access to applications without requiring the use of a virtual private network, and that it evaluates each application request to ensure users can access each application only when they meet the specified security requirements. The contrast AWS draws is that a traditional security model evaluates access once and grants the user access to all applications, whereas Verified Access evaluates each application access request in real time, which makes it difficult for bad actors to move from one application to another. The mechanism is that when a user tries to access an application, Verified Access gets their data from the trust provider and evaluates it against the policies set for that application, so the trust data is fetched rather than read from a previously issued credential. Five components make up the service. A Verified Access instance is the resource that organises trust providers and groups, and it evaluates application requests and grants access only when security requirements are met. A Verified Access endpoint represents an application, and the available endpoint types are load balancer, network interface, network CIDR, and Amazon Relational Database Service, where RDS requests go to an RDS instance, cluster or DB proxy. A Verified Access group is a collection of endpoints, and AWS recommends grouping endpoints for applications with similar security requirements to simplify policy administration. Access policies are user-defined rules determining whether to allow or deny access, and a group access policy is created for each group and inherited by all endpoints in that group, while application-specific policies may optionally be attached to individual endpoints, with the request evaluated against the group policy and any endpoint policies together, making an endpoint policy additive rather than a replacement. Trust providers are services that manage user identities or device security state, and the data they send is called trust data, also referred to as user claims or trust context, for example a user's email address or a device's operating system version. A critical plumbing asymmetry is that at least one trust provider must be attached to each instance, and an instance accepts a single identity trust provider but multiple device trust providers, so device signals can be plural while the identity source cannot, which means separate directories for contractors or an acquisition require separate instances with their own groups, endpoints and policies. Trust context can include attributes based on user identity such as an email address or membership in a sales organisation, or device information such as installed security patches or anti-virus software version, and Verified Access supports two categories of trust provider accordingly: user identity providers and device management systems for laptops, tablets and smartphones. On defaults, all application requests are denied by default until a policy is defined, so a newly created endpoint refuses everything until something grants access, and distinguishing a default denial from an evaluated one matters in the same way it does for an authorization decision with no determining policy. Verified Access logs all access attempts, providing centralised visibility into application access to help respond to security incidents and audit requests, which is what makes a setup-time denial visible rather than inferred. On cost, charging is hourly for each application on Verified Access plus the amount of data processed, so the per-application hourly component means the number of endpoints is a standing cost rather than a usage-driven one, and an endpoint created for a decommissioned application continues to charge." />
-      <figcaption>The trust data is fetched on each request, not carried by the request.</figcaption>
+      <img src="/blog/assets/diagrams/arch-081-verified-access.svg" alt="Diagram: how AWS Verified Access evaluates an application request, what it asks a trust provider for on each request, and where its policies live. AWS states that Verified Access provides secure access to applications without requiring the use of a virtual private network, and that it evaluates each application request to ensure users can access each application only when they meet the specified security requirements. The contrast AWS draws is that a traditional security model evaluates access once and grants the user access to all applications, whereas Verified Access evaluates each application access request in real time, which makes it difficult for bad actors to move from one application to another. The mechanism is that when a user tries to access an application, Verified Access gets their data from the trust provider and evaluates it against the policies set for that application, but that describes the flow rather than guaranteeing a fresh fetch from the original source on every request: trust data arrives on a session whose default duration is one day for trust providers created from 24 February 2025, seven days for providers created before that date, or the expiry of a refresh token where one is specified, so per-request authorisation and per-request freshness are different guarantees and only the first is documented. Five components make up the service. A Verified Access instance is the resource that organises trust providers and groups, and it evaluates application requests and grants access only when security requirements are met. A Verified Access endpoint represents an application, and the available endpoint types are load balancer, network interface, network CIDR, and Amazon Relational Database Service, where RDS requests go to an RDS instance, cluster or DB proxy. A Verified Access group is a collection of endpoints, and AWS recommends grouping endpoints for applications with similar security requirements to simplify policy administration. Access policies are user-defined rules determining whether to allow or deny access, and a group access policy is created for each group and inherited by all endpoints in that group, while application-specific policies may optionally be attached to individual endpoints, with the request evaluated against the group policy and any endpoint policies together, making an endpoint policy additive rather than a replacement. Trust providers are services that manage user identities or device security state, and the data they send is called trust data, also referred to as user claims or trust context, for example a user's email address or a device's operating system version. A critical plumbing asymmetry is that at least one trust provider must be attached to each instance, and an instance accepts a single identity trust provider but multiple device trust providers, so device signals can be plural while the identity source cannot, which means separate directories for contractors or an acquisition require separate instances with their own groups, endpoints and policies. Trust context can include attributes based on user identity such as an email address or membership in a sales organisation, or device information such as installed security patches or anti-virus software version, and Verified Access supports two categories of trust provider accordingly: user identity providers and device management systems for laptops, tablets and smartphones. On defaults, all application requests are denied by default until a policy is defined, so a newly created endpoint refuses everything until something grants access, and distinguishing a default denial from an evaluated one matters in the same way it does for an authorization decision with no determining policy. Verified Access logs all access attempts, providing centralised visibility into application access to help respond to security incidents and audit requests, which is what makes a setup-time denial visible rather than inferred. On cost, charging is hourly for each application on Verified Access plus the amount of data processed, so the per-application hourly component means the number of endpoints is a standing cost rather than a usage-driven one, and an endpoint created for a decommissioned application continues to charge." />
+      <figcaption>Policy is evaluated per request. The trust data it reads arrives on a session.</figcaption>
     </figure>
 
     <h3>The five components</h3>
@@ -192,9 +208,29 @@ catch: "AWS states the contrast plainly: 'A traditional security model evaluates
     </p>
     <p>
       <em>User claims</em> is the same word <a href="/blog/aws-architecture-cognito-tokens/">#78</a> was about,
-      and the difference is entirely in the timing. A Cognito claim is written into a token at issuance and
-      asserts what was true then. A Verified Access claim is fetched from the provider when the request arrives.
-      Same noun, opposite freshness guarantee.
+      and the similarity goes further than the noun. Both arrive on a session and both can be stale by the time
+      they are read. What differs is where the evaluation happens, not how fresh the input is.
+    </p>
+    <p>
+      The session durations are documented, and they are longer than most people assume:
+      <em>&ldquo;With trust providers created as of February 24, 2025, the <strong>default session duration is
+      one day</strong>. With trust providers created before February 24, 2025, the default session duration is
+      <strong>seven days</strong>. If a refresh token is specified, Verified Access uses the expiration of the
+      refresh token as the session duration.&rdquo;</em>
+    </p>
+    <p>
+      That is worth sitting with against the comparison this series has been building. A Cognito ID token can be
+      set to a maximum of one day. A Verified Access session defaults to one day, and to seven on a trust
+      provider created before February 2025. So per-request evaluation does not, by itself, buy you fresher
+      identity data than a token does &mdash; and on an older provider it can be a great deal staler.
+    </p>
+    <p>
+      Where the data comes from is also narrower than &ldquo;the provider&rdquo; suggests:
+      <em>&ldquo;Verified Access obtains the trust data that it evaluates from the OIDC provider's
+      <strong>UserInfo Endpoint</strong>. The <strong>Scope</strong> parameter is used to determine which sets of
+      trust data will be retrieved.&rdquo;</em> So the attributes available to a policy are bounded by the scope
+      you configured, and on older trust providers the ID token is not used at all:
+      <em>&ldquo;Only trust data from the UserInfo Endpoint is evaluated against the policy.&rdquo;</em>
     </p>
     <p>
       The examples show the range:
@@ -306,6 +342,11 @@ catch: "AWS states the contrast plainly: 'A traditional security model evaluates
         <td><em>&ldquo;multiple device trust providers&rdquo;</em> are supported, and they answer different questions.</td>
       </tr>
       <tr>
+        <td>How stale an attribute may be</td>
+        <td>Read it off the session duration, not the request rate</td>
+        <td>Default <em>&ldquo;one day&rdquo;</em>, or <em>&ldquo;seven days&rdquo;</em> before 24 February 2025, or the refresh token's expiry.</td>
+      </tr>
+      <tr>
         <td>Grouping endpoints</td>
         <td>By security requirement, not by team</td>
         <td>The group policy is <em>&ldquo;inherited by all endpoints in the group&rdquo;</em>.</td>
@@ -354,25 +395,28 @@ catch: "AWS states the contrast plainly: 'A traditional security model evaluates
   <div class="section" id="closing">
     <h2>Closing Thought</h2>
     <p>
-      This is the post that resolves something four others have been circling.
-      <a href="/blog/aws-architecture-cognito-tokens/">#78</a> showed a credential asserting what was true when
-      it was signed. <a href="/blog/aws-architecture-verified-permissions/">#79</a> showed a decision made per
-      request but from data the caller chose to send.
+      I wrote this expecting it to resolve something four others had been circling, and the documentation did
+      not cooperate. <a href="/blog/aws-architecture-cognito-tokens/">#78</a> showed a credential asserting what
+      was true when it was signed. <a href="/blog/aws-architecture-verified-permissions/">#79</a> showed a
+      decision made per request but from data the caller chose to send.
       <a href="/blog/aws-architecture-ram-resource-shares/">#80</a> showed access whose other half was
-      administered elsewhere. Verified Access answers all three the same way: it goes and asks, every time,
-      and the asking is the product.
+      administered elsewhere. Verified Access moves the evaluation, not the staleness: the decision is made on
+      every request, from trust data that arrived on a session lasting a day or a week.
     </p>
     <p>
-      What it costs is a different kind of coupling. You are now live-dependent on a trust provider for every
-      request rather than once per session, your identity topology is pinned to one directory per instance, and
-      every application is an hourly line item whether anyone opens it or not. Those are real trades, and they
-      are the honest price of not having a network perimeter do your authorisation for you.
+      What it does buy is real and worth having: the decision point moves from the network edge to each
+      application, so a credential that is good for one application is not automatically good for the next.
+      That is the lateral-movement argument, and it holds regardless of how fresh the attributes are. Your
+      identity topology is pinned to one directory per instance, and every application is an hourly line item
+      whether anyone opens it or not.
     </p>
     <p>
-      The sentence to carry away is AWS's own, because it is the whole design in one line:
+      AWS's own sentence is still the design in one line &mdash;
       <em>&ldquo;A traditional security model evaluates access once and grants the user access to all
-      applications.&rdquo;</em> Every bearer token, every VPN session and every long-lived credential in this
-      series has been a variation on that sentence. This is the first service in the block built to refuse it.
+      applications&rdquo;</em> &mdash; and Verified Access refuses the second half of it rather than the first.
+      Access is no longer granted to <em>all applications</em> at once. It is still, underneath, granted on
+      something evaluated once and held for a while. Knowing which half a control actually fixes is most of
+      the work.
     </p>
 
     <div class="callout">
@@ -386,6 +430,7 @@ catch: "AWS states the contrast plainly: 'A traditional security model evaluates
     <ul>
       <li><a href="https://docs.aws.amazon.com/verified-access/latest/ug/what-is-verified-access.html" target="_blank" rel="noopener">What is AWS Verified Access &#8212; the per-request evaluation model, the contrast with evaluating access once, the logging guarantee, and the two-part pricing</a></li>
       <li><a href="https://docs.aws.amazon.com/verified-access/latest/ug/how-it-works.html" target="_blank" rel="noopener">How Verified Access works &#8212; the five components, the default-deny rule, group policy inheritance alongside endpoint policies, the single-identity and multiple-device trust provider constraint, and the definition of trust data</a></li>
+      <li><a href="https://docs.aws.amazon.com/verified-access/latest/ug/user-trust.html" target="_blank" rel="noopener">User-identity trust providers for Verified Access &#8212; the session durations that bound how fresh trust data can be, the UserInfo Endpoint as its source, the <code>Scope</code> parameter, and the ID token handling that differs by trust provider creation date</a></li>
       <li><a href="https://docs.aws.amazon.com/verified-access/latest/ug/trust-providers.html" target="_blank" rel="noopener">Trust providers for Verified Access &#8212; what trust context contains and the two supported provider categories</a></li>
       <li><a href="https://docs.aws.amazon.com/verified-access/latest/ug/verified-access-endpoints.html" target="_blank" rel="noopener">Verified Access endpoints &#8212; that an endpoint represents an application and inherits its group's policy, and the four endpoint types including RDS</a></li>
       <li><a href="https://docs.aws.amazon.com/verified-access/latest/ug/verified-access-instances.html" target="_blank" rel="noopener">Verified Access instances &#8212; what an instance organises and evaluates</a></li>
