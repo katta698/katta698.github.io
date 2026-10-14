@@ -1,0 +1,78 @@
+# Keep "What they earn" true without anyone remembering to run it.
+#
+# Those figures were static. fetch_cloud_economics.py reads the segment facts
+# out of each company's own XBRL instance, and nothing ran it -- so the page
+# carried whatever was captured the last time a person typed the command. It
+# said "Captured 2026-10-06" honestly enough, under a heading promising the
+# "latest 10-Q or 10-K", and the two would have disagreed the moment a new
+# filing landed.
+#
+# That moment is quarterly and it is close: Amazon, Alphabet and Microsoft all
+# report within days of each other at the end of October, January, April and
+# July. A figure that is right for five weeks and then silently a quarter out
+# of date is the worst kind of wrong, because nothing about it looks stale.
+#
+# Weekly rather than daily. Segment figures change four times a year, and the
+# SEC asks that its endpoints not be hammered -- a daily poll for a quarterly
+# number is rude and buys nothing. Tuesday because the big three have all
+# filed by then in the weeks they report.
+#
+# It commits its own output, like refresh-ai.yml and ingest-news.yml: a cron
+# on paths no human edits. The objection recorded in 111570f was to a workflow
+# committing in response to a PUSH, racing the person who made it.
+name: Refresh cloud segment economics
+
+on:
+  schedule:
+    - cron: "35 6 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-economics
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Read the latest filings
+        run: python scripts/fetch_cloud_economics.py
+
+      # The page is built from the JSON, so refreshing one without the other
+      # leaves the figures current in a file nobody reads and stale on the
+      # page everybody does.
+      - name: Rebuild the clouds page
+        run: python scripts/build_clouds_page.py
+
+      - name: Commit if anything changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add intelligence/cloud-economics.json intelligence/clouds/index.html
+          if git diff --cached --quiet; then
+            echo "no new filings"
+            exit 0
+          fi
+          # The capture date moves every run whether or not a figure did, so
+          # the message says which it was rather than claiming a new quarter
+          # every week.
+          moved=$(git diff --cached -U0 -- intelligence/cloud-economics.json \
+                  | grep -E '^\+' | grep -vcE '^\+\+\+|"captured"' || true)
+          if [ "$moved" = "0" ]; then
+            git commit -m "Economics: re-read the filings, no figure changed"
+          else
+            git commit -m "Economics: new segment figures from the latest filings"
+          fi
+          for i in 1 2 3 4 5; do
+            git pull --rebase --autostash origin main && git push origin HEAD:main && break
+            sleep $((i * 10))
+          done
