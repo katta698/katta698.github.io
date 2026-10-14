@@ -146,6 +146,55 @@ the whole point:
 Asked 2026-09-06, right after the rule above. A reference list that mixes the
 two reads as though every link was checked, and only one group was.
 
+## A number fetched once is a number that will be wrong
+
+**Anything read from outside the repo gets a schedule the same day it gets a
+page. No exceptions, and the schedule is part of the feature, not a follow-up.**
+
+Written 2026-10-14, after being asked whether the segment revenues on
+`/intelligence/clouds/` keep up with the clouds' quarterly results. They did
+not. `fetch_cloud_economics.py` reads AWS and Google Cloud revenue out of each
+company's own XBRL, it had been run exactly once, by hand, and the page had
+been carrying the 6 October capture ever since. Amazon, Alphabet and Microsoft
+all report within days of each other at the end of October. Left alone it
+would have shown June-quarter figures under a heading promising the latest
+filing, for a quarter, and nothing about it would have looked wrong.
+
+There was no decision to make it static. That is the point: it was an
+omission, not a trade-off. The fetcher was treated as a thing you run to
+build the page rather than a thing the page depends on, and the question
+"when does this become false?" was never asked.
+
+**A capture date is not a substitute for a refresh.** The page said "Captured
+2026-10-06" and the estimator says its prices were "fetched 2026-08-13". Both
+are honest and both are the tell: labelling the staleness is what you do
+INSTEAD of preventing it, and it reads as diligence while the number rots. If
+you find yourself writing an as-of date next to a figure, that is the moment
+to wire the cron, not the moment to feel covered.
+
+So, for anything fetched:
+
+- **A workflow that re-runs it**, at the rate the source actually changes.
+  Quarterly figures weekly; a daily feed daily; prices monthly. A daily poll
+  for a quarterly number is rude to the source and buys nothing.
+- **It must deploy.** A workflow that commits cannot trigger another one --
+  GitHub does not fire workflows for pushes made with GITHUB_TOKEN -- so it
+  belongs in `deploy-pages.yml`'s `workflow_run` list.
+  `check_deploy_triggers.py` enforces that in both directions.
+- **Something that fails when it stops.** A silent fetcher looks exactly like
+  a quiet quarter. `check_news.py`'s `check_ingest_ran` is the pattern: assert
+  the RUN happened, not that the data looks plausible.
+- **Run it before scheduling it**, so you are not automating something that
+  has already broken.
+
+**Known and not yet done:** the EC2 estimator on `index.html` carries
+On-Demand, Reserved and Savings Plan rates transcribed by hand from
+`fetch_aws_prices.py` and `fetch_aws_savings.py`, fetched 2026-08-13. Those
+two scripts write JSON to a path you pass them; nothing rewrites the page from
+it, so automating this needs a generator rather than a cron. It is the same
+fault as the one above, older, and on numbers a reader might actually budget
+against.
+
 ## Finish the work and stop
 
 **Do not end a response with offers of further work.** No "Want me to…?", no
