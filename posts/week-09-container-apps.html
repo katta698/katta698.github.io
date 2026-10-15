@@ -1,0 +1,325 @@
+---
+title: 'Week 9 — Nothing Runs Until Someone Asks'
+date: '2026-10-15T10:00:00'
+labels:
+- Azure
+- Terraform
+- Azure Weekly Lab
+slug: week-09-container-apps
+draft: true
+verified: '2026-10-15'
+verified_claims:
+  - claim: "When a Container Apps revision is scaled to zero replicas, no resource consumption charges are incurred"
+    source: "https://learn.microsoft.com/en-us/azure/container-apps/billing"
+  - claim: "The first 180,000 vCPU-seconds, 360,000 GiB-seconds and 2 million HTTP requests each calendar month are free per subscription on the Consumption plan"
+    source: "https://learn.microsoft.com/en-us/azure/container-apps/billing"
+  - claim: "A replica is only eligible for the reduced idle billing rate if its revision is configured with a minimum replica count greater than zero and is scaled to that minimum"
+    source: "https://learn.microsoft.com/en-us/azure/container-apps/billing"
+  - claim: "No plan management charge applies unless a Dedicated workload profile is used in the environment"
+    source: "https://learn.microsoft.com/en-us/azure/container-apps/billing"
+  - claim: "The Container Apps logs destination can be set to log-analytics, azure-monitor or none, and the azure-monitor destination requires diagnostic settings to be configured separately"
+    source: "https://learn.microsoft.com/en-us/azure/container-apps/log-options"
+  - claim: "Sending Container Apps logs directly to a Log Analytics workspace over Private Link is not supported; the Azure Monitor destination exists for that case"
+    source: "https://learn.microsoft.com/en-us/azure/container-apps/log-options"
+---
+<div id="jk-post">
+
+<div class="meta">
+  <span class="stack-badge">Container Apps</span>
+  <span class="stack-badge">Scale to Zero</span>
+  <span class="stack-badge">Managed Identity</span>
+  <span class="stack-badge">Diagnostic Settings</span>
+  <span class="stack-badge">Terraform</span>
+</div>
+
+<div class="post-eyebrow">Azure Platform Engineering Lab · Week 9 of 52</div>
+
+<h1>Week 9 — Nothing Runs Until Someone Asks</h1>
+
+<p class="post-subtitle">Eight weeks of building the place things run, and
+nothing was actually running. This week deploys a real workload that serves
+traffic, costs nothing while idle, and sends one unlucky user the bill for
+waking it up.</p>
+
+<div class="post-meta">
+  <span>15 October 2026</span>
+  <span>Terraform · HCP Terraform, local execution</span>
+  <span>8/8 validation · $0.00 expected</span>
+</div>
+
+<div class="toc">
+  <h2>📋 In This Post</h2>
+  <ol>
+    <li><a href="#why">Why — The Problem This Solves</a></li>
+    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
+    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
+    <li><a href="#build">How We Built It — In Deployment Order</a></li>
+    <li><a href="#testing">How It's Tested</a></li>
+    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
+    <li><a href="#security">Security — Controls at Every Layer</a></li>
+    <li><a href="#cost">Cost</a></li>
+    <li><a href="#cleanup">Cleanup</a></li>
+    <li><a href="#references">References</a></li>
+    <li><a href="#takeaways">Key Takeaways</a></li>
+  </ol>
+</div>
+
+<h2 id="why">Why — The Problem This Solves</h2>
+
+<p>An internal tool gets used nine times a day, all of them between 9am and
+5pm, all of them by the same four people. On a virtual machine it costs the
+same at 3am as it does at noon. Most internal software looks like this, and
+most of it is billed as though it were busy.</p>
+
+<p>The alternative is to run nothing when nobody is asking. That is free, and
+it is not free — somebody has to wait while a container starts. This week
+deploys that trade and measures both ends of it.</p>
+
+<h2 id="skills">What You Need to Know — Skills &amp; Tools</h2>
+
+<ul>
+  <li><strong>The environment versus the app.</strong> The environment is the
+  boundary — shared network, shared log destination. The app is what scales.</li>
+  <li><strong>Replica counts</strong>, and that a floor of zero is a decision
+  with a latency price attached.</li>
+  <li><strong>Scale rules</strong> — what signal Azure watches to decide it
+  needs another replica.</li>
+  <li><strong>Diagnostic settings</strong>, and that they are a different way
+  to reach a workspace than a shared key.</li>
+</ul>
+
+<h2 id="architecture">Architecture — How It Fits Together</h2>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-09-container-apps/docs/blog/diagrams/week-09-architecture.svg" alt="Diagram: a request from the internet reaches HTTPS-only ingress on a container app in sub-lab-dev. The app runs between zero and three replicas, scaling on concurrent requests, inside a Consumption-plan Container Apps environment. After about ten minutes idle it drops to zero replicas and bills nothing; the first request after that takes 16.9 seconds against a warm 0.13. The environment sends two log categories through a diagnostic setting across a subscription boundary into week 8's Log Analytics workspace in sub-management, which this week reads but does not own." style="width:100%;max-width:900px" /></p>
+
+<h2 id="build">How We Built It — In Deployment Order</h2>
+
+<p><strong>The goal:</strong> a workload that serves real traffic from the
+internet, runs nothing when idle, and reports to week 8's workspace across a
+subscription boundary. <strong>You need</strong> an Azure subscription, an HCP
+Terraform account, and a Log Analytics workspace to point at.</p>
+
+<p>Five resources, and the shape of the week is in the last one:</p>
+
+<table>
+  <thead><tr><th>Resource</th><th>Count</th><th>Its job</th></tr></thead>
+  <tbody>
+    <tr><td>Resource group</td><td>1</td><td>what dies together at teardown</td></tr>
+    <tr><td>User-assigned managed identity</td><td>1</td><td>the seam a private registry would authenticate through</td></tr>
+    <tr><td>Container Apps environment</td><td>1</td><td>the boundary — network and log destination</td></tr>
+    <tr><td>Container app</td><td>1</td><td>the workload — a Microsoft-published sample image, 0 to 3 replicas, HTTPS only</td></tr>
+    <tr><td>Diagnostic setting</td><td>1</td><td>routes logs into <em>week 8's</em> workspace, in another subscription</td></tr>
+  </tbody>
+</table>
+
+<h3>1. The HCP workspace, created first and deliberately</h3>
+
+<pre><code>POST /api/v2/organizations/Katta/workspaces
+{ "name": "azure-week-09-dev", "execution-mode": "local" }
+
+created: azure-week-09-dev | execution-mode: local</code></pre>
+
+<p>A new HCP workspace defaults to <strong>remote</strong> execution, which
+runs the plan on HCP's servers where there is no Azure CLI. Setting it at
+birth is one line; discovering it afterwards costs a confusing failure on the
+wrong machine.</p>
+
+<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-09-container-apps/docs/blog/screenshots/01-hcp-workspace.png" alt="HCP Terraform workspace azure-week-09-dev in the Azure Platform Lab project showing 6 resources, 8 outputs, Terraform v1.16.6, execution mode Local, and the resource list including the container app environment, container app, user assigned identity, diagnostic setting and the Log Analytics workspace data source" style="width:100%" /></p>
+
+<p>Six resources there, not five — the sixth is the <em>data source</em>
+reading week 8's workspace. Terraform tracks what it reads as well as what it
+owns.</p>
+
+<h3>2. The Terraform</h3>
+
+<figure class="screenshot" data-prereq>
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-09-container-apps/docs/blog/screenshots/02-terraform-layout.png" alt="The Terraform file tree for week 9: terraform/ with a 41-line versions.tf carrying two provider blocks, a 70-line variables.tf, a 154-line main.tf holding the resource group, identity, environment and app, a 78-line logging.tf reading week 8's workspace across a subscription, and a 36-line outputs.tf; plus deploy.sh, a 282-line validate.sh and cleanup.sh, each annotated with its job and line count">
+  <figcaption><strong>Every file, and what it is for.</strong>
+  <code>main.tf</code> answers "what runs, and how little of it runs when nobody
+  is asking". <code>logging.tf</code> is separate because its answer lives in
+  another subscription.</figcaption>
+</figure>
+
+<p>The replica floor is the week in one argument:</p>
+
+<pre><code>template {
+  min_replicas = 0      # the whole point
+  max_replicas = 3      # a ceiling, not a target
+
+  cooldown_period_in_seconds = 300
+
+  http_scale_rule {
+    name                = "http-concurrency"
+    concurrent_requests = 10
+  }
+}</code></pre>
+
+<p><code>max_replicas</code> matters as much as the floor. Scaling to zero
+removes the floor on cost; without a ceiling, the same autoscaler removes the
+limit on it.</p>
+
+<h3>3. Deploy</h3>
+
+<pre><code>$ ./scripts/deploy.sh
+   registering Microsoft.App (currently NotRegistered)
+   attempt 1: Registered
+...
+azurerm_container_app_environment.workload: Creation complete after 14m55s
+azurerm_container_app.hello: Creation complete after 18s
+
+Apply complete! Resources: 5 added, 0 changed, 0 destroyed.</code></pre>
+
+<p>The environment took <strong>14 minutes 55 seconds</strong>. The app on top
+of it took 18. Provider registration lives in the deploy script rather than in
+Terraform, because registration is subscription-wide shared state and one
+week's destroy must not unregister what another week still needs.</p>
+
+<h3>4. It answers — and only over HTTPS</h3>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-09-container-apps/docs/blog/screenshots/03-app-responding.png" alt="Terminal output: curl -i against the app over HTTPS returns HTTP/1.1 200 OK with content-length 4331 and the Azure Container Apps default page; the same request on port 80 returns HTTP/1.1 301 Moved Permanently with a location header pointing at the HTTPS URL">
+  <figcaption><strong>200 over HTTPS, 301 on port 80.</strong> With
+  <code>allow_insecure_connections</code> left at its default the ingress also
+  answers port 80 with a 200 — and a client that gets a 200 in the clear has no
+  reason to ever upgrade.</figcaption>
+</figure>
+
+<h3>5. And then it stops</h3>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-09-container-apps/docs/blog/screenshots/04-scaled-to-zero.png" alt="Azure portal Revisions and replicas blade for ca-hello-dev-scus-001 showing one active revision with Running status Scaled to 0, traffic at 100 percent, and the Replicas column reading 0">
+  <figcaption><strong>Zero replicas.</strong> The app still exists, still has a
+  URL, still has a revision. There is simply nothing running behind it, and
+  nothing being billed.</figcaption>
+</figure>
+
+<h3>6. The logs land in last week's workspace</h3>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-09-container-apps/docs/blog/screenshots/05-logs-in-workspace.png" alt="Azure portal Logs blade on workspace log-platform-prod-scus-001 showing two ContainerAppConsoleLogs rows for ca-hello-dev-scus-001, each with the revision name, the mcr.microsoft.com/k8se/quickstart image, stream stderr and a Listening on :80 message — one at 01:52 and one at 02:08 after the restart" style="width:100%" />
+  <figcaption><strong>Week 8's workspace, in a different subscription.</strong>
+  Two timestamps: the original start, and the restart after the app had scaled
+  to zero. The cold start is visible in the logs as a container booting again.</figcaption>
+</figure>
+
+<h3>What production does differently</h3>
+
+<ul>
+  <li><strong>A private registry.</strong> This pulls a Microsoft sample
+  anonymously. Production builds its own image into ACR — which adds a registry
+  block pointing at that managed identity, not a password.</li>
+  <li><strong>Builds in CI</strong>, on week 7's federated credential, not on a
+  laptop.</li>
+  <li><strong>Something in front of the ingress.</strong> External ingress
+  straight to the app is right for a demonstration and rare in production.</li>
+</ul>
+
+<h2 id="testing">How It's Tested</h2>
+
+<p><code>validate.sh</code> — 6 checks, 8 assertions, <strong>8 passed / 0
+failed</strong>:</p>
+
+<table>
+  <thead><tr><th>What</th><th>Measured</th></tr></thead>
+  <tbody>
+    <tr><td>HTTPS <code>GET /</code></td><td><strong>200</strong></td></tr>
+    <tr><td>Plain HTTP on port 80</td><td><strong>301</strong> — never served in the clear</td></tr>
+    <tr><td>Warm request, average of 3</td><td><strong>0.13 s</strong></td></tr>
+    <tr><td>Idle before replicas reached 0</td><td><strong>602 s</strong></td></tr>
+    <tr><td>First request after idle</td><td><strong>16.94 s</strong>, still a 200</td></tr>
+    <tr><td>The penalty, stated plainly</td><td><strong>16.81 s</strong> on one request</td></tr>
+    <tr><td>Log rows in week 8's workspace</td><td><strong>3</strong></td></tr>
+    <tr><td>Rows in shared <code>AzureDiagnostics</code></td><td><strong>0</strong></td></tr>
+  </tbody>
+</table>
+
+<p>That last pair is the test that the logs went to <em>dedicated</em> tables
+rather than the shared one — which is what makes week 8's per-table cost design
+apply to them at all.</p>
+
+<h2 id="challenges">Challenges — What Actually Went Wrong</h2>
+
+<p><strong>The default logging path was impossible.</strong> The default
+destination wires the environment to a workspace using that workspace's
+<em>shared key</em>. Week 8 disabled local authentication, so there is no key
+to hand over. The fix is <code>azure-monitor</code> plus a diagnostic setting,
+which authenticates as ARM. A security decision made one week became an
+architecture constraint the next.</p>
+
+<p><strong>A configuration that never converged.</strong> The obvious way to get
+dedicated tables is <code>log_analytics_destination_type = "Dedicated"</code>.
+ARM does not persist that field here, so it returns null and every plan wants to
+set it again, forever. Removed — these logs are resource-specific anyway, proven
+by <code>AzureDiagnostics</code> holding zero rows. A plan that is never empty
+trains you to ignore the diff that matters.</p>
+
+<p><strong>The cooldown is not the whole wait.</strong>
+<code>cooldown_period_in_seconds</code> was 300; replicas reached zero at
+<strong>602 seconds</strong>. The setting governs when the scaler starts
+counting, not when the last replica goes.</p>
+
+<h2 id="security">Security — Controls at Every Layer</h2>
+
+<ul>
+  <li><strong>No password exists.</strong> The app carries a user-assigned
+  managed identity, and a managed identity cannot hold a secret — that is a
+  property of the object, not a discipline anyone keeps.</li>
+  <li><strong>HTTPS only</strong>, proven by a 301 rather than assumed from a
+  setting.</li>
+  <li><strong>Named log categories</strong>, not <code>allLogs</code> — which is
+  defined by Azure and silently grows when Azure adds a category.</li>
+  <li><strong>The image comes from MCR</strong>, so there is no registry
+  credential to hold in the first place.</li>
+</ul>
+
+<h2 id="cost">Cost</h2>
+
+<p>The free grant is 180,000 vCPU-seconds, 360,000 GiB-seconds and 2 million
+requests per subscription per month. This week used roughly <strong>600
+vCPU-seconds</strong>. A Consumption-only environment carries no fixed hourly
+fee.</p>
+
+<p><strong>No total yet</strong> — Azure posts charges about a day in arrears,
+and this lab reads cost from the bill, not from a rate card. Expected $0.00.</p>
+
+<p>Idle replicas bill eight times cheaper than active — but only if the floor is
+<em>above</em> zero. A floor of zero has no idle state to bill. Keeping one
+replica warm is the other defensible answer, and the one to pick if 17 seconds
+is unacceptable.</p>
+
+<h2 id="cleanup">Cleanup</h2>
+
+<pre><code>$ ./scripts/cleanup.sh
+   resource groups named rg-containerapps-lab-dev-scus-001 : 0
+   Container Apps environments                             : 0
+   container apps                                          : 0
+   wk09 managed identities                                 : 0
+   week 08's workspace still there                         : log-platform-prod-scus-001</code></pre>
+
+<p>That last line is deliberate. Week 8's workspace is read through a data
+source, never owned, so this week's teardown cannot destroy it — and the
+teardown checks that it didn't.</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li><a href="https://learn.microsoft.com/en-us/azure/container-apps/billing">Billing in Azure Container Apps</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/container-apps/log-options">Log storage and monitoring options</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/container-apps/scale-app">Set scaling rules</a></li>
+  <li><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-09-container-apps">The code for this week</a></li>
+</ul>
+
+<h2 id="takeaways">Key Takeaways</h2>
+
+<ul>
+  <li><strong>Scale-to-zero is not free, it is cheap and slow.</strong> 16.81
+  seconds, paid by one user, invisible in any average. Put that number in front
+  of whoever decides whether it is acceptable.</li>
+  <li><strong>A ceiling matters as much as a floor.</strong> Zero protects you
+  from idle cost; <code>max_replicas</code> protects you from a runaway one.</li>
+  <li><strong>Last week's security decision is this week's constraint</strong> —
+  which is what good security does, and better found in week 9 than in an
+  incident.</li>
+</ul>
+
+</div>
