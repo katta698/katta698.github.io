@@ -1,0 +1,320 @@
+---
+title: 'Week 9 — The Service Accounts Nobody Ever Used'
+date: '2026-10-14T22:00:00'
+draft: true
+labels:
+- GCP
+- Terraform
+- GCP Weekly Lab
+slug: week-09-sa-lifecycle
+verified: '2026-10-14'
+verified_claims:
+  - claim: "Google recommends disabling a service account before deleting it, to make sure it isn't necessary, because disabled service accounts can be re-enabled if they are still in use"
+    source: https://docs.cloud.google.com/iam/docs/service-account-overview
+  - claim: "Role bindings that existed for a deleted service account do not apply to a new service account created with the same email address, because IAM uses a unique internal ID rather than the email"
+    source: https://docs.cloud.google.com/iam/docs/service-account-overview
+  - claim: "Activity Analyzer lets you check when a service account was last used, and service account insights report which service accounts have not authenticated in the past 90 days"
+    source: https://docs.cloud.google.com/iam/docs/service-account-overview
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Platform Engineering Lab &middot; Week 9 of 58</div>
+  <div class="post-title">The service accounts nobody ever used</div>
+  <div class="post-subtitle">Two logins existed in my cloud that I did not create and have never used. Finding them was easy. The interesting part was nearly deleting the wrong one, and a security rule I briefly believed had been switched off.</div>
+  <div class="post-meta">
+    <span>14 October 2026</span>
+    <span>Cloud IAM &middot; Service accounts &middot; Organization policy</span>
+    <span>$0</span>
+  </div>
+</div>
+
+<div class="toc">
+  <h3>&#128203; In This Post</h3>
+  <ol>
+    <li><a href="#why">Why — The Problem This Solves</a></li>
+    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
+    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
+    <li><a href="#build">How We Built It — Step by Step</a></li>
+    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
+    <li><a href="#security">Security — Controls at Every Layer</a></li>
+    <li><a href="#cost">Cost</a></li>
+    <li><a href="#cleanup">Cleanup</a></li>
+    <li><a href="#references">References</a></li>
+    <li><a href="#takeaways">Key Takeaways</a></li>
+  </ol>
+</div>
+
+<div class="section" id="why">
+<h2>Why — The Problem This Solves</h2>
+
+<p>Every project in Google Cloud quietly comes with a login attached. You do not
+ask for it, you are not told about it, and it stays there for as long as the
+project exists.</p>
+
+<p>After nine weeks this organization had five of these machine logins. Three I
+built on purpose. Two I had never heard of. An unused credential is not
+dramatic &mdash; it is just a door nobody checks, in a building where everything
+else is locked.</p>
+
+<p>So this week is a tidy-up: find every machine identity, prove which have never
+been used, and close those &mdash; carefully enough that nothing breaks.</p>
+</div>
+
+<div class="section" id="skills">
+<h2>What You Need to Know — Skills &amp; Tools</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <h3>Google Cloud</h3>
+    <ul>
+      <li><strong>Service accounts</strong> — logins for software, not people</li>
+      <li><strong>Default service accounts</strong> — created for you, whether you want them or not</li>
+      <li><strong>Activity Analyzer</strong> — when an identity last authenticated</li>
+      <li><strong>Organization policy</strong> — and that constraints come in two generations</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Tooling</h3>
+    <ul>
+      <li><strong>Terraform</strong> — <code>google_project_default_service_accounts</code></li>
+      <li><strong>HCP Terraform</strong> — remote runs via Workload Identity Federation</li>
+      <li><strong>gcloud policy-intelligence</strong> — the usage evidence</li>
+    </ul>
+  </div>
+</div>
+
+<h3>Concepts to understand before starting</h3>
+
+<div class="tag-grid">
+  <span>Disable before delete</span>
+  <span>Measure, do not assume idle</span>
+  <span>A deleted identity is not recreatable</span>
+  <span>Check both constraint generations</span>
+</div>
+</div>
+
+<div class="section" id="architecture">
+<h2>Architecture — How It Fits Together</h2>
+
+<svg viewBox="0 0 880 330" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="A decision tree applied to every service account. If it authenticated recently, keep it. If it never authenticated, check whether it holds any role: if it does, investigate; if it holds nothing, disable it, which is reversible. Deletion only follows a quiet period and is not done this week."
+     style="width:100%;height:auto;border:1px solid #e4e7ec;border-radius:8px">
+  <rect x="0" y="0" width="880" height="330" fill="#ffffff"/>
+  <defs>
+    <marker id="w9a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="28" font-family="Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#202124">One question, asked of every machine identity</text>
+
+  <rect x="24" y="130" width="158" height="62" rx="7" fill="#ffffff" stroke="#5f6368" stroke-width="1.3"/>
+  <text x="40" y="156" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">a service account</text>
+  <text x="40" y="176" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">5 of them, here</text>
+
+  <path d="M 182 161 L 258 108" fill="none" stroke="#5f6368" stroke-width="1.3" marker-end="url(#w9a)"/>
+  <path d="M 182 161 L 258 214" fill="none" stroke="#5f6368" stroke-width="1.3" marker-end="url(#w9a)"/>
+  <text x="188" y="118" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" font-weight="700" fill="#0F9D58">used recently</text>
+  <text x="188" y="232" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" font-weight="700" fill="#DB4437">never used</text>
+
+  <rect x="264" y="78" width="214" height="62" rx="7" fill="#e6f4ea" stroke="#0F9D58" stroke-width="1.2"/>
+  <text x="280" y="104" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">keep, and leave alone</text>
+  <text x="280" y="124" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">3 accounts &#183; tf-plan, tf-apply, finops</text>
+
+  <rect x="264" y="184" width="214" height="62" rx="7" fill="#ffffff" stroke="#5f6368" stroke-width="1.2"/>
+  <text x="280" y="210" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">holds a role anywhere?</text>
+  <text x="280" y="230" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">2 accounts &#183; both default compute</text>
+
+  <path d="M 478 215 L 556 215" fill="none" stroke="#5f6368" stroke-width="1.3" marker-end="url(#w9a)"/>
+  <text x="484" y="207" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" font-weight="700" fill="#5f6368">no &#8212; holds nothing</text>
+
+  <rect x="562" y="184" width="294" height="62" rx="7" fill="#fef7e0" stroke="#F4B400" stroke-width="1.2"/>
+  <text x="578" y="210" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">DISABLE &#8212; reversible, one field</text>
+  <text x="578" y="230" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">this is where the week stops</text>
+
+  <rect x="562" y="268" width="294" height="44" rx="7" fill="#ffffff" stroke="#dadce0" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="578" y="289" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" font-weight="700" fill="#5f6368">delete &#8212; only after a quiet period</text>
+  <text x="578" y="305" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">not done here: a recreated account is not the old one</text>
+
+  <path d="M 709 246 L 709 266" fill="none" stroke="#dadce0" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#w9a)"/>
+</svg>
+
+<p>Everything below is that tree applied to five accounts.</p>
+</div>
+
+<div class="section" id="build">
+<h2>How We Built It — Step by Step</h2>
+
+<h3>What we deployed</h3>
+
+<table>
+  <thead><tr><th>Resource</th><th>Count</th><th>Its job</th></tr></thead>
+  <tbody>
+    <tr><td><code>google_project_default_service_accounts</code></td><td>2</td><td>disable the unused default login in each project</td></tr>
+    <tr><td><code>google_org_policy_policy</code></td><td>1</td><td>block key creation on the second constraint generation</td></tr>
+  </tbody>
+</table>
+
+<h3>How we wrote it</h3>
+
+<figure class="screenshot" data-prereq>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-09-sa-lifecycle/docs/blog/screenshots/01-terraform-layout.png"
+       alt="The Terraform file tree for Week 9: versions.tf, variables.tf, a 79-line main.tf with three resources, and a 90-line validate.sh"/>
+  <figcaption><strong>Every file, and what it is for.</strong> The validator is
+  longer than the Terraform, which is the right shape: disabling an account is
+  three resources, but knowing which ones are safe to disable is the week.</figcaption>
+</figure>
+
+<p>Before writing any of it, I asked when each account last authenticated:</p>
+
+<pre><code>finops-reader@…        2026-10-09
+tf-plan@…              2026-10-05
+tf-apply@…             2026-10-05
+398884169348-compute@  NEVER AUTHENTICATED
+851623897121-compute@  NEVER AUTHENTICATED</code></pre>
+
+<p>The two at the bottom are default Compute Engine service accounts. They hold
+no role anywhere, and this organization's baseline already blocks the automatic
+grant that usually makes them dangerous. What is left is two credentials
+existing for no reason.</p>
+
+<h3>How we deployed it</h3>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-09-sa-lifecycle/docs/blog/screenshots/02-hcp-apply.png"
+       alt="The HCP Terraform run list for the Week 9 workspace showing an applied run with three resources"/>
+  <figcaption>Three resources, applied. The run executes on HCP and
+  authenticates to Google through Workload Identity Federation &mdash; no
+  service account key exists anywhere in this pipeline.</figcaption>
+</figure>
+
+<h3>What changed in the console</h3>
+
+<figure class="screenshot" data-prereq>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-09-sa-lifecycle/docs/blog/screenshots/03-service-accounts-before.png"
+       alt="The service accounts list for the Logging project before the change, showing the default Compute Engine service account with status Enabled"/>
+  <figcaption><strong>Before.</strong> Status <em>Enabled</em>, no keys, created
+  by nobody. This view had to be captured before the apply &mdash; afterwards it
+  cannot be recreated.</figcaption>
+</figure>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-09-sa-lifecycle/docs/blog/screenshots/04-service-accounts-after.png"
+       alt="The same service accounts list after the change, showing the default Compute Engine service account with status Disabled"/>
+  <figcaption><strong>After.</strong> Same view, same account, status
+  <em>Disabled</em>. Still present &mdash; which is the point.</figcaption>
+</figure>
+
+<h3>How we tested it, and what success looked like</h3>
+
+<p>Disabling a login is only safe if nothing depended on it. The honest test is
+not "did the resource apply" but "does everything built in the previous three
+weeks still work":</p>
+
+<pre><code>All Week 06 checks passed.
+All Week 07 checks passed.
+All Week 08 checks passed.</code></pre>
+
+<p>Plus this week's own: both accounts disabled, both still <em>present</em>
+rather than deleted, and zero downloadable keys anywhere in the organization.</p>
+</div>
+
+<div class="section" id="challenges">
+<h2>Challenges — What Actually Went Wrong</h2>
+
+<div class="challenge-card">
+  <h3>1. I briefly believed a security rule had been switched off</h3>
+  <p>This lab's first rule is that service account keys are never created. I
+  checked the organization policy and got <code>enforce: false</code>, and for a
+  few minutes I thought the rule had been off for weeks.</p>
+  <p>It had not. The rule is enforced under a <em>second</em> name &mdash;
+  Google is migrating these constraints to a new generation, and this
+  organization's baseline uses the new name for one key rule and the old name
+  for another. A constraint with no policy attached reads as "not enforced",
+  which looks identical to "switched off". This week sets both names.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>2. The account that looked dormant was not</h3>
+  <p><code>finops-reader</code> was one I had forgotten creating, and I was ready
+  to call it unused. It had authenticated five days earlier. Looking idle and
+  being idle are different things, and only one of them is measurable.</p>
+</div>
+
+<div class="challenge-card">
+  <h3>3. Deleting is worse than it sounds</h3>
+  <p>The obvious tidy-up is to delete. But a deleted account's email can be
+  reused while IAM keeps tracking a hidden internal ID &mdash; so the permissions
+  attached to the old one never apply to the replacement. A rebuild looks
+  identical and quietly is not. Disabling avoids the whole class of problem.</p>
+</div>
+</div>
+
+<div class="section" id="security">
+<h2>Security — Controls at Every Layer</h2>
+
+<p><strong>Reversible first.</strong> Disable, confirm nothing breaks, and only
+consider deleting after a quiet period. This week deliberately stops at disable.</p>
+
+<p><strong>Teardown restores rather than abandons.</strong> The Terraform sets
+<code>restore_policy = "REVERT"</code>, so destroying this week re-enables the
+accounts instead of leaving them disabled with nothing managing them.</p>
+
+<p><strong>Defence in depth on the key rule.</strong> Setting the second
+constraint name is redundant while the baseline holds. That is what redundancy
+is for, and it removes a trap for the next person who checks.</p>
+</div>
+
+<div class="section" id="cost">
+<h2>Cost</h2>
+
+<p><strong>$0.</strong> Identities, policies and usage analysis are all free, and
+nothing here runs.</p>
+
+<p>Read from the billing export rather than a rate card: this organization has
+cost <strong>$0.006 since 1 July</strong>, total.</p>
+</div>
+
+<div class="section" id="cleanup">
+<h2>Cleanup</h2>
+
+<p><strong>Exempt from teardown</strong>, with one caveat worth knowing: because
+of <code>restore_policy = "REVERT"</code>, destroying this week puts the accounts
+back to enabled. That is deliberate &mdash; an account left disabled by a
+configuration that no longer exists is a mystery for someone later.</p>
+</div>
+
+<div class="section" id="references">
+<h2>References</h2>
+
+<ul>
+  <li><a href="https://docs.cloud.google.com/iam/docs/service-account-overview">Service accounts overview</a> &mdash; disable before delete, why a recreated account is not the old one, and the two tools that report last use.</li>
+  <li><a href="https://docs.cloud.google.com/iam/docs/service-account-org-policy">Service account organization policies</a> &mdash; key creation and key upload as separate constraints.</li>
+</ul>
+
+<p><strong>Measured, not documented:</strong> which accounts were actually unused,
+and that this organization enforces the two key constraints on different
+generations.</p>
+</div>
+
+<div class="section" id="takeaways">
+<h2>Key Takeaways</h2>
+
+<ul>
+  <li><strong>Every project hands you a login you did not ask for.</strong> Go
+  and look at yours.</li>
+  <li><strong>Idle-looking is not idle.</strong> One command tells you when an
+  identity last authenticated; guessing does not.</li>
+  <li><strong>Disable, then wait, then delete.</strong> Deleting breaks
+  permissions in a way that a rebuild does not restore.</li>
+  <li><strong>A rule can be enforced under a name you did not check.</strong>
+  "Not enforced" and "no policy attached" read identically and mean very
+  different things.</li>
+</ul>
+
+<p>Next week: Cloud Identity and group-based access &mdash; giving permissions to
+groups rather than to people, and what that fixes.</p>
+</div>
+
+</div>
