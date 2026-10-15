@@ -1,0 +1,436 @@
+---
+title: "AWS Architecture Series #83 — The health check that raises the alarm threshold"
+date: '2026-10-15T09:00:00'
+slug: aws-architecture-shield-advanced
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-10-15'
+verified_claims:
+  - claim: "AWS Shield Advanced is a managed service that helps you protect your application against external threats, like DDoS attacks, volumetric bots, and vulnerability exploitation attempts"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-summary.html
+  - claim: "The protections that you receive from Shield Advanced can vary depending on your architecture and configuration choices"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-summary.html
+  - claim: "The standard AWS WAF fees covered by your Shield Advanced protections are the cost per protection pack (web ACL), the cost per rule, and the base price per million requests for web request inspection, up to 1,500 WCUs and up to the default body size"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-summary.html
+  - claim: "Enabling Shield Advanced automatic application layer DDoS mitigation adds a rule group to your protection pack (web ACL) that uses 150 web ACL capacity units (WCUs), and these WCUs count against the WCU usage in your protection pack (web ACL)"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-summary.html
+  - claim: "The automatic application layer DDoS mitigation rule group consumes 10 percent of the 1,500 WCUs covered by the subscription, because 150 of 1,500 is one tenth"
+    derive: "150 / 1500"
+    expect: "0.1"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-summary.html
+  - claim: "Your subscription to Shield Advanced does not cover the use of AWS WAF for resources that you do not protect using Shield Advanced, and it also does not cover any additional non-standard AWS WAF costs for protected resources"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-summary.html
+  - claim: "Examples of non-standard AWS WAF costs are those for Bot Control, for the CAPTCHA rule action, for web ACLs that use more than 1,500 WCUs, and for inspecting the request body beyond the default body size"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-summary.html
+  - claim: "As part of your Shield Advanced subscription you will get up to 50 billion requests to Shield Advanced protected AWS WAF resources in a calendar month, and requests beyond 50 billion will be billed as per the AWS Shield Advanced pricing page"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-summary.html
+  - claim: "For accounts that are members of an AWS Organizations organization, AWS bills the Shield Advanced subscriptions against the payer account for the organization, regardless of whether the payer account itself is subscribed"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-summary.html
+  - claim: "When you subscribe multiple accounts that are in the same AWS Organizations consolidated billing account family, one subscription price covers all subscribed accounts in the family, and the organization must own all of the AWS accounts and all of their resources"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-summary.html
+  - claim: "Your subscription to Shield Advanced includes access to the Layer 7 Anti-DDoS Amazon Managed Rule group"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-summary.html
+  - claim: "You can configure Shield Advanced to use health-based detection for improved responsiveness and accuracy in attack detection and mitigation, and you can use this option with any resource type except for Route 53 hosted zones"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-health-checks.html
+  - claim: "Health checks are required for Shield Response Team (SRT) proactive engagement support"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-health-checks.html
+  - claim: "With health-based detection, when the associated Route 53 health check is unhealthy, Shield Advanced requires smaller deviations to alert and it reports events more quickly"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-health-checks.html
+  - claim: "Conversely, when the associated Route 53 health check is healthy, Shield Advanced requires larger deviations to alert"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-health-checks.html
+  - claim: "AWS states you will benefit the most from using a health check with Shield Advanced if the health check only reports healthy when your application is running within acceptable parameters and only reports unhealthy when it's not"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-health-checks.html
+  - claim: "Shield Advanced doesn't automatically manage your health checks, and you are responsible for defining and maintaining health checks that accurately report the health of your application"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-health-checks.html
+  - claim: "To use a health check with Shield Advanced the health check must report healthy when you associate it with your Shield Advanced protection, and the health check must be relevant to the health of your protected resource"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-health-checks.html
+  - claim: "For network and transport layer resources, health-based detection improves the accuracy of network-layer and transport-layer event detection and mitigation for Network Load Balancers, Elastic IP addresses, and Global Accelerator standard accelerators"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-health-checks.html
+  - claim: "When you protect network and transport layer resource types with Shield Advanced, Shield Advanced can provide mitigations for smaller attacks and faster mitigation for attacks, even when traffic is within the application's capacity"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-health-checks.html
+  - claim: "For application layer resources you receive web request flood detection alerts when there's a statistically significant deviation in traffic volume that's combined with significant changes in traffic patterns, based on request characteristics"
+    source: https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-health-checks.html
+problem: "A health check answers one question: is the application up. Attaching one to a Shield Advanced protection makes it answer a second question it was never designed for, and the answer tunes how hard Shield looks for an attack."
+builds: "A reading of what the Shield Advanced subscription covers, what it does not, and what a Route 53 health check does to detection sensitivity once it is associated with a protection."
+catch: "AWS states both directions. Unhealthy: 'Shield Advanced requires smaller deviations to alert and it reports events more quickly.' Healthy: 'Conversely, when the associated Route 53 health check is healthy, Shield Advanced requires larger deviations to alert.' So a shallow check that keeps reporting healthy while the application struggles does not merely fail to help - it raises the bar for being told."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #083 &middot; Security &amp; Resilience</div>
+  <h1 class="post-title">The health check that raises the alarm threshold</h1>
+  <p class="post-subtitle">Shield Advanced uses a Route 53 health check to tune how sensitive its attack detection is. The tuning works in both directions, and the naive health check pushes it the wrong way.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Reliability</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Five posts in this block have been about access &mdash; who may do what, and whether the system knows.
+      This one is about availability, and it has the same shape: a signal configured for one purpose turns out
+      to be an input to another.
+    </p>
+    <p>
+      Shield Advanced is <em>&ldquo;a managed service that helps you protect your application against external
+      threats, like DDoS attacks, volumetric bots, and vulnerability exploitation attempts&rdquo;</em>, with a
+      caveat stated early and worth holding onto:
+      <em>&ldquo;The protections that you receive from Shield Advanced <strong>can vary depending on your
+      architecture and configuration choices</strong>.&rdquo;</em>
+    </p>
+    <p>
+      This post is about two of those configuration choices.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>A healthy health check makes Shield less sensitive</strong></div>
+      <div class="challenge-body">
+        <p>
+          Health-based detection is presented as an improvement, and it is. The mechanism is a dial, and AWS
+          documents both ends of it.
+        </p>
+        <p>
+          <em>&ldquo;With health-based detection, when the associated Route 53 health check is
+          <strong>unhealthy</strong>, Shield Advanced requires <strong>smaller deviations to alert</strong> and
+          it reports events more quickly.&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;<strong>Conversely, when the associated Route 53 health check is healthy, Shield Advanced
+          requires larger deviations to alert.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Read those together. Associating a health check does not only add sensitivity when things are bad; it
+          <em>removes</em> sensitivity when the check says things are fine. A classic shallow check &mdash; an
+          HTTP 200 from a path that returns a static response &mdash; keeps reporting healthy while the
+          application behind it is drowning. That is not a neutral failure. It actively raises the threshold
+          Shield needs to cross before telling you.
+        </p>
+        <p>
+          AWS says what good looks like, and the condition is strict:
+          <em>&ldquo;You'll benefit the most from using a health check with Shield Advanced if the health check
+          <strong>only reports healthy when your application is running within acceptable parameters and only
+          reports unhealthy when it's not</strong>.&rdquo;</em>
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Point the health check at something that degrades when the application degrades &mdash; a path that touches the dependency you actually worry about. If you are not willing to maintain that, understand you are choosing between no health check and a check that can work against you.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>No health check means no proactive SRT engagement</strong></div>
+      <div class="challenge-body">
+        <p>
+          One line, in a note, carrying a dependency people discover during an incident:
+        </p>
+        <p>
+          <em>&ldquo;<strong>Health checks are required for Shield Response Team (SRT) proactive engagement
+          support.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Proactive engagement is the SRT contacting <em>you</em> when they see something, rather than you
+          raising a case and waiting. It is a large part of what the subscription is bought for, and it is
+          conditional on a Route 53 health check existing and being associated.
+        </p>
+        <p>
+          So the health check is not an optimisation. It is a prerequisite for one of the headline benefits, and
+          nothing about subscribing to Shield Advanced creates one for you:
+          <em>&ldquo;<strong>Shield Advanced doesn't automatically manage your health checks.</strong>&rdquo;</em>
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat "configure a Route 53 health check per protected resource" as a step in subscribing, not as a later refinement. Check it during onboarding rather than discovering the gap when you wanted a phone call.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The protection you turn on spends a tenth of the allowance that pays for it</strong></div>
+      <div class="challenge-body">
+        <p>
+          The subscription covers standard AWS WAF costs, bounded:
+          <em>&ldquo;the cost per protection pack (web ACL), the cost per rule, and the base price per million
+          requests for web request inspection, <strong>up to 1,500 WCUs</strong> and up to the default body
+          size&rdquo;</em>.
+        </p>
+        <p>
+          And then:
+          <em>&ldquo;Enabling Shield Advanced automatic application layer DDoS mitigation adds a rule group to
+          your protection pack (web ACL) that uses <strong>150 web ACL capacity units (WCUs)</strong>. These
+          WCUs <strong>count against</strong> the WCU usage in your protection pack (web ACL).&rdquo;</em>
+        </p>
+        <p>
+          <code>150 / 1500</code> &mdash; the automatic mitigation consumes <strong>a tenth</strong> of the
+          capacity the subscription pays for, before any rule of yours. And crossing 1,500 does not fail; it
+          moves you into costs the subscription explicitly excludes:
+          <em>&ldquo;web ACLs that use <strong>more than 1,500 WCUs</strong>&rdquo;</em> is named among the
+          <em>&ldquo;non-standard AWS WAF costs&rdquo;</em> that are not covered.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Budget WCUs as 1,350 rather than 1,500 if automatic mitigation is on, and know that the boundary is a billing change rather than a block.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      A subscription with edges, a detection mechanism you tune, and a response team you can only reach
+      proactively if you did one specific thing first.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-083-shield-advanced.svg" alt="Diagram: what an AWS Shield Advanced subscription covers and excludes, and what a Route 53 health check does to attack detection sensitivity once associated with a protection. Shield Advanced is described as a managed service that helps protect an application against external threats like DDoS attacks, volumetric bots and vulnerability exploitation attempts, with AWS noting early that the protections received can vary depending on the customer's architecture and configuration choices. On health-based detection, Shield Advanced can be configured to use a Route 53 health check for improved responsiveness and accuracy in attack detection and mitigation, and this option works with any resource type except Route 53 hosted zones. The mechanism is a dial documented in both directions, and this is the central finding of the post. When the associated health check is unhealthy, Shield Advanced requires smaller deviations to alert and reports events more quickly. Conversely, when the associated health check is healthy, Shield Advanced requires larger deviations to alert. Associating a health check therefore does not only add sensitivity when things are bad, it removes sensitivity when the check reports fine, so a shallow check such as an HTTP 200 from a path returning a static response keeps reporting healthy while the application behind it is struggling and actively raises the threshold Shield must cross before alerting. AWS states the condition for benefit strictly: the customer will benefit most if the health check only reports healthy when the application is running within acceptable parameters and only reports unhealthy when it is not. AWS also states that Shield Advanced does not automatically manage health checks, that the customer is responsible for defining and maintaining health checks that accurately report application health, that the health check must report healthy at the moment it is associated with the protection, and that the health check must be relevant to the health of the protected resource. A second dependency is carried in a note: health checks are required for Shield Response Team proactive engagement support, meaning the response team contacting the customer rather than the customer raising a case, so the health check is a prerequisite for a headline benefit rather than an optimisation. By resource class, health-based detection improves accuracy of network and transport layer event detection and mitigation for Network Load Balancers, Elastic IP addresses and Global Accelerator standard accelerators, where Shield Advanced can provide mitigations for smaller attacks and faster mitigation even when traffic is within the application's capacity, and during unhealthy periods can place mitigations even more quickly and at lower thresholds. For application layer resources, web request flood detection alerts fire when there is a statistically significant deviation in traffic volume combined with significant changes in traffic patterns based on request characteristics. On subscription economics, the subscription covers standard AWS WAF fees for protected resources, namely the cost per protection pack or web ACL, the cost per rule, and the base price per million requests for web request inspection, bounded at up to 1,500 web ACL capacity units and up to the default body size. Enabling automatic application layer DDoS mitigation adds a rule group consuming 150 web ACL capacity units which count against that same allowance, so the automatic mitigation consumes one tenth of the covered capacity before any customer rule, and exceeding 1,500 units does not fail but moves the web ACL into non-standard costs that the subscription explicitly does not cover. Other named non-standard costs are Bot Control, the CAPTCHA rule action, and inspecting the request body beyond the default body size, and the subscription also does not cover AWS WAF use for resources not protected by Shield Advanced. The subscription includes access to the Layer 7 Anti-DDoS Amazon Managed Rule group and up to 50 billion requests to protected AWS WAF resources in a calendar month, with requests beyond that billed separately. On billing structure, for accounts in an AWS Organizations organization AWS bills Shield Advanced subscriptions against the payer account regardless of whether the payer account itself is subscribed, and when multiple accounts in the same consolidated billing family are subscribed one subscription price covers all of them provided the organization owns all the accounts and their resources." />
+      <figcaption>The health check is a sensitivity dial, and the default position is "less sensitive".</figcaption>
+    </figure>
+
+    <h3>What the dial actually does, by resource class</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Layer</th><th>Resources</th><th>What health-based detection changes</th></tr>
+      <tr>
+        <td>Network / transport (3 and 4)</td>
+        <td><em>&ldquo;Network Load Balancers, Elastic IP addresses, and Global Accelerator standard accelerators&rdquo;</em></td>
+        <td>Mitigations for <em>&ldquo;smaller attacks&rdquo;</em> and <em>&ldquo;faster mitigation&hellip; even when traffic is within the application's capacity&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Application (7)</td>
+        <td>CloudFront distributions and Application Load Balancers</td>
+        <td>Alerting on <em>&ldquo;a statistically significant deviation in traffic volume&hellip; combined with significant changes in traffic patterns&rdquo;</em>, with the threshold moved by health</td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      The layer 3/4 phrase worth noticing is <em>&ldquo;even when traffic is within the application's
+      capacity&rdquo;</em>. Without health-based detection, an attack that your infrastructure is absorbing may
+      not trip anything, because nothing is obviously wrong. That is often fine and occasionally expensive
+      &mdash; absorbing an attack is a cost you are paying.
+    </p>
+
+    <div class="callout amber">
+      <strong>Three requirements, and the first one is a trap for automation</strong>
+      <p><em>&ldquo;The health check <strong>must report healthy when you associate it</strong> with your Shield Advanced protection. The health check <strong>must be relevant to the health of your protected resource</strong>.&rdquo;</em> And: <em>&ldquo;<strong>You are responsible</strong> for defining and maintaining health checks that accurately report the health of your application.&rdquo;</em></p>
+      <p>The first is an ordering constraint. A Terraform or CloudFormation run that creates the health check and the association in one pass can fail, because a newly created health check has not yet reported healthy. That is the kind of thing that works when you build it by hand and breaks in the pipeline.</p>
+    </div>
+
+    <h3>Where the subscription's edges are</h3>
+    <p>
+      The covered set is specific, and so is the excluded set.
+    </p>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Covered by the subscription</th><th>Not covered</th></tr>
+      <tr>
+        <td>Cost per protection pack (web ACL)</td>
+        <td><em>&ldquo;AWS WAF for resources that you do <strong>not</strong> protect using Shield Advanced&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Cost per rule</td>
+        <td>Bot Control</td>
+      </tr>
+      <tr>
+        <td>Base price per million requests, <em>&ldquo;up to 1,500 WCUs&rdquo;</em></td>
+        <td>Web ACLs <em>&ldquo;that use more than 1,500 WCUs&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Inspection <em>&ldquo;up to the default body size&rdquo;</em></td>
+        <td>The CAPTCHA rule action; body inspection beyond the default size</td>
+      </tr>
+      <tr>
+        <td>The Layer 7 Anti-DDoS Amazon Managed Rule group</td>
+        <td>Requests beyond <em>&ldquo;50 billion requests&hellip; in a calendar month&rdquo;</em></td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      Two of those are gradients rather than switches. Exceeding 1,500 WCUs or the default body size does not
+      stop anything working &mdash; it changes who pays. That makes them the kind of boundary you cross without
+      an event, which is the recurring theme of this block.
+    </p>
+
+    <h3>Billing lands on the payer account, subscribed or not</h3>
+    <p>
+      <em>&ldquo;For accounts that are members of an AWS Organizations organization, AWS bills the Shield
+      Advanced subscriptions <strong>against the payer account</strong> for the organization, <strong>regardless
+      of whether the payer account itself is subscribed</strong>.&rdquo;</em>
+    </p>
+    <p>
+      And the economics that follow:
+      <em>&ldquo;When you subscribe multiple accounts that are in the same AWS Organizations consolidated
+      billing account family, <strong>one subscription price covers all subscribed accounts</strong> in the
+      family. The organization must own all of the AWS accounts and all of their resources.&rdquo;</em>
+    </p>
+    <p>
+      So the subscription is an organisation-level purchase that happens to be enabled per account. A team
+      subscribing "their" account is not buying a small thing &mdash; and conversely, once the organisation is
+      paying, additional accounts in the family are covered by the same price.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>The bidirectional dial is the right design, stated honestly</h3>
+    <p>
+      It would be easy to document health-based detection as "improves detection" and leave the converse
+      unstated. AWS writes it out: healthy means <em>&ldquo;larger deviations to alert&rdquo;</em>. That is
+      correct behaviour &mdash; a system known to be serving normally should tolerate more variation before
+      crying wolf &mdash; and publishing it is what lets you reason about whether your health check is good
+      enough to be trusted with that job.
+    </p>
+    <p>
+      The design assumes a health check that means something. The documentation says so twice, once as a
+      benefit condition and once as a responsibility. The failure mode is not AWS's; it is a health check
+      written years ago to satisfy a load balancer.
+    </p>
+
+    <h3>Covering standard WAF costs changes the WAF decision</h3>
+    <p>
+      The covered list &mdash; protection pack, rules, base request inspection &mdash; is most of what an
+      ordinary web ACL costs. For a team already running WAF on protected resources, a meaningful part of the
+      Shield Advanced subscription is recovered rather than added.
+    </p>
+    <p>
+      That reframes the comparison. The question is not "is DDoS protection worth the subscription" but "is the
+      subscription worth the difference, given it absorbs the WAF bill for these resources" &mdash; and the
+      answer changes with how much WAF you already run.
+    </p>
+
+    <div class="callout red">
+      <strong>The exclusion that catches people is the one about unprotected resources</strong>
+      <p><em>&ldquo;Your subscription to Shield Advanced <strong>does not cover the use of AWS WAF for resources that you do not protect using Shield Advanced</strong>.&rdquo;</em></p>
+      <p>Protection is per resource, and so is the cost coverage. A web ACL attached to twelve load balancers where only four are Shield-protected is not a covered web ACL with eight extras — the WAF costs for those eight are yours.</p>
+      <p>Which means the cheapest configuration and the most protected configuration point the same way: protect everything the web ACL serves, or move the unprotected resources to their own ACL deliberately.</p>
+    </div>
+
+    <h3>The fee waiver for multiple organisations is a manual step</h3>
+    <p>
+      For customers running more than one organisation, the documentation does not describe a setting. It
+      describes a conversation: <em>&ldquo;Contact your account manager or AWS support and <strong>request a fee
+      waiver</strong> on the AWS Shield Advanced subscription charges for all but one of the
+      organizations.&rdquo;</em>
+    </p>
+    <p>
+      That is worth knowing because it will not happen by itself. An organisation structure that grew by
+      acquisition, each with its own Shield subscription, is paying several times for something AWS will
+      consolidate on request.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Health check depth</td>
+        <td>Make it reflect real application health</td>
+        <td>A healthy check means <em>&ldquo;larger deviations to alert&rdquo;</em>, so a shallow one suppresses detection.</td>
+      </tr>
+      <tr>
+        <td>Whether to attach one at all</td>
+        <td>Yes &mdash; it gates proactive SRT</td>
+        <td><em>&ldquo;Health checks are required for Shield Response Team (SRT) proactive engagement support.&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Provisioning order in IaC</td>
+        <td>Create, wait for healthy, then associate</td>
+        <td>The check <em>&ldquo;must report healthy when you associate it&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>WCU budgeting</td>
+        <td>Plan against 1,350, not 1,500</td>
+        <td>Automatic mitigation consumes 150 of the covered 1,500.</td>
+      </tr>
+      <tr>
+        <td>Web ACL composition</td>
+        <td>Do not mix protected and unprotected resources</td>
+        <td>Coverage is per protected resource, not per web ACL.</td>
+      </tr>
+      <tr>
+        <td>Route 53 hosted zones</td>
+        <td>Do not plan on health-based detection</td>
+        <td>It works with <em>&ldquo;any resource type except for Route 53 hosted zones&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Multiple organisations</td>
+        <td>Ask for the fee waiver</td>
+        <td>It is a request to your account team, not a setting.</td>
+      </tr>
+      <tr>
+        <td>Who owns the subscription</td>
+        <td>Treat it as organisation-level</td>
+        <td>Billed to the payer account <em>&ldquo;regardless of whether the payer account itself is subscribed&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Request volume</td>
+        <td>Know where 50 billion a month sits for you</td>
+        <td>Beyond it, requests are billed separately.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      For every Shield-protected resource, answer two questions: is a health check associated, and would that
+      check go unhealthy if the application degraded without failing outright? The first is a yes/no you can
+      query. The second needs somebody to read the check definition, and it is the one that decides whether the
+      dial is helping or hurting.
+    </p>
+    <p>
+      Then total the WCUs on each protection pack. Anything near 1,350 is one rule away from crossing into
+      uncovered cost, and the crossing produces a larger bill rather than an error.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Shield Advanced is well documented, and unusually candid about its own conditionality. It says the
+      protections <em>&ldquo;can vary depending on your architecture and configuration choices&rdquo;</em> in the
+      overview rather than in a footnote, it writes out both directions of the health-check dial, and it lists
+      what the subscription does not cover beside what it does.
+    </p>
+    <p>
+      The thing to carry away is that the health check is load-bearing in a way its origins do not suggest. It
+      was probably created to tell a load balancer which targets to use. Associated with a Shield protection it
+      becomes a statement about whether your application is behaving normally, and Shield believes it &mdash;
+      which is right when it is true and costly when it is not.
+    </p>
+    <p>
+      That is the same pattern as the five posts before it, in a different domain.
+      <a href="/blog/aws-architecture-ram-resource-shares/">#80</a> had an identifier chosen for convenience
+      becoming a permission decision. <a href="/blog/aws-architecture-security-lake/">#82</a> had a schema
+      version becoming a query result. Here a liveness probe becomes a detection threshold. In each case the
+      signal is doing a job it was not designed for, and nothing in the system announces the promotion.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; AWS Resource Explorer: what an index actually contains, why a view is the unit of access rather than the index, and what an aggregator index changes about cross-Region search.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-summary.html" target="_blank" rel="noopener">AWS Shield Advanced overview &#8212; the conditionality statement, the AWS WAF costs the subscription covers and the 1,500 WCU and default body size bounds, the 150 WCUs consumed by automatic application layer mitigation, the named non-standard costs, the 50 billion request allowance, and the organisation billing rules</a></li>
+      <li><a href="https://docs.aws.amazon.com/waf/latest/developerguide/ddos-advanced-health-checks.html" target="_blank" rel="noopener">Health-based detection using health checks with Shield Advanced and Route 53 &#8212; both directions of the detection threshold, the SRT proactive engagement requirement, the resource types covered at each layer, the three requirements for a usable health check, and the statement that Shield Advanced does not manage them for you</a></li>
+      <li><a href="https://docs.aws.amazon.com/waf/latest/developerguide/ddos-overview.html" target="_blank" rel="noopener">How AWS Shield works &#8212; further reading on the service as a whole; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/waf/latest/developerguide/shield-chapter.html" target="_blank" rel="noopener">AWS Shield &#8212; the chapter this material sits in; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
