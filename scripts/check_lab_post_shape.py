@@ -76,9 +76,15 @@ WEEK_RE = re.compile(r"week-(\d+)")
 
 # section id -> (human name, regex that proves the promised shape is present)
 REQUIRED = {
+    # Inline <svg> only, not <img>. The original rule accepted either, which
+    # let the exact failure this check exists for walk through in a different
+    # costume: Week 23 rendered an ASCII schematic to PNG via the card
+    # pipeline, so it arrived as an <img> of a command prompt sitting under
+    # an architecture heading. Every lab post in all three series already
+    # carries an inline <svg> here, so this flags nothing that was passing.
     "architecture": (
-        "a diagram (inline <svg> or an <img>)",
-        re.compile(r"<svg|<img", re.I),
+        "an inline <svg> diagram (an <img> does not count - see Week 23)",
+        re.compile(r"<svg", re.I),
     ),
     "skills": (
         "an inventory (a <ul> list of services/tooling)",
@@ -136,13 +142,19 @@ def main():
                 '<div class="section" id="architecture"><h2>y</h2><svg></svg></div>')
         stripped = ('<div class="section" id="skills"><h2>x</h2><p>prose only</p></div>'
                     '<div class="section" id="architecture"><h2>y</h2><pre>ascii</pre></div>')
+        # An <img> under the architecture heading is the Week 23 shape:
+        # a picture of a terminal, which is not a diagram.
+        as_image = ('<div class="section" id="skills"><h2>x</h2><ul><li>a</li></ul></div>'
+                    '<div class="section" id="architecture"><h2>y</h2>'
+                    '<img src="00-architecture.png"/></div>')
         good_w7 = good + f'<img src="05-{CODE_SHOT_MARKER}.png"/>'
-        r1, r2, r3 = [], [], []
+        r1, r2, r3, r4 = [], [], [], []
         ok = check_text(good_w7, "synthetic-good", r1, CODE_SHOT_FROM_WEEK)
         bad = check_text(stripped, "synthetic-stripped", r2)
         nocode = check_text(good, "synthetic-no-code-shot", r3, CODE_SHOT_FROM_WEEK)
-        print("\n".join(r1 + r2 + r3))
-        if ok == 0 and bad == 2 and nocode == 1:
+        imgonly = check_text(as_image, "synthetic-architecture-as-image", r4)
+        print("\n".join(r1 + r2 + r3 + r4))
+        if ok == 0 and bad == 2 and nocode == 1 and imgonly == 1:
             print("\nself-test passed: clean post passes, stripped post fails on both")
             print("sections, and a post missing the Terraform layout card fails too.")
             return 0
