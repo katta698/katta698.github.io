@@ -1,0 +1,356 @@
+---
+title: 'Week 23 - Service Networking with VPC Lattice: Who May Call This Service'
+date: '2026-10-15T15:00:00'
+draft: true
+labels:
+- AWS
+- Terraform
+- AWS Weekly Lab
+slug: week-23-service-networking-lattice
+verified: '2026-10-15'
+verified_claims:
+  - claim: "AWS App Mesh shut down on 30 September 2026 and new deployments are directed to VPC Lattice for cross-VPC and cross-cluster connectivity"
+    source: https://aws.amazon.com/blogs/containers/migrating-from-aws-app-mesh-to-amazon-ecs-service-connect/
+  - claim: "VPC Lattice is billed at $0.025 per hour for each service in US East (N. Virginia), plus $0.025 per GB of data processed; the first 300,000 requests per hour per service are included"
+    source: https://aws.amazon.com/vpc/lattice/pricing/
+  - claim: "Service network VPC associations and service network endpoints are available at no additional cost"
+    source: https://aws.amazon.com/vpc/lattice/pricing/
+  - claim: "A VPC Lattice resource gateway is billed at $0.10 per resource per hour, four times the hourly rate of a service, which is why this build does not use one"
+    source: https://aws.amazon.com/vpc/lattice/pricing/
+  - claim: "VPC Lattice authorisation is evaluated at two layers, the service network and the service, and both must explicitly allow a request; a layer whose authType is NONE is skipped entirely"
+    source: https://docs.aws.amazon.com/vpc-lattice/latest/ug/auth-policies.html
+  - claim: "With authType set to AWS_IAM and no auth policy attached, all traffic receives an access denied error"
+    source: https://docs.aws.amazon.com/vpc-lattice/latest/ug/auth-policies.html
+  - claim: "An auth policy attached to a service whose authType is NONE remains attached and reports state Inactive, and the service serves requests from principals the policy does not name"
+    source: "Observed 2026-10-15 on service svc-0a1eedbdb164b813e: get-auth-policy returned state Inactive with the document unchanged, and a signed POST from the week23-lattice-stranger role returned 200"
+  - claim: "The security group attached to a service network VPC association requires INBOUND rules sourced from the client VPC CIDR on the listener port; an egress-only group causes client requests to time out with no error"
+    source: https://docs.aws.amazon.com/vpc-lattice/latest/ug/security-groups.html
+  - claim: "VPC Lattice requires the x-amz-content-sha256 header to be present in the signed canonical headers with the literal value UNSIGNED-PAYLOAD; omitting it returns IncompleteSignatureException and supplying a real payload hash returns InvalidSignatureException: Signed payloads are not supported"
+    source: "Observed 2026-10-15 against the deployed service; both errors reproduced in sequence"
+  - claim: "The SigV4 service name for calling through VPC Lattice is vpc-lattice-svcs, distinct from vpc-lattice which is the control plane"
+    source: https://docs.aws.amazon.com/vpc-lattice/latest/ug/sigv4-authenticated-requests.html
+  - claim: "VPC Lattice authorisation denial messages distinguish the layer that refused, reporting 'no network-based policy allows' for the service network and 'no service-based policy allows' for the service"
+    source: "Observed 2026-10-15: both messages reproduced, the first from an unsigned call and the second after deleting the service auth policy with authType left at AWS_IAM"
+  - claim: "AWS Lambda cannot attach an elastic network interface in an AWS Local Zone; a subnet placed in us-east-1-dfw-1a caused CreateFunction to fail with 'The provided subnets contain availability zone Lambda doesn't support'"
+    source: "Observed 2026-10-14 during the first apply; data.aws_availability_zones with state=available returned the opted-in Local Zone alongside standard zones"
+  - claim: "Terraform makes auth_type optional on both aws_vpclattice_service and aws_vpclattice_service_network, while aws_vpclattice_auth_policy is a separate resource that does not set it"
+    source: "terraform providers schema -json against hashicorp/aws 6.68.0, read 2026-10-14"
+---
+
+  <div class="section" id="why">
+    <h2>Why &mdash; The Problem This Solves</h2>
+
+    <p>Your orders app calls your rates app. How do you control who is allowed to make that
+    call?</p>
+
+    <p>Almost everyone does it with network rules: a security group, a CIDR range, "anything in
+    this subnet can reach port 8080 over there". That controls <em>addresses</em>, not
+    <em>identities</em>. Anything that lands in that subnet can make the call, and the rule cannot
+    tell your orders app from a compromised test box sitting beside it.</p>
+
+    <p>You also cannot write the sentence you actually mean. "Only the orders service may call
+    rates" is not expressible in a security group. "This IP range may connect" is.</p>
+
+    <p>VPC Lattice moves the check from the address to the identity. This week builds one service
+    that only a named IAM role may call, and then tries to call it as the wrong one.</p>
+
+    <p><strong>Not App Mesh.</strong> App Mesh shut down on 30 September 2026 and cannot be
+    created. Lattice is where AWS points instead, and that is the only reason App Mesh appears
+    here at all.</p>
+  </div>
+
+  <div class="section" id="skills">
+    <h2>What You Need to Know &mdash; Skills &amp; Tools</h2>
+
+    <p><strong>Amazon VPC Lattice</strong> is a managed switchboard for traffic between your own
+    applications. Normally, connecting two apps in different VPCs means peering the networks,
+    opening security group rules in both directions, and giving each app the other's load balancer
+    address. Do that across a dozen teams and you get a web of peering connections and rules nobody
+    can audit. Lattice replaces that: each VPC attaches to a shared service network, each
+    application registers as a service, and anything attached can reach anything registered &mdash;
+    subject to policy. It is the service AWS now points to for this job, after App Mesh was retired
+    on 30 September 2026.</p>
+
+    <p><strong>A service network</strong> is the switchboard itself. It owns nothing and runs
+    nothing; it is a named meeting point that VPCs attach to and services register with. Attaching
+    a VPC is free and is what removes the need for peering &mdash; the VPC gains the ability to
+    resolve and reach every service on the network, with no route tables or gateways involved. A
+    service network is also the first place you can apply an access policy, which makes it the
+    natural boundary for "everything in this organisation" or "everything in this environment".</p>
+
+    <p><strong>A service</strong> is one callable application on that switchboard. The name is
+    confusing: it is not your code, it is the Lattice object that <em>fronts</em> your code. Each
+    one gets a stable DNS name &mdash; something like
+    <code>rates-0a1ee.vpc-lattice-svcs.us-east-1.on.aws</code> &mdash; that resolves only inside a
+    VPC attached to the same network. Callers use that name instead of an IP address or a load
+    balancer endpoint, so the backend can move, scale or change type without anyone updating
+    config.</p>
+
+    <p><strong>A listener and a target group</strong> are the routing underneath. The listener says
+    which port and protocol the service answers on; the target group says what is actually behind
+    it. Targets can be IP addresses, EC2 instances, an Application Load Balancer, or a Lambda
+    function. That last option is why this build has no load balancer and no servers at all &mdash;
+    the service forwards straight to a function, and you pay for neither idle compute nor an idle
+    ALB.</p>
+
+    <p><strong>An auth policy</strong> is where Lattice stops being a networking feature and starts
+    being a security one. It is an IAM policy document &mdash; the same JSON shape as an S3 bucket
+    policy &mdash; attached to a service or a service network, naming which <em>identities</em> may
+    call it. Because it is IAM, it can express things a security group cannot: a specific role, a
+    specific HTTP method, a specific path, callers from a named organisation. The check happens in
+    AWS before the request reaches your application, so your code does not implement it and cannot
+    forget to.</p>
+
+    <p><strong><code>auth_type</code></strong> is a separate switch, set independently on the
+    service and on the service network, that decides whether that policy is consulted at all. It
+    takes two values: <code>AWS_IAM</code> means evaluate the policy, <code>NONE</code> means skip
+    this layer entirely. <strong>The policy and the switch are two different things</strong>, and
+    they can disagree &mdash; a perfectly written policy sitting on a layer whose switch is off is
+    simply not read. That gap is the finding this week is built around, so it is worth holding on
+    to now.</p>
+
+    <p><strong>SigV4 signing</strong> is how a caller proves who it is. It is the same signing the
+    AWS CLI performs on every command you run: the caller hashes the request together with its
+    credentials, and AWS verifies the result. A request without a signature is not rejected for
+    being malformed &mdash; it is simply treated as coming from <em>anonymous</em>, which your
+    policy can allow or refuse like any other principal.</p>
+
+    <p>Everything is built with <strong>Terraform</strong>, run through <strong>HCP
+    Terraform</strong> with OIDC so no static AWS keys exist anywhere, and the callers are
+    <strong>Lambda</strong> functions so the week needs no servers to demonstrate a networking
+    control.</p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture &mdash; How It Fits Together</h2>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-23-service-networking-lattice/docs/blog/screenshots/00-architecture.png" alt="Two Lambda functions in the same VPC subnets behind one shared security group, reaching a service network with an auth policy, then a service with a second auth policy, then a listener and Lambda target group">
+      <figcaption><strong>Two callers, two authorisation layers.</strong> Both policies must allow.
+      Either <code>authType</code> set to <code>NONE</code> makes its layer wave everything
+      through.</figcaption>
+    </figure>
+
+    <p>The two callers are identical in every way a network can observe: same VPC, same two
+    subnets, same security group, byte-identical code. One has the role
+    <code>orders-client</code> attached, the other has <code>stranger</code>. That is the entire
+    experiment.</p>
+  </div>
+
+  <div class="section" id="built">
+    <h2>How We Built It &mdash; Step by Step</h2>
+
+    <h3>What we deployed</h3>
+
+    <table>
+      <thead><tr><th>What</th><th>Count</th><th>Its job</th></tr></thead>
+      <tbody>
+        <tr><td>Service network + VPC association</td><td>2</td><td>The switchboard, and the consumer VPC attached to it. The association is free</td></tr>
+        <tr><td>Service, listener, target group, attachment</td><td>4</td><td>The thing being called</td></tr>
+        <tr><td>Service network &harr; service association</td><td>1</td><td>Puts the service on the switchboard</td></tr>
+        <tr><td><strong>Auth policies</strong></td><td><strong>2</strong></td><td>Layer one: org and source VPC. Layer two: named role and GET only</td></tr>
+        <tr><td>Lambdas</td><td>3</td><td>The protected service, and two callers that differ only by role</td></tr>
+        <tr><td>IAM roles + policies</td><td>6</td><td><code>orders-client</code>, <code>stranger</code>, backend</td></tr>
+        <tr><td>VPC, 2 subnets, 1 security group</td><td>4</td><td>One network, shared by both callers on purpose</td></tr>
+        <tr><td>Log groups</td><td>3</td><td></td></tr>
+      </tbody>
+    </table>
+
+    <p>24 resources. <strong>No NAT gateway, no internet gateway, no load balancer.</strong> The
+    callers reach the service through the VPC association, which costs nothing.</p>
+
+    <h3>Where we started</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-23-service-networking-lattice/docs/blog/screenshots/01-before-state.png" alt="The VPC Lattice service networks console page reading: You don't have any VPC Lattice service networks in us-east-1">
+      <figcaption>Nothing yet. Worth capturing &mdash; a walkthrough that only shows the end state
+      cannot be followed.</figcaption>
+    </figure>
+
+    <h3>How we wrote it</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-23-service-networking-lattice/docs/blog/screenshots/02-terraform-layout.png" alt="File tree for week 23 with per-file line counts, showing the lattice module split into network, lattice and compute, and two Lambda handlers">
+      <figcaption><strong>The two callers are 2 of the 24 resources</strong> and differ in exactly
+      one attribute.</figcaption>
+    </figure>
+
+    <p>One detail will cost you an afternoon: the SigV4 service name for calling <em>through</em>
+    Lattice is <code>vpc-lattice-svcs</code>, while <code>vpc-lattice</code> is the control plane
+    API. Sign with the wrong one and the 403 is indistinguishable from a policy denial.</p>
+
+    <h3>How we deployed it</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-23-service-networking-lattice/docs/blog/screenshots/03-hcp-workspace-vars.png" alt="HCP Terraform workspace variables for week-23-dev showing OIDC provider auth and a sensitive run role ARN, with no static access keys">
+      <figcaption>OIDC, not access keys.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-23-service-networking-lattice/docs/blog/screenshots/04-hcp-plan.png" alt="The HCP Terraform plan for week-23-dev showing 24 resources to add and none to change or destroy">
+      <figcaption><strong>Read the plan.</strong> The thing to look for is <code>auth_type</code>
+      being set on <em>both</em> the service network and the service.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-23-service-networking-lattice/docs/blog/screenshots/05-hcp-applied.png" alt="The applied HCP Terraform run for week-23-dev">
+      <figcaption>Applied. Two apply failures got us here &mdash; see Challenges.</figcaption>
+    </figure>
+
+    <h3>What appeared in the console</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-23-service-networking-lattice/docs/blog/screenshots/06-service-network.png" alt="The VPC Lattice service networks list showing week23-lattice-net with one service association and one VPC association">
+      <figcaption>One service association, one VPC association. Compare with the empty list
+      above.</figcaption>
+    </figure>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-23-service-networking-lattice/docs/blog/screenshots/07-auth-policy-active.png" alt="Both auth policies read from the CLI, each reporting state Active, with the service network policy scoped to the VPC and the service policy naming one role and the GET method">
+      <figcaption><strong>Three separate things:</strong> a policy on the network, a policy on the
+      service, and an <code>authType</code> on each deciding whether its policy is read.</figcaption>
+    </figure>
+
+    <h3>How we tested it</h3>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-23-service-networking-lattice/docs/blog/screenshots/08-allowed-call.png" alt="Terminal output showing the same request from two Lambda functions: 200 from the orders-client role and 403 from the stranger role, plus a 403 for the wrong method and a 403 for an unsigned call">
+      <figcaption><strong>A security group cannot produce these four answers.</strong> It sees one
+      subnet, one set of rules, and four identical packets.</figcaption>
+    </figure>
+
+    <p>Order matters: the allowed call must return 200 before any refusal counts, because a broken
+    build produces a flawless-looking set of denials. And the refusal only means something because
+    the <code>stranger</code> role is <em>granted</em> <code>vpc-lattice-svcs:Invoke</code> in its
+    own IAM policy &mdash; without that, a 403 would prove the identity policy said no, not the
+    auth policy.</p>
+  </div>
+
+  <div class="section" id="challenges">
+    <h2>Challenges &mdash; What Actually Went Wrong</h2>
+
+    <h3>The policy that was attached, visible, and inert</h3>
+
+    <p>Set <code>auth_type</code> to <code>NONE</code> and leave the policy exactly as it was. The
+    policy naming one role and one method stays attached. It stays in the console. It reports
+    <code>state: Inactive</code>, a field almost nobody queries.</p>
+
+    <p>The wrong role, using the wrong method, gets a 200.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-23-service-networking-lattice/docs/blog/screenshots/10-policy-inactive.png" alt="Side by side comparison of the identical auth policy document reporting state Active and state Inactive, with the intruder receiving 200 in the second case while an unsigned caller still receives 403">
+      <figcaption><strong>Identical document. One word different.</strong></figcaption>
+    </figure>
+
+    <p>In Terraform this is easy to write by accident: <code>auth_type</code> is <em>optional</em>
+    on both the service and the service network, and the auth policy is a separate resource that
+    does not set it. Omit it and you get the default, which is <code>NONE</code>.</p>
+
+    <h3>And the system still looked healthy</h3>
+
+    <p>This is the part I did not expect. With the service policy inert, the <em>service network</em>
+    policy carried on refusing anonymous callers. The error even names the layer:</p>
+
+    <pre><code>User: anonymous ... because no network-based policy allows
+the vpc-lattice-svcs:Invoke action</code></pre>
+
+    <p>So the service was never fully open. Spot-check it from outside the VPC, get a 403, and
+    conclude the controls are fine &mdash; while inside the VPC the wrong identity is being served.</p>
+
+    <p><strong>A half-disabled two-layer control looks healthier than a fully disabled one</strong>,
+    because something is still saying no. That is worse than an obvious failure, not better.</p>
+
+    <p>Deleting the policy outright, with <code>auth_type</code> left at <code>AWS_IAM</code>,
+    fails closed as documented &mdash; and reports <code>no service-based policy</code>, naming the
+    other layer. Those two phrases are a genuinely useful diagnostic.</p>
+
+    <h3>Three that cost an evening before any of that</h3>
+
+    <ul>
+      <li><strong>An opted-in Local Zone.</strong> <code>data.aws_availability_zones</code> returned
+      <code>us-east-1-dfw-1a</code>, a subnet landed in it, and Lambda refused to attach an ENI
+      there. Filtering on <code>zone-type</code> fixes it portably.</li>
+      <li><strong>The VPC association security group needs <em>inbound</em> rules.</strong> The
+      client makes an outbound call, so an egress-only group looks obviously right. It produces no
+      error at all &mdash; requests simply time out, which sends you hunting for a routing
+      problem.</li>
+      <li><strong>Lattice wants <code>x-amz-content-sha256</code> set to
+      <code>UNSIGNED-PAYLOAD</code>.</strong> Omit it and you get
+      <code>IncompleteSignatureException</code>. Supply a real hash and you get
+      <code>Signed payloads are not supported</code>. Both are 403s from a service whose entire job
+      is issuing 403s, which is a bad costume for a signing bug to wear.</li>
+    </ul>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-23-service-networking-lattice/docs/blog/screenshots/11-test-results.png" alt="The six authorisation tests with pass and fail markers, and the three connectivity and signing faults found by running them">
+      <figcaption>Every one of these was found by calling the service, not by reading the
+      configuration.</figcaption>
+    </figure>
+  </div>
+
+  <div class="section" id="security">
+    <h2>Security &mdash; Controls at Every Layer</h2>
+
+    <ul>
+      <li><strong>Two layers, both deny-by-default.</strong> The network policy sets the coarse
+      boundary, the service policy the fine one. Both must allow.</li>
+      <li><strong>Check <code>authType</code>, not just the policy.</strong> An attached policy
+      proves nothing. <code>get-auth-policy</code> returns a <code>state</code> field and it is the
+      only place the difference shows.</li>
+      <li><strong>The security group is deliberately permissive and shared</strong> by both callers.
+      If it were doing the authorisation, both would get the same answer. It is in the build to show
+      what it cannot do.</li>
+      <li><strong>No public endpoint.</strong> The service DNS resolves only inside an associated
+      VPC.</li>
+      <li><strong>Least privilege, with one deliberate exception</strong> &mdash; the
+      <code>stranger</code> role is granted <code>Invoke</code> so its refusal proves the right
+      thing.</li>
+      <li><strong>The honest limit:</strong> Lattice authorises <em>who is calling</em>, not
+      <em>what they send</em>. An allowed caller can still send something harmful. This replaces
+      network-position trust, not input validation.</li>
+    </ul>
+  </div>
+
+  <div class="section" id="cost">
+    <h2>Cost</h2>
+
+    <p>To be read from the bill after teardown, not estimated from a rate card.</p>
+  </div>
+
+  <div class="section" id="cleanup">
+    <h2>Cleanup</h2>
+
+    <p>A VPC cannot be deleted while a service network association survives, so a half-finished
+    destroy leaves a VPC that looks orphaned and is not. The teardown script checks service
+    networks, services, both association types, target groups, the VPC, the Lambdas, the log groups
+    and the IAM roles, rather than trusting the destroy to have been complete.</p>
+  </div>
+
+  <div class="section" id="references">
+    <h2>References</h2>
+
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/vpc-lattice/latest/ug/auth-policies.html">VPC Lattice auth policies</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc-lattice/latest/ug/security-groups.html">Security groups for VPC Lattice</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc-lattice/latest/ug/sigv4-authenticated-requests.html">SigV4 authenticated requests</a></li>
+      <li><a href="https://aws.amazon.com/vpc/lattice/pricing/">VPC Lattice pricing</a></li>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/week-23-service-networking-lattice">The code for this week</a></li>
+    </ul>
+  </div>
+
+  <div class="section" id="takeaways">
+    <h2>Key Takeaways</h2>
+
+    <ul>
+      <li><strong>Identity is checkable, network position is not.</strong> Two functions in the same
+      subnet behind the same security group got 200 and 403, and the only difference was the role.</li>
+      <li><strong>An attached policy is not an enforced policy.</strong> Check
+      <code>authType</code> and the policy's <code>state</code>, because the document looks correct
+      either way.</li>
+      <li><strong>A half-disabled control is more dangerous than a broken one.</strong> One layer
+      kept refusing, so the system kept looking healthy while the other served the wrong
+      caller.</li>
+      <li><strong>Test the refusal, and test the allow first.</strong> Every denial is meaningless
+      until a legitimate call has succeeded &mdash; a broken build denies everything beautifully.</li>
+    </ul>
+  </div>
