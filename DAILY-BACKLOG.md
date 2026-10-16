@@ -92,6 +92,88 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 15 October 2026 — covered by post #55
+
+Twenty announcements, the busiest day of the week. The DevOps Agent /
+Resilience Hub integration took the slot on the strength of one sentence in the
+documentation rather than anything in the announcement.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| DevOps Agent investigations attached to failure mode findings and resilience test runs. The finding is the standing of the output: "The DevOps Agent verdict is advisory; your test run's own result remains authoritative" — correct separation — sitting beside "test report generation completes when DevOps Agent completes the investigation", so the advisory component gates the authoritative artefact. The identity design is exemplary and worth copying: no new role, no trust policy change, eight named actions, and AWS naming two managed policies and telling you not to attach them | AWS Resilience Hub | **#55** | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-devops-agent-test-results-aws-resilience-hub/) |
+| Timestamp-based stream processing. Lets a consumer start from a point in time rather than from a shard iterator type, which changes how replay and backfill are written | Amazon DynamoDB Streams | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-dynamodb-streams-timestamp-processing) |
+| Dual-stack support for VPC origins | Amazon CloudFront | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/cloudfront-vpc-origin-dualstack/) |
+| Durable Execution SDK for Go now GA — the third Lambda durability item this month | AWS Lambda | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-lambda-durable-go-sdk-support/) |
+| Microsecond-accurate time on 135 additional EC2 instance types, all commercial Regions | Amazon Time Sync Service | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/time-sync-additional-instances-all-regions) |
+| Cyber Risk Institute profile version 2.2 | AWS Security Hub CSPM | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/security-hub-cspm-cri-profile-v22/) |
+| Shared VPC support | AWS HealthOmics | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/omics-workflows-shared-vpcs/) |
+| Aggregate and default routes for ODB peering | Oracle Database@AWS | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/oracle-database-aws-aggregate-routes-odb/) |
+| PostgreSQL 19 RC1 in the Database Preview Environment | Amazon RDS | open | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/postgresql-19-rc1-amazon-rds-database-preview-environment/) |
+| The rest were Region expansions and model availability: Bedrock AgentCore web search to GovCloud and three Regions, SageMaker Studio sign-in options, EC2 T8i in São Paulo, AWS Transform in Singapore and seven more Aurora cross-Region targets, MSK Connect and Glue Schema Registry in the European Sovereign Cloud, Redshift long-term system table retention, S3 Metadata in six more Regions, Prometheus Collector in New Zealand, MWAA AI agent skills, Muse Spark Open on JumpStart | various | skipped | Low | — |
+
+## 14 October 2026 — covered by post #54
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Resource criticality for exposure prioritization. The finding is the default path: criticality is "inferred... from resource tags and resource names, with no configuration required", "always on for all customers", "no new enablement" — so naming conventions chosen for human convenience became an input to how findings rank, overnight. The risk is asymmetric, because old systems with dull names are disproportionately likely to carry real risk | AWS Security Hub | **#54** | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/security-hub-resource-criticality/) |
+| ARC Region switch adds four new capabilities, including target health and SSM and Lambda integration. **Strong held item** — Region switch is the mechanism the DevOps Agent investigations in #55 observe, so the two pair naturally | Application Recovery Controller | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/region-switch-target-health-ssm-lambda/) |
+| Log routing and chained log parsers. Underrated: parsing chained at ingest changes what a log group costs and what a query can assume | Amazon CloudWatch | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/cloudwatch-pipelines-log-routing/) |
+| Secrets Manager storage for SFTP server host keys — removes a long-standing place where a private key sat in service configuration | AWS Transfer Family | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/transfer-family-secrets-host-keys/) |
+| Recursive loop detection extended to EventBridge custom event buses | AWS Lambda | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/lambda-recursive-loops-eventbridge-custom) |
+| License type conversions for Ubuntu Pro purchased through AWS Marketplace | AWS License Manager | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-license-manager-conversions-ubuntu-pro-marketplace/) |
+| RDS Proxy now supports SQL Server 2022 | Amazon RDS | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/rds-proxy-supports-sqlserver-2022) |
+| Blockchain Snapshots for node bootstrapping | AWS | open | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/blockchain-snapshots-node-bootstrapping/) |
+| HealthOmics container registry expansion and Nextflow resource fallback order; Backup for FSx in New Zealand; Transfer Family console SVG and ICO logos; S3 on the Vercel Marketplace | various | skipped | Low | — |
+
+## 13 October 2026 — covered by post #53
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| The AWS AI/ML skill in the Agent Toolkit for AWS | Amazon SageMaker AI | **#53** | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/bring-sagemaker-ai-expertise-to-your-coding-agent/) |
+| LiveTaskCount added and the charge for RunningTaskCount removed. A metric going free is rarer than a metric appearing, and anybody who designed around the cost of RunningTaskCount should revisit that decision | Amazon ECS | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/ecs-service-metrics/) |
+| Enhanced mode adds FSx for OpenZFS, NFS 4.2 and object metadata controls | AWS DataSync | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/datasync-enhanced-openzfs-nfs42-metadata/) |
+| Durable operation and checkpoint payload limits increased | AWS Lambda | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-lambda-durable-gen-limit-increase/) |
+| Custom metadata for registry records | AWS Agent Registry | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-agent-registry-custom-metadata-registry-records) |
+| Registrations, transfers and renewals for Premium Domains | Amazon Route 53 | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/route-53-premium-domains/) |
+| DCV 2026.0 with RHEL 10 support; Deadline Cloud accessible-resource discovery; Location Service API Playground; RDS SQL Server cumulative update | various | skipped | Low | — |
+
+## 12 October 2026 — covered by post #52
+
+Monday. Lambda Web Functions was the clear item, and the only one of the eleven
+that changes an invariant rather than a limit.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Lambda Web Functions. The finding is that concurrent requests now share one execution environment, which breaks the one-request-per-environment invariant that every piece of Lambda advice about module-level state was written against. AWS's own wording — "For each concurrent request, Lambda provisions a separate instance of your execution environment" — no longer describes this function type | AWS Lambda | **#52** | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-lambda-web-functions/) |
+| Lambda Web Functions as a CloudFront origin — the companion announcement, and the reason the feature matters at the edge | Amazon CloudFront | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/cloudfront-lambda-web-functions-origin/) |
+| Consumption-based pricing for short-term memory | Amazon Bedrock AgentCore | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/agentcore-memory-consumption-based-pricing) |
+| Custom ports for public SFTP servers | AWS Transfer Family | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/transfer-family-custom-ports-public-sftp) |
+| EC2 G7 instances in Europe (Frankfurt) and Europe (Stockholm) | Amazon EC2 | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-g7-european-regions/) |
+| Connect step-by-step guide prefill for after contact work, plus the remaining Region and model items | various | skipped | Low | — |
+
+**Held items carried into this week, oldest first.** The 5 October IAM Identity
+Center pair has now aged past the feed horizon without being written, which is
+the failure this file exists to make visible rather than to prevent:
+
+- **IAM Identity Center network access controls for Identity Store** (5 Oct) —
+  flagged as the strongest unwritten item for five consecutive days and never
+  taken. Past the horizon; the link in the 10 October section is the record.
+- **Client VPN device posture assessment** (5 Oct) — same, and paired with it.
+- **GuardDuty RDS Protection data exfiltration and destruction detection**
+  (9 Oct) — still the strongest unwritten *security* item, and still open. It
+  interacts with the suppression-rule behaviour in #74 and with the resource
+  criticality ranking introduced in #54.
+- **ARC Region switch, four new capabilities** (14 Oct) — new to this list and
+  the strongest held item overall, now that #55 has made Region switch part of
+  what an investigation observes.
+- **CloudWatch log routing and chained log parsers** (14 Oct).
+- **DynamoDB Streams timestamp-based processing** (15 Oct).
+- **Transfer Family host keys in Secrets Manager** (14 Oct).
+- **ECS RunningTaskCount becoming free** (13 Oct).
+- **AWS Capabilities by Region availability notifications** (7 Oct) — still
+  underrated, still unwritten.
+- **Redshift Apache Iceberg materialized views** (5 Oct) — past the horizon.
+
 ## 10 October 2026 — covered by post #51, plus weekly #10
 
 Saturday: three posts. Architecture #78 (Cognito tokens), daily #51, and the
