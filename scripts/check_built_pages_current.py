@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""A post's served page must be newer than the source it was built from.
+"""A post's served page must have been built from the post as it stands now.
 
     python scripts/check_built_pages_current.py
     python scripts/check_built_pages_current.py week-09      # one post
@@ -27,33 +27,43 @@ skips drafts entirely, because a draft is deliberately absent from all of them.
 This failure was a draft whose page existed and was simply out of date.
 Existence and freshness are different assertions.
 
-What it asserts
----------------
-For every post in `posts/`, DRAFTS INCLUDED:
+How it decides, and why not by timestamp
+----------------------------------------
+`sync_blog.py` stamps each page it writes with `<!-- src-sha256 ... -->`, the
+hash of the source file it was built from. This check recomputes that hash and
+compares. Equal means the page was built from exactly this source; different
+means it was not; absent means the page predates the stamp or was not written
+by the generator at all.
 
-1. a built page exists at `blog/<slug>/index.html`
-2. that page is not older than its source
+Two timestamp-based versions were written first and BOTH shipped wrong, in
+opposite directions, within an hour:
 
-Age comes from git -- the timestamp of the last commit to touch each path --
-plus the working tree, so a source edited and not yet synced fails before it is
-ever committed. Both changed in one commit is the normal, passing case: that is
-what a sync-then-commit produces.
+- Comparing last-commit times flagged every publish. Commit the post, rebase,
+  sync, commit the build is the normal order, and in the window before that
+  last commit the source's commit is newer than the build's.
+- "Never stale while the build is uncommitted" fixed that and blinded the
+  check completely: during the same window an unsynced source edit also reads
+  clean, which is the one thing this file exists to catch.
+- Falling back to file mtimes in that window failed too -- `git checkout` and
+  `git rebase` rewrite mtimes without changing what was built from what, so a
+  page that was genuinely current reported stale.
+
+No clock answers "was this built from that". A fingerprint does, with no
+windows, no regimes, and nothing to tune.
 
 What it deliberately does not do
 --------------------------------
-It does not compare CONTENT. The built page wraps the source in a template, so
-"the edit is present in both" has no cheap exact form, and a hash embedded at
-build time would require changing the generator to catch a mistake in using it.
-Order of modification is enough: it is exactly the thing that was wrong.
+It does not run the generator. A check that fixes what it finds teaches you to
+ignore what it says, and syncing is not always the right answer -- a stale page
+can also mean a bad rebase, which regenerating would paper over.
 
-It does not run the generator. A check that fixes the problem it finds teaches
-you to ignore what it says, and syncing is not always the right answer -- a
-stale page can also mean a bad rebase, which regenerating would paper over.
+Architecture Series posts are built by a different pipeline, carry no stamp and
+are skipped, the same exemption those pages have in `sync_blog.py` itself.
 """
 import argparse
+import hashlib
 import os
 import re
-import subprocess
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -62,133 +72,137 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 POSTS = os.path.join(ROOT, "posts")
 
+STAMP_RE = re.compile(r"<!--\s*src-sha256\s+([0-9a-f]{64})\s*-->")
 
-def git(*args, strip=True):
-    """Run a git command in the repo root; '' on any failure.
-
-    strip=False matters for `status --porcelain`, whose format is
-    `XY<space>path` -- the status of an unstaged edit is " M", so stripping
-    the output eats the leading space of the FIRST line only and shifts that
-    one path left by a character. The check then reports every file clean
-    while silently looking for "osts/week-09-...". Found by reintroducing the
-    bug this file exists to catch, which is the only reason it was found.
-    """
-    try:
-        out = subprocess.run(
-            ["git", "-C", ROOT, *args],
-            capture_output=True, text=True, timeout=30,
-        )
-        if out.returncode != 0:
-            return ""
-        return out.stdout.strip() if strip else out.stdout
-    except Exception:
-        return ""
+# Built elsewhere, from _templates/arch-post-template.html -- see the
+# externally_built handling in sync_blog.py. Nothing in posts/ is the input to
+# those pages, so there is nothing here to fingerprint and they carry no stamp.
+#
+# These prefixes are COPIED from sync_blog.py's own test, deliberately as a
+# literal rather than a guess: the first version here matched only "arch-" and
+# flagged all 129 Azure Architecture posts as unstamped, which is a check
+# failing 129 times for being wrong. If sync_blog.py's list changes, this one
+# has to change with it -- hence the assertion below, which fails loudly
+# instead of letting the two drift apart silently.
+EXTERNALLY_BUILT_PREFIXES = ("arch-", "az-", "gcp-")
 
 
-def last_commit_time(relpath):
-    """Unix time of the last commit touching relpath; 0 if never committed."""
-    ts = git("log", "-1", "--format=%ct", "--", relpath)
-    return int(ts) if ts.isdigit() else 0
+def _assert_prefixes_match_generator():
+    """The two lists must stay identical; a drift makes this check lie."""
+    gen = os.path.join(HERE, "sync_blog.py")
+    if not os.path.exists(gen):
+        return
+    with open(gen, encoding="utf-8") as fh:
+        src = fh.read()
+    m = re.search(r'post_file\.name\.startswith\(\(([^)]*)\)\)', src)
+    if not m:
+        return
+    theirs = tuple(re.findall(r'"([^"]+)"', m.group(1)))
+    if theirs and theirs != EXTERNALLY_BUILT_PREFIXES:
+        sys.exit("sync_blog.py's externally-built prefixes are "
+                 f"{theirs}, this check has {EXTERNALLY_BUILT_PREFIXES}. "
+                 "Update EXTERNALLY_BUILT_PREFIXES to match.")
 
 
-def dirty_paths():
-    """Every path with uncommitted changes, as a set of repo-relative paths."""
-    out = git("status", "--porcelain", strip=False)
-    paths = set()
-    for line in out.splitlines():
-        if len(line) < 4:
-            continue
-        p = line[3:].strip().strip('"')
-        if " -> " in p:            # a rename reports "old -> new"
-            p = p.split(" -> ", 1)[1]
-        if p:
-            paths.add(p)
-    return paths
+def verdict(source_bytes, built_text):
+    """CURRENT / STALE / UNSTAMPED, pure so --self-test can prove it."""
+    m = STAMP_RE.search(built_text)
+    if not m:
+        return "UNSTAMPED"
+    if m.group(1) == hashlib.sha256(source_bytes).hexdigest():
+        return "CURRENT"
+    return "STALE"
 
 
-def is_stale(src_time, built_time, src_dirty, built_dirty):
-    """The whole decision, as a pure function so --self-test can prove it.
-
-    An uncommitted source edit is the live case: it is newer than anything
-    git knows about, so it is stale unless the built page is also uncommitted
-    (that pair is a sync that has not been committed yet, which is fine).
-    """
-    if src_dirty and not built_dirty:
-        return True
-    if src_dirty and built_dirty:
-        return False
-    return src_time > built_time
-
-
-def slug_of(path, text):
+def slug_of(filename, text):
     m = re.search(r"^slug:\s*['\"]?([A-Za-z0-9._-]+)", text, re.M)
     if m:
         return m.group(1)
-    return os.path.splitext(os.path.basename(path))[0]
+    return os.path.splitext(filename)[0]
 
 
 def check(filters):
-    dirty = dirty_paths()
-    report, failures, checked = [], 0, 0
+    _assert_prefixes_match_generator()
+    report, failures, checked, skipped = [], 0, 0, 0
 
     for fn in sorted(os.listdir(POSTS)):
         if not fn.endswith(".html"):
             continue
         if filters and not any(a in fn for a in filters):
             continue
-        src_rel = f"posts/{fn}"
-        with open(os.path.join(POSTS, fn), encoding="utf-8") as fh:
-            text = fh.read()
-        slug = slug_of(fn, text)
-        built_rel = f"blog/{slug}/index.html"
+        if fn.startswith(EXTERNALLY_BUILT_PREFIXES):
+            skipped += 1
+            continue
+
+        with open(os.path.join(POSTS, fn), "rb") as fh:
+            raw = fh.read()
+        slug = slug_of(fn, raw.decode("utf-8", "replace"))
+        built_rel = os.path.join("blog", slug, "index.html")
+        built_abs = os.path.join(ROOT, built_rel)
         checked += 1
 
-        if not os.path.exists(os.path.join(ROOT, built_rel)):
-            report.append(f"  [FAIL] {fn}: no built page at {built_rel} "
-                          "-- run: python scripts/sync_blog.py")
+        if not os.path.exists(built_abs):
+            report.append(f"  [FAIL] {fn}: no built page at {built_rel}")
             failures += 1
             continue
 
-        if is_stale(last_commit_time(src_rel), last_commit_time(built_rel),
-                    src_rel in dirty, built_rel in dirty):
-            report.append(f"  [FAIL] {fn}: {built_rel} is older than its source. "
-                          "The site will serve the previous version "
-                          "-- run: python scripts/sync_blog.py")
+        with open(built_abs, encoding="utf-8") as fh:
+            state = verdict(raw, fh.read())
+
+        if state == "CURRENT":
+            report.append(f"  [ ok ] {fn}")
+        elif state == "STALE":
+            report.append(
+                f"  [FAIL] {fn}: {built_rel} was built from a DIFFERENT version "
+                "of this post. The site serves that one, not this one.")
             failures += 1
         else:
-            report.append(f"  [ ok ] {fn}")
+            report.append(
+                f"  [FAIL] {fn}: {built_rel} carries no src-sha256 stamp, so it "
+                "predates the current generator and cannot be checked.")
+            failures += 1
 
     print("\n".join(report))
-    print(f"\n{checked} post(s) checked.")
+    tail = f", {skipped} externally-built skipped." if skipped else "."
+    print(f"\n{checked} post(s) checked{tail}")
     if failures:
-        print(f"{failures} built page(s) are stale or missing.")
+        print(f"{failures} built page(s) do not match their source.")
+        print("Run: python scripts/sync_blog.py   and commit blog/.")
         print("A push that does not regenerate them changes nothing a reader sees.")
         return 1
-    print("Every built page is at least as new as the post it was built from.")
+    print("Every served page was built from the post as it stands now.")
     return 0
 
 
 def self_test():
+    src = b"<h1>the post</h1>"
+    good = hashlib.sha256(src).hexdigest()
+    other = hashlib.sha256(b"<h1>an older draft</h1>").hexdigest()
     cases = [
-        # (src_time, built_time, src_dirty, built_dirty, expect_stale, label)
-        (100, 200, False, False, False, "built after source"),
-        (100, 100, False, False, False, "same commit (sync then commit)"),
-        (200, 100, False, False, True,  "source committed after the build"),
-        (100, 200, True,  False, True,  "source edited, not yet synced"),
-        (100, 200, True,  True,  False, "both uncommitted (synced, not committed)"),
-        (0,   0,   False, False, False, "neither committed"),
+        (src, "<html>x</html>\n<!-- src-sha256 " + good + " -->\n", "CURRENT",
+         "page stamped with this source"),
+        (src, "<html>x</html>\n<!-- src-sha256 " + other + " -->\n", "STALE",
+         "page stamped with a different source"),
+        (src, "<html>x</html>\n", "UNSTAMPED",
+         "page carries no stamp at all"),
+        (src, "<!-- src-sha256 " + good.upper() + " -->", "UNSTAMPED",
+         "an uppercase digest is not a stamp (the regex is strict)"),
+        (b"<h1>the post</h1> ", "<!-- src-sha256 " + good + " -->", "STALE",
+         "one trailing space in the source is a different post"),
     ]
     bad = 0
-    for src, built, sd, bd, want, label in cases:
-        got = is_stale(src, built, sd, bd)
+    for source, built, want, label in cases:
+        got = verdict(source, built)
         ok = got == want
         bad += not ok
-        print(f"  [{' ok ' if ok else 'FAIL'}] {label}: stale={got} (want {want})")
+        mark = " ok " if ok else "FAIL"
+        print(f"  [{mark}] {label}: {got} (want {want})")
     if bad:
         print("\nSELF-TEST FAILED: the check cannot detect the defect it exists for.")
         return 1
-    print("\nself-test passed: a source newer than its built page is detected,")
-    print("including the uncommitted case, and a clean sync is not flagged.")
+    print("\nself-test passed: a page built from a different version of the post")
+    print("is detected, an unstamped page is not silently accepted, and a")
+    print("one-character source change is enough to register.")
     return 0
 
 

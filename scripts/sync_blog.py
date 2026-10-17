@@ -1337,6 +1337,14 @@ def fetch_local_posts():
         body_html = body if post_file.suffix == ".html" else markdown.markdown(body, extensions=MD_EXTENSIONS)
         published = date.isoformat() if hasattr(date, "isoformat") else str(date)
         posts.append({
+            # Fingerprint of the SOURCE file, stamped into the built page so a
+            # served page can be checked against the post it was built from.
+            # Clocks cannot answer that question: a rebase rewrites every
+            # mtime, and in the window between a source commit and the commit
+            # carrying this script's output, commit order says "stale" for an
+            # ordinary publish. The hash is exact and needs no window.
+            # See scripts/check_built_pages_current.py.
+            "src_sha": hashlib.sha256(post_file.read_bytes()).hexdigest(),
             "title": title,
             "url": "",
             "html": body_html,
@@ -4371,6 +4379,11 @@ def main():
             # render the accuracy badge. This dict — not the one built during
             # the initial posts/ scan — is what reaches build_post_page().
             "verified":      entry.get("verified"),
+            # Same reason as verified above: carried through explicitly, or it
+            # is dropped here and never reaches the page. The stamp was added
+            # to the scan dict first and silently went nowhere -- sync ran
+            # clean, 389 pages were written, and not one carried it.
+            "src_sha":       entry.get("src_sha"),
             "externally_built": entry.get("externally_built", False),
         })
 
@@ -4410,14 +4423,18 @@ def main():
     for post in own_pages:
         out_dir = BLOG_DIR / post["slug"]
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "index.html").write_text(
-            build_post_page(
-                post,
-                prev_post=post.get("_prev"),
-                next_post=post.get("_next"),
-            ),
-            encoding="utf-8",
+        page_html = build_post_page(
+            post,
+            prev_post=post.get("_prev"),
+            next_post=post.get("_next"),
         )
+        # Trailing, invisible, and not inside <head> so no template change can
+        # drop it silently. An externally-built page has no source here and so
+        # carries no stamp; the check knows those are out of scope.
+        if post.get("src_sha"):
+            stamp = "<!-- src-sha256 " + post["src_sha"] + " -->"
+            page_html = page_html + chr(10) + stamp + chr(10)
+        (out_dir / "index.html").write_text(page_html, encoding="utf-8")
 
     # ── The index, paginated ──────────────────────────────────
     # Page 1 stays at /blog/ so no existing link breaks; the rest live at
