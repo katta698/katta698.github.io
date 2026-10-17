@@ -219,6 +219,16 @@ CHECKS = [
     ("check_publish_date.py",   True,  False, False, False),
 
     ("check_index_complete.py", True,  False, False, False),
+
+    # Is the served page even built from the post that was committed?
+    # check_index_complete.py above asks whether a post REACHED the generated
+    # surfaces and skips drafts, which are deliberately absent from all of
+    # them. This asks a different question of every post including drafts: is
+    # blog/<slug>/index.html older than posts/<slug>.html. A posts/-only
+    # commit pushes clean, lands on origin, and serves the previous version
+    # forever -- three pushes did exactly that on 2026-10-16 and each one was
+    # reported as delivered.
+    ("check_built_pages_current.py", True, False, False, True),
     ("fix_series_nav.py",       True,  False, False, False),
     # Is anything MISSING? Every other check here inspects what is on the page,
     # so a hand-written structural element that gets dropped is invisible to
