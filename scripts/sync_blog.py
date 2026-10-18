@@ -2929,8 +2929,16 @@ def build_index_page(posts, page_posts=None, page=1, total_pages=1):
     _day_pills = "".join(
         '<button class="filter-pill" data-day="%s">%s (%d)</button>'
         % (iso, _day_label(iso), _day_counts[iso]) for iso in _recent)
+    # The calendar toggle ships in the markup for the same reason the pills
+    # do. Added by script instead, it wraps the pill row to a second line and
+    # the whole post list drops 87px a few hundred milliseconds in -- measured
+    # at 390px by check_page_settle, which is the check that exists for this
+    # exact mistake and caught it the same afternoon it was made.
     index_day_row = ('<div class="filters day-filters">'
-                     '<div class="day-pills">%s</div></div>'
+                     '<div class="day-pills">%s'
+                     '<button type="button" class="filter-pill day-cal-toggle" '
+                     'aria-expanded="false">Pick a day</button>'
+                     '</div></div>'
                      % _day_pills) if (index_year_row and _day_pills) else ""
 
     # ── Pagination nav ────────────────────────────────────────

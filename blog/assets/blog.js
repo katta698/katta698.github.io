@@ -728,6 +728,10 @@
      arrives as a layout shift, not as a wrong number. The server counts
      every post and writes the result onto the grid, so the two agree at
      first paint and on every page. */
+  /* The calendar's own month, independent of the year and month filter rows.
+     null means it has not been opened; a 'YYYY-MM' string means it has. */
+  var calMonth = null;
+  var calOpen = false;
   var dayCountCache = null;
   function dayCounts() {
     if (dayCountCache) { return dayCountCache; }
@@ -753,6 +757,9 @@
 
   var DAY_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var MONTHS_FULL = ['January', 'February', 'March', 'April', 'May', 'June',
+                     'July', 'August', 'September', 'October', 'November',
+                     'December'];
   /* Relative where relative is true, a date otherwise. The server renders
      the same two labels against the build date; on any day the site was
      rebuilt they are identical, so the rebuild changes nothing visible. */
@@ -802,14 +809,84 @@
     /* The calendar, once a month is actually chosen. A grid for a whole
        year would be a different thing -- useful, but not what "which posts
        went out on the 3rd" is asking. */
+    /* The way in. Without it the calendar only ever appeared once a year
+       and a month had both been chosen, which is two choices deep and was
+       never found -- it was asked for as a new feature a week after it
+       shipped. */
+    var toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'filter-pill day-cal-toggle' + (calOpen ? ' active' : '');
+    toggle.setAttribute('aria-expanded', calOpen ? 'true' : 'false');
+    toggle.textContent = calOpen ? 'Hide calendar' : 'Pick a day';
+    toggle.addEventListener('click', function () {
+      calOpen = !calOpen;
+      if (calOpen && !calMonth) {
+        /* The month of the newest post, not the current month. The question
+           is "what went out", and on the 1st the current month is empty. */
+        var newest = Object.keys(dayCounts()).sort().reverse()[0];
+        calMonth = newest ? newest.slice(0, 7) : isoLocal(new Date()).slice(0, 7);
+      }
+      rebuildDayRow();
+    });
+    pillRow.appendChild(toggle);
+
     if (pillRow.children.length) { dayRow.appendChild(pillRow); }
 
+    /* Either the reader opened it, or they narrowed to a single month by
+       other means and showing that month is the obvious next thing. */
+    var showCal = calOpen;
     if (activeYear !== 'all' && activeMonth !== 'all') {
-      var y = parseInt(activeYear, 10), mo = parseInt(activeMonth, 10);
+      showCal = true;
+      calMonth = activeYear + '-' + activeMonth;
+    }
+
+    if (showCal && calMonth) {
+      var y = parseInt(calMonth.slice(0, 4), 10);
+      var mo = parseInt(calMonth.slice(5, 7), 10);
       var first = new Date(y, mo - 1, 1);
       var days = new Date(y, mo, 0).getDate();
       /* Monday-first, which is what the rest of this site uses. */
       var lead = (first.getDay() + 6) % 7;
+      /* The month, and a way out of it in both directions. Paging needs no
+         fetch: data-days carries every day the site has published. */
+      var head = document.createElement('div');
+      head.className = 'post-cal-head';
+      function step(delta) {
+        var d = new Date(y, mo - 1 + delta, 1);
+        calMonth = d.getFullYear() + '-'
+          + String(d.getMonth() + 1).padStart(2, '0');
+        /* Paging the calendar past the month the filter rows are pinned to
+           would snap straight back on the next rebuild, so stepping clears
+           them. The day itself, if one is chosen, is left alone. */
+        if (activeMonth !== 'all') {
+          activeMonth = 'all';
+          monthPills.forEach(function (q) {
+            q.classList.toggle('active', q.dataset.month === 'all');
+          });
+        }
+        rebuildDayRow();
+        applyFilters();
+      }
+      var prev = document.createElement('button');
+      prev.type = 'button';
+      prev.className = 'post-cal-nav';
+      prev.setAttribute('aria-label', 'Previous month');
+      prev.textContent = '\u2039';
+      prev.addEventListener('click', function () { step(-1); });
+      var label = document.createElement('span');
+      label.className = 'post-cal-month';
+      label.textContent = MONTHS_FULL[mo - 1] + ' ' + y;
+      var next = document.createElement('button');
+      next.type = 'button';
+      next.className = 'post-cal-nav';
+      next.setAttribute('aria-label', 'Next month');
+      next.textContent = '\u203a';
+      next.addEventListener('click', function () { step(1); });
+      head.appendChild(prev);
+      head.appendChild(label);
+      head.appendChild(next);
+      dayRow.appendChild(head);
+
       var cal = document.createElement('div');
       cal.className = 'post-cal';
       ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (d, i) {
@@ -825,8 +902,7 @@
         cal.appendChild(pad);
       }
       for (var dnum = 1; dnum <= days; dnum++) {
-        var iso = activeYear + '-' + activeMonth + '-'
-          + String(dnum).padStart(2, '0');
+        var iso = calMonth + '-' + String(dnum).padStart(2, '0');
         var n2 = counts[iso] || 0;
         if (!n2) {
           var empty = document.createElement('span');
