@@ -1,0 +1,341 @@
+---
+title: "GCP Architecture Series #65 — Expanding a Subnet, and What Cannot Be Undone"
+date: '2026-10-17T09:00:00'
+slug: gcp-architecture-expanding-a-subnet
+labels: [GCP, "GCP Architecture Series"]
+verified: '2026-10-17'
+verified_claims:
+  - claim: "You can expand the primary IPv4 range of an existing subnet by modifying its subnet mask, setting the prefix length to a smaller number"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "The proposed new primary IPv4 range of the subnet must follow the rules listed in the IPv4 subnet range limitations"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "Expanding the primary IPv4 range of a subnet can take several minutes to complete"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "During expansion, traffic within the subnet is not interrupted"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "Expanding the primary IPv4 range of a subnet cannot be undone"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "You cannot shrink the primary IPv4 range of a subnet"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "Expand primary IPv4 ranges conservatively; you can always expand them again"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "Consider IPv4 address space in any networks to which your VPC network is or will be connected before you expand a subnet"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "If you expand the primary IPv4 range of a subnet, you might need to modify other configurations that are assuming this IP address range"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "If you have VPC firewall rules or firewall policy rules that use the original IPv4 address range as a source or destination, add additional firewall rules to apply the same rules to the extended range"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "you must add the expanded IP range to the control plane authorized networks list"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "You can't expand subnets that are used exclusively for load balancer proxies"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "or in a custom mode VPC network that was previously an auto mode VPC network"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "the broadest prefix (subnet mask) you can use is /16"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "would conflict with the primary IPv4 ranges of the other automatically created subnets"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "Use the subnets expand-ip-range command"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "Enter a new, broader CIDR block in the IP address range field"
+    source: https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks
+  - claim: "the primary IPv4 range for the subnet can be expanded but not replaced or shrunk"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "You can remove and replace a subnet's secondary IPv4 address range only if no instances are using that range"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "Each primary or secondary IPv4 range for all subnets in a VPC network must be a unique valid CIDR block"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "any primary or secondary range of another subnet in the same network, or any IPv4 ranges of subnets in peered networks"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "Google Cloud prevents the creation of overlapping subnet ranges in these scenarios"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "Subnet IPv4 ranges cannot conflict with destinations for static routes"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "The minimum primary or secondary range size is eight IPv4 addresses"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "the longest subnet mask that you can use is /29"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "The shortest subnet mask that you can use is /4"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "we recommend that you limit your maximum subnet size to /8"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "Google Cloud uses the first two and last two IPv4 addresses in each subnet primary IPv4 address range to host the subnet"
+    derive: "(512 - 4) - (256 - 4)"
+    expect: "256"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "Avoid using IPv4 addresses from the 10.128.0.0/9 block for a subnet's primary or secondary IPv4 ranges"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+  - claim: "Subnet routes, and therefore subnet IP ranges, must have the most specific IP ranges by definition"
+    source: https://docs.cloud.google.com/vpc/docs/subnets
+problem: "Expansion is the only escape valve in subnet addressing, and the thing that makes it dangerous is not the operation — that is non-disruptive — but what it leaves behind. The new addresses are not covered by the firewall rules that covered the old ones, and the space the range grows into is taken permanently from neighbours you may not have met yet."
+builds: "What expanding a primary range actually does and why the operation itself is safe; the configurations that do not follow the expansion, starting with firewall rules; which subnets cannot be expanded or are capped at /16; and why Google recommends expanding conservatively when every other instinct says do it once and do it big."
+catch: "If firewall rules reference the original range as a source or destination, you must add rules for the extended range. The subnet grows and the policy does not, so the new addresses arrive governed by nothing you wrote — and nothing fails to make that visible."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Architecture Series &middot; #065 &middot; Networking</div>
+  <h1 class="post-title">Expanding a Subnet, and What Cannot Be Undone</h1>
+  <p class="post-subtitle">A non-disruptive operation with a permanent effect, and a policy gap that opens quietly the moment it succeeds.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>Google Cloud &middot; Networking &middot; Platform Engineering</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Three posts have now deferred something to this one. #61 noted the asymmetry, #63 called the primary range the only forgiving decision in a subnet, and #64 contrasted it with secondary ranges, which can be taken back. The rule itself is one line: <em>the primary IPv4 range for the subnet can be expanded but not replaced or shrunk.</em>
+    </p>
+    <p>
+      So expansion is the escape valve, and the obvious reading is that it makes under-sizing survivable. It does, and the operation is better behaved than you would expect &mdash; <em>during expansion, traffic within the subnet is not interrupted</em>. What makes it worth a post is that the risk is not in the operation. It is in two things the operation does not do, one of which is a security gap and neither of which produces an error.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"We expanded the subnet, so the new addresses inherit the same rules"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          They do not. The documentation is explicit: <em>if you have VPC firewall rules or firewall policy rules that use the original IPv4 address range as a source or destination, add additional firewall rules to apply the same rules to the extended range</em>. A rule written against <code>10.1.0.0/24</code> does not begin matching <code>10.1.1.0/24</code> because the subnet is now a <code>/23</code>. The subnet grows; the policy stays exactly where it was.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat an expansion as a two-part change: widen the range, then widen every rule that named the old one, in the same change. The failure mode is the worst shape available &mdash; an allow rule that no longer covers the new addresses breaks traffic loudly and gets fixed, while a deny rule that no longer covers them fails open and silently.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"Expansion is reversible enough — we can always pull it back"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          There is no back. <em>Expanding the primary IPv4 range of a subnet cannot be undone</em>, and <em>you cannot shrink the primary IPv4 range of a subnet</em>. The addresses the range grew into belong to it from then on, and because <em>each primary or secondary IPv4 range for all subnets in a VPC network must be a unique valid CIDR block</em>, every address it absorbed is an address no other subnet in the network can ever use.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Follow the documented advice, which is the opposite of the usual instinct: <em>expand primary IPv4 ranges conservatively; you can always expand them again.</em> One generous expansion feels efficient and is the more expensive choice, because it claims adjacent space you have not yet decided how to use.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"Any subnet can grow if we need it to"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Two exceptions. <em>You can't expand subnets that are used exclusively for load balancer proxies</em> &mdash; a proxy-only subnet is sized once and that is final. And a subnet that auto mode created carries a ceiling: <em>the broadest prefix (subnet mask) you can use is /16</em>, which applies to such a subnet in an auto mode network <em>or in a custom mode VPC network that was previously an auto mode VPC network</em>, because anything broader <em>would conflict with the primary IPv4 ranges of the other automatically created subnets</em>.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Check the subnet's purpose and its provenance before planning capacity around expansion. For proxy-only subnets, size at creation with the growth already in it. For anything inherited from auto mode, treat <code>/16</code> as the hard limit it is &mdash; the mode decision from #62 is still binding three posts later.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Mechanically this is the simplest operation in the block. You are moving one number in one direction.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-065-expanding-a-subnet.svg" alt="Diagram: how expanding a subnet primary IPv4 range works and why the operation itself is non-disruptive, which configurations do not follow the expansion including firewall rules and GKE control plane authorized networks, which subnets cannot be expanded or are capped at slash 16, and why Google recommends expanding conservatively because each expansion permanently consumes neighbouring address space" />
+      <figcaption>Safe to perform, permanent in effect, and silent about everything that referenced the old range.</figcaption>
+    </figure>
+
+    <p>
+      <em>You can expand the primary IPv4 range of an existing subnet by modifying its subnet mask, setting the prefix length to a smaller number.</em> In the console you <em>enter a new, broader CIDR block in the IP address range field</em>; on the command line you <em>use the subnets expand-ip-range command</em>, which takes the new prefix length rather than a new CIDR &mdash; a small design detail that makes the one-directional nature of the operation explicit in the interface. There is no shrink command because there is no shrink.
+    </p>
+    <p>
+      The runtime behaviour is unalarming. <em>Expanding the primary IPv4 range of a subnet can take several minutes to complete</em>, and traffic is not interrupted while it does. That is genuinely reassuring and it is also what makes the gap below easy to miss: nothing about running the operation suggests that work remains afterwards.
+    </p>
+
+    <h3>What the expansion must satisfy</h3>
+    <p>
+      The proposed range <em>must follow the rules listed in the IPv4 subnet range limitations</em> &mdash; the same set #63 covered, which now function as a list of reasons an expansion can be refused rather than reasons a creation can be. The ones that bite on expansion specifically are the collision rules, because a growing range moves into space it did not previously touch.
+    </p>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Constraint</th>
+          <th>Why it matters more on expansion than on creation</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><em>Any primary or secondary range of another subnet in the same network, or any IPv4 ranges of subnets in peered networks.</em></td>
+          <td>At creation you pick a free block. On expansion the direction is forced &mdash; you grow into whatever is adjacent, and a neighbour there blocks you.</td>
+        </tr>
+        <tr>
+          <td><em>Google Cloud prevents the creation of overlapping subnet ranges in these scenarios.</em></td>
+          <td>You get a refusal, not a conflict. Good, but it means the expansion you planned may simply be unavailable.</td>
+        </tr>
+        <tr>
+          <td><em>Subnet IPv4 ranges cannot conflict with destinations for static routes.</em></td>
+          <td>A static route added since the subnet was created can block its growth, from outside the addressing plan.</td>
+        </tr>
+        <tr>
+          <td><em>The shortest subnet mask that you can use is /4</em>, with <em>we recommend that you limit your maximum subnet size to /8</em>.</td>
+          <td>The real ceiling is advisory, not the headline number &mdash; and <code>/16</code> for anything auto mode created.</td>
+        </tr>
+        <tr>
+          <td><em>Subnet routes, and therefore subnet IP ranges, must have the most specific IP ranges by definition.</em></td>
+          <td>The subnet route widens with the range, which is how the new addresses become reachable without any route work.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      The first row is the one that reframes the whole operation. Expansion is not allocation from a pool; it is annexation of the adjacent block. Which neighbours exist, in this network and in every network peered to it, decides whether the expansion is even possible &mdash; and that set grows over time without reference to your plan.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>What Does Not Follow the Range</h2>
+    <p>
+      The documentation states the general case before listing instances of it: <em>if you expand the primary IPv4 range of a subnet, you might need to modify other configurations that are assuming this IP address range.</em> "Might need to" is doing a lot of work in that sentence. Two specific cases follow, and the first is a security control.
+    </p>
+
+    <div class="callout amber">
+      <strong>Firewall rules do not widen with the subnet</strong>
+      <p><em>If you have VPC firewall rules or firewall policy rules that use the original IPv4 address range as a source or destination, add additional firewall rules to apply the same rules to the extended range.</em> Note what is being asked: not edit the rules, <em>add</em> rules. The original rule keeps matching the original range, and the addresses added by the expansion match nothing it says.</p>
+    </div>
+
+    <p>
+      This is the same class of problem #64 ended on, arriving from a different direction. There the gap was that alias ranges are excluded from source tag matching; here it is that a range reference does not track the range it was copied from. In both cases the artifact you would inspect looks correct: the rule is valid, the CIDR it names is real, and it governs exactly what it governed yesterday. What changed is the set of addresses that exists.
+    </p>
+    <p>
+      The asymmetry of consequences is what makes it worth planning around rather than remembering. An allow rule that has not been widened produces unreachable workloads on the new addresses &mdash; disruptive, obvious, fixed within the hour. A deny rule that has not been widened produces new addresses that are not denied. Nothing breaks, nothing alerts, and the subnet is quietly more permissive than its documented policy.
+    </p>
+    <p>
+      The second case is narrower but worth naming because it is easy to be caught by: if a Google Kubernetes Engine cluster uses the subnet, <em>you must add the expanded IP range to the control plane authorized networks list</em>. Expanding the range the nodes live in does not authorise the new part of it to reach the control plane.
+    </p>
+
+    <h3>Why "conservatively" is the right advice, and why it feels wrong</h3>
+    <p>
+      The sentence that deserves the most thought is the one that sounds like boilerplate: <em>expand primary IPv4 ranges conservatively; you can always expand them again.</em> Every instinct trained on irreversible operations says the opposite &mdash; if you only get one shot, take a big one. The advice inverts that, and it is correct, because of what the previous section established.
+    </p>
+    <p>
+      Expansion consumes adjacent space permanently. The addresses absorbed become unavailable to every other subnet in the network and incompatible with any peered network that uses them. So the cost of over-expanding is not paid in the expanded subnet, which is fine; it is paid by future subnets and future peers, which do not exist yet and therefore cannot object. Under-expanding costs one more operation later &mdash; an operation that is repeatable, non-disruptive and takes minutes. The asymmetry runs entirely one way.
+    </p>
+    <p>
+      That resolves what looks like a contradiction with #63, which argued for oversizing the range deliberately. Both are right, and the difference is when. At creation, space is unclaimed: a generous range costs nothing because nothing is adjacent to it yet and you are choosing where to put it. At expansion, space is contested: the direction is forced and the neighbours are real. Generosity is free before and expensive afterwards.
+    </p>
+
+    <div class="callout">
+      <strong>The planning sentence</strong>
+      <p><em>Consider IPv4 address space in any networks to which your VPC network is or will be connected before you expand a subnet</em> and its primary IPv4 range. That is the only forward-looking instruction in the procedure, and the phrase <em>or will be</em> is the whole point &mdash; the overlap that stops a peering in a year is created by an expansion today, and the expansion will succeed.</p>
+    </div>
+
+    <h3>The size floor, and what an expansion is actually buying</h3>
+    <p>
+      One piece of arithmetic worth having explicit, because it is the thing people are usually trying to fix. <em>The minimum primary or secondary range size is eight IPv4 addresses</em>, so <em>the longest subnet mask that you can use is /29</em>; and <em>Google Cloud uses the first two and last two IPv4 addresses in each subnet primary IPv4 address range to host the subnet</em>. That overhead is four addresses per subnet, fixed, and it does not grow when the range does.
+    </p>
+    <p>
+      So expanding a <code>/24</code> to a <code>/23</code> takes usable addresses from 252 to 508 &mdash; the 256 new addresses arrive whole, because the four reserved ones were already paid for. Expansion is the one operation in this area with no marginal overhead, which is a genuine argument for doing it rather than adding a second subnet to the same workload. #66 takes those four reserved addresses on their own terms.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Design Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Situation</th>
+          <th>Decision</th>
+          <th>Because</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Subnet is running out of addresses</td>
+          <td>Expand by one step, not to the limit</td>
+          <td>Repeatable and non-disruptive; over-expanding permanently claims the neighbours' space.</td>
+        </tr>
+        <tr>
+          <td>Any expansion at all</td>
+          <td>Widen the firewall rules in the same change</td>
+          <td>Rules do not follow the range, and a stale deny rule fails open.</td>
+        </tr>
+        <tr>
+          <td>Subnet hosts a GKE cluster</td>
+          <td>Add the new range to control plane authorized networks</td>
+          <td>Authorisation is by range and does not widen either.</td>
+        </tr>
+        <tr>
+          <td>Proxy-only subnet</td>
+          <td>Size correctly at creation</td>
+          <td>It cannot be expanded at all.</td>
+        </tr>
+        <tr>
+          <td>Subnet came from auto mode</td>
+          <td>Plan within <code>/16</code></td>
+          <td>Broader collides with the other automatically created subnets.</td>
+        </tr>
+        <tr>
+          <td>Peering or hybrid connectivity is possible later</td>
+          <td>Check the other side before expanding</td>
+          <td>The expansion succeeds now and forecloses the peering later.</td>
+        </tr>
+        <tr>
+          <td>Growth is uncertain and the workload is new</td>
+          <td>Size generously at creation instead</td>
+          <td>Space is unclaimed before anything is adjacent to it.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      Take any subnet that has been expanded and compare its current range against every firewall rule and firewall policy rule that names a CIDR. If a rule still carries the pre-expansion prefix, you have found the gap &mdash; and the ones to look at first are the deny rules, because the allow rules would already have complained. Then, separately, list the ranges immediately adjacent to your largest subnets and ask what they are reserved for, because that is the space the next expansion will take whether or not anyone decided it should.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The interesting thing about this operation is how far the risk sits from where the warnings are. The caution in the documentation is about irreversibility, and irreversibility is real but manageable &mdash; you cannot shrink a range, and almost nobody needs to. The expensive consequences are elsewhere: in the adjacent space you claimed from subnets and peers that did not exist yet, and in the firewall rules that kept doing precisely what they said while the thing they described changed underneath them.
+    </p>
+    <p>
+      Both have the same shape, and it is the shape this whole block keeps producing. The platform does one thing cleanly and completely, and the surrounding configuration that referenced the old state is left for you. #62's conversion preserved every subnet and left every implicit command to be rewritten. #64's secondary range gave a policy surface and excluded it from source-tag matching. Here the range widens with no interruption and the rules governing it do not move. None of these is a defect, all are documented in a sentence, and every one of them is invisible in the resource you would think to check. Five posts in, the habit that keeps paying is to ask not what the operation does but what still points at what it used to be.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#66 takes the four addresses this post kept deferring: the addresses reserved in every subnet &mdash; which ones, why, and the one range where none are reserved at all.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/create-modify-vpc-networks" target="_blank" rel="noopener">Create and modify VPC networks</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/subnets" target="_blank" rel="noopener">Subnets</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/vpc" target="_blank" rel="noopener">VPC networks</a></li>
+      <li><a href="https://docs.cloud.google.com/firewall/docs/firewalls" target="_blank" rel="noopener">VPC firewall rules</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/quota" target="_blank" rel="noopener">VPC quotas and limits</a></li>
+      <li><a href="https://docs.cloud.google.com/load-balancing/docs/proxy-only-subnets" target="_blank" rel="noopener">Proxy-only subnets for Envoy-based load balancers</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
