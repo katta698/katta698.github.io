@@ -92,6 +92,50 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 16 October 2026 — no daily deep-dive; covered in weekly #11's inventory
+
+Eleven items, four of them AWS End User Messaging registration improvements.
+Nothing outranked the strongest held item, so post #56 took ARC Region switch
+from 14 October instead. Friday's eleven are all in weekly #11's inventory —
+see the note at the top of this file about a missed daily slot not being
+missed coverage.
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| End-to-end managed OTP verification in Notify. AWS now generates, delivers and verifies the code rather than sending one you generated. **Held deliberately, and the reason matters:** the announcement describes a code configuration holding the code type, length, validity window and attempt count — the parameters that decide whether a managed OTP flow is sound — and as of 17 October those controls appear in neither the End User Messaging user guide nor the SMS Voice v2 API reference, while the documented send path still passes `code` as a template variable. Write it when the documentation lands; an authentication primitive whose expiry and lockout behaviour cannot be read is not yet writable | AWS End User Messaging | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-end-user-messaging-adds-end-to-end-managed-OTP) |
+| Log centralization now in GovCloud (US) and 13 additional commercial Regions | Amazon CloudWatch | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-cloudwatch-centralization-region-expansion) |
+| Azure-to-AWS cloud-native .NET code conversion, GA | AWS Transform | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-transform-azure-to-aws-code-conversion/) |
+| Durable functions reach GovCloud (US-West) and (US-East) — fourth Lambda durability item of the week | AWS Lambda | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/durablefunctions-govcloud/) |
+| Brand Profiles — store brand and company information once and reuse across registrations | AWS End User Messaging | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-end-user-messaging-now-supports-brand-profiles) |
+| Now in scope for FedRAMP Class C in AWS US Regions where Braket is available | Amazon Braket | open | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/braket-fedramp-class-c/) |
+| Second-generation Outposts racks supported in Mexico (Central) | AWS Outposts | open | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-outposts-racks-mexico-central/) |
+| Registration improvements, and a guided wizard for RCS registration videos | AWS End User Messaging | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-end-user-messaging-adds-registration-improvements-for-faster-higher-quality-submissions) |
+| Nemotron 3.5 Super VL and Beam by Reflection on SageMaker JumpStart | Amazon SageMaker | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/01/reflection-beam-on-sagemaker-jumpstart-and-aws-trainium/) |
+
+**Weekly #11 numbers, for the record:** 65 announcements over 12–16 October,
+against 36 the week before — close to a doubling. Per day: Monday 11, Tuesday
+10, Wednesday 13, Thursday 20, Friday 11. All 19 feeds returned items on the
+Saturday audit and no truncation warning fired; the What's New feed held
+5 to 16 October, so the window sat inside the 100-item cap.
+`build_weekly_inventory.py` validated 65 of 65 links at 200.
+
+**A note on counts.** A Friday-afternoon fetch of the same window returned 63
+items; the Saturday fetch returned 65. Two Friday announcements had not yet
+appeared when the earlier fetch ran. This is exactly why the roundup is
+composed on Saturday from a fresh fetch rather than pre-written on Friday.
+
+**Reconciliation for the week:** #52 took 12 Oct, #53 took 13 Oct, #54 took
+14 Oct, #55 took 15 Oct, and #56 took 14 Oct's ARC Region switch as a held
+item. So four of five news days got a deep-dive and 16 October did not.
+
+**The week's theme, recorded because it was only visible in aggregate:** four
+separate Lambda announcements — Web Functions (12th), durable payload limits
+(13th), the Go Durable Execution SDK (15th) and durable functions in GovCloud
+(16th) — plus CloudFront accepting Web Functions as an origin. Individually
+each is a bullet point. Together they are Lambda becoming a place to run a web
+server and a long-lived workflow, and the Web Functions concurrency change
+retires the one-request-per-environment assumption that #52 is about.
+
 ## 15 October 2026 — covered by post #55
 
 Twenty announcements, the busiest day of the week. The DevOps Agent /
@@ -116,7 +160,7 @@ documentation rather than anything in the announcement.
 | Item | Service | Status | Importance | Reference |
 | --- | --- | --- | --- | --- |
 | Resource criticality for exposure prioritization. The finding is the default path: criticality is "inferred... from resource tags and resource names, with no configuration required", "always on for all customers", "no new enablement" — so naming conventions chosen for human convenience became an input to how findings rank, overnight. The risk is asymmetric, because old systems with dull names are disproportionately likely to carry real risk | AWS Security Hub | **#54** | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/security-hub-resource-criticality/) |
-| ARC Region switch adds four new capabilities, including target health and SSM and Lambda integration. **Strong held item** — Region switch is the mechanism the DevOps Agent investigations in #55 observe, so the two pair naturally | Application Recovery Controller | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/region-switch-target-health-ssm-lambda/) |
+| ARC Region switch adds four new capabilities, including target health and SSM and Lambda integration. Taken by #56 on 17 October as a held item, after a thin Friday. The finding was the inverted default: the quota parity check is enabled for new plans and disabled for every plan that predates it | Application Recovery Controller | **#56** | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/region-switch-target-health-ssm-lambda/) |
 | Log routing and chained log parsers. Underrated: parsing chained at ingest changes what a log group costs and what a query can assume | Amazon CloudWatch | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/cloudwatch-pipelines-log-routing/) |
 | Secrets Manager storage for SFTP server host keys — removes a long-standing place where a private key sat in service configuration | AWS Transfer Family | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/transfer-family-secrets-host-keys/) |
 | Recursive loop detection extended to EventBridge custom event buses | AWS Lambda | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/lambda-recursive-loops-eventbridge-custom) |
