@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #87 — The backup AWS cannot read, and you cannot restore without them | Jayanth Katta Blog</title>
+<meta name="description" content="CloudHSM's backup design holds two properties at once that sound contradictory and are not. The backup is confidential from AWS, because AWS cannot decrypt it. And it is useless without AWS, because it can only be restored onto AWS-owned HSMs from the same manufacturer. Both are documented, and together they define exactly what your recovery options are."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="The backup AWS cannot read, and you cannot restore without them"/>
+<meta property="og:description" content="CloudHSM's backup design holds two properties at once that sound contradictory and are not. The backup is confidential from AWS, because AWS cannot decrypt it. And it is useless without AWS, because it can only be restored onto AWS-owned HSMs from the same manufacturer. Both are documented, and together they define exactly what your recovery options are."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-cloudhsm/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="The backup AWS cannot read, and you cannot restore without them"/>
+<meta name="twitter:description" content="CloudHSM's backup design holds two properties at once that sound contradictory and are not. The backup is confidential from AWS, because AWS cannot decrypt it. And it is useless without AWS, because it can only be restored onto AWS-owned HSMs from the same manufacturer. Both are documented, and together they define exactly what your recovery options are."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-cloudhsm/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=6a0f8d01"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=f93bedfe" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=f93bedfe">
+<script src="/blog/assets/site-footer.js?v=f93bedfe" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #87 — The backup AWS cannot read, and you cannot restore without them…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #87 — The backup AWS cannot read, and you cannot restore without them</h1>
+      <p class="post-description">CloudHSM's backup design holds two properties at once that sound contradictory and are not. The backup is confidential from AWS, because AWS cannot decrypt it. And it is useless without AWS, because it can only be restored onto AWS-owned HSMs from the same manufacturer. Both are documented, and together they define exactly what your recovery options are.</p>
+      <div class="post-info">
+        <span>Oct 19, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>14 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 19 October 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-cloudhsm" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      CloudHSM is where you put keys when "AWS can technically access this" is not an acceptable answer. The
+      backup documentation makes the strong claim that justifies choosing it:
+      <em>&ldquo;<strong>backups cannot be decrypted by AWS</strong> because AWS doesn't have access to key used
+      to decrypt the backups.&rdquo;</em>
+    </p>
+    <p>
+      Four pages later, in the same section, is the constraint that comes with it:
+      <em>&ldquo;AWS CloudHSM can restore backups <strong>onto only AWS-owned HSMs made by the same
+      manufacturer</strong>.&rdquo;</em>
+    </p>
+    <p>
+      Neither of those is marketing and neither contradicts the other. Read together they tell you something
+      precise about where you stand, and it is worth knowing before the day you need a restore rather than
+      during it.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>A backup moved to another Region stops having a retention policy, and becomes yours to delete by hand</strong></div>
+      <div class="challenge-body">
+        <p>
+          The policy attaches to the wrong noun for the thing you are about to do.
+          <em>&ldquo;AWS CloudHSM purges backups based on the backup retention policy you set when you create a
+          cluster. <strong>Backup retention policy applies to clusters.</strong>&rdquo;</em>
+        </p>
+        <p>
+          And then:
+        </p>
+        <p>
+          <em>&ldquo;<strong>If you move a backup to a different region, that backup is no longer associated
+          with a cluster and has no backup retention policy. You must manually delete any backups not
+          associated with a cluster.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Copying a backup to a second Region is the obvious resilience move &mdash; it is why the operation
+          exists. The side effect is that the copy leaves the lifecycle entirely. It will not be purged at 90
+          days or 379 days or ever; it does not appear in a retention report; and because
+          <em>&ldquo;AWS CloudTrail reports backups marked for deletion&rdquo;</em> and nothing is ever marking
+          this one, it will not show up there either.
+        </p>
+        <p>
+          A CloudHSM backup contains, in AWS's words,
+          <em>&ldquo;all users, keys, and configuration from the original HSM&rdquo;</em>. An indefinitely
+          retained copy of that in a Region nobody is looking at is a governance problem rather than a billing
+          one.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat a cross-Region backup copy as a resource you own outright, with its own ticket and its own review date. If your key material has a retention requirement, that requirement does not travel with the copy &mdash; you have to re-implement it. Enumerate backups with no cluster association periodically; that set is exactly the set nothing is managing.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The property that makes the backup safe is the property that binds it to AWS hardware</strong></div>
+      <div class="challenge-body">
+        <p>
+          The encryption chain is documented in enough detail to see why both facts hold. The data is encrypted
+          inside the HSM with an ephemeral key:
+          <em>&ldquo;The EBK is an <strong>AES 256-bit</strong> encryption key generated inside the HSM when AWS
+          CloudHSM makes a backup&rdquo;</em>, and
+          <em>&ldquo;<strong>The data never leaves the HSM in plaintext form.</strong>&rdquo;</em>
+        </p>
+        <p>
+          That ephemeral key is itself encrypted by a persistent one, and the persistent one is
+          <em>derived</em> rather than stored &mdash; from two inputs:
+        </p>
+        <p>
+          <em>&ldquo;A <strong>manufacturer key backup key (MKBK), permanently embedded in the HSM hardware by
+          the hardware manufacturer</strong>.&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;An <strong>AWS key backup key (AKBK), securely installed in the HSM when it's initially
+          configured by AWS CloudHSM</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So the decryption key exists only where both of those inputs exist, which is inside an HSM of that
+          manufacture that AWS has configured. That is simultaneously why AWS cannot read your backup &mdash;
+          the key is not something AWS holds &mdash; and why no one else can restore it either.
+        </p>
+        <p>
+          The practical reading: this is not a backup in the sense of a file you could take elsewhere. It is a
+          backup in the sense of a restore ticket valid at one vendor.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Do not write a disaster recovery plan whose fallback is "restore the HSM backup somewhere else". There is no somewhere else. If your requirement is genuine independence from AWS, the artifact that provides it is an exported key under your own wrapping, not a cluster backup &mdash; and that is a different design with different exposure, to be decided deliberately rather than discovered.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>A restore overwrites everything, and the backup carries the old access controls with it</strong></div>
+      <div class="challenge-body">
+        <p>
+          Two sentences that belong on the same page as your restore runbook.
+        </p>
+        <p>
+          <em>&ldquo;Because each backup contains all users, keys, and configuration from the original HSM,
+          <strong>the restored HSM contains the same protections and access controls as the
+          original</strong>.&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;<strong>The restored data overwrites all other data that might have been on the HSM prior
+          to restoration.</strong>&rdquo;</em>
+        </p>
+        <p>
+          The first means a restore is a rollback of your user and quorum configuration, not just of key
+          material. If you removed a crypto officer last month and restore a backup from two months ago, that
+          officer is back, with whatever permissions they had.
+        </p>
+        <p>
+          The second means there is no merge. Restoring into a cluster that has been in use since the backup was
+          taken does not combine the two sets of keys; it replaces one with the other.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Make the user and quorum configuration part of what you track alongside each backup, because restoring reinstates it. And before any restore into a live cluster, establish what has been created since the backup's timestamp &mdash; that is the set you are about to lose, and the service will not warn you about it.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      An HSM that encrypts its own backups, a derived key that exists only inside AWS-configured hardware of one
+      manufacture, and a retention policy attached to clusters rather than to backups.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-087-cloudhsm.svg" alt="Diagram: how an AWS CloudHSM cluster backup is encrypted, where it is stored, what is required to restore it, and what the retention policy does and does not cover. AWS CloudHSM makes periodic backups of the users, keys and policies in the cluster, described as secure, durable and updated on a predictable schedule, and stores them in a service-controlled Amazon S3 bucket in the same region as the cluster, with a 99.999999999 percent durability level, the same as any object stored in Amazon S3. The encryption chain is documented in detail. When CloudHSM makes a backup from the HSM, the HSM encrypts all of its data before sending it to CloudHSM, and the data never leaves the HSM in plaintext form. The HSM uses a unique ephemeral encryption key called the ephemeral backup key or EBK, an AES 256-bit key generated inside the HSM at backup time, and wraps the data with a FIPS-approved AES key wrapping method. The encrypted data includes an encrypted copy of the EBK, which is itself encrypted using a persistent backup key or PBK, also an AES 256-bit key. The PBK is derived rather than stored, using a FIPS-approved key derivation function in counter mode, and its inputs include a manufacturer key backup key permanently embedded in the HSM hardware by the hardware manufacturer, and an AWS key backup key securely installed in the HSM when it is initially configured by CloudHSM. Two consequences follow and they are the central point of the post. First, backups cannot be decrypted by AWS because AWS does not have access to the key used to decrypt the backups, which is the property that justifies choosing CloudHSM when AWS technical access is not acceptable. Second, CloudHSM can restore backups onto only AWS-owned HSMs made by the same manufacturer, because the derivation inputs exist only inside such hardware. So the backup is confidential from AWS and simultaneously unusable without AWS, which means it is not a file that can be taken elsewhere but a restore ticket valid at one vendor, and a disaster recovery plan must not treat restoring the HSM backup somewhere else as a fallback. A backup consists of only encrypted data, and before the service stores it in S3 the service encrypts the backup again using AWS Key Management Service. On restore semantics, because each backup contains all users, keys and configuration from the original HSM, the restored HSM contains the same protections and access controls as the original, so a restore rolls back user and quorum configuration as well as key material and can reinstate a removed crypto officer. The restored data overwrites all other data that might have been on the HSM prior to restoration, so there is no merge and anything created since the backup timestamp is lost. On lifecycle, CloudHSM purges backups based on the backup retention policy set when a cluster is created, and that policy applies to clusters rather than to backups. The consequence worth acting on is that if a backup is moved to a different region it is no longer associated with a cluster and has no backup retention policy, and the customer must manually delete any backups not associated with a cluster. The cross-Region copy made for resilience therefore leaves the lifecycle entirely: it is never purged, has no expiration, and since CloudTrail reports backups marked for deletion and nothing marks this one, it does not appear there either, while still containing all users, keys and configuration from the original HSM. The retention period can be set to any number between 7 and 379 days. Clusters created before November 18, 2020 have a retention policy of 90 days plus the age of the cluster, with AWS's own example being a cluster created on November 18, 2019 receiving one year plus 90 days, that is 455 days. CloudHSM does not delete a cluster's last backup, which is a deliberate floor. Managed backup retention can be opted out of altogether by contacting AWS Support. To prevent a race condition, the retention policy for a cluster should be changed before restoring a backup that the service deleted. Deletion is reversible for a bounded window: after a backup is deleted the service holds it for seven days during which it can be restored, after which it can no longer be restored, and a deleted backup moves to the PENDING_DELETE state and can be restored for up to 7 days after deletion is requested. Finally, before a cluster can be deleted all HSMs must be removed from it. The recommended actions are to treat every cross-Region backup copy as a resource owned outright with its own review date because its retention requirement does not travel with it, to enumerate backups with no cluster association since that set is exactly what nothing is managing, to avoid any recovery plan that assumes a backup can be restored outside AWS, to track the user and quorum configuration alongside each backup because a restore reinstates it, and to establish what has been created since a backup's timestamp before restoring into a live cluster because that is the set about to be overwritten." />
+      <figcaption>Opaque to AWS, and restorable only by AWS. Both from the same key derivation.</figcaption>
+    </figure>
+
+    <h3>The key chain, and why it has exactly this consequence</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Key</th><th>What it is</th><th>Where it comes from</th></tr>
+      <tr>
+        <td>EBK &mdash; ephemeral backup key</td>
+        <td><em>&ldquo;AES 256-bit&rdquo;</em>, encrypts the HSM's data</td>
+        <td><em>&ldquo;generated inside the HSM when AWS CloudHSM makes a backup&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>PBK &mdash; persistent backup key</td>
+        <td><em>&ldquo;also an AES 256-bit encryption key&rdquo;</em>, encrypts the EBK</td>
+        <td>Derived, from the two inputs below</td>
+      </tr>
+      <tr>
+        <td>MKBK &mdash; manufacturer key backup key</td>
+        <td>A derivation input</td>
+        <td><em>&ldquo;permanently embedded in the HSM hardware by the hardware manufacturer&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>AKBK &mdash; AWS key backup key</td>
+        <td>A derivation input</td>
+        <td><em>&ldquo;securely installed in the HSM when it's initially configured by AWS CloudHSM&rdquo;</em></td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      Read bottom-up and the two headline facts stop being surprising. The PBK is not stored anywhere; it is
+      derived, and both of its documented inputs live inside the HSM &mdash; one embedded by the manufacturer,
+      one installed by AWS. AWS states the two consequences directly rather than leaving them to be worked out:
+      <em>&ldquo;backups cannot be decrypted by AWS&rdquo;</em>, and restores go
+      <em>&ldquo;onto only AWS-owned HSMs made by the same manufacturer&rdquo;</em>. The derivation is the
+      reason both sentences can be true at once.
+    </p>
+
+    <div class="callout">
+      <strong>And then it is encrypted again</strong>
+      <p><em>&ldquo;A backup consists of only encrypted data. <strong>Before the service stores a backup in Amazon S3, the service encrypts the backup again using AWS Key Management Service (AWS KMS).</strong>&rdquo;</em></p>
+      <p>The outer layer is the one AWS can manage; the inner layer is the one it cannot. Worth knowing which is which, because the outer layer is the one that shows up in your KMS key policies and CloudTrail, and it is not the layer protecting your key material.</p>
+    </div>
+
+    <h3>Where backups live, and how durable that is</h3>
+    <p>
+      <em>&ldquo;AWS CloudHSM stores backups in a service-controlled Amazon Simple Storage Service (Amazon S3)
+      bucket <strong>in the same region as your cluster</strong>&rdquo;</em>, with
+      <em>&ldquo;a <strong>99.999999999%</strong> durability level, the same as any object stored in Amazon
+      S3&rdquo;</em>.
+    </p>
+    <p>
+      Service-controlled is the word to notice. The bucket is not in your account, so there is no bucket policy
+      of yours on it, no object lock you can apply, and no lifecycle rule you can write. The only lifecycle
+      control available is the retention policy, which is why its scoping matters so much.
+    </p>
+
+    <h3>The lifecycle numbers, in one table</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Control</th><th>Value</th><th>Notes</th></tr>
+      <tr><td>Retention period, settable range</td><td><strong>7 to 379 days</strong></td><td>Set when you create a cluster; changeable later</td></tr>
+      <tr><td>Clusters created before 18 Nov 2020</td><td><em>&ldquo;90 days plus the age of the cluster&rdquo;</em></td><td>AWS's example: a Nov 2019 cluster gets <code>365 + 90</code> = <strong>455</strong> days</td></tr>
+      <tr><td>Last backup</td><td>Never purged</td><td><em>&ldquo;AWS CloudHSM does not delete a cluster's last backup&rdquo;</em></td></tr>
+      <tr><td>After you delete a backup</td><td><strong>7 days</strong> to restore it</td><td>State becomes <code>PENDING_DELETE</code>; after seven days <em>&ldquo;you can no longer restore the backup&rdquo;</em></td></tr>
+      <tr><td>Cross-Region copy</td><td><strong>No policy at all</strong></td><td><em>&ldquo;You must manually delete&rdquo;</em></td></tr>
+      <tr><td>Opting out of managed retention</td><td>Possible</td><td><em>&ldquo;by contacting AWS Support&rdquo;</em></td></tr>
+    </table>
+    </div>
+
+    <div class="callout amber">
+      <strong>One ordering warning, stated by AWS and easy to trip over</strong>
+      <p><em>&ldquo;<strong>To prevent a race condition, you should change the backup retention policy for the cluster before you restore a backup deleted by the service.</strong>&rdquo;</em></p>
+      <p>Restoring a service-purged backup into a cluster whose policy still says to purge it is a loop you can lose. Change the policy first, then restore &mdash; the documentation says so, and the reason is that both actions are racing the same deadline.</p>
+    </div>
+
+    <h3>Deleting a cluster is a two-step operation</h3>
+    <p>
+      <em>&ldquo;<strong>Before you can delete a cluster, you must remove all HSMs from the cluster.</strong>&rdquo;</em>
+    </p>
+    <p>
+      Which is a reasonable guard, and it means "delete the cluster" is not a single call that could be made by
+      accident or by an over-broad automation. It also means the last backup survives the cluster, because
+      nothing purges it.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>Deriving the backup key rather than storing it is the whole product</h3>
+    <p>
+      The alternative designs are both worse. A backup key stored by AWS means AWS can decrypt your keys, which
+      defeats the reason CloudHSM exists. A backup key held only by you means a lost key is lost key material
+      with no recovery, and AWS would be operating a service whose main failure mode it cannot help with.
+    </p>
+    <p>
+      Deriving it from a manufacturer-embedded value plus an AWS-installed value gives a third thing: the key
+      exists reliably, in hardware, and in no one's hands. The cost is the restore constraint, and AWS states
+      the constraint plainly instead of letting you discover it.
+    </p>
+
+    <h3>Not deleting the last backup is the right floor</h3>
+    <p>
+      <em>&ldquo;AWS CloudHSM does not delete a cluster's last backup.&rdquo;</em> A retention policy that could
+      take you to zero backups is a retention policy that can destroy key material on a schedule nobody
+      reviewed. Refusing the final deletion means the worst case of a misconfigured policy is a stale cluster
+      rather than an unrecoverable one.
+    </p>
+    <p>
+      The seven-day window after an explicit delete is the same instinct applied to the manual path, and the
+      <code>PENDING_DELETE</code> state makes it queryable rather than implicit &mdash; you can list exactly
+      what is in the grace period.
+    </p>
+
+    <div class="callout red">
+      <strong>The gap is the noun the policy attaches to</strong>
+      <p>Everything above is careful. The retention design has a floor, a grace period, a queryable state, and a CloudTrail record. All of it keys off the cluster association &mdash; and the one operation you perform specifically to survive losing a Region is the operation that severs that association.</p>
+      <p>So the most carefully protected copy and the least governed copy are produced by the same resilience decision. Nothing is broken; the lifecycle simply has no noun to hang on once the backup is standalone, and AWS says so rather than pretending otherwise.</p>
+    </div>
+
+    <h3>Stating the restore constraint in the security section is the honest placement</h3>
+    <p>
+      <em>&ldquo;AWS CloudHSM can restore backups onto only AWS-owned HSMs made by the same
+      manufacturer&rdquo;</em> appears in the page explaining backup encryption, next to the derivation that
+      causes it &mdash; not buried in a limitations list. That is the difference between a documented
+      consequence and a surprise: the reader who understands the key chain already expects the sentence by the
+      time they reach it.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Cross-Region backup copies</td>
+        <td>Own them explicitly, with a review date</td>
+        <td>They have <em>&ldquo;no backup retention policy&rdquo;</em> and you <em>&ldquo;must manually delete&rdquo;</em> them.</td>
+      </tr>
+      <tr>
+        <td>DR plan fallback</td>
+        <td>Never "restore the backup elsewhere"</td>
+        <td>Restorable <em>&ldquo;onto only AWS-owned HSMs made by the same manufacturer&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Genuine vendor independence</td>
+        <td>Exported keys under your own wrapping, decided deliberately</td>
+        <td>A cluster backup cannot provide it, by construction.</td>
+      </tr>
+      <tr>
+        <td>Retention period</td>
+        <td>Set it from your key-material requirement</td>
+        <td>Range is 7 to 379 days; the default for old clusters is age-dependent.</td>
+      </tr>
+      <tr>
+        <td>Before restoring into a live cluster</td>
+        <td>Inventory what was created since the backup</td>
+        <td>The restore <em>&ldquo;overwrites all other data&rdquo;</em> &mdash; there is no merge.</td>
+      </tr>
+      <tr>
+        <td>User and quorum changes</td>
+        <td>Track them against backup timestamps</td>
+        <td>A restored HSM has <em>&ldquo;the same protections and access controls as the original&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Restoring a service-purged backup</td>
+        <td>Change the policy first</td>
+        <td>AWS names the race condition explicitly.</td>
+      </tr>
+      <tr>
+        <td>Deleting a cluster</td>
+        <td>Expect two steps</td>
+        <td><em>&ldquo;you must remove all HSMs from the cluster&rdquo;</em> first.</td>
+      </tr>
+      <tr>
+        <td>Expecting bucket-level controls</td>
+        <td>Do not plan on them</td>
+        <td>The bucket is <em>&ldquo;service-controlled&rdquo;</em>; retention policy is the only lever.</td>
+      </tr>
+      <tr>
+        <td>Opting out of managed retention</td>
+        <td>Only with a replacement process</td>
+        <td>It is available <em>&ldquo;by contacting AWS Support&rdquo;</em>, and removes the floor's usefulness.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List every backup with no cluster association.</strong> That set has no retention policy, no
+      expiry and no deletion record, and each member contains
+      <em>&ldquo;all users, keys, and configuration from the original HSM&rdquo;</em>. If the list is longer
+      than your team expects, each extra entry is a copy of your key material that somebody made for a good
+      reason and nothing has governed since.
+    </p>
+    <p>
+      <strong>Then read your DR document for the phrase "restore the backup".</strong> If it does not say "into
+      a CloudHSM cluster in an AWS Region", it is assuming a capability that does not exist.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The two sentences this post is built on look like a contradiction and are a single design decision seen
+      from two sides. The backup key is derived inside hardware from a manufacturer value and an AWS value, so
+      it is in nobody's custody &mdash; which is exactly why AWS cannot read your backup, and exactly why
+      nothing outside AWS can restore it. You cannot have the first property without the second. The
+      documentation is clear about both and puts them on the same page.
+    </p>
+    <p>
+      What is genuinely easy to miss is the retention scoping, because it runs the other way from intuition:
+      the copy you make to protect yourself is the copy the service stops protecting. Every other part of the
+      lifecycle has a safeguard &mdash; a floor on the last backup, a seven-day grace period, a queryable
+      pending state, a CloudTrail record &mdash; and all of them are expressed in terms of a cluster the
+      standalone copy no longer belongs to.
+    </p>
+    <p>
+      <a href="/blog/aws-architecture-signer/">#86</a> was about two operations whose names suggest the same
+      reach and do not have it. This is about one operation whose purpose is resilience and whose side effect is
+      leaving the lifecycle. In both cases the documentation says so; it just says so somewhere other than
+      where you were reading.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; AWS Payment Cryptography: why importing the same key twice leaves you with two key ARNs on separate lifecycles, how TR-31 modes of use constrain what a key is permitted to do from the moment it is created, and what an alias buys that a key ARN cannot.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/data-protection-backup-security.html" target="_blank" rel="noopener">Security of cluster backups &#8212; the statement that AWS cannot decrypt backups, the EBK and PBK and their sizes, the MKBK and AKBK derivation inputs, the restriction to AWS-owned HSMs of the same manufacturer, what a restored HSM inherits, the overwrite behaviour, and the second encryption with AWS KMS</a></li>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/manage-backup-retention.html" target="_blank" rel="noopener">Configure AWS CloudHSM backup retention policy &#8212; that the policy applies to clusters, the loss of any policy when a backup moves Region and the resulting manual deletion requirement, the 7 to 379 day range, the pre-November-2020 age-based policy and its 455 day example, the last-backup floor, the CloudTrail reporting of backups marked for deletion, the race condition warning, and opting out via Support</a></li>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/delete-restore-backup.html" target="_blank" rel="noopener">Delete AWS CloudHSM cluster backups &#8212; the seven-day hold after deletion, the point after which restoration is impossible, and the PENDING_DELETE state</a></li>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/backups.html" target="_blank" rel="noopener">AWS CloudHSM cluster backups &#8212; what a backup contains, the service-controlled S3 bucket in the cluster's Region, and the durability level</a></li>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/delete-cluster.html" target="_blank" rel="noopener">Deleting an AWS CloudHSM cluster &#8212; the requirement to remove all HSMs first</a></li>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/copy-backup-to-region.html" target="_blank" rel="noopener">Copy backups to a different Region &#8212; further reading on the operation itself; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/restore-backup.html" target="_blank" rel="noopener">Restore backups &#8212; further reading on the restore procedure; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/week-23-service-networking-lattice/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">Week 23 - Service Networking with VPC Lattice: Who May Call This Service</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-cloudhsm/';
+      this.page.identifier = 'aws-architecture-cloudhsm';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=f93bedfe"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

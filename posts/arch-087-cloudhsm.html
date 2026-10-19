@@ -1,0 +1,458 @@
+---
+title: "AWS Architecture Series #87 — The backup AWS cannot read, and you cannot restore without them"
+date: '2026-10-19T09:00:00'
+slug: aws-architecture-cloudhsm
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-10-19'
+verified_claims:
+  - claim: "AWS CloudHSM makes periodic backups of the users, keys, and policies in the cluster, and backups are secure, durable, and updated on a predictable schedule"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/backups.html
+  - claim: "AWS CloudHSM stores backups in a service-controlled Amazon Simple Storage Service (Amazon S3) bucket in the same region as your cluster"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/backups.html
+  - claim: "Backups have a 99.999999999% durability level, the same as any object stored in Amazon S3"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/backups.html
+  - claim: "When AWS CloudHSM makes a backup from the HSM, the HSM encrypts all of its data before sending it to AWS CloudHSM, and the data never leaves the HSM in plaintext form"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/data-protection-backup-security.html
+  - claim: "Backups cannot be decrypted by AWS because AWS doesn't have access to key used to decrypt the backups"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/data-protection-backup-security.html
+  - claim: "The HSM uses a unique, ephemeral encryption key known as the ephemeral backup key (EBK), which is an AES 256-bit encryption key generated inside the HSM when AWS CloudHSM makes a backup"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/data-protection-backup-security.html
+  - claim: "To encrypt the EBK, the HSM uses another encryption key known as the persistent backup key (PBK), which is also an AES 256-bit encryption key"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/data-protection-backup-security.html
+  - claim: "The inputs to the key derivation function include a manufacturer key backup key (MKBK), permanently embedded in the HSM hardware by the hardware manufacturer, and an AWS key backup key (AKBK), securely installed in the HSM when it's initially configured by AWS CloudHSM"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/data-protection-backup-security.html
+  - claim: "AWS CloudHSM can restore backups onto only AWS-owned HSMs made by the same manufacturer"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/data-protection-backup-security.html
+  - claim: "Because each backup contains all users, keys, and configuration from the original HSM, the restored HSM contains the same protections and access controls as the original"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/data-protection-backup-security.html
+  - claim: "The restored data overwrites all other data that might have been on the HSM prior to restoration"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/data-protection-backup-security.html
+  - claim: "A backup consists of only encrypted data, and before the service stores a backup in Amazon S3, the service encrypts the backup again using AWS Key Management Service (AWS KMS)"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/data-protection-backup-security.html
+  - claim: "AWS CloudHSM purges backups based on the backup retention policy you set when you create a cluster, and backup retention policy applies to clusters"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/manage-backup-retention.html
+  - claim: "If you move a backup to a different region, that backup is no longer associated with a cluster and has no backup retention policy, and you must manually delete any backups not associated with a cluster"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/manage-backup-retention.html
+  - claim: "AWS CloudHSM does not delete a cluster's last backup"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/manage-backup-retention.html
+  - claim: "You can set the backup retention period to any number between 7 and 379 days"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/manage-backup-retention.html
+  - claim: "Clusters created before November 18, 2020 have a backup retention policy of 90 days plus the age of the cluster, and AWS gives the example of a cluster created on November 18, 2019 being assigned one year plus 90 days (455 days)"
+    derive: "365 + 90"
+    expect: "455"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/manage-backup-retention.html
+  - claim: "AWS CloudTrail reports backups marked for deletion"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/manage-backup-retention.html
+  - claim: "To prevent a race condition, you should change the backup retention policy for the cluster before you restore a backup deleted by the service"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/manage-backup-retention.html
+  - claim: "You can opt out of managed backup retention altogether by contacting AWS Support"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/manage-backup-retention.html
+  - claim: "After you delete an AWS CloudHSM cluster backup, the service holds the backup for seven days, during which time you can restore the backup, and after the seven-day period you can no longer restore the backup"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/delete-restore-backup.html
+  - claim: "When you delete a backup the state of the backup changes to PENDING_DELETE, and you can restore a backup that is pending deletion for up to 7 days after you request the deletion"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/delete-restore-backup.html
+  - claim: "Before you can delete a cluster, you must remove all HSMs from the cluster"
+    source: https://docs.aws.amazon.com/cloudhsm/latest/userguide/delete-cluster.html
+problem: "CloudHSM's backup design holds two properties at once that sound contradictory and are not. The backup is confidential from AWS, because AWS cannot decrypt it. And it is useless without AWS, because it can only be restored onto AWS-owned HSMs from the same manufacturer. Both are documented, and together they define exactly what your recovery options are."
+builds: "A reading of what a CloudHSM backup contains, the key derivation chain that makes it both opaque to AWS and bound to AWS hardware, where backups live relative to the cluster, and what the retention policy does and does not cover."
+catch: "The retention policy attaches to a cluster, not to a backup. 'If you move a backup to a different region, that backup is no longer associated with a cluster and has no backup retention policy. You must manually delete any backups not associated with a cluster.' So the copy you made for regional resilience is the one copy no policy governs — it will not be purged, it will not expire, and nothing will remind you it is there."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #087 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">The backup AWS cannot read, and you cannot restore without them</h1>
+  <p class="post-subtitle">A CloudHSM backup is encrypted by a key AWS does not hold, and restorable only onto AWS-owned hardware from the same manufacturer. Both are true at once, and together they decide what your recovery plan can actually contain.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Reliability</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      CloudHSM is where you put keys when "AWS can technically access this" is not an acceptable answer. The
+      backup documentation makes the strong claim that justifies choosing it:
+      <em>&ldquo;<strong>backups cannot be decrypted by AWS</strong> because AWS doesn't have access to key used
+      to decrypt the backups.&rdquo;</em>
+    </p>
+    <p>
+      Four pages later, in the same section, is the constraint that comes with it:
+      <em>&ldquo;AWS CloudHSM can restore backups <strong>onto only AWS-owned HSMs made by the same
+      manufacturer</strong>.&rdquo;</em>
+    </p>
+    <p>
+      Neither of those is marketing and neither contradicts the other. Read together they tell you something
+      precise about where you stand, and it is worth knowing before the day you need a restore rather than
+      during it.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>A backup moved to another Region stops having a retention policy, and becomes yours to delete by hand</strong></div>
+      <div class="challenge-body">
+        <p>
+          The policy attaches to the wrong noun for the thing you are about to do.
+          <em>&ldquo;AWS CloudHSM purges backups based on the backup retention policy you set when you create a
+          cluster. <strong>Backup retention policy applies to clusters.</strong>&rdquo;</em>
+        </p>
+        <p>
+          And then:
+        </p>
+        <p>
+          <em>&ldquo;<strong>If you move a backup to a different region, that backup is no longer associated
+          with a cluster and has no backup retention policy. You must manually delete any backups not
+          associated with a cluster.</strong>&rdquo;</em>
+        </p>
+        <p>
+          Copying a backup to a second Region is the obvious resilience move &mdash; it is why the operation
+          exists. The side effect is that the copy leaves the lifecycle entirely. It will not be purged at 90
+          days or 379 days or ever; it does not appear in a retention report; and because
+          <em>&ldquo;AWS CloudTrail reports backups marked for deletion&rdquo;</em> and nothing is ever marking
+          this one, it will not show up there either.
+        </p>
+        <p>
+          A CloudHSM backup contains, in AWS's words,
+          <em>&ldquo;all users, keys, and configuration from the original HSM&rdquo;</em>. An indefinitely
+          retained copy of that in a Region nobody is looking at is a governance problem rather than a billing
+          one.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat a cross-Region backup copy as a resource you own outright, with its own ticket and its own review date. If your key material has a retention requirement, that requirement does not travel with the copy &mdash; you have to re-implement it. Enumerate backups with no cluster association periodically; that set is exactly the set nothing is managing.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The property that makes the backup safe is the property that binds it to AWS hardware</strong></div>
+      <div class="challenge-body">
+        <p>
+          The encryption chain is documented in enough detail to see why both facts hold. The data is encrypted
+          inside the HSM with an ephemeral key:
+          <em>&ldquo;The EBK is an <strong>AES 256-bit</strong> encryption key generated inside the HSM when AWS
+          CloudHSM makes a backup&rdquo;</em>, and
+          <em>&ldquo;<strong>The data never leaves the HSM in plaintext form.</strong>&rdquo;</em>
+        </p>
+        <p>
+          That ephemeral key is itself encrypted by a persistent one, and the persistent one is
+          <em>derived</em> rather than stored &mdash; from two inputs:
+        </p>
+        <p>
+          <em>&ldquo;A <strong>manufacturer key backup key (MKBK), permanently embedded in the HSM hardware by
+          the hardware manufacturer</strong>.&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;An <strong>AWS key backup key (AKBK), securely installed in the HSM when it's initially
+          configured by AWS CloudHSM</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So the decryption key exists only where both of those inputs exist, which is inside an HSM of that
+          manufacture that AWS has configured. That is simultaneously why AWS cannot read your backup &mdash;
+          the key is not something AWS holds &mdash; and why no one else can restore it either.
+        </p>
+        <p>
+          The practical reading: this is not a backup in the sense of a file you could take elsewhere. It is a
+          backup in the sense of a restore ticket valid at one vendor.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Do not write a disaster recovery plan whose fallback is "restore the HSM backup somewhere else". There is no somewhere else. If your requirement is genuine independence from AWS, the artifact that provides it is an exported key under your own wrapping, not a cluster backup &mdash; and that is a different design with different exposure, to be decided deliberately rather than discovered.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>A restore overwrites everything, and the backup carries the old access controls with it</strong></div>
+      <div class="challenge-body">
+        <p>
+          Two sentences that belong on the same page as your restore runbook.
+        </p>
+        <p>
+          <em>&ldquo;Because each backup contains all users, keys, and configuration from the original HSM,
+          <strong>the restored HSM contains the same protections and access controls as the
+          original</strong>.&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;<strong>The restored data overwrites all other data that might have been on the HSM prior
+          to restoration.</strong>&rdquo;</em>
+        </p>
+        <p>
+          The first means a restore is a rollback of your user and quorum configuration, not just of key
+          material. If you removed a crypto officer last month and restore a backup from two months ago, that
+          officer is back, with whatever permissions they had.
+        </p>
+        <p>
+          The second means there is no merge. Restoring into a cluster that has been in use since the backup was
+          taken does not combine the two sets of keys; it replaces one with the other.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Make the user and quorum configuration part of what you track alongside each backup, because restoring reinstates it. And before any restore into a live cluster, establish what has been created since the backup's timestamp &mdash; that is the set you are about to lose, and the service will not warn you about it.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      An HSM that encrypts its own backups, a derived key that exists only inside AWS-configured hardware of one
+      manufacture, and a retention policy attached to clusters rather than to backups.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-087-cloudhsm.svg" alt="Diagram: how an AWS CloudHSM cluster backup is encrypted, where it is stored, what is required to restore it, and what the retention policy does and does not cover. AWS CloudHSM makes periodic backups of the users, keys and policies in the cluster, described as secure, durable and updated on a predictable schedule, and stores them in a service-controlled Amazon S3 bucket in the same region as the cluster, with a 99.999999999 percent durability level, the same as any object stored in Amazon S3. The encryption chain is documented in detail. When CloudHSM makes a backup from the HSM, the HSM encrypts all of its data before sending it to CloudHSM, and the data never leaves the HSM in plaintext form. The HSM uses a unique ephemeral encryption key called the ephemeral backup key or EBK, an AES 256-bit key generated inside the HSM at backup time, and wraps the data with a FIPS-approved AES key wrapping method. The encrypted data includes an encrypted copy of the EBK, which is itself encrypted using a persistent backup key or PBK, also an AES 256-bit key. The PBK is derived rather than stored, using a FIPS-approved key derivation function in counter mode, and its inputs include a manufacturer key backup key permanently embedded in the HSM hardware by the hardware manufacturer, and an AWS key backup key securely installed in the HSM when it is initially configured by CloudHSM. Two consequences follow and they are the central point of the post. First, backups cannot be decrypted by AWS because AWS does not have access to the key used to decrypt the backups, which is the property that justifies choosing CloudHSM when AWS technical access is not acceptable. Second, CloudHSM can restore backups onto only AWS-owned HSMs made by the same manufacturer, because the derivation inputs exist only inside such hardware. So the backup is confidential from AWS and simultaneously unusable without AWS, which means it is not a file that can be taken elsewhere but a restore ticket valid at one vendor, and a disaster recovery plan must not treat restoring the HSM backup somewhere else as a fallback. A backup consists of only encrypted data, and before the service stores it in S3 the service encrypts the backup again using AWS Key Management Service. On restore semantics, because each backup contains all users, keys and configuration from the original HSM, the restored HSM contains the same protections and access controls as the original, so a restore rolls back user and quorum configuration as well as key material and can reinstate a removed crypto officer. The restored data overwrites all other data that might have been on the HSM prior to restoration, so there is no merge and anything created since the backup timestamp is lost. On lifecycle, CloudHSM purges backups based on the backup retention policy set when a cluster is created, and that policy applies to clusters rather than to backups. The consequence worth acting on is that if a backup is moved to a different region it is no longer associated with a cluster and has no backup retention policy, and the customer must manually delete any backups not associated with a cluster. The cross-Region copy made for resilience therefore leaves the lifecycle entirely: it is never purged, has no expiration, and since CloudTrail reports backups marked for deletion and nothing marks this one, it does not appear there either, while still containing all users, keys and configuration from the original HSM. The retention period can be set to any number between 7 and 379 days. Clusters created before November 18, 2020 have a retention policy of 90 days plus the age of the cluster, with AWS's own example being a cluster created on November 18, 2019 receiving one year plus 90 days, that is 455 days. CloudHSM does not delete a cluster's last backup, which is a deliberate floor. Managed backup retention can be opted out of altogether by contacting AWS Support. To prevent a race condition, the retention policy for a cluster should be changed before restoring a backup that the service deleted. Deletion is reversible for a bounded window: after a backup is deleted the service holds it for seven days during which it can be restored, after which it can no longer be restored, and a deleted backup moves to the PENDING_DELETE state and can be restored for up to 7 days after deletion is requested. Finally, before a cluster can be deleted all HSMs must be removed from it. The recommended actions are to treat every cross-Region backup copy as a resource owned outright with its own review date because its retention requirement does not travel with it, to enumerate backups with no cluster association since that set is exactly what nothing is managing, to avoid any recovery plan that assumes a backup can be restored outside AWS, to track the user and quorum configuration alongside each backup because a restore reinstates it, and to establish what has been created since a backup's timestamp before restoring into a live cluster because that is the set about to be overwritten." />
+      <figcaption>Opaque to AWS, and restorable only by AWS. Both from the same key derivation.</figcaption>
+    </figure>
+
+    <h3>The key chain, and why it has exactly this consequence</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Key</th><th>What it is</th><th>Where it comes from</th></tr>
+      <tr>
+        <td>EBK &mdash; ephemeral backup key</td>
+        <td><em>&ldquo;AES 256-bit&rdquo;</em>, encrypts the HSM's data</td>
+        <td><em>&ldquo;generated inside the HSM when AWS CloudHSM makes a backup&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>PBK &mdash; persistent backup key</td>
+        <td><em>&ldquo;also an AES 256-bit encryption key&rdquo;</em>, encrypts the EBK</td>
+        <td>Derived, from the two inputs below</td>
+      </tr>
+      <tr>
+        <td>MKBK &mdash; manufacturer key backup key</td>
+        <td>A derivation input</td>
+        <td><em>&ldquo;permanently embedded in the HSM hardware by the hardware manufacturer&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>AKBK &mdash; AWS key backup key</td>
+        <td>A derivation input</td>
+        <td><em>&ldquo;securely installed in the HSM when it's initially configured by AWS CloudHSM&rdquo;</em></td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      Read bottom-up and the two headline facts stop being surprising. The PBK is not stored anywhere; it is
+      derived, and both of its documented inputs live inside the HSM &mdash; one embedded by the manufacturer,
+      one installed by AWS. AWS states the two consequences directly rather than leaving them to be worked out:
+      <em>&ldquo;backups cannot be decrypted by AWS&rdquo;</em>, and restores go
+      <em>&ldquo;onto only AWS-owned HSMs made by the same manufacturer&rdquo;</em>. The derivation is the
+      reason both sentences can be true at once.
+    </p>
+
+    <div class="callout">
+      <strong>And then it is encrypted again</strong>
+      <p><em>&ldquo;A backup consists of only encrypted data. <strong>Before the service stores a backup in Amazon S3, the service encrypts the backup again using AWS Key Management Service (AWS KMS).</strong>&rdquo;</em></p>
+      <p>The outer layer is the one AWS can manage; the inner layer is the one it cannot. Worth knowing which is which, because the outer layer is the one that shows up in your KMS key policies and CloudTrail, and it is not the layer protecting your key material.</p>
+    </div>
+
+    <h3>Where backups live, and how durable that is</h3>
+    <p>
+      <em>&ldquo;AWS CloudHSM stores backups in a service-controlled Amazon Simple Storage Service (Amazon S3)
+      bucket <strong>in the same region as your cluster</strong>&rdquo;</em>, with
+      <em>&ldquo;a <strong>99.999999999%</strong> durability level, the same as any object stored in Amazon
+      S3&rdquo;</em>.
+    </p>
+    <p>
+      Service-controlled is the word to notice. The bucket is not in your account, so there is no bucket policy
+      of yours on it, no object lock you can apply, and no lifecycle rule you can write. The only lifecycle
+      control available is the retention policy, which is why its scoping matters so much.
+    </p>
+
+    <h3>The lifecycle numbers, in one table</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Control</th><th>Value</th><th>Notes</th></tr>
+      <tr><td>Retention period, settable range</td><td><strong>7 to 379 days</strong></td><td>Set when you create a cluster; changeable later</td></tr>
+      <tr><td>Clusters created before 18 Nov 2020</td><td><em>&ldquo;90 days plus the age of the cluster&rdquo;</em></td><td>AWS's example: a Nov 2019 cluster gets <code>365 + 90</code> = <strong>455</strong> days</td></tr>
+      <tr><td>Last backup</td><td>Never purged</td><td><em>&ldquo;AWS CloudHSM does not delete a cluster's last backup&rdquo;</em></td></tr>
+      <tr><td>After you delete a backup</td><td><strong>7 days</strong> to restore it</td><td>State becomes <code>PENDING_DELETE</code>; after seven days <em>&ldquo;you can no longer restore the backup&rdquo;</em></td></tr>
+      <tr><td>Cross-Region copy</td><td><strong>No policy at all</strong></td><td><em>&ldquo;You must manually delete&rdquo;</em></td></tr>
+      <tr><td>Opting out of managed retention</td><td>Possible</td><td><em>&ldquo;by contacting AWS Support&rdquo;</em></td></tr>
+    </table>
+    </div>
+
+    <div class="callout amber">
+      <strong>One ordering warning, stated by AWS and easy to trip over</strong>
+      <p><em>&ldquo;<strong>To prevent a race condition, you should change the backup retention policy for the cluster before you restore a backup deleted by the service.</strong>&rdquo;</em></p>
+      <p>Restoring a service-purged backup into a cluster whose policy still says to purge it is a loop you can lose. Change the policy first, then restore &mdash; the documentation says so, and the reason is that both actions are racing the same deadline.</p>
+    </div>
+
+    <h3>Deleting a cluster is a two-step operation</h3>
+    <p>
+      <em>&ldquo;<strong>Before you can delete a cluster, you must remove all HSMs from the cluster.</strong>&rdquo;</em>
+    </p>
+    <p>
+      Which is a reasonable guard, and it means "delete the cluster" is not a single call that could be made by
+      accident or by an over-broad automation. It also means the last backup survives the cluster, because
+      nothing purges it.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Deriving the backup key rather than storing it is the whole product</h3>
+    <p>
+      The alternative designs are both worse. A backup key stored by AWS means AWS can decrypt your keys, which
+      defeats the reason CloudHSM exists. A backup key held only by you means a lost key is lost key material
+      with no recovery, and AWS would be operating a service whose main failure mode it cannot help with.
+    </p>
+    <p>
+      Deriving it from a manufacturer-embedded value plus an AWS-installed value gives a third thing: the key
+      exists reliably, in hardware, and in no one's hands. The cost is the restore constraint, and AWS states
+      the constraint plainly instead of letting you discover it.
+    </p>
+
+    <h3>Not deleting the last backup is the right floor</h3>
+    <p>
+      <em>&ldquo;AWS CloudHSM does not delete a cluster's last backup.&rdquo;</em> A retention policy that could
+      take you to zero backups is a retention policy that can destroy key material on a schedule nobody
+      reviewed. Refusing the final deletion means the worst case of a misconfigured policy is a stale cluster
+      rather than an unrecoverable one.
+    </p>
+    <p>
+      The seven-day window after an explicit delete is the same instinct applied to the manual path, and the
+      <code>PENDING_DELETE</code> state makes it queryable rather than implicit &mdash; you can list exactly
+      what is in the grace period.
+    </p>
+
+    <div class="callout red">
+      <strong>The gap is the noun the policy attaches to</strong>
+      <p>Everything above is careful. The retention design has a floor, a grace period, a queryable state, and a CloudTrail record. All of it keys off the cluster association &mdash; and the one operation you perform specifically to survive losing a Region is the operation that severs that association.</p>
+      <p>So the most carefully protected copy and the least governed copy are produced by the same resilience decision. Nothing is broken; the lifecycle simply has no noun to hang on once the backup is standalone, and AWS says so rather than pretending otherwise.</p>
+    </div>
+
+    <h3>Stating the restore constraint in the security section is the honest placement</h3>
+    <p>
+      <em>&ldquo;AWS CloudHSM can restore backups onto only AWS-owned HSMs made by the same
+      manufacturer&rdquo;</em> appears in the page explaining backup encryption, next to the derivation that
+      causes it &mdash; not buried in a limitations list. That is the difference between a documented
+      consequence and a surprise: the reader who understands the key chain already expects the sentence by the
+      time they reach it.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Cross-Region backup copies</td>
+        <td>Own them explicitly, with a review date</td>
+        <td>They have <em>&ldquo;no backup retention policy&rdquo;</em> and you <em>&ldquo;must manually delete&rdquo;</em> them.</td>
+      </tr>
+      <tr>
+        <td>DR plan fallback</td>
+        <td>Never "restore the backup elsewhere"</td>
+        <td>Restorable <em>&ldquo;onto only AWS-owned HSMs made by the same manufacturer&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Genuine vendor independence</td>
+        <td>Exported keys under your own wrapping, decided deliberately</td>
+        <td>A cluster backup cannot provide it, by construction.</td>
+      </tr>
+      <tr>
+        <td>Retention period</td>
+        <td>Set it from your key-material requirement</td>
+        <td>Range is 7 to 379 days; the default for old clusters is age-dependent.</td>
+      </tr>
+      <tr>
+        <td>Before restoring into a live cluster</td>
+        <td>Inventory what was created since the backup</td>
+        <td>The restore <em>&ldquo;overwrites all other data&rdquo;</em> &mdash; there is no merge.</td>
+      </tr>
+      <tr>
+        <td>User and quorum changes</td>
+        <td>Track them against backup timestamps</td>
+        <td>A restored HSM has <em>&ldquo;the same protections and access controls as the original&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Restoring a service-purged backup</td>
+        <td>Change the policy first</td>
+        <td>AWS names the race condition explicitly.</td>
+      </tr>
+      <tr>
+        <td>Deleting a cluster</td>
+        <td>Expect two steps</td>
+        <td><em>&ldquo;you must remove all HSMs from the cluster&rdquo;</em> first.</td>
+      </tr>
+      <tr>
+        <td>Expecting bucket-level controls</td>
+        <td>Do not plan on them</td>
+        <td>The bucket is <em>&ldquo;service-controlled&rdquo;</em>; retention policy is the only lever.</td>
+      </tr>
+      <tr>
+        <td>Opting out of managed retention</td>
+        <td>Only with a replacement process</td>
+        <td>It is available <em>&ldquo;by contacting AWS Support&rdquo;</em>, and removes the floor's usefulness.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List every backup with no cluster association.</strong> That set has no retention policy, no
+      expiry and no deletion record, and each member contains
+      <em>&ldquo;all users, keys, and configuration from the original HSM&rdquo;</em>. If the list is longer
+      than your team expects, each extra entry is a copy of your key material that somebody made for a good
+      reason and nothing has governed since.
+    </p>
+    <p>
+      <strong>Then read your DR document for the phrase "restore the backup".</strong> If it does not say "into
+      a CloudHSM cluster in an AWS Region", it is assuming a capability that does not exist.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The two sentences this post is built on look like a contradiction and are a single design decision seen
+      from two sides. The backup key is derived inside hardware from a manufacturer value and an AWS value, so
+      it is in nobody's custody &mdash; which is exactly why AWS cannot read your backup, and exactly why
+      nothing outside AWS can restore it. You cannot have the first property without the second. The
+      documentation is clear about both and puts them on the same page.
+    </p>
+    <p>
+      What is genuinely easy to miss is the retention scoping, because it runs the other way from intuition:
+      the copy you make to protect yourself is the copy the service stops protecting. Every other part of the
+      lifecycle has a safeguard &mdash; a floor on the last backup, a seven-day grace period, a queryable
+      pending state, a CloudTrail record &mdash; and all of them are expressed in terms of a cluster the
+      standalone copy no longer belongs to.
+    </p>
+    <p>
+      <a href="/blog/aws-architecture-signer/">#86</a> was about two operations whose names suggest the same
+      reach and do not have it. This is about one operation whose purpose is resilience and whose side effect is
+      leaving the lifecycle. In both cases the documentation says so; it just says so somewhere other than
+      where you were reading.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; AWS Payment Cryptography: why importing the same key twice leaves you with two key ARNs on separate lifecycles, how TR-31 modes of use constrain what a key is permitted to do from the moment it is created, and what an alias buys that a key ARN cannot.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/data-protection-backup-security.html" target="_blank" rel="noopener">Security of cluster backups &#8212; the statement that AWS cannot decrypt backups, the EBK and PBK and their sizes, the MKBK and AKBK derivation inputs, the restriction to AWS-owned HSMs of the same manufacturer, what a restored HSM inherits, the overwrite behaviour, and the second encryption with AWS KMS</a></li>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/manage-backup-retention.html" target="_blank" rel="noopener">Configure AWS CloudHSM backup retention policy &#8212; that the policy applies to clusters, the loss of any policy when a backup moves Region and the resulting manual deletion requirement, the 7 to 379 day range, the pre-November-2020 age-based policy and its 455 day example, the last-backup floor, the CloudTrail reporting of backups marked for deletion, the race condition warning, and opting out via Support</a></li>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/delete-restore-backup.html" target="_blank" rel="noopener">Delete AWS CloudHSM cluster backups &#8212; the seven-day hold after deletion, the point after which restoration is impossible, and the PENDING_DELETE state</a></li>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/backups.html" target="_blank" rel="noopener">AWS CloudHSM cluster backups &#8212; what a backup contains, the service-controlled S3 bucket in the cluster's Region, and the durability level</a></li>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/delete-cluster.html" target="_blank" rel="noopener">Deleting an AWS CloudHSM cluster &#8212; the requirement to remove all HSMs first</a></li>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/copy-backup-to-region.html" target="_blank" rel="noopener">Copy backups to a different Region &#8212; further reading on the operation itself; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/cloudhsm/latest/userguide/restore-backup.html" target="_blank" rel="noopener">Restore backups &#8212; further reading on the restore procedure; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
