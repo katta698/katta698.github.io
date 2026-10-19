@@ -1861,6 +1861,25 @@ body.light .cl-card .cl-growth{color:#605F5B}
    the ring it replaced was -- it named the mechanism rather than saying what
    pressing it does for the reader, which is give scrolling back. */
 .cl-globe-mode{display:inline-block;margin-right:.5rem;color:#C4A484}
+/* The same tan, darkened, in light mode.
+   -------------------------------------------------------------------------
+   #C4A484 is the AWS accent and it is pitched for the dark page. On the light
+   one it measures 2.15:1 against the background -- check_contrast.py flagged
+   both of these, and /intelligence/clouds/ is on its STRICT list, so this was
+   the one finding on the site that actually blocks a publish.
+
+   It is the exact fault that check's own header warns about: "a rule set a
+   background for one theme and left the colour that sits on it alone". The
+   dark-mode value was written once and the light palette arrived later.
+
+   #705539 is not a new colour -- it is what `body.light .chip.aws` already
+   uses on this page for the same tan on the same background, so this follows
+   a decision that was made rather than inventing a second answer to it. */
+body.light .cl-globe-mode,
+body.light .cl-globe-release,
+body.light .cl-globe-reset:hover{color:#705539}
+body.light .cl-globe-release,
+body.light .cl-globe-reset:hover{border-color:rgba(112,85,57,.55)}
 /* There was a ring here and it is gone. It meant "the globe has your
    gestures" and was asked about twice as "what is the circle?", which is the
    answer about whether a bare circle can say that.
