@@ -482,8 +482,27 @@ def timeline(history, live, hist_meta=None):
             bad[cloud].setdefault(d, []).append(inc)
             d += datetime.timedelta(days=1)
 
+    # An incident that is BOTH still open and already stored would otherwise
+    # be marked twice -- once from the store, once from the live fetch -- and
+    # inc_key() indexes on id(), the Python object, so the two copies are two
+    # different objects and the day dialog lists the same outage twice.
+    #
+    # Reported 2026-10-20: the europe-west2 disruption showed as two GCP
+    # incidents, one "ended" and one "still open". Same Google incident id,
+    # same vendor URL, two rows -- the stored copy carried a date-only begin
+    # from Google's product pages (a day early, and closed), the live copy
+    # carried the real timestamp and no end yet.
+    #
+    # The live copy wins: it is the one being refreshed, and it carries the
+    # update text and the real timestamps.
+    live_keys = {(c, (i.get("id") or "").strip())
+                 for c, rows in live.items() for i in rows
+                 if (i.get("id") or "").strip()}
+
     for i in history.values():
         c = i.get("cloud")
+        if (c, (i.get("id") or "").strip()) in live_keys:
+            continue
         if c in bad:
             # AWS timestamps are epoch seconds in the history feed too, not
             # just in the live one. Parsing them with the ISO reader returned

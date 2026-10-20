@@ -679,6 +679,29 @@ def merge_history(past_by_cloud):
                 # this function throwing data away.
                 fresh = {k: v for k, v in dict(r, cloud=cloud).items()
                          if v not in ("", None, [], {})}
+                # ...and never let a LESS precise value win either.
+                #
+                # The empty-value guard above stops a blank overwriting a
+                # real one, but says nothing about "2026-10-19" overwriting
+                # "2026-10-20T06:08:00+00:00". Both are non-empty, so the
+                # date-only one from the Google product-history pages won,
+                # and the stored record for the europe-west2 outage came out
+                # as begin 2026-10-19, end 2026-10-19 -- a day early at both
+                # ends, and claiming it had closed while it was still open.
+                # Reported 2026-10-20 as "one says ended, one says still
+                # open, are they the same incident?". They were.
+                #
+                # A date-only string sorts and renders like a timestamp, so
+                # nothing downstream could tell it had lost sixteen hours of
+                # precision; it just drew the incident on the wrong day.
+                # The precise value came from incidents.json, the vendor's own
+                # record of its own incident. A scraped product page does not
+                # get to move it, whether it names the same day or another.
+                for k in ("begin", "end"):
+                    old, new = items[key].get(k), fresh.get(k)
+                    if (isinstance(old, str) and isinstance(new, str)
+                            and "T" in old and "T" not in new):
+                        fresh.pop(k, None)
                 items[key].update(fresh)
     hist["incidents"] = items
     hist["updated"] = stamp()
