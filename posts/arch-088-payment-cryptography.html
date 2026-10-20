@@ -1,0 +1,445 @@
+---
+title: "AWS Architecture Series #88 — The key is the material; the lifecycle belongs to the ARN"
+date: '2026-10-20T09:00:00'
+slug: aws-architecture-payment-cryptography
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-10-20'
+verified_claims:
+  - claim: "AWS Payment Cryptography keys are used for all cryptographic functions, and keys are either generated directly by you using the create key command or added to the system by you calling key import"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/concepts.html
+  - claim: "The origin of a key can be determined by reviewing the attribute KeyOrigin"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/concepts.html
+  - claim: "The key ARN is not related or derived from the key material, and as they are automatically assigned during create or import operations, these values are not idempotent"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/concepts.html
+  - claim: "Importing the same key multiple times will result in multiple key ARNs with their own lifecycle"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/concepts.html
+  - claim: "If adding the same key material multiple times using the import key functionality, the same key material will be located under multiple key ARNS but each with a different key lifecycle"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/concepts.html
+  - claim: "Keys have both immutable and mutable attributes defined at creation, and attributes such as algorithm, length, and usage are defined at creation and cannot be changed"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/concepts.html
+  - claim: "Other attributes, such as effective date or expiration date, can be modified"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/concepts.html
+  - claim: "AWS Payment Cryptography keys have key types, principally defined by ANSI X9 TR 31, that restrict their use to their intended purpose as specified in PCI PIN v3.1 Requirement 19"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/concepts.html
+  - claim: "Attributes are bound to keys using key blocks when stored, shared with other accounts, or exported as specified in PCI PIN v3.1 Requirement 18-3"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/concepts.html
+  - claim: "An alias is a user-friendly name that is associated with an AWS Payment Cryptography key, and aliases allow keys to be rotated or otherwise changed without impacting your application code"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/concepts.html
+  - claim: "The alias name is a string of up to 256 characters, and in AWS Payment Cryptography alias names always begin with alias/"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/concepts.html
+  - claim: "A tenet of proper key management is that keys are appropriately scoped and can only be used for permitted operations, and as such certain keys can only be created with certain key modes of use"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-validattributes.html
+  - claim: "Whenever possible, the available modes of use align with those defined by TR-31, and although AWS Payment Cryptography will prevent you from creating invalid keys, valid combinations are provided for your convenience"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-validattributes.html
+  - claim: "Payment Cryptography never deletes keys belonging to active AWS accounts unless you explicitly schedule them for deletion and the mandatory waiting period expires"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-deleting.html
+  - claim: "Because deleting a key is irreversible, AWS Payment Cryptography requires you to set a waiting period of between 3 and 180 days"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-deleting.html
+  - claim: "The default waiting period is seven days, however the actual waiting period might be up to 24 hours longer than the one you scheduled"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-deleting.html
+  - claim: "During the waiting period, the AWS Payment Cryptography key status and key state is Pending deletion, and an AWS Payment Cryptography key pending deletion cannot be used in any cryptographic operations"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-deleting.html
+  - claim: "After the waiting period ends, AWS Payment Cryptography deletes the AWS Payment Cryptography key, its aliases, and all related AWS Payment Cryptography metadata"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-deleting.html
+  - claim: "If you find that you do need the key during the waiting period, you can cancel key deletion before the waiting period ends, and after the waiting period ends you cannot cancel key deletion"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-deleting.html
+  - claim: "To get the actual date and time when the AWS Payment Cryptography key will be deleted, use the GetKey operations"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-deleting.html
+  - claim: "AWS Payment Cryptography records an entry in your AWS CloudTrail log when you schedule deletion of the key and when the key is actually deleted"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-deleting.html
+  - claim: "When using Multi-Region key replication, deleting a Payment Cryptography key that is a Primary Region key (PRK) means the Replica Region keys (RRK) will also be automatically deleted, and a RRK cannot be deleted like a PRK"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-deleting.html
+  - claim: "If you close or delete your AWS account, your AWS Payment Cryptography key become inaccessible, and you do not need to schedule deletion separate from closing the account"
+    source: https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-deleting.html
+problem: "A Payment Cryptography key's identity is its ARN, and AWS states that the ARN 'is not related or derived from the key material'. Every lifecycle operation — enable, disable, schedule deletion, cancel deletion, expire — acts on that handle. So the same secret imported twice is two keys with two independent lifecycles, and deleting one of them does not remove the material."
+builds: "A reading of what a Payment Cryptography key actually is, which of its attributes are fixed at creation, why import is not idempotent, and what the deletion waiting period does to a key from the moment it is scheduled rather than when it expires."
+catch: "AWS says it twice, in two places, because it matters: 'Importing the same key multiple times will result in multiple key ARNs with their own lifecycle', and 'the same key material will be located under multiple key ARNS but each with a different key lifecycle'. The service is deliberately not deduplicating on material. Nothing in the key's identity tells you another ARN holds the same secret."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #088 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">The key is the material; the lifecycle belongs to the ARN</h1>
+  <p class="post-subtitle">AWS Payment Cryptography identifies keys by an ARN that has nothing to do with the key material. Every lifecycle action operates on that handle, which makes "delete the key" a sentence with two possible meanings.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Payment Cryptography is the service for PIN blocks, card verification values and the key hierarchies that
+      payment networks mandate. Its keys are governed by standards rather than by preference:
+      <em>&ldquo;AWS Payment Cryptography keys have key types, <strong>principally defined by ANSI X9 TR
+      31</strong>, that restrict their use to their intended purpose as specified in <strong>PCI PIN v3.1
+      Requirement 19</strong>.&rdquo;</em>
+    </p>
+    <p>
+      Which makes one sentence in the concepts page worth reading slowly, because it decides what every
+      lifecycle operation actually touches:
+    </p>
+    <p>
+      <em>&ldquo;The ARN <strong>is not related or derived from the key material</strong>. As they are
+      automatically assigned during create or import operations, <strong>these values are not
+      idempotent</strong>.&rdquo;</em>
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Import the same secret twice and you have two keys, with two lifecycles</strong></div>
+      <div class="challenge-body">
+        <p>
+          AWS states this twice on one page, which is usually a sign somebody got caught by it.
+        </p>
+        <p>
+          <em>&ldquo;<strong>Importing the same key multiple times will result in multiple key ARNs with their
+          own lifecycle.</strong>&rdquo;</em>
+        </p>
+        <p>
+          And in a note, in different words:
+          <em>&ldquo;if adding the same key material multiple times using the import key functionality,
+          <strong>the same key material will be located under multiple key ARNS but each with a different key
+          lifecycle</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So the service does not deduplicate on material, deliberately. Two consequences follow and they point
+          in opposite directions.
+        </p>
+        <p>
+          The first is a false sense of completion. You schedule deletion of the ARN your application
+          references, the waiting period expires, the key is gone &mdash; and the material is still live under
+          another ARN somebody imported during a migration eighteen months ago. Your key inventory says one
+          fewer key; your cryptographic exposure is unchanged.
+        </p>
+        <p>
+          The second is a false alarm. Two ARNs holding the same material look exactly like two distinct keys in
+          any list, so an audit counting keys over-counts secrets, and a rotation that replaces one ARN leaves
+          the other serving.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>The key check value is what tells you two ARNs hold the same material &mdash; the API returns <code>KeyCheckValue</code> and <code>KeyCheckValueAlgorithm</code> on every key. Make a duplicate-KCV sweep part of your key inventory, not a thing you do during an incident, and record <code>KeyOrigin</code> alongside it, since AWS notes <em>&ldquo;The origin of a key can be determined by reviewing the attribute KeyOrigin&rdquo;</em> and an imported duplicate is the case that matters.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Scheduling deletion stops the key working immediately, not in three days</strong></div>
+      <div class="challenge-body">
+        <p>
+          The waiting period reads like a grace period, and for recovery it is one:
+          <em>&ldquo;Because deleting a key is irreversible, AWS Payment Cryptography requires you to set a
+          waiting period of <strong>between 3&ndash;180 days</strong>&rdquo;</em>, and
+          <em>&ldquo;If you find that you do need the key during the waiting period, <strong>you can cancel key
+          deletion before the waiting period ends</strong>.&rdquo;</em>
+        </p>
+        <p>
+          But it is not a grace period for the workload:
+        </p>
+        <p>
+          <em>&ldquo;An AWS Payment Cryptography key <strong>pending deletion cannot be used in any
+          cryptographic operations</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So the moment you schedule deletion, PIN verification against that key stops. The 3-to-180-day window
+          protects your ability to get the key <em>back</em>; it does nothing to keep it working in the
+          meantime. Anyone reading "waiting period" as "the key keeps working until the date" has it backwards,
+          and in this domain the symptom is declined transactions.
+        </p>
+        <p>
+          There is also a small honest imprecision worth knowing:
+          <em>&ldquo;the actual waiting period might be <strong>up to 24 hours longer</strong> than the one you
+          scheduled&rdquo;</em>, with <em>&ldquo;To get the actual date and time when the AWS Payment
+          Cryptography key will be deleted, use the GetKey operations&rdquo;</em>.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat <code>DeleteKey</code> as the disable switch it effectively is. If you want to stop using a key but keep the option of using it again, that is what the waiting period buys &mdash; but verify nothing is still calling it first, because scheduling is the outage, not the deletion date. And read the real date from <code>GetKey</code> rather than computing it from your own schedule.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>What a key is allowed to do is fixed at creation, so "changing a key's usage" means a new ARN</strong></div>
+      <div class="challenge-body">
+        <p>
+          The split is stated plainly:
+          <em>&ldquo;These keys have both immutable and mutable attributes defined at creation.
+          <strong>Attributes, such as algorithm, length, and usage are defined at creation and cannot be
+          changed.</strong> Others, such as effective date or expiration date, can be
+          modified.&rdquo;</em>
+        </p>
+        <p>
+          And the permitted combinations are not yours to choose freely:
+          <em>&ldquo;certain keys <strong>can only be created with certain key modes of use</strong>&rdquo;</em>,
+          aligned <em>&ldquo;whenever possible&rdquo;</em> with TR-31, and
+          <em>&ldquo;<strong>AWS Payment Cryptography will prevent you from creating invalid keys</strong>&rdquo;</em>.
+        </p>
+        <p>
+          That is correct design for this domain &mdash; a PIN verification key that could be quietly widened to
+          allow encryption would defeat the standard it exists to satisfy. The operational consequence is that
+          there is no such thing as adjusting a key. A key whose modes of use are wrong is replaced, which
+          produces a new ARN, which is why the alias exists:
+          <em>&ldquo;Aliases allow keys to be <strong>rotated or otherwise changed without impacting your
+          application code</strong>.&rdquo;</em>
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Reference keys by alias from the start, never by ARN, because every correction to a key's permitted use is a replacement. Aliases are <em>&ldquo;up to 256 characters&rdquo;</em> and always begin with <code>alias/</code>; the cost of adopting them later is a code change in the one system you least want to change in a hurry.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      A handle, a secret, and a set of attributes bound together by a standard &mdash; with the lifecycle
+      attached to the handle.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-088-payment-cryptography.svg" alt="Diagram: how AWS Payment Cryptography separates a key's identity from its key material, and what each lifecycle operation therefore acts on. Payment Cryptography keys are used for all cryptographic functions and are either generated directly using the create key command or added to the system by calling key import, with the origin recorded in the KeyOrigin attribute. The keys have key types principally defined by ANSI X9 TR 31 that restrict their use to their intended purpose as specified in PCI PIN v3.1 Requirement 19, and attributes are bound to keys using key blocks when stored, shared with other accounts, or exported, as specified in PCI PIN v3.1 Requirement 18-3. The central structural fact is that a key is identified by an ARN which, in AWS's words, is not related or derived from the key material, and because ARNs are automatically assigned during create or import operations these values are not idempotent. AWS states the consequence twice on one page: importing the same key multiple times will result in multiple key ARNs with their own lifecycle, and the same key material will be located under multiple key ARNs but each with a different key lifecycle. The service therefore does not deduplicate on material, deliberately, and two opposite consequences follow. The first is a false sense of completion, because scheduling deletion of the ARN an application references and letting the waiting period expire removes that key while the same material may remain live under another ARN imported during an earlier migration, so the key inventory shrinks while cryptographic exposure does not change. The second is a false alarm, because two ARNs holding identical material are indistinguishable from two distinct keys in any listing, so an audit that counts keys over-counts secrets and a rotation that replaces one ARN leaves the other serving. The remedy is the key check value, since the API returns KeyCheckValue and KeyCheckValueAlgorithm on every key, so a duplicate-KCV sweep belongs in routine key inventory rather than in incident response, recorded alongside KeyOrigin because an imported duplicate is the case that matters. On deletion, Payment Cryptography never deletes keys belonging to active AWS accounts unless deletion is explicitly scheduled and the mandatory waiting period expires. Because deleting a key is irreversible the service requires a waiting period of between 3 and 180 days, with a default of seven days, and the actual waiting period might be up to 24 hours longer than the one scheduled, so the real date should be read from the GetKey operations rather than computed. Deletion can be cancelled before the waiting period ends but not after. The point that matters operationally is that the waiting period is not a grace period for the workload: a key pending deletion cannot be used in any cryptographic operations, so scheduling deletion stops PIN verification against that key immediately. The window protects the ability to recover the key, not its continued operation, and reading waiting period as meaning the key keeps working until the date is backwards, with declined transactions as the symptom. After the waiting period ends the service deletes the key, its aliases, and all related metadata, and CloudTrail records an entry both when deletion is scheduled and when the key is actually deleted. On attributes, keys have both immutable and mutable attributes defined at creation: algorithm, length and usage are defined at creation and cannot be changed, while effective date and expiration date can be modified. Certain keys can only be created with certain key modes of use, aligned whenever possible with TR-31, and the service prevents creation of invalid keys. The operational consequence is that there is no such thing as adjusting a key, since a key whose modes of use are wrong must be replaced, producing a new ARN, which is why aliases exist: an alias is a user-friendly name associated with a key, up to 256 characters, always beginning with alias slash, that allows keys to be rotated or otherwise changed without impacting application code. On multi-Region replication, deleting a key that is a Primary Region key means the Replica Region keys are also automatically deleted, and a Replica Region key cannot be deleted like a Primary Region key; to remove one, the replication regions of the primary must be modified instead. Finally, closing or deleting the AWS account makes the keys inaccessible, and deletion does not need to be scheduled separately from closing the account. The recommended actions are to reference keys by alias rather than ARN from the outset because every correction to permitted use is a replacement, to run a duplicate key check value sweep as part of inventory, to treat scheduling deletion as the disable switch it effectively is and verify nothing still calls the key first, and to read the deletion timestamp from GetKey." />
+      <figcaption>The ARN is the thing with a lifecycle. The material is the thing you care about.</figcaption>
+    </figure>
+
+    <h3>What is fixed and what moves</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Attributes</th><th>Changing them means</th></tr>
+      <tr>
+        <td><strong>Immutable</strong></td>
+        <td><em>&ldquo;algorithm, length, and usage&rdquo;</em> &mdash; <em>&ldquo;defined at creation and cannot be changed&rdquo;</em></td>
+        <td>Creating a replacement key, and a new ARN</td>
+      </tr>
+      <tr>
+        <td><strong>Mutable</strong></td>
+        <td><em>&ldquo;effective date or expiration date&rdquo;</em></td>
+        <td>An update on the existing key</td>
+      </tr>
+      <tr>
+        <td><strong>Identity</strong></td>
+        <td>The key ARN</td>
+        <td>Nothing &mdash; it is assigned, and <em>&ldquo;not related or derived from the key material&rdquo;</em></td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      Read down that table and the design intent is clear. The standard requires that a key's purpose be
+      unalterable, so the attributes expressing purpose are immutable; the operational need for dates to move is
+      real, so dates are mutable; and identity is deliberately decoupled from both, which is what allows an
+      alias to be re-pointed.
+    </p>
+
+    <h3>The deletion sequence, and the two different clocks in it</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Moment</th><th>State</th><th>What is true</th></tr>
+      <tr><td>Before</td><td><code>CREATE_COMPLETE</code></td><td>Usable in cryptographic operations</td></tr>
+      <tr><td>You schedule deletion</td><td><code>DELETE_PENDING</code></td><td><strong>Immediately unusable</strong> &mdash; <em>&ldquo;cannot be used in any cryptographic operations&rdquo;</em>. Recoverable.</td></tr>
+      <tr><td>During the window</td><td><code>DELETE_PENDING</code></td><td>Between 3 and 180 days, default seven, <em>&ldquo;up to 24 hours longer&rdquo;</em> in practice</td></tr>
+      <tr><td>You cancel</td><td><code>CREATE_COMPLETE</code></td><td><code>DeletePendingTimestamp</code> is removed; the key is usable again</td></tr>
+      <tr><td>Window ends</td><td>Gone</td><td>The key, <em>&ldquo;its aliases, and all related AWS Payment Cryptography metadata&rdquo;</em>. <em>&ldquo;you cannot cancel&rdquo;</em></td></tr>
+    </table>
+    </div>
+
+    <div class="callout amber">
+      <strong>The two clocks are doing different jobs, and only one of them is a grace period</strong>
+      <p>The recovery clock runs 3 to 180 days and is genuinely generous. The availability clock runs out the instant you call <code>DeleteKey</code>.</p>
+      <p>This is defensible &mdash; a key you have declared you intend to destroy should not keep authorising transactions &mdash; but it is the opposite of how a "waiting period" reads, and it is the single most expensive thing to misunderstand here.</p>
+    </div>
+
+    <h3>Replication deletes downward and only downward</h3>
+    <p>
+      <em>&ldquo;When using Multi-Region key replication, deleting an Payment Cryptography key that is an
+      Primary Region key (PRK), <strong>the Replica Region keys (RRK) will also be automatically
+      deleted</strong>. <strong>A RRK cannot be deleted like a PRK.</strong> If you want to delete a RRK, you'll
+      need to modify the replication regions for your PRK.&rdquo;</em>
+    </p>
+    <p>
+      So the replica is not an independent object with its own lifecycle, unlike the duplicate-import case where
+      two ARNs <em>are</em> independent. Two superficially similar situations &mdash; the same material in two
+      places &mdash; with opposite lifecycle semantics depending on how it got there.
+    </p>
+
+    <h3>Closing the account is its own path</h3>
+    <p>
+      <em>&ldquo;If you close or delete your AWS account, your AWS Payment Cryptography key become inaccessible.
+      <strong>You do not need to schedule deletion of your AWS Payment Cryptography key separate from closing
+      the account.</strong>&rdquo;</em>
+    </p>
+    <p>
+      Worth noting the word: <em>inaccessible</em>, not deleted. For a compliance question about key destruction,
+      that distinction is the answer, and it is not the same answer as the deletion path gives.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Not deduplicating on material is the right call, even though it surprises people</h3>
+    <p>
+      The alternative is a service that recognises your key material and returns an existing ARN. That would
+      mean the service comparing imported secrets against stored ones, and it would silently merge two
+      lifecycles that two teams created for two reasons &mdash; including their attributes, which are immutable
+      and might differ.
+      <em>&ldquo;These values are not idempotent&rdquo;</em> is AWS declining to make that inference.
+    </p>
+    <p>
+      It also respects the key block model:
+      <em>&ldquo;Attributes are bound to keys using key blocks when stored, shared with other accounts, or
+      exported&rdquo;</em>. Material plus attributes is the unit, so the same material with different attributes
+      is legitimately a different key.
+    </p>
+
+    <h3>Immutable usage is the whole point of the service</h3>
+    <p>
+      <em>&ldquo;A tenet of proper key management is that keys are appropriately scoped and <strong>can only be
+      used for permitted operations</strong>&rdquo;</em>, with the permitted set drawn from TR-31 and enforced at
+      creation rather than at use. A service that let you widen a key's modes of use after the fact would be
+      offering a PCI-shaped API without the property PCI is asking for.
+    </p>
+    <p>
+      And it fails closed on the way in:
+      <em>&ldquo;AWS Payment Cryptography will prevent you from creating invalid keys&rdquo;</em>. The valid
+      combinations table is documentation for convenience, not the enforcement point &mdash; which is the right
+      order, because a table can go stale and an API check cannot.
+    </p>
+
+    <div class="callout red">
+      <strong>The gap is that nothing in a key's identity reveals a duplicate</strong>
+      <p>The rest of this design is explicit. Attributes are immutable and stated. Deletion is logged to CloudTrail at both ends. The waiting period is documented including its 24-hour imprecision. Replication's delete semantics are spelled out in both directions.</p>
+      <p>But two ARNs holding the same secret are indistinguishable in a key listing, and the only thing that reveals the relationship is comparing key check values &mdash; which no part of the service prompts you to do. The information is available; the question is one you have to think to ask.</p>
+    </div>
+
+    <h3>Logging both ends of deletion is a small thing done properly</h3>
+    <p>
+      <em>&ldquo;AWS Payment Cryptography records an entry in your AWS CloudTrail log <strong>when you schedule
+      deletion</strong> of the AWS Payment Cryptography key <strong>and when the AWS Payment Cryptography key is
+      actually deleted</strong>.&rdquo;</em>
+    </p>
+    <p>
+      Two events rather than one, which matters precisely because the two moments are days apart and have
+      different meanings &mdash; one is the outage, the other is the point of no return. A service logging only
+      the second would leave the actual operational event unrecorded.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>How application code references keys</td>
+        <td>Always by alias</td>
+        <td>Aliases exist so keys can be <em>&ldquo;rotated or otherwise changed without impacting your application code&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Duplicate detection</td>
+        <td>Sweep for duplicate key check values</td>
+        <td>Nothing in the ARN reveals shared material.</td>
+      </tr>
+      <tr>
+        <td>Before scheduling deletion</td>
+        <td>Confirm nothing still calls the key</td>
+        <td>Pending deletion <em>&ldquo;cannot be used in any cryptographic operations&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Reading the deletion date</td>
+        <td>From <code>GetKey</code>, not from your schedule</td>
+        <td>It may be <em>&ldquo;up to 24 hours longer&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Changing a key's usage or algorithm</td>
+        <td>Create a replacement; re-point the alias</td>
+        <td>Those attributes <em>&ldquo;cannot be changed&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Removing a replica key</td>
+        <td>Modify the primary's replication Regions</td>
+        <td><em>&ldquo;A RRK cannot be deleted like a PRK.&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Deleting a primary</td>
+        <td>Expect the replicas to go with it</td>
+        <td>They <em>&ldquo;will also be automatically deleted&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Waiting period length</td>
+        <td>Choose from recovery need, not from caution</td>
+        <td>Longer does not keep the key working; it only extends the cancel window.</td>
+      </tr>
+      <tr>
+        <td>Key destruction for compliance</td>
+        <td>Distinguish deleted from inaccessible</td>
+        <td>Account closure makes keys <em>&ldquo;inaccessible&rdquo;</em>, which is a different claim.</td>
+      </tr>
+      <tr>
+        <td>Audit of key counts</td>
+        <td>Count distinct material, not ARNs</td>
+        <td>Imported duplicates inflate the ARN count.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List every key with its <code>KeyCheckValue</code> and <code>KeyOrigin</code>, and group by
+      KCV.</strong> Any group with more than one member is the same secret under several ARNs, each with its own
+      lifecycle, each independently deletable and independently survivable. That set is where "we removed that
+      key" can be true and wrong at the same time.
+    </p>
+    <p>
+      <strong>Then check what your code holds.</strong> If any system references a key ARN rather than an alias,
+      the next immutable-attribute correction is a deployment rather than a configuration change &mdash; in the
+      system where deployments are hardest to schedule.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The sentence that explains this whole service is five words long:
+      <em>&ldquo;not related or derived from the key material&rdquo;</em>. Once identity is independent of the
+      secret, everything else follows. Lifecycle operations act on handles, so the same secret can exist under
+      several of them. Immutable attributes mean corrections produce new handles, so aliases are necessary
+      rather than convenient. And a replica is a handle AWS manages for you, which is why it deletes with its
+      primary while a duplicate import does not.
+    </p>
+    <p>
+      Everything here is documented, most of it twice. The one thing the service does not do is tell you when
+      two handles point at one secret &mdash; the key check value will tell you, and nothing asks you to look.
+    </p>
+    <p>
+      <a href="/blog/aws-architecture-cloudhsm/">#87</a> had a backup whose lifecycle policy attached to a
+      cluster the backup could leave. This has a lifecycle that attaches to a handle the material can outlive.
+      Both are the same question in different services: when you delete the thing, what exactly did you delete.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; Amazon Cognito identity pools: why an unauthenticated identity is still an identity with a role attached, what the token-to-credential exchange actually asserts, and how pool-level role mapping interacts with the trust policy on the role it chooses.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/payment-cryptography/latest/userguide/concepts.html" target="_blank" rel="noopener">Concepts &#8212; the key ARN's independence from key material and its non-idempotence, the duplicate-import consequence stated twice, immutable versus mutable attributes, the TR-31 and PCI PIN requirements that govern key types, key blocks binding attributes to keys, KeyOrigin, and what an alias is for</a></li>
+      <li><a href="https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-deleting.html" target="_blank" rel="noopener">Deleting keys &#8212; the 3 to 180 day waiting period and seven-day default, the up-to-24-hours imprecision and reading the real date from GetKey, the rule that a key pending deletion cannot be used in any cryptographic operations, what is removed when the window ends, cancellation before and after, the CloudTrail entries at both ends, the multi-Region primary and replica delete semantics, and the account-closure path</a></li>
+      <li><a href="https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-validattributes.html" target="_blank" rel="noopener">Understanding key attributes &#8212; that keys can only be used for permitted operations, that certain keys can only be created with certain modes of use, the alignment with TR-31, and that the service prevents creation of invalid keys</a></li>
+      <li><a href="https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-multi-region-replication.html" target="_blank" rel="noopener">Replicating keys &#8212; further reading on primary and replica Region keys; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/payment-cryptography/latest/userguide/keys-importexport.html" target="_blank" rel="noopener">Importing and exporting keys &#8212; further reading on the import path that produces duplicates; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
