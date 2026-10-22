@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Azure Architecture Series #70 — NAT Gateway and SNAT Port Exhaustion | Jayanth Katta Blog</title>
+<meta name="description" content=""/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="NAT Gateway and SNAT Port Exhaustion"/>
+<meta property="og:description" content=""/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/azure-architecture-nat-gateway/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="NAT Gateway and SNAT Port Exhaustion"/>
+<meta name="twitter:description" content=""/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/azure-architecture-nat-gateway/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=6a0f8d01"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=1274c0a4" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=1274c0a4">
+<script src="/blog/assets/site-footer.js?v=1274c0a4" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>Azure Architecture Series #70 — NAT Gateway and SNAT Port Exhaustion…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">Azure</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">Azure Architecture Series</span></div>
+      <h1>Azure Architecture Series #70 — NAT Gateway and SNAT Port Exhaustion</h1>
+      <p class="post-description"></p>
+      <div class="post-info">
+        <span>Oct 22, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>15 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 22 October 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="azure-architecture-nat-gateway" data-topics="Azure,Architecture,Azure Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official Azure Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <a href="/blog/azure-architecture-default-outbound-access/">#68</a> established that new virtual networks no longer get implicit internet egress, and that you must pick an explicit method instead. Microsoft names a favourite without hedging:
+    </p>
+    <p>
+      <em>&ldquo;Azure NAT Gateway is <strong>the method that we recommend</strong> for outbound connectivity.&rdquo;</em>
+    </p>
+    <p>
+      The pitch is that it removes the problem it is named after &mdash; it <em>&ldquo;<strong>dynamically allocates</strong> source NAT (SNAT) ports to automatically scale outbound connectivity and <strong>minimize the risk of SNAT port exhaustion</strong>&rdquo;</em>, and <em>&ldquo;doesn&rsquo;t have the same limitations of SNAT port exhaustion as default outbound access and outbound rules of a load balancer.&rdquo;</em>
+    </p>
+    <p>
+      Minimise, not eliminate. So the useful question is what the remaining limits are, and the arithmetic is worth doing properly because the headline number and the binding number are different by a factor of twenty.
+    </p>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Figure</th><th>Value</th><th>What it governs</th></tr>
+      <tr><td>SNAT ports per public IP</td><td><strong>64,512</strong></td><td>The port inventory</td></tr>
+      <tr><td>Public IPs per NAT gateway</td><td>up to <strong>16</strong></td><td>How far the inventory scales</td></tr>
+      <tr><td>Total SNAT ports</td><td><em>&ldquo;more than <strong>1 million</strong>&rdquo;</em></td><td>16 &times; 64,512 = 1,032,192</td></tr>
+      <tr><td>Concurrent connections <strong>to one destination</strong>, per IP</td><td><strong>50,000</strong></td><td><strong>The limit you will actually hit</strong></td></tr>
+      <tr><td>Active connections per gateway</td><td><strong>2 million</strong></td><td>Beyond it, new connections fail</td></tr>
+    </table>
+    </div>
+    <p>
+      The fourth row is the post. A million ports is not a pool you draw from freely, because ports are not interchangeable &mdash; what a port identifies is a <em>flow</em>, and flows to the same place must differ:
+    </p>
+    <div class="callout red">
+      <strong>The two sentences that explain everything</strong>
+      <p><em>&ldquo;The <strong>same SNAT port</strong> can be used to connect to <strong>different destination endpoints</strong> at the same time.&rdquo;</em></p>
+      <p><em>&ldquo;<strong>Different SNAT ports</strong> are used to make connections to the <strong>same destination endpoint</strong> in order to distinguish connection flows from one another.&rdquo;</em></p>
+    </div>
+    <p>
+      So the inventory is effectively per-destination. Spread across a thousand destinations, a million ports is enormous. Pointed at one &mdash; one payment gateway, one API, one database endpoint &mdash; the ceiling is 50,000 per public IP, and the way to raise it is to add public IPs rather than to add machines.
+    </p>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      A subnet-level service with no routes to write, a port inventory shared on demand, and a set of timers that decide how fast ports come back.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/az-070-nat-gateway.svg" alt="Diagram: Azure NAT Gateway and SNAT port exhaustion in five layers. The first layer gives the arithmetic: each public IP attached to a NAT gateway provides 64,512 SNAT ports, up to 16 public IPs can be attached, and 16 times 64,512 equals 1,032,192, which is the more-than-one-million figure. The second layer explains why that number is not a free pool: the same SNAT port can serve different destination endpoints simultaneously, but different SNAT ports are required for connections to the same destination endpoint, so the inventory is effectively per-destination. The binding limit is therefore 50,000 concurrent connections per public IP address to the same destination endpoint, and the remedy is to add public IP addresses rather than machines. A separate ceiling applies per gateway: 2 million active simultaneous connections counted on the five-tuple of source address, source port, destination address, destination port and protocol, beyond which the data path's availability declines and new connections fail. TCP and UDP hold separate port inventories. The third layer covers the timers that govern how quickly ports return. TCP idle timeout defaults to 4 minutes and is configurable up to 120 minutes, but Microsoft does not recommend raising it because the gateway holds the port until the connection times out and longer timers increase exhaustion risk; UDP idle timeout is fixed at 4 minutes. Port reuse hold-downs to the same destination are 65 seconds after a TCP FIN, 16 seconds after a TCP RST, 30 seconds for a half-open connection, and 65 seconds for UDP. Microsoft warns these timer values are subject to change and should not be depended on. TCP keepalives appear as duplicate acknowledgements and are invisible to the application; UDP keepalives are one-directional and must be enabled on both sides. The fourth layer is the precedence ladder for outbound traffic, highest first: a user-defined route to a virtual appliance or virtual network gateway, then the NAT gateway, then an instance-level public IP on the virtual machine, then load balancer outbound rules, then the default system route to the internet. So attaching a NAT gateway silently overrides a load balancer, an instance public IP and Azure Firewall for new connections, while a user-defined route overrides the NAT gateway. The fifth layer lists the constraints: one NAT gateway per subnet, cannot span virtual networks, not allowed in a gateway subnet, no Basic SKU resources anywhere in the subnet, no public IPs using Internet routing preference or with DDoS protection enabled, no IP fragmentation, not supported in a secured virtual WAN hub, the zone cannot be changed after deployment, Standard cannot be upgraded to StandardV2 and StandardV2 requires StandardV2 public IPs, and existing flows are not preserved when a virtual machine live-migrates. Throughput is 50 Gbps split 25 outbound and 25 inbound on Standard, and 100 Gbps on StandardV2." />
+      <figcaption>A million ports, but the binding limit is 50,000 per IP to one destination &mdash; and the fix is more addresses, not more machines.</figcaption>
+    </figure>
+
+    <h3>Where the ports come from, and who shares them</h3>
+    <p>
+      There is no per-machine allocation, which is the structural difference from load balancer outbound rules: <em>&ldquo;SNAT port inventory is provided by the public IP addresses, public IP prefixes, or both attached to a NAT gateway. SNAT port inventory is <strong>available on demand</strong> to all instances within a subnet attached to the NAT gateway. <strong>No preallocation of SNAT ports per instance is required.</strong>&rdquo;</em>
+    </p>
+    <p>
+      That on-demand model is why a NAT gateway tolerates uneven load: one busy VM can draw on the whole inventory rather than being capped at its share. The flip side is that the inventory is a shared resource with a shared fate &mdash; <em>&ldquo;When multiple subnets within a virtual network are attached to the same NAT gateway resource, the SNAT port inventory&hellip; is <strong>shared across all subnets</strong>.&rdquo;</em> One noisy subnet can starve another.
+    </p>
+    <p>
+      One mitigation that costs nothing to know: <em>&ldquo;<strong>TCP and UDP are separate SNAT port inventories</strong>&rdquo;</em>, so a UDP-heavy workload cannot exhaust TCP capacity or vice versa.
+    </p>
+
+    <h3>The timers, which are the real exhaustion mechanism</h3>
+    <p>
+      Ports are not returned the moment a connection ends. Two kinds of delay apply, and together they set the recycling rate:
+    </p>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Timer</th><th>Value</th><th>Effect</th></tr>
+      <tr><td>TCP idle timeout</td><td><strong>4 minutes</strong> default, up to <strong>120 minutes</strong></td><td>Port held for the whole idle period</td></tr>
+      <tr><td>UDP idle timeout</td><td><strong>4 minutes</strong>, not configurable</td><td>Same, with no control</td></tr>
+      <tr><td>Reuse after TCP FIN</td><td><strong>65 seconds</strong></td><td>Hold-down to the same destination</td></tr>
+      <tr><td>Reuse after TCP RST</td><td><strong>16 seconds</strong></td><td>A reset frees the port four times faster</td></tr>
+      <tr><td>TCP half open</td><td><strong>30 seconds</strong></td><td>Unacknowledged setup closes, then frees</td></tr>
+      <tr><td>Reuse after UDP close</td><td><strong>65 seconds</strong></td><td>Hold-down to the same destination</td></tr>
+    </table>
+    </div>
+    <p>
+      The idle timeout is the one worth not touching, and the documentation says so explicitly: <em>&ldquo;When a connection goes idle, the NAT gateway <strong>holds onto the SNAT port</strong> until the connection idle times out. Because <strong>long idle timeout timers can unnecessarily increase the likelihood of SNAT port exhaustion</strong>, we <strong>don&rsquo;t recommend</strong> that you increase the TCP idle timeout duration to longer than the default time of 4 minutes.&rdquo;</em>
+    </p>
+    <p>
+      Which inverts the instinct. Faced with connections dropping, the obvious move is to raise the idle timeout &mdash; and that makes exhaustion more likely, because every idle connection is now squatting on a port for up to two hours. The documented alternative is keepalives: <em>&ldquo;TCP keepalives appear as <strong>duplicate acknowledgements (ACKs)</strong> to the endpoints, are <strong>low overhead</strong>, and are <strong>invisible to the application layer</strong>&rdquo;</em> &mdash; they refresh the flow without holding a port idle.
+    </p>
+    <p>
+      UDP keepalives come with a catch worth reading twice: <em>&ldquo;Unlike TCP connections, a UDP keepalive enabled on <strong>one side</strong> of the connection applies <strong>only to traffic flow in one direction</strong>. You must enable UDP keepalives on <strong>both sides</strong>.&rdquo;</em>
+    </p>
+    <p>
+      And a caveat on the whole table, which is unusually candid: <em>&ldquo;These timer settings are <strong>subject to change</strong>. The provided values can help with troubleshooting. You <strong>shouldn&rsquo;t take a dependency on specific timers</strong> at this time.&rdquo;</em> Useful for diagnosis, not for capacity planning.
+    </p>
+
+    <h3>The precedence ladder</h3>
+    <p>
+      Attaching a NAT gateway changes outbound behaviour for things you did not touch, because it outranks them: <em>&ldquo;Azure NAT Gateway <strong>takes precedence over</strong> other outbound connectivity methods, including a <strong>load balancer</strong>, <strong>instance-level public IP addresses</strong>, and <strong>Azure Firewall</strong>.&rdquo;</em>
+    </p>
+    <p>
+      The full order, highest first:
+    </p>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Priority</th><th>Method</th></tr>
+      <tr><td>1</td><td>UDR to a virtual appliance or virtual network gateway</td></tr>
+      <tr><td>2</td><td><strong>NAT gateway</strong></td></tr>
+      <tr><td>3</td><td>Instance-level public IP on the VM</td></tr>
+      <tr><td>4</td><td>Load balancer outbound rules</td></tr>
+      <tr><td>5</td><td>Default system route to the internet</td></tr>
+    </table>
+    </div>
+    <p>
+      Two consequences. A machine with its own public IP stops using it for egress the moment a NAT gateway appears on the subnet &mdash; and the change is not retroactive, since <em>&ldquo;There are <strong>no drops</strong> in traffic flow for existing connections that use other explicit methods&rdquo;</em>, so old flows persist on the old path while new ones move. And a <code>0.0.0.0/0</code> UDR to a firewall beats the NAT gateway entirely, which is how a hub-and-spoke design keeps inspection in place.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>Because the number that constrains you is not the number that gets quoted</h3>
+    <p>
+      &ldquo;Over a million SNAT ports&rdquo; is true and nearly useless for capacity planning. The figure to size against is <em>&ldquo;up to <strong>50,000 concurrent connections per public IP address <em>to the same destination endpoint</em></strong>&rdquo;</em>.
+    </p>
+    <p>
+      So the question is not how many connections the workload opens, but how many it opens <em>to each place</em>. A fleet making a million connections spread over thousands of endpoints is comfortable. A fleet making 60,000 simultaneous calls to one API endpoint is over the limit on a single public IP, regardless of how much inventory is sitting unused.
+    </p>
+    <p>
+      Which makes the remedy counterintuitive and cheap: attach more public IP addresses. Each adds 64,512 ports <em>and</em> another 50,000-connection allowance to that destination. Scaling out the VMs does nothing for this limit; scaling out the addresses is the whole fix.
+    </p>
+    <p>
+      The second ceiling is absolute and worth knowing because its failure mode is ugly: <em>&ldquo;Each can support up to <strong>2 million active connections</strong> simultaneously&hellip; If a NAT gateway <strong>exceeds 2 million connections</strong>, <strong>the data path&rsquo;s availability declines and new connections fail</strong>.&rdquo;</em> Counted on the 5-tuple, so a connection is a flow and not a socket.
+    </p>
+
+    <h3>Because the fix for dropped connections makes exhaustion worse</h3>
+    <p>
+      This is the trap I would most expect an on-call engineer to walk into. Connections are dying; the idle timeout is right there and goes up to two hours; raising it looks like the fix. It is the opposite of the fix, because the port stays held for the whole idle window.
+      </p>
+    <p>
+      And the symptom that sends people there is itself informative. A NAT gateway <em>&ldquo;sends a <strong>TCP Reset (RST)</strong> packet for any connection flow that it doesn&rsquo;t recognize as an existing connection&hellip; When the sender&hellip; receives the&hellip; TCP RST packet, <strong>the connection is no longer usable</strong>.&rdquo;</em> So an application that has been idle past the timeout does not hang &mdash; it gets a reset on its next write, which reads like the remote end hung up.
+    </p>
+    <p>
+      There is one small mercy in the timer table: a reset frees its port after 16 seconds versus 65 for a graceful FIN. Connections that die badly recycle four times faster than connections that close politely, which is a genuinely strange property to hold in mind.
+    </p>
+
+    <h3>Because it silently takes over egress from things you configured</h3>
+    <p>
+      The precedence ladder means adding a NAT gateway is not an additive change. A VM with an instance-level public IP keeps the address &mdash; and stops using it for outbound. A load balancer with outbound rules keeps the rules &mdash; and stops being the egress path. Azure Firewall likewise, unless a UDR puts it above.
+    </p>
+    <p>
+      For most estates that is what you want, and it is why the migration is simple. But it makes the NAT gateway a thing that changes the meaning of existing configuration without changing the configuration &mdash; the same shape of problem as <code>AllowVNetInBound</code> in <a href="/blog/azure-architecture-default-nsg-rules/">#65</a>, arriving from the opposite direction. Anyone auditing egress addresses needs to read the ladder, not the resource list.
+    </p>
+
+    <h3>Because the SKU choice is permanent and drags the public IPs with it</h3>
+    <p>
+      Two SKUs, and the difference is resilience: Standard is <em>&ldquo;zonal (deployed to a <strong>single availability zone</strong>)&rdquo;</em> while StandardV2 is <em>&ldquo;<strong>zone redundant</strong>&rdquo;</em> with higher throughput, IPv6 and flow logs. The consequence of choosing Standard is explicit &mdash; <em>&ldquo;If the zone that&rsquo;s associated with a Standard NAT gateway goes down, the outage <strong>affects outbound connectivity</strong> for the subnets associated with the NAT gateway.&rdquo;</em>
+    </p>
+    <p>
+      And there is no path between them: <em>&ldquo;You <strong>can&rsquo;t upgrade</strong> the Standard SKU to the StandardV2 SKU. You must <strong>create a StandardV2 NAT gateway to replace</strong> the Standard NAT gateway on your subnet.&rdquo;</em> Nor can you carry the addresses across &mdash; <em>&ldquo;The StandardV2 SKU <strong>requires StandardV2 public IP addresses</strong> or prefixes. Standard public IPs <strong>aren&rsquo;t supported</strong> with StandardV2.&rdquo;</em>
+    </p>
+    <p>
+      Which lands directly on <a href="/blog/azure-architecture-public-ips/">#69</a>: the Standard-v2 public IP that could only be used with a Standard v2 NAT Gateway turns out to be the matching half of this decision. Choosing zone redundancy here means re-IPing, and re-IPing means every firewall rule and A record that referenced the old addresses. The zone cannot be changed later either &mdash; <em>&ldquo;After you deploy a NAT gateway, you <strong>can&rsquo;t change the zone selection</strong>.&rdquo;</em>
+    </p>
+
+    <h3>Because the Basic SKU exclusion is subnet-wide</h3>
+    <p>
+      A constraint that turns #69's migration into a prerequisite rather than a parallel task: <em>&ldquo;You <strong>can&rsquo;t use Azure NAT Gateway with subnets that have Basic resources</strong>. Resources for the Basic SKU, such as a <strong>Basic load balancer or Basic public IPs</strong>, don&rsquo;t work with Azure NAT Gateway.&rdquo;</em>
+    </p>
+    <p>
+      So one leftover Basic public IP anywhere in the subnet blocks the recommended outbound method for everything in it. Given #68 pushes new subnets towards requiring an explicit method and #69 established that Basic is retired and unsupported, the three posts compose into a single ordering: clear the Basic resources, then attach the NAT gateway, then make the subnet private.
+    </p>
+
+    <h3>Because a handful of exclusions will decide the design before the numbers do</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Exclusion</th><th>Why it matters</th></tr>
+      <tr><td><em>&ldquo;IP fragmentation isn&rsquo;t available&rdquo;</em></td><td>The same gap default outbound access had &mdash; migrating does not fix it</td></tr>
+      <tr><td>No public IPs with <strong>Internet routing preference</strong></td><td>Rules out the cheaper egress routing from #69</td></tr>
+      <tr><td>No public IPs with <strong>DDoS protection enabled</strong></td><td>A security control and this service are mutually exclusive</td></tr>
+      <tr><td>Not in a <strong>gateway subnet</strong></td><td>The VPN gateway's own subnet cannot use it</td></tr>
+      <tr><td>Not in a <strong>secured vWAN hub</strong></td><td>Rules it out for that whole topology</td></tr>
+      <tr><td>One per subnet, never across VNets</td><td>Hub-and-spoke needs the Firewall-plus-UDR pattern instead</td></tr>
+    </table>
+    </div>
+    <p>
+      The fragmentation one is the quiet repeat. <a href="/blog/azure-architecture-default-outbound-access/">#68</a> noted that default outbound access IPs <em>&ldquo;don&rsquo;t support fragmented packets&rdquo;</em>, and the recommended replacement does not either. A workload failing on large UDP payloads will fail identically after the migration, which is worth knowing before anyone proposes the migration as the cure.
+    </p>
+
+    <h3>Because live migration breaks flows and nothing warns you</h3>
+    <p>
+      One operational detail with no configuration to fix it: <em>&ldquo;NAT Gateway <strong>doesn&rsquo;t support connection continuity</strong> for existing flows when a virtual machine undergoes <strong>live migration</strong>. Existing connections through the NAT gateway <strong>might be disrupted and need to be reestablished</strong>.&rdquo;</em>
+    </p>
+    <p>
+      Live migration is a platform action you do not schedule. So long-lived outbound connections through a NAT gateway need application-level reconnection logic, not because of anything in your design, but because the host underneath can move. That belongs in a resilience review rather than a network one.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision point</th>
+        <th>Choose</th>
+        <th>Because</th>
+      </tr>
+      <tr>
+        <td>Explicit outbound method</td>
+        <td>NAT gateway</td>
+        <td>It is Microsoft's recommended method.</td>
+      </tr>
+      <tr>
+        <td>Sizing against &ldquo;a million ports&rdquo;</td>
+        <td>Don&rsquo;t &mdash; size per destination</td>
+        <td>Ports are only distinct per destination endpoint.</td>
+      </tr>
+      <tr>
+        <td>Heavy traffic to one endpoint</td>
+        <td>Add public IP addresses</td>
+        <td>50,000 concurrent per IP, per destination.</td>
+      </tr>
+      <tr>
+        <td>Scaling out VMs to fix exhaustion</td>
+        <td>Won&rsquo;t help</td>
+        <td>The limit is per address, not per instance.</td>
+      </tr>
+      <tr>
+        <td>Approaching 2 million active flows</td>
+        <td>Split across gateways</td>
+        <td>Beyond it, new connections fail.</td>
+      </tr>
+      <tr>
+        <td>Connections dropping when idle</td>
+        <td>Keepalives, not a longer timeout</td>
+        <td>A longer timeout holds ports and worsens exhaustion.</td>
+      </tr>
+      <tr>
+        <td>Raising the TCP idle timeout</td>
+        <td>Microsoft advises against it</td>
+        <td>Default 4 minutes; 120 is available but risky.</td>
+      </tr>
+      <tr>
+        <td>UDP keepalives</td>
+        <td>Enable on both sides</td>
+        <td>One side only covers one direction.</td>
+      </tr>
+      <tr>
+        <td>Planning capacity from the timer table</td>
+        <td>Don&rsquo;t</td>
+        <td>Microsoft says not to depend on the values.</td>
+      </tr>
+      <tr>
+        <td>An app getting resets after inactivity</td>
+        <td>Suspect the idle timeout</td>
+        <td>The gateway resets unrecognised flows.</td>
+      </tr>
+      <tr>
+        <td>Attaching a gateway to a subnet with public IPs</td>
+        <td>Expect egress to move to it</td>
+        <td>It outranks instance IPs and load balancers.</td>
+      </tr>
+      <tr>
+        <td>Keeping firewall inspection on egress</td>
+        <td>A <code>0.0.0.0/0</code> UDR</td>
+        <td>A UDR outranks the NAT gateway.</td>
+      </tr>
+      <tr>
+        <td>Needing zone resilience</td>
+        <td>StandardV2, from the start</td>
+        <td>Standard is zonal and can't be upgraded.</td>
+      </tr>
+      <tr>
+        <td>Moving Standard to StandardV2</td>
+        <td>Plan a re-IP</td>
+        <td>StandardV2 needs StandardV2 public IPs.</td>
+      </tr>
+      <tr>
+        <td>Any Basic resource in the subnet</td>
+        <td>Upgrade it first</td>
+        <td>Basic blocks NAT gateway for the whole subnet.</td>
+      </tr>
+      <tr>
+        <td>A workload sending fragmented packets</td>
+        <td>NAT gateway won&rsquo;t fix it</td>
+        <td>IP fragmentation isn't available.</td>
+      </tr>
+      <tr>
+        <td>Public IPs with DDoS protection</td>
+        <td>Incompatible</td>
+        <td>Not supported with NAT gateway.</td>
+      </tr>
+      <tr>
+        <td>Outbound from a gateway subnet</td>
+        <td>Not possible here</td>
+        <td>NAT gateway can't be used in one.</td>
+      </tr>
+      <tr>
+        <td>Secured vWAN hub topology</td>
+        <td>Use another method</td>
+        <td>NAT gateway isn't supported there.</td>
+      </tr>
+      <tr>
+        <td>Long-lived outbound connections</td>
+        <td>Add reconnection logic</td>
+        <td>Live migration breaks existing flows.</td>
+      </tr>
+      <tr>
+        <td>Backends behind an internal load balancer</td>
+        <td>NAT gateway on the backend subnet</td>
+        <td>It gives SNAT without public IPs per VM.</td>
+      </tr>
+    </table>
+    </div>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The honest summary is that a NAT gateway makes SNAT port exhaustion much harder to hit and changes what hitting it looks like. The old failure was a per-instance allocation running dry while the pool had capacity. The new failure is a per-destination ceiling: 50,000 concurrent connections from one public IP to one endpoint, with a million ports sitting idle because they are not the kind of port you need.
+    </p>
+    <p>
+      That is why the capacity question is about <em>shape</em> rather than volume. Tell me how many connections your fleet opens and I cannot size this. Tell me how many it opens to its busiest single endpoint and the answer is arithmetic: divide by 50,000, round up, attach that many public IP addresses. Everything else &mdash; instance count, subnet count, VM size &mdash; is irrelevant to that number.
+    </p>
+    <p>
+      And the thing I would put on the wall is the idle timeout inversion. Connections are resetting, the timeout is adjustable up to two hours, and raising it is exactly wrong because every idle connection holds its port for the whole window. Microsoft says so plainly and the control is still there, set to four minutes, inviting the mistake. Keepalives refresh a flow without holding a port; a longer timeout holds a port without refreshing anything. One of those scales and the other is a slow way to run out.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#71 returns to the topology that <a href="/blog/azure-architecture-address-planning/">#62</a> set up and prices it: VNet peering, global peering, and what the data transfer actually costs when every spoke talks through a hub.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official Azure Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official Azure Reference</h2>
+    <ul>
+      <li><a href="https://learn.microsoft.com/en-us/azure/nat-gateway/nat-gateway-resource" target="_blank" rel="noopener">NAT gateway resource &mdash; the 64,512 ports per address, the per-destination SNAT semantics, the 50,000 and 2 million connection ceilings, the full timer tables, the bandwidth splits and the limitations list</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/nat-gateway/nat-overview" target="_blank" rel="noopener">What is Azure NAT Gateway? &mdash; the recommendation, the precedence ladder over other outbound methods, the two SKUs and the Basic-resource exclusion</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/nat-gateway/nat-gateway-snat" target="_blank" rel="noopener">Source Network Address Translation with Azure NAT Gateway &mdash; further reading on the allocation mechanics (no claims drawn from it)</a></li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/nat-gateway/troubleshoot-nat" target="_blank" rel="noopener">Troubleshoot Azure NAT Gateway &mdash; the connectivity validation steps referenced for ICMP (no claims drawn from it)</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">Azure</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">Azure Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-architecture-network-access-analyzer/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Architecture Series #90 — A finding is a path, and no findings is not an answer</span></a><a href="/blog/aws-daily-intelligence-network-firewall-resolved-ip-validation/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">AWS Daily Intelligence #59 - The VPCs that widen your firewall's trust do not have to send it traffic</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/azure-architecture-nat-gateway/';
+      this.page.identifier = 'azure-architecture-nat-gateway';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=1274c0a4"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
