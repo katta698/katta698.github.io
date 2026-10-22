@@ -1,0 +1,388 @@
+---
+title: "AWS Architecture Series #90 — A finding is a path, and no findings is not an answer"
+date: '2026-10-22T09:00:00'
+slug: aws-architecture-network-access-analyzer
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-10-22'
+verified_claims:
+  - claim: "Network Access Analyzer is a feature that identifies unintended network access to your resources on AWS"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/what-is-network-access-analyzer.html
+  - claim: "You can use Network Access Analyzer to specify your network access requirements and to identify potential network paths that do not meet your specified requirements"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/what-is-network-access-analyzer.html
+  - claim: "Network Access Analyzer uses automated reasoning algorithms to analyze the network paths that a packet can take between resources in an AWS network, and it then produces findings for paths that match a customer defined Network Access Scope"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/how-network-access-analyzer-works.html
+  - claim: "Network Access Analyzer performs a static analysis of a network configuration, meaning that no packets are transmitted in the network as part of this analysis"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/how-network-access-analyzer-works.html
+  - claim: "Because Network Access Analyzer only considers the state of the network as described in the network configuration, packet loss that is due to transient network interruptions or service failures is not considered in the analysis"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/how-network-access-analyzer-works.html
+  - claim: "Network Access Analyzer makes a best effort attempt to return a diverse, representative set of findings from among all possible findings"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/how-network-access-analyzer-works.html
+  - claim: "Not all AWS network configurations are supported by Network Access Analyzer"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/how-network-access-analyzer-works.html
+  - claim: "A Network Access Analyzer finding is a network path that a packet can take in a network"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/how-network-access-analyzer-works.html
+  - claim: "Network Access Analyzer does not produce network paths through resources that are associated with Amazon API Gateway, AWS Global Accelerator, Traffic Mirroring, AWS Wavelength, or AWS Direct Connect"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/how-network-access-analyzer-works.html
+  - claim: "Network Access Analyzer can't produce network paths containing customer managed Amazon EC2 instances that modify packet forwarding behavior"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/how-network-access-analyzer-works.html
+  - claim: "Network Access Analyzer supports internet gateways and virtual private gateways at the beginning or end of a path, but does not report paths that pass through internet gateways or virtual private gateways"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/how-network-access-analyzer-works.html
+  - claim: "Network Access Analyzer does not support NAT reflection at internet gateways"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/how-network-access-analyzer-works.html
+  - claim: "Network Access Analyzer does not support advanced forwarding rules for Application Load Balancers, and does not support nested Resource Groups"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/how-network-access-analyzer-works.html
+  - claim: "A Network Access Scope defines outbound and inbound traffic patterns, including sources, destinations, paths, and traffic types"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/working-with-network-access-scopes.html
+  - claim: "Each Network Access Scope consists of one or more match conditions, and zero or more exclusion conditions"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/working-with-network-access-scopes.html
+  - claim: "Network Access Analyzer identifies network paths in the Network Access Scope that match at least one of the match conditions, and none of the exclude conditions"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/working-with-network-access-scopes.html
+  - claim: "A match condition defines the types of network paths that should be produced as findings, and a Network Access Scope must specify at least one match condition"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/match-paths.html
+  - claim: "If a Network Access Scope has multiple match conditions, it produces findings for any path that satisfies at least one of the match conditions"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/match-paths.html
+  - claim: "A through entry contains exactly one element that contains a resource statement, and it excludes paths that contain the specified network component anywhere along the path, not just at the beginning or end"
+    source: https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/exclude-paths.html
+problem: "Network Access Analyzer answers a question most network reviews cannot: is there a path. It does not answer the question people then ask of it, which is whether there are any others — because AWS states the finding set is 'a diverse, representative set of findings from among all possible findings' rather than a complete enumeration."
+builds: "A reading of what a finding is, what a Network Access Scope asserts, how match and exclude conditions combine, and the documented limits on both completeness and coverage."
+catch: "Two sentences from the same page bound what a clean run means. 'A Network Access Analyzer finding is a network path that a packet can take in a network.' And: 'Network Access Analyzer makes a best effort attempt to return a diverse, representative set of findings from among all possible findings.' A finding is evidence of reachability. An empty result is not evidence of its absence."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #090 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">A finding is a path, and no findings is not an answer</h1>
+  <p class="post-subtitle">Network Access Analyzer finds reachable paths by reasoning over configuration rather than sending packets. What it does not claim is completeness, and AWS says so on the same page.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <em>&ldquo;Network Access Analyzer is a feature that identifies unintended network access to your
+      resources on AWS.&rdquo;</em> It works differently from every manual review of security groups and route
+      tables, and the difference is stated plainly:
+    </p>
+    <p>
+      <em>&ldquo;Network Access Analyzer uses <strong>automated reasoning algorithms</strong> to analyze the
+      network paths that a packet can take between resources in an AWS network. It then produces findings for
+      paths that match a customer defined Network Access Scope.&rdquo;</em>
+    </p>
+    <p>
+      So it reasons rather than probes:
+      <em>&ldquo;Network Access Analyzer performs a <strong>static analysis</strong> of a network
+      configuration, meaning that <strong>no packets are transmitted</strong> in the network as part of this
+      analysis.&rdquo;</em>
+    </p>
+    <p>
+      That is a genuinely different kind of answer from a connectivity test. It is also bounded in ways worth
+      knowing before you treat a clean run as a clean bill of health.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The finding set is a sample, not an enumeration</strong></div>
+      <div class="challenge-body">
+        <p>
+          The definition of a finding is narrow and precise:
+        </p>
+        <p>
+          <em>&ldquo;<strong>A Network Access Analyzer finding is a network path that a packet can take in a
+          network.</strong>&rdquo;</em>
+        </p>
+        <p>
+          And elsewhere on the same page, the sentence that decides what a result means:
+        </p>
+        <p>
+          <em>&ldquo;Network Access Analyzer makes a <strong>best effort attempt to return a diverse,
+          representative set of findings from among all possible findings</strong>.&rdquo;</em>
+        </p>
+        <p>
+          Read those together. A finding is positive evidence &mdash; this path exists. The set of findings is
+          described as representative rather than complete, which means the tool is not offering to list every
+          path that matches your scope.
+        </p>
+        <p>
+          That matters because of what people do with the output. "We ran Network Access Analyzer and it found
+          three paths, we fixed all three, the next run was clean" is a sequence that feels like closure and is
+          not the same as "there are no paths". The documented claim supports the first reading and not the
+          second.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Use it to find things, not to prove their absence. A finding is actionable on its own; an empty result is a weaker statement than it looks, and the right next question is whether the scope was drawn to match what you were worried about. Where you need an assertion about absence, the control that produces one is a policy that prevents the configuration, not a scan that did not report it.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Several real path types are out of scope by design</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;<strong>Not all AWS network configurations are supported</strong> by Network Access
+          Analyzer.&rdquo;</em> The list is specific, and two entries on it are the kind of thing a security
+          review is usually about.
+        </p>
+        <p>
+          <em>&ldquo;Network Access Analyzer does not produce network paths through resources that are
+          associated with <strong>Amazon API Gateway, AWS Global Accelerator, Traffic Mirroring, AWS Wavelength,
+          or AWS Direct Connect</strong>.&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;Network Access Analyzer <strong>can't produce network paths containing customer managed
+          Amazon EC2 instances that modify packet forwarding behavior</strong>.&rdquo;</em>
+        </p>
+        <p>
+          That second one covers anything you run yourself that forwards traffic. And on the edge:
+          <em>&ldquo;Network Access Analyzer supports internet gateways and virtual private gateways at the
+          beginning or end of a path, but <strong>does not report paths that pass through</strong> internet
+          gateways or virtual private gateways.&rdquo;</em> Plus
+          <em>&ldquo;does not support <strong>NAT reflection</strong> at internet gateways&rdquo;</em>,
+          <em>&ldquo;does not support <strong>advanced forwarding rules</strong>&rdquo;</em> on Application Load
+          Balancers, and no support for <em>&ldquo;nested Resource Groups&rdquo;</em>.
+        </p>
+        <p>
+          Each exclusion is defensible &mdash; AWS explains the gateway one as resources being
+          <em>&ldquo;outside of AWS networking and therefore out of scope&rdquo;</em>. The point is cumulative
+          rather than individual: the unsupported list is the second reason an empty result is not a proof.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Write the unsupported list down next to your scope definitions, and check it against your own topology once. If you run a forwarding appliance on EC2, or reach workloads through Direct Connect or API Gateway, you know which part of your network this tool is not describing &mdash; and that is a more useful thing to know than any single finding.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>A scope is a question, and a bad question returns a clean answer</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;A Network Access Scope defines outbound and inbound traffic patterns, including sources,
+          destinations, paths, and traffic types.&rdquo;</em> Structurally:
+          <em>&ldquo;Each Network Access Scope consists of <strong>one or more match conditions, and zero or
+          more exclusion conditions</strong>.&rdquo;</em>
+        </p>
+        <p>
+          The combination rule is what to hold onto:
+          <em>&ldquo;It identifies network paths in the Network Access Scope that <strong>match at least one of
+          the match conditions, and none of the exclude conditions</strong>.&rdquo;</em> And across multiple
+          matches: <em>&ldquo;it produces findings for <strong>any path that satisfies at least one</strong> of
+          the match conditions.&rdquo;</em>
+        </p>
+        <p>
+          So matches are a union and exclusions veto. Which means an exclusion condition is the most powerful
+          thing in the scope &mdash; and the <code>through</code> field is the broadest of those:
+          <em>&ldquo;It excludes paths that contain the specified network component <strong>anywhere along the
+          path, not just at the beginning or end</strong>.&rdquo;</em>
+        </p>
+        <p>
+          A <code>through</code> exclusion naming a firewall is exactly how you ask "show me paths that bypass
+          the firewall", which is the right use. It is also how a scope can return nothing while paths exist,
+          if the excluded component is more common along your paths than whoever wrote the scope expected.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat the scope as the artifact under review, not just the findings. Before accepting an empty result, read the exclusions and ask what fraction of your paths they remove. A scope with a broad <code>through</code> exclusion and no findings has told you very little.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      A reasoning engine over configuration, a scope that poses the question, and two bounds on what the answer
+      covers.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-090-network-access-analyzer.svg" alt="Diagram: what AWS Network Access Analyzer asserts, how a Network Access Scope poses the question, and the two documented bounds on what a result covers. AWS describes Network Access Analyzer as a feature that identifies unintended network access to resources on AWS, used to specify network access requirements and to identify potential network paths that do not meet those requirements. It uses automated reasoning algorithms to analyze the network paths that a packet can take between resources in an AWS network, and produces findings for paths that match a customer defined Network Access Scope. It performs a static analysis of a network configuration, meaning no packets are transmitted in the network as part of the analysis, and because it only considers the state of the network as described in the configuration, packet loss due to transient network interruptions or service failures is not considered. The definition of a finding is precise and narrow: a Network Access Analyzer finding is a network path that a packet can take in a network. On the same page AWS states that Network Access Analyzer makes a best effort attempt to return a diverse, representative set of findings from among all possible findings. Read together, a finding is positive evidence that a path exists while the finding set is described as representative rather than complete, so the tool is not offering to enumerate every path matching a scope. That matters for how results are used, because running the analyzer, fixing the three paths it reported, and seeing a clean next run feels like closure but is not the same as establishing that no paths exist; the documented claim supports the first reading and not the second. The second bound on a result is coverage. AWS states that not all AWS network configurations are supported, and the list is specific. Network Access Analyzer does not produce network paths through resources associated with Amazon API Gateway, AWS Global Accelerator, Traffic Mirroring, AWS Wavelength, or AWS Direct Connect. It cannot produce network paths containing customer managed Amazon EC2 instances that modify packet forwarding behavior, which covers any self-run forwarding appliance. It supports internet gateways and virtual private gateways at the beginning or end of a path but does not report paths that pass through them, which AWS explains as those resources being outside of AWS networking and therefore out of scope. It does not support NAT reflection at internet gateways, does not support advanced forwarding rules for Application Load Balancers, and does not support nested Resource Groups. Each exclusion is individually defensible; the point is cumulative, in that the unsupported list is the second reason an empty result is not a proof. On the structure of the question, a Network Access Scope defines outbound and inbound traffic patterns including sources, destinations, paths and traffic types, and each scope consists of one or more match conditions and zero or more exclusion conditions. The analyzer identifies network paths in the scope that match at least one of the match conditions and none of the exclude conditions, and where a scope has multiple match conditions it produces findings for any path satisfying at least one of them. Match and exclude conditions have similar structures, consisting of resource statements and packet header statements that specify the traffic to match or exclude. A match condition defines the types of network paths that should be produced as findings and a scope must specify at least one. So matches form a union and exclusions veto, which makes an exclusion condition the most powerful element of a scope, and the through field is the broadest of those because a through entry contains exactly one element containing a resource statement and excludes paths that contain the specified network component anywhere along the path, not just at the beginning or end. A through exclusion naming a firewall is precisely how to ask which paths bypass the firewall, which is the intended use, and it is also how a scope can return nothing while paths exist, if the excluded component is more common along the paths than whoever wrote the scope expected. For supported resources, findings can only start or end at internet gateways, network interfaces, transit gateway attachments, VPC interface endpoints, VPC gateway endpoints, VPC gateway load balancer endpoints, VPC service endpoints, VPC peering connections and virtual private gateways, while a path may pass through a wider set including load balancers, NAT gateways, network ACLs, network firewalls, VPC route tables, security groups, target groups and transit gateway route tables. The recommended practice is to use the analyzer to find things rather than to prove their absence, since a finding is actionable on its own while an empty result is a weaker statement than it appears; to write the unsupported list down beside the scope definitions and check it against the actual topology once, since knowing which part of a network the tool is not describing is more useful than any single finding; and to treat the scope itself as the artifact under review, reading its exclusions and asking what fraction of paths they remove before accepting a clean result." />
+      <figcaption>A finding proves a path exists. Nothing here proves one does not.</figcaption>
+    </figure>
+
+    <h3>What static analysis buys, and what it sets aside</h3>
+    <p>
+      The trade is explicit:
+      <em>&ldquo;Because Network Access Analyzer only considers the state of the network as described in the
+      network configuration, <strong>packet loss that is due to transient network interruptions or service
+      failures is not considered</strong> in the analysis.&rdquo;</em>
+    </p>
+    <p>
+      That is the right trade for the question being asked. A connectivity test tells you whether a packet got
+      through at one moment; reasoning over configuration tells you whether the configuration permits a packet
+      at all. The second is the security question, and it does not require the path to be exercised &mdash;
+      which is why it can find paths nobody has used yet.
+    </p>
+
+    <h3>Where a path may start, and where it may pass</h3>
+    <p>
+      Two different lists, and the start-or-end list is the shorter one. Findings
+      <em>&ldquo;can only produce findings for network paths that <strong>start or end at</strong>&rdquo;</em>
+      internet gateways, network interfaces, transit gateway attachments, the VPC endpoint types, VPC peering
+      connections and virtual private gateways.
+    </p>
+    <p>
+      Paths may <em>pass through</em> a wider set, which adds load balancers, NAT gateways, network ACLs,
+      network firewalls, route tables, security groups, target groups and transit gateway route tables.
+    </p>
+    <p>
+      Reading those two lists against each other is the quickest way to see what kind of question the tool is
+      built to answer: endpoints are interfaces and gateways, and the middle of a path is where the controls
+      live.
+    </p>
+
+    <div class="callout amber">
+      <strong>The two bounds are independent, and both apply to the same clean run</strong>
+      <p>One is about completeness: the result is <em>&ldquo;a diverse, representative set&hellip; from among all possible findings&rdquo;</em>. The other is about coverage: <em>&ldquo;Not all AWS network configurations are supported&rdquo;</em>.</p>
+      <p>A scan can therefore miss a path either because it did not enumerate it or because that class of path is not analysed. Neither is a defect, and both are reasons to read an empty result as "nothing surfaced" rather than "nothing exists".</p>
+    </div>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Saying "best effort" and "representative" in the documentation is the honest choice</h3>
+    <p>
+      A service doing automated reasoning over a large configuration space could easily describe its output as
+      "all paths matching your scope" and leave the sampling unstated. This one does the opposite, in the
+      overview of how it works rather than in a limitations appendix. That sentence is what lets a reader
+      calibrate the result instead of over-trusting it.
+    </p>
+    <p>
+      The same applies to the unsupported list. It is long, specific, and includes items that are
+      uncomfortable to disclose &mdash; API Gateway and Direct Connect are not obscure.
+    </p>
+
+    <h3>Making exclusions veto rather than subtract is the right rule</h3>
+    <p>
+      Matches union and exclusions veto, and the <code>through</code> field reaches
+      <em>&ldquo;anywhere along the path&rdquo;</em>. That combination is what makes the useful question
+      expressible: show me paths from the internet to this subnet that do <em>not</em> traverse the firewall.
+      A subtractive rule scoped only to endpoints could not ask it.
+    </p>
+    <p>
+      The cost is that the same expressiveness lets a scope be accidentally narrow, which is why the scope
+      belongs in review alongside the findings.
+    </p>
+
+    <h3>Not transmitting packets is what makes it safe to run broadly</h3>
+    <p>
+      <em>&ldquo;no packets are transmitted in the network as part of this analysis&rdquo;</em> means the
+      analysis has no blast radius. There is no scan traffic, nothing to whitelist, and no risk of a probe
+      being mistaken for an intrusion. For a control you want running against production regularly, that
+      property is worth more than it sounds.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>What a finding means</td>
+        <td>Evidence that a path exists</td>
+        <td><em>&ldquo;a network path that a packet can take in a network&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>What an empty result means</td>
+        <td>Nothing surfaced &mdash; not nothing exists</td>
+        <td>The set is <em>&ldquo;a diverse, representative set&hellip; from among all possible findings&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Using it for compliance evidence</td>
+        <td>Cite findings, not their absence</td>
+        <td>Both documented bounds apply to an empty run.</td>
+      </tr>
+      <tr>
+        <td>Self-run forwarding appliances</td>
+        <td>Expect them to be invisible</td>
+        <td>No paths <em>&ldquo;containing customer managed Amazon EC2 instances that modify packet forwarding behavior&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Direct Connect and API Gateway reachability</td>
+        <td>Out of scope; use another method</td>
+        <td>Both are on the unsupported list.</td>
+      </tr>
+      <tr>
+        <td>Paths crossing the internet</td>
+        <td>Not reported</td>
+        <td>Gateways are supported at the ends, not as transit.</td>
+      </tr>
+      <tr>
+        <td>Scope review</td>
+        <td>Review the scope as well as the findings</td>
+        <td>Exclusions veto, and <code>through</code> reaches anywhere along a path.</td>
+      </tr>
+      <tr>
+        <td>Run frequency</td>
+        <td>As often as you like</td>
+        <td>No packets are transmitted, so there is no blast radius.</td>
+      </tr>
+      <tr>
+        <td>Transient failures</td>
+        <td>Not modelled, and should not be</td>
+        <td>The question is what the configuration permits.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      Take the unsupported list and walk your own topology against it once. Do you run an EC2 instance that
+      forwards packets? Do you reach anything over Direct Connect, or through API Gateway, or behind Global
+      Accelerator? Each yes marks a region of your network this tool is not describing, and that map is worth
+      more than any individual finding because it tells you where to use something else.
+    </p>
+    <p>
+      Then read every Network Access Scope you have and total up its exclusion conditions, paying attention to
+      any <code>through</code> entry. A scope that excludes a component sitting on most of your paths will
+      return few findings for a reason that has nothing to do with your security posture.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The useful thing about this service is the question it can answer that a security group review cannot:
+      not "is this rule correct" but "does a packet have a route". Automated reasoning over configuration can
+      surface paths nobody has exercised, and it does it without sending anything.
+    </p>
+    <p>
+      The thing to carry is the shape of the answer. A finding is a positive claim and a strong one. An empty
+      result is bounded twice over &mdash; once by sampling, once by coverage &mdash; and AWS writes both bounds
+      into the page that explains how the tool works rather than leaving them to be discovered.
+    </p>
+    <p>
+      That makes it the opposite of the pattern the last several posts have found. In
+      <a href="/blog/aws-architecture-cognito-identity-pools/">#89</a> and
+      <a href="/blog/aws-architecture-payment-cryptography/">#88</a> the risk was a mechanism that looked like
+      a guarantee. Here the mechanism is weaker than it looks and says so, which puts the whole burden on the
+      reader to not over-read a clean run.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; AWS Firewall Manager: what a policy actually does on an account that already has conflicting configuration, why remediation is a setting rather than a default, and what happens to protected resources when an account leaves the organization.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/how-network-access-analyzer-works.html" target="_blank" rel="noopener">How Network Access Analyzer works &#8212; the automated reasoning description, the definition of a finding, the static-analysis statement and what it sets aside, the best-effort representative-set sentence, the supported start, end and path resource lists, and the unsupported resources and network configurations including API Gateway, Global Accelerator, Traffic Mirroring, Wavelength, Direct Connect, customer managed forwarding instances, gateway transit, NAT reflection, ALB advanced forwarding rules and nested Resource Groups</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/working-with-network-access-scopes.html" target="_blank" rel="noopener">Network Access Scopes &#8212; what a scope defines, its composition from match and exclusion conditions, and the rule that findings must match at least one match condition and none of the exclude conditions</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/match-paths.html" target="_blank" rel="noopener">Match conditions &#8212; that a scope must specify at least one, and that multiple match conditions produce findings for any path satisfying at least one of them</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/exclude-paths.html" target="_blank" rel="noopener">Exclusion conditions &#8212; the optional source, destination and through fields, and that a through entry excludes paths containing the component anywhere along the path</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/what-is-network-access-analyzer.html" target="_blank" rel="noopener">What is Network Access Analyzer &#8212; the service description and the requirement-verification framing</a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/network-access-analyzer/example-scopes.html" target="_blank" rel="noopener">Example Network Access Scopes &#8212; further reading on scope authoring; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

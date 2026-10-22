@@ -92,6 +92,34 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 21 October 2026 — covered by post #59
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Route 53 Resolved IP Validation. Extends domain filtering past HTTP/HTTPS by checking "the provenance of the destination IP address" rather than a client-asserted SNI or Host header. The finding is the scope: "Every VPC that is associated with it contributes its resolutions to a single shared pool", and that "includes VPCs that are associated with the rule group but don't send traffic through this firewall" — AWS's own warning is that "Sharing a rule group across unrelated deployments therefore widens what each firewall accepts" | AWS Network Firewall | **#59** | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/network-firewall-route-53-ip-validation/) |
+| Neuron 2.33: TorchNeuron and Neuron Observer, both public beta. **Written and verified, then held — and the reason is a tooling gap rather than the material.** The substantive facts exist only on `awsdocs-neuron.readthedocs-hosted.com`, which is AWS's own documentation (titled "AWS Neuron Documentation", copyright Amazon.com, linked from the announcement as the official docs) but is not in the `doc_hosts` allowlist in `validate_arch_post.py`, so all 15 docs-sourced claims fail the host check. There is no Neuron documentation on `docs.aws.amazon.com` (404) and the `aws.amazon.com` product page carries none of the specifics — zero occurrences of TorchNeuron, PrivateUse1, DaemonSet, unhealthy or unknown. The held post and diagram are in the scratch area outside the worktree; its quotes are already verified 42 of 42. Publishes with the next free number once the allowlist is extended | AWS Neuron | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-announce-neuron-2-33-0/) |
+| On-Demand Capacity Reservations support | Amazon Aurora and Amazon RDS | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-aurora-rds-on-demand-capacity-reservations/) |
+| Multi-Region replication extended to AWS GovCloud (US) | Amazon Cognito | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/cognito-multi-region-us-govcloud/) |
+| Builds new networks and modernizes security groups; separately, storage migration assessments for S3, EBS, EFS and FSx | AWS Transform | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-transform-new-networks/) |
+| Custom sequence lengths for serverless model customization jobs | Amazon SageMaker AI | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/sagemaker-custom-sequence-lengths/) |
+| Server access log delivery to CloudWatch Logs in five more Regions; Direct Connect 100G in Manchester; two new Connect agent workspace layouts; Beam model on JumpStart | various | skipped | Low | — |
+
+**For the Validation window.** The `aws` series `doc_hosts` tuple in
+`validate_arch_post.py` is `('docs.aws.amazon.com', 'aws.amazon.com')`. AWS
+publishes the Neuron, NKI and Inferentia documentation on
+`awsdocs-neuron.readthedocs-hosted.com` instead, and nothing equivalent exists
+on either allowed host. The check is doing its job — the rule is
+under-inclusive, and extending it is a one-line change that also unblocks every
+future Trainium and Inferentia post. Raised here rather than patched from the
+AWS window, per the rule about not editing shared checks from a cloud window.
+
+**A note on today's substitution.** The daily was asked for on the Neuron
+announcement. The Neuron post was written and its quotes verified before the
+host check surfaced the problem, so the choice was between publishing a badge
+that covered less of the post than usual, dropping the badge against the
+standing rule that every technical post carries one, or writing a different
+daily. Jayanth chose the third. Nothing about the Neuron material is in doubt.
+
 ## 16 October 2026 — no daily deep-dive; covered in weekly #11's inventory
 
 Eleven items, four of them AWS End User Messaging registration improvements.
