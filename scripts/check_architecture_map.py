@@ -41,14 +41,7 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 # diagram, and drawing itself inside itself explains nothing. Named here
 # rather than silently skipped, so the exemption is a decision somebody can
 # disagree with rather than an omission.
-#
-# build_sirivennela_preview.py is exempt because the page it writes is
-# scaffolding, not architecture: one noindex copy of the connect card, made
-# to be looked at once and then either folded into connect/index.html or
-# deleted. Putting it on the diagram would describe the site as it is this
-# week rather than as it works. If it is still here in a month, that reason
-# has expired and it belongs on the diagram or in the bin.
-EXEMPT_BUILDERS = {"build_colophon.py", "build_sirivennela_preview.py"}
+EXEMPT_BUILDERS = {"build_colophon.py"}
 
 
 def rendered():
