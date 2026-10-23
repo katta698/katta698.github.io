@@ -92,6 +92,28 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 22 October 2026 — covered by post #60
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Serverless model customization for Muse Glimmer, Qwen3.8 27B and Ministral 3 3B / 8B / 14B, with SFT, DPO and RFT, and a choice of LoRA or full fine-tuning. The finding is in the documented sequence-length table, where "each populated cell shows the maximum sequence length that you can set for that customization technique and training type" — an asterisk means "fixed at 4K and is not overridable", an em dash means the combination is unsupported, and the direction of the LoRA-versus-full-fine-tuning difference reverses between rows (Muse Glimmer 30B SFT is 32K LoRA / 16K FFT; Nemotron 3 Nano 30B DPO is 8K LoRA / 16K FFT) | Amazon SageMaker AI | **#60** | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-sagemaker-muse-qwen-ministral/) |
+| Neuron 2.33: TorchNeuron and Neuron Observer, both public beta. Still held on the `doc_hosts` allowlist gap recorded in the 21 October section below. The written post and diagram remain in the scratch area, quotes verified 42 of 42, and it publishes with the next free number once `awsdocs-neuron.readthedocs-hosted.com` is added | AWS Neuron | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-announce-neuron-2-33-0/) |
+| AWS Continuum for code vulnerabilities now generally available. Carries a News Blog post as well as the What's New entry, which usually means enough documented substance for a deep-dive | AWS Continuum | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-continuum-for-code-vulnerabilities-is-now-generally-available) |
+| Training session APIs for serverless model customization — "write your own training loop without managing GPUs". Adjacent to #60 and deliberately not folded into it; it is a separate announcement with its own API surface and deserves its own post rather than a paragraph | Amazon SageMaker AI | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/training-session-apis-on-sagemaker-ai) |
+| Stack update rollback operations simplified | AWS CloudFormation | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-cloudformation-cdk/) |
+| AWS Interconnect — last mile, preview with Megaport | AWS Interconnect | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-announces-AWS-interconnect-last-mile-megaport-preview/) |
+| Bedrock InvokeModel APIs and model fallback | AgentCore Gateway | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/agentcore-gateway-invokemodel-fallback/) |
+| 5-second default refresh interval | Amazon OpenSearch Serverless | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-opensearch-serverless-supports-5-second-refresh-interval/) |
+| Customer Profiles app customization on the agent workspace | Amazon Connect | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/connect-customer-customize-cp) |
+| Lambda MicroVMs in four more Regions; Direct Connect 100G in Bangalore; Amazon Quick in Singapore | various | skipped | Low | — |
+
+**Four CVE bulletins the same day**, none of them a daily topic but all worth
+noting for anyone running the affected components: Strands Agents SDK A2A
+Server (CVE-2026-115419), SAM CLI Terraform Hook (CVE-2026-115414), Athena
+engine version 3 (CVE-2026-115416), and `aws-c-mqtt` (CVE-2026-115417).
+
+---
+
 ## 21 October 2026 — covered by post #59
 
 | Item | Service | Status | Importance | Reference |
