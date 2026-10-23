@@ -41,7 +41,14 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 # diagram, and drawing itself inside itself explains nothing. Named here
 # rather than silently skipped, so the exemption is a decision somebody can
 # disagree with rather than an omission.
-EXEMPT_BUILDERS = {"build_colophon.py"}
+#
+# build_walker_poses.py is exempt because it does not BUILD connect's page,
+# it edits three SVG poses inside the page that already exists. Nothing
+# generates connect/index.html; it is hand-maintained, and this is a one-shot
+# art tool for a figure that is 17px tall. On the diagram it would read as a
+# pipeline stage that produces the connect card, which is the opposite of
+# true and worse than leaving it off.
+EXEMPT_BUILDERS = {"build_colophon.py", "build_walker_poses.py"}
 
 
 def rendered():
