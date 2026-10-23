@@ -1,0 +1,72 @@
+name: Preflight — the full checks, browser included
+
+# Split out of deploy-pages.yml on 2026-10-22, because sharing a workflow
+# with the deploy was starving the deploy.
+#
+# The mechanism, measured rather than guessed. deploy-pages.yml holds
+# `concurrency: group: pages-deploy, cancel-in-progress: false`, and a RUN
+# occupies that group until every job in it finishes -- not until the job
+# that matters finishes. The deploy job needs only `build` and takes about
+# a minute; the checks job runs the full preflight with Chromium and WebKit
+# and takes over thirty. So each run sat on the group for half an hour
+# after the site was already published, and because four windows and ten
+# scheduled workflows push here, the queue never drained:
+#
+#   02:09  153df6e6  in_progress   <- still running checks at 02:40
+#   02:35  db30a24f  CANCELLED     <- a real push, never deployed
+#   02:35  f777947b  pending
+#
+# A deploy that is ready in a minute waited half an hour behind a test run
+# whose result it does not even consume. The checks were not wrong and the
+# deploy was not wrong; putting them in one run was.
+#
+# Here they have their own group, so a slow check run can no longer block a
+# publish, and the newest tree supersedes an older one still running --
+# which is right for a check and wrong for a deploy, which is why the two
+# groups have opposite cancel policies.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "40 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preflight
+  # Opposite of the deploy's policy, on purpose. Checking a tree that has
+  # already been superseded tells nobody anything; deploying one would
+  # leave the site on the wrong build.
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Named explicitly rather than read from a requirements file, because
+      # there is no requirements.txt in this repo -- an earlier version of
+      # this job pointed at one and hid the failure behind `|| true`, so the
+      # checks ran without pyyaml and seven of them failed in under a second
+      # on ModuleNotFoundError. A dependency failure must stop the job, not
+      # be swallowed into a wall of meaningless check failures.
+      - name: Install dependencies
+        run: pip install --quiet pyyaml beautifulsoup4 markdown
+
+      # Both engines: some checks compare the two, and without webkit they
+      # degrade to a note rather than a failure.
+      - name: Install Playwright
+        run: |
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium webkit
+
+      - name: Run the full preflight, browser checks included
+        run: python scripts/preflight.py
