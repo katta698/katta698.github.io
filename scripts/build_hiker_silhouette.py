@@ -1,25 +1,30 @@
 # -*- coding: utf-8 -*-
-"""Cut the hiker silhouette out of the reference photograph.
+"""Cut the walking figure out of the reference silhouette.
 
     python scripts/build_hiker_silhouette.py
 
 Writes connect/hiker.webp and connect/hiker-dusk.webp -- the same figure in
-the two inks the card already uses for its artwork, swapped by theme the way
-ink-scene.webp and ink-scene-dusk.webp are.
+the two inks the card already uses, swapped by theme the way ink-scene.webp
+and the seal are.
 
-Why a traced photograph and not a drawing
------------------------------------------
-The figure on this card was built from capsules and circles, and it was
-twice rebuilt by hand before the honest verdict arrived: "doesn't look like
-human". Every measurement behind those rebuilds was correct and the result
-was still wrong, because a person at 17px is recognised by outline alone --
-the weight of a loaded pack pulling the shoulders forward, the forward lean,
-the particular bend of a knee mid-stride. Those are not things you reason
-your way to from joint radii. A photograph already has them.
+Why a traced image and not a drawing
+------------------------------------
+This figure was built from capsules and circles and rebuilt twice by hand
+before the honest verdict arrived: "doesn't look like human". Every
+measurement behind those rebuilds was correct -- the pack really was drawn
+larger than the torso, the standing pose really did fuse both legs into one
+stalk -- and the result was still wrong, because a person at 17px is
+recognised by OUTLINE. The lean, the swing of an arm, the bend of a knee
+mid-stride: none of that is reachable from joint radii, and all of it is
+already in a photograph of a person walking.
 
-The reference is a backlit hiker against a sunset: the subject is almost
-black and the sky is almost white, so the cut is a threshold rather than a
-matting problem, and the edge it produces is the real edge of a person.
+The source is a black-on-white silhouette, so the cut is a threshold.
+
+The ground scribble underneath him is NOT cropped by eye. It is found by
+row width: the figure runs 80-140 dark pixels per row and the scribble
+jumps to 234 and then past 400, so the first row past the jump is the
+ground and everything below it goes. Measured, so re-running this against
+a differently-cropped source does not silently keep a slab under his feet.
 """
 import os
 import sys
@@ -29,69 +34,64 @@ from PIL import Image, ImageFilter
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(os.path.expanduser("~"), ".claude", "uploads",
                    "40fdb3f0-dbd0-5032-9595-e931e38464fe",
-                   "bf55d461-image.jpg")
+                   "7684a5ec-image.jpg")
 OUT_LIGHT = os.path.join(ROOT, "connect", "hiker.webp")
 OUT_DARK = os.path.join(ROOT, "connect", "hiker-dusk.webp")
 
-# The inks the card paints its figures in today, read off .walker:
-#   light theme  #241f1a
-#   dark theme   #a7b2a0
+# The inks .walker painted in before this became an image.
 INK_LIGHT = (0x24, 0x1F, 0x1A)
 INK_DARK = (0xA7, 0xB2, 0xA0)
 
-# Where he is in the 2576x1719 frame, found by counting dark pixels per
-# column rather than by eye. Generous margins; the crop is tightened to the
-# silhouette's own bounding box afterwards.
-BOX = (1170, 560, 1700, 1620)
-
-# Everything below 92 is him. The sky bottoms out around 150 even at its
-# darkest, and his edge is hard because he is backlit.
-CUT = 92
+CUT = 110          # black figure, white page
+GROUND_FACTOR = 1.6   # a row this much wider than the body is the ground
 
 
 def main():
     if not os.path.exists(SRC):
-        print("reference photo not found:", SRC)
+        print("reference not found:", SRC)
         return 1
 
-    g = Image.open(SRC).convert("L").crop(BOX)
+    g = Image.open(SRC).convert("L")
+    w, h = g.size
+    px = g.load()
 
-    # Alpha straight from the luminance: fully opaque where he is, fading
-    # over a few levels at the edge so the outline is not stair-stepped.
-    alpha = g.point(lambda v: 255 if v < CUT - 10 else
-                    (0 if v > CUT + 14 else int(255 * (CUT + 14 - v) / 24.0)))
+    rows = [sum(1 for x in range(w) if px[x, y] < CUT) for y in range(h)]
+    body = [n for n in rows if n]
+    if not body:
+        print("nothing below the threshold")
+        return 1
+    # Typical body width, from the middle half of the occupied rows.
+    occupied = [y for y, n in enumerate(rows) if n]
+    lo, hi = occupied[0], occupied[-1]
+    mid = sorted(rows[lo:hi + 1])
+    typical = mid[len(mid) // 2] or 1
 
-    # The ground he stands on is part of the dark mass and must go, or he
-    # arrives with a slab under his feet. Everything below the lowest point
-    # of his shoes is cut; the shoes themselves are found as the lowest row
-    # that is still narrow.
-    w, h = alpha.size
-    px = alpha.load()
-    ground = h
-    for y in range(h - 1, 0, -1):
-        run = sum(1 for x in range(w) if px[x, y] > 128)
-        if run and run < w * 0.45:          # narrow => feet, not horizon
-            ground = y + 1
+    ground = hi + 1
+    for y in range(lo + (hi - lo) // 2, hi + 1):
+        if rows[y] > typical * GROUND_FACTOR:
+            ground = y
             break
+    print("body rows %d-%d, typical width %d, ground at %d"
+          % (lo, hi, typical, ground))
+
+    alpha = g.point(lambda v: 255 if v < CUT - 14 else
+                    (0 if v > CUT + 14 else int(255 * (CUT + 14 - v) / 28.0)))
+    ap = alpha.load()
     for y in range(ground, h):
         for x in range(w):
-            px[x, y] = 0
+            ap[x, y] = 0
 
     bbox = alpha.getbbox()
     assert bbox, "nothing survived the threshold"
     alpha = alpha.crop(bbox)
 
-    # Down to the size it is actually drawn at, with a little headroom.
     tw = 150
     th = max(1, int(round(alpha.height * tw / float(alpha.width))))
     alpha = alpha.resize((tw, th), Image.LANCZOS)
-    alpha = alpha.filter(ImageFilter.GaussianBlur(0.4))
+    alpha = alpha.filter(ImageFilter.GaussianBlur(0.35))
 
-    # He walks LEFT in the photograph and RIGHT on the card -- the existing
-    # figure's foot wedges point +x. Mirrored here rather than with a CSS
-    # transform so nothing downstream has to know.
-    alpha = alpha.transpose(Image.FLIP_LEFT_RIGHT)
-
+    # No mirror: this reference already walks to the right, which is the way
+    # the card's figure travels.
     for ink, out in ((INK_LIGHT, OUT_LIGHT), (INK_DARK, OUT_DARK)):
         flat = Image.new("RGB", alpha.size, ink)
         flat.putalpha(alpha)
