@@ -99,7 +99,20 @@ function isAsset(pathname) {
 }
 
 // Pages that must never be served stale: their content IS the data.
-const LIVE_DATA = ['/intelligence/status/', '/intelligence/whats-new/'];
+// /connect/ is here for the same reason the other two are, and because of
+// how it is used: it is the card handed to someone at a conference, and the
+// one page whose owner reloads it to check a change landed.
+//
+// Cache-first made that impossible rather than merely slow. A navigation
+// paints the previous visit's copy and fetches the new one for NEXT time, so
+// reloading the page you just deployed shows the old one every time, until
+// you load it twice. Reported as "why can't I refresh connect page in
+// phone", after four separate changes each looked like they had not shipped.
+//
+// It also carries a countdown -- "39 days to AWS re:Invent" -- which a
+// day-old copy gets wrong, not late.
+const LIVE_DATA = ['/intelligence/status/', '/intelligence/whats-new/',
+                   '/connect/'];
 
 // A post page: /blog/<slug>/ and nothing deeper or shallower. NOT /blog/
 // itself and NOT /blog/page/2/ -- those are the index, the 610KB page this
