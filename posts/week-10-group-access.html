@@ -1,0 +1,345 @@
+---
+title: 'Week 10 — The Group Nobody Could Read'
+date: '2026-10-23T22:00:00'
+draft: true
+labels:
+- GCP
+- Terraform
+- GCP Weekly Lab
+slug: week-10-group-access
+verified: '2026-10-23'
+verified_claims:
+  - claim: "Google recommends granting roles to a group rather than to individual principals, and then managing group membership"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "Access groups typically should not be nested, because nesting makes it difficult to determine who has access, and enforcement groups should not be nested either"
+    source: https://docs.cloud.google.com/iam/docs/groups-best-practices
+  - claim: "To let a service account manage groups without domain-wide delegation, assign it the Google Workspace Group Administrator role; alternatively, if it does not need access to all groups, make it an owner of the groups of interest"
+    source: https://docs.cloud.google.com/identity/docs/how-to/setup
+  - claim: "Dynamic groups require Cloud Identity Premium or specific Google Workspace editions, and are not available on the free edition"
+    source: https://docs.cloud.google.com/identity/docs/concepts/overview-dynamic-groups
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Platform Engineering Lab &middot; Week 10 of 58</div>
+  <div class="post-title">The group nobody could read</div>
+  <div class="post-subtitle">Nine weeks of handing permissions to named people and named robots. This week a group holds the permission instead — which took four attempts, because the pipeline created a group it was not allowed to look at.</div>
+  <div class="post-meta">
+    <span>23 October 2026</span>
+    <span>Cloud Identity &middot; Google Groups &middot; Cloud IAM</span>
+    <span>$0</span>
+  </div>
+</div>
+
+<div class="toc">
+  <h3>&#128203; In This Post</h3>
+  <ol>
+    <li><a href="#why">Why — The Problem This Solves</a></li>
+    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
+    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
+    <li><a href="#build">How We Built It — Step by Step</a></li>
+    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
+    <li><a href="#security">Security — Controls at Every Layer</a></li>
+    <li><a href="#cost">Cost</a></li>
+    <li><a href="#cleanup">Cleanup</a></li>
+    <li><a href="#references">References</a></li>
+    <li><a href="#takeaways">Key Takeaways</a></li>
+  </ol>
+</div>
+
+<div class="section" id="why">
+<h2>Why — The Problem This Solves</h2>
+
+<p>Somebody joins the team and needs to read logs. Somebody else changes role and
+should stop. In most organizations both of those are a two-minute job, and
+neither of them involves editing a security policy.</p>
+
+<p>Not here. After nine weeks every permission in this organization was attached
+to a named thing &mdash; my own account, or one of three service accounts. I
+checked before writing any of this, and the organization held
+<strong>zero</strong> grants to any group. So every change of responsibility
+would have meant editing the policy that governs the whole estate, which is a
+heavier and more dangerous act than the change deserves.</p>
+
+<p>This week moves one permission behind a group, and then tries to prove the
+indirection actually works.</p>
+</div>
+
+<div class="section" id="skills">
+<h2>What You Need to Know — Skills &amp; Tools</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <h3>Google Cloud</h3>
+    <ul>
+      <li><strong>Cloud Identity</strong> &mdash; the directory that holds your
+        people and groups; a different product from IAM, with its own API and its
+        own administrators</li>
+      <li><strong>Google Groups</strong> &mdash; an address that contains
+        members, and that IAM will accept as a principal in a policy</li>
+      <li><strong>Security groups</strong> &mdash; groups labelled as being for
+        access control, so the ones that grant power are distinguishable from the
+        ones that are mailing lists</li>
+      <li><strong>Cloud IAM at a folder</strong> &mdash; the binding that
+        actually hands the group its permission</li>
+      <li><strong>Resource Manager</strong> &mdash; the folder the grant lands
+        on, inherited by every project inside it</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Tooling</h3>
+    <ul>
+      <li><strong>Terraform</strong> &mdash;
+        <code>google_cloud_identity_group</code>, its membership, and
+        <code>google_folder_iam_member</code></li>
+      <li><strong>HCP Terraform</strong> &mdash; remote runs, with separate plan
+        and apply identities</li>
+      <li><strong>Google Admin console</strong> &mdash; where Workspace admin
+        roles are granted; there is no gcloud for this</li>
+      <li><strong>gcloud identity groups</strong> and the Cloud Identity REST
+        API &mdash; reading back what was built</li>
+    </ul>
+  </div>
+</div>
+
+<h3>What these actually are</h3>
+
+<p><strong>Cloud Identity is not part of IAM, and that is the whole shape of
+this week.</strong> IAM answers "what may this principal do to this resource".
+Cloud Identity answers "who exists, and who belongs to what". They meet at
+exactly one point: an IAM policy will accept a group address as a principal.
+Everything on the IAM side of that line is managed with GCP roles; everything on
+the Cloud Identity side is managed with <em>Workspace admin roles</em>, granted
+in the Admin console, which no amount of GCP permission will substitute for.</p>
+
+<p><strong>A group used for access is a different animal from a mailing
+list</strong>, even though Google Cloud will let you use either. Google's own
+guidance splits groups four ways and gives them different rules.
+<em>Organizational</em> groups mirror the org chart and may be nested.
+<em>Access</em> groups carry permissions and typically should <em>not</em> be
+nested, because once groups contain groups, "who can read the logs" stops having
+a short answer. <em>Enforcement</em> groups, which attach restrictions, must not
+be nested at all. And <em>collaboration</em> groups &mdash; the ones people
+create for themselves to talk to each other &mdash; should never be used for
+access control, because nobody is curating who is in them.</p>
+
+<p><strong>The tools, and what each is for.</strong> <em>Terraform</em>
+describes the end state; here that is a group, one membership, and one IAM
+binding. <em>HCP Terraform</em> runs it remotely with two different service
+accounts &mdash; one for the plan, one for the apply &mdash; which is a security
+property established in Week 2 and which this week collided with head-on. The
+<em>Admin console</em> is the only place a Workspace admin role can be granted;
+there is no command-line path, which makes it the one step a pipeline cannot
+bootstrap for itself. And <em>gcloud</em> plus the Cloud Identity REST API are
+how the result gets read back &mdash; with a caveat about gcloud that cost me an
+hour and is in Challenges.</p>
+
+<div class="tag-grid">
+  <span>Grant to groups, not people</span>
+  <span>Access groups are not mailing lists</span>
+  <span>Never nest an access group</span>
+  <span>Directory admin is not cloud admin</span>
+</div>
+</div>
+
+<div class="section" id="architecture">
+<h2>Architecture — How It Fits Together</h2>
+
+<svg viewBox="0 0 880 300" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="A service account that holds no roles of its own is a member of a group. The group holds roles slash logging dot viewer on the platform folder. The folder contains the logging project, so the service account can read its logs only for as long as the membership exists."
+     style="width:100%;height:auto;border:1px solid #e4e7ec;border-radius:8px">
+  <rect x="0" y="0" width="880" height="300" fill="#ffffff"/>
+  <defs>
+    <marker id="w10a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="28" font-family="Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#202124">One permission, reached through a membership</text>
+
+  <rect x="24" y="110" width="186" height="74" rx="7" fill="#ffffff" stroke="#5f6368" stroke-width="1.3"/>
+  <text x="40" y="136" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="700" fill="#202124">service account</text>
+  <text x="40" y="154" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">group-access-demo</text>
+  <text x="40" y="170" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#b00020">holds no roles at all</text>
+
+  <line x1="210" y1="147" x2="292" y2="147" stroke="#5f6368" stroke-width="1.3" marker-end="url(#w10a)"/>
+  <text x="216" y="140" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">MEMBER</text>
+
+  <rect x="292" y="110" width="200" height="74" rx="7" fill="#ffffff" stroke="#1a73e8" stroke-width="1.6"/>
+  <text x="308" y="136" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="700" fill="#202124">access group</text>
+  <text x="308" y="154" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">grp-gcp-log-readers</text>
+  <text x="308" y="170" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">Cloud Identity, not IAM</text>
+
+  <line x1="492" y1="147" x2="574" y2="147" stroke="#5f6368" stroke-width="1.3" marker-end="url(#w10a)"/>
+  <text x="498" y="140" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">bound at</text>
+
+  <rect x="574" y="96" width="282" height="102" rx="7" fill="#ffffff" stroke="#5f6368" stroke-width="1.3"/>
+  <text x="590" y="122" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="700" fill="#202124">platform folder</text>
+  <text x="590" y="140" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">roles/logging.viewer &#8594; group:</text>
+  <text x="590" y="158" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">inherited by every project inside</text>
+  <text x="590" y="180" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">katta698-gcp-logging</text>
+
+  <text x="24" y="232" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">Remove the membership and the access goes with it. No IAM policy is edited, and the binding never changes.</text>
+  <text x="24" y="252" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">Folder rather than organization, because the pipeline's write identity holds Folder Administrator and not Organization Administrator.</text>
+</svg>
+</div>
+
+<div class="section" id="build">
+<h2>How We Built It — Step by Step</h2>
+
+<h3>What we deployed</h3>
+
+<table>
+  <thead><tr><th>What</th><th>How many</th><th>Its job</th></tr></thead>
+  <tbody>
+    <tr><td><code>google_cloud_identity_group</code></td><td>1</td><td>the access group that carries the permission</td></tr>
+    <tr><td><code>google_cloud_identity_group_membership</code></td><td>1</td><td>puts the test subject in it, as MEMBER</td></tr>
+    <tr><td><code>google_folder_iam_member</code></td><td>1</td><td>grants the group <code>roles/logging.viewer</code> on the platform folder</td></tr>
+    <tr><td><code>google_service_account</code></td><td>1</td><td>the test subject, deliberately holding nothing</td></tr>
+    <tr><td><code>google_service_account_iam_member</code></td><td>1</td><td>lets the operator mint a token as the subject, to run the test</td></tr>
+    <tr><td><code>google_project_service</code></td><td>1</td><td>the Cloud Identity API</td></tr>
+  </tbody>
+</table>
+
+<p>Four of those six exist only so the test means something. A revocation test
+run as a principal that can reach the permission another way proves nothing, and
+in this organization my own account holds Organization Administrator &mdash;
+nothing can be denied to it by removing a group membership. So the subject is a
+purpose-built service account with no roles of its own.</p>
+
+<h3>How we wrote it</h3>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-10-group-access/docs/blog/screenshots/02-terraform-layout.png" alt="File tree of week-10-group-access showing main.tf at 160 lines with 6 resources, variables.tf at 63 lines, versions.tf at 37 lines, validate.sh at 96 lines and measure-membership-lag.sh at 109 lines." loading="lazy">
+  <figcaption>Six resources, 260 lines of Terraform, and 205 lines of shell whose only job is to ask whether the access really follows the membership.</figcaption>
+</figure>
+
+<p>Two things in that code are not obvious. A group is parented to
+<code>customers/&lt;id&gt;</code> &mdash; the directory &mdash; and not to the
+organization, making it the only resource in this lab that does not hang off the
+resource hierarchy. And the provider needs
+<code>user_project_override</code>, because Cloud Identity bills the caller's
+project rather than the resource's, and the resource has no project at all.</p>
+
+<p>The IAM binding is <code>google_folder_iam_member</code> and never
+<code>_binding</code>. The <code>_binding</code> form is authoritative for the
+whole role: applying it would remove every other holder of
+<code>roles/logging.viewer</code> on that folder, and Terraform would report it
+as a tidy one-line change.</p>
+
+<h3>What appeared in the console</h3>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-10-group-access/docs/blog/screenshots/01-groups-before.png" alt="Google Admin console Groups page reading: your organization doesn't have any groups yet." loading="lazy">
+  <figcaption>The starting point, and the only figure here that cannot be recaptured: once the apply runs, this page never says this again.</figcaption>
+</figure>
+
+<h3>What success looked like</h3>
+
+<p>Read back from the cloud rather than from Terraform state: the group exists,
+it has exactly one member, that member is a <code>MEMBER</code> rather than a
+manager, the folder's <code>roles/logging.viewer</code> is held by
+<code>group:grp-gcp-log-readers@</code> and not by any person, and the subject
+holds zero direct role bindings anywhere in the organization. That last check is
+the one that makes the rest of it mean anything.</p>
+</div>
+
+<div class="section" id="challenges">
+<h2>Challenges — What Actually Went Wrong</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <h3>The pipeline built a group it could not read</h3>
+    <p>Google suggests that a pipeline which should not administer every group
+    can instead <em>own the groups it creates</em>. Terraform exposes that as
+    <code>initial_group_config = "WITH_INITIAL_OWNER"</code>. It created the
+    group and conferred no ownership &mdash; the group came out with zero
+    members, including no owner. The result was worse than a refused request: an
+    apply that reported success, and an object nobody could manage.</p>
+  </div>
+  <div class="card">
+    <h3>A 403 that was really a clock</h3>
+    <p>Granting the admin role did not fix it, and the error stayed a flat
+    <code>403 Permission denied</code>. Five minutes later the identical apply
+    succeeded with no changes. Workspace admin role assignments take minutes to
+    become effective, and during that window the API reports exactly what a
+    wrong permission reports. Observed once here, so treat the five minutes as
+    an anecdote, not a measurement.</p>
+  </div>
+</div>
+
+<p><strong>And one that invalidated my own evidence.</strong>
+<code>gcloud identity groups search --organization=&lt;ORG_ID&gt;</code> returns
+zero results always. Groups are parented to the <em>customer</em>, not the
+organization, so that query asks for groups under a parent no group can ever
+have. It exits zero and prints nothing, which reads exactly like "there are no
+groups". I had used it to establish this week's premise. The premise was true,
+but only the Admin console screenshot ever proved it &mdash; the command I
+quoted could not have returned anything else. A check that cannot fail is not a
+check.</p>
+</div>
+
+<div class="section" id="security">
+<h2>Security — Controls at Every Layer</h2>
+
+<p>The plan identity stays read-only: it was given a custom Workspace admin role
+carrying exactly one privilege, <em>Groups &rarr; Read</em>, confirmed against
+all 244 available privileges before the role was created. The write identity
+holds Groups Admin, which is broader than it should be and is the honest cost of
+this design &mdash; Cloud Identity publishes no narrower service-account path.
+The test subject holds no role directly, so its access depends entirely on a
+membership. And the grant sits on a folder rather than the organization, because
+the pipeline cannot write organization policy by deliberate design.</p>
+</div>
+
+<div class="section" id="cost">
+<h2>Cost</h2>
+
+<p><strong>$0.</strong> Cloud Identity Free covers groups and memberships, and
+no compute, storage or network resource was created. One capability is missing
+at this tier and worth knowing before you design around it: <strong>dynamic
+groups &mdash; membership from a query rather than a list &mdash; require
+Premium</strong>. Everything here is static membership, which is why removing
+someone is an explicit act rather than a consequence of their attributes
+changing.</p>
+</div>
+
+<div class="section" id="cleanup">
+<h2>Cleanup</h2>
+
+<p><code>terraform destroy</code> removes the membership, the group, the folder
+binding and the service account. The two Workspace admin roles are <em>not</em>
+Terraform-managed and must be revoked by hand in the Admin console &mdash; which
+is the same lesson as the grant: the directory is a separate system, and it will
+not be tidied up by the tool that manages the cloud.</p>
+</div>
+
+<div class="section" id="references">
+<h2>References</h2>
+
+<ul>
+  <li><a href="https://docs.cloud.google.com/iam/docs/groups-best-practices">Best practices for using Google groups</a> &mdash; the four kinds of group, and which may be nested</li>
+  <li><a href="https://docs.cloud.google.com/identity/docs/how-to/setup">Setting up the Groups API</a> &mdash; the service-account authorization paths</li>
+  <li><a href="https://docs.cloud.google.com/identity/docs/concepts/overview-dynamic-groups">Dynamic groups overview</a> &mdash; what the free tier does not include</li>
+</ul>
+</div>
+
+<div class="section" id="takeaways">
+<h2>Key Takeaways</h2>
+
+<ul>
+  <li><strong>Directory administration is not cloud administration.</strong> No
+    GCP role, up to and including Organization Administrator, lets you manage a
+    group. That grant lives in the Admin console and has no command-line path.</li>
+  <li><strong>An identity that cannot read a resource cannot manage it.</strong>
+    A read-only plan identity is a good control until the resource being planned
+    lives in a system that has no read-only role to give it.</li>
+  <li><strong>A permission error and a propagation delay look identical.</strong>
+    Before redesigning around a 403, wait and try again.</li>
+  <li><strong>Verify the command, not just the result.</strong> A query that
+    returns nothing because it asked the wrong parent is indistinguishable from
+    one that returns nothing because there is nothing there.</li>
+</ul>
+</div>
+
+</div>
