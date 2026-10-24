@@ -92,6 +92,56 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 23 October 2026 — covered by post #61
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Web Search gains domain filtering and user location. Up to 100 `allowed_domains` or 100 `blocked_domains` on the `filters` parameter. The finding is a scoping one: these shape "the results that ground a model's response", while whether the external web is reached at all is governed by `external_web_access` plus the `bedrock-websearch:ExternalWebAccess` IAM permission — "External retrieval takes effect only when you both grant the permission and leave the parameter enabled". AWS names the exfiltration risk and names the parameter, not a domain list, as the remedy | Amazon Bedrock | **#61** | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/bedrock-web-search-domain-user-location/) |
+| 1:1 NAT on Transit Gateway and Cloud WAN attachments, "through integration with Regional Private NAT Gateway". The strongest networking item of the week and the best remaining candidate for a deep-dive — it removes an overlapping-CIDR workaround rather than adding a capability | AWS Transit Gateway, Cloud WAN | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-transit-gateway-cloud-wan-1-1-nat/) |
+| Persistent chat across linked Regions | Amazon Connect Global Resiliency | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-connect-global-resiliency-persistent-chat) |
+| EMR charge on EKS reduced by 30 percent — the week's only price cut, and worth a note because it can move an EMR-on-EKS versus EMR-on-EC2 comparison | Amazon EMR on EKS | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/emr-eks-reduces-emr-charge-30-percent/) |
+| October 2026 quarterly updates | Amazon Corretto | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-corretto-october-2026-quarterly-updates) |
+| Now available in Mexico (Central) | Amazon MWAA | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-mwaa-mexico-central/) |
+
+**Covered in weekly #12.** The 19–23 October window is now closed and written up
+as AWS Weekly Intelligence #12, with all 54 What's New announcements inventoried
+and every link verified 200. Dailies #57–#61 covered one announcement from each
+of the five working days, so no item needed reconciling across the window edge.
+
+---
+
+## For the Validation window — two tooling items found on 24 October
+
+Both surfaced while publishing arch #92, daily #61 and weekly #12 together.
+Raised here rather than patched, per the rule about not editing shared checks
+from a cloud window.
+
+**1. `publish.py` passes filenames to checks that match on slug, producing a
+false green.** `publish.py <post>` scopes the per-post checks by passing the
+argument through verbatim. `validate_arch_post.py` and `verify_claims.py` match
+on **slug**, not filename, so `publish.py arch-092-security-incident-response`
+makes `validate_arch_post.py` match zero posts and report `pass`. In this run it
+reported `validate_arch_post.py pass` while the post actually carried one error
+(a missing "On this page" block on the weekly) and one warning. Running the same
+check by slug found both. This is the most consequential of the two: the scoped
+path is the normal path, and it currently reports success for checks that
+examined nothing.
+
+**2. `check_lab_post_shape.py` cannot pass under any non-lab scoping.** Commit
+`5ff264c` ("Check the AWS lab too, and stop passing when nothing was checked")
+correctly made the check fail when its filter matches no post. But `publish.py`
+passes the scoped post names to every per-post check, so scoping to any set that
+contains no Weekly Lab post now always fails this one — it prints
+`NOTHING MATCHED [...] -- this is a failure, not a pass`. Unscoped it passes
+cleanly (10 GCP + 24 AWS Weekly Lab posts, all ok). So a correct rule inside the
+check is interacting with the scoping in `publish.py` to block every
+architecture, daily and weekly publish that uses the scoped path. The rule is
+right; the plumbing needs to either skip a per-post check whose series does not
+match, or distinguish "nothing matched because this run is not about labs" from
+"nothing matched because the filter is broken".
+
+---
+
 ## 22 October 2026 — covered by post #60
 
 | Item | Service | Status | Importance | Reference |
