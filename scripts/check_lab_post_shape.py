@@ -58,7 +58,6 @@ MIGRATION_PENDING = {
     "week-06-billing-export",
     "week-07-asset-inventory",
     "week-08-iam-deny",
-    "week-09-sa-lifecycle",
 }
 
 # The standard's section order. Presence is checked; order is not, because the
