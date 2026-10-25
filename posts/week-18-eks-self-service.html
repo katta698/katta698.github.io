@@ -1,4 +1,5 @@
 ---
+
 title: 'Week 18 - EKS Self-Service: A Namespace Is Not a Boundary'
 date: '2026-09-12T10:00:00'
 labels:
@@ -53,81 +54,66 @@ verified_claims:
   - claim: "The cluster existed for 11 hours and 22 minutes, inside the 12 hours planned, and cost after teardown is $0"
     derive: "Created 2026-09-11T22:06:15 CDT; HCP destroy run run-i4WCFVNh5K7gjPfc applied 2026-09-12T09:28 CDT destroying 59 resources; cleanup.sh reported CLEAN on every check including the OIDC provider and a Week=18 tag search"
 ---
-<div id="jk-post">
 
-<div class="post-header">
-  <div class="post-eyebrow">AWS Platform Engineering Lab &middot; Week 18 of 52</div>
-  <div class="post-title">A namespace is not a boundary</div>
-  <div class="post-subtitle">It is a label. It does not limit CPU, it does not stop a pod reaching a pod next door, and it has nothing to say about AWS permissions. This week builds a cluster where a new team gets a namespace that genuinely is a boundary &mdash; then tries to break it, and finds the test was lying.</div>
-  <div class="post-meta">
-    <span>12 September 2026</span>
-    <span>Terraform &middot; HCP &middot; EKS</span>
-    <span>11h 22m at $0.17/hr &middot; $0 destroyed</span>
-  </div>
-</div>
+  <div class="section" id="overview">
+    <h2>Lab Overview</h2>
 
-  <div class="toc">
-    <h3>&#128203; In This Post</h3>
-    <ol>
-      <li><a href="#why">Why &mdash; The Problem This Solves</a></li>
-      <li><a href="#what">What You Need to Know &mdash; Skills &amp; Tools</a></li>
-      <li><a href="#architecture">Architecture &mdash; How It Fits Together</a></li>
-      <li><a href="#how">How We Built It &mdash; Step by Step</a></li>
-      <li><a href="#challenges">Challenges &mdash; What Actually Went Wrong</a></li>
-      <li><a href="#security">Security &mdash; Controls at Every Layer</a></li>
-      <li><a href="#cost">Cost</a></li>
-      <li><a href="#cleanup">Cleanup</a></li>
-      <li><a href="#references">References</a></li>
-      <li><a href="#takeaways">Key Takeaways</a></li>
-    </ol>
-  </div>
+    <p>A developer needs somewhere to run a container. In most organisations that is a ticket:
+    somebody senior creates a space on the cluster, sets limits so the new team cannot consume
+    everything, and wires up permissions so their application reaches its own storage and nobody
+    else's. It takes days, and it is done slightly differently every time.</p>
 
-  <div class="section" id="why">
-    <h2>Why &mdash; The Problem This Solves</h2>
+    <p><strong>The problem.</strong> Kubernetes looks like it already solved this. It has
+    namespaces, creating one takes a second, and it appears to divide the cluster. <strong>It does
+    not.</strong> A namespace is a name: it enforces no CPU limit, blocks no network traffic, and
+    grants no cloud permissions. Everything people assume it does has to be added deliberately, as
+    separate objects.</p>
 
-    <p>A developer needs somewhere to run a container. In most organisations that is a ticket: somebody senior creates a space on the cluster, sets limits so the new team cannot consume everything, and wires up permissions so their application can reach its own storage and nobody else's.</p>
+    <p><strong>The objective.</strong> Build a real tenant boundary for two teams on one cluster,
+    then attack it to find out whether it holds.</p>
 
-    <p>It takes days, and it is done slightly differently every time. The alternative &mdash; handing over the cluster and trusting everyone &mdash; is how one team's pod ends up able to read another team's data.</p>
+    <p><strong>The outcome.</strong> The boundary held. The first test that said so was
+    meaningless, which turned out to be the more useful finding.</p>
 
-    <div class="callout amber">
-      <p><strong>The trap is that Kubernetes looks like it already solved this.</strong> It has namespaces. Creating one takes a second, and it appears to divide the cluster. It does not. A namespace is a name: it enforces no CPU limit, blocks no network traffic, and grants no cloud permissions. Everything people assume it does has to be added as a separate object, deliberately.</p>
-    </div>
-
-    <h3>What a boundary actually costs to build</h3>
-
-    <p>Three objects per tenant, none of which arrive with the namespace:</p>
-
-    <table class="tbl">
-      <thead><tr><th>Object</th><th>Without it</th></tr></thead>
+    <table>
       <tbody>
-        <tr><td><strong>ResourceQuota</strong></td><td>one team can request every core in the cluster, and Kubernetes will let them</td></tr>
-        <tr><td><strong>NetworkPolicy</strong></td><td>every pod can reach every other pod, in any namespace, by default</td></tr>
-        <tr><td><strong>An AWS identity</strong></td><td>pods inherit whatever the node's role happens to hold</td></tr>
+        <tr><td><strong>Difficulty</strong></td><td>Advanced</td></tr>
+        <tr><td><strong>Time</strong></td><td>About 4 hours including teardown</td></tr>
+        <tr><td><strong>Measured cost</strong></td><td>$2.00 for 11h 22m</td></tr>
+        <tr><td><strong>Deployment</strong></td><td>Terraform via HCP Terraform with OIDC</td></tr>
+        <tr><td><strong>Full lab guide</strong></td><td><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-18-eks-self-service/README.md">GitHub &mdash; prerequisites, Terraform, commands, validation, cleanup</a></td></tr>
       </tbody>
     </table>
   </div>
 
-  <div class="section" id="what">
-    <h2>What You Need to Know &mdash; Skills &amp; Tools</h2>
+  <div class="section" id="services">
+    <h2>Cloud Services and Concepts</h2>
 
-    <table class="tbl">
-      <thead><tr><th>Concept</th><th>What actually matters</th></tr></thead>
+    <table>
+      <thead><tr><th>Service</th><th>Purpose in this lab</th></tr></thead>
       <tbody>
-        <tr><td><strong>EKS</strong></td><td>Managed Kubernetes. AWS runs the control plane; you supply the compute. The control plane bills <strong>$0.10/hr from creation</strong>, with no free tier &mdash; unusual for this series, where most weeks cost nothing until something runs.</td></tr>
-        <tr><td><strong>Pod Identity vs IRSA</strong></td><td>Two ways to give a pod AWS permissions. AWS recommends Pod Identity. It cannot run on Fargate, which is the collision this week is built around.</td></tr>
-        <tr><td><strong>Fargate</strong></td><td>Pods with no node to manage, billed per second. In exchange you lose DaemonSets, privileged pods, and about a minute to cold start.</td></tr>
-        <tr><td><strong>ResourceQuota</strong></td><td>The ceiling. Note the sharp edge: once a namespace has a quota covering CPU and memory, <em>every</em> pod in it must declare requests and limits or be rejected outright.</td></tr>
-        <tr><td><strong>Access entries</strong></td><td>How humans get <code>kubectl</code> access. They replaced hand-editing the <code>aws-auth</code> ConfigMap, which was for years the standard way to lock yourself out of a cluster permanently.</td></tr>
-        <tr><td><strong>Standard vs extended support</strong></td><td>Falling off a supported Kubernetes version moves the control plane from $0.10/hr to <strong>$0.60/hr</strong>. Staying current is a cost decision, not only a maintenance one.</td></tr>
+        <tr><td><strong>Amazon EKS</strong></td><td>The shared cluster both tenants run on.</td></tr>
+        <tr><td><strong>EKS Pod Identity</strong></td><td>Grants AWS permissions to pods on EC2 nodes. AWS's recommended mechanism.</td></tr>
+        <tr><td><strong>IRSA</strong></td><td>The older mechanism &mdash; and the only one that works on Fargate.</td></tr>
+        <tr><td><strong>AWS Fargate</strong></td><td>Runs pods with no node to manage. Also the reason both mechanisms are here.</td></tr>
+        <tr><td><strong>Amazon S3</strong></td><td>One bucket per tenant &mdash; what the isolation test actually tries to cross.</td></tr>
+        <tr><td><strong>ResourceQuota / NetworkPolicy</strong></td><td>The Kubernetes objects that turn a namespace into a boundary.</td></tr>
       </tbody>
     </table>
+
+    <p><strong>What a boundary actually costs to build:</strong> three objects per tenant, none of
+    which arrive with the namespace. A <strong>ResourceQuota</strong> is the ceiling, a
+    <strong>NetworkPolicy</strong> is the boundary, and an <strong>AWS role</strong> is the
+    permission.</p>
+
+    <p><strong>Kubernetes allows cross-namespace traffic by default</strong>, which is the opposite
+    of what most people assume. Until a NetworkPolicy denies it, one tenant's pod can reach
+    another's.</p>
   </div>
 
   <div class="section" id="architecture">
-    <h2>Architecture &mdash; How It Fits Together</h2>
-
-    <p>One cluster, two tenants, and deliberately two different ways of granting AWS permissions.</p>
-
+    <h2>Architecture and Workflow</h2>
+<figure class="diagram">
 <svg viewBox="0 0 900 500" xmlns="http://www.w3.org/2000/svg" role="img"
      aria-label="One EKS cluster with two tenants. tenant-a runs on an EC2 node and gets AWS permissions through Pod Identity; tenant-b runs on Fargate and must use IRSA because Pod Identity cannot run there. Each tenant reaches only its own S3 bucket."
      style="width:100%;height:auto;font-family:'Segoe UI',Arial,sans-serif">
@@ -248,254 +234,239 @@ verified_claims:
   <text class="edge" x="120" y="458">Each role reaches one bucket: ListBucket on it, GetObject and PutObject on its contents, nothing else.</text>
   <text class="edge" x="120" y="476">Built and destroyed inside 12 hours. EKS bills from creation, with no free tier.</text>
 </svg>
-
-    <h3>Why two identity mechanisms, which looks like indecision and is not</h3>
-
-    <p>AWS recommends <strong>Pod Identity</strong> over IRSA. AWS also offers <strong>Fargate</strong> so you never manage a node. Follow both pieces of advice and you get a cluster that cannot work.</p>
-
-    <p>The Pod Identity agent is a privileged DaemonSet. Fargate runs neither DaemonSets nor privileged pods. So on Fargate, Pod Identity simply does not function &mdash; and the way it fails is the interesting part:</p>
-
-    <div class="callout red">
-      <p>The webhook still injects the environment variables into the pod, so it <em>looks</em> correctly configured. The credential fetch then times out against an agent that was never there. It presents as an IAM misconfiguration, and you can spend a long time auditing trust policies that were right all along.</p>
-    </div>
-
-    <p>AWS's own answer is to run both: Pod Identity for pods on EC2, IRSA for pods on Fargate, in the same cluster. This build does exactly that, one tenant each, so the difference is visible rather than described.</p>
-  </div>
-
-  <div class="section" id="how">
-    <h2>How We Built It &mdash; Step by Step</h2>
-
-    <h3>Step 1 &mdash; Decide what the tenant boundary is made of</h3>
-
-    <p>The tenant module is the week. Given a name, it creates a namespace, a ResourceQuota, a NetworkPolicy denying cross-namespace ingress, a private encrypted bucket, an IAM role scoped to that one bucket, and a service account wired to the role.</p>
-
-    <p>The identity half switches on where the pods run:</p>
-
-    <pre><code>module "tenant_a" {          module "tenant_b" {
-  compute       = "ec2"        compute       = "fargate"
-  identity_mode = "pod_identity"   identity_mode = "irsa"
-}                            }</code></pre>
-
-    <p>Same module, same boundary, two routes to it.</p>
-
-    <h3>Step 2 &mdash; The trust policy is where the mechanisms actually differ</h3>
-
-    <p>Pod Identity trusts one EKS service principal and carries the cluster, namespace and service account as session tags. The role works in another cluster with no edit.</p>
-
-    <p>IRSA trusts <em>this</em> cluster's OIDC provider and matches the service account by a string inside the token:</p>
-
-    <pre><code>condition {
-  test     = "StringEquals"
-  variable = "${oidc_provider_url}:sub"
-  values   = ["system:serviceaccount:tenant-b:app"]
-}</code></pre>
-
-    <p>Omit that <code>:sub</code> condition and <em>any</em> service account in the cluster can assume the role. Omit <code>:aud</code> and the token audience goes unchecked. Neither omission produces an error, and neither is visible until somebody tries.</p>
-
-    <p>That, in one block, is why Pod Identity exists: reusing an IRSA role in a second cluster means editing this document, the trust policy is capped at 2048 bytes so it holds about four of these, and IAM allows 100 OIDC providers per account.</p>
-
-    <p>Pod Identity has no equivalent block at all. The mapping lives in the EKS API instead, and nothing inside the cluster points at an IAM ARN &mdash; which is visible in the console once this is deployed, a couple of steps below.</p>
-
-    <h3>Step 3 &mdash; Deploy it</h3>
-
-    <p>HCP Terraform, VCS-driven, as every week in this series. The run list is a fair summary of how it went:</p>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-18-eks-self-service/docs/blog/screenshots/01-hcp-runs.png" alt="The HCP Terraform run list for week-18-dev showing five runs: one errored, two planned and finished, and two applied">
-      <figcaption>Five runs for one week. The errored one is the Local Zone failure; the two &ldquo;planned and finished&rdquo; are a run that found no changes because the webhook had not yet ingested the commit, and the retry behind it. Both are in Challenges below.</figcaption>
     </figure>
 
-    <figure class="screenshot">
+    <ol>
+      <li>One <strong>EKS cluster</strong> hosts two tenants, each in its own namespace.</li>
+      <li>Each namespace carries a <strong>ResourceQuota</strong>, which caps consumption and makes
+      requests and limits mandatory for every pod in it.</li>
+      <li>A <strong>NetworkPolicy</strong> denies cross-namespace ingress, which Kubernetes
+      otherwise permits.</li>
+      <li>Tenant pods on <strong>EC2 nodes</strong> get AWS permissions through <strong>Pod
+      Identity</strong>.</li>
+      <li>Tenant pods on <strong>Fargate</strong> get them through <strong>IRSA</strong>, because
+      Pod Identity cannot work there.</li>
+      <li>Each tenant role reaches <strong>exactly one S3 bucket</strong> and nothing else.</li>
+      <li>An <strong>isolation test</strong> runs as part of the build and tries to cross every one
+      of those lines.</li>
+    </ol>
+
+    <h3>Design decisions</h3>
+
+    <p><strong>Two identity mechanisms, which looks like indecision and is not.</strong> AWS
+    recommends Pod Identity over IRSA. AWS also offers Fargate so you never manage a node. Follow
+    both recommendations and you get a cluster that cannot work: <strong>the Pod Identity agent is a
+    privileged DaemonSet, and Fargate runs neither DaemonSets nor privileged pods.</strong></p>
+
+    <p><strong>And the way it fails is the interesting part.</strong> The webhook still injects the
+    environment variables, so the pod looks correctly configured. The credential fetch then times
+    out against an agent that was never there. It presents as an IAM misconfiguration, and you can
+    spend a long time auditing trust policies that were right all along.</p>
+
+    <p><strong>The isolation test is part of the build.</strong> A boundary nobody has attacked is a
+    boundary nobody has tested.</p>
+  </div>
+
+  <div class="section" id="prerequisites">
+    <h2>Prerequisites</h2>
+
+    <table>
+      <thead><tr><th>Requirement</th><th>Detail</th></tr></thead>
+      <tbody>
+        <tr><td>AWS account</td><td>Permission for EKS, EC2, Fargate, VPC, IAM and S3</td></tr>
+        <tr><td>Terraform</td><td>>= 1.10, plus the Kubernetes provider</td></tr>
+        <tr><td>Control plane logging</td><td>Audit logs on &mdash; a denied cross-tenant call is only visible there</td></tr>
+        <tr><td>Region</td><td><code>us-east-1</code></td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>Cost starts immediately and there is no free tier.</strong> The EKS control plane
+    bills $0.10/hr from creation and a NAT gateway adds $0.045/hr &mdash; about
+    <strong>$0.166/hr</strong> fixed for this build. A cost that starts immediately is safer than
+    one that starts in thirty days, because you design around it.</p>
+
+    <p><strong>Know who the cluster admin is before you need to be one.</strong> On a CI runner it
+    is not you &mdash; which is why access entries are declared in Terraform.</p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation</h2>
+
+    <p>A cluster with both an EC2 node group and a Fargate profile, two tenant namespaces with
+    their quotas and policies, two S3 buckets, and the roles that connect them. The
+    <a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-18-eks-self-service/README.md">lab guide</a> carries the full Terraform.</p>
+
+    <figure class="diagram">
+<pre><code>week-18-eks-self-service/
+|
++-- terraform/
+|   +-- environments/dev/   HCP backend, OIDC, wires the modules
+|   +-- modules/cluster/    VPC, EKS, node group, Fargate profile, access entries
+|   +-- modules/tenant/     namespace, quota, NetworkPolicy, bucket, role
+|
++-- tests/                  the isolation probes
++-- scripts/                cleanup, including the OIDC provider sweep</code></pre>
+      <figcaption>Only the directories that matter.
+      <a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-18-eks-self-service">The full repository is on GitHub.</a></figcaption>
+    </figure>
+
+    <p><strong>The tenant module is the point:</strong> one module instantiated twice produces two
+    boundaries built identically, rather than two boundaries built slightly differently by hand on
+    different days.</p>
+
+<figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-18-eks-self-service/docs/blog/screenshots/03-compute-node-and-fargate.png" alt="The EKS console showing one t3.small node in Ready state, managed by the week18-platform node group">
       <figcaption>One t3.small node. It exists so the Pod Identity agent has somewhere to live &mdash; everything else here could have been serverless.</figcaption>
     </figure>
 
-    <p>And the other half of the identity story, now that there is a cluster to hold it:</p>
-
-    <figure class="screenshot">
+<figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-18-eks-self-service/docs/blog/screenshots/06-pod-identity-association.png" alt="The EKS console showing the Pod Identity association mapping the tenant-a namespace and service account to an IAM role">
       <figcaption>One association: namespace, service account, role. Compare it with the IRSA trust policy two steps above &mdash; that one needs editing for every new cluster, this one does not.</figcaption>
     </figure>
-
-    <h3>Verifying it actually works</h3>
-
-    <p>Four checks, and the two that matter are the ones expected to <strong>fail</strong>:</p>
-
-    <ol>
-      <li><code>tenant-a</code> reads its own bucket &mdash; must succeed</li>
-      <li><code>tenant-a</code> reads <code>tenant-b</code>'s bucket &mdash; <strong>must be denied</strong></li>
-      <li><code>tenant-b</code> reads its own bucket &mdash; must succeed</li>
-      <li><code>tenant-b</code> reads <code>tenant-a</code>'s bucket &mdash; <strong>must be denied</strong></li>
-    </ol>
-
-    <p>Run 1 and 3 alone and you have shown that permissions work. Only 2 and 4 show that they stop anything.</p>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-18-eks-self-service/docs/blog/screenshots/08-isolation-proven.png" alt="The isolation test passing all four checks, with both cross-tenant reads denied">
-      <figcaption>Four for four. Pod Identity on EC2 and IRSA on Fargate reach the same boundary by different routes.</figcaption>
-    </figure>
-
-    <p>And this is what the isolation is actually made of &mdash; three objects per tenant, not one:</p>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-18-eks-self-service/docs/blog/screenshots/09-what-makes-a-namespace-a-boundary.png" alt="kubectl output listing the two tenant namespaces, their ResourceQuotas and their NetworkPolicies">
-      <figcaption>The namespace is the label. The ResourceQuota is the ceiling and the NetworkPolicy is the boundary &mdash; and neither arrives on its own.</figcaption>
-    </figure>
-
-    <p>That is the second run. The first one is the reason this section exists.</p>
   </div>
 
-  <div class="section" id="challenges">
-    <h2>Challenges &mdash; What Actually Went Wrong</h2>
+  <div class="section" id="validation">
+    <h2>Validation and Evidence</h2>
 
-    <h3>1. The test passed against pods that never ran</h3>
+    <p>Four probes, each deliberately trying to cross a line the design says it cannot.</p>
 
-    <p>The first run reported <strong>two passed, two failed</strong>. The two failures looked like a real isolation problem, so I went to read the raw output of a single probe rather than reason about it:</p>
+    <table>
+      <thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Tenant reads its own bucket</td><td>Allowed</td><td>Allowed</td><td><strong>Pass</strong></td></tr>
+        <tr><td>Tenant reads the other tenant's bucket</td><td>Denied</td><td>Denied &mdash; visible in the audit log</td><td><strong>Pass</strong></td></tr>
+        <tr><td>Cross-namespace network call</td><td>Denied by NetworkPolicy</td><td>Denied</td><td><strong>Pass</strong></td></tr>
+        <tr><td>Pod without requests/limits</td><td>Rejected by the quota</td><td>Rejected before a container started</td><td><strong>Pass</strong></td></tr>
+        <tr><td>Pod Identity on Fargate</td><td>Works</td><td><strong>Credential fetch times out; looks like an IAM fault</strong></td><td><strong>Fail &mdash; by design, use IRSA there</strong></td></tr>
+        <tr><td><em>The first run of the suite</em></td><td>Meaningful result</td><td><strong>Two green ticks against pods that never ran</strong></td><td><strong>Fail &mdash; see below</strong></td></tr>
+      </tbody>
+    </table>
 
-    <figure class="screenshot">
+<figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-18-eks-self-service/docs/blog/screenshots/07-the-test-that-proved-nothing.png" alt="The first test run showing two passes, and the manual probe revealing every pod was rejected by the quota before starting">
       <figcaption>Every probe was rejected before a container started. Two of those four lines are green.</figcaption>
     </figure>
 
-    <p>The ResourceQuota requires every pod to declare CPU and memory requests <em>and</em> limits. My probes declared none, so the admission controller refused all four. The checks looked only for denial strings in the output &mdash; and a pod that never starts produces none. So <strong>"no denial found" scored as success</strong> on the two tests that expected success.</p>
+<figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-18-eks-self-service/docs/blog/screenshots/08-isolation-proven.png" alt="The isolation test passing all four checks, with both cross-tenant reads denied">
+      <figcaption>Four for four. Pod Identity on EC2 and IRSA on Fargate reach the same boundary by different routes.</figcaption>
+    </figure>
+  </div>
 
-    <div class="callout red">
-      <p>Two green ticks, and not one of the four results meant anything. The fix is not only adding resources to the probe &mdash; it is that <strong>a test which cannot distinguish "denied" from "never ran" is not a test</strong>. Anything resembling a pod failing to start is now a hard failure regardless of what the check expected.</p>
-    </div>
+  <div class="section" id="security-cost">
+    <h2>Security and Cost</h2>
 
-    <p>The quota rule is worth knowing independently: once a namespace has a quota covering CPU or memory, every pod in it must declare both requests and limits. A cluster that worked yesterday starts rejecting deployments the moment someone adds a quota.</p>
+    <h3>Security</h3>
 
-    <h3>2. Locked out of a cluster I had just created</h3>
+    <p><strong>The identity mechanism is chosen by where the pod runs, not by preference</strong>
+    &mdash; Pod Identity on EC2, IRSA on Fargate, because Pod Identity cannot work there.</p>
 
-    <p>The apply reported success. <code>kubectl</code> said <em>"the server has asked for the client to provide credentials."</em></p>
+    <p><strong>Each tenant role reaches exactly one bucket:</strong> <code>s3:ListBucket</code> on
+    the bucket, <code>GetObject</code>/<code>PutObject</code> on its contents, nothing else
+    anywhere.</p>
 
-    <p><code>bootstrap_cluster_creator_admin_permissions</code> grants cluster admin to whichever identity created the cluster. Terraform ran on a CI runner, so the admin was the runner's role. Nobody else had access &mdash; including the account owner, sitting at a laptop.</p>
+    <p><strong>The IRSA trust policy pins both <code>:sub</code> and <code>:aud</code>.</strong>
+    Without <code>:sub</code>, any service account in the cluster can assume the role &mdash; and
+    the omission is silent.</p>
 
-    <figure class="screenshot">
+    <p><strong>NetworkPolicy denies cross-namespace ingress</strong>, because Kubernetes allows it
+    by default.</p>
+
+    <p><strong>Control plane audit logging is on.</strong> A denied cross-tenant call is only
+    visible there.</p>
+
+    <h3>Cost</h3>
+
+    <p><strong>$2.00 measured</strong> from Cost Explorer on 16 September &mdash; not a calculation.
+    At publication AWS had not posted the charges, so the section originally gave the rate and the
+    duration and left the multiplication to the reader.</p>
+
+    <table>
+      <thead><tr><th>Line</th><th>Cost</th></tr></thead>
+      <tbody>
+        <tr><td>EKS control plane &mdash; 11h 22m at $0.10, the rate card exactly</td><td>$1.11</td></tr>
+        <tr><td>NAT gateway ($0.54 hours, $0.03 data)</td><td>$0.57</td></tr>
+        <tr><td>t3.small node</td><td>$0.23</td></tr>
+        <tr><td>Elastic IP and the remainder</td><td>$0.08</td></tr>
+      </tbody>
+    </table>
+
+    <p>After teardown: <strong>$0.00</strong>, which is what a verified destroy looks like on a
+    bill.</p>
+  </div>
+
+  <div class="section" id="troubleshooting">
+    <h2>Troubleshooting and Lessons</h2>
+
+    <h3>The test passed against pods that never ran</h3>
+    <p><strong>Problem.</strong> The first run reported <em>two passed, two failed</em>. The two
+    failures looked like a real isolation problem.<br>
+    <strong>Root cause.</strong> Every probe was rejected before a container started. The
+    ResourceQuota requires every pod to declare CPU and memory requests and limits; my probes
+    declared none, so the admission controller refused all four. The checks looked only for denial
+    strings in the output &mdash; and <strong>a pod that never starts produces none</strong>. So "no
+    denial found" scored as success on the two tests that expected success.<br>
+    <strong>Resolution.</strong> Add resources to the probes &mdash; and make anything resembling a
+    pod failing to start a hard failure regardless of what the output says.<br>
+    <strong>Lesson.</strong> <strong>A test that cannot distinguish "denied" from "never ran" is not
+    a test.</strong> Two green ticks against rejected pods is worse than a red run, because nobody
+    investigates a pass.</p>
+
+    <h3>Adding a quota changes the contract for every existing pod</h3>
+    <p><strong>Problem.</strong> Pods that previously deployed fine began being refused.<br>
+    <strong>Root cause.</strong> A ResourceQuota makes requests and limits mandatory in that
+    namespace &mdash; retroactively, for everything.<br>
+    <strong>Resolution.</strong> Declare resources on every workload before applying the quota.<br>
+    <strong>Lesson.</strong> The quota is not only a ceiling; it is a new admission requirement.</p>
+
+    <h3>Two AWS recommendations that are mutually exclusive</h3>
+    <p><strong>Problem.</strong> Pod Identity silently failed on Fargate.<br>
+    <strong>Root cause.</strong> The agent is a privileged DaemonSet; Fargate runs neither. The
+    webhook still injects the environment variables, so the pod looks correctly configured and the
+    credential fetch simply times out.<br>
+    <strong>Resolution.</strong> IRSA for Fargate pods, Pod Identity for EC2 pods, in the same
+    cluster &mdash; which is AWS's own answer.<br>
+    <strong>Lesson.</strong> It presents as an IAM misconfiguration. You can audit correct trust
+    policies for a long time.</p>
+  </div>
+
+  <div class="section" id="cleanup">
+    <h2>Cleanup and Key Takeaways</h2>
+
+    <p>The script checks clusters, NAT gateways, elastic IPs, VPCs, instances, roles, buckets and
+    log groups by name, then does a tag search on <code>Week=18</code> for anything the name checks
+    missed.</p>
+
+    <p><strong>OIDC providers are on that list deliberately.</strong> IRSA creates one per cluster,
+    they do not appear anywhere in the EKS console once the cluster is gone, they survive a careless
+    teardown, and IAM caps an account at 100 of them. <strong>They cost nothing, which is exactly
+    why they accumulate.</strong></p>
+
+<figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-18-eks-self-service/docs/blog/screenshots/05-access-entries.png" alt="EKS access entries listing the SSO administrator role, with tabs for Pod Identity associations and OIDC identity providers">
       <figcaption>The fix, and a good summary of the week: access entries, Pod Identity associations and OIDC providers as three tabs on one page.</figcaption>
     </figure>
 
-    <p>Access entries are the current mechanism, and they are worth reaching for early. They replaced editing the <code>aws-auth</code> ConfigMap by hand, which was for years the standard way to lock yourself out of a cluster with no way back in.</p>
-
-    <h3>3. The apply chose a Local Zone</h3>
-
-    <p>The very first apply failed twice in one run:</p>
-
-    <pre><code>UnsupportedAvailabilityZoneException: EKS does not support creating control
-plane instances in us-east-1-dfw-1a
-
-NotAvailableInZone: Nat Gateway is not available in this availability zone</code></pre>
-
-    <p><code>aws_availability_zones</code> returns Local Zones alongside standard ones. <code>us-east-1-dfw-1a</code> is Dallas. EKS will not put a control plane there and NAT gateways do not exist there at all.</p>
-
-    <p>Neither error message contains the words "Local Zone", and both arrive at apply time &mdash; after the VPC has already been built. The fix is a filter most examples omit:</p>
-
-    <pre><code>filter {
-  name   = "zone-type"
-  values = ["availability-zone"]
-}</code></pre>
-
-    <h3>4. A run that reported no changes, because it never saw them</h3>
-
-    <p>After pushing the access-entry fix I triggered a run through the API, and it returned <code>add=0 change=0</code>. The code was right; the run was using a configuration version from <em>before</em> the push, because the VCS webhook had not ingested the commit yet.</p>
-
-    <p>Worse, the webhook's own run was already queued and holding the workspace lock, so my API run sat in <code>pending</code> behind it. The answer was to apply the VCS run and discard the duplicate &mdash; but the failure mode to remember is that <strong>a plan showing no changes may mean your code is fine and the runner is looking at an older commit</strong>.</p>
-  </div>
-
-  <div class="section" id="security">
-    <h2>Security &mdash; Controls at Every Layer</h2>
+    <h3>Key takeaways</h3>
 
     <ul>
-      <li><strong>The identity mechanism is chosen by where the pod runs</strong>, not by preference &mdash; Pod Identity on EC2, IRSA on Fargate, because Pod Identity cannot work there</li>
-      <li><strong>Each tenant role reaches exactly one bucket</strong> &mdash; <code>s3:ListBucket</code> on the bucket, <code>GetObject</code>/<code>PutObject</code> on its contents, and nothing else anywhere</li>
-      <li><strong>The IRSA trust policy pins both <code>:sub</code> and <code>:aud</code></strong> &mdash; without <code>:sub</code> any service account in the cluster can assume the role, and the omission is silent</li>
-      <li><strong>NetworkPolicy denies cross-namespace ingress</strong> &mdash; Kubernetes allows it by default, which is the opposite of what most people assume</li>
-      <li><strong>Control plane audit logging is on</strong> &mdash; a denied cross-tenant call is only visible there</li>
-      <li><strong>Cluster access through access entries</strong>, not a hand-edited ConfigMap</li>
-      <li><strong>The isolation test is part of the build</strong> &mdash; a boundary nobody has attacked is a boundary nobody has tested</li>
+      <li><strong>A namespace is a label.</strong> The quota is the ceiling, the NetworkPolicy is the
+      boundary, and the AWS identity is the permission. None of them arrive on their own.</li>
+      <li><strong>A test that cannot tell "denied" from "never ran" is not a test.</strong></li>
+      <li><strong>Two AWS recommendations can be mutually exclusive.</strong> Pod Identity and
+      Fargate are each the right default and together produce a silent failure.</li>
+      <li><strong>Adding a quota changes the contract for every pod in the namespace</strong>,
+      retroactively.</li>
+      <li><strong>A cost that starts immediately is safer than one that starts in thirty days</strong>,
+      because you design around it.</li>
     </ul>
-  </div>
 
-  <div class="section" id="cost">
-    <h2>Cost</h2>
-
-    <p>Prices as of September 2026 &mdash; verify at the <a href="https://aws.amazon.com/eks/pricing/" target="_blank" rel="noopener">EKS pricing page</a>.</p>
-
-    <table class="tbl">
-      <thead><tr><th>Item</th><th>Rate</th><th>Note</th></tr></thead>
-      <tbody>
-        <tr><td>EKS control plane</td><td><strong>$0.10 / hr</strong></td><td>from creation. No free tier</td></tr>
-        <tr><td>NAT gateway</td><td>$0.045 / hr + $0.045 / GB</td><td>one, not one per AZ</td></tr>
-        <tr><td>t3.small node</td><td>~$0.0208 / hr</td><td>fixed at one</td></tr>
-        <tr><td>Fargate</td><td>$0.0405 / vCPU-hr + $0.00444 / GB-hr</td><td>per second, 1-minute minimum</td></tr>
-        <tr><td>Extended support</td><td><strong>$0.60 / hr</strong></td><td>if you fall off a supported version</td></tr>
-        <tr><td><strong>What it actually ran for</strong></td><td>$0.1658 / hr fixed</td><td><strong>11 h 22 m</strong>, created 22:06 and destroyed 09:28</td></tr>
-        <tr><td><strong>What it actually cost</strong></td><td><strong>$2.00</strong></td><td>Cost Explorer, 16 Sep &mdash; not a calculation</td></tr>
-        <tr><td><strong>Destroyed</strong></td><td></td><td><strong>$0</strong></td></tr>
-      </tbody>
-    </table>
-
-    <div class="callout">
-      <p><strong>Updated 16 September, with the billed figure.</strong> At publication AWS had not posted the charges, so this section gave the rate and the duration and said the multiplication was yours. Here is the measurement instead: <strong>$2.00</strong>, from Cost Explorer.</p>
-      <p>EKS control plane <strong>$1.11</strong> &mdash; 11 h 22 m at $0.10, which is the rate card exactly. NAT gateway <strong>$0.57</strong> ($0.54 in hours, $0.03 in data). The t3.small node <strong>$0.23</strong>. Then <strong>$0.08</strong> for an Elastic IP and the node's root volume.</p>
-      <p><strong>That last $0.08 is the point.</strong> The rate line above predicts $1.89 for this run. The bill was $2.00 &mdash; about 6% higher, and every cent of the gap is something the rate table does not list: the Elastic IP attached to the NAT, and the EBS volume under the node. Neither is hidden and neither is large. They are simply not the things you think of when you cost a cluster, which is exactly why a figure derived from a rate card is an estimate wearing the clothes of a measurement.</p>
-    </div>
-
-    <h3>This bill is the opposite shape to the last several weeks</h3>
-
-    <p>Weeks 11, 12 and 16 of this series, and a QuickSight subscription that caught me last month, all cost <em>nothing</em> on the day they were created and began billing thirty days later when a free trial quietly ended. Nothing alerted, because nothing had changed &mdash; a number that was zero simply stopped being zero.</p>
-
-    <p>EKS is the reverse. It charges about <strong>$4 a day from the moment the cluster exists</strong>, visibly, with no trial and nothing deferred. That is easier to manage, not harder, and it changes the discipline: teardown becomes part of the build rather than an afterthought. This cluster was created and destroyed inside twelve hours by design.</p>
-  </div>
-
-  <div class="section" id="cleanup">
-    <h2>Cleanup</h2>
-
-    <pre><code>./scripts/cleanup.sh</code></pre>
-
-    <p>It checks clusters, NAT gateways, elastic IPs, VPCs, instances, roles, buckets and log groups by name, then does a tag search on <code>Week=18</code> for anything the name checks missed.</p>
-
-    <p><strong>OIDC providers are on that list deliberately.</strong> IRSA creates one per cluster, they do not appear anywhere in the EKS console once the cluster is gone, they survive a careless teardown, and IAM caps an account at 100 of them. They cost nothing, which is exactly why they accumulate.</p>
-  </div>
-
-  <div class="section" id="references">
-    <h2>References</h2>
-
+    <h3>References</h3>
     <ul>
-      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/service-accounts.html" target="_blank" rel="noopener">Pod Identity and IRSA compared</a> &mdash; AWS's own table of the limits that drove the change</li>
-      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html" target="_blank" rel="noopener">EKS Pod Identity restrictions</a> &mdash; including Fargate</li>
-      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/fargate.html" target="_blank" rel="noopener">Fargate on EKS</a> &mdash; what you give up</li>
-      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions-standard.html" target="_blank" rel="noopener">Kubernetes versions in standard support</a></li>
-      <li><a href="https://aws.amazon.com/eks/pricing/" target="_blank" rel="noopener">EKS pricing</a></li>
-      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/week-18-eks-self-service" target="_blank" rel="noopener">This week's code</a></li>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-18-eks-self-service/README.md"><strong>The full lab guide</strong></a></li>
+      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html">EKS Pod Identity</a></li>
+      <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html">IAM roles for service accounts (IRSA)</a></li>
+      <li><a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/">Kubernetes NetworkPolicy</a></li>
+      <li><a href="https://aws.amazon.com/eks/pricing/">Amazon EKS pricing</a></li>
     </ul>
   </div>
-
-  <div class="section" id="takeaways">
-    <h2>Key Takeaways</h2>
-
-    <ul>
-      <li><strong>A namespace is a label.</strong> The quota is the ceiling, the NetworkPolicy is the boundary, and the AWS identity is the permission. None of them arrive on their own</li>
-      <li><strong>A test that cannot tell "denied" from "never ran" is not a test.</strong> Two green ticks against pods rejected before startup is worse than a red run, because nobody investigates a pass</li>
-      <li><strong>Two AWS recommendations can be mutually exclusive.</strong> Pod Identity and Fargate are each the right default, and together they produce a silent failure</li>
-      <li><strong>Adding a quota changes the contract for every pod in the namespace</strong> &mdash; requests and limits become mandatory, retroactively</li>
-      <li><strong>Know who the cluster admin is before you need to be one.</strong> On a CI runner it is not you</li>
-      <li><strong>A cost that starts immediately is safer than one that starts in thirty days</strong>, because you design around it</li>
-    </ul>
-
-    <h3>What I'd do differently in production</h3>
-
-    <p>This is a same-day lab cluster with two tenants and one operator. Several decisions above are only correct because of that.</p>
-
-    <ul>
-      <li><strong>A NAT gateway per availability zone.</strong> One NAT is a single-AZ failure away from breaking egress for every pod in the other subnet. It doubles a $0.045/hr line to remove a single point of failure &mdash; obviously right in production, and wasteful for twelve hours</li>
-      <li><strong>Narrow the API endpoint.</strong> <code>public_access_cidrs</code> is open here. In a real estate it is your office and your CI ranges, or the endpoint is private and reached through a bastion or VPN</li>
-      <li><strong>Generate the tenant, do not hand-write it.</strong> The module is the mechanism; self-service needs a front door &mdash; a pull request template or a ticket that fills in the variables &mdash; so a new team never edits Terraform directly</li>
-      <li><strong>Add LimitRange alongside ResourceQuota.</strong> The quota makes requests and limits mandatory; a LimitRange supplies sensible defaults so developers are not forced to guess on every pod</li>
-      <li><strong>Egress policy too.</strong> The NetworkPolicy here denies cross-namespace <em>ingress</em>. A compromised pod's first move is usually outbound, and that is a separate rule</li>
-      <li><strong>Do not build on Ingress NGINX.</strong> Upstream Kubernetes retired it in March 2026 &mdash; no further bug fixes or security patches. Gateway API or the AWS Load Balancer Controller instead</li>
-    </ul>
-  </div>
-
-</div>
