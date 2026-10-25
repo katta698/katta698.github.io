@@ -31,25 +31,23 @@ asymmetry is the part worth designing for.</p>
   <span>Terraform · HCP Terraform, local execution</span>
   <span>$0 while running · $0 after</span>
 </div>
-
 <div class="toc">
-  <h2>📋 In This Post</h2>
+  <h2>&#128203; In This Post</h2>
   <ol>
-    <li><a href="#why">Why — The Problem This Solves</a></li>
-    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
-    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
-    <li><a href="#build">How We Built It — Step by Step</a></li>
-    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
-    <li><a href="#security">Security — Controls at Every Layer</a></li>
-    <li><a href="#cost">Cost</a></li>
-    <li><a href="#cleanup">Cleanup — The Interesting Half</a></li>
-    <li><a href="#references">References</a></li>
-    <li><a href="#takeaways">Key Takeaways</a></li>
+    <li><a href="#overview">Lab Overview</a></li>
+    <li><a href="#services">Cloud Services and Concepts</a></li>
+    <li><a href="#architecture">Architecture and Workflow</a></li>
+    <li><a href="#prereqs">Prerequisites</a></li>
+    <li><a href="#build">Implementation</a></li>
+    <li><a href="#validation">Validation and Evidence</a></li>
+    <li><a href="#seccost">Security and Cost</a></li>
+    <li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+    <li><a href="#cleanup">Cleanup and Key Takeaways</a></li>
   </ol>
 </div>
 
-<h2 id="why">Why — The Problem This Solves</h2>
 
+<h2 id="overview">Lab Overview</h2>
 <p>The bootstrap for this lab created three subscriptions by hand, one at a time,
 watching each one finish. That is fine for three. It is not fine for an
 organisation where a team asks for a landing zone on Tuesday and expects to
@@ -74,8 +72,26 @@ and that answer cannot be "destroy it".</p>
   landing zone — and the second one is the one pipelines forget.</p>
 </div>
 
-<h2 id="skills">What You Need to Know — Skills &amp; Tools</h2>
+<div class="table-scroll">
+<table>
+  <tbody>
+    <tr><td><strong>Difficulty</strong></td><td>Advanced &mdash; four resources, but they span three APIs and a billing account</td></tr>
+    <tr><td><strong>Time to complete</strong></td><td>About an hour. Subscription creation is asynchronous and placement is not instant</td></tr>
+    <tr><td><strong>Deployment</strong></td><td>Terraform (<code>azurerm</code>), two stages, state in HCP Terraform, local execution</td></tr>
+    <tr><td><strong>Measured cost</strong></td><td><strong>$0.00</strong> &mdash; an empty subscription and a budget both cost nothing</td></tr>
+    <tr><td><strong>Full lab guide</strong></td><td><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/blob/main/week-04-subscription-vending/LAB.md">LAB.md</a> &mdash; prerequisites, variables, commands, expected outputs, validation and cleanup</td></tr>
+  </tbody>
+</table>
+</div>
 
+<p><strong>Read this before running it.</strong> This week creates a
+<em>real</em> Azure subscription, and <strong>a subscription cannot be
+deleted</strong> &mdash; only cancelled, after which it lingers for a retention
+window. <code>vend_new_subscription</code> defaults to <code>false</code> for
+exactly that reason, and the cleanup section is about decommissioning rather
+than removal.</p>
+
+<h2 id="services">Cloud Services and Concepts</h2>
 <p><strong>Subscription vending</strong> is handing a team a new subscription
 that is already governed on arrival — placed in the hierarchy, budgeted, and
 with the right people holding the right roles — instead of an empty one and a
@@ -109,9 +125,11 @@ wiki page. Five facts shape how:</p>
   which is why decommission and delete are different words.</li>
 </ul>
 
-<h2 id="architecture">Architecture — How It Fits Together</h2>
-
-<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-04-subscription-vending/docs/blog/diagrams/week-04-architecture.svg" alt="Diagram: subscription vending as four operations across three APIs - create through the Subscription Alias API, place through the Management Groups API as a separate call, then budget and grant - followed by the two stages config and vend, the lifecycle constraint that a cancelled subscription cannot be deleted for three days, and the decommission path of move, prove the deny, then cancel" style="width:100%;max-width:880px" /></p>
+<h2 id="architecture">Architecture and Workflow</h2>
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-04-subscription-vending/docs/blog/diagrams/week-04-architecture.svg" alt="Diagram: subscription vending as four operations across three APIs - create through the Subscription Alias API, place through the Management Groups API as a separate call, then budget and grant - followed by the two stages config and vend, the lifecycle constraint that a cancelled subscription cannot be deleted for three days, and the decommission path of move, prove the deny, then cancel" style="width:100%;max-width:880px" />
+  <figcaption><strong>Vending is four operations across three APIs.</strong> Create through the Subscription Alias API, place through Management Groups, grant through RBAC, cap through Cost Management. Nothing does all four, which is why the module market exists.</figcaption>
+</figure>
 
 <p>Four operations, measured on the real thing:</p>
 
@@ -132,58 +150,13 @@ wiki page. Five facts shape how:</p>
 <p>All four, in code. The alias call carries a 60-minute timeout because the
 provider default is shorter than Azure sometimes is:</p>
 
-<pre><code>resource "azurerm_subscription" "vended" {
-  count = var.vend_new_subscription ? 1 : 0
-
-  alias             = var.landing_zone_name
-  subscription_name = var.landing_zone_name
-  billing_scope_id  = local.billing_scope
-  workload          = var.subscription_workload   # "Production" - see below
-
-  timeouts { create = "60m" }
-}
-
-# A SEPARATE resource, because placement is a separate API call.
-resource "azurerm_management_group_subscription_association" "vended" {
-  count = var.vend_new_subscription ? 1 : 0
-
-  management_group_id = "/providers/Microsoft.Management/managementGroups/${var.target_management_group_id}"
-
-  # The SUBSCRIPTION id, not the resource's own id. azurerm_subscription.id is
-  # the ALIAS resource id, and passing it here fails with
-  # "the segment at position 0 didn't match".
-  subscription_id = "/subscriptions/${azurerm_subscription.vended[0].subscription_id}"
-}</code></pre>
+<p>In <a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/blob/main/week-04-subscription-vending/terraform/main.tf"><code>main.tf</code></a>.</p>
 
 <p>The budget and the grant are declared once and applied to every target, so
 "what does a landing zone get" has one answer that cannot drift between the
 rehearsal and the real thing:</p>
 
-<pre><code>resource "azurerm_consumption_budget_subscription" "vended" {
-  for_each        = local.vend_targets        # keys static, values may be unknown
-  subscription_id = "/subscriptions/${each.value}"
-  amount          = var.budget_amount
-
-  notification {                      # arrives when 80% is already spent
-    threshold = 80
-    threshold_type = "Actual"
-    operator = "GreaterThan"
-    contact_emails = var.budget_alert_emails
-  }
-  notification {                      # arrives while the month can still change
-    threshold = 100
-    threshold_type = "Forecasted"
-    operator = "GreaterThan"
-    contact_emails = var.budget_alert_emails
-  }
-}
-
-resource "azurerm_role_assignment" "landing_zone_owner" {
-  for_each             = local.vend_targets
-  scope                = "/subscriptions/${each.value}"
-  role_definition_name = var.role_assignment_definition   # "Reader", deliberately
-  principal_id         = var.role_assignment_principal_id
-}</code></pre>
+<p>In <a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/blob/main/week-04-subscription-vending/terraform/main.tf"><code>main.tf</code></a>.</p>
 
 <h3>Step 2 is the one that gets skipped, and its absence is invisible</h3>
 
@@ -199,10 +172,43 @@ group lists the subscription, and that the subscription reports the management
 group as its parent. One query answering correctly is not the same as the
 association existing.</p>
 
-<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-04-subscription-vending/docs/blog/screenshots/01-vended-subscription-placed.png" alt="Azure portal management group tree showing the vended subscription lz-vend-demo under Landing Zones - Dev" style="width:100%" /></p>
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-04-subscription-vending/docs/blog/screenshots/01-vended-subscription-placed.png" alt="Azure portal management group tree showing the vended subscription lz-vend-demo under Landing Zones - Dev" style="width:100%" />
+  <figcaption><strong>Checkpoint:</strong> the vended subscription under <em>Landing Zones &mdash; Dev</em>. Placement is what makes every policy on that branch apply to it, so this is the step that turns a new subscription into a governed one.</figcaption>
+</figure>
 
-<h2 id="build">How We Built It — Step by Step</h2>
+<h2 id="prereqs">Prerequisites</h2>
 
+<ul>
+  <li><strong>A Microsoft Customer Agreement billing account</strong>, plus the
+  <em>billing profile</em> and <em>invoice section</em> the new subscription
+  bills to. All three are required variables with no defaults. They identify
+  your billing arrangement, so they live in <code>terraform.tfvars</code>,
+  which is gitignored, and never in a <code>.tf</code> file.</li>
+  <li><strong>Rights to create subscriptions on that invoice section.</strong>
+  This is a <em>billing</em> permission, separate from Entra and from Azure
+  RBAC &mdash; being Owner of a tenant does not grant it.</li>
+  <li><strong>User Access Administrator</strong> (or Owner), because the lab
+  creates a role assignment at subscription scope.</li>
+  <li><strong>Write access to the management group hierarchy</strong> the
+  subscription is placed into. Week 01 builds one; any hierarchy works.</li>
+  <li><strong>Terraform &ge; 1.10</strong> with <code>azurerm</code>
+  <strong>~&gt; 5.2</strong>. Microsoft's own
+  <code>Azure/lz-vending/azurerm</code> module <em>cannot</em> be used with it
+  &mdash; see Troubleshooting.</li>
+  <li><strong>Two resource providers:</strong>
+  <code>Microsoft.Consumption</code> and
+  <code>Microsoft.CostManagement</code>.</li>
+  <li><strong>An individual billing account cannot use the DevTest rate.</strong>
+  The alias call refuses it outright, so the workload is
+  <code>Production</code> whether or not that is what you wanted.</li>
+</ul>
+
+<p>Every variable and both stages are in the
+<a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/blob/main/week-04-subscription-vending/LAB.md#1-prerequisites">lab guide</a>, which is the reproducible half of
+this write-up.</p>
+
+<h2 id="build">Implementation</h2>
 <h3>0. How any of this gets deployed</h3>
 
 <p>All of it is Terraform. State lives in HCP Terraform, the apply runs locally
@@ -238,30 +244,86 @@ real thing. A $25 monthly budget with both an <em>actual</em> 80% alert and a
 arrives when 80% is already spent, and the forecast alert arrives while the month
 can still be changed.</p>
 
-<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-04-subscription-vending/docs/blog/screenshots/02-budget-on-vended.png" alt="Azure portal Cost Management budgets blade for the vended subscription showing a 25 dollar monthly budget" style="width:100%" /></p>
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-04-subscription-vending/docs/blog/screenshots/02-budget-on-vended.png" alt="Azure portal Cost Management budgets blade for the vended subscription showing a 25 dollar monthly budget" style="width:100%" />
+  <figcaption><strong>The cap, attached at vend time rather than later.</strong> A $25 monthly budget on a subscription minutes old. A budget added when someone gets round to it is the one that is missing when it matters.</figcaption>
+</figure>
 
 <p>Validation after the vend: <strong>7 passed, 0 failed</strong>, every check
 read from Azure rather than from Terraform state — because state is a record of
 what Terraform believes it did.</p>
 
-<h2 id="challenges">Challenges — What Actually Went Wrong</h2>
+<h2 id="validation">Validation and Evidence</h2>
 
-<h3>Microsoft's own vending module could not be used at all</h3>
+<p>A successful apply proves an alias call returned. It does not prove the
+subscription landed in the right management group, that the budget attached, or
+that the grant is at the subscription rather than inherited from above &mdash;
+and that last distinction is most of what vending means.</p>
 
-<p><code>Azure/lz-vending/azurerm</code> is the obvious choice for this week. It
-is Microsoft's, it has 1.4 million downloads, and its inputs map exactly onto
-what vending means. It is unusable here: its <code>role_definitions</code> and
-<code>cached_data</code> submodules require
-<code>hashicorp/azurerm ~&gt; 4.0</code>, this lab standardised on
-<code>~&gt; 5.2</code>, and the two constraints have no overlap.</p>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
+  <tbody>
+    <tr><td>A budget exists on every vended target</td><td>a budget on each</td><td><strong><code>25.0</code> on both</strong> the existing and the vended subscription</td><td>PASS</td></tr>
+    <tr><td>The landing-zone grant exists at subscription scope</td><td>granted <em>at</em> the subscription, not inherited</td><td><strong>1 Reader on each, at the subscription itself</strong></td><td>PASS</td></tr>
+    <tr><td>Placement, from the management group's side</td><td>the group lists the subscription</td><td><strong><code>mg-lz-dev</code> lists it</strong></td><td>PASS</td></tr>
+    <tr><td>Placement, from the subscription's own side</td><td>its parent is that group</td><td><strong>parent = <code>.../managementGroups/mg-lz-dev</code></strong></td><td>PASS</td></tr>
+    <tr><td>Deployed state matches configuration</td><td>no drift</td><td><strong>none</strong></td><td>PASS</td></tr>
+  </tbody>
+</table>
+</div>
 
-<pre><code>Could not retrieve the list of available versions for provider
-hashicorp/azurerm: no available releases match the given constraints ~&gt; 4.0, ~&gt; 5.2</code></pre>
+<p><strong>Checks 3 and 4 ask the same question from both ends, deliberately.</strong>
+A management group listing a child and a subscription naming its parent are
+stored separately, and a vending run that half-finishes can satisfy one without
+the other.</p>
 
-<p>Not a version to negotiate — <code>terraform init</code> refuses to resolve at
-all. Version 7.0.3 is the newest of its 37 releases and predates azurerm 5.
-Checked with azurerm at 5.5.0. Last week's post was about what a version pin does
-to a consumer; this week opened by <em>being</em> that consumer.</p>
+<h2 id="seccost">Security and Cost</h2>
+<h3>Security</h3>
+<ul>
+  <li><strong>The grant is Reader by default, and the default is the point.</strong>
+  Vending decides what a landing zone owner holds on day one, for every landing
+  zone. The interesting failure is not "they could not deploy" — that is a
+  request away — it is a pipeline that hands out Owner on every subscription it
+  creates because Owner was the value in the example.</li>
+  <li><strong>The grant is checked at subscription scope specifically</strong>,
+  not with a query that would also match a grant inherited from a management
+  group. An inherited grant is not something vending did.</li>
+  <li><strong>Placement is the security control.</strong> Policy inheritance
+  flows from the management group; a subscription in the wrong place is a
+  subscription outside your guardrails, whatever the assignments say.</li>
+  <li><strong>Budgets alert, they do not cap.</strong> Stated here because it is
+  routinely misunderstood as a spending limit.</li>
+</ul>
+<h3>Cost</h3>
+<p>Nothing in this week has a per-hour price. A subscription costs nothing to
+exist, and a budget and a role assignment are free. The bill is whatever gets
+deployed <em>into</em> a landing zone, which is deliberately the next week's
+problem. $0 while running, $0 after.</p>
+
+<h2 id="troubleshooting">Troubleshooting and Lessons</h2>
+<p><strong>Microsoft's own vending module could not be used at all.</strong></p>
+
+<ul>
+  <li><strong>Problem:</strong> <code>terraform init</code> refused to resolve
+  at all &mdash; <code>no available releases match the given constraints
+  ~&gt; 4.0, ~&gt; 5.2</code>.</li>
+  <li><strong>Root cause:</strong> <code>Azure/lz-vending/azurerm</code> is the
+  obvious choice: Microsoft's own, 1.4 million downloads, inputs that map
+  exactly onto what vending means. Its <code>role_definitions</code> and
+  <code>cached_data</code> submodules require
+  <code>hashicorp/azurerm ~&gt; 4.0</code>; this lab standardised on
+  <code>~&gt; 5.2</code>. The constraints have no overlap, and 7.0.3 &mdash;
+  newest of its 37 releases &mdash; predates azurerm 5. Checked with azurerm at
+  5.5.0.</li>
+  <li><strong>Resolution:</strong> write the four resources directly. Vending
+  is an alias call, a management group association, a role assignment and a
+  budget; the module's value is in everything it adds <em>after</em> that.</li>
+  <li><strong>Lesson learned:</strong> a version pin is a compatibility claim
+  about the whole dependency tree, not a preference. Week 03's post was about
+  what a pin does to a consumer; this week opened by <em>being</em> that
+  consumer.</li>
+</ul>
 
 <h3>DevTest is not available on an individual billing account</h3>
 
@@ -311,33 +373,8 @@ demonstrably existed.</p>
 <code>Enabled</code> while ARM refused writes on it as disabled. Trust the write
 path, not the list.</p>
 
-<h2 id="security">Security — Controls at Every Layer</h2>
-
-<ul>
-  <li><strong>The grant is Reader by default, and the default is the point.</strong>
-  Vending decides what a landing zone owner holds on day one, for every landing
-  zone. The interesting failure is not "they could not deploy" — that is a
-  request away — it is a pipeline that hands out Owner on every subscription it
-  creates because Owner was the value in the example.</li>
-  <li><strong>The grant is checked at subscription scope specifically</strong>,
-  not with a query that would also match a grant inherited from a management
-  group. An inherited grant is not something vending did.</li>
-  <li><strong>Placement is the security control.</strong> Policy inheritance
-  flows from the management group; a subscription in the wrong place is a
-  subscription outside your guardrails, whatever the assignments say.</li>
-  <li><strong>Budgets alert, they do not cap.</strong> Stated here because it is
-  routinely misunderstood as a spending limit.</li>
-</ul>
-
-<h2 id="cost">Cost</h2>
-
-<p>Nothing in this week has a per-hour price. A subscription costs nothing to
-exist, and a budget and a role assignment are free. The bill is whatever gets
-deployed <em>into</em> a landing zone, which is deliberately the next week's
-problem. $0 while running, $0 after.</p>
-
-<h2 id="cleanup">Cleanup — The Interesting Half</h2>
-
+<h2 id="cleanup">Cleanup and Key Takeaways</h2>
+<h3>Cleanup — the interesting half</h3>
 <p>The payload tears down completely: budgets and role assignments are ordinary
 resources and <code>terraform destroy</code> removes them. Six destroyed.</p>
 
@@ -388,15 +425,16 @@ move the subscription out of the decommissioned management group first.'</code><
 <p>The message is the one written into the policy at bootstrap, which is the
 point: a deny is only useful if the person who hits it is told what to do next.</p>
 
-<p><img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-04-subscription-vending/docs/blog/screenshots/03-decommissioned.png" alt="Azure portal management group tree after decommission, showing the Decommissioned management group now containing the vended subscription" style="width:100%" /></p>
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-04-subscription-vending/docs/blog/screenshots/03-decommissioned.png" alt="Azure portal management group tree after decommission, showing the Decommissioned management group now containing the vended subscription" style="width:100%" />
+  <figcaption><strong>What cleanup actually looks like here.</strong> The subscription has moved into <em>Decommissioned</em>, not disappeared &mdash; a subscription cannot be deleted. Moving it is what puts it under the enforcing deny-all.</figcaption>
+</figure>
 
 <p>One last detail worth knowing, because no document phrases it this way. A
 cancelled subscription in its retention window does not report as
 <code>Disabled</code>. It reports as <strong><code>Warned</code></strong> —
 Azure's own word for "on its way out but not gone".</p>
-
-<h2 id="references">References</h2>
-
+<h3>References</h3>
 <ul>
   <li><a href="https://learn.microsoft.com/en-us/azure/cost-management-billing/manage/create-subscription" target="_blank" rel="noopener">Programmatically create Azure subscriptions</a></li>
   <li><a href="https://learn.microsoft.com/en-us/azure/cost-management-billing/manage/cancel-azure-subscription" target="_blank" rel="noopener">Cancel and delete your Azure subscription</a></li>
@@ -404,9 +442,7 @@ Azure's own word for "on its way out but not gone".</p>
   <li><a href="https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/tutorial-acm-create-budgets" target="_blank" rel="noopener">Create and manage Azure budgets</a></li>
   <li><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-04-subscription-vending" target="_blank" rel="noopener">Week 4 code in the lab repository</a></li>
 </ul>
-
-<h2 id="takeaways">Key Takeaways</h2>
-
+<h3>Key takeaways</h3>
 <ul>
   <li><strong>Vending is four operations, not one</strong>, and the second —
   placement — is the one that gets skipped. Its absence is invisible until a
@@ -426,4 +462,5 @@ Azure's own word for "on its way out but not gone".</p>
   untested, because nothing had ever been in scope for it.</li>
 </ul>
 
+</div>
 </div>
