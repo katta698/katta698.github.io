@@ -202,6 +202,15 @@ CHECKS = [
     # cannot judge whether a diagram is any good.
     ("check_lab_post_shape.py",  True,  False, True,  True),
 
+    # No GCP account identifier in a GCP lab post. Added 2026-10-25 after the
+    # published Week 09 post was found carrying two project numbers, in default
+    # Compute Engine service account addresses, for a day. The screenshots were
+    # masked correctly by the lab's capture tooling and the lab repo has its own
+    # sweep; neither covers post prose in THIS repository, which is where the
+    # leak was. It matches derived values AND the shape of the leak, and exits
+    # non-zero rather than reporting a pass if it cannot derive the values.
+    ("check_gcp_identifiers.py", True,  False, False, True),
+
     # A post going live for the first time must carry today's date. Week 20 was
     # written on 24 Sep, reviewed for two days, and published on the 26th
     # reading "Sep 24" -- Jay found it on the site. Weeks 18 and 19 were written
