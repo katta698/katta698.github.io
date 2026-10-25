@@ -66,6 +66,32 @@ LAB_HEADINGS = [
     ('Key Takeaways',        r'^Key Takeaways\b'),
 ]
 
+# Jay replaced the structure above on 2026-10-25 with the Master Standard,
+# across AWS, Azure and GCP: nine sections, a blog that teaches and a separate
+# GitHub lab guide that reproduces. Posts written before that date use
+# LAB_HEADINGS and are not wrong, only earlier -- so both schemas are valid and
+# a post has to satisfy one of them in full. Matching neither is a real finding;
+# matching half of each is the specific failure this catches, because that is
+# what a partly-converted post looks like.
+MASTER_LAB_HEADINGS = [
+    ('Lab Overview',            r'^Lab Overview\b'),
+    ('Cloud Services',          r'^Cloud Services\b'),
+    ('Architecture',            r'^Architecture\b'),
+    ('Prerequisites',           r'^Prerequisites\b'),
+    ('Implementation',          r'^(Step-by-Step )?Implementation\b'),
+    ('Validation and Evidence', r'^Validation\b'),
+    ('Security and Cost',       r'^Security and Cost\b'),
+    ('Troubleshooting',         r'^Troubleshooting\b'),
+    ('Cleanup',                 r'^Cleanup\b'),
+]
+
+# Tried in order; the first one a post fully satisfies is the one it is judged
+# against. Reported errors come from whichever schema it came closest to, so
+# the message names the sections actually missing rather than all nine.
+LAB_SCHEMAS = [('Master Standard', MASTER_LAB_HEADINGS),
+               ('pre-2026-10-25 lab structure', LAB_HEADINGS)]
+
+
 SERIES = {
     'arch': {
         'label': 'Architecture Series',
@@ -562,10 +588,28 @@ def check_page(slug, spec):
         skip_headings = n is not None and n < min_week
 
     if not skip_headings:
-        for label, pattern in spec['headings']:
-            if not any(re.search(pattern, h) for h in headings):
+        required = spec['headings']
+        if required is LAB_HEADINGS:
+            # A lab may follow either structure. Score both, keep the closer.
+            best = None
+            for name, schema in LAB_SCHEMAS:
+                missing = [(lbl, pat) for lbl, pat in schema
+                           if not any(re.search(pat, h) for h in headings)]
+                if not missing:
+                    best = (name, [])
+                    break
+                if best is None or len(missing) < len(best[1]):
+                    best = (name, missing)
+            schema_name, missing = best
+            for label, _pattern in missing:
                 err(slug, 'no rendered <h2> matching "%s" — section missing or '
-                          'commented out' % label)
+                          'commented out (judged against the %s; it is the '
+                          'closer fit)' % (label, schema_name))
+        else:
+            for label, pattern in required:
+                if not any(re.search(pattern, h) for h in headings):
+                    err(slug, 'no rendered <h2> matching "%s" — section '
+                              'missing or commented out' % label)
 
     # 4b. An empty "Next in this series" callout. The template marks it
     #     REQUIRED and the build scripts either fill it or remove the whole
