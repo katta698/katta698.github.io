@@ -184,7 +184,7 @@ def _has_caption(frag, pos):
     return "<figcaption" in window
 
 
-def add_captions(frag, captions):
+def add_captions(frag, captions, prereq=()):
     """Give an uncaptioned figure a caption. A screenshot without one is not
     evidence of anything -- the standard asks what the image PROVES."""
     added = []
@@ -198,7 +198,12 @@ def add_captions(frag, captions):
             # Wrap the <p><img></p> or bare <img> in a figure with a caption.
             para = re.search(r"<p>\s*" + re.escape(tag) + r"\s*</p>", frag)
             block = para.group(0) if para else tag
-            fig = ('<figure class="screenshot">' + NL + "  " + tag + NL +
+            # A figure showing state that exists BEFORE the deploy must say
+            # so, or check_figure_order reads it as showing live state too
+            # early. Wrapping a bare <img> to add a caption silently drops
+            # that marking -- it blocked a push for weeks 07, 08 and 09.
+            attr = " data-prereq" if any(k in name for k in prereq) else ""
+            fig = ('<figure class="screenshot"' + attr + ">" + NL + "  " + tag + NL +
                    "  <figcaption>" + text + "</figcaption>" + NL + "</figure>")
             frag = frag.replace(block, fig, 1)
             added.append(name)
@@ -299,7 +304,9 @@ def main():
                          % unmapped)
 
     result = build(fm, head, pre, sections, spec, tail)
-    result, added = add_captions(result, spec.get("captions"))
+    result, added = add_captions(result, spec.get("captions"),
+                                 spec.get("prereq", ("hcp-workspace",
+                                                     "terraform-layout")))
 
     # Targeted replacements, for the places where carrying prose across is not
     # enough -- chiefly a two-column "What / Measured" table becoming the
