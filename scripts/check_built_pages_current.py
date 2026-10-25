@@ -105,11 +105,28 @@ def _assert_prefixes_match_generator():
 
 
 def verdict(source_bytes, built_text):
-    """CURRENT / STALE / UNSTAMPED, pure so --self-test can prove it."""
+    """CURRENT / STALE / UNSTAMPED, pure so --self-test can prove it.
+
+    Line endings are normalised before hashing, on BOTH sides - here and in
+    sync_blog.py. git's autocrlf rewrites LF to CRLF on checkout, so the bytes
+    of a source file change without its content changing, and a hash over raw
+    bytes then reports a perfectly current page as stale.
+
+    Found 2026-10-25, when this check blocked a push over a 2023 post nobody
+    had touched: the stamp matched the LF-normalised hash exactly. A blocking
+    gate that cries wolf is worse than no gate, because the first thing anyone
+    does is bypass it - which is how this repo ended up pushing with
+    --no-verify in the first place.
+
+    bytes([13, 10]) rather than an escape sequence: three attempts at this edit
+    were destroyed by backslash handling in shell heredocs. A byte literal has
+    nothing to mangle.
+    """
+    normalised = source_bytes.replace(bytes([13, 10]), bytes([10]))
     m = STAMP_RE.search(built_text)
     if not m:
         return "UNSTAMPED"
-    if m.group(1) == hashlib.sha256(source_bytes).hexdigest():
+    if m.group(1) == hashlib.sha256(normalised).hexdigest():
         return "CURRENT"
     return "STALE"
 
@@ -189,6 +206,10 @@ def self_test():
          "an uppercase digest is not a stamp (the regex is strict)"),
         (b"<h1>the post</h1> ", "<!-- src-sha256 " + good + " -->", "STALE",
          "one trailing space in the source is a different post"),
+        (bytes([60,104,49,62,116,104,101,13,10,112,111,115,116]),
+         "<!-- src-sha256 " + hashlib.sha256(bytes([60,104,49,62,116,104,101,10,112,111,115,116])).hexdigest() + " -->",
+         "CURRENT",
+         "CRLF source against an LF-built stamp is NOT stale (autocrlf)"),
     ]
     bad = 0
     for source, built, want, label in cases:

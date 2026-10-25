@@ -1344,7 +1344,13 @@ def fetch_local_posts():
             # carrying this script's output, commit order says "stale" for an
             # ordinary publish. The hash is exact and needs no window.
             # See scripts/check_built_pages_current.py.
-            "src_sha": hashlib.sha256(post_file.read_bytes()).hexdigest(),
+            # Normalised before hashing: git autocrlf rewrites LF to CRLF on
+            # checkout, so raw bytes change without the content changing and a
+            # page that is current reports as stale. bytes([13, 10]) avoids an
+            # escape sequence, three of which were destroyed by shell quoting
+            # while making this one-line change on 2026-10-25.
+            "src_sha": hashlib.sha256(post_file.read_bytes().replace(
+                bytes([13, 10]), bytes([10]))).hexdigest(),
             "title": title,
             "url": "",
             "html": body_html,
