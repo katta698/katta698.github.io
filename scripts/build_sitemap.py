@@ -111,7 +111,45 @@ def pages():
             if declares_noindex(pathlib.Path(base) / name):
                 continue
             found.append(rel)
-    return sorted(found)
+    return sorted(drop_ignored(found))
+
+
+def drop_ignored(rels):
+    """Remove anything git ignores. A sitemap is a promise to a crawler.
+
+    SKIP_DIRS is a hand-maintained list and it drifts. Measured 2026-10-25:
+    `_sweep/` -- eleven local scratch pages -- was absent from it, so a build
+    run on a machine that had them added 135 URLs for pages GitHub Pages never
+    deploys. The same bug ran the other way at the same moment: the LIVE
+    sitemap advertised two `reports/out/*.html` URLs, also gitignored, which
+    404 for anyone who follows them.
+
+    What gets published is what git tracks, so let git decide. This lists the
+    untracked-and-ignored files, which is exactly the set to drop: a brand-new
+    post is untracked but NOT ignored, so it still appears, and an
+    ignored-but-tracked file is still deployed and still belongs.
+
+    `-z` is not decoration. Without it git quotes any path it considers
+    unusual and escapes the contents, so the names stop matching.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "--others", "--ignored",
+             "--exclude-standard", "-z"],
+            cwd=ROOT, capture_output=True, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return rels          # no git here; a stale list beats no sitemap
+    if proc.returncode != 0:
+        raise SystemExit("build_sitemap: git ls-files failed: "
+                         + proc.stderr.decode("utf-8", "replace").strip())
+    ignored = {part.decode("utf-8", "replace")
+               for part in proc.stdout.split(bytes([0])) if part}
+    dropped = [r for r in rels if r in ignored]
+    if dropped:
+        print("  %d gitignored page(s) left out of the sitemap, e.g. %s"
+              % (len(dropped), dropped[0]))
+    return [r for r in rels if r not in ignored]
 
 
 def url_for(rel):

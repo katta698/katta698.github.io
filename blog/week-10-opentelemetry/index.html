@@ -4,7 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Week 10 — A Log Says 256ms. A Trace Says Where It Went. | Jayanth Katta Blog</title>
-<meta name="description" content="A page is slow. The log says the request took 256 milliseconds. That is true and almost useless: the request passed through three services on its way, and the l…"/>
+<meta name="description" content="The problem. A page is slow and the log says the request took 256 milliseconds. That is true and almost useless: the request passed through more than one servic…"/>
 <link rel="canonical" href="https://jayanthkatta.com/blog/week-10-opentelemetry/"/>
 <!-- The blog's own feed. It has existed at /blog/rss.xml all along and
      nothing advertised it, so no reader or browser extension could find
@@ -14,12 +14,12 @@
 <meta property="og:type" content="article"/>
 <meta property="og:site_name" content="Jayanth Katta"/>
 <meta property="og:title" content="Week 10 — A Log Says 256ms. A Trace Says Where It Went."/>
-<meta property="og:description" content="A page is slow. The log says the request took 256 milliseconds. That is true and almost useless: the request passed through three services on its way, and the l…"/>
+<meta property="og:description" content="The problem. A page is slow and the log says the request took 256 milliseconds. That is true and almost useless: the request passed through more than one servic…"/>
 <meta property="og:url" content="https://jayanthkatta.com/blog/week-10-opentelemetry/"/>
 <meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
 <meta name="twitter:card" content="summary"/>
 <meta name="twitter:title" content="Week 10 — A Log Says 256ms. A Trace Says Where It Went."/>
-<meta name="twitter:description" content="A page is slow. The log says the request took 256 milliseconds. That is true and almost useless: the request passed through three services on its way, and the l…"/>
+<meta name="twitter:description" content="The problem. A page is slow and the log says the request took 256 milliseconds. That is true and almost useless: the request passed through more than one servic…"/>
 <meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
 <link rel="icon" href="/favicon-transparent.png" type="image/png"/>
 <link rel="manifest" href="/manifest.webmanifest"/>
@@ -165,13 +165,13 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
     <header class="post-header">
       <div class="post-header-meta"><span class="tag-badge">Azure Weekly Lab</span> <span class="tag-badge">Azure</span> <span class="tag-badge">Terraform</span></div>
       <h1>Week 10 — A Log Says 256ms. A Trace Says Where It Went.</h1>
-      <p class="post-description">Last week measured a 16.94-second cold start and
-could not say what happened during it. This week deploys two services, makes
-them share one trace, and measures which of them spent the time.</p>
+      <p class="post-description">Two container apps, one HTTP hop between them, and one
+trace that crosses it — so the 256 ms a user waits can be attributed
+to the service that actually spent it.</p>
       <div class="post-info">
         <span>Oct 24, 2026</span>
         <span class="post-info-dot"></span>
-        <span>9 min read</span>
+        <span>13 min read</span>
       </div>
     </header>
     <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 24 October 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
@@ -332,63 +332,78 @@ them share one trace, and measures which of them spent the time.</p>
 <div class="post-meta">
 <span>24 October 2026</span>
 <span>Terraform + azapi · HCP Terraform, local execution</span>
-<span>9/9 validation · ACR Basic $0.1666/day</span>
+<span>9/9 validation · measured cost $0.0142</span>
 </div>
 <div class="toc">
 <h2>📋 In This Post</h2>
 <ol>
-<li><a href="#why">Why — The Problem This Solves</a></li>
-<li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
-<li><a href="#architecture">Architecture — How It Fits Together</a></li>
-<li><a href="#build">How We Built It — In Deployment Order</a></li>
-<li><a href="#testing">How It's Tested</a></li>
-<li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
-<li><a href="#security">Security — Controls at Every Layer</a></li>
-<li><a href="#cost">Cost</a></li>
-<li><a href="#cleanup">Cleanup</a></li>
-<li><a href="#references">References</a></li>
-<li><a href="#takeaways">Key Takeaways</a></li>
+<li><a href="#overview">Lab Overview</a></li>
+<li><a href="#services">Cloud Services and Concepts</a></li>
+<li><a href="#architecture">Architecture and Workflow</a></li>
+<li><a href="#prereqs">Prerequisites</a></li>
+<li><a href="#build">Implementation</a></li>
+<li><a href="#validation">Validation and Evidence</a></li>
+<li><a href="#seccost">Security and Cost</a></li>
+<li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+<li><a href="#cleanup">Cleanup and Key Takeaways</a></li>
 </ol>
 </div>
-<h2 id="why">Why — The Problem This Solves</h2>
-<p>A page is slow. The log says the request took 256 milliseconds. That is
-true and almost useless: the request passed through three services on its way,
-and the log was written by one of them.</p>
-<p>Logs record what each service did separately. A trace records what happened
-to <em>one request</em> as it moved between them — and the moving between is
-where the time usually goes.</p>
-<h2 id="skills">What You Need to Know — Skills &amp; Tools</h2>
-<p><strong>The services this week deploys:</strong></p>
+<h2 id="overview">Lab Overview</h2>
+<p><strong>The problem.</strong> A page is slow and the log says the request
+took 256 milliseconds. That is true and almost useless: the request passed
+through more than one service, and the log was written by one of them. Logs
+record what each service did separately; a trace records what happened to
+<em>one request</em> as it moved between them, which is where the time usually
+goes. Week 9 measured a 16.94-second cold start — a number that says
+<em>how long</em> and nothing about <em>where</em>.</p>
+<p><strong>The objective.</strong> Deploy two containerised services, one
+public and one internal, and make a single request to the public one produce a
+single trace spanning both — with the time attributed to whichever
+service spent it, and both images pulled from a private registry with no
+password stored anywhere. <strong>Done right</strong>, Application Insights
+draws the two services as connected without ever being told they are
+related.</p>
+<table>
+<tbody>
+<tr><td><strong>Difficulty</strong></td><td>Intermediate — assumes containers and Terraform; the tracing concepts are introduced here</td></tr>
+<tr><td><strong>Time to complete</strong></td><td>Roughly an evening. Deployed resources were up about two hours, which is what the bill reflects</td></tr>
+<tr><td><strong>Deployment method</strong></td><td>Terraform (<code>azurerm</code> + <code>azapi</code>), state in HCP Terraform, local execution</td></tr>
+<tr><td><strong>Source and lab guide</strong></td><td><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-10-opentelemetry">week-10-opentelemetry on GitHub</a> — exact prerequisites, variables, commands, expected outputs and cleanup</td></tr>
+</tbody>
+</table>
+<h2 id="services">Cloud Services and Concepts</h2>
+<table>
+<thead><tr><th>Service</th><th>Purpose in this lab</th></tr></thead>
+<tbody>
+<tr>
+<td><strong>Azure Container Apps</strong></td>
+<td>Runs containers without you running the servers underneath. An <em>environment</em> is the box they live in — shared network, shared telemetry. Here it holds both services and the telemetry agent.</td>
+</tr>
+<tr>
+<td><strong>Azure Container Registry</strong></td>
+<td>A private store for container images; <em>Basic</em> is the cheapest tier. Holds the two images, and builds them too — <em>ACR Tasks</em> builds <em>in Azure</em>, so no local Docker daemon is involved.</td>
+</tr>
+<tr>
+<td><strong>Managed identity</strong></td>
+<td>An Azure identity attached to a resource, with no password anywhere — Azure holds and rotates the credential. It is what lets the apps pull from the registry with nothing stored.</td>
+</tr>
+<tr>
+<td><strong>Managed OpenTelemetry agent</strong></td>
+<td>A collector Azure runs inside the environment at no compute cost. It receives spans from both apps and forwards them. It is a <em>router</em> — it does not produce telemetry, which is the trap this week walks into.</td>
+</tr>
+<tr>
+<td><strong>Application Insights</strong></td>
+<td>Azure's application monitoring service, and what draws the service map. <em>Workspace-based</em> means it stores nothing itself: data lands in a Log Analytics workspace you already own, so that workspace's retention and cost controls still apply.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>And four ideas those services move around.</strong>
+<strong>OpenTelemetry</strong> is a vendor-neutral standard for producing
+telemetry: your app emits in its format, and where the data ends up stays
+somebody else's decision.</p>
 <ul>
-<li><strong>Azure Container Apps</strong> runs containers without you running
-  the servers underneath. An <em>environment</em> is the box they live in —
-  shared network, shared telemetry — and each <em>app</em> scales on its
-  own.</li>
-<li><strong>Azure Container Registry (ACR)</strong> is a private store for
-  container images. Its <em>Basic</em> tier is the cheap one; <em>ACR
-  Tasks</em> lets you build an image <em>in Azure</em> rather than on your
-  machine, so no Docker daemon is needed locally.</li>
-<li><strong>A managed identity</strong> is an Azure identity attached to a
-  resource with no password anywhere — Azure holds and rotates the credential.
-  Here it is what lets the apps pull from the registry without a stored
-  secret.</li>
-<li><strong>Application Insights</strong> is Azure's application monitoring
-  service: it receives traces and requests and draws the maps and charts over
-  them. <em>Workspace-based</em> means it stores nothing itself — the data
-  lands in a Log Analytics workspace you already own, so that workspace's
-  retention, table plans and cost controls still apply.</li>
-<li><strong>The managed OpenTelemetry agent</strong> is a collector Azure
-  runs inside the Container Apps environment for free. Your apps send
-  telemetry to it; it forwards to the destinations you configure. It is a
-  <em>router</em> — it does not produce telemetry, which is the trap this week
-  walks into.</li>
-</ul>
-<p><strong>And the four ideas they move around.</strong> <strong>OpenTelemetry</strong>
-is a vendor-neutral standard for producing telemetry: your app emits in its
-format, and where the data ends up stays somebody else's decision.</p>
-<ul>
-<li><strong>A span is one timed piece of work</strong> — a request handled,
-  a database called, a function you chose to measure. It records a start, a
+<li><strong>A span is one timed piece of work</strong> — a request
+  handled, a call made, a function you chose to measure. It records a start, a
   duration, and an id.</li>
 <li><strong>A trace is the spans for one request, linked by parent.</strong>
   Each span records the id of the span that caused it. Follow the parents back
@@ -399,186 +414,306 @@ format, and where the data ends up stays somebody else's decision.</p>
   entire mechanism by which two separate processes end up in one trace.</li>
 <li><strong>Sampling is how you afford it.</strong> Traces are billed like
   any other telemetry, so busy systems keep a fraction. The fraction must be
-  decided <em>once per trace</em>, not per service — otherwise you keep half a
-  journey, which looks complete and misleads.</li>
+  decided <em>once per trace</em>, not per service — otherwise you keep
+  half a journey, which looks complete and misleads.</li>
 </ul>
-<h2 id="architecture">Architecture — How It Fits Together</h2>
-<p><img alt="Diagram: a request reaches an external frontend container app which calls an internal-only backend inside the Container Apps environment, passing a traceparent header. Both apps export spans over OTLP gRPC to the managed OpenTelemetry agent Azure runs inside the environment at no compute cost. The agent forwards traces and logs to Application Insights, stored in week 8's Log Analytics workspace in another subscription. Both images are pulled from a Basic container registry with a user-assigned managed identity holding AcrPull and the admin user disabled. Measured: frontend p50 256.4 ms, backend p50 250.8 ms." src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-10-opentelemetry/docs/blog/diagrams/week-10-architecture.svg"/></p>
-<h2 id="build">How We Built It — In Deployment Order</h2>
-<p><strong>The goal:</strong> one request produces one trace across two
-services, with the time attributed correctly, and no password anywhere in the
-image pull. <strong>You need</strong> an Azure subscription, an HCP Terraform
-account, and a Log Analytics workspace.</p>
+<h2 id="architecture">Architecture and Workflow</h2>
+<figure class="screenshot">
+<img alt="Diagram: a request reaches an external frontend container app which calls an internal-only backend inside the Container Apps environment, passing a traceparent header. Both apps export spans over OTLP gRPC to the managed OpenTelemetry agent Azure runs inside the environment at no compute cost. The agent forwards traces and logs to Application Insights, stored in week 8's Log Analytics workspace in another subscription. Both images are pulled from a Basic container registry with a user-assigned managed identity holding AcrPull and the admin user disabled. Measured: frontend p50 256.4 ms, backend p50 250.8 ms." src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-10-opentelemetry/docs/blog/diagrams/week-10-architecture.svg"/>
+<figcaption><strong>The whole week on one page.</strong> Follow the blue line
+  for the request and the dashed line for the telemetry. The two never share a
+  path: spans leave each app sideways to the agent, not along the
+  request.</figcaption>
+</figure>
+<p>What happens when somebody loads the page:</p>
+<ol>
+<li>A request arrives over HTTPS at the <strong>frontend</strong>, the only
+  app with external ingress.</li>
+<li>The frontend opens a span for the request, then calls the
+  <strong>backend</strong> over plain HTTP inside the environment. The HTTP
+  client library attaches a <code>traceparent</code> header carrying the active
+  span's id.</li>
+<li>The backend reads that header, so its own spans become
+  <em>children</em> of the frontend's — one trace, two processes. It then
+  sleeps 250 ms on purpose, so there is something unambiguous to
+  attribute.</li>
+<li>Both apps export finished spans over <strong>OTLP gRPC</strong> to the
+  managed agent, at an endpoint the platform injected into them. The agent
+  forwards traces and logs on to <strong>Application Insights</strong> —
+  but not metrics, a documented limitation rather than a
+  misconfiguration.</li>
+<li>Being workspace-based, it writes into <strong>week 8's Log Analytics
+  workspace</strong>, queryable as <code>AppRequests</code> and
+  <code>AppDependencies</code>.</li>
+</ol>
+<p><strong>The decisions behind that shape.</strong></p>
 <table>
-<thead><tr><th>Resource</th><th>Count</th><th>Its job</th></tr></thead>
+<thead><tr><th>Decision</th><th>Taken</th><th>Why not the alternative</th></tr></thead>
 <tbody>
-<tr><td>Resource group</td><td>1</td><td>what dies together at teardown</td></tr>
-<tr><td>Container registry (Basic)</td><td>1</td><td>holds the two images we build</td></tr>
-<tr><td>Managed identity + AcrPull</td><td>2</td><td>pulls images — no password exists</td></tr>
-<tr><td>Application Insights</td><td>1</td><td>trace destination, stored in week 8's workspace</td></tr>
-<tr><td>Container Apps environment</td><td>1</td><td>the boundary, and where the agent lives</td></tr>
-<tr><td>OpenTelemetry agent config</td><td>1</td><td><code>azapi</code> — azurerm cannot express it</td></tr>
-<tr><td>Container apps</td><td>2</td><td>frontend (external), backend (internal only)</td></tr>
-<tr><td>Diagnostic setting</td><td>1</td><td>console logs to week 8's workspace</td></tr>
+<tr><td>Backend ingress</td><td><strong>internal</strong></td><td>A publicly reachable backend would make the word “distributed” meaningless here</td></tr>
+<tr><td>Sampler</td><td><code>parentbased_traceidratio</code></td><td>Independent per-service samplers keep half a trace, which looks complete and is worse than keeping none</td></tr>
+<tr><td>Agent configuration</td><td><code>azapi</code></td><td><code>azurerm</code> has no argument for <code>openTelemetryConfiguration</code></td></tr>
 </tbody>
 </table>
-<h3>1. The HCP workspace, created first and deliberately</h3>
-<p><img alt="HCP Terraform workspace azure-week-10-dev showing execution mode Local, 11 resources, 8 outputs, and the resource list including the azapi_update_resource that configures the OpenTelemetry agent" src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-10-opentelemetry/docs/blog/screenshots/01-hcp-workspace.png"/></p>
-<h3>2. The code</h3>
-<figure class="screenshot" data-prereq="">
-<img alt="File tree for week 10: an app directory with otel_setup.py, two Flask services and their Dockerfiles; six Terraform files including registry.tf, observability.tf and apps.tf; and three scripts, each annotated with its job and line count" src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-10-opentelemetry/docs/blog/screenshots/02-terraform-layout.png"/>
-<figcaption><strong>Every file, and what it is for.</strong> <code>app/</code>
-  is the only place that knows what a span is. The managed agent routes
-  telemetry; it does not create any.</figcaption>
+<h2 id="prereqs">Prerequisites</h2>
+<ul>
+<li><strong>Permissions:</strong> Contributor <em>and</em> User Access
+  Administrator on the workload subscription. The second is easy to miss
+  — the lab creates an <strong>AcrPull role assignment</strong>, and
+  Contributor alone cannot create role assignments.</li>
+<li><strong>An existing Log Analytics workspace.</strong> This week writes
+  into the one week 8 built and never creates its own. One subscription works
+  fine; the lab splits the workload and the workspace across two.</li>
+<li><strong>Terraform 1.10+, <code>azurerm</code> 5.x and
+  <code>azapi</code> 2.x</strong>, with HCP Terraform for state in
+  <em>local execution</em> mode — so Azure credentials never leave the
+  machine. <strong>No local Docker daemon</strong>, because the images build in
+  Azure.</li>
+<li><strong>Region:</strong> the managed OpenTelemetry agent is in
+  <strong>preview</strong> and not available everywhere. This lab runs in South
+  Central US; check availability before changing it.</li>
+<li><strong>Builds on week 8</strong> (the workspace) and <strong>week
+  9</strong> (the Container Apps environment pattern). Neither needs to still be
+  deployed.</li>
+</ul>
+<p>Exact versions, the five resource providers the deploy script registers, the
+full variable list and the role scopes are in the
+<a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-10-opentelemetry#2-prerequisites">lab guide on GitHub</a>, which is the
+reproducible half of this write-up.</p>
+<h2 id="build">Implementation</h2>
+<p>Eleven resources, deployed in three passes — because a container app
+cannot reference an image tag that does not resolve yet. The registry must
+exist before a build can push to it, and the images must exist before the apps
+can pull them. One <code>terraform apply</code> from empty cannot work; the
+<a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-10-opentelemetry#4-deploy">deploy script</a> runs the three passes in order, and the
+<a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-10-opentelemetry#5-what-it-deploys">guide lists every resource</a>.</p>
+<h3>1. Create the state workspace first</h3>
+<p><strong>Why it is required:</strong> the execution mode is fixed when the
+workspace is created — changing it later means re-authorising
+everything.</p>
+<figure class="screenshot">
+<img alt="HCP Terraform workspace azure-week-10-dev showing execution mode Local, 11 resources, 8 outputs, and the resource list including the azapi_update_resource that configures the OpenTelemetry agent" src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-10-opentelemetry/docs/blog/screenshots/01-hcp-workspace.png"/>
+<figcaption><strong>Checkpoint:</strong> the workspace reports <em>Local</em>
+  execution and, once deployed, 11 resources — including the
+  <code>azapi_update_resource</code> that turns the agent on.</figcaption>
 </figure>
-<p>The sampler is the one setting worth reading twice:</p>
+<h3>2. Write the code, split by decision</h3>
+<p><strong>Why it is required:</strong> the application is the only thing that
+can create a span — so it lives in its own directory, away from the
+Terraform.</p>
+<figure class="screenshot" data-prereq="">
+<img alt="Repository structure for week 10: an app directory holding otel_setup.py plus the frontend and backend services, a terraform directory with registry.tf, observability.tf and apps.tf, and a scripts directory, each directory annotated with what it is responsible for" src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-10-opentelemetry/docs/blog/screenshots/02-terraform-layout.png"/>
+<figcaption><strong>How the implementation is organised.</strong>
+<code>app/</code> is the only code that knows what a span is;
+  <code>terraform/</code> is split by the decision each file makes. Full source
+  on <a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-10-opentelemetry">GitHub</a>.</figcaption>
+</figure>
+<p>One setting in <a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/blob/main/week-10-opentelemetry/app/otel_setup.py"><code>otel_setup.py</code></a>
+is worth reading twice:</p>
 <pre><code>provider = TracerProvider(
     resource=Resource.create({"service.name": service_name}),
     sampler=ParentBasedTraceIdRatio(ratio),      # parentbased, deliberately
 )
 provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))</code></pre>
-<p><code>OTLPSpanExporter()</code> takes no endpoint. It reads one the platform
-injects — which is the next step.</p>
+<p><code>OTLPSpanExporter()</code> takes no endpoint argument. It reads one the
+platform injects — which is step 4.</p>
 <h3>3. Build the images in Azure</h3>
+<p><strong>Why it is required:</strong> the build should not depend on what a
+particular laptop has installed. In production it runs in CI under week 7's
+federated credential rather than from a workstation at all.</p>
 <figure class="screenshot" data-prereq="">
 <img alt="Terminal output of az acr build with --no-logs, followed by az acr task list-runs showing Succeeded and az acr repository show-manifests showing the sha256 digest and the v2 tag" src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-10-opentelemetry/docs/blog/screenshots/03-acr-build.png"/>
-<figcaption><strong>No Docker daemon in the loop.</strong> ACR Tasks builds
-  on an agent in Azure, so the build does not depend on what a laptop has
-  installed.</figcaption>
+<figcaption><strong>Checkpoint:</strong> <code>az acr task list-runs</code>
+  reports <code>Succeeded</code> and <code>show-manifests</code> returns a
+  digest for the expected tag. The run status is the truth here, not the CLI's
+  exit code — see Troubleshooting.</figcaption>
 </figure>
-<h3>4. The agent hands the app its destination</h3>
-<p>Enabling the agent is a property on the environment, set through
-<code>azapi</code> because azurerm has no argument for it. What it does is
-visible from inside the container:</p>
+<h3>4. Turn the agent on, and let it hand the app its destination</h3>
+<p><strong>Why it is required:</strong> the apps must not hardcode where
+telemetry goes, so the same image works unchanged in an environment pointing
+somewhere else.</p>
 <pre><code>$ curl https://frontend.&lt;env&gt;.azurecontainerapps.io/otel-config
 
 OTEL_EXPORTER_OTLP_ENDPOINT   http://k8se-otel.k8se-apps.svc.cluster.local:4317
 OTEL_EXPORTER_OTLP_PROTOCOL   grpc
 OTEL_RESOURCE_ATTRIBUTES      service.instance.id=frontend--0000001-…</code></pre>
-<p>The app is <em>handed</em> its telemetry destination. Setting
-<code>OTEL_EXPORTER_OTLP_ENDPOINT</code> yourself would override the agent's
-address and send spans nowhere.</p>
-<h3>5. Two services, one trace</h3>
+<p><strong>Expected result:</strong> those three variables are present without
+Terraform ever setting them — which is why setting
+<code>OTEL_EXPORTER_OTLP_ENDPOINT</code> yourself sends spans nowhere.</p>
+<h3>5. Make a request, and look for one trace across two services</h3>
 <figure class="screenshot">
 <img alt="Application Insights application map showing two nodes, the frontend and the backend, joined by an arrow labelled 257.1 ms and 43 calls" src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-10-opentelemetry/docs/blog/screenshots/04-application-map.png">
-<figcaption><strong>The application map.</strong> Two services Azure has
-  never been told are related, drawn as connected — because the traces say
-  so.</figcaption>
+<figcaption><strong>Checkpoint:</strong> the application map shows two nodes
+  joined by an arrow. Azure was never told these services are related —
+  the traces say so.</figcaption>
 </img></figure>
-<h3>6. And where the time went</h3>
 <figure class="screenshot">
 <img alt="Logs query on week 8's workspace showing five spans for one OperationId: frontend GET slash at 255.32 ms, frontend assemble-page at 254.654, frontend outbound GET at 254.256, backend GET slash api slash items at 250.844 whose ParentId equals the frontend outbound span id, and backend query-items at 250.139" src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-10-opentelemetry/docs/blog/screenshots/05-end-to-end-trace.png">
-<figcaption><strong>One operation, five spans, two services.</strong> The
-  backend's <code>ParentId</code> is the frontend's outbound span <code>Id</code>.
-  That is context propagation, as data rather than as a diagram.</figcaption>
+<figcaption><strong>Checkpoint, and the week's whole point:</strong> one
+  operation, five spans, two services. The backend's <code>ParentId</code> is
+  the frontend's outbound span <code>Id</code>. That is context propagation as
+  data rather than as a diagram.</figcaption>
 </img></figure>
-<h2 id="testing">How It's Tested</h2>
-<p><code>validate.sh</code> — 6 checks, 9 assertions, <strong>9 passed / 0
-failed</strong>:</p>
+<h2 id="validation">Validation and Evidence</h2>
+<p>A successful <code>apply</code> proves the resources exist. It says nothing
+about whether a trace crosses the process boundary, so that is tested
+separately. <a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/blob/main/week-10-opentelemetry/scripts/validate.sh"><code>validate.sh</code></a>
+runs 6 checks and 9 assertions against the live deployment, querying week 8's
+workspace directly — <strong>9 passed / 0 failed</strong> on
+2026-10-23.</p>
 <table>
-<thead><tr><th>What</th><th>Measured</th></tr></thead>
+<thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
 <tbody>
-<tr><td>Frontend <code>GET /</code></td><td><strong>200</strong>, carrying the backend's payload</td></tr>
-<tr><td>Backend from the internet</td><td><strong>404</strong> — internal ingress</td></tr>
-<tr><td>Registry admin user</td><td><strong>disabled</strong></td></tr>
-<tr><td>App's registry credential</td><td><strong>none</strong> — identity only</td></tr>
-<tr><td>Request spans in week 8's workspace</td><td><strong>663</strong></td></tr>
-<tr><td>Operations containing <em>both</em> services</td><td><strong>74</strong></td></tr>
-<tr><td>Frontend <code>GET /</code> p50</td><td><strong>256.4 ms</strong></td></tr>
-<tr><td>Backend <code>GET /api/items</code> p50</td><td><strong>250.8 ms</strong></td></tr>
-<tr><td>Traces kept at sampler 0.2</td><td><strong>16 of 100</strong></td></tr>
-<tr><td>Half-traces at sampler 0.2</td><td><strong>0</strong></td></tr>
+<tr><td>Frontend <code>GET /</code></td><td>200 with backend data</td><td><strong>200</strong>, carrying the backend's payload</td><td>PASS</td></tr>
+<tr><td>Backend reached from the internet</td><td>not reachable</td><td><strong>404</strong> — internal ingress</td><td>PASS</td></tr>
+<tr><td>Registry admin user</td><td>disabled</td><td><strong>disabled</strong></td><td>PASS</td></tr>
+<tr><td>App's registry credential</td><td>none</td><td><strong>none</strong> — identity only</td><td>PASS</td></tr>
+<tr><td>Request spans in week 8's workspace</td><td>more than zero</td><td><strong>663</strong></td><td>PASS</td></tr>
+<tr><td>Operations containing <em>both</em> services</td><td>more than zero</td><td><strong>74</strong></td><td>PASS</td></tr>
+<tr><td>Frontend <code>GET /</code> p50</td><td>backend plus a little overhead</td><td><strong>256.4 ms</strong></td><td>PASS</td></tr>
+<tr><td>Backend <code>GET /api/items</code> p50</td><td>about 250 ms, its deliberate sleep</td><td><strong>250.8 ms</strong></td><td>PASS</td></tr>
+<tr><td>Traces kept at sampler 0.2</td><td>about 20 of 100</td><td><strong>16 of 100</strong></td><td>PASS</td></tr>
+<tr><td>Half-traces at sampler 0.2</td><td>none</td><td><strong>0</strong></td><td>PASS</td></tr>
 </tbody>
 </table>
-<p>Of the 256.4 ms a user waits, <strong>250.8 is the backend</strong>. The
-frontend's own work is about 5.6 ms. That difference is the entire argument for
-tracing over logging.</p>
-<p>And sampling keeps <em>whole</em> traces: 100 requests at a 0.2 ratio kept
-16, every one containing both services, none half-captured. That is
-<code>parentbased</code> working — the decision is taken once at the frontend
-and respected downstream.</p>
-<h2 id="challenges">Challenges — What Actually Went Wrong</h2>
-<p><strong>A full table that read as empty.</strong> Validation reported zero
-traces for twenty minutes while 663 spans sat in the workspace. The managed
-agent writes <code>AppRoleName</code> as
-<code>&lt;environment&gt;.&lt;service&gt;</code>, not the bare
-<code>OTEL_SERVICE_NAME</code>, so filtering on <code>'frontend'</code> matched
-nothing. The filter looked obviously correct, and an empty result from a
-correct-looking query is indistinguishable from no telemetry. I theorised a
-gunicorn fork bug and rebuilt both images before running
-<code>AppRequests | summarize count()</code> with no filter — which would have
-settled it in thirty seconds.</p>
-<p><strong>A build that succeeded and reported failure.</strong>
-<code>az acr build</code> streams the agent's log back through colorama to a
-Windows console; pip's progress bar is not cp1252, and the CLI dies with
-<code>UnicodeEncodeError</code> — after the build has finished and pushed.
-<code>az acr task list-runs</code> said <code>Succeeded</code> for a command
-that exited 1. Use <code>--no-logs</code> and ask Azure for the status.</p>
-<p><strong>A latency number about the health probe.</strong> The first p50 came
-out at 0.7 ms for a service that sleeps 250 ms on purpose. Liveness probes were
-78% of all requests at 0.6 ms each and dominated the percentile. Excluding
-them is not tidying up; including them was measuring the wrong thing.</p>
-<h2 id="security">Security — Controls at Every Layer</h2>
+<p><strong>What the latency rows prove.</strong> Of the 256.4 ms a user
+waits, <strong>250.8 is the backend</strong>; the frontend's own work is about
+5.6 ms. A log line had that 256 ms all along and could not say whose
+it was.</p>
+<p><strong>What the sampling rows prove.</strong> 100 requests at a 0.2 ratio
+kept 16 traces, every one containing both services and none half-captured
+— the keep decision taken once at the frontend and respected
+downstream.</p>
+<h2 id="seccost">Security and Cost</h2>
+<h3>Security</h3>
 <ul>
 <li><strong>No password exists in the image pull.</strong> The registry's
-  admin user is off, and the apps reference a managed identity rather than a
-  credential — verified by asserting <code>passwordSecretRef</code> is
-  absent.</li>
-<li><strong>AcrPull at the registry</strong>, not the subscription, and pull
-  only — the push happens from <code>az acr build</code>.</li>
-<li><strong>The backend has no public ingress</strong>, so the
-  service-to-service hop is genuinely internal.</li>
-<li><strong>One deliberate exception:</strong> Application Insights has local
-  authentication <em>enabled</em>. Week 8 disabled exactly that on the
-  workspace. The managed agent authenticates with a connection string and
-  Microsoft documents no ARM-authenticated alternative, so this is a trade
-  taken knowingly rather than a default left alone.</li>
+  admin user is off and the apps reference a managed identity rather than a
+  credential — asserted by checking <code>passwordSecretRef</code> is
+  absent, not assumed from the Terraform.</li>
+<li><strong>Least privilege on the role assignment:</strong> AcrPull, at the
+  registry rather than the subscription, and pull only. Pushing is done by
+  <code>az acr build</code> under a separate identity.</li>
+<li><strong>Network exposure:</strong> one app has external ingress. The
+  backend has none, so the service-to-service hop is genuinely internal, and
+  the 404 from outside is that control working.</li>
+<li><strong>One accepted trade-off.</strong> Application Insights has local
+  authentication <em>enabled</em> — the argument week 8 deliberately
+  disabled on the workspace. The managed agent authenticates with a connection
+  string and Microsoft documents no ARM-authenticated alternative, so the
+  choice is between having the agent and keeping the control. Two
+  Microsoft-recommended controls pulling against each other in the same estate,
+  three weeks apart.</li>
+<li><strong>What production adds:</strong> building in CI under a federated
+  credential, Premium ACR for private endpoints, a sampler well below 1.0, and
+  alerting on trace-derived metrics rather than only collecting them.</li>
 </ul>
-<h2 id="cost">Cost</h2>
-<p>The agent itself is <strong>free</strong> — Microsoft provisions 0.5 vCPU
-and 1.5 GB inside the environment at no compute charge. You pay for the
-destination. ACR Basic is <strong>$0.1666/day</strong>, measured from the
-retail price API, and it is the only standing charge here.</p>
-<p>Traces land in week 8's workspace at its rates, which is why sampling is a
-cost control and not a detail.</p>
-<p><strong>Measured: $0.0142.</strong> Read from Cost Management after
-teardown, not estimated. All of it is Container Registry — the container apps
-sat inside the monthly free grant and the agent carries no compute charge. At
-$0.1666/day that is about two hours of registry, which is what the week
-actually took.</p>
+<h3>Cost</h3>
+<p>The agent itself is <strong>free</strong>: Microsoft provisions
+0.5 vCPU and 1.5 GB inside the environment at no compute charge. You
+pay for the destination. ACR Basic at <strong>$0.1666/day</strong>, read from
+the retail price API, is the only standing charge; the container apps fell
+inside the monthly free grant, and traces land in week 8's workspace at its
+ingestion rate — which is why the sampler is a cost control and not a
+detail.</p>
+<p><strong>Measured: $0.0142</strong> — read from Cost Management after
+teardown, not estimated. All of it is Container Registry, and at $0.1666/day
+that is about two hours of it, which is how long the lab was up.</p>
 <figure class="screenshot">
 <img alt="Azure portal subscription overview for sub-lab-dev after teardown, showing current cost of one cent and a costs-by-resource chart naming acrwk10devscus001 as the only resource that cost anything" src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-10-opentelemetry/docs/blog/screenshots/06-cost.png"/>
 <figcaption><strong>The whole bill, after teardown.</strong> One resource
   appears: the registry. The container apps, the environment and the
   OpenTelemetry agent cost nothing.</figcaption>
 </figure>
-<h2 id="cleanup">Cleanup</h2>
+<h2 id="troubleshooting">Troubleshooting and Lessons</h2>
+<p><strong>A full table that read as empty.</strong></p>
+<ul>
+<li><strong>Problem:</strong> validation reported zero traces for twenty
+  minutes while 663 spans sat in the workspace.</li>
+<li><strong>Root cause:</strong> the managed agent writes
+  <code>AppRoleName</code> as <code>&lt;environment&gt;.&lt;service&gt;</code>,
+  not the bare <code>OTEL_SERVICE_NAME</code>, so a filter on
+  <code>'frontend'</code> matched nothing.</li>
+<li><strong>Resolution:</strong> match on the suffix —
+  <code>split(AppRoleName, '.')[-1]</code> — rather than on the whole
+  value.</li>
+<li><strong>Lesson learned:</strong> an empty result from a correct-looking
+  query is indistinguishable from no telemetry at all. I theorised a gunicorn
+  fork bug and rebuilt both images before running
+  <code>AppRequests | summarize count()</code> with no filter, which would have
+  settled it in thirty seconds. Count the rows before explaining why there are
+  none.</li>
+</ul>
+<p><strong>A build that succeeded and reported failure.</strong></p>
+<ul>
+<li><strong>Problem:</strong> <code>az acr build</code> exited 1 with
+  <code>UnicodeEncodeError</code>, and the image was in the registry
+  anyway.</li>
+<li><strong>Root cause:</strong> the CLI streams the build agent's log back to
+  the console, and pip's progress bar is not encodable in cp1252. The crash is
+  in the client's output handling, after the remote build has finished and
+  pushed.</li>
+<li><strong>Resolution:</strong> queue with <code>--no-logs</code> and read
+  <code>az acr task list-runs</code> for the outcome.</li>
+<li><strong>Lesson learned:</strong> when the work happens remotely, the
+  server's recorded status is the result. The local exit code only describes the
+  local process.</li>
+</ul>
+<p><strong>A latency number that was really about the health probe.</strong></p>
+<ul>
+<li><strong>Problem:</strong> the first p50 came out at 0.7 ms for a
+  service that sleeps 250 ms on purpose.</li>
+<li><strong>Root cause:</strong> liveness probes were 78% of all requests at
+  0.6 ms each, and a percentile over that population is a percentile about
+  the probe.</li>
+<li><strong>Resolution:</strong> exclude probe paths from the latency query
+  explicitly.</li>
+<li><strong>Lesson learned:</strong> excluding them is not tidying the data.
+  Including them was measuring a different thing and calling it application
+  latency.</li>
+</ul>
+<h2 id="cleanup">Cleanup and Key Takeaways</h2>
+<h3>Cleanup</h3>
 <pre><code>$ ./scripts/cleanup.sh
    resource groups named rg-tracing-lab-dev-scus-001 : 0
    Microsoft.ContainerRegistry/registries            0
    Microsoft.App/managedEnvironments                 0
    Microsoft.Insights/components                     0
    week 08's workspace still there                   log-platform-prod-scus-001</code></pre>
-<p>Deleting the group deletes the registry and the images in it. They are
-rebuildable from <code>app/</code> with one command, which is the test of
-whether a registry is holding anything irreplaceable.</p>
-<h2 id="references">References</h2>
+<p>The script deletes the resource group and then <strong>counts what is
+left</strong>, which is the difference between tearing down and believing you
+did. The registry and its images go with the group; they rebuild from
+<code>app/</code> with one command, which is the test of whether a registry
+holds anything irreplaceable.</p>
+<p><strong>Preserve</strong> week 8's workspace — read, never owned, by
+this week, and the last line of the script exists to prove the teardown did not
+reach it. <strong>Still charging afterwards:</strong> nothing, though the
+traces already ingested sit in that workspace until its retention
+expires.</p>
+<h3 id="takeaways">Key takeaways</h3>
+<ul>
+<li><strong>The agent routes; the SDK creates.</strong> Enable the managed
+  agent against an uninstrumented application and you get a correctly
+  configured pipeline carrying nothing — every component healthy, no
+  data.</li>
+<li><strong>One HTTP header is the whole mechanism.</strong> The backend's
+  <code>ParentId</code> is the frontend's outbound span id. Nothing else joins
+  the two processes, and nothing in Azure was told they were related.</li>
+<li><strong>Sample per trace, not per service.</strong> 16 of 100 kept, and
+  not one of them half, because the decision was taken once and
+  propagated.</li>
+<li><strong>An empty result is not evidence of an empty table.</strong>
+  Twenty minutes went into a bug I invented because I trusted a filter instead
+  of counting rows first.</li>
+</ul>
+<h3 id="references">References</h3>
 <ul>
 <li><a href="https://learn.microsoft.com/en-us/azure/container-apps/opentelemetry-agents">Collect and read OpenTelemetry data in Azure Container Apps</a></li>
 <li><a href="https://learn.microsoft.com/en-us/azure/azure-monitor/app/opentelemetry-enable">Enable Azure Monitor OpenTelemetry</a></li>
-<li><a href="https://learn.microsoft.com/en-us/azure/container-registry/container-registry-tasks-overview">ACR Tasks</a></li>
-<li><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-10-opentelemetry">The code for this week</a></li>
-</ul>
-<h2 id="takeaways">Key Takeaways</h2>
-<ul>
-<li><strong>The agent routes; the SDK creates.</strong> Enable the managed
-  agent against an uninstrumented app and every component reports healthy while
-  nothing arrives.</li>
-<li><strong>Sample per trace, not per service.</strong> 16 of 100 kept, and
-  not one of them half — because the decision was taken once and propagated.</li>
-<li><strong>An empty result is not evidence of an empty table.</strong> Twenty
-  minutes went into a bug I invented because I trusted a filter instead of
-  counting rows first.</li>
+<li><a href="https://learn.microsoft.com/en-us/azure/container-registry/container-registry-tasks-overview">ACR Tasks overview</a></li>
+<li><a href="https://registry.terraform.io/providers/Azure/azapi/latest/docs/resources/update_resource">Terraform <code>azapi_update_resource</code></a></li>
+<li><a href="https://www.w3.org/TR/trace-context/">W3C Trace Context</a> — the <code>traceparent</code> header itself</li>
+<li><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-10-opentelemetry">The lab guide and code for this week</a> — prerequisites, commands, expected outputs, cleanup</li>
 </ul>
 </div>
 </div>
@@ -783,4 +918,4 @@ whether a registry is holding anything irreplaceable.</p>
   hljs.highlightAll();
 </script>
 </body></html>
-<!-- src-sha256 002422425f9a5e0d8257fb205fb9dcf0213c6a8662e117229be569950ab63e90 -->
+<!-- src-sha256 79cde571fbc5113ab3f7a73ca25f9f850e7ba533f4577eeaadc9f4df70767e44 -->
