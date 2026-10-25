@@ -80,7 +80,11 @@ SECTION_SHAPE = {
     # "compact table containing service name, purpose, definition"
     "services":      ("a services table", re.compile(r"<table", re.I)),
     # "Required accounts, permissions, software and version requirements..."
-    "prerequisites": ("a prerequisites table", re.compile(r"<table", re.I)),
+    # A table or a list - the standard asks for a LIST of what is actually
+    # needed, and a short prerequisite set reads better as bullets than as a
+    # two-column table. Either shape is scannable; prose alone is not.
+    "prerequisites": ("a table or list of prerequisites",
+                      re.compile(r"<table|<ul", re.I)),
     # "Test command, expected result, ACTUAL observed result, supporting
     # screenshot or output" - a claim of validation with no evidence is the
     # thing the standard most insists on.
@@ -137,7 +141,7 @@ def check_text(text, name, report, slug=None):
         if sec is None:
             continue  # already reported as missing above
         if not pattern.search(sec):
-            problems.append(f"#{sid} has no {want}")
+            problems.append(f"#{sid} is missing {want}")
 
     if problems:
         for p in problems:
