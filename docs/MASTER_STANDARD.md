@@ -97,7 +97,13 @@ within hours of the standard being issued the series had already diverged:
 Both windows believed they were following the standard. Nothing caught it,
 because the shape check only inspected one series.
 
-**Canonical list, derived from the mandated headings:**
+**Update, same day:** the ids turned out to be the wrong thing to standardise.
+Azure uses no section wrappers at all and is nonetheless the most faithful of
+the three to the standard, because **the standard specifies headings, not ids**.
+All three series carry 9/9 of the mandated headings. The shape check now keys on
+headings, so no series has to rewrite its markup, and one gate covers all three.
+
+Converge the ids when you next touch a post, not before. Canonical list:
 
 ```
 overview · services · architecture · prerequisites · implementation

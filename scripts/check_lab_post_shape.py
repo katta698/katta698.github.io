@@ -170,6 +170,69 @@ def section(text, sid):
     return m.group(0) if m else None
 
 
+# (stem used to match, canonical heading reported)
+#
+# Matched on a distinctive STEM rather than the exact string. GCP week-10 heads
+# its section "Troubleshooting" where the standard says "Troubleshooting and
+# Lessons" -- a one-word difference that is worth converging, and not worth
+# failing another window's published post over. The canonical wording is in
+# docs/MASTER_STANDARD.md.
+HEADINGS = [
+    ("Lab Overview", "Lab Overview"),
+    ("Cloud Services", "Cloud Services and Concepts"),
+    ("Architecture and Workflow", "Architecture and Workflow"),
+    ("Prerequisites", "Prerequisites"),
+    ("Implementation", "Implementation"),
+    ("Validation and Evidence", "Validation and Evidence"),
+    ("Security and Cost", "Security and Cost"),
+    ("Troubleshooting", "Troubleshooting and Lessons"),
+    ("Cleanup and Key Takeaways", "Cleanup and Key Takeaways"),
+]
+
+# Shape keyed on the HEADING, not the id -- see section_by_heading below.
+SHAPE_BY_HEADING = {
+    # An inline <svg>, OR an <img> pointing at a real .svg file.
+    #
+    # The original rule rejected every <img>, because the failure it was written
+    # for was an ASCII schematic rendered to PNG -- a picture of a command prompt
+    # under an architecture heading. A vector .svg referenced by <img> is not
+    # that: it renders as a diagram, scales, and keeps the HTML small, which is
+    # how the Azure series does it. Rejecting it would be crying wolf over an
+    # embedding choice the standard does not make.
+    "Architecture and Workflow": ("a diagram - inline <svg>, or an <img> of a .svg "
+                                  "(a .png of text does not count)",
+                                  re.compile(r"<svg|<img[^>]+\.svg", re.I)),
+    "Cloud Services and Concepts": ("a services table", re.compile(r"<table", re.I)),
+    "Prerequisites": ("a table or list of prerequisites",
+                      re.compile(r"<table|<ul", re.I)),
+    "Validation and Evidence": ("a Test/Expected/Actual/Status table",
+                                re.compile(r"<th>\s*Status\s*</th>", re.I)),
+    "Troubleshooting and Lessons": ("the Problem/Root cause/Resolution/Lesson form",
+                                    re.compile(r"Root cause", re.I)),
+}
+
+
+def section_by_heading(text, heading):
+    """A section's markup, from its <h2> to the next <h2>.
+
+    WHY NOT BY id (2026-10-25)
+    --------------------------
+    The standard specifies section HEADINGS. It never specified the HTML `id`
+    attribute, so all three series invented their own and diverged inside a
+    day: AWS chose implementation/security-cost/cleanup, GCP chose
+    build/security/takeaways, and Azure uses no section wrappers at all.
+
+    All three were following the standard. Checking ids declared two of them
+    broken over a detail the standard does not contain. Checking headings
+    checks what was actually mandated, needs no series to rewrite its markup,
+    and lets one gate cover all three clouds.
+    """
+    pat = re.compile(r"<h2[^>]*>(?:(?!</h2>).)*?" + re.escape(heading).replace(r"\ ", r"\s+")
+                     + r".*?</h2>(.*?)(?=<h2|\Z)", re.S | re.I)
+    m = pat.search(text)
+    return m.group(0) if m else None
+
+
 def check_text(text, name, report, slug=None, required=None):
     problems = []
     required = required or REQUIRED_SECTIONS
