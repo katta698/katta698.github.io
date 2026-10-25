@@ -1,0 +1,514 @@
+---
+
+title: 'Week 24 - Chaos Engineering with AWS FIS: The Safety Net That Could Never Close'
+date: '2026-10-24T15:00:00'
+labels:
+- AWS
+- Terraform
+- AWS Weekly Lab
+slug: week-24-chaos-engineering-fis
+draft: true
+verified: '2026-10-24'
+verified_claims:
+  - claim: "AWS Fault Injection Service is billed at $0.10 per action-minute in US East (N. Virginia), with an additional $0.10 per action-minute for each additional account in a multi-account experiment"
+    source: https://aws.amazon.com/fis/pricing/
+  - claim: "An AWS FIS experiment report costs $5 per report"
+    source: https://aws.amazon.com/fis/pricing/
+  - claim: "The aws:fis:wait action accepts a duration from one minute to 12 hours in ISO 8601 format and requires no IAM permissions"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/fis-actions-reference.html
+  - claim: "A FIS stop condition is a CloudWatch alarm; when it triggers, AWS FIS stops the experiment, and a stopped experiment cannot be resumed"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/stop-conditions.html
+  - claim: "Every aws:ecs:task-* action requires tasks to be managed by AWS Systems Manager, whereas aws:ecs:stop-task goes through the ECS API and requires no agent"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/fis-actions-reference.html
+  - claim: "The AWS FIS quota for actions per experiment template is 20, and experiment duration is capped at 12 hours"
+    source: "Observed 2026-10-23: aws service-quotas list-service-quotas --service-code fis returned 'Actions per experiment template' = 20 and 'Experiment duration in hours' = 12"
+  - claim: "When AWS FIS stops an ECS task, the task is deregistered from its ALB target group, so UnHealthyHostCount does not rise; a service that went from 4 healthy tasks to 2 and back reported UnHealthyHostCount of 0.0 for every one-minute datapoint across the window"
+    source: "Observed 2026-10-23 on target group week24-chaos: get-metric-statistics for UnHealthyHostCount returned Maximum 0.0 for every minute from 22:50 to 23:00 CDT, while HealthyHostCount returned Minimum 2.0 for the 22:56 minute"
+  - claim: "The aws:ecs:stop-task action completes in well under a second, making it impossible for any CloudWatch alarm to halt an experiment that uses it alone"
+    source: "Observed 2026-10-23: FIS GetExperiment reported action stop-tasks startTime 22:56:30.862 and endTime 22:56:31.235, a duration of 373 milliseconds"
+  - claim: "AWS FIS resolves its target set once at experiment start and does not re-resolve it for later actions, so a repeated action can report success while affecting nothing"
+    source: "Observed 2026-10-23 on experiment EXPZR92yiLRutrQu6A: six aws:ecs:stop-task actions each reported 'Action was completed', Resources targeted was 2, and only the first action stopped any tasks; replacement tasks carried the FISTarget tag correctly"
+  - claim: "An ECS Fargate service replaced two stopped tasks in about 40 seconds, producing an ALB capacity outage of roughly 17 seconds that CloudWatch's one-minute Minimum for HealthyHostCount did not record at all"
+    source: "Observed 2026-10-23: StopTask issued 23:28:06, replacement tasks running 23:28:45 and 23:28:47; per-2-second polling showed 2 healthy targets from t=28s to t=45s; HealthyHostCount Minimum reported 4.0 for every minute from 23:26 to 23:30"
+  - claim: "FIS experiment logging to CloudWatch Logs requires vended log delivery permissions, including logs:PutResourcePolicy, which is an account-level action that cannot be scoped to a single log group ARN"
+    source: "Observed 2026-10-23: the experiment failed with 'does not have sufficient privileges to set up logging for the specified CloudWatch LogGroup' until logs:PutResourcePolicy was granted on resources ['*']"
+  - claim: "Creating an HCP Terraform run through the API without specifying a configuration version makes the run use the last configuration version the workspace ingested, not the latest pushed commit"
+    source: "Observed 2026-10-23: an API-created run reported planned_and_finished with no changes while the IAM policy it was intended to fix was still live in the account; pinning configuration-version to the cv whose commit-sha matched HEAD produced the expected plan"
+---
+
+  <div class="section" id="overview">
+    <h2>Lab Overview</h2>
+
+    <p>You fit a smoke alarm, press the test button, and it beeps. You now believe the kitchen is
+    covered. But the button only tests the speaker &mdash; it says nothing about whether the sensor
+    can smell smoke.</p>
+
+    <p><strong>The problem.</strong> A chaos experiment's safety net is a CloudWatch alarm wired in
+    as a <em>stop condition</em>. It shows a green <code>OK</code>, and everyone assumes it would
+    catch a real failure. Almost nobody tests whether it <em>can</em>.</p>
+
+    <p><strong>The objective.</strong> Deliberately break an ECS service with AWS Fault Injection
+    Service and measure how much damage runs before the stop condition closes, comparing a fast
+    alarm against a slow one.</p>
+
+    <p><strong>The outcome.</strong> That measurement is impossible on this workload, for four
+    separate reasons, each of which presented in the console as a successful run. Those four
+    reasons are worth more than the number would have been.</p>
+
+    <table>
+      <tbody>
+        <tr><td><strong>Difficulty</strong></td><td>Intermediate</td></tr>
+        <tr><td><strong>Time</strong></td><td>About 90 minutes including teardown</td></tr>
+        <tr><td><strong>Measured cost</strong></td><td>$1.26</td></tr>
+        <tr><td><strong>Deployment</strong></td><td>Terraform via HCP Terraform with OIDC</td></tr>
+        <tr><td><strong>Full lab guide</strong></td><td><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-24-chaos-engineering-fis/README.md">GitHub &mdash; prerequisites, Terraform, commands, validation, cleanup</a></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section" id="services">
+    <h2>Cloud Services and Concepts</h2>
+
+    <table>
+      <thead><tr><th>Service</th><th>Purpose here</th><th>What it is</th></tr></thead>
+      <tbody>
+        <tr><td><strong>AWS Fault Injection Service</strong></td><td>Breaks the service on cue</td>
+            <td>Managed fault injection. You define a target, an action and a stop condition. It is the only component with permission to do damage, and it bills per action-minute.</td></tr>
+        <tr><td><strong>ECS Fargate</strong></td><td>The thing being broken</td>
+            <td>Runs containers without managing servers. You declare how many copies (tasks) you want and ECS keeps that many alive, replacing any that die.</td></tr>
+        <tr><td><strong>Application Load Balancer</strong></td><td>Serves the app and reports its health</td>
+            <td>Spreads traffic across the tasks. Its <em>target group</em> is the register of which tasks exist and which are passing health checks.</td></tr>
+        <tr><td><strong>CloudWatch alarms</strong></td><td>The two stop conditions</td>
+            <td>Reads a metric, summarises each fixed window with a statistic, and fires after N bad windows. Not a live tripwire &mdash; it sees only what the metric sampled.</td></tr>
+        <tr><td><strong>HCP Terraform</strong></td><td>Provisioning</td>
+            <td>Runs Terraform remotely and assumes an AWS role by OIDC, so no static keys exist anywhere.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture and Workflow</h2>
+<figure class="diagram">
+      <svg viewBox="0 0 900 330" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="An AWS FIS experiment template issues the aws:ecs:stop-task action, which completes in 373 milliseconds, against an ECS Fargate service of four tasks. Two tasks are stopped and ECS replaces them in about forty seconds. Because a stopped task is deregistered from the ALB target group rather than marked unhealthy, the HealthyHostCount metric dips from four to two while UnHealthyHostCount stays at zero throughout. Two CloudWatch alarms read these metrics, one evaluating a single sixty-second datapoint and one evaluating two three-hundred-second datapoints, and both are wired back to the experiment as stop conditions. Neither alarm ever fires, because the outage lasted seventeen seconds and the metric is sampled every sixty."
+     style="width:100%;height:auto;background:#fff;border:1px solid #e6e8eb;border-radius:8px">
+  <rect x="0" y="0" width="900" height="330" fill="#ffffff"/>
+  <defs>
+    <marker id="a24" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8a94a0"/>
+    </marker>
+    <marker id="a24r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#cc0c39"/>
+    </marker>
+  </defs>
+  <style>
+    .b{fill:#fff;stroke:#d5dbe1;stroke-width:1.4;rx:7}
+    .g{fill:#fbfcfd;stroke:#d5dbe1;stroke-width:1.2;stroke-dasharray:4 3;rx:8}
+    .t{font:600 13px "Segoe UI",Arial,sans-serif;fill:#16191f}
+    .s{font:11.5px "Segoe UI",Arial,sans-serif;fill:#6c757d}
+    .l{stroke:#8a94a0;stroke-width:1.4;fill:none;marker-end:url(#a24)}
+    .d{stroke:#cc0c39;stroke-width:1.4;fill:none;stroke-dasharray:5 4;marker-end:url(#a24r)}
+    .k{font:700 10px "Segoe UI",Arial,sans-serif;letter-spacing:.08em;fill:#8a94a0}
+    .ok{font:600 11.5px "Segoe UI",Arial,sans-serif;fill:#1a7f37}
+    .no{font:600 11.5px "Segoe UI",Arial,sans-serif;fill:#cc0c39}
+  </style>
+
+  <text class="k" x="20" y="30">THE FAULT</text>
+  <rect class="b" x="20" y="44" width="178" height="86" style="stroke:#FF9900;stroke-width:1.8"/>
+  <text class="t" x="34" y="68">FIS experiment</text>
+  <text class="s" x="34" y="88">aws:ecs:stop-task</text>
+  <text class="s" x="34" y="106">PERCENT(50) of tasks</text>
+  <text class="no" x="34" y="124">completes in 373 ms</text>
+
+  <path class="l" d="M198 87 H246"/>
+
+  <text class="k" x="252" y="30">THE WORKLOAD</text>
+  <rect class="b" x="252" y="44" width="178" height="86"/>
+  <text class="t" x="266" y="68">ECS Fargate service</text>
+  <text class="s" x="266" y="88">4 tasks &#8594; 2 stopped</text>
+  <text class="s" x="266" y="106">ECS replaces them</text>
+  <text class="ok" x="266" y="124">healed in ~40 s</text>
+
+  <path class="l" d="M430 87 H478"/>
+
+  <text class="k" x="484" y="30">WHAT THE ALB REPORTS</text>
+  <rect class="b" x="484" y="44" width="196" height="40"/>
+  <text class="s" x="498" y="69">stopped task is <tspan font-weight="600">deregistered</tspan></text>
+
+  <rect class="b" x="484" y="94" width="94" height="66"/>
+  <text class="s" x="494" y="114">Healthy</text>
+  <text class="s" x="494" y="130">HostCount</text>
+  <text class="ok" x="494" y="150">4 &#8594; 2</text>
+
+  <rect class="b" x="586" y="94" width="94" height="66" style="stroke:#cc0c39;stroke-width:1.8"/>
+  <text class="s" x="596" y="114">UnHealthy</text>
+  <text class="s" x="596" y="130">HostCount</text>
+  <text class="no" x="596" y="150">stays 0</text>
+
+  <path class="l" d="M680 110 H728"/>
+
+  <text class="k" x="734" y="30">THE SAFETY NET</text>
+  <rect class="b" x="734" y="44" width="146" height="54"/>
+  <text class="t" x="746" y="66">alarm &#8220;fast&#8221;</text>
+  <text class="s" x="746" y="86">60 s &#183; 1 datapoint</text>
+
+  <rect class="b" x="734" y="108" width="146" height="54"/>
+  <text class="t" x="746" y="130">alarm &#8220;typical&#8221;</text>
+  <text class="s" x="746" y="150">300 s &#183; 2 datapoints</text>
+
+  <text class="no" x="734" y="182">neither ever fires</text>
+
+  <path class="d" d="M807 192 V236 H109 V134"/>
+  <text class="no" x="420" y="230">stop condition &#8212; the arrow that never carried a signal</text>
+
+  <rect class="g" x="20" y="256" width="860" height="56"/>
+  <text class="s" x="34" y="279">The outage was real and lasted about 17 seconds. The metric both alarms read is sampled</text>
+  <text class="s" x="34" y="297">once a minute. On one run it recorded the dip; on an identical run it did not record it at all.</text>
+</svg>
+      <figcaption>Three of the four findings are visible here: the metric that cannot move, the
+      action that ends too fast to interrupt, and an outage shorter than the sampling interval that
+      watches for it.</figcaption>
+    </figure>
+
+    <ol>
+      <li>An <strong>FIS experiment template</strong> names a target (tasks tagged
+      <code>FISTarget</code>, 50% of them), an action (<code>aws:ecs:stop-task</code>) and a stop
+      condition.</li>
+      <li>The action <strong>stops two of the four tasks</strong>. ECS notices and begins replacing
+      them without being asked.</li>
+      <li>The ALB <strong>deregisters</strong> the stopped tasks from its target group.</li>
+      <li><code>HealthyHostCount</code> dips from 4 to 2. <strong><code>UnHealthyHostCount</code>
+      stays at 0</strong> &mdash; a deregistered target is absent, not unhealthy.</li>
+      <li>Two alarms read that metric: one evaluating a single 60-second window, one evaluating two
+      300-second windows.</li>
+      <li>Either alarm, if it fires, halts the experiment as a stop condition.</li>
+      <li>ECS finishes replacing the tasks and the service returns to 4 healthy.</li>
+    </ol>
+
+    <h3>Architectural decisions</h3>
+
+    <p><strong>Alarm on <code>HealthyHostCount</code>, not <code>UnHealthyHostCount</code>.</strong>
+    The obvious metric cannot see this fault at all, for the reason in step 4.</p>
+
+    <p><strong>Statistic <code>Minimum</code>, not <code>Average</code>.</strong> Over a 300-second
+    window a one-minute dip to 2 averages to roughly 3.6 and never crosses a threshold of 4.</p>
+
+    <p><strong>Both alarms come from one definition</strong>, differing only in <code>period</code>
+    and <code>datapoints_to_alarm</code>. If anything else drifted, the comparison would be
+    measuring something other than patience.</p>
+
+    <p><strong><code>aws:ecs:stop-task</code> rather than the <code>aws:ecs:task-*</code>
+    family.</strong> The richer actions &mdash; CPU stress, network latency &mdash; all require
+    SSM-managed tasks, which on Fargate means a sidecar in every task definition. That is a lot of
+    machinery for a lab about stop conditions. This choice has a consequence, covered in
+    Troubleshooting.</p>
+  </div>
+
+
+  <div class="section" id="prerequisites">
+    <h2>Prerequisites</h2>
+
+    <table>
+      <thead><tr><th>Requirement</th><th>Detail</th></tr></thead>
+      <tbody>
+        <tr><td>AWS account</td><td>Permission to create ECS, ELB, IAM, CloudWatch and FIS resources</td></tr>
+        <tr><td>AWS CLI</td><td>v2, authenticated &mdash; <code>aws sts get-caller-identity</code> must succeed</td></tr>
+        <tr><td>HCP Terraform</td><td>A workspace with an AWS OIDC role. No static keys</td></tr>
+        <tr><td>Terraform</td><td>1.15.x (this lab ran 1.15.8)</td></tr>
+        <tr><td>Region</td><td><code>us-east-1</code></td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>One quota decides whether the design fits.</strong> A FIS experiment template allows
+    <strong>20 actions</strong>; the repeated-fault template here uses 13. Check before building:</p>
+
+<pre><code>aws service-quotas list-service-quotas --service-code fis --region us-east-1 \
+  --query "Quotas[?contains(QuotaName,'per experiment template')].[QuotaName,Value]"</code></pre>
+
+    <p><strong>Network assumption.</strong> The service runs in the default VPC with public IPs, and
+    the ALB shares those subnets &mdash; which keeps the lab to 19 resources and no NAT gateway. It
+    also rules out <code>aws:network:disrupt-connectivity</code> as an alternative fault, because
+    that action targets <em>subnets</em> and would cut the load balancer along with the tasks.</p>
+
+    <p><strong>No prerequisite labs.</strong> Week 24 is self-contained. The service module is
+    adapted from Week 21's blue/green ECS build, but nothing from that week needs to exist.</p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation</h2>
+
+    <p>Nineteen resources: an ECS cluster, service and task definition; an ALB, listener and target
+    group; two security groups; two alarms; three FIS experiment templates; four IAM roles and
+    policies; two log groups. The <a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-24-chaos-engineering-fis/README.md">lab guide</a> carries the full
+    Terraform, the exact commands and the expected output. This is the shape of it.</p>
+
+
+    <figure class="diagram">
+<pre><code>week-24-chaos-engineering-fis/
+|
++-- terraform/
+|   +-- environments/dev/   HCP backend, OIDC, wires the two modules
+|   +-- modules/service/    ECS Fargate service, ALB, and the two alarms
+|   +-- modules/chaos/      FIS role, log group, three experiment templates
+|
++-- scripts/                starts an experiment and records what happened
+|
++-- docs/                   findings, figure sources, the commands behind them</code></pre>
+      <figcaption>Only the directories that matter.
+      <a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-24-chaos-engineering-fis">The full repository is on GitHub.</a></figcaption>
+    </figure>
+
+    <p><strong>The service.</strong> Four Fargate tasks behind an ALB, tagged so FIS can find them.
+    One line carries more weight than it looks:</p>
+
+<pre><code>propagate_tags = "SERVICE"</code></pre>
+
+    <p>FIS selects tasks by tag, and <strong>a task does not inherit its service's tags</strong>
+    unless told to &mdash; without it the experiment targets nothing and still reports success.</p>
+
+    <p><strong>The two alarms</strong>
+    (<a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-24-chaos-engineering-fis/terraform/modules/service/main.tf">service module</a>) differ in exactly two
+    lines:</p>
+
+<pre><code>period              = 60     # fast      |  300   # typical
+datapoints_to_alarm = 1      #           |    2</code></pre>
+
+    <p><strong>Three experiment templates</strong>
+    (<a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-24-chaos-engineering-fis/terraform/modules/chaos/main.tf">chaos module</a>): the same fault guarded by
+    nothing, by the fast alarm, and by the slow alarm.</p>
+
+    <p><strong>Measurement.</strong> A <a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-24-chaos-engineering-fis/scripts/run-experiment.sh">recording
+    script</a> samples the experiment state, both target counts and both alarm states every two
+    seconds, and keeps sampling after FIS reports finished.</p>
+  </div>
+
+  <div class="section" id="validation">
+    <h2>Validation and Evidence</h2>
+
+
+    <p>Four claims are worth separating, because three of them passed while the fourth &mdash; the
+    one the lab exists to test &mdash; could not even be measured.</p>
+
+    <table>
+      <thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Infrastructure deploys</td><td>19 resources created</td><td>19 created, apply clean</td><td><strong>Pass</strong></td></tr>
+        <tr><td>Service serves traffic</td><td>4/4 healthy, HTTP 200</td><td>4/4 healthy, HTTP 200</td><td><strong>Pass</strong></td></tr>
+        <tr><td>Fault actually lands</td><td>Tasks stopped by FIS</td><td>2 tasks stopped, <code>stoppedReason</code> names the experiment</td><td><strong>Pass</strong></td></tr>
+        <tr><td>Stop condition halts the experiment</td><td>Alarm fires, FIS stops the run</td><td>Neither alarm ever reached <code>ALARM</code></td><td><strong>Fail &mdash; and that is the finding</strong></td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>Deployment succeeding is not the lab working.</strong> Before injecting anything, the
+    service has to be genuinely serving traffic.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-24-chaos-engineering-fis/docs/blog/screenshots/06-service-healthy.png" alt="ALB target group page showing four of four targets healthy before any fault is injected">
+      <figcaption><strong>Baseline: 4 of 4 healthy</strong>, and <code>curl</code> returns 200.
+      Every later number is measured against this.</figcaption>
+    </figure>
+
+    <h3>Evidence 1 &mdash; the metric the alarms read never moved</h3>
+
+    <p><strong>Procedure:</strong> stop 50% of tasks, then query both host-count metrics over the
+    same window.<br>
+    <strong>Expected:</strong> <code>UnHealthyHostCount</code> rises while tasks are down.<br>
+    <strong>Observed:</strong> it reported <code>0.0</code> for every one-minute datapoint, across a
+    window in which the service demonstrably halved.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-24-chaos-engineering-fis/docs/blog/screenshots/09-metric-that-never-moved.png" alt="CloudWatch graph of HealthyHostCount and UnHealthyHostCount over one window; the healthy count dips from four to two once while the unhealthy count is a flat line at zero throughout">
+      <figcaption>One window, two metrics, one service. Capacity halves at 03:56 while the metric
+      most people would alarm on reports zero throughout. <strong>This proves both stop conditions
+      were unreachable</strong> &mdash; not badly tuned, but structurally unable to
+      fire.</figcaption>
+    </figure>
+
+    <h3>Evidence 2 &mdash; six successful actions, one effect</h3>
+
+    <p><strong>Procedure:</strong> deliver the fault in seven rounds two minutes apart, giving it a
+    duration a stop condition could interrupt.<br>
+    <strong>Expected:</strong> each round removes half the running tasks.<br>
+    <strong>Observed:</strong> all six rounds that ran reported "Action was completed". Only the
+    first stopped anything.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-24-chaos-engineering-fis/docs/blog/screenshots/10-six-completed-actions.png" alt="AWS FIS experiment detail page listing six stop-tasks actions all showing green Completed status at two-minute intervals, above a Resource overview panel reading Resources targeted: 2">
+      <figcaption>Six green ticks, over <strong>"Resources targeted: 2"</strong>. FIS resolved its
+      target set once, at the start, and every later round re-issued <code>StopTask</code> against
+      two tasks that had already stopped. <strong>This proves a repeated FIS action does not
+      re-select its targets.</strong></figcaption>
+    </figure>
+
+    <h3>Evidence 3 &mdash; the outage was shorter than the metric's sampling interval</h3>
+
+    <p><strong>Observed:</strong> the recorder saw 2 healthy targets from t=28s to t=45s, a real
+    17-second loss of half the service. CloudWatch's one-minute <code>Minimum</code> over the same
+    window did not show it:</p>
+
+    <table>
+      <thead><tr><th>Source</th><th>23:26</th><th>23:27</th><th>23:28</th><th>23:29</th><th>23:30</th></tr></thead>
+      <tbody>
+        <tr><td>Per-2-second recording</td><td>4</td><td>4</td><td><strong>dipped to 2</strong></td><td>4</td><td>4</td></tr>
+        <tr><td>CloudWatch 1-min Minimum</td><td>4.0</td><td>4.0</td><td><strong>4.0</strong></td><td>4.0</td><td>4.0</td></tr>
+      </tbody>
+    </table>
+
+    <p>ECS replaced both tasks in about 40 seconds. The dip never reached the metric &mdash; and it
+    is not deterministic: an earlier, identical run <em>did</em> record a <code>2.0</code>.
+    <strong>This proves the service recovered faster than its own observability could sample
+    it.</strong></p>
+
+    <p><strong>What that means for the original question.</strong> It is unanswerable here. The
+    fault heals in 17 seconds, the metric samples every 60, and the action completes in 373
+    milliseconds. There is no window in which any stop condition could have acted.</p>
+  </div>
+
+  <div class="section" id="security-cost">
+    <h2>Security and Cost</h2>
+
+    <h3>Security</h3>
+
+    <p><strong>No static credentials.</strong> HCP Terraform assumes an AWS role by OIDC; no access
+    key exists in the workspace.</p>
+
+    <p><strong>Least privilege with confused-deputy conditions.</strong> The FIS role can describe
+    one cluster, stop tasks in that cluster only, read the two stop-condition alarms, and write to
+    its own log group. Its trust policy pins the source account and ARN.</p>
+
+    <p><strong>One permission could not be narrowed.</strong> <code>logs:PutResourcePolicy</code> is
+    account-level and cannot be scoped to a log-group ARN, and FIS experiment logging needs it. It
+    sits on <code>*</code>. Worth stating rather than hiding.</p>
+
+    <p><strong>Blast radius is declared before the fault is:</strong> one tagged service, one
+    cluster, a fixed percentage. That is the control that makes this safe to run &mdash; and as this
+    lab showed, it should be verified by reading <em>Resources targeted</em>, not by trusting a green
+    experiment state.</p>
+
+    <p><strong>Not production-ready as built.</strong> Tasks run in public subnets with public IPs to
+    keep the lab small; in production they belong in private subnets behind NAT or VPC endpoints with
+    the ALB public. <strong>And a stop condition is not one of this build's working controls</strong>
+    &mdash; it is the thing the lab disproved. If you rely on one, test that the alarm beneath it can
+    physically reach <code>ALARM</code> for the fault you inject.</p>
+
+    <h3>Cost</h3>
+
+    <p><strong>$1.26 measured</strong>, not estimated &mdash; unblended cost for the single UTC day
+    the lab existed.</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-24-chaos-engineering-fis/docs/blog/screenshots/13-cost.png" alt="Terminal running an AWS Cost Explorer query that returns seven usage types: ActionMinute 1.025, LoadBalancerUsage 0.0675, PublicIPv4 InUseAddress 0.0645, Fargate vCPU-hours 0.0850, Fargate GB-hours 0.0187, idle IPv4 0.0003 and LCU usage effectively zero">
+      <figcaption><strong>81% of the bill is one line:</strong> FIS action-minutes at $0.10
+      each.</figcaption>
+    </figure>
+
+    <p>Almost all of those action-minutes were <code>aws:fis:wait</code> &mdash; padding added so the
+    fault would last long enough for a stop condition to interrupt. The <code>stop-task</code>
+    actions that did the damage ran 373&nbsp;ms each and rounded to nothing. <strong>The fault was
+    free; the waiting was the bill.</strong> FIS charges elapsed action time, not damage done.</p>
+
+    <p>The remaining 19 cents is Fargate compute, the load balancer and public IPv4 addresses for
+    about two hours. A FIS <em>experiment report</em> would have been another $5 &mdash; four times
+    the rest of the lab &mdash; so the evidence here is the experiment detail page and the recorded
+    CSVs instead.</p>
+  </div>
+
+  <div class="section" id="troubleshooting">
+    <h2>Troubleshooting and Lessons</h2>
+
+    <h3>An alarm on UnHealthyHostCount can never fire for a stopped ECS task</h3>
+    <p><strong>Problem.</strong> Both stop conditions sat at <code>OK</code> through a run that
+    halved the service.<br>
+    <strong>Root cause.</strong> FIS stops the task and ECS <em>deregisters</em> it from the target
+    group. <code>UnHealthyHostCount</code> counts targets that are registered <em>and</em> failing a
+    health check; a deregistered target is absent, not unhealthy.<br>
+    <strong>Resolution.</strong> Alarm on <code>HealthyHostCount</code> below desired count,
+    statistic <code>Minimum</code>.<br>
+    <strong>Lesson.</strong> A green alarm proves the alarm exists, not that it can fire.</p>
+
+    <h3>A stop condition needs an action with a duration</h3>
+    <p><strong>Problem.</strong> The guarded experiments finished before either alarm could
+    evaluate.<br>
+    <strong>Root cause.</strong> <code>aws:ecs:stop-task</code> ran for <strong>373
+    milliseconds</strong>. The fastest possible alarm here needs 60 seconds.<br>
+    <strong>Resolution.</strong> Deliver the fault in rounds separated by <code>aws:fis:wait</code>,
+    which has a one-minute floor and needs no IAM permissions.<br>
+    <strong>Lesson.</strong> "Add a stop condition" is not by itself a safety measure. Check the
+    action lasts long enough to be interrupted.</p>
+
+    <h3>FIS resolves its targets once</h3>
+    <p><strong>Problem.</strong> Six repeated kill rounds, six "Action was completed", one actual
+    effect.<br>
+    <strong>Root cause.</strong> FIS resolved the target set at <code>t=0</code> and held it. Later
+    rounds re-issued <code>StopTask</code> against already-stopped tasks, which succeeds. Not a
+    tagging failure &mdash; the replacement tasks carried <code>FISTarget</code> correctly.<br>
+    <strong>Resolution.</strong> Expect only the first round of a repeated fault to act against a
+    self-healing target.<br>
+    <strong>Lesson.</strong> Read <em>Resources targeted</em>. A completed action is not an effective
+    one.</p>
+
+    <h3>The recorder stopped watching before the damage landed</h3>
+    <p><strong>Problem.</strong> The first run recorded a flat line of 4 healthy targets through a
+    run that demonstrably halved the service.<br>
+    <strong>Root cause.</strong> FIS reports <code>completed</code> when its last action
+    <em>returns</em>. It reported completed at 22:56:31; ECS started replacements at 22:57:08 and the
+    originals reached <code>STOPPED</code> at 22:57:41, seventy seconds later.<br>
+    <strong>Resolution.</strong> Keep sampling through an "aftermath" phase until the service is
+    whole again.<br>
+    <strong>Lesson.</strong> A tool's terminal state describes the tool, not the system.</p>
+
+    <h3>An HCP run can apply code you did not push</h3>
+    <p><strong>Problem.</strong> A run reported "no changes" while the broken IAM policy it was meant
+    to fix was still live.<br>
+    <strong>Root cause.</strong> A run created through the API without a configuration version
+    reuses the last version HCP ingested.<br>
+    <strong>Resolution.</strong> Pin the configuration version whose commit SHA matches
+    <code>HEAD</code>, and refuse to run if it never arrives.<br>
+    <strong>Lesson.</strong> Only reading the live policy in AWS caught this.</p>
+  </div>
+
+  <div class="section" id="cleanup">
+    <h2>Cleanup and Key Takeaways</h2>
+
+    <p>One destroy run removed all 19 resources. But a run reporting success is a claim about what it
+    did, which is the kind of claim this lab spent four findings learning not to trust. So the check
+    queries AWS for every resource type the lab created:</p>
+
+    <figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-24-chaos-engineering-fis/docs/blog/screenshots/12-destroyed.png" alt="Terminal running six AWS CLI queries for ECS clusters, load balancers, FIS experiment templates, CloudWatch alarms, IAM roles and log groups matching week24, each returning no output, ending with the message nothing left">
+      <figcaption>Six queries, no results, and an HCP workspace resource count of zero.
+      <a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-24-chaos-engineering-fis/docs/blog/terminal/12-destroyed.sh">The script is in the repo.</a></figcaption>
+    </figure>
+
+    <p>Nothing here is shared, so there is nothing to preserve. <strong>Left running, the ALB, the
+    four Fargate tasks and the public IPv4 addresses all keep charging by the hour.</strong> The FIS
+    templates cost nothing, but a template aimed at a cluster that no longer exists is worth
+    deleting anyway.</p>
+
+    <h3>Key takeaways</h3>
+
+    <ul>
+      <li><strong>A green alarm proves it exists, not that it can fire.</strong> Both stop conditions
+      here were structurally unable to detect the fault they guarded, and looked identical to working
+      ones.</li>
+      <li><strong>A stopped ECS task is deregistered, not unhealthy.</strong> Alarm on
+      <code>HealthyHostCount</code> below desired, statistic <code>Minimum</code>.</li>
+      <li><strong>FIS resolves targets once.</strong> A repeated action does not re-select, so every
+      round after the first can be a no-op reporting "Action was completed".</li>
+      <li><strong>A workload can out-heal its observability.</strong> A real 17-second outage never
+      reached a metric sampled once a minute &mdash; recorded on one run, missed on an identical
+      one.</li>
+      <li><strong>FIS bills elapsed action time, not damage.</strong> 81% of this lab's cost was
+      waiting for an alarm that was never going to notice.</li>
+    </ul>
+
+    <h3>References</h3>
+    <ul>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-24-chaos-engineering-fis/README.md"><strong>The full lab guide</strong></a> &mdash; prerequisites, Terraform, commands, validation, cleanup</li>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-24-chaos-engineering-fis/docs/FINDINGS.md">FINDINGS.md</a> &mdash; the four findings with complete evidence</li>
+      <li><a href="https://docs.aws.amazon.com/fis/latest/userguide/fis-actions-reference.html">AWS FIS actions reference</a> &mdash; which actions have a duration, and which need an SSM agent</li>
+      <li><a href="https://docs.aws.amazon.com/fis/latest/userguide/stop-conditions.html">Stop conditions for AWS FIS</a></li>
+      <li><a href="https://aws.amazon.com/fis/pricing/">AWS FIS pricing</a></li>
+      <li><a href="https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/fis_experiment_template">Terraform <code>aws_fis_experiment_template</code></a></li>
+    </ul>
+  </div>
