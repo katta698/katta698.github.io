@@ -1,45 +1,39 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""A lab post's sections must contain what their headings promise.
+"""A lab post must follow the documentation standard of 2026-10-25.
 
     python scripts/check_lab_post_shape.py                 # every lab-week post
-    python scripts/check_lab_post_shape.py week-06         # one post
+    python scripts/check_lab_post_shape.py week-10         # one post
     python scripts/check_lab_post_shape.py --self-test     # prove it can fail
 
 Why this exists
 ---------------
-Two defects shipped in the GCP series, both found by Jay reading the rendered
-page rather than by anything here.
+Two defects shipped in the GCP series and both were found by Jay reading the
+rendered page: an "Architecture" heading with no diagram, and a "What You Need
+to Know - Skills & Tools" heading with neither. A section whose heading names a
+form should be checked for that form, or the heading is decoration.
 
-1. "Architecture — How It Fits Together" with no diagram. Week 6 carried an
-   ASCII schematic in a <pre> and nothing else. On a phone that reads as a
-   command prompt sitting under an architecture heading. Weeks 1 to 5 all carry
-   an inline SVG, so the post was the odd one out and nothing said so.
+What changed on 2026-10-25
+--------------------------
+Jay issued a full documentation standard. The section vocabulary changed, and
+one rule inverted: the file-tree figure, required from Week 07 and enforced
+here, is now FORBIDDEN - the standard says do not put repository trees in the
+article, link to the GitHub file instead. Asked directly which rule won, Jay
+chose the standard.
 
-2. "What You Need to Know — Skills & Tools" with no skills and no tools. Weeks 1
-   and 2 carry a service list, a tooling list and a concepts grid. Weeks 3
-   through 6 quietly dropped all three and kept only prose, so the heading
-   promised an inventory that four posts did not deliver.
+So this file now checks the new structure, and actively fails a post that still
+carries the retired tree card.
 
-Both are mechanically detectable and neither was detected. That is the whole
-argument for this file: a section whose heading names a form should be checked
-for that form, or the heading is decoration and a reader has to find out by
-being disappointed.
+The migration list
+------------------
+All ten GCP lab posts are being rewritten to the new structure, newest first.
+Until a post is rewritten it cannot satisfy this check, so each unmigrated slug
+is listed in MIGRATION_PENDING and skipped.
 
-What it checks, and what it deliberately does not
--------------------------------------------------
-It checks for the PRESENCE of a shape, never its quality. A diagram that is
-wrong, ugly or misleading passes here; only an absent one fails. Judging whether
-a diagram explains the architecture is a reading task and this is not a reader.
-
-It does not require a <pre> schematic to be removed. Week 5 carries both an SVG
-and an ASCII block and is better for it -- the check wants the diagram to exist,
-not the text to go away.
-
-Scope is the GCP Weekly Lab, because that is the series whose convention was
-established and then broken. The AWS and Azure labs predate it and use a
-different section vocabulary; running there would flag posts against a standard
-they were never written to, which is how a check learns to cry wolf.
+That list is a RATCHET, not an excuse: a post that is neither migrated nor
+listed FAILS. Removing a slug is part of migrating it, and the list can only
+shrink. An advisory warning would have been ignored - the account-id warning
+was true and ignored for twelve days - so this blocks.
 """
 import argparse
 import os
@@ -54,43 +48,58 @@ POSTS = os.path.join(ROOT, "posts")
 
 SERIES_LABEL = "GCP Weekly Lab"
 
-# Every lab post from this week on must show the files it was built from.
-# Asked for on 2026-09-30: prose describes what the Terraform does and never
-# shows a reader what was actually written, so "these are the scripts" has to be
-# visible. Earlier posts are left alone rather than retrofitted - the rule starts
-# where it was agreed.
-#
-# A rendered card, named *terraform-layout*, matching the Azure and AWS labs so a
-# reader moving between the three series meets the same object each week. Built
-# by scripts/screenshots/render_tree_card.py in the lab repo from a tree.txt
-# whose line counts come from wc -l.
-#
-# Two wrong turns are recorded so they are not retaken. A screenshot of the
-# GitHub directory listing: rejected, because anyone can open the repo and a list
-# of filenames says nothing about what is in them. An inline <pre> block: closer,
-# but it inherits the post's code styling, reads as a code sample rather than a
-# figure, and looked nothing like the other two clouds.
-CODE_SHOT_FROM_WEEK = 7
-CODE_SHOT_MARKER = "terraform-layout"
-WEEK_RE = re.compile(r"week-(\d+)")
-
-# section id -> (human name, regex that proves the promised shape is present)
-REQUIRED = {
-    # Inline <svg> only, not <img>. The original rule accepted either, which
-    # let the exact failure this check exists for walk through in a different
-    # costume: Week 23 rendered an ASCII schematic to PNG via the card
-    # pipeline, so it arrived as an <img> of a command prompt sitting under
-    # an architecture heading. Every lab post in all three series already
-    # carries an inline <svg> here, so this flags nothing that was passing.
-    "architecture": (
-        "an inline <svg> diagram (an <img> does not count - see Week 23)",
-        re.compile(r"<svg", re.I),
-    ),
-    "skills": (
-        "an inventory (a <ul> list of services/tooling)",
-        re.compile(r"<ul\b", re.I),
-    ),
+# Slugs not yet rewritten to the 2026-10-25 standard. Shrinks only.
+MIGRATION_PENDING = {
+    "week-01-gcp-landing-zone",
+    "week-02-keyless-ci",
+    "week-03-org-policy-guardrails",
+    "week-04-shared-vpc",
+    "week-05-project-factory",
+    "week-06-billing-export",
+    "week-07-asset-inventory",
+    "week-08-iam-deny",
+    "week-09-sa-lifecycle",
 }
+
+# The standard's section order. Presence is checked; order is not, because the
+# table of contents already makes order visible to a reader and reordering is a
+# judgement the check should not make.
+REQUIRED_SECTIONS = [
+    "overview", "services", "architecture", "prerequisites", "build",
+    "validation", "security", "troubleshooting", "takeaways",
+]
+
+# section id -> (what the heading promises, pattern that proves it is there)
+SECTION_SHAPE = {
+    # Inline <svg> only, never <img>. The original rule accepted either, which
+    # let the exact failure this check exists for walk through in a different
+    # costume: an ASCII schematic rendered to PNG arrived as an <img> of a
+    # command prompt under an architecture heading.
+    "architecture": ("an inline <svg> diagram (an <img> does not count)",
+                     re.compile(r"<svg", re.I)),
+    # "compact table containing service name, purpose, definition"
+    "services":      ("a services table", re.compile(r"<table", re.I)),
+    # "Required accounts, permissions, software and version requirements..."
+    "prerequisites": ("a prerequisites table", re.compile(r"<table", re.I)),
+    # "Test command, expected result, ACTUAL observed result, supporting
+    # screenshot or output" - a claim of validation with no evidence is the
+    # thing the standard most insists on.
+    # The standard requires a Test | Expected | Actual | Status table, which is
+    # the difference between claiming validation and showing it.
+    "validation":    ("a Test/Expected/Actual/Status table",
+                      re.compile(r"<th>\s*Status\s*</th>", re.I)),
+    # "Problem -> Root cause -> Resolution -> Lesson learned"
+    "troubleshooting": ("the Problem/Root cause/Resolution/Lesson form",
+                        re.compile(r"Root cause", re.I)),
+}
+
+# Retired 2026-10-25. A post carrying this now fails.
+# Retired 2026-09-30 rule: a tree WITH per-file line counts. The master
+# standard permits a COMPACT structure figure and forbids line counts, so
+# what is banned is the old card, not a structure figure as such.
+RETIRED_TREE_CARD = "terraform-layout"
+
+WEEK_RE = re.compile(r"week-(\d+)")
 
 
 def front_matter(text):
@@ -98,29 +107,38 @@ def front_matter(text):
     return m.group(1) if m else ""
 
 
+def slug_of(text, filename):
+    m = re.search(r"^slug:\s*(.+)$", front_matter(text), re.M)
+    return m.group(1).strip() if m else os.path.splitext(filename)[0]
+
+
 def section(text, sid):
-    """The markup of one section, from its opening div to the next section."""
-    m = re.search(
-        r'<div class="section" id="%s".*?(?=<div class="section"|\Z)' % re.escape(sid),
-        text,
-        re.S,
-    )
+    m = re.search(r'<div class="section" id="%s".*?(?=<div class="section"|\Z)'
+                  % re.escape(sid), text, re.S)
     return m.group(0) if m else None
 
 
-def check_text(text, name, report, week=None):
+def check_text(text, name, report, slug=None):
     problems = []
-    if week is not None and week >= CODE_SHOT_FROM_WEEK and CODE_SHOT_MARKER not in text:
+
+    if RETIRED_TREE_CARD in text:
         problems.append(
-            f"no Terraform layout card (expected an image named *{CODE_SHOT_MARKER}*, "
-            "built with render_tree_card.py)"
-        )
-    for sid, (want, pattern) in REQUIRED.items():
+            f"carries the retired file-tree card (*{RETIRED_TREE_CARD}*), which "
+            "listed per-file line counts. The master standard allows a COMPACT "
+            "structure figure and forbids line counts and exhaustive inventories")
+
+    for sid in REQUIRED_SECTIONS:
+        if section(text, sid) is None:
+            problems.append(f'no "{sid}" section - the standard requires all '
+                            f"{len(REQUIRED_SECTIONS)}")
+
+    for sid, (want, pattern) in SECTION_SHAPE.items():
         sec = section(text, sid)
         if sec is None:
-            continue  # a post may legitimately omit a section; not this check's job
+            continue  # already reported as missing above
         if not pattern.search(sec):
             problems.append(f"#{sid} has no {want}")
+
     if problems:
         for p in problems:
             report.append(f"  [FAIL] {name}: {p}")
@@ -129,60 +147,96 @@ def check_text(text, name, report, week=None):
     return len(problems)
 
 
+def self_test():
+    STATUS_TABLE = ("<table><thead><tr><th>Test</th><th>Expected</th>"
+                    "<th>Actual</th><th>Status</th></tr></thead></table>")
+
+    def post(**kw):
+        parts = []
+        for sid in REQUIRED_SECTIONS:
+            parts.append('<div class="section" id="%s"><h2>%s</h2>%s</div>'
+                         % (sid, sid, kw.get(sid, "")))
+        return "".join(parts)
+
+    good = post(architecture="<svg></svg>", services="<table></table>",
+                prerequisites="<table></table>", validation=STATUS_TABLE,
+                troubleshooting="<p>Root cause: x</p>")
+
+    cases = [
+        (good, 0, "a post following the standard"),
+        (good.replace('id="prerequisites"><h2>prerequisites</h2><table></table>',
+                      'id="prerequisites"><h2>prerequisites</h2><p>prose</p>'),
+         1, "prerequisites with no table"),
+        # The standard's sharpest requirement: a Status column, so a claim of
+        # validation cannot be made without saying what actually happened.
+        (good.replace(STATUS_TABLE, "<figure><img src=x></figure>"),
+         1, "validation with a figure but no Test/Expected/Actual/Status table"),
+        (good.replace("<p>Root cause: x</p>", "<p>some things broke</p>"),
+         1, "troubleshooting not in Problem/Root cause form"),
+        (good + '<img src="05-terraform-layout.png">',
+         1, "still carrying the retired line-count tree card"),
+        (good.replace('<div class="section" id="takeaways"><h2>takeaways</h2></div>', ""),
+         1, "a missing section"),
+        (good.replace("<svg></svg>", '<img src="arch.png">'),
+         1, "architecture as an image rather than a diagram"),
+    ]
+
+    bad = 0
+    for text, want, label in cases:
+        r = []
+        got = check_text(text, "synthetic", r)
+        ok = got == want
+        bad += not ok
+        print("  [%s] %s: %d problem(s), want %d"
+              % (" ok " if ok else "FAIL", label, got, want))
+        if not ok:
+            for line in r:
+                print("        ", line.strip())
+    if bad:
+        print("\nSELF-TEST FAILED: the check cannot detect the defect it exists for.")
+        return 1
+    print("\nself-test passed: a missing section, a section missing the form its")
+    print("heading promises, a validation claim with no Status column, and the")
+    print("retired line-count tree card are all detected.")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("posts", nargs="*", help="substring of a post filename")
     ap.add_argument("--series", help="accepted and ignored; scope is fixed")
-    ap.add_argument("--self-test", action="store_true",
-                    help="prove the check fails on a post with the shape removed")
+    ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
 
     if args.self_test:
-        good = ('<div class="section" id="skills"><h2>x</h2><ul><li>a</li></ul></div>'
-                '<div class="section" id="architecture"><h2>y</h2><svg></svg></div>')
-        stripped = ('<div class="section" id="skills"><h2>x</h2><p>prose only</p></div>'
-                    '<div class="section" id="architecture"><h2>y</h2><pre>ascii</pre></div>')
-        # An <img> under the architecture heading is the Week 23 shape:
-        # a picture of a terminal, which is not a diagram.
-        as_image = ('<div class="section" id="skills"><h2>x</h2><ul><li>a</li></ul></div>'
-                    '<div class="section" id="architecture"><h2>y</h2>'
-                    '<img src="00-architecture.png"/></div>')
-        good_w7 = good + f'<img src="05-{CODE_SHOT_MARKER}.png"/>'
-        r1, r2, r3, r4 = [], [], [], []
-        ok = check_text(good_w7, "synthetic-good", r1, CODE_SHOT_FROM_WEEK)
-        bad = check_text(stripped, "synthetic-stripped", r2)
-        nocode = check_text(good, "synthetic-no-code-shot", r3, CODE_SHOT_FROM_WEEK)
-        imgonly = check_text(as_image, "synthetic-architecture-as-image", r4)
-        print("\n".join(r1 + r2 + r3 + r4))
-        if ok == 0 and bad == 2 and nocode == 1 and imgonly == 1:
-            print("\nself-test passed: clean post passes, stripped post fails on both")
-            print("sections, and a post missing the Terraform layout card fails too.")
-            return 0
-        print("\nSELF-TEST FAILED: the check cannot detect the defect it exists for.")
-        return 1
+        return self_test()
 
-    report, failures, checked = [], 0, 0
+    report, failures, checked, pending = [], 0, 0, 0
     for fn in sorted(os.listdir(POSTS)):
         if not fn.endswith(".html"):
             continue
         if args.posts and not any(a in fn for a in args.posts):
             continue
-        path = os.path.join(POSTS, fn)
-        with open(path, encoding="utf-8") as fh:
+        with open(os.path.join(POSTS, fn), encoding="utf-8") as fh:
             text = fh.read()
         if SERIES_LABEL not in front_matter(text):
             continue
+        slug = slug_of(text, fn)
+        if slug in MIGRATION_PENDING:
+            pending += 1
+            report.append(f"  [ -- ] {fn}: awaiting rewrite to the 2026-10-25 standard")
+            continue
         checked += 1
-        m = WEEK_RE.search(fn)
-        failures += check_text(text, fn, report, int(m.group(1)) if m else None)
+        failures += check_text(text, fn, report, slug)
 
     print("\n".join(report))
-    print(f"\n{checked} {SERIES_LABEL} post(s) checked.")
+    print(f"\n{checked} post(s) checked against the standard; "
+          f"{pending} awaiting rewrite.")
     if failures:
-        print(f"{failures} section(s) do not contain what their heading promises.")
-        print("Add the missing diagram or inventory, or change the heading.")
+        print(f"{failures} problem(s). See the documentation standard "
+              "(CLAUDE.md in the lab repo).")
         return 1
-    print("Every section contains the shape its heading promises.")
+    print("Every checked post follows the documentation standard.")
     return 0
 
 
