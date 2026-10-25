@@ -37,7 +37,18 @@ In brief, and no substitute for reading it:
 and `verified:` alone unless you have actually re-checked that post's vendor
 facts today.
 
-**Enforcement:** `scripts/check_lab_post_shape.py` checks the shape per series.
+**Writing a NEW lab post? Start from `_templates/lab-post-skeleton.html`.**
+It is the nine sections in order with the required shape already in place, and
+it is the same file for all three clouds. Do not build the structure from
+memory -- that is exactly how three windows produced three different structures
+from one standard on the day it was issued.
+
+**Enforcement is automatic and it blocks.** The pre-push hook
+(`.git/hooks/pre-push` in the shared git directory, so every worktree gets it)
+runs `preflight.py`, which runs `check_lab_post_shape.py` from the
+`prepublish.CHECKS` registry. A lab post that does not follow the standard
+cannot be pushed, in any series. The check matches on HEADINGS, so it covers
+AWS, Azure and GCP regardless of markup differences.
 The AWS series is enforced from week 23. Azure and GCP are not yet switched on —
 see `NEW_STRUCTURE_FROM` in that file, and set it for your series when you have
 migrated your back catalogue.
