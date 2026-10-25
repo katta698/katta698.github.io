@@ -1,5 +1,47 @@
 # Claude Code Instructions — katta698.github.io
 
+## The lab documentation standard — ALL THREE CLOUDS
+
+**Read `docs/MASTER_STANDARD.md` before writing or restructuring any weekly lab
+post, in any series.** Issued 2026-10-25. It supersedes the older ten-section
+weekly template and the 2026-09-30 instruction requiring a complete rendered
+file tree in every post.
+
+It is in this repository deliberately. The `aws`, `azure` and `gcp` branches are
+three checkouts of one repo, so a change here reaches all three windows on their
+next rebase. **Do not keep a private copy in a cloud-specific lab repository** —
+that is precisely how the three series drifted apart, with the standard issued
+once in chat and each window keeping whatever it remembered.
+
+In brief, and no substitute for reading it:
+
+- **Two deliverables, not one.** A blog article (problem, services, architecture,
+  key steps, evidence, security, cost, lessons) and a GitHub lab guide
+  (prerequisites, source, exact commands, expected output, validation, cleanup).
+  Do not duplicate the guide inside the blog.
+- **Nine sections, this order:** Lab Overview · Cloud Services and Concepts ·
+  Architecture and Workflow · Prerequisites · Implementation · Validation and
+  Evidence · Security and Cost · Troubleshooting and Lessons · Cleanup and Key
+  Takeaways.
+- **1,500–2,500 words, 4–7 screenshots.** No full Terraform files, no terminal
+  dumps, no repository trees with per-file line counts — link to GitHub.
+- **Validation is a table:** Test | Expected | Actual | Status, separating
+  "deployed" from "works".
+- **Troubleshooting is Problem → Root Cause → Resolution → Lesson**, not a diary.
+- **Never invent evidence, costs or results.** Measured cost comes from Cost
+  Explorer, not a rate card. If it cannot be verified, say so.
+- **Terminal output is a real capture**, not a typeset card — see
+  `capture_terminal.py` in the AWS lab repo for the approach.
+
+**Restructuring an already-published post is not republishing.** Leave `date:`
+and `verified:` alone unless you have actually re-checked that post's vendor
+facts today.
+
+**Enforcement:** `scripts/check_lab_post_shape.py` checks the shape per series.
+The AWS series is enforced from week 23. Azure and GCP are not yet switched on —
+see `NEW_STRUCTURE_FROM` in that file, and set it for your series when you have
+migrated your back catalogue.
+
 ## Workflow rules
 
 - **At the start of the day, read `MORNING.md` in this folder.** It is written

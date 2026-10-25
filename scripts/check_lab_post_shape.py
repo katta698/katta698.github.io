@@ -48,8 +48,57 @@ POSTS = os.path.join(ROOT, "posts")
 
 SERIES_LABEL = "GCP Weekly Lab"
 
+# ALL THREE SERIES ARE IN SCOPE (2026-10-25)
+# ------------------------------------------
+# This file checked only the GCP series. Pointed at an AWS or Azure post it
+# printed "0 GCP Weekly Lab post(s) checked / Every section contains the shape
+# its heading promises" -- a pass, over nothing, on every post it never read.
+#
+# That is not hypothetical. Within hours of the master standard being issued,
+# the GCP and AWS windows both migrated posts to it and chose DIFFERENT section
+# ids for three of the nine sections (build/security/takeaways against
+# implementation/security-cost/cleanup). Both believed they were compliant.
+# Nothing caught it, because the check could only see one of them.
+#
+# Each series declares the ids it currently uses. The canonical list is in
+# docs/MASTER_STANDARD.md; a series converges by changing its entry here when
+# it next touches those posts.
+SERIES = {
+    "GCP Weekly Lab": ["overview", "services", "architecture", "prerequisites",
+                       "build", "validation", "security", "troubleshooting",
+                       "takeaways"],
+    "AWS Weekly Lab": ["overview", "services", "architecture", "prerequisites",
+                       "implementation", "validation", "security-cost",
+                       "troubleshooting", "cleanup"],
+    "Azure Weekly Lab": None,   # not migrated yet; set the list to switch on
+}
+
 # Slugs not yet rewritten to the 2026-10-25 standard. Shrinks only.
+#
+# The AWS entries were added 2026-10-25 when this check first covered the
+# AWS series. Weeks 20-24 are migrated; the rest are in progress. Remove a
+# line as its post lands, never add one back.
 MIGRATION_PENDING = {
+    "week-1-from-ticket-to-ec2-in-6-minutes-enterprise-self-servi",
+    "week-10-centralized-logging",
+    "week-11-security-hub-guardduty",
+    "week-12-config-compliance-automation",
+    "week-13-waf-shield-protection",
+    "week-14-vpc-flow-logs-intelligence",
+    "week-15-cloudtrail-audit-forensics",
+    "week-16-devops-agent-investigations",
+    "week-17-mcp-platform-ops",
+    "week-18-eks-self-service",
+    "week-19-gitops-argocd",
+    "week-2-automating-postgresql-provisioning-with-servicenow-an",
+    "week-3-self-service-ec2-fleet-patching-with-aws-ssm",
+    "week-4-building-a-fleet-intelligence-platform-with-aws-glue-",
+    "week-5-cost-anomaly-detection-with-aws-cost-explorer-sns-and",
+    "week-6-account-vending-machine-with-aws-organizations-and-scps",
+    "week-7-iam-identity-center-sso-multi-account-permission-sets",
+    "week-8-s3-intelligent-storage-platform",
+    "week-9-ecs-fargate-self-service",
+
     "week-01-gcp-landing-zone",
     "week-02-keyless-ci",
     "week-03-org-policy-guardrails",
@@ -121,8 +170,9 @@ def section(text, sid):
     return m.group(0) if m else None
 
 
-def check_text(text, name, report, slug=None):
+def check_text(text, name, report, slug=None, required=None):
     problems = []
+    required = required or REQUIRED_SECTIONS
 
     if RETIRED_TREE_CARD in text:
         problems.append(
@@ -130,12 +180,15 @@ def check_text(text, name, report, slug=None):
             "listed per-file line counts. The master standard allows a COMPACT "
             "structure figure and forbids line counts and exhaustive inventories")
 
-    for sid in REQUIRED_SECTIONS:
+    for sid in required:
         if section(text, sid) is None:
             problems.append(f'no "{sid}" section - the standard requires all '
-                            f"{len(REQUIRED_SECTIONS)}")
+                            f"{len(required)}")
 
-    for sid, (want, pattern) in SECTION_SHAPE.items():
+    # SECTION_SHAPE is keyed on the GCP ids; translate to this series'.
+    alias = dict(zip(REQUIRED_SECTIONS, required))
+    for gcp_sid, (want, pattern) in SECTION_SHAPE.items():
+        sid = alias.get(gcp_sid, gcp_sid)
         sec = section(text, sid)
         if sec is None:
             continue  # already reported as missing above
@@ -222,15 +275,20 @@ def main():
             continue
         with open(os.path.join(POSTS, fn), encoding="utf-8") as fh:
             text = fh.read()
-        if SERIES_LABEL not in front_matter(text):
+        fm = front_matter(text)
+        series = next((lbl for lbl in SERIES if lbl in fm), None)
+        if series is None:
             continue
+        required = SERIES[series]
+        if required is None:
+            continue          # series not migrated yet; see SERIES above
         slug = slug_of(text, fn)
         if slug in MIGRATION_PENDING:
             pending += 1
             report.append(f"  [ -- ] {fn}: awaiting rewrite to the 2026-10-25 standard")
             continue
         checked += 1
-        failures += check_text(text, fn, report, slug)
+        failures += check_text(text, fn, report, slug, required)
 
     print("\n".join(report))
     print(f"\n{checked} post(s) checked against the standard; "
