@@ -1,4 +1,5 @@
 ---
+
 title: 'Week 16 - AWS DevOps Agent: The Agent Was Right, and I Still Had to Check'
 date: '2026-08-29T09:15:00'
 labels:
@@ -50,80 +51,63 @@ verified_claims:
   - claim: "Cost after teardown is $0; nothing this week creates survives the destroy"
     derive: "HCP destroy run applied 2026-08-29 (24 resources); workspace resource-count 0 and every AWS check - agent spaces, Lambdas, roles, alarms, buckets, SSM parameters, EventBridge rules, anomaly detectors - returned empty"
 ---
-<div id="jk-post">
 
-<div class="post-header">
-  <div class="post-eyebrow">AWS Platform Engineering Lab &middot; Week 16 of 52</div>
-  <div class="post-title">The agent was right, and I still had to check</div>
-  <div class="post-subtitle">An investigating agent does not return a metric. It returns a <em>narrative</em> &mdash; and a narrative is persuasive whether or not it is correct. So this week is an evaluation rather than a demonstration: break something in a known way, write the answer down before asking, and grade the agent against the CloudTrail record built in Week 15. It passed twice, including against a deliberate decoy. Then I found I had left the answer key lying in the room.</div>
-  <div class="post-meta">
-    <span>26 August 2026</span>
-    <span>Terraform &middot; HCP &middot; awscc</span>
-    <span>$23.28 spent &middot; $0 destroyed</span>
-  </div>
-</div>
+  <div class="section" id="overview">
+    <h2>Lab Overview</h2>
 
-  <div class="toc">
-    <h3>&#128203; In This Post</h3>
-    <ol>
-      <li><a href="#why">Why &mdash; The Problem This Solves</a></li>
-      <li><a href="#what">What You Need to Know &mdash; Skills &amp; Tools</a></li>
-      <li><a href="#architecture">Architecture &mdash; How It Fits Together</a></li>
-      <li><a href="#how">How We Built It &mdash; Step by Step</a></li>
-      <li><a href="#challenges">Challenges &mdash; What Actually Went Wrong</a></li>
-      <li><a href="#security">Security &mdash; Controls at Every Layer</a></li>
-      <li><a href="#cost">Cost</a></li>
-      <li><a href="#cleanup">Cleanup</a></li>
-      <li><a href="#references">References</a></li>
-      <li><a href="#takeaways">Key Takeaways</a></li>
-    </ol>
-  </div>
+    <p>Every incident ends with somebody writing a sentence. <em>"The IAM change at 14:02 removed
+    the parameter read, and that is why orders stopped."</em> That sentence is the deliverable
+    &mdash; it goes in the postmortem, the next person reads it, and the fix is built on it.</p>
 
-  <div class="section" id="why">
-    <h2>Why &mdash; The Problem This Solves</h2>
+    <p><strong>The problem.</strong> An investigating agent writes that sentence for you, in about
+    sixteen minutes, at three in the morning. That is genuinely useful, and it is the exact reason
+    to be careful: <strong>a fluent wrong sentence and a fluent right one look identical.</strong> A
+    metric that is wrong is visibly wrong. A narrative that is wrong reads like an explanation.</p>
 
-    <p>Every incident ends with somebody writing a sentence. <em>&ldquo;The IAM change at 14:02 removed the parameter read, and that is why orders stopped.&rdquo;</em> That sentence is the deliverable &mdash; it is what goes in the postmortem, what the next person reads, and what the fix is built on.</p>
+    <p><strong>The objective.</strong> Not "can an agent investigate" &mdash; obviously yes. The
+    question is <strong>how would I know if it were wrong</strong>, answered before an agent's
+    conclusion is allowed to shorten anybody's thinking.</p>
 
-    <p>An investigating agent writes that sentence for you, in about sixteen minutes, at three in the morning. That is genuinely useful. It is also the exact reason to be careful, because <strong>a fluent wrong sentence and a fluent right one look identical.</strong> A metric that is wrong is visibly wrong. A narrative that is wrong reads like an explanation.</p>
+    <p><strong>The outcome.</strong> The agent was right, twice. I still had to check &mdash; and
+    the checking found that I had left the answer key in the room.</p>
 
-    <p>So the question this week asks is not <em>can an agent investigate</em>. AWS&rsquo;s marketing covers that, and the answer is obviously yes. The question is <strong>how would I know if it were wrong</strong> &mdash; and that has to be answered before an agent&rsquo;s conclusion is allowed to shorten anybody&rsquo;s outage.</p>
-
-    <h3>What makes an answer gradeable</h3>
-
-    <p>You cannot grade a conclusion against your impression of it. You need a fact that exists independently of the agent, recorded before the agent was asked.</p>
-
-    <p>Two things make that possible here, and both were already in the account:</p>
-
-    <ul>
-      <li><strong>Week 15&rsquo;s organization trail.</strong> An IAM policy deletion is a CloudTrail management event with a principal, a timestamp, a source IP and a user agent attached to it. That is a fact, not an opinion, and it is not something the agent produces &mdash; it is something the agent can be measured against.</li>
-      <li><strong>A break chosen so that every obvious explanation is wrong.</strong> Revoke <code>ssm:GetParameter</code> from a running function&rsquo;s execution role. No deploy, no code change, no config change, same package hash. The function simply starts failing, and the only evidence anywhere is one IAM event.</li>
-    </ul>
-
-    <p>Write the truth down first, ask with no hints, then mark the answer. That is the whole method, and it is the part that most &ldquo;we tried an AI agent&rdquo; write-ups skip.</p>
-  </div>
-
-  <div class="section" id="what">
-    <h2>What You Need to Know &mdash; Skills &amp; Tools</h2>
-
-    <table class="tbl">
-      <thead><tr><th>Concept</th><th>What actually matters</th></tr></thead>
+    <table>
       <tbody>
-        <tr><td><strong>Agent space</strong></td><td>Not a container &mdash; a boundary. Everything the agent can see or reach comes from this resource and the associations hung off it, which makes the blast radius reviewable in a pull request instead of discoverable in a console.</td></tr>
-        <tr><td><strong>Associations</strong></td><td>One per thing the agent may touch. The AWS one carries an <code>account_type</code> that decides whether the agent may only look or may also act.</td></tr>
-        <tr><td><strong>The <code>awscc</code> provider</strong></td><td>Generates resources from the CloudFormation registry rather than being hand-written, so a service appears there as soon as its CFN types go LIVE. This is the only IaC path to DevOps Agent today.</td></tr>
-        <tr><td><strong>Per-second billing with no ceiling</strong></td><td>$0.0083 per agent-second of active work, nothing when idle, and <strong>no budget, duration or task cap anywhere in the schema</strong>. Every prior week in this series leaned on a service-enforced limit. There is none here.</td></tr>
-        <tr><td><strong>OAuth <code>client_credentials</code></strong></td><td>Machine-to-machine grant, no user in the loop. ServiceNow will only issue it once three separate settings agree &mdash; and it reports all three failures with the same unhelpful error.</td></tr>
-        <tr><td><strong>Ground truth</strong></td><td>The thing that turns &ldquo;the agent seemed clever&rdquo; into a mark out of two. Has to be written before the question is asked, or it is just a reaction to the answer.</td></tr>
+        <tr><td><strong>Difficulty</strong></td><td>Advanced</td></tr>
+        <tr><td><strong>Time</strong></td><td>About 4 hours including teardown</td></tr>
+        <tr><td><strong>Measured cost</strong></td><td><strong>$23.28</strong> &mdash; the most expensive week in the series</td></tr>
+        <tr><td><strong>Deployment</strong></td><td>Terraform via HCP Terraform with OIDC</td></tr>
+        <tr><td><strong>Full lab guide</strong></td><td><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-16-devops-agent-investigations/README.md">GitHub &mdash; prerequisites, Terraform, commands, validation, cleanup</a></td></tr>
       </tbody>
     </table>
   </div>
 
+  <div class="section" id="services">
+    <h2>Cloud Services and Concepts</h2>
+
+    <table>
+      <thead><tr><th>Service</th><th>Purpose in this lab</th></tr></thead>
+      <tbody>
+        <tr><td><strong>AWS DevOps Agent</strong></td><td>Investigates an incident and produces a root cause and a mitigation plan. Billed per agent-second of active work.</td></tr>
+        <tr><td><strong>Agent space</strong></td><td>The agent's declared reach &mdash; what it may read, defined entirely in Terraform.</td></tr>
+        <tr><td><strong>AWS CloudTrail</strong></td><td>From Week 15. The record of what actually happened, against which the agent's story is graded.</td></tr>
+        <tr><td><strong>AWS Lambda, EventBridge, SSM, S3</strong></td><td>A small scheduled workload that can be broken cleanly and repaired.</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>"Monitor" is not a setting here, it is the only option.</strong>
+    <code>AccountType</code> has exactly one legal value, and no actions-role property exists on
+    either CloudFormation resource. The agent reads and recommends; <strong>it cannot act, and that
+    is enforced by the service rather than chosen by me.</strong></p>
+
+    <p><strong>Grading, not admiring.</strong> The method is to write the ground truth down
+    <em>before</em> asking, then mark the answer against it. Anything recorded afterwards is a
+    reaction to the answer, not a test of it.</p>
+  </div>
+
   <div class="section" id="architecture">
-    <h2>Architecture &mdash; How It Fits Together</h2>
-
-    <p>Three parts, and the third is the one that matters. A small scheduled workload that can be broken cleanly; an agent space whose reach is entirely declared in Terraform; and the CloudTrail trail from Week 15 sitting underneath both, recording what actually happened so the agent&rsquo;s story can be marked against it.</p>
-
-    <div class="arch-container">
+    <h2>Architecture and Workflow</h2>
+<figure class="diagram">
 <svg style="width:100%;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 660" width="100%" role="img"
      aria-label="Week 16 architecture: an AWS DevOps Agent agent space, deployed by HCP Terraform through the awscc provider, with two associations - a monitor-only AWS account role and a ServiceNow service. A scheduled Lambda workload reads SSM and writes S3, watched by a CloudWatch errors alarm. A human deletes an IAM policy, breaking the workload; the agent investigates through the Operator App and returns a narrative, which is graded against the Week 15 CloudTrail organization trail.">
 <defs>
@@ -297,383 +281,249 @@ verified_claims:
 <path d="M924,410 C924,440 924,450 924,494" fill="none" stroke="#8C4FFF" stroke-width="1.8" marker-end="url(#ap)"/>
 <text class="edge" x="932" y="446">the agent&#8217;s answer</text>
 </svg>
-    </div>
+    </figure>
 
-    <h3>The agent reads and recommends. It never acts &mdash; and through Terraform, it cannot</h3>
+    <ol>
+      <li>A small <strong>scheduled Lambda workload</strong> runs normally, reading an SSM parameter
+      on every invocation.</li>
+      <li>A <strong>deliberate break</strong> is introduced: the role's <code>ssm:GetParameter</code>
+      is revoked. The workload starts failing.</li>
+      <li>The <strong>ground truth is written down first</strong>, in a shell script, before the
+      agent is asked anything.</li>
+      <li>An <strong>investigation</strong> is started in the agent space, whose reach is entirely
+      declared in Terraform.</li>
+      <li>The agent reads <strong>CloudTrail, CloudWatch and the resource configuration</strong>,
+      and declares what it could <em>not</em> see.</li>
+      <li>It produces a <strong>root cause and a mitigation plan</strong>. A human reads the plan
+      and performs the repair.</li>
+      <li>The answer is <strong>marked against the ground truth</strong> written in step 3.</li>
+    </ol>
 
-    <p>Nothing here does auto-remediation. The agent investigates, names a cause, and produces a mitigation <em>plan</em>; a human ran the repair. That matters given the premise of the week: an agent that can act on a wrong narrative is a different risk category from one that can only propose it, and nothing here has earned the promotion.</p>
+    <h3>Design decisions</h3>
 
-    <p>I originally wrote that up as a design decision. Reading the CloudFormation schemas shows it is not one, which is more interesting:</p>
+    <p><strong>A second, decoy investigation.</strong> One correct answer proves very little. The
+    decoy run introduced a repair and a re-break, so the agent had to reconstruct a sequence rather
+    than name a single event.</p>
 
-    <ul>
-      <li><strong><code>AccountType</code> has exactly one legal value &mdash; <code>monitor</code>.</strong> Writing <code>account_type = "monitor"</code> reads like a restraint. It is the only value the enum accepts.</li>
-      <li><strong>Neither resource has an actions-role property.</strong> <code>AWS::DevOpsAgent::AgentSpace</code> exposes <code>Name</code>, <code>Description</code>, <code>KmsKeyArn</code>, <code>Locale</code>, <code>OperatorApp</code> and <code>Tags</code>. The Association&rsquo;s only role field is <code>AssumableRoleArn</code>, which is the read role. There is nowhere to put an actions role.</li>
-    </ul>
+    <p><strong>No auto-remediation.</strong> An agent that can act on a wrong narrative is a
+    different risk category from one that can only propose it. I originally wrote this up as a
+    design decision; reading the CloudFormation schemas showed it is not one &mdash; the service
+    permits nothing else.</p>
 
-    <p>The console reports <em>Actions role status: Not configured</em>, so the capability plainly exists &mdash; it is simply not reachable from the IaC path. <strong>Any account built entirely through Terraform gets a read-only agent whether or not that was the intention</strong>, and granting it the ability to act means stepping outside the code that describes the rest of your estate. Worth knowing before you plan a remediation workflow around it.</p>
+    <p><strong>Both service roles double-scoped.</strong> <code>aws:SourceAccount</code> pins the
+    caller to this account, <code>aws:SourceArn</code> to an agent space ARN in this account and
+    region, against the confused-deputy case.</p>
   </div>
 
-  <div class="section" id="how">
-    <h2>How We Built It &mdash; Step by Step</h2>
+  <div class="section" id="prerequisites">
+    <h2>Prerequisites</h2>
 
-    <h3>Step 1 &mdash; Deploy via HCP Terraform</h3>
+    <table>
+      <thead><tr><th>Requirement</th><th>Detail</th></tr></thead>
+      <tbody>
+        <tr><td>AWS account</td><td>DevOps Agent available in region; permission for Lambda, EventBridge, SSM, S3, IAM</td></tr>
+        <tr><td>A CloudTrail trail</td><td>From Week 15. Without it there is nothing to grade the agent against</td></tr>
+        <tr><td>Terraform</td><td>>= 1.10</td></tr>
+        <tr><td>Service namespace</td><td><code>aidevops</code>, <strong>not</strong> <code>devops-agent</code> &mdash; getting it wrong yields a trust policy that looks right and never matches</td></tr>
+      </tbody>
+    </table>
 
-    <p>Same pattern as every week in this series: a VCS-connected HCP workspace using OIDC dynamic credentials, so no AWS keys exist anywhere.</p>
+    <p><strong>Budget warning, and it is the real one.</strong> This is the most expensive week in
+    the series at <strong>$23.28</strong>. An investigation costs a flat <strong>$5.03</strong>
+    regardless of effort, and there is a one-time <strong>$13.22</strong> "system learning" charge
+    that <strong>does not appear on the pricing page at all</strong>. Budget for it before you
+    start.</p>
+  </div>
 
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/01b-hcp-workspace-variables.png" alt="HCP workspace variables for Week 16, including the OIDC environment variables and the ServiceNow OAuth credentials marked sensitive">
-      <figcaption>The two OIDC environment variables every workspace in this series needs, plus this week&rsquo;s additions: the ServiceNow instance URL, its short instance ID, and the OAuth client ID and secret &mdash; the secret marked sensitive so it is write-only from here on.</figcaption>
+  <div class="section" id="implementation">
+    <h2>Implementation</h2>
+
+    <p>A breakable workload, an agent space with both associations, and the grading script. The
+    <a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-16-devops-agent-investigations/README.md">lab guide</a> carries the full Terraform and the break/repair
+    scripts.</p>
+
+    <figure class="diagram">
+<pre><code>week-16-devops-agent-investigations/
+|
++-- terraform/
+|   +-- environments/dev/   HCP backend, OIDC, wires the modules
+|   +-- modules/workload/   the Lambda, its schedule, SSM parameter and bucket
+|   +-- modules/agent/      agent space, both service roles, associations
+|
++-- scripts/                break, repair, and the ground-truth grader</code></pre>
+      <figcaption>Only the directories that matter.
+      <a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-16-devops-agent-investigations">The full repository is on GitHub.</a></figcaption>
     </figure>
 
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/01-hcp-runs.png" alt="HCP Terraform run list showing the applied Week 16 run">
-      <figcaption>24 managed resources &mdash; the agent space, both associations, three IAM roles and the whole observed workload &mdash; showing as <strong>32</strong> in the workspace, which counts data sources too. Note the run list rather than the total &mdash; <strong>the first attempt errored.</strong> ServiceNow would not issue a token until three separate settings agreed, so the run that actually applied is the one titled for the fix. That story is in Challenges.</figcaption>
-    </figure>
+    <p><strong>The grading script is the whole method, and it is one file.</strong> It records what
+    was broken, when, and by which principal &mdash; before the agent is asked. That single
+    discipline is the difference between an evaluation and an anecdote.</p>
 
-    <div class="callout amber">
-      <p><strong>The provider does not exist yet.</strong> <code>hashicorp/aws</code> has no <code>aws_devopsagent_*</code> resources &mdash; scanning the installed v6.60.0 binary finds the string as a bare prefix with nothing behind it, and <a href="https://github.com/hashicorp/terraform-provider-aws/issues/46894" target="_blank" rel="noopener">issue #46894</a> asking for them is still open. Everything here uses <code>awscc</code> instead, which generates from the CloudFormation registry and therefore had the resources on day one. The trade is real: machine-generated shapes, CloudFormation naming, and thin documentation. That is the price of being early, and it is worth paying rather than clicking through a console.</p>
-    </div>
-
-    <h3>Step 2 &mdash; The agent space, and what it is allowed to reach</h3>
-
-    <p>The space itself is small. Two IAM roles trusting the <code>aidevops.amazonaws.com</code> service principal do the real work &mdash; one for the agent, one for the Operator App &mdash; and both are constrained twice over, by <code>aws:SourceAccount</code> and by <code>aws:SourceArn</code>, so a confused deputy in another account cannot borrow them.</p>
-
-    <figure class="screenshot">
+<figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/02-agent-space.png" alt="AWS DevOps Agent console listing one agent space named week16-agent">
       <figcaption>One agent space, created by Terraform. Account ID redacted.</figcaption>
     </figure>
+  </div>
 
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/04-agent-space-detail.png" alt="Agent space detail showing the primary AWS account source as Valid, with Actions role status Not configured">
-      <figcaption>The primary source is <strong>Valid</strong>; the <strong>Actions role status</strong> is <em>Not configured</em>, and stays that way. The agent can read this account and recommend changes to it. It cannot make them.</figcaption>
-    </figure>
+  <div class="section" id="validation">
+    <h2>Validation and Evidence</h2>
 
-    <p>The AWS association also carries a <code>resources</code> list, left empty here so the agent sees the whole account. That is deliberate for a lab &mdash; the agent has to <em>find</em> the broken workload rather than be handed it, and pointing it at the function would test recall instead of diagnosis. In production this is the tightening point: the schema accepts specific ARNs and tags, and that scoping, far more than the IAM policy, is the practical blast-radius control.</p>
+    <p>Two investigations, both marked against ground truth written beforehand.</p>
 
-    <h3>Step 3 &mdash; Wire up ServiceNow (setup only &mdash; nothing was filed)</h3>
+    <table>
+      <thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Run 1: names the cause</td><td>The revoked <code>ssm:GetParameter</code></td><td>Named it, with the causal chain from CloudTrail</td><td><strong>Pass</strong></td></tr>
+        <tr><td>Run 1: identifies who and when</td><td>Principal and timestamp</td><td>Both, from CloudTrail</td><td><strong>Pass</strong></td></tr>
+        <tr><td>Run 2 (decoy): reconstructs a sequence</td><td>Break, repair, re-break</td><td>Reconstructed all three</td><td><strong>Pass</strong></td></tr>
+        <tr><td>Declares what it could not see</td><td>Names its own gaps</td><td>Reported being denied <code>lambda:GetFunction</code></td><td><strong>Pass &mdash; the important one</strong></td></tr>
+        <tr><td>Mitigation plan is safe to run</td><td>Correct repair</td><td>Proposed a broader grant than the original</td><td><strong>Fail &mdash; read, do not run</strong></td></tr>
+        <tr><td>Evaluation is uncontaminated</td><td>Agent works from evidence</td><td><strong>It quoted my own SSM description back at me</strong></td><td><strong>Fail &mdash; see below</strong></td></tr>
+      </tbody>
+    </table>
 
-    <p>An investigation nobody reads is not an investigation. Weeks 1&ndash;3 turned a ServiceNow ticket into infrastructure; the intent here was the reverse &mdash; an incident becoming a ticket, written by the agent.</p>
-
-    <div class="callout amber">
-      <p><strong>Be clear about what this week actually proved.</strong> The registration works &mdash; the service is associated, and the OAuth client issues a token on demand, which I re-verified against the instance after the fact. <strong>But no ticket was created.</strong> Both investigations were started by hand from the Operator App rather than from a ServiceNow incident, and neither wrote anything back: zero incidents on the instance for the day. So this section is <em>wiring proven, loop not closed</em>. The OAuth debugging below is the durable part; the integration itself is set up and untested, and I would rather label it that way than imply a ticket appeared.</p>
-    </div>
-
-    <p>The OAuth endpoint has no Terraform path, so it is a documented manual prerequisite rather than a hidden one. In ServiceNow: <strong>System OAuth &rarr; Application Registry &rarr; Create an OAuth API endpoint for external clients</strong>.</p>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/05-snow-oauth-registry.png" alt="ServiceNow Application Registries list with an OAuth Client entry named AWS DevOps Agent">
-      <figcaption>The new OAuth client sitting alongside ServiceNow&rsquo;s built-ins. Client ID redacted.</figcaption>
-    </figure>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/06-snow-oauth-entity.png" alt="The ServiceNow OAuth client record showing Client Type set to Integration as a Service and an OAuth Application User assigned">
-      <figcaption>The two fields that actually decide whether this works: <strong>Client Type = Integration as a Service</strong>, and an <strong>OAuth Application User</strong> assigned. Both default to something else. See Challenges.</figcaption>
-    </figure>
-
-    <p>With those in place, Terraform registers the service and associates it. Registration takes the full <code>https://&lt;instance&gt;.service-now.com</code>; the association takes the bare instance name.</p>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/03-capability-providers.png" alt="Capability Providers page showing ServiceNow registered, with fourteen other capabilities available">
-      <figcaption>ServiceNow registered by Terraform, not by clicking. Fourteen other capability providers sit available and unregistered &mdash; each one would widen what the agent can reach.</figcaption>
-    </figure>
-
-    <h3>Step 4 &mdash; Write down the answer before asking the question</h3>
-
-    <p>This is the step that makes the rest mean anything. <code>break_it.sh</code> confirms the workload is healthy first (breaking something already broken produces an investigation with two causes and no way to tell which one was found), records what it is about to do with a timestamp, and only then does it.</p>
-
-    <pre><code>aws iam delete-role-policy \
-  --role-name week16-agent-processor \
-  --policy-name config-read</code></pre>
-
-    <p>The ledger it writes names the cause, the expected symptom, and explicitly what did <em>not</em> change &mdash; then states the marking scheme: <em>a correct answer names the policy detachment; naming the AccessDeniedException is the symptom, not the cause.</em></p>
-
-    <h4>What actually happens next, mechanically</h4>
-
-    <p>Nothing pushes an error anywhere. The failure surfaces because the workload keeps running and starts failing in public:</p>
-
-    <div class="flow">
-      <div class="flow-step"><div class="flow-content"><strong>Every 5 minutes</strong> &mdash; the EventBridge rule invokes the function. That schedule is the point: a break shows up as a change in a working series rather than as silence.</div></div>
-      <div class="flow-step"><div class="flow-content"><strong>Line 39 raises</strong> &mdash; the handler reads its config on every invocation, and the call is deliberately <em>not</em> wrapped in a try/except.</div></div>
-      <div class="flow-step"><div class="flow-content"><strong>The exception goes unhandled</strong> &mdash; so Lambda records a failed invocation and publishes <code>Errors = 1</code>.</div></div>
-      <div class="flow-step"><div class="flow-content"><strong>The alarm evaluates</strong> &mdash; <code>Sum(Errors) &gt;= 1</code> over one 300-second period, and flips to ALARM.</div></div>
-    </div>
-
-    <pre><code># handler.py - the whole failure surface, on purpose
-config = ssm.get_parameter(Name=PARAM_NAME)["Parameter"]["Value"]</code></pre>
-
-    <p>Not catching that is a design decision, not an oversight. <strong>A workload that swallows its own failure gives an investigator nothing to find</strong> &mdash; the errors never reach CloudWatch, the alarm never fires, and the only evidence is an absence. Letting it raise leaves a real, attributable stack trace in the logs, which is what the agent is being asked to work from.</p>
-
-    <p>It also produces a second signal I did not plan and the agent used anyway: the function now <em>fails faster than it succeeds</em>, dropping from ~550&nbsp;ms to ~200&nbsp;ms, because it dies before doing any work. The agent read that as evidence of failing fast rather than timing out, and said so before it had found the cause.</p>
-
-    <h3>Step 5 &mdash; Ask with no hints at all</h3>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/09-start-investigation-dialog.png" alt="The Start an investigation dialog with a bare symptom description and an empty investigation starting point field">
-      <figcaption>The prompt names the symptom and nothing else. The <strong>Investigation starting point</strong> field &mdash; where you would normally paste an alarm, a metric or a log line &mdash; is deliberately left empty. Anything in it would be handing over the answer and then admiring the recall.</figcaption>
-    </figure>
-
-    <h3>Step 6 &mdash; Watch the working, not just the conclusion</h3>
-
-    <p>The timeline tab is the most useful screen in the product, and the one that decides whether the conclusion is trustworthy. It shows the agent forming a symptom statement, then fanning out into three named subagents in parallel, each with its own tool-call count and duration.</p>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/14-investigation-timeline.png" alt="Investigation timeline showing three parallel subagents: check-lambda-logs, check-cloudtrail-changes and check-ssm-and-s3, with tool call counts and durations">
-      <figcaption><code>check-lambda-logs</code> (8 tool calls, 1m13s), <code>check-cloudtrail-changes</code> (14 calls, 2m17s), <code>check-ssm-and-s3</code> (7 calls, 48s) &mdash; running concurrently. It also noticed the function was last modified 54 minutes before the failures started, and correctly declined to treat that as the cause.</figcaption>
-    </figure>
-
-    <h3>Step 7 &mdash; The answer, and the gap it declared</h3>
-
-    <figure class="screenshot">
+<figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/15-root-cause.png" alt="Root cause tab naming the deleted config-read inline policy, with an investigation gaps section reporting access denied on lambda GetFunction">
       <figcaption>The cause, with the principal and the timestamp: <code>DeleteRolePolicy</code> at 15:57:32Z. Matches the ledger. Note the <strong>Investigation gaps</strong> panel underneath &mdash; it reports being denied <code>lambda:GetFunction</code> rather than quietly guessing around the hole.</figcaption>
     </figure>
 
-    <p>That gaps panel deserves more attention than the conclusion. AWS&rsquo;s own managed policy, <code>AIDevOpsAgentAccessPolicy</code>, does not grant <code>lambda:GetFunction</code>, so the agent could not read the full function configuration. It said so, in the output, unprompted. <strong>An agent that reports what it could not see is far more usable than one that returns the same confident paragraph either way</strong> &mdash; that panel is where you find out whether to believe the rest.</p>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/16-mitigation-plan.png" alt="Mitigation plan with prepare, pre-validate and apply steps, each with copyable AWS CLI commands">
-      <figcaption>A staged plan &mdash; save the current policy as a rollback point, validate the parameter exists, then apply &mdash; with runnable commands at each step. The remediation itself is subtly wrong, which is covered in Challenges. Account ID redacted.</figcaption>
-    </figure>
-
-    <h3>Step 8 &mdash; Run it again, with a decoy in the way</h3>
-
-    <p>One pass proves very little. The true cause was the only change in the window, which is the easiest possible version of the problem. So the second run put something more attractive in front of it:</p>
-
-    <div class="flow">
-      <div class="flow-step"><div class="flow-content"><strong>17:27:38Z</strong> &mdash; a real Terraform apply, changing the function timeout from 15s to 20s. Entirely innocent.</div></div>
-      <div class="flow-step"><div class="flow-content"><strong>17:28:49Z</strong> &mdash; the same IAM policy deleted again. The true cause, <strong>71 seconds later</strong>.</div></div>
-    </div>
-
-    <p>A recent deploy is the most attractive explanation in any incident, and here it is wrong. The prompt was identical, word for word, so the decoy was the only variable.</p>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/22-decoy-summary.png" alt="Decoy investigation summary with an error rate chart annotated with both the Terraform timeout change and the IAM policy deletion">
-      <figcaption>Look at the <strong>Error rate over time</strong> chart: the Terraform timeout change is plotted on it, annotated by name, right beside the policy deletion markers. It saw the deploy, placed it on the timeline, and declined to rank it as the cause. That is a stronger result than simply missing it.</figcaption>
-    </figure>
-
-    <figure class="screenshot">
+<figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/23-decoy-root-cause.png" alt="Decoy investigation root cause reconstructing the full sequence of deletion, brief restoration, and second deletion">
       <figcaption>It reconstructed the entire sequence rather than the most recent change: deleted at 15:57:32Z, <strong>briefly re-added at 17:24:41Z with one successful invocation observed</strong>, deleted again at 17:28:59Z. That middle event was my own repair and the single manual invoke I used to verify it &mdash; neither was in the prompt, and neither is visible in the alarm.</figcaption>
     </figure>
-
-    <p>It also proposed a better remediation than the one in my ledger: alongside restoring the policy, an SCP denying manual deletion of Terraform-managed policies. That addresses recurrence, which a restore does not.</p>
-
-    <div class="callout amber">
-      <p><strong>Do not over-read this result.</strong> A Lambda <em>timeout</em> change is a weak decoy &mdash; the failure signature is <code>AccessDeniedException</code>, so nothing about the symptom points at it. This shows the agent is not naively ranking by recency. It does <em>not</em> show it can separate two plausible permission-shaped causes, and I have not tested that. A stronger decoy would corrupt the SSM parameter name in the same apply.</p>
-    </div>
-
-    <h3>Verifying it actually works</h3>
-
-    <p>Two claims needed proving, and neither is proved by the investigation reading well.</p>
-
-    <p><strong>That the conclusion matches the record.</strong> Both runs were marked against <code>docs/ground-truth.md</code>, written before either question was asked, and against CloudTrail. Both named the policy detachment as the cause and the <code>AccessDeniedException</code> as the symptom &mdash; the distinction the marking scheme was built around. The decoy run&rsquo;s three reported timestamps all check out against the trail.</p>
-
-    <div class="callout red">
-      <p><strong>The limitation that matters most, and it is not the contamination.</strong> This post opens by asking how you would know if the agent were wrong. Two investigations ran and <em>the agent was never wrong about root cause</em> &mdash; so the marking scheme was only ever exercised against correct answers. I have no evidence it would catch a false conclusion, because it never had to.</p>
-      <p>That is the same defect as testing a smoke detector by not setting a fire. <strong>N&nbsp;=&nbsp;2, one failure mode, one account, one afternoon.</strong> What this week demonstrates is the <em>shape</em> of an answer &mdash; write the truth down first, keep an independent record, fix the marking scheme before you look &mdash; and one instance of it earning its keep, when grading caught a mitigation plan that would have deepened drift. It does not establish that the method reliably separates right answers from confident wrong ones. Doing that means running it against a break where the agent is expected to fail, which is a harder experiment to design and the honest next step.</p>
-    </div>
-
-    <p><strong>That the workload actually recovers.</strong> Restoring the policy and declaring victory is not verification. The alarm has to come back on its own:</p>
-
-    <pre><code>RESTORED  17:53:18Z
-alarm OK  17:58:34Z    (5m16s - one evaluation period)</code></pre>
-
-    <p>That recovery is only observable because this week&rsquo;s alarm uses a 300-second period. Week 15 used <code>Period: 86400</code> with <code>Statistic: Maximum</code>, which latched &mdash; one event pinned it in ALARM and every later detection was a non-transition, so nothing was ever sent again. The short period here is a direct correction of that.</p>
-
-    <h3>The six links between a Lambda error and a fix &mdash; and which ones this build actually has</h3>
-
-    <p>It is easy to read a post like this and conclude the thing is ready to sit on-call. It is not, and the gap is not in the agent. Here is the full chain from a function throwing an exception to somebody having fixed it, marked against what was really built:</p>
-
-    <table class="tbl">
-      <thead><tr><th>#</th><th>Link</th><th>How it works</th><th>This build</th></tr></thead>
-      <tbody>
-        <tr><td>1</td><td><strong>CloudWatch notices</strong></td><td>Unhandled exception &rarr; <code>Errors</code> metric &rarr; alarm enters ALARM in one 5-minute period</td><td><strong>Built</strong></td></tr>
-        <tr><td>2</td><td><strong>Somebody is told</strong></td><td>SNS topic on <code>alarm_actions</code> &rarr; email, Slack or PagerDuty</td><td><strong>Not built</strong></td></tr>
-        <tr><td>3</td><td><strong>The investigation starts itself</strong></td><td>Alarm &rarr; EventBridge &rarr; Lambda &rarr; the agent&rsquo;s webhook</td><td><strong>Not built</strong></td></tr>
-        <tr><td>4</td><td><strong>The agent investigates</strong></td><td>Reads metrics, logs, config and CloudTrail; returns a cause and a plan</td><td><strong>Built &mdash; started by hand</strong></td></tr>
-        <tr><td>5</td><td><strong>Findings reach a human</strong></td><td>A ServiceNow incident, or a Slack message</td><td><strong>Wired, zero tickets</strong></td></tr>
-        <tr><td>6</td><td><strong>The fix is applied</strong></td><td>A human, or an agent holding the actions role</td><td><strong>Human only</strong></td></tr>
-      </tbody>
-    </table>
-
-    <div class="callout red">
-      <p><strong>Link 2 is the one that should be uncomfortable.</strong> The alarm in this build has no <code>alarm_actions</code> and there is no SNS topic anywhere in the stack. It changes state correctly and tells nobody. I knew about both breaks because I caused them, and I knew about the recovery because I sat polling the CLI in a loop. As an answer to &ldquo;how would I find out something is broken&rdquo;, that is no answer at all &mdash; and it is five lines of Terraform, which is exactly why it is worth calling out rather than quietly leaving as an exercise.</p>
-    </div>
-
-    <p><strong>Links 2 and 3 are what turn this from a demonstration into operations</strong>, and neither involves the agent being any cleverer. Notification is a topic and a subscription. Automatic investigation is AWS&rsquo;s documented alarm-to-webhook path, and it is what makes the agent proactive rather than something you remember to go and ask.</p>
-
-    <h4>Why link 6 should stay human for this particular failure</h4>
-
-    <p>The tempting last step is to close the loop and let the agent apply its own plan. For this failure class specifically, I would not, and the reason is visible earlier in this post.</p>
-
-    <p>The cause was a human deleting a <em>Terraform-managed</em> IAM policy. The correct repair is therefore <code>terraform apply</code> &mdash; reconcile the drift back to the declared state. A remediation that instead patches the permission back leaves an account that no longer matches its code, and the next apply produces a surprise for whoever runs it.</p>
-
-    <p>That is not hypothetical here. <strong>The first investigation&rsquo;s own mitigation plan proposed exactly that mistake</strong> &mdash; adding <code>ssm:GetParameter</code> to the <code>baseline</code> policy rather than restoring the deleted <code>config-read</code> resource. Service restored, drift deepened, incident closed. Auto-applying that plan would have produced a green dashboard and a worse estate.</p>
-
-    <p>So the order I would build these in is 2, then 3, then 5 &mdash; notification, automatic start, findings delivery. Action comes last, after enough graded conclusions to know how often the plan is the one you would have written yourself.</p>
   </div>
 
-  <div class="section" id="challenges">
-    <h2>Challenges &mdash; What Actually Went Wrong</h2>
+  <div class="section" id="security-cost">
+    <h2>Security and Cost</h2>
 
-    <h3>1. I left the answer key in the room</h3>
+    <h3>Security</h3>
 
-    <p>The first investigation&rsquo;s root cause ends with a sentence I did not expect: <em>&ldquo;The SSM parameter&rsquo;s own description confirms this was a deliberate break.&rdquo;</em></p>
+    <p><strong>The agent reads and recommends; it never acts</strong> &mdash; enforced by the
+    service, not chosen by me. <code>AccountType</code> accepts only <code>monitor</code> and no
+    actions-role property exists, so the whole IaC path is read-only.</p>
 
-    <p>It did. Because I wrote it, in the Terraform, months of good intentions ago:</p>
+    <p><strong>Both service roles double-scoped</strong> with <code>aws:SourceAccount</code> and
+    <code>aws:SourceArn</code>, against the confused-deputy case.</p>
 
-    <pre><code>resource "aws_ssm_parameter" "config" {
-  description = "Read on every invocation. Revoking the role's ssm:GetParameter is the deliberate break."
-}</code></pre>
+    <p><strong>The service namespace is <code>aidevops</code>, not <code>devops-agent</code>.</strong>
+    Getting it wrong yields a trust policy that looks right and never matches.</p>
 
-    <p>That description is a comment to a human reader and a <strong>signpost to anything that can read the AWS API</strong>. The agent read it, and it named the exact mechanism the test was about.</p>
+    <p><strong>AWS managed policies rather than hand-rolled read access.</strong> Hand-writing
+    least-privilege across every service an investigator might touch is a losing game.</p>
 
-    <p>How much does it invalidate? Less than it first appears, but not nothing. The description says which permission matters; it does not say who removed it, when, or from where, and the causal chain came from CloudTrail. The decoy run reconstructed a repair and a re-break that the description contains no trace of. But the first run is weakened, and I would rather say so than quietly drop it.</p>
+    <p><strong>The standing grant is the thing to remove.</strong> An idle agent space costs nothing
+    &mdash; verified on every meter &mdash; so what persists is not a bill but a role a managed AWS
+    service can assume to read your account.</p>
 
-    <div class="callout red">
-      <p><strong>The general lesson, and it applies well beyond this lab:</strong> your resource descriptions, tags, names and comments are <em>inputs to the agent</em>, not annotations for humans. If you are evaluating one, scrub the environment of anything that describes the scenario. If you are running one for real, the reverse holds &mdash; good descriptions make it better, and that is a reason to write them.</p>
-    </div>
+    <h3>Cost</h3>
 
-    <h3>2. <code>service_id = "aws"</code> is a reserved literal that appears in no schema</h3>
+    <p><strong>$23.28 measured.</strong> After teardown, <strong>$0.00</strong>.</p>
 
-    <p>Every association requires a <code>service_id</code>, and the obvious reading is that it references an <code>awscc_devopsagent_service</code> resource. For AWS itself, it does not. The <code>ServiceType</code> enum contains only third-party integrations &mdash; ServiceNow, GitLab, Dynatrace, PagerDuty and the MCP servers &mdash; and <code>list-services</code> on a fresh account returns empty. There is nothing to reference and no way to create one.</p>
-
-    <p>The value is the literal string <code>"aws"</code>. It appears in the CloudFormation schema nowhere, the Terraform provider schema nowhere, and the CLI skeleton nowhere. I found it in AWS&rsquo;s own published Terraform sample. This is the sharpest edge of using a service that is newer than its provider: the documentation has not caught up with the API, and the only reliable source is working example code.</p>
-
-    <h3>3. The instance ID is the short name &mdash; a trap I read about rather than fell into</h3>
-
-    <p>Registration takes the full <code>https://&lt;instance&gt;.service-now.com</code>. The association takes the bare instance name. Passing the URL to both is documented to fail with <code>GeneralServiceException: instanceId ... does not match the registered ServiceNow instance</code> &mdash; which reads as <em>these two values disagree</em>, when in fact they agree perfectly and only the format is wrong.</p>
-
-    <p><strong>In the interest of not dressing up a design decision as a war story: I did not hit this.</strong> I read it before writing the association and carried the short name as a separate Terraform variable rather than deriving it from the URL, so the mistake was never available to make. It earns a place here because the error text points away from the fix, and because &ldquo;two variables that look redundant&rdquo; is exactly the kind of thing a later reader deletes to tidy up.</p>
-
-    <h3>4. Three ServiceNow settings, one error message</h3>
-
-    <p>Getting <code>client_credentials</code> to issue a token took three separate fixes, and the failures arrived in an order that pointed away from each one in turn: AWS reported <em>&ldquo;check your service credentials&rdquo;</em>, then ServiceNow returned <code>401 access_denied</code>, then <code>unauthorized_client</code>. All three looked like a wrong secret. None of them were.</p>
-
-    <ol>
-      <li>The <code>client_credentials</code> grant is <strong>disabled by default</strong> and enabled by a system property, not by anything on the OAuth record.</li>
-      <li><strong>Client Type</strong> must be <em>Integration as a Service</em>. The default is not.</li>
-      <li>An <strong>OAuth Application User</strong> must be assigned. Without one there is no identity for the token to act as, and ServiceNow reports that as an unauthorized <em>client</em>.</li>
-    </ol>
-
-    <p>If you are debugging this, check all three before touching the secret. The error text will not lead you to any of them.</p>
-
-    <h3>5. The mitigation plan was correct and would have deepened the drift</h3>
-
-    <p>The first run&rsquo;s plan proposed adding <code>ssm:GetParameter</code> to the existing <code>baseline</code> inline policy. That restores service immediately and it is a perfectly reasonable operator instinct.</p>
-
-    <p>It is also not what happened. What happened is that a <em>separate</em> policy called <code>config-read</code> &mdash; a Terraform-managed resource &mdash; was deleted. Following the plan would leave <code>baseline</code> carrying a permission Terraform does not know about, and the next <code>terraform apply</code> would recreate <code>config-read</code> alongside it. The incident closes; the estate drifts further.</p>
-
-    <p>Notably, the <em>decoy</em> run did not make this mistake &mdash; it proposed restoring the original policy document and adding an SCP. Same agent, same account, two runs, two different qualities of remediation. That variance is itself the finding, and it is the argument for reading the plan rather than running it.</p>
-
-    <h3>6. There is no spend ceiling, anywhere</h3>
-
-    <p>Weeks 14 and 15 both capped Athena at 10&nbsp;GB per query at the workgroup level, so a mistake was bounded by configuration. The <code>AgentSpace</code> schema has no equivalent: <code>Name</code>, <code>Description</code>, <code>KmsKeyArn</code>, <code>Locale</code>, <code>OperatorApp</code>, <code>Tags</code>, and nothing else. No budget, no maximum duration, no task cap. The only quota bounds how <em>many</em> tasks run concurrently, never how <em>long</em> one runs.</p>
-
-    <p>So the control is observation rather than configuration, which is a genuinely weaker position and worth naming as such:</p>
-
-    <pre><code>./scripts/measure_usage.sh</code></pre>
-
-    <p>Run before and after anything the agent does. It reads the usage meter, converts hours to dollars, and prints the absence of a limit rather than hiding it.</p>
-  </div>
-
-  <div class="section" id="security">
-    <h2>Security &mdash; Controls at Every Layer</h2>
-
-    <ul>
-      <li><strong>The agent reads and recommends; it never acts</strong> &mdash; and note this is enforced by the service rather than chosen by me. <code>AccountType</code> accepts only <code>monitor</code>, and no actions-role property exists on either CloudFormation resource, so the whole IaC path is read-only. An agent that can act on a wrong narrative is a different risk category from one that can only propose it</li>
-      <li><strong>Both service roles double-scoped</strong> &mdash; <code>aws:SourceAccount</code> pins the caller to this account and <code>aws:SourceArn</code> pins it to an agent space ARN in this account and region, against the confused-deputy case. The service namespace is <code>aidevops</code>, not <code>devops-agent</code>; getting it wrong yields a trust policy that looks right and never matches</li>
-      <li><strong>AWS managed policies rather than hand-rolled read access</strong> &mdash; <code>AIDevOpsAgentAccessPolicy</code> and <code>AIDevOpsOperatorAppAccessPolicy</code>. Hand-writing least-privilege across every service an investigator might touch is how you end up with <code>ReadOnlyAccess</code> by accident</li>
-      <li><strong>The association&rsquo;s <code>resources</code> list is the real blast-radius control</strong> &mdash; empty here so the agent must find the workload, but in production this scopes the agent to a stack or a tag far more effectively than IAM does</li>
-      <li><strong>The OAuth secret is write-only</strong> &mdash; marked sensitive in HCP, never in state output, never in a repo</li>
-      <li><strong>Every capability is declared in Terraform</strong> &mdash; fourteen other providers sit available and unregistered. Each would widen what the agent can reach, and each would be a reviewable line in a pull request rather than a click</li>
-      <li><strong>Spend is observed, not capped</strong> &mdash; stated plainly because it is the one control this week does not have</li>
-    </ul>
-  </div>
-
-  <div class="section" id="cost">
-    <h2>Cost</h2>
-
-    <p>Prices as of August 2026 &mdash; verify at the <a href="https://aws.amazon.com/devops-agent/pricing/" target="_blank" rel="noopener">DevOps Agent pricing page</a>.</p>
-
-    <table class="tbl">
+    <table>
       <thead><tr><th>Item</th><th>Rate</th><th>This build</th></tr></thead>
       <tbody>
-        <tr><td>Agent active work</td><td>$0.0083 / agent-second (~$0.50 / min)</td><td>billed per second</td></tr>
+        <tr><td>Investigations &times; 2</td><td>flat, ~0.168 hrs each</td><td>$10.06</td></tr>
+        <tr><td>System learning (one-time)</td><td><strong>not listed on the pricing page</strong></td><td>$13.22</td></tr>
         <tr><td>Idle agent space</td><td>free</td><td>$0.00, verified on every meter</td></tr>
-        <tr><td>Investigations &times; 2</td><td>~0.168 hrs each, flat</td><td>$10.06</td></tr>
-        <tr><td><code>system learning</code>, one-time</td><td>not listed on the pricing page</td><td>$13.22</td></tr>
         <tr><td>Lambda, EventBridge, SSM, S3</td><td>&mdash;</td><td>effectively free at lab volume</td></tr>
-        <tr><td>CloudWatch alarm &times; 1</td><td>$0.10 / alarm / month</td><td>$0.10/month</td></tr>
-        <tr><td><strong>Total spent this week</strong></td><td></td><td><strong>$23.28</strong></td></tr>
-        <tr><td><strong>Destroyed</strong></td><td></td><td><strong>$0</strong></td></tr>
       </tbody>
     </table>
 
-    <h3>Three things the meter taught that the pricing page does not</h3>
+    <p><strong>An investigation costs a flat rate regardless of effort.</strong> Sampling the meter
+    every ninety seconds through both runs produced the same figure each time &mdash; 0.168 hours,
+    $5.03. The decoy run did visibly more work: more steps, more tool calls, a longer wall-clock.
+    It cost the same. Whatever "agent-second" measures, it is not proportional to the investigating
+    you can see.</p>
 
-    <p><strong>An investigation costs a flat rate regardless of effort.</strong> Sampling the meter every ninety seconds through both runs produced the same figure each time &mdash; 0.168 hours, $5.03. The decoy run did visibly more work: more steps, more tool calls, a longer wall-clock. It cost the same. Whatever &ldquo;agent-second&rdquo; measures, it is not proportional to the investigating I could observe.</p>
+<figure class="screenshot">
+      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-16-devops-agent-investigations/docs/blog/screenshots/22-decoy-summary.png" alt="Decoy investigation summary with an error rate chart annotated with both the Terraform timeout change and the IAM policy deletion">
+      <figcaption>Look at the <strong>Error rate over time</strong> chart: the Terraform timeout change is plotted on it, annotated by name, right beside the policy deletion markers. It saw the deploy, placed it on the timeline, and declined to rank it as the cause. That is a stronger result than simply missing it.</figcaption>
+    </figure>
+  </div>
 
-    <p><strong>The meter reads zero while the work is happening.</strong> Seven consecutive samples during the first investigation reported 0.0 hours, then the full 0.168 posted at once after completion. If you are watching the meter as a live guardrail, it will tell you nothing until it is too late to intervene &mdash; which materially weakens &ldquo;observation&rdquo; as a substitute for a spend cap.</p>
+  <div class="section" id="troubleshooting">
+    <h2>Troubleshooting and Lessons</h2>
 
-    <p><strong><code>system learning</code> is a billed category that the pricing page does not name.</strong> It was the single largest line this week at $13.22, and it appeared once &mdash; the agent mapping the account on first use. It did not recur for the second investigation. The published categories are investigations, evaluations and on-demand SRE tasks; this is none of them. Budget for a one-off charge on first use that you cannot find a rate card for.</p>
+    <h3>I left the answer key in the room</h3>
+    <p><strong>Problem.</strong> The first investigation's root cause ended with a sentence I did
+    not expect: <em>"The SSM parameter's own description confirms this was a deliberate
+    break."</em><br>
+    <strong>Root cause.</strong> It did &mdash; because I wrote it, in the Terraform, months
+    earlier:</p>
 
-    <div class="callout">
-      <p><strong>On the free trial:</strong> new DevOps Agent customers get two months including up to 20 hours of investigations per month. At the flat ~0.168 hours per investigation observed here, that is a great deal of investigating. It arrives as a billing credit rather than a usage limit, so it cannot be read from the API &mdash; and a credit is not a ceiling.</p>
-    </div>
+<pre><code>description = "Read on every invocation. Revoking the role's ssm:GetParameter is the deliberate break."</code></pre>
+
+    <p>That description is a comment to a human reader <strong>and a signpost to anything that can
+    read the AWS API</strong>. The agent read it and named the exact mechanism the test was
+    about.<br>
+    <strong>Resolution.</strong> Scrub the environment before evaluating. Less was invalidated than
+    it first appears &mdash; the description says which permission matters, not who removed it, when
+    or from where, and the causal chain still came from CloudTrail. The decoy run reconstructed a
+    sequence the description could not have contained.<br>
+    <strong>Lesson.</strong> <strong>Your resource descriptions are inputs to the agent.</strong>
+    Scrub them before evaluating; write them well before operating.</p>
+
+    <h3>The declared gaps matter more than the conclusion</h3>
+    <p><strong>Problem.</strong> How do you trust a fluent narrative at all?<br>
+    <strong>Root cause.</strong> You cannot, from the narrative. You can from what it admits it
+    could not see.<br>
+    <strong>Resolution.</strong> The agent reported being denied <code>lambda:GetFunction</code> and
+    said so.<br>
+    <strong>Lesson.</strong> <strong>Being told it was denied something is what makes the rest
+    believable.</strong> An agent that returns the same confident paragraph whether or not it could
+    see the evidence is the one to worry about.</p>
+
+    <h3>Read the mitigation plan; do not run it</h3>
+    <p><strong>Problem.</strong> One run proposed a repair broader than the permission that had been
+    removed.<br>
+    <strong>Root cause.</strong> A plan optimises for "make it work", not for "restore the prior
+    boundary".<br>
+    <strong>Resolution.</strong> A human performed the repair, scoped to what was actually
+    revoked.<br>
+    <strong>Lesson.</strong> The plan is a proposal from something that cannot act. Keep it that
+    way.</p>
   </div>
 
   <div class="section" id="cleanup">
-    <h2>Cleanup</h2>
+    <h2>Cleanup and Key Takeaways</h2>
 
-    <p>Queue a destroy from the HCP UI. Everything this week creates is a Terraform resource, including the agent space and both associations, so nothing is left behind by design.</p>
-
-    <p><strong>The agent space is the one to confirm.</strong> Left behind it costs nothing while idle &mdash; genuinely nothing, verified on every meter &mdash; which is exactly what makes it easy to forget. What persists is not a bill but a <em>standing grant</em>: a role in your account that a managed AWS service can assume to read it. That is a thing to remove deliberately, not a thing to leave lying around because it is free.</p>
-
-    <p>The ServiceNow OAuth endpoint is not managed by Terraform and does not disappear with the stack. Deactivate the Application Registry record, or the credential outlives the lab.</p>
-
-    <p>The observed workload tears down with everything else. The S3 bucket carries <code>force_destroy</code> and a seven-day lifecycle rule, so teardown never needs a manual empty.</p>
-  </div>
-
-  <div class="section" id="references">
-    <h2>References</h2>
+    <p>Everything this week creates is a Terraform resource, including the agent space and both
+    associations, so nothing is left behind by design. Two things still need confirming:</p>
 
     <ul>
-      <li><a href="https://docs.aws.amazon.com/devopsagent/latest/userguide/about-aws-devops-agent.html" target="_blank" rel="noopener">About AWS DevOps Agent</a> &mdash; AWS DevOps Agent User Guide</li>
-      <li><a href="https://aws.amazon.com/blogs/mt/announcing-general-availability-of-aws-devops-agent/" target="_blank" rel="noopener">Announcing General Availability of AWS DevOps Agent</a> &mdash; AWS Cloud Operations Blog</li>
-      <li><a href="https://aws.amazon.com/devops-agent/pricing/" target="_blank" rel="noopener">AWS DevOps Agent pricing</a> &mdash; the three published billing categories</li>
-      <li><a href="https://registry.terraform.io/providers/hashicorp/awscc/latest/docs/resources/devopsagent_agent_space" target="_blank" rel="noopener"><code>awscc_devopsagent_agent_space</code></a>, <a href="https://registry.terraform.io/providers/hashicorp/awscc/latest/docs/resources/devopsagent_association" target="_blank" rel="noopener"><code>_association</code></a> and <a href="https://registry.terraform.io/providers/hashicorp/awscc/latest/docs/resources/devopsagent_service" target="_blank" rel="noopener"><code>_service</code></a> &mdash; Terraform Registry</li>
-      <li><a href="https://github.com/hashicorp/terraform-provider-aws/issues/46894" target="_blank" rel="noopener">terraform-provider-aws issue #46894</a> &mdash; the request for native <code>aws_devopsagent_*</code> resources, still open</li>
-      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/week-16-devops-agent-investigations" target="_blank" rel="noopener">Full source for this week</a> &mdash; Terraform, the break and repair scripts, both investigation transcripts and the ground-truth ledger</li>
+      <li><strong>The agent space.</strong> Left behind it costs nothing while idle &mdash; genuinely
+      nothing, verified on every meter &mdash; <strong>which is exactly what makes it easy to
+      forget.</strong> What persists is not a bill but a standing grant: a role a managed AWS
+      service can assume to read your account. Remove it deliberately.</li>
+      <li><strong>The ServiceNow OAuth endpoint is not managed by Terraform</strong> and does not
+      disappear with the stack. Deactivate the Application Registry record, or the credential
+      outlives the lab.</li>
     </ul>
-  </div>
 
-  <div class="section" id="takeaways">
-    <h2>Key Takeaways</h2>
+    <p>The observed workload tears down with everything else &mdash; the S3 bucket carries
+    <code>force_destroy</code> and a seven-day lifecycle rule, so teardown never needs a manual
+    empty.</p>
+
+    <h3>Key takeaways</h3>
 
     <ul>
-      <li><strong>An agent returns a narrative, and narratives persuade regardless of accuracy.</strong> A wrong metric looks wrong. A wrong explanation reads like an explanation. That asymmetry is the entire reason to grade rather than admire.</li>
-      <li><strong>Write the ground truth down before you ask.</strong> Anything recorded afterwards is a reaction to the answer, not a test of it. This is one shell script and it is the difference between an evaluation and an anecdote.</li>
-      <li><strong>Your resource descriptions are inputs to the agent.</strong> I put the answer in an SSM parameter description and the agent quoted it back. Scrub the environment before evaluating; write them well before operating.</li>
-      <li><strong>The declared gaps matter more than the conclusion.</strong> Being told it was denied <code>lambda:GetFunction</code> is what makes the rest believable. An agent that returns the same confident paragraph whether or not it could see the evidence is the one to worry about.</li>
-      <li><strong>Read the mitigation plan; do not run it.</strong> One run proposed a fix that would have restored service and deepened Terraform drift. The other proposed a better remediation than mine. Same agent, same account, different runs.</li>
-      <li><strong>It did not fall for a recent deploy sitting 71 seconds in front of the true cause</strong> &mdash; it plotted the deploy on the timeline and ranked it correctly. That is a real result, and a weak decoy; do not read it as more than it is.</li>
-      <li><strong>Observation is a weaker control than a limit, especially when the meter lags.</strong> No budget, no duration cap, and a meter that reads zero until the work is finished. Know that before you let something autonomous loose.</li>
-      <li><strong>Through Terraform, this agent can only ever read.</strong> <code>AccountType</code> accepts exactly one value, and no actions-role property exists on either CloudFormation resource &mdash; so an estate built entirely in code gets a read-only agent whether or not anyone decided that. The console shows the capability exists, which means enabling remediation requires stepping outside the code that describes everything else you run. Know which of your guardrails you chose and which the service chose for you.</li>
-      <li><strong>Being early costs documentation.</strong> <code>service_id = "aws"</code> exists in no schema and no CLI skeleton. When a service outruns its provider, working sample code is the only reliable source.</li>
+      <li><strong>An agent returns a narrative, and narratives persuade regardless of
+      accuracy.</strong> A wrong metric looks wrong; a wrong explanation reads like an explanation.
+      That asymmetry is the whole reason to grade rather than admire.</li>
+      <li><strong>Write the ground truth down before you ask.</strong> Anything recorded afterwards
+      is a reaction to the answer, not a test of it.</li>
+      <li><strong>Your resource descriptions are inputs to the agent.</strong> I put the answer in an
+      SSM parameter description and it was quoted back to me.</li>
+      <li><strong>The declared gaps matter more than the conclusion.</strong> An agent that sounds
+      equally confident with and without the evidence is the one to distrust.</li>
+      <li><strong>Price the thing before you run it.</strong> A flat $5.03 per investigation and an
+      undocumented $13.22 one-time charge made this the most expensive week in the series.</li>
     </ul>
 
-    <h3>What I&rsquo;d do differently in production</h3>
-
+    <h3>References</h3>
     <ul>
-      <li><strong>Scope the association to resources or tags rather than the whole account.</strong> Empty is right for a lab, where finding the workload is the test. In a real estate that scoping is the practical blast-radius control, and it is more effective than tightening the IAM policy.</li>
-      <li><strong>Put a spend alarm on the usage meter, since the service offers no cap.</strong> It will fire late, because the meter posts late &mdash; but late is better than at the end of the month, and it is the only mechanism available.</li>
-      <li><strong>Wire the alarm to the agent, which this build did not.</strong> Every investigation here was started by hand in the console. AWS documents the automatic path &mdash; a CloudWatch alarm to EventBridge to a Lambda that calls the agent&rsquo;s webhook &mdash; and the alarm built here fired correctly on both breaks and then went nowhere. Hand-starting was right for a grading exercise, because it controls exactly what the agent is told. It is also the reason nothing in this post should be read as evidence that the thing is on-call-ready. That is the next build, not this one.</li>
-      <li><strong>Close the ServiceNow loop, then verify a ticket exists.</strong> Registration succeeded and the OAuth client issues tokens, so it is easy to call this done &mdash; and zero incidents were created. &ldquo;The integration is configured&rdquo; and &ldquo;the integration works&rdquo; are separate claims, and only one of them was tested here. Check the destination system, not the source config.</li>
-      <li><strong>Route findings to a ticket that a human closes, and never to an automated action.</strong> The ServiceNow association is meant to be the terminus, and wiring it up is the easy half. Promoting an agent from proposing to acting should follow a track record measured the way this week measures it, not a demo that read well.</li>
-      <li><strong>Run the evaluation periodically, not once.</strong> The model behind this changes without a version bump in your Terraform. A quarterly rerun of the same known break, graded against CloudTrail the same way, is the only way to notice it getting worse.</li>
-      <li><strong>Test with a decoy in the same failure domain.</strong> A timeout change was too easy to dismiss. The honest version corrupts the SSM parameter name in the same apply, so both candidates produce a plausible permission-shaped failure.</li>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-16-devops-agent-investigations/README.md"><strong>The full lab guide</strong></a></li>
+      <li><a href="https://docs.aws.amazon.com/devops-agent/">AWS DevOps Agent documentation</a></li>
+      <li><a href="https://docs.aws.amazon.com/awscloudtrail/latest/userguide/">AWS CloudTrail</a></li>
     </ul>
   </div>
-
-</div>
