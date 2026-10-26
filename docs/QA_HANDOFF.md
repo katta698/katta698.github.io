@@ -129,6 +129,51 @@ promise on every post carrying one.
 that day. `lab_post_kit.py` in the AWS lab repo enforces this mechanically; the
 other series have no equivalent guard.
 
+## 5b. The failure mode that nearly shipped, and the tool for it
+
+**`scripts/diff_post_facts.py`** compares every number in a rewritten post
+against the committed previous version. Run it on any restructured post, in any
+series:
+
+```bash
+python scripts/diff_post_facts.py week-12-whatever.html
+```
+
+- **ADDED** = a number in the new version that was not in the old one. It must
+  trace to the repository or to a measurement taken today, or it was invented.
+- **dropped** = expected; the rewrite cuts 40-60% on purpose. Worth a glance for
+  anything load-bearing.
+
+**Why it exists.** Restructuring is not a mechanical move: each post is read and
+re-expressed. The shape gate guarantees the front matter, publish date,
+verification badge and figure set survive. It guarantees nothing about whether
+the prose still says the same thing.
+
+**The specific trap, and it is structural rather than one window's mistake.**
+The mandated Lab Overview table asks for *difficulty* and *approximate
+completion time*. **Most back-catalogue posts never recorded either.** The
+temptation is to fill the row in. The AWS window did exactly that on ten posts
+before this check existed, and several were badly wrong against the posts' own
+recorded timings — one said "about 2 hours" for a lab the post records as
+running 41 hours.
+
+It is the hardest class of error to catch by reading, because an invented
+duration reads exactly like a recorded one.
+
+**Measured 2026-10-25, after the tool existed:**
+
+| Post | Result |
+|---|---|
+| GCP `week-10-group-access` | clean — no added numbers |
+| GCP `week-09-sa-lifecycle` | one added: a Terraform version, traces to the repo |
+| Azure `week-10-opentelemetry` | clean — no added numbers |
+| AWS weeks 15–24 | **ten invented durations, now corrected** |
+
+So the other two series were doing this correctly. The guidance worth passing
+on is the pattern, not a correction: **where a post never recorded a duration,
+say "Not recorded" or something honestly vague.** Azure's "Roughly an evening"
+is the right instinct; a precise-sounding number nobody measured is the trap.
+
 ## 6. New posts
 
 **`_templates/lab-post-skeleton.html`** — the nine sections in order with the
