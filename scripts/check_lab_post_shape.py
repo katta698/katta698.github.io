@@ -103,10 +103,6 @@ MIGRATION_PENDING = {
     "week-02-keyless-ci",
     "week-03-org-policy-guardrails",
     "week-04-shared-vpc",
-    "week-05-project-factory",
-    "week-06-billing-export",
-    "week-07-asset-inventory",
-    "week-08-iam-deny",
 }
 
 # The standard's section order. Presence is checked; order is not, because the
