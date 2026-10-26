@@ -85,7 +85,6 @@ MIGRATION_PENDING = {
     "week-12-config-compliance-automation",
     "week-13-waf-shield-protection",
     "week-14-vpc-flow-logs-intelligence",
-    "week-15-cloudtrail-audit-forensics",
     "week-2-automating-postgresql-provisioning-with-servicenow-an",
     "week-3-self-service-ec2-fleet-patching-with-aws-ssm",
     "week-4-building-a-fleet-intelligence-platform-with-aws-glue-",
