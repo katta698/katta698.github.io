@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #94 — You get an ENI, not a domain controller | Jayanth Katta Blog</title>
+<meta name="description" content="A managed directory looks like two domain controllers you own, running in your VPC. Neither half of that is true. The instances run outside your AWS account, what lands in your subnet is one network adapter, and your users never move into it at all — the directory is a resource forest that trusts the domain they already live in."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="You get an ENI, not a domain controller"/>
+<meta property="og:description" content="A managed directory looks like two domain controllers you own, running in your VPC. Neither half of that is true. The instances run outside your AWS account, what lands in your subnet is one network adapter, and your users never move into it at all — the directory is a resource forest that trusts the domain they already live in."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-directory-service/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="You get an ENI, not a domain controller"/>
+<meta name="twitter:description" content="A managed directory looks like two domain controllers you own, running in your VPC. Neither half of that is true. The instances run outside your AWS account, what lands in your subnet is one network adapter, and your users never move into it at all — the directory is a resource forest that trusts the domain they already live in."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-directory-service/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=6a0f8d01"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=1274c0a4" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=1274c0a4">
+<script src="/blog/assets/site-footer.js?v=1274c0a4" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #94 — You get an ENI, not a domain controller…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #94 — You get an ENI, not a domain controller</h1>
+      <p class="post-description">A managed directory looks like two domain controllers you own, running in your VPC. Neither half of that is true. The instances run outside your AWS account, what lands in your subnet is one network adapter, and your users never move into it at all — the directory is a resource forest that trusts the domain they already live in.</p>
+      <div class="post-info">
+        <span>Oct 26, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>12 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 26 October 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-directory-service" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <em>&ldquo;AWS Directory Service for Microsoft Active Directory, also referred to as AWS Managed Microsoft
+      AD, runs Microsoft Active Directory as a managed service powered by Windows Server 2019. It creates a
+      <strong>highly available pair of domain controllers in your Amazon VPC</strong> across different
+      Availability Zones&rdquo;</em>
+    </p>
+    <p>
+      Read &ldquo;in your Amazon VPC&rdquo; carefully, because it is doing less work than it appears to. The
+      rest of this post is what that phrase actually means, and what your users do and do not do as a result.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Your users never move into it</strong></div>
+      <div class="challenge-body">
+        <p>
+          The thing most people expect &mdash; a copy of their directory in AWS &mdash; is not what this is.
+        </p>
+        <p>
+          <em>&ldquo;These directories establish <strong>resource forests</strong> that create trust
+          relationships with your existing AD domains on-premises, in AWS, or in multi-cloud
+          environments.&rdquo;</em> And the consequence, stated plainly:
+          <em>&ldquo;<strong>User identities stay in your existing AD domains</strong> while the resource forest
+          manages your AWS resources, maintaining <strong>operational isolation between environments</strong>
+          while providing seamless single sign-on.&rdquo;</em>
+        </p>
+        <p>
+          So the managed directory holds your AWS resources &mdash; the EC2 instances joined to it, the
+          directory-aware applications, the group policy that applies to them &mdash; and it trusts the domain
+          where your people actually are. Nothing is copied and nothing is synchronised. The Hybrid Edition
+          makes the same point about itself:
+          <em>&ldquo;This solution extends your directory services to AWS <strong>without synchronizing user
+          identities</strong>&rdquo;</em>.
+        </p>
+        <p>
+          That is a genuinely good design. A synchronised copy of an identity store is two sources of truth and
+          a reconciliation problem; a trust is one source of truth and a network dependency. But it does mean
+          the thing you are standing up is not a backup of your directory, and it will not keep working if the
+          domain it trusts is unreachable.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Write down which side of the trust each failure mode lands on before you build. The sentence to catch in a design review is <em>our AD is in AWS now</em> &mdash; for a resource forest it is not true in the way the speaker means.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The domain controllers are not in your account, and one bullet explains another</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the paragraph worth reading twice before you design around it:
+        </p>
+        <p>
+          <em>&ldquo;Directory Service uses a <strong>two VPC structure</strong>. The EC2 instances which make up
+          your directory <strong>run outside of your AWS account</strong>, and are managed by AWS. They have two
+          network adapters, <code>ETH0</code> and <code>ETH1</code>. <strong><code>ETH0</code> is the management
+          adapter, and exists outside of your account. <code>ETH1</code> is created within your
+          account.</strong>&rdquo;</em>
+        </p>
+        <p>
+          So what you receive in your subnets is <code>ETH1</code>. The instance behind it is not yours, is not
+          in your account, is not visible to your EC2 console, and is not something you patch. That is the
+          managed part of a managed service, and it is the right trade &mdash; but it changes what your
+          monitoring and your incident response can actually reach.
+        </p>
+        <p>
+          And then, a few lines earlier on the same page:
+          <em>&ldquo;<strong>You cannot create a AWS Managed Microsoft AD in a VPC using addresses in the
+          198.18.0.0/15 address space.</strong>&rdquo;</em> With the reason sitting below it:
+          <em>&ldquo;The management IP range of your directory's <code>ETH0</code> network is
+          <strong>198.18.0.0/15</strong>.&rdquo;</em>
+        </p>
+        <p>
+          The page states both and connects neither &mdash; that join is my reading rather than AWS's. But the
+          two ranges are the same, and the practical effect is that a <code>/15</code> of your address space is
+          unusable here because of a network adapter in an account you do not have.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Check your IP address management plan for <code>198.18.0.0/15</code> before you choose a VPC. It is an unusual range to have allocated &mdash; it is reserved for benchmarking &mdash; but organisations that carved up private space informally sometimes have, and discovering it at create time is a bad day.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>AD Connector caches nothing, and three limits decide it at scale</strong></div>
+      <div class="challenge-body">
+        <p>
+          The alternative is a proxy rather than a directory:
+          <em>&ldquo;AD Connector is a <strong>directory gateway</strong> with which you can redirect directory
+          requests to your on-premises Microsoft Active Directory <strong>without caching any information in the
+          cloud</strong>.&rdquo;</em>
+        </p>
+        <p>
+          For a single account with one domain and a reliable link, that is often exactly right. Nothing is
+          stored, nothing is duplicated, and
+          <em>&ldquo;Your end users and IT administrators can use their existing corporate credentials to log on
+          to AWS applications such as WorkSpaces, WorkDocs, or Amazon WorkMail.&rdquo;</em>
+        </p>
+        <p>
+          Three documented limits decide against it in a large organisation, and none of them is about
+          performance:
+        </p>
+        <p>
+          <em>&ldquo;AD Connectors and your on-premises Active Directory domains have a <strong>1-to-1
+          relationship</strong>. That is, for each on-premises domain, <strong>including child domains</strong>
+          in an Active Directory forest that you want to authenticate against, you must create a unique AD
+          Connector.&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;<strong>AD Connector cannot be shared with other AWS accounts.</strong>&rdquo;</em> And:
+          <em>&ldquo;AD Connector is also <strong>not multi-VPC aware</strong>, which means that AWS
+          applications like WorkSpaces are required to be provisioned into the same VPC as your AD
+          Connector.&rdquo;</em>
+        </p>
+        <p>
+          Multiply those together across an organisation and the arithmetic does it for you: one connector per
+          domain, per account, per VPC. Managed Microsoft AD can be shared across accounts, which is why AWS
+          points there &mdash; the documentation says to consider it <em>&ldquo;If this is a
+          requirement&rdquo;</em>.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Count your domains, your accounts and your VPCs before choosing. AD Connector is a good answer to a small question and a bad answer to a large one, and the thing that decides it is organisational shape rather than user count &mdash; there are <em>&ldquo;no enforced user or connection limits&rdquo;</em>.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      A forest that holds resources and trusts your domain, instances that run in an account you cannot see, and
+      one adapter in your subnet.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-094-directory-service.svg" alt="Diagram: what AWS Directory Service actually places in your account and what it keeps outside it. AWS describes AWS Directory Service for Microsoft Active Directory, also called AWS Managed Microsoft AD, as running Microsoft Active Directory as a managed service powered by Windows Server 2019, creating a highly available pair of domain controllers in your Amazon VPC across different Availability Zones, with AWS automatically managing host monitoring, recovery, data replication, snapshots and software updates. The phrase in your Amazon VPC does less work than it appears to. Standard and Enterprise editions create new managed AD domains to manage users, devices and computers on AWS, and those directories establish resource forests that create trust relationships with existing AD domains on premises, in AWS, or in multi-cloud environments. The consequence is stated plainly: user identities stay in the existing AD domains while the resource forest manages the AWS resources, maintaining operational isolation between environments while providing seamless single sign-on. So nothing is copied and nothing is synchronised, and the Hybrid Edition makes the same point about itself, extending directory services to AWS without synchronizing user identities. That is a good design, because a synchronised copy of an identity store is two sources of truth and a reconciliation problem while a trust is one source of truth and a network dependency, but it means the directory being stood up is not a backup of the existing one and will not keep working if the domain it trusts is unreachable. The second finding is where the servers actually run. Directory Service uses a two VPC structure, and the EC2 instances which make up the directory run outside the customer's AWS account and are managed by AWS. They have two network adapters, ETH0 and ETH1: ETH0 is the management adapter and exists outside the account, while ETH1 is created within the account. So what the customer receives in their subnets is ETH1, and the instance behind it is not theirs, not in their account, not visible in their EC2 console and not something they patch. That is the managed part of a managed service and it is the right trade, but it changes what monitoring and incident response can reach. Two bullets on the same prerequisites page explain each other without the page connecting them: customers cannot create an AWS Managed Microsoft AD in a VPC using addresses in the 198.18.0.0/15 address space, and the management IP range of the directory's ETH0 network is 198.18.0.0/15. The join between those two statements is the author's reading rather than AWS's, but the ranges are identical, so a slash fifteen of the customer's address space is unusable because of a network adapter in an account they do not have. The VPC commitments are specific: at least two subnets, each in a different Availability Zone and of the same network type; the VPC must have default hardware tenancy; and integrating with an existing on-premises Active Directory domain requires the Forest and Domain functional levels for that domain to be set to Windows Server 2003 or higher. The alternative is AD Connector, a directory gateway that redirects directory requests to an on-premises Microsoft Active Directory without caching any information in the cloud. It comes in two sizes, small and large, where small is intended to handle a low number of operations per second and large a moderate to high number; loads can be spread across multiple AD Connectors, and there are no enforced user or connection limits. For a single account with one domain and a reliable link that is often exactly right, since end users and IT administrators can use their existing corporate credentials to log on to AWS applications such as WorkSpaces, WorkDocs or Amazon WorkMail. Three documented limits decide against it in a large organisation and none is about performance. AD Connectors and on-premises Active Directory domains have a one-to-one relationship, so a unique AD Connector is required for each on-premises domain including child domains in a forest that the customer wants to authenticate against. AD Connector cannot be shared with other AWS accounts. And AD Connector is not multi-VPC aware, which means AWS applications like WorkSpaces must be provisioned into the same VPC as the AD Connector. Multiplied across an organisation that is one connector per domain, per account, per VPC, which is why AWS points to sharing AWS Managed Microsoft AD instead when sharing is a requirement. AD Connector also does not support Active Directory transitive trusts. The recommended actions are to write down which side of the trust each failure mode lands on before building, because a resource forest is not a backup of the directory it trusts; to check the IP address management plan for 198.18.0.0/15 before choosing a VPC, since discovering the conflict at create time is a bad day; to count domains, accounts and VPCs before choosing AD Connector, because organisational shape rather than user count is what decides it; to plan monitoring and incident response around the fact that the domain controller instances are not reachable in the customer's account; and to confirm the on-premises forest and domain functional levels before committing to a trust." />
+      <figcaption>The forest holds your resources and trusts your domain. The instances behind it are in neither.</figcaption>
+    </figure>
+
+    <h3>The three options, and what decides between them</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Managed Microsoft AD<br/>(Standard, Enterprise)</th><th>Managed Microsoft AD<br/>(Hybrid Edition)</th><th>AD Connector</th></tr>
+      <tr>
+        <td>What it is</td>
+        <td>A new managed domain forming a <em>&ldquo;resource forest&rdquo;</em></td>
+        <td>Connects your self-managed AD with the managed service</td>
+        <td>A <em>&ldquo;directory gateway&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Your identities</td>
+        <td colspan="2">Stay where they are &mdash; no synchronisation either way</td>
+        <td>Stay where they are; nothing is cached</td>
+      </tr>
+      <tr>
+        <td>Shareable across accounts</td>
+        <td colspan="2">Yes</td>
+        <td><em>&ldquo;cannot be shared with other AWS accounts&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Per domain</td>
+        <td colspan="2">One directory, trusts many</td>
+        <td>One connector per domain, child domains included</td>
+      </tr>
+      <tr>
+        <td>Works if the link is down</td>
+        <td colspan="2">Resources keep working; trusted logons do not</td>
+        <td>No &mdash; every request is proxied</td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      The row that usually settles it in a large estate is sharing. A directory you can share is one directory;
+      a connector you cannot share is one per account, and at 500 accounts that stops being a design and becomes
+      an inventory.
+    </p>
+
+    <div class="callout amber">
+      <strong>What you commit your VPC to</strong>
+      <p><em>&ldquo;At least two subnets. Each of the subnets must be in a different Availability Zone and must be of same network type.&rdquo;</em></p>
+      <p><em>&ldquo;The VPC must have <strong>default hardware tenancy</strong>.&rdquo;</em> &mdash; so a dedicated-tenancy VPC is out, which is the kind of thing a regulated workload may have chosen for its own reasons.</p>
+      <p>And before you plan a trust: <em>&ldquo;you must have the Forest and Domain functional levels for your on-premises domain set to <strong>Windows Server 2003 or higher</strong>&rdquo;</em>. Low bar, worth confirming rather than assuming, because it is a property of a system you may not administer.</p>
+    </div>
+
+    <h3>Sizing AD Connector is about operations, not users</h3>
+    <p>
+      <em>&ldquo;AD Connector comes in two sizes, small and large. A small AD Connector is designed for smaller
+      organizations and is intended to handle a <strong>low number of operations per second</strong>. A large AD
+      Connector is designed for larger organizations and is intended to handle a <strong>moderate to high number
+      of operations per second</strong>.&rdquo;</em>
+    </p>
+    <p>
+      With the escape hatch:
+      <em>&ldquo;You can spread application loads across multiple AD Connectors to scale to your performance
+      needs. <strong>There are no enforced user or connection limits.</strong>&rdquo;</em>
+    </p>
+    <p>
+      So the sizing question is throughput, and the scaling answer is more connectors &mdash; which runs into
+      the per-account and per-VPC limits above rather than into a quota.
+    </p>
+
+    <h3>One more AD Connector limit, for anyone with a forest</h3>
+    <p>
+      <em>&ldquo;AD Connector <strong>does not support Active Directory transitive trusts</strong>.&rdquo;</em>
+      If your on-premises estate relies on transitive trust between domains to resolve access, a connector will
+      not inherit that, which is the same reason the 1-to-1 rule names child domains explicitly.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>A resource forest is the right answer to the wrong-sounding question</h3>
+    <p>
+      People ask for their directory in AWS and mean <em>I want AWS workloads to authenticate</em>. Copying
+      the identity store would satisfy the literal request and create a second source of truth, a sync pipeline
+      and a divergence problem. A resource forest satisfies the actual requirement with
+      <em>&ldquo;operational isolation between environments&rdquo;</em> intact.
+    </p>
+    <p>
+      The honest cost is the one the design makes explicit: resources in the forest keep working, but a logon
+      by a user from the trusted domain is only as available as the path to that domain.
+    </p>
+
+    <h3>Running the instances outside your account is what makes it managed</h3>
+    <p>
+      <em>&ldquo;with AWS automatically managing host monitoring, recovery, data replication, snapshots, and
+      software updates&rdquo;</em> is only deliverable if AWS controls the host. You cannot have both a patched,
+      recovered, snapshotted domain controller and a domain controller you administer at the OS level.
+    </p>
+    <p>
+      Publishing the mechanism rather than hiding it is the good part. The <code>ETH0</code> and
+      <code>ETH1</code> split tells you exactly where the boundary is, which is more than most managed services
+      disclose.
+    </p>
+
+    <div class="callout red">
+      <strong>The reserved range is a boundary leak, and it is the one to catch early</strong>
+      <p>Almost every consequence of the two-VPC structure is invisible and benign. This one is neither: <em>&ldquo;You cannot create a AWS Managed Microsoft AD in a VPC using addresses in the 198.18.0.0/15 address space.&rdquo;</em></p>
+      <p>An implementation detail of an account you cannot see constrains the addressing of a VPC you own. It sits in the prerequisites rather than anywhere you would look while designing a network, and it fails at create time &mdash; by which point the VPC usually exists.</p>
+    </div>
+
+    <h3>AD Connector's limits are honest about what a proxy can be</h3>
+    <p>
+      Not caching is the whole value &mdash; <em>&ldquo;without caching any information in the cloud&rdquo;</em>
+      is what makes it acceptable to a security team that will not have credentials stored in AWS. The 1-to-1
+      mapping, the no-sharing rule and the single-VPC scope all follow from being a network path rather than a
+      directory. A proxy that could be shared across accounts and VPCs would be a directory, and would need to
+      cache.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Directory type at scale</td>
+        <td>Managed Microsoft AD, shared across accounts</td>
+        <td>AD Connector <em>&ldquo;cannot be shared with other AWS accounts&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Expectation setting</td>
+        <td>Say <em>&ldquo;resource forest&rdquo;</em>, never <em>our AD is in AWS</em></td>
+        <td><em>&ldquo;User identities stay in your existing AD domains&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>VPC selection</td>
+        <td>Check for <code>198.18.0.0/15</code> first</td>
+        <td>It collides with the <code>ETH0</code> management range and fails at create time.</td>
+      </tr>
+      <tr>
+        <td>Tenancy</td>
+        <td>Default, not dedicated</td>
+        <td><em>&ldquo;The VPC must have default hardware tenancy.&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Subnets</td>
+        <td>Two, different AZs, same network type</td>
+        <td>A stated prerequisite, not a recommendation.</td>
+      </tr>
+      <tr>
+        <td>Monitoring</td>
+        <td>Plan around instances you cannot reach</td>
+        <td>They <em>&ldquo;run outside of your AWS account&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Before planning a trust</td>
+        <td>Confirm functional levels</td>
+        <td><em>&ldquo;Windows Server 2003 or higher&rdquo;</em>, on a system you may not own.</td>
+      </tr>
+      <tr>
+        <td>Forests with transitive trust</td>
+        <td>Not AD Connector</td>
+        <td>It <em>&ldquo;does not support Active Directory transitive trusts&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Sizing a connector</td>
+        <td>By operations per second, then add connectors</td>
+        <td>There are <em>&ldquo;no enforced user or connection limits&rdquo;</em>.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>Count the AD Connectors you would need: domains times accounts times VPCs.</strong> Do the
+      multiplication before the first one is built, because each factor is a documented constraint rather than a
+      tuning decision, and the number is usually larger than the room expects.
+    </p>
+    <p>
+      <strong>Then grep your IPAM for <code>198.18</code>.</strong> Thirty seconds, and it joins tenancy and
+      subnet layout as a constraint that stops you at create time rather than in a design review &mdash; except
+      that unlike those two, nobody thinks to check it.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The phrase to re-read is &ldquo;a highly available pair of domain controllers in your Amazon VPC.&rdquo;
+      Every word is true and the sentence still misleads, because the domain controllers are not yours, the VPC
+      holds one adapter each, and the directory they serve does not contain your users.
+    </p>
+    <p>
+      None of that is a criticism. Each is the price of something you wanted: managed patching costs you OS
+      access, a resource forest costs you a copy of your directory, and a non-caching proxy costs you sharing.
+      The failure mode is only ever describing the service to somebody else in the words of the marketing
+      sentence rather than the words of the prerequisites page.
+    </p>
+    <p>
+      <a href="/blog/aws-architecture-resource-control-policies/">#93</a> was a policy whose asymmetry is about
+      which account owns the resource. This is a service whose surprises are all about which account owns the
+      instance. Twice in a week, the useful question has turned out to be the same one: not what the thing does,
+      but whose account it does it in.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; AWS Certificate Manager: why a certificate's automatic renewal depends on whether anything is actually using it, what DNS validation buys that email validation does not, and why a certificate issued through ACME cannot be used with an integrated service.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_microsoft_ad.html" target="_blank" rel="noopener">AWS Managed Microsoft AD &#8212; the Windows Server 2019 basis and the highly available pair of domain controllers, the resource forest model and the statement that user identities stay in your existing domains, the Hybrid Edition's no-synchronisation behaviour, and the which-to-choose table</a></li>
+      <li><a href="https://docs.aws.amazon.com/directoryservice/latest/admin-guide/ms_ad_getting_started_prereqs.html" target="_blank" rel="noopener">AWS Managed Microsoft AD prerequisites &#8212; the two-subnet and Availability Zone requirement, default hardware tenancy, the 198.18.0.0/15 prohibition, the two-VPC structure with ETH0 outside your account and ETH1 within it, the ETH0 management range, and the on-premises forest and domain functional level requirement</a></li>
+      <li><a href="https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_ad_connector.html" target="_blank" rel="noopener">AD Connector &#8212; the directory gateway definition and the no-caching guarantee, the small and large sizes with their operations-per-second framing, the absence of enforced user or connection limits, the lack of transitive trust support, the 1-to-1 domain relationship including child domains, the no-sharing rule, the single-VPC scope, and the existing-credentials benefits</a></li>
+      <li><a href="https://docs.aws.amazon.com/directoryservice/latest/admin-guide/what_is.html" target="_blank" rel="noopener">What is AWS Directory Service? &#8212; further reading on the full option set including Simple AD; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/week-24-chaos-engineering-fis/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">Week 24 - Chaos Engineering with AWS FIS: The Safety Net That Could Never Close</span></a><a href="/blog/azure-architecture-point-to-site-vpn-and-client-configuration/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">Azure Architecture Series #74 — Point-to-Site VPN and Client Configuration</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-directory-service/';
+      this.page.identifier = 'aws-architecture-directory-service';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=1274c0a4"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

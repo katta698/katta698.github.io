@@ -1,0 +1,428 @@
+---
+title: "AWS Architecture Series #94 — You get an ENI, not a domain controller"
+date: '2026-10-26T09:00:00'
+slug: aws-architecture-directory-service
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-10-26'
+verified_claims:
+  - claim: "AWS Directory Service for Microsoft Active Directory, also referred to as AWS Managed Microsoft AD, runs Microsoft Active Directory as a managed service powered by Windows Server 2019"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_microsoft_ad.html
+  - claim: "It creates a highly available pair of domain controllers in your Amazon VPC across different Availability Zones, with AWS automatically managing host monitoring, recovery, data replication, snapshots, and software updates"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_microsoft_ad.html
+  - claim: "AWS Managed Microsoft AD (Standard Edition and Enterprise Edition) create new managed AD domains to manage users, devices, and computers on AWS, and these directories establish resource forests that create trust relationships with your existing AD domains on-premises, in AWS, or in multi-cloud environments"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_microsoft_ad.html
+  - claim: "User identities stay in your existing AD domains while the resource forest manages your AWS resources, maintaining operational isolation between environments while providing seamless single sign-on"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_microsoft_ad.html
+  - claim: "AWS Managed Microsoft AD (Hybrid Edition) connects your self-managed Active Directory with AWS Directory Service for Microsoft Active Directory, and this solution extends your directory services to AWS without synchronizing user identities"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_microsoft_ad.html
+  - claim: "To create an AWS Managed Microsoft AD Active Directory you need at least two subnets, each of the subnets must be in a different Availability Zone and must be of same network type"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/ms_ad_getting_started_prereqs.html
+  - claim: "The VPC must have default hardware tenancy"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/ms_ad_getting_started_prereqs.html
+  - claim: "You cannot create a AWS Managed Microsoft AD in a VPC using addresses in the 198.18.0.0/15 address space"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/ms_ad_getting_started_prereqs.html
+  - claim: "Directory Service uses a two VPC structure, and the EC2 instances which make up your directory run outside of your AWS account, and are managed by AWS"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/ms_ad_getting_started_prereqs.html
+  - claim: "They have two network adapters, ETH0 and ETH1, where ETH0 is the management adapter and exists outside of your account, and ETH1 is created within your account"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/ms_ad_getting_started_prereqs.html
+  - claim: "The management IP range of your directory's ETH0 network is 198.18.0.0/15"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/ms_ad_getting_started_prereqs.html
+  - claim: "If you need to integrate your AWS Managed Microsoft AD domain with an existing on-premises Active Directory domain, you must have the Forest and Domain functional levels for your on-premises domain set to Windows Server 2003 or higher"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/ms_ad_getting_started_prereqs.html
+  - claim: "AD Connector is a directory gateway with which you can redirect directory requests to your on-premises Microsoft Active Directory without caching any information in the cloud"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_ad_connector.html
+  - claim: "AD Connector comes in two sizes, small and large, where a small AD Connector is intended to handle a low number of operations per second and a large AD Connector is intended to handle a moderate to high number of operations per second"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_ad_connector.html
+  - claim: "You can spread application loads across multiple AD Connectors to scale to your performance needs, and there are no enforced user or connection limits"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_ad_connector.html
+  - claim: "AD Connector does not support Active Directory transitive trusts"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_ad_connector.html
+  - claim: "AD Connectors and your on-premises Active Directory domains have a 1-to-1 relationship, that is, for each on-premises domain, including child domains in an Active Directory forest that you want to authenticate against, you must create a unique AD Connector"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_ad_connector.html
+  - claim: "AD Connector cannot be shared with other AWS accounts"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_ad_connector.html
+  - claim: "AD Connector is also not multi-VPC aware, which means that AWS applications like WorkSpaces are required to be provisioned into the same VPC as your AD Connector"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_ad_connector.html
+  - claim: "Your end users and IT administrators can use their existing corporate credentials to log on to AWS applications such as WorkSpaces, WorkDocs, or Amazon WorkMail"
+    source: https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_ad_connector.html
+problem: "A managed directory looks like two domain controllers you own, running in your VPC. Neither half of that is true. The instances run outside your AWS account, what lands in your subnet is one network adapter, and your users never move into it at all — the directory is a resource forest that trusts the domain they already live in."
+builds: "A reading of what a resource forest actually holds, what the two-VPC structure puts in your account and what it keeps out, the VPC commitments that follow from it, and the three AD Connector limits that decide against it in a large organisation."
+catch: "Two bullets a few lines apart explain each other and the page never connects them. 'You cannot create a AWS Managed Microsoft AD in a VPC using addresses in the 198.18.0.0/15 address space.' And: 'The management IP range of your directory's ETH0 network is 198.18.0.0/15.' A /15 of your address space is reserved because of a network adapter that is not in your account."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #094 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">You get an ENI, not a domain controller</h1>
+  <p class="post-subtitle">The managed directory owns neither your users nor its own servers. Both of those are deliberate, and each one costs you something specific.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Reliability</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <em>&ldquo;AWS Directory Service for Microsoft Active Directory, also referred to as AWS Managed Microsoft
+      AD, runs Microsoft Active Directory as a managed service powered by Windows Server 2019. It creates a
+      <strong>highly available pair of domain controllers in your Amazon VPC</strong> across different
+      Availability Zones&rdquo;</em>
+    </p>
+    <p>
+      Read &ldquo;in your Amazon VPC&rdquo; carefully, because it is doing less work than it appears to. The
+      rest of this post is what that phrase actually means, and what your users do and do not do as a result.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Your users never move into it</strong></div>
+      <div class="challenge-body">
+        <p>
+          The thing most people expect &mdash; a copy of their directory in AWS &mdash; is not what this is.
+        </p>
+        <p>
+          <em>&ldquo;These directories establish <strong>resource forests</strong> that create trust
+          relationships with your existing AD domains on-premises, in AWS, or in multi-cloud
+          environments.&rdquo;</em> And the consequence, stated plainly:
+          <em>&ldquo;<strong>User identities stay in your existing AD domains</strong> while the resource forest
+          manages your AWS resources, maintaining <strong>operational isolation between environments</strong>
+          while providing seamless single sign-on.&rdquo;</em>
+        </p>
+        <p>
+          So the managed directory holds your AWS resources &mdash; the EC2 instances joined to it, the
+          directory-aware applications, the group policy that applies to them &mdash; and it trusts the domain
+          where your people actually are. Nothing is copied and nothing is synchronised. The Hybrid Edition
+          makes the same point about itself:
+          <em>&ldquo;This solution extends your directory services to AWS <strong>without synchronizing user
+          identities</strong>&rdquo;</em>.
+        </p>
+        <p>
+          That is a genuinely good design. A synchronised copy of an identity store is two sources of truth and
+          a reconciliation problem; a trust is one source of truth and a network dependency. But it does mean
+          the thing you are standing up is not a backup of your directory, and it will not keep working if the
+          domain it trusts is unreachable.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Write down which side of the trust each failure mode lands on before you build. The sentence to catch in a design review is <em>our AD is in AWS now</em> &mdash; for a resource forest it is not true in the way the speaker means.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The domain controllers are not in your account, and one bullet explains another</strong></div>
+      <div class="challenge-body">
+        <p>
+          This is the paragraph worth reading twice before you design around it:
+        </p>
+        <p>
+          <em>&ldquo;Directory Service uses a <strong>two VPC structure</strong>. The EC2 instances which make up
+          your directory <strong>run outside of your AWS account</strong>, and are managed by AWS. They have two
+          network adapters, <code>ETH0</code> and <code>ETH1</code>. <strong><code>ETH0</code> is the management
+          adapter, and exists outside of your account. <code>ETH1</code> is created within your
+          account.</strong>&rdquo;</em>
+        </p>
+        <p>
+          So what you receive in your subnets is <code>ETH1</code>. The instance behind it is not yours, is not
+          in your account, is not visible to your EC2 console, and is not something you patch. That is the
+          managed part of a managed service, and it is the right trade &mdash; but it changes what your
+          monitoring and your incident response can actually reach.
+        </p>
+        <p>
+          And then, a few lines earlier on the same page:
+          <em>&ldquo;<strong>You cannot create a AWS Managed Microsoft AD in a VPC using addresses in the
+          198.18.0.0/15 address space.</strong>&rdquo;</em> With the reason sitting below it:
+          <em>&ldquo;The management IP range of your directory's <code>ETH0</code> network is
+          <strong>198.18.0.0/15</strong>.&rdquo;</em>
+        </p>
+        <p>
+          The page states both and connects neither &mdash; that join is my reading rather than AWS's. But the
+          two ranges are the same, and the practical effect is that a <code>/15</code> of your address space is
+          unusable here because of a network adapter in an account you do not have.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Check your IP address management plan for <code>198.18.0.0/15</code> before you choose a VPC. It is an unusual range to have allocated &mdash; it is reserved for benchmarking &mdash; but organisations that carved up private space informally sometimes have, and discovering it at create time is a bad day.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>AD Connector caches nothing, and three limits decide it at scale</strong></div>
+      <div class="challenge-body">
+        <p>
+          The alternative is a proxy rather than a directory:
+          <em>&ldquo;AD Connector is a <strong>directory gateway</strong> with which you can redirect directory
+          requests to your on-premises Microsoft Active Directory <strong>without caching any information in the
+          cloud</strong>.&rdquo;</em>
+        </p>
+        <p>
+          For a single account with one domain and a reliable link, that is often exactly right. Nothing is
+          stored, nothing is duplicated, and
+          <em>&ldquo;Your end users and IT administrators can use their existing corporate credentials to log on
+          to AWS applications such as WorkSpaces, WorkDocs, or Amazon WorkMail.&rdquo;</em>
+        </p>
+        <p>
+          Three documented limits decide against it in a large organisation, and none of them is about
+          performance:
+        </p>
+        <p>
+          <em>&ldquo;AD Connectors and your on-premises Active Directory domains have a <strong>1-to-1
+          relationship</strong>. That is, for each on-premises domain, <strong>including child domains</strong>
+          in an Active Directory forest that you want to authenticate against, you must create a unique AD
+          Connector.&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;<strong>AD Connector cannot be shared with other AWS accounts.</strong>&rdquo;</em> And:
+          <em>&ldquo;AD Connector is also <strong>not multi-VPC aware</strong>, which means that AWS
+          applications like WorkSpaces are required to be provisioned into the same VPC as your AD
+          Connector.&rdquo;</em>
+        </p>
+        <p>
+          Multiply those together across an organisation and the arithmetic does it for you: one connector per
+          domain, per account, per VPC. Managed Microsoft AD can be shared across accounts, which is why AWS
+          points there &mdash; the documentation says to consider it <em>&ldquo;If this is a
+          requirement&rdquo;</em>.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Count your domains, your accounts and your VPCs before choosing. AD Connector is a good answer to a small question and a bad answer to a large one, and the thing that decides it is organisational shape rather than user count &mdash; there are <em>&ldquo;no enforced user or connection limits&rdquo;</em>.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      A forest that holds resources and trusts your domain, instances that run in an account you cannot see, and
+      one adapter in your subnet.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-094-directory-service.svg" alt="Diagram: what AWS Directory Service actually places in your account and what it keeps outside it. AWS describes AWS Directory Service for Microsoft Active Directory, also called AWS Managed Microsoft AD, as running Microsoft Active Directory as a managed service powered by Windows Server 2019, creating a highly available pair of domain controllers in your Amazon VPC across different Availability Zones, with AWS automatically managing host monitoring, recovery, data replication, snapshots and software updates. The phrase in your Amazon VPC does less work than it appears to. Standard and Enterprise editions create new managed AD domains to manage users, devices and computers on AWS, and those directories establish resource forests that create trust relationships with existing AD domains on premises, in AWS, or in multi-cloud environments. The consequence is stated plainly: user identities stay in the existing AD domains while the resource forest manages the AWS resources, maintaining operational isolation between environments while providing seamless single sign-on. So nothing is copied and nothing is synchronised, and the Hybrid Edition makes the same point about itself, extending directory services to AWS without synchronizing user identities. That is a good design, because a synchronised copy of an identity store is two sources of truth and a reconciliation problem while a trust is one source of truth and a network dependency, but it means the directory being stood up is not a backup of the existing one and will not keep working if the domain it trusts is unreachable. The second finding is where the servers actually run. Directory Service uses a two VPC structure, and the EC2 instances which make up the directory run outside the customer's AWS account and are managed by AWS. They have two network adapters, ETH0 and ETH1: ETH0 is the management adapter and exists outside the account, while ETH1 is created within the account. So what the customer receives in their subnets is ETH1, and the instance behind it is not theirs, not in their account, not visible in their EC2 console and not something they patch. That is the managed part of a managed service and it is the right trade, but it changes what monitoring and incident response can reach. Two bullets on the same prerequisites page explain each other without the page connecting them: customers cannot create an AWS Managed Microsoft AD in a VPC using addresses in the 198.18.0.0/15 address space, and the management IP range of the directory's ETH0 network is 198.18.0.0/15. The join between those two statements is the author's reading rather than AWS's, but the ranges are identical, so a slash fifteen of the customer's address space is unusable because of a network adapter in an account they do not have. The VPC commitments are specific: at least two subnets, each in a different Availability Zone and of the same network type; the VPC must have default hardware tenancy; and integrating with an existing on-premises Active Directory domain requires the Forest and Domain functional levels for that domain to be set to Windows Server 2003 or higher. The alternative is AD Connector, a directory gateway that redirects directory requests to an on-premises Microsoft Active Directory without caching any information in the cloud. It comes in two sizes, small and large, where small is intended to handle a low number of operations per second and large a moderate to high number; loads can be spread across multiple AD Connectors, and there are no enforced user or connection limits. For a single account with one domain and a reliable link that is often exactly right, since end users and IT administrators can use their existing corporate credentials to log on to AWS applications such as WorkSpaces, WorkDocs or Amazon WorkMail. Three documented limits decide against it in a large organisation and none is about performance. AD Connectors and on-premises Active Directory domains have a one-to-one relationship, so a unique AD Connector is required for each on-premises domain including child domains in a forest that the customer wants to authenticate against. AD Connector cannot be shared with other AWS accounts. And AD Connector is not multi-VPC aware, which means AWS applications like WorkSpaces must be provisioned into the same VPC as the AD Connector. Multiplied across an organisation that is one connector per domain, per account, per VPC, which is why AWS points to sharing AWS Managed Microsoft AD instead when sharing is a requirement. AD Connector also does not support Active Directory transitive trusts. The recommended actions are to write down which side of the trust each failure mode lands on before building, because a resource forest is not a backup of the directory it trusts; to check the IP address management plan for 198.18.0.0/15 before choosing a VPC, since discovering the conflict at create time is a bad day; to count domains, accounts and VPCs before choosing AD Connector, because organisational shape rather than user count is what decides it; to plan monitoring and incident response around the fact that the domain controller instances are not reachable in the customer's account; and to confirm the on-premises forest and domain functional levels before committing to a trust." />
+      <figcaption>The forest holds your resources and trusts your domain. The instances behind it are in neither.</figcaption>
+    </figure>
+
+    <h3>The three options, and what decides between them</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Managed Microsoft AD<br/>(Standard, Enterprise)</th><th>Managed Microsoft AD<br/>(Hybrid Edition)</th><th>AD Connector</th></tr>
+      <tr>
+        <td>What it is</td>
+        <td>A new managed domain forming a <em>&ldquo;resource forest&rdquo;</em></td>
+        <td>Connects your self-managed AD with the managed service</td>
+        <td>A <em>&ldquo;directory gateway&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Your identities</td>
+        <td colspan="2">Stay where they are &mdash; no synchronisation either way</td>
+        <td>Stay where they are; nothing is cached</td>
+      </tr>
+      <tr>
+        <td>Shareable across accounts</td>
+        <td colspan="2">Yes</td>
+        <td><em>&ldquo;cannot be shared with other AWS accounts&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Per domain</td>
+        <td colspan="2">One directory, trusts many</td>
+        <td>One connector per domain, child domains included</td>
+      </tr>
+      <tr>
+        <td>Works if the link is down</td>
+        <td colspan="2">Resources keep working; trusted logons do not</td>
+        <td>No &mdash; every request is proxied</td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      The row that usually settles it in a large estate is sharing. A directory you can share is one directory;
+      a connector you cannot share is one per account, and at 500 accounts that stops being a design and becomes
+      an inventory.
+    </p>
+
+    <div class="callout amber">
+      <strong>What you commit your VPC to</strong>
+      <p><em>&ldquo;At least two subnets. Each of the subnets must be in a different Availability Zone and must be of same network type.&rdquo;</em></p>
+      <p><em>&ldquo;The VPC must have <strong>default hardware tenancy</strong>.&rdquo;</em> &mdash; so a dedicated-tenancy VPC is out, which is the kind of thing a regulated workload may have chosen for its own reasons.</p>
+      <p>And before you plan a trust: <em>&ldquo;you must have the Forest and Domain functional levels for your on-premises domain set to <strong>Windows Server 2003 or higher</strong>&rdquo;</em>. Low bar, worth confirming rather than assuming, because it is a property of a system you may not administer.</p>
+    </div>
+
+    <h3>Sizing AD Connector is about operations, not users</h3>
+    <p>
+      <em>&ldquo;AD Connector comes in two sizes, small and large. A small AD Connector is designed for smaller
+      organizations and is intended to handle a <strong>low number of operations per second</strong>. A large AD
+      Connector is designed for larger organizations and is intended to handle a <strong>moderate to high number
+      of operations per second</strong>.&rdquo;</em>
+    </p>
+    <p>
+      With the escape hatch:
+      <em>&ldquo;You can spread application loads across multiple AD Connectors to scale to your performance
+      needs. <strong>There are no enforced user or connection limits.</strong>&rdquo;</em>
+    </p>
+    <p>
+      So the sizing question is throughput, and the scaling answer is more connectors &mdash; which runs into
+      the per-account and per-VPC limits above rather than into a quota.
+    </p>
+
+    <h3>One more AD Connector limit, for anyone with a forest</h3>
+    <p>
+      <em>&ldquo;AD Connector <strong>does not support Active Directory transitive trusts</strong>.&rdquo;</em>
+      If your on-premises estate relies on transitive trust between domains to resolve access, a connector will
+      not inherit that, which is the same reason the 1-to-1 rule names child domains explicitly.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>A resource forest is the right answer to the wrong-sounding question</h3>
+    <p>
+      People ask for their directory in AWS and mean <em>I want AWS workloads to authenticate</em>. Copying
+      the identity store would satisfy the literal request and create a second source of truth, a sync pipeline
+      and a divergence problem. A resource forest satisfies the actual requirement with
+      <em>&ldquo;operational isolation between environments&rdquo;</em> intact.
+    </p>
+    <p>
+      The honest cost is the one the design makes explicit: resources in the forest keep working, but a logon
+      by a user from the trusted domain is only as available as the path to that domain.
+    </p>
+
+    <h3>Running the instances outside your account is what makes it managed</h3>
+    <p>
+      <em>&ldquo;with AWS automatically managing host monitoring, recovery, data replication, snapshots, and
+      software updates&rdquo;</em> is only deliverable if AWS controls the host. You cannot have both a patched,
+      recovered, snapshotted domain controller and a domain controller you administer at the OS level.
+    </p>
+    <p>
+      Publishing the mechanism rather than hiding it is the good part. The <code>ETH0</code> and
+      <code>ETH1</code> split tells you exactly where the boundary is, which is more than most managed services
+      disclose.
+    </p>
+
+    <div class="callout red">
+      <strong>The reserved range is a boundary leak, and it is the one to catch early</strong>
+      <p>Almost every consequence of the two-VPC structure is invisible and benign. This one is neither: <em>&ldquo;You cannot create a AWS Managed Microsoft AD in a VPC using addresses in the 198.18.0.0/15 address space.&rdquo;</em></p>
+      <p>An implementation detail of an account you cannot see constrains the addressing of a VPC you own. It sits in the prerequisites rather than anywhere you would look while designing a network, and it fails at create time &mdash; by which point the VPC usually exists.</p>
+    </div>
+
+    <h3>AD Connector's limits are honest about what a proxy can be</h3>
+    <p>
+      Not caching is the whole value &mdash; <em>&ldquo;without caching any information in the cloud&rdquo;</em>
+      is what makes it acceptable to a security team that will not have credentials stored in AWS. The 1-to-1
+      mapping, the no-sharing rule and the single-VPC scope all follow from being a network path rather than a
+      directory. A proxy that could be shared across accounts and VPCs would be a directory, and would need to
+      cache.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Directory type at scale</td>
+        <td>Managed Microsoft AD, shared across accounts</td>
+        <td>AD Connector <em>&ldquo;cannot be shared with other AWS accounts&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Expectation setting</td>
+        <td>Say <em>&ldquo;resource forest&rdquo;</em>, never <em>our AD is in AWS</em></td>
+        <td><em>&ldquo;User identities stay in your existing AD domains&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>VPC selection</td>
+        <td>Check for <code>198.18.0.0/15</code> first</td>
+        <td>It collides with the <code>ETH0</code> management range and fails at create time.</td>
+      </tr>
+      <tr>
+        <td>Tenancy</td>
+        <td>Default, not dedicated</td>
+        <td><em>&ldquo;The VPC must have default hardware tenancy.&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Subnets</td>
+        <td>Two, different AZs, same network type</td>
+        <td>A stated prerequisite, not a recommendation.</td>
+      </tr>
+      <tr>
+        <td>Monitoring</td>
+        <td>Plan around instances you cannot reach</td>
+        <td>They <em>&ldquo;run outside of your AWS account&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Before planning a trust</td>
+        <td>Confirm functional levels</td>
+        <td><em>&ldquo;Windows Server 2003 or higher&rdquo;</em>, on a system you may not own.</td>
+      </tr>
+      <tr>
+        <td>Forests with transitive trust</td>
+        <td>Not AD Connector</td>
+        <td>It <em>&ldquo;does not support Active Directory transitive trusts&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Sizing a connector</td>
+        <td>By operations per second, then add connectors</td>
+        <td>There are <em>&ldquo;no enforced user or connection limits&rdquo;</em>.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>Count the AD Connectors you would need: domains times accounts times VPCs.</strong> Do the
+      multiplication before the first one is built, because each factor is a documented constraint rather than a
+      tuning decision, and the number is usually larger than the room expects.
+    </p>
+    <p>
+      <strong>Then grep your IPAM for <code>198.18</code>.</strong> Thirty seconds, and it joins tenancy and
+      subnet layout as a constraint that stops you at create time rather than in a design review &mdash; except
+      that unlike those two, nobody thinks to check it.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The phrase to re-read is &ldquo;a highly available pair of domain controllers in your Amazon VPC.&rdquo;
+      Every word is true and the sentence still misleads, because the domain controllers are not yours, the VPC
+      holds one adapter each, and the directory they serve does not contain your users.
+    </p>
+    <p>
+      None of that is a criticism. Each is the price of something you wanted: managed patching costs you OS
+      access, a resource forest costs you a copy of your directory, and a non-caching proxy costs you sharing.
+      The failure mode is only ever describing the service to somebody else in the words of the marketing
+      sentence rather than the words of the prerequisites page.
+    </p>
+    <p>
+      <a href="/blog/aws-architecture-resource-control-policies/">#93</a> was a policy whose asymmetry is about
+      which account owns the resource. This is a service whose surprises are all about which account owns the
+      instance. Twice in a week, the useful question has turned out to be the same one: not what the thing does,
+      but whose account it does it in.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; AWS Certificate Manager: why a certificate's automatic renewal depends on whether anything is actually using it, what DNS validation buys that email validation does not, and why a certificate issued through ACME cannot be used with an integrated service.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_microsoft_ad.html" target="_blank" rel="noopener">AWS Managed Microsoft AD &#8212; the Windows Server 2019 basis and the highly available pair of domain controllers, the resource forest model and the statement that user identities stay in your existing domains, the Hybrid Edition's no-synchronisation behaviour, and the which-to-choose table</a></li>
+      <li><a href="https://docs.aws.amazon.com/directoryservice/latest/admin-guide/ms_ad_getting_started_prereqs.html" target="_blank" rel="noopener">AWS Managed Microsoft AD prerequisites &#8212; the two-subnet and Availability Zone requirement, default hardware tenancy, the 198.18.0.0/15 prohibition, the two-VPC structure with ETH0 outside your account and ETH1 within it, the ETH0 management range, and the on-premises forest and domain functional level requirement</a></li>
+      <li><a href="https://docs.aws.amazon.com/directoryservice/latest/admin-guide/directory_ad_connector.html" target="_blank" rel="noopener">AD Connector &#8212; the directory gateway definition and the no-caching guarantee, the small and large sizes with their operations-per-second framing, the absence of enforced user or connection limits, the lack of transitive trust support, the 1-to-1 domain relationship including child domains, the no-sharing rule, the single-VPC scope, and the existing-credentials benefits</a></li>
+      <li><a href="https://docs.aws.amazon.com/directoryservice/latest/admin-guide/what_is.html" target="_blank" rel="noopener">What is AWS Directory Service? &#8212; further reading on the full option set including Simple AD; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
