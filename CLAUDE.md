@@ -42,6 +42,11 @@ brief is `docs/QA_HANDOFF.md` — what the gate enforces, what it cannot enforce
 the current migration state of all three series, and the open items. If you are
 a cloud window, you follow the standard; you do not police the other two.
 
+**The LinkedIn post for a lab follows `docs/LINKEDIN_STANDARD.md`** (also
+2026-10-25, also all three clouds). Roughly 120-180 words, seven named parts,
+no emojis or hype, findings from real evidence only. It supersedes the older
+~2,900-character general-audience guidance, which described a different post.
+
 **Writing a NEW lab post? Start from `_templates/lab-post-skeleton.html`.**
 It is the nine sections in order with the required shape already in place, and
 it is the same file for all three clouds. Do not build the structure from
