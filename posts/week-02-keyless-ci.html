@@ -25,131 +25,100 @@ verified_claims:
 
 <div class="post-header">
   <div class="post-eyebrow">GCP Platform Engineering Lab &middot; Week 2 of 58</div>
-  <div class="post-title">The shortcut was already gone</div>
-  <div class="post-subtitle">I planned to open this week by banning service account keys, then building the thing that works without them. Google had banned them before I arrived &mdash; every organization created since May 2024 inherits a security baseline that makes a key impossible to create. So the week became a different one: find out what the platform has already decided on your behalf, and build the only path it left open.</div>
+  <div class="post-title">Keyless CI, and the shortcut that was already gone</div>
+  <div class="post-subtitle">Build a pipeline that proves who it is to Google Cloud without storing a credential &mdash; and find out what the platform has already decided on your behalf.</div>
   <div class="post-meta">
     <span>26 August 2026</span>
-    <span>Terraform &middot; HCP</span>
-    <span>$0 &middot; nothing here bills per hour</span>
+    <span>Workload Identity Federation &middot; HCP Terraform &middot; Organization Policy</span>
+    <span>$0</span>
   </div>
 </div>
 
 <div class="toc">
   <h3>&#128203; In This Post</h3>
   <ol>
-    <li><a href="#why">Why — The Problem This Solves</a></li>
-    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
-    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
-    <li><a href="#build">How We Built It — Step by Step</a></li>
-    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
-    <li><a href="#security">Security — Controls at Every Layer</a></li>
-    <li><a href="#cost">Cost</a></li>
-    <li><a href="#cleanup">Cleanup</a></li>
-    <li><a href="#references">References</a></li>
-    <li><a href="#takeaways">Key Takeaways</a></li>
+    <li><a href="#overview">Lab Overview</a></li>
+    <li><a href="#services">Cloud Services and Concepts</a></li>
+    <li><a href="#architecture">Architecture and Workflow</a></li>
+    <li><a href="#prerequisites">Prerequisites</a></li>
+    <li><a href="#build">Implementation</a></li>
+    <li><a href="#validation">Validation and Evidence</a></li>
+    <li><a href="#security">Security and Cost</a></li>
+    <li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+    <li><a href="#takeaways">Cleanup and Key Takeaways</a></li>
   </ol>
 </div>
 
-<div class="section" id="why">
-<h2>Why — The Problem This Solves</h2>
+<div class="section" id="overview">
+<h2>Lab Overview</h2>
 
-<p>Week 1 built a resource hierarchy by running <code>terraform apply</code> on my
-laptop. That works exactly once, for exactly one person, and leaves no record of
-what was proposed before it happened. Every week after it would inherit the same
-arrangement, and every one of them would need retrofitting later.</p>
+<p><strong>The problem.</strong> Week 1 built a resource hierarchy by running
+<code>terraform apply</code> on a laptop. That works exactly once, for exactly
+one person, and leaves no record of what was proposed before it happened. The
+conventional fix is to give CI a <strong>service account key</strong>: a JSON
+file holding a private key, pasted into a pipeline variable. It never expires,
+it lives in a file, and it gets copied wherever is convenient.</p>
 
-<p>So the second week is the pipeline. The question is how a CI system proves who
-it is to Google Cloud.</p>
+<p><strong>Objective.</strong> Give the pipeline an identity with no stored
+credential at all &mdash; a workload identity pool trusting HCP Terraform's OIDC
+issuer, two service accounts split by run phase, and an attribute condition that
+decides who the issuer actually speaks for.</p>
 
-<p>The conventional answer is a <strong>service account key</strong>: a JSON file
-holding a private key, pasted into a CI variable. It is the default because it is
-the obvious thing, and it is the source of a large share of cloud compromise —
-a credential that does not expire, sitting in a file, copied wherever it is
-convenient.</p>
+<p><strong>What reading the platform first changed.</strong> Listing the
+organization policy before writing any found <strong>seven constraints already
+enforced</strong> &mdash; Google's security baseline, applied automatically to
+every organization created on or after <strong>3 May 2024</strong>. Two of them
+mean a key cannot be created and cannot be uploaded, so the planned opening move
+of the week was already done.</p>
 
-<h3>Then I looked at what the organization already enforced</h3>
-
-<p>Before writing anything, I listed the organization policy. I expected an empty
-result — a new organization, nothing configured. Instead there were seven
-constraints already enforced, none of which I had created:</p>
-
-<pre class="code-block"><code>$ gcloud org-policies list --organization=ORG_ID
-iam.allowedPolicyMemberDomains
-storage.uniformBucketLevelAccess
-essentialcontacts.managed.allowedContactDomains
-iam.managed.disableServiceAccountKeyCreation
-compute.managed.restrictProtocolForwardingCreationForTypes
-iam.automaticIamGrantsForDefaultServiceAccounts
-iam.disableServiceAccountKeyUpload</code></pre>
-
-<p>These are Google's <strong>security baseline constraints</strong>, applied
-automatically to every organization created on or after <strong>3 May 2024</strong>.
-Two of them matter here:
-<code>iam.managed.disableServiceAccountKeyCreation</code> and
-<code>iam.disableServiceAccountKeyUpload</code>. A key cannot be created, and a
-key cannot be uploaded.</p>
-
-<div class="callout green">
-  <p><strong>The week I planned was already unnecessary.</strong> I was going to
-  apply that constraint myself as the opening move, then build federation as the
-  only remaining option. The platform had done it first. What was left was more
-  useful: find out what has already been decided for you, prove it, and build
-  inside it.</p>
+<div class="table-scroll">
+<table>
+  <tbody>
+    <tr><th>Difficulty</th><td>Intermediate &mdash; the resources are few; the trust boundary is subtle and easy to leave wide open</td></tr>
+    <tr><th>Deployment</th><td>Terraform, <strong>hand-run on purpose and permanently</strong> &mdash; this is the layer that defines who CI is</td></tr>
+    <tr><th>Reproduce it</th><td><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-02-keyless-ci/LAB.md">Lab guide</a> &mdash; the attribute condition, the phase split, the denial</td></tr>
+    <tr><th>Cost</th><td>$0 &mdash; pools, providers, service accounts, bindings and token exchanges are all free</td></tr>
+  </tbody>
+</table>
+</div>
 </div>
 
-<h3>Why this matters beyond one lab</h3>
+<div class="section" id="services">
+<h2>Cloud Services and Concepts</h2>
 
-<p>If your organization predates May 2024, none of this is on. The constraints
-exist and are one <code>terraform apply</code> away, but nothing turned them on
-for you — and the tutorial you are following almost certainly still tells you to
-download a key.</p>
-
-<p>Worth checking which side of that date your organization is on before assuming
-either way.</p>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Service or tool</th><th>Purpose in this lab</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Workload Identity Federation</strong></td><td>Lets an identity from outside Google Cloud act as a service account, without a key. A <em>pool</em> holds external identities; a <em>provider</em> inside it names the issuer they come from.</td></tr>
+    <tr><td><strong>Security Token Service</strong></td><td>The endpoint that exchanges an external OIDC token for a short-lived Google federated token. Where the attribute condition is evaluated.</td></tr>
+    <tr><td><strong>IAM service accounts</strong></td><td>Two of them, <code>tf-plan</code> and <code>tf-apply</code>, holding read and write roles respectively.</td></tr>
+    <tr><td><strong>Organization Policy</strong></td><td>Not written this week &mdash; <em>read</em>. The baseline it already enforces is what makes a key impossible.</td></tr>
+    <tr><td><strong>Project liens</strong></td><td>Deletion refused at the API, whoever asks, until the lien is deliberately removed.</td></tr>
+    <tr><td><strong>HCP Terraform</strong></td><td>Runs the plans and applies, mints one OIDC token per run phase, and stores no GCP credential.</td></tr>
+  </tbody>
+</table>
 </div>
 
-<div class="section" id="skills">
-<h2>What You Need to Know — Skills &amp; Tools</h2>
-
-<div class="grid-2">
-  <div class="card">
-    <h3>Google Cloud</h3>
-    <ul>
-      <li><strong>Organization Policy</strong> — and specifically that a baseline may already be enforced</li>
-      <li><strong>Workload Identity Federation</strong> — pools, providers, attribute mapping and conditions</li>
-      <li><strong>Security Token Service</strong> — the exchange endpoint</li>
-      <li><strong>IAM Service Account Credentials</strong> — impersonation</li>
-      <li><strong>Liens</strong> — deletion protection enforced by the API</li>
-    </ul>
-  </div>
-  <div class="card">
-    <h3>Tooling</h3>
-    <ul>
-      <li><strong>HCP Terraform</strong> dynamic provider credentials</li>
-      <li><strong>CEL</strong> — the expression language attribute conditions are written in</li>
-      <li><strong>OIDC</strong> — enough to know what a claim is and who signs it</li>
-    </ul>
-  </div>
-</div>
-
-<h3>Concepts to understand before starting</h3>
-
-<div class="tag-grid">
-  <span>The issuer is public</span>
-  <span>Claims are the trust boundary</span>
-  <span>Impersonation ≠ authentication</span>
-  <span>Read-only ≠ harmless</span>
-  <span>Terraform guards ≠ cloud guards</span>
-</div>
-
-<p>The one that reframes everything: <strong>the issuer is public</strong>.
+<p><strong>The concept that reframes everything: the issuer is public.</strong>
 <code>https://app.terraform.io</code> signs tokens for every HCP Terraform
-customer in the world. Configuring it as a trusted issuer does not, by itself,
-trust <em>your</em> runs. It trusts <em>all</em> of them.</p>
+customer in the world. Configuring it as a trusted issuer does not trust
+<em>your</em> runs &mdash; it trusts <em>all</em> of them. The security control is
+not the pool, the provider, or the issuer URL. It is the CEL expression that
+inspects the token's claims and decides which of those customers you meant.</p>
+
+<p><strong>Impersonation is not authentication.</strong> The federated token is
+not the service account. It is permission to <em>ask</em> to be one, and the
+service account's own IAM policy decides whether the request is granted. That is
+where the plan/apply split is enforced: each account grants
+<code>roles/iam.workloadIdentityUser</code> to a <code>principalSet</code> scoped
+to one value of the <code>terraform_run_phase</code> claim. Google refuses the
+mismatch at exchange time, so it is a boundary rather than a convention.</p>
+
 </div>
 
 <div class="section" id="architecture">
-<h2>Architecture — How It Fits Together</h2>
+<h2>Architecture and Workflow</h2>
 
 <p>No credential is stored on either side. Each run mints a token, exchanges it,
 uses it, and lets it expire.</p>
@@ -227,59 +196,111 @@ uses it, and lets it expire.</p>
   <text x="24" y="452" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">to assume holds no role that can. Google refuses the impersonation at exchange time.</text>
   <text x="24" y="478" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">Nothing above is written to disk. No key exists, on either side, because the organization policy will not permit one to be created.</text>
 </svg>
+<h3>The flow</h3>
 
-<figure class="screenshot">
-  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-02-keyless-ci/docs/blog/screenshots/04-service-accounts.png"
-       alt="Google Cloud service accounts page showing tf-plan and tf-apply, both enabled, Key ID column reading No keys"/>
-  <figcaption>Both identities, and the column that carries the whole argument:
-  <strong>Key ID — No keys</strong>. Not "we deleted them". None was ever
-  possible.</figcaption>
-</figure>
+<ol>
+  <li>Read what the organization already enforces, before designing anything.</li>
+  <li>Create the pool and a provider trusting <code>https://app.terraform.io</code>,
+    mapping five claims to attributes.</li>
+  <li>Write the attribute condition &mdash; the one piece that turns a public
+    issuer into a specific trust relationship.</li>
+  <li>Create <code>tf-plan</code> and <code>tf-apply</code>, and bind each to a
+    phase-scoped <code>principalSet</code>.</li>
+  <li>Grant each identity the narrowest roles that work, individually rather than
+    by basic role.</li>
+  <li>Place a lien on the seed project, so deletion is refused at the API.</li>
+  <li>Prove a plan really ran remotely, then attempt the shortcut and confirm it
+    is refused.</li>
+</ol>
+
+<h3>The decision worth naming</h3>
+
+<p><strong>This week is deliberately human-run, permanently.</strong> For
+<code>tf-apply</code> to apply this configuration it would need
+<code>resourcemanager.organizations.setIamPolicy</code> &mdash; which would let it
+grant itself anything &mdash; and admin on the pool, which would let it rewrite
+the attribute condition and trust whoever it liked. <strong>An identity must not
+manage its own grants.</strong> So the lab has two layers: this week and the
+bootstrap are hand-run and define who CI <em>is</em>; every other week runs
+remotely <em>as</em> CI.</p>
+
+</div>
+
+<div class="section" id="prerequisites">
+<h2>Prerequisites</h2>
+
+<ul>
+  <li><strong>An organization with a seed project</strong> for bootstrap concerns
+    &mdash; Week 1 supplies it. The pool, provider and both identities live there.</li>
+  <li><strong>An HCP Terraform organization and workspace.</strong> Note that the
+    organization's <em>real</em> name may differ in case from every screen that
+    displays it; see Troubleshooting.</li>
+  <li><strong><code>roles/resourcemanager.organizationAdmin</code></strong> on a
+    human operator. This week cannot be run by CI, by design.</li>
+  <li><strong>APIs:</strong> <code>iam</code>, <code>sts</code> and
+    <code>cloudresourcemanager</code>.</li>
+  <li><strong>Terraform 1.9+</strong> with <code>hashicorp/google</code>
+    <code>~&gt; 6.0</code>.</li>
+</ul>
+
+<p>Variables, role lists and commands are in the
+<a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-02-keyless-ci/LAB.md">lab guide</a>.</p>
 </div>
 
 <div class="section" id="build">
-<h2>How We Built It — Step by Step</h2>
+<h2>Implementation</h2>
 
-<h3>Step 1 — Read the organization policy before writing any</h3>
+<p>Eighteen resources at deploy time, all free. The file carries thirty-four
+today, because later weeks added the roles CI needed &mdash; this is the layer
+where CI's permissions are defined, so it grows by design. Commands are in the
+<a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-02-keyless-ci/LAB.md">lab guide</a>.</p>
 
-<p>Covered above, and worth stating as a habit rather than a step. The
-<code>gcloud org-policies list</code> call took two seconds and removed an entire
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-02-keyless-ci/docs/blog/screenshots/07-repo-structure.png" alt="Repository structure for week 02: LAB.md, terraform, scripts and docs, each with a one-line responsibility." loading="lazy">
+  <figcaption>How the week is organised. <a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/tree/main/week-02-keyless-ci">Full source on GitHub</a>.</figcaption>
+</figure>
+
+<h3>Step 1 &mdash; Read the organization policy before writing any</h3>
+
+<p><strong>Why:</strong> because what you are about to build may already exist.
+The <code>gcloud org-policies list</code> call took two seconds and removed a
 planned section of this week.</p>
 
-<h3>Step 2 — The pool and the provider</h3>
+<p><strong>Checkpoint:</strong> seven constraints enforced, all sharing an
+<code>updateTime</code> from the moment the organization was created.</p>
 
-<p>A workload identity pool holds external identities. A provider inside it
-declares which issuer those identities come from.</p>
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-02-keyless-ci/docs/blog/screenshots/06-org-policy-baseline.png" alt="Organization policies page showing baseline constraints including disableServiceAccountKeyCreation." loading="lazy">
+  <figcaption><strong>Validates Step 1:</strong> the baseline, including the two
+  constraints that make a service account key impossible. Nobody in this lab set
+  them.</figcaption>
+</figure>
 
-<pre class="code-block"><code>resource "google_iam_workload_identity_pool_provider" "hcp" {
-  workload_identity_pool_id          = google_iam_workload_identity_pool.hcp.workload_identity_pool_id
-  workload_identity_pool_provider_id = "hcp-terraform-oidc"
+<h3>Step 2 &mdash; The pool and the provider</h3>
 
-  oidc {
-    issuer_uri = "https://app.terraform.io"
-  }
+<p><strong>Why:</strong> a pool holds external identities; a provider declares
+which issuer they come from and maps the token's claims to attributes that IAM
+can reason about.</p>
 
-  attribute_mapping = {
-    "google.subject"                        = "assertion.sub"
-    "attribute.terraform_organization_name" = "assertion.terraform_organization_name"
-    "attribute.terraform_project_name"      = "assertion.terraform_project_name"
-    "attribute.terraform_workspace_name"    = "assertion.terraform_workspace_name"
-    "attribute.terraform_run_phase"         = "assertion.terraform_run_phase"
-  }
+<pre class="code-block"><code>attribute_mapping = {
+  "google.subject"                        = "assertion.sub"
+  "attribute.terraform_organization_name" = "assertion.terraform_organization_name"
+  "attribute.terraform_project_name"      = "assertion.terraform_project_name"
+  "attribute.terraform_workspace_name"    = "assertion.terraform_workspace_name"
+  "attribute.terraform_run_phase"         = "assertion.terraform_run_phase"
 }</code></pre>
 
-<p><code>allowed_audiences</code> is deliberately unset. Left alone, Google
-expects its own default audience — the provider's full resource name — which is
-exactly what HCP sends unless <code>TFC_GCP_WORKLOAD_IDENTITY_AUDIENCE</code>
-overrides it. Setting one side by hand only creates a second place for the two
-ends to disagree.</p>
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-02-keyless-ci/docs/blog/screenshots/02-workload-identity-pool.png" alt="The hcp-terraform workload identity pool in the console, with its provider listed." loading="lazy">
+  <figcaption><strong>Validates Step 2:</strong> the pool and its single provider.
+  At this point the configuration trusts every HCP Terraform customer on earth.</figcaption>
+</figure>
 
-<h3>Step 3 — The attribute condition, which is the actual security control</h3>
+<h3>Step 3 &mdash; The attribute condition, which is the actual control</h3>
 
-<p>Everything above trusts an issuer. The issuer is public. Without a condition,
-the only thing between any HCP Terraform user on earth and this organization is
-that they have not guessed the provider's resource name — which is not a secret
-and is printed in plan output.</p>
+<p><strong>Why:</strong> without a condition, the only thing between any HCP
+Terraform user and this organization is that they have not guessed the provider's
+resource name &mdash; which is not a secret and is printed in plan output.</p>
 
 <pre class="code-block"><code>attribute_condition = join(" &amp;&amp; ", [
   "assertion.terraform_organization_name == \"katta\"",
@@ -287,25 +308,24 @@ and is printed in plan output.</p>
   "assertion.terraform_workspace_name.startsWith(\"gcp-\")",
 ])</code></pre>
 
-<p>Three claims, narrowing in turn. The third is not decoration: my AWS lab's
-workspaces live in the <em>same</em> HCP organization and carry tokens from the
-same issuer. The project and prefix checks are what keep them out of this
+<p>Three claims, narrowing in turn. The third is not decoration: other workspaces
+of mine live in the <em>same</em> HCP organization and carry tokens from the same
+issuer. The project and prefix checks are what keep them out of this
 organization.</p>
 
-<figure class="screenshot">
-  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-02-keyless-ci/docs/blog/screenshots/03-provider-attribute-condition.png"
-       alt="Workload identity provider configuration showing attribute mappings and the CEL condition, alongside a usage chart of successful token exchanges"/>
-  <figcaption>The provider in the console. The CEL box is scrolled, so only two
-  of the three clauses are visible — the organization check sits above the fold.
-  Note the panel on the right: <em>Workload Identity Federation usage — count of
-  successful token exchanges</em>. That chart is the proof the flow works.</figcaption>
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-02-keyless-ci/docs/blog/screenshots/03-provider-attribute-condition.png" alt="Workload identity provider configuration showing attribute mappings and the CEL condition, alongside a usage chart of successful token exchanges." loading="lazy">
+  <figcaption><strong>Validates Step 3:</strong> the condition in the console. The
+  CEL box is scrolled, so the organization check sits above the fold. The panel on
+  the right &mdash; <em>count of successful token exchanges</em> &mdash; is the
+  proof the flow works.</figcaption>
 </figure>
 
-<h3>Step 4 — Two identities, split by run phase</h3>
+<h3>Step 4 &mdash; Two identities, split by run phase</h3>
 
-<p>HCP issues a token per phase and names the plan and apply identities
-separately. The token carries a <code>terraform_run_phase</code> claim, so the
-split can be bound in IAM rather than trusted as convention:</p>
+<p><strong>Why:</strong> HCP issues a token per phase, carrying a
+<code>terraform_run_phase</code> claim, so the split can be bound in IAM rather
+than trusted as convention.</p>
 
 <pre class="code-block"><code>resource "google_service_account_iam_member" "plan_federation" {
   service_account_id = google_service_account.plan.name
@@ -313,233 +333,210 @@ split can be bound in IAM rather than trusted as convention:</p>
   member             = "principalSet://iam.googleapis.com/${pool}/attribute.terraform_run_phase/plan"
 }</code></pre>
 
-<p>An apply-phase token cannot assume the plan account, and a plan-phase token
-cannot assume the apply account. The binding does not match, so Google refuses
-the impersonation. A speculative plan on a pull request cannot mutate anything —
-not because a policy forbids it, but because the identity it can reach holds no
-role that could.</p>
-
-<h3>Verifying it actually works</h3>
-
-<p>Three checks, and the third is the one that matters.</p>
-
-<p><strong>1. A remote plan actually runs remotely.</strong> This is easy to get
-wrong: a workspace can be set to remote while your plan quietly executes locally
-against your own credentials, and the output looks identical. The tell is the
-first line.</p>
-
-<pre class="code-block"><code>terraform plan
-# Running plan in HCP Terraform. Output will stream here.</code></pre>
-
-<p>If that line is absent, nothing has been proven about the CI identity.</p>
-
-<figure class="screenshot">
-  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-02-keyless-ci/docs/blog/screenshots/01-hcp-runs.png"
-       alt="HCP Terraform run detail showing a plan that finished with no changes, triggered from CLI"/>
-  <figcaption>A plan running in HCP as <code>tf-plan</code>, refreshing every
-  resource in Week 1's hierarchy through federation, finishing with no changes.</figcaption>
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-02-keyless-ci/docs/blog/screenshots/04-service-accounts.png" alt="Google Cloud service accounts page showing tf-plan and tf-apply, both enabled, Key ID column reading No keys." loading="lazy">
+  <figcaption><strong>Validates Step 4:</strong> both identities, and the column
+  that carries the whole argument &mdash; <strong>Key ID: No keys</strong>. Not
+  "we deleted them". None was ever possible.</figcaption>
 </figure>
 
-<p><strong>2. The identities hold what you think.</strong> Read the roles back
-from the organization rather than from your configuration.</p>
 
-<p><strong>3. The shortcut still fails.</strong> The week's entire claim is that
-no key can exist. That is a testable statement, so the validation script tests
-it — it attempts to create a key on <code>tf-apply</code> and fails the run if
-one appears.</p>
+<h3>Step 5 &mdash; Prove the plan ran remotely</h3>
 
-<p>Two details in that test are deliberate. It counts <em>user-managed</em> keys
-before and after, because every service account carries Google-managed keys it
-never asked for and counting those reports a failure on a healthy system. And it
-asserts on that count rather than on the wording of the error, because matching
-error text turns a reworded message into a silent pass.</p>
+<p><strong>Why:</strong> a workspace can be set to remote while the plan quietly
+executes locally against your own credentials, and the output looks identical.
+The tell is the first line &mdash; <em>"Running plan in HCP Terraform"</em>.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-02-keyless-ci/docs/blog/screenshots/01-hcp-runs.png" alt="HCP Terraform run detail showing a plan that finished with no changes, triggered from CLI." loading="lazy">
+  <figcaption><strong>Validates Step 5:</strong> a plan running in HCP as
+  <code>tf-plan</code>, refreshing Week 1's hierarchy through federation and
+  finishing with no changes.</figcaption>
+</figure>
+
+<h3>Step 6 &mdash; Attempt the shortcut</h3>
+
+<p><strong>Action:</strong> ask for a service account key, as an identity that
+<em>holds</em> <code>iam.serviceAccountKeys.create</code>.</p>
+
+<p><strong>Expected:</strong> a refusal that names the policy, and no key
+afterwards.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-02-keyless-ci/docs/blog/screenshots/05-key-creation-denied.png" alt="Terminal output showing key creation refused with FAILED_PRECONDITION and CUSTOM_ORG_POLICY_VIOLATION, followed by an empty key list." loading="lazy">
+  <figcaption><strong>Validates Step 6 &mdash; the figure the post rests on:</strong>
+  <code>FAILED_PRECONDITION: Operation denied by org policy</code>, naming
+  <code>constraints/iam.managed.disableServiceAccountKeyCreation</code> and
+  <code>reason: CUSTOM_ORG_POLICY_VIOLATION</code>. The following
+  <code>keys list --managed-by=user</code> returns nothing.</figcaption>
+</figure>
+</div>
+
+<div class="section" id="validation">
+<h2>Validation and Evidence</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
+  <tbody>
+    <tr><td>Infrastructure deployed</td><td>18 resources</td><td>18 added, 0 changed, 0 destroyed</td><td>Pass</td></tr>
+    <tr><td>What the baseline already enforces</td><td>read before designing</td><td><strong>7 constraints</strong>, from organization creation</td><td>Finding</td></tr>
+    <tr><td>Workload identity pool</td><td>exists, correct issuer</td><td><code>https://app.terraform.io</code></td><td>Pass</td></tr>
+    <tr><td>Provider attribute condition</td><td>pins organization, project and workspace prefix</td><td>present, all three clauses</td><td>Pass</td></tr>
+    <tr><td>Service accounts</td><td><code>tf-plan</code> and <code>tf-apply</code>, no keys</td><td>both; <strong>Key ID: No keys</strong></td><td>Pass</td></tr>
+    <tr><td>Who may impersonate the apply account</td><td>the apply-phase <code>principalSet</code> only</td><td>correct</td><td>Pass</td></tr>
+    <tr><td>Plan identity cannot write</td><td>no write roles</td><td>five read roles, no write role</td><td>Pass</td></tr>
+    <tr><td>The plan actually ran remotely</td><td><em>"Running plan in HCP Terraform"</em></td><td>present; run visible in HCP as <code>tf-plan</code></td><td>Pass</td></tr>
+    <tr><td><strong>The shortcut, attempted</strong></td><td>key creation refused, no key created</td><td><code>FAILED_PRECONDITION</code>, <code>CUSTOM_ORG_POLICY_VIOLATION</code>; <code>keys list</code> empty</td><td><strong>Pass</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>The last row was unverified for two months.</strong> The figure proving
+the week's central claim was the one missing from the original capture. It was
+attempted and captured on <strong>25 October 2026</strong>, as an identity
+holding the permission &mdash; the only way the result means anything.</p>
+
+<p><strong>It is the MANAGED generation doing the work.</strong> The legacy
+constraint of the same name carries no policy and reads
+<code>enforce: false</code>. Both generations have to be checked before
+concluding anything about either &mdash; an absent policy reads identically to a
+disabled one.</p>
 
 <div class="callout amber">
   <p><strong>A test must not be able to create the thing it disproves.</strong>
-  The obvious way to write this check is to send the key to <code>/dev/null</code>.
-  That discards the key <em>material</em> — but if the constraint ever failed to
-  hold, the key itself would still exist server-side, on the identity that can
-  change the estate, created by the test meant to prove none could exist. The
-  failure branch has to clean up after itself, or the check is a liability on
-  exactly the day it finally fires.</p>
-</div>
-</div>
-
-<div class="section" id="challenges">
-<h2>Challenges — What Actually Went Wrong</h2>
-
-<div class="challenge-card">
-  <h3>1. A read-only role that could read every object in the estate</h3>
-  <p>The plan identity was first given <code>roles/viewer</code> at the
-  organization, reasoning that a plan only reads, so breadth costs nothing.</p>
-  <p>That reasoning is wrong, and the documentation says why: a principal granted
-  <code>roles/viewer</code> gains <code>roles/storage.legacyObjectReader</code> on
-  buckets. So it was not "read the hierarchy". It was <strong>read every object in
-  every project in the organization</strong>, including projects that did not
-  exist yet — reachable by any workspace satisfying the attribute condition.</p>
-  <p>Replaced with five specific read roles. Google's guidance is blunter than I
-  had internalised: in production, do not grant basic roles unless there is no
-  alternative.</p>
-</div>
-
-<div class="challenge-card">
-  <h3>2. <code>roles/viewer</code> cannot read a folder</h3>
-  <p>Found the other way round, and it is a good illustration of why basic roles
-  are a poor fit here. <code>roles/viewer</code> does not include
-  <code>resourcemanager.folders.get</code>. Basic roles predate the resource
-  hierarchy: they describe a project's contents, not the structure a project
-  hangs from. So an organization-level grant of viewer inherits all the way down
-  and still cannot read a folder. <code>roles/browser</code> is the role that
-  can.</p>
-</div>
-
-<div class="challenge-card">
-  <h3>3. A guard that lived in the wrong place</h3>
-  <p>The seed project carries <code>prevent_destroy</code>. That felt like
-  protection until <code>tf-apply</code> was granted
-  <code>roles/resourcemanager.projectDeleter</code> at the organization — which
-  includes the project holding the pool, the provider and both identities.</p>
-  <p><code>prevent_destroy</code> refuses a destroy <em>in one configuration</em>.
-  It says nothing to a <code>gcloud</code> call, a console click, or a different
-  configuration running as the same identity. The guard lived in the state file
-  while the risk lived in the cloud.</p>
-  <p>A <strong>lien</strong> is the same intent enforced by Google: deletion is
-  refused at the API, whoever asks, until the lien is deliberately removed.</p>
-</div>
-
-<div class="challenge-card">
-  <h3>4. A required variable that is not required in practice</h3>
-  <p>HashiCorp documents <code>TFC_GCP_PRINCIPAL_TYPE</code> as required
-  alongside <code>TFC_GCP_PROVIDER_AUTH</code>. The workspace does not have it,
-  and authentication works anyway — it evidently defaults sensibly when the plan
-  and apply service account emails are set.</p>
-  <p>Working by undocumented default is not the same as working. It is set
-  explicitly now.</p>
+  The obvious way to write this check is to send the key to
+  <code>/dev/null</code>. That discards the key <em>material</em> &mdash; but if
+  the constraint ever failed to hold, the key would still exist server-side, on
+  the identity that can change the estate, created by the test meant to prove
+  none could exist. The failure branch has to clean up after itself, or the check
+  is a liability on exactly the day it finally fires.</p>
 </div>
 </div>
 
 <div class="section" id="security">
-<h2>Security — Controls at Every Layer</h2>
+<h2>Security and Cost</h2>
 
-<ul>
-  <li><strong>No key exists, and none can be created.</strong> Enforced by
-  organization policy, not by discipline. The validation script proves it on every
-  run by attempting the thing that must fail.</li>
+<h3>Security decisions</h3>
 
-  <li><strong>The trust boundary is the attribute condition, not the issuer.</strong>
-  A public issuer plus no condition means trusting every customer of that issuer.
-  Three claims narrow it to one project's workspaces.</li>
-
-  <li><strong>Plan and apply are different identities</strong>, bound to different
-  run phases, so a pull-request plan cannot reach a role that writes.</li>
-
-  <li><strong>Least privilege on the read side too.</strong> Read-only is not the
-  same as harmless — the plan identity holds five specific read roles rather than
-  a basic role that would have included object data.</li>
-
-  <li><strong>Deletion protection at the API</strong>, via a lien, not only in
-  Terraform state.</li>
-
-  <li><strong>Billing IAM is deliberately not managed here.</strong> The apply
-  identity spends against a billing account; it does not manage roles on it. That
-  grant is made once, by a human, out of band. An identity that can widen its own
-  access to money is a different kind of identity.</li>
-</ul>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Control</th><th>Decision and trade-off</th></tr></thead>
+  <tbody>
+    <tr><td>No key, enforced not intended</td><td>Organization policy refuses creation and upload. Discipline is not a control; a denial from the API is.</td></tr>
+    <tr><td>The attribute condition is the trust boundary</td><td>A public issuer plus no condition trusts every customer of that issuer. Three claims narrow it to one project's workspaces.</td></tr>
+    <tr><td>Plan and apply are separate identities</td><td>Bound to different run phases, so a pull-request plan cannot reach a role that writes. Enforced by Google at exchange, not by convention.</td></tr>
+    <tr><td>Predefined roles, not basic</td><td><code>roles/viewer</code> confers object read on every bucket. Replaced with five specific read roles &mdash; read-only is not the same as harmless.</td></tr>
+    <tr><td>Deletion protection at the API</td><td>A lien, not only <code>prevent_destroy</code>. Terraform's guard protects one configuration; the lien protects the resource.</td></tr>
+    <tr><td>Billing IAM deliberately out of scope</td><td>The apply identity spends against a billing account; it does not manage roles on it. That grant is made once, by a human, out of band.</td></tr>
+    <tr><td>Accepted gap</td><td>The pool trusts one HCP <em>organization</em> and a workspace <em>prefix</em>, not one workspace. Any workspace matching the prefix can obtain a token.</td></tr>
+  </tbody>
+</table>
 </div>
 
-<div class="section" id="cost">
-<h2>Cost</h2>
+<h3>Cost</h3>
 
-<p><strong>Zero.</strong> Workload identity pools, providers, service accounts,
-IAM bindings and liens are all free. Token exchanges are free. Nothing in this
-week bills per hour, and HCP Terraform's free tier covers the runs.</p>
-
-<p>Which is the uncomfortable part: the keyless path costs nothing, takes an
-afternoon, and is still not what most tutorials teach.</p>
+<p><strong>$0.</strong> Workload identity pools, providers, service accounts, IAM
+bindings and liens are free, token exchanges are free, and HCP Terraform's free
+tier covers the runs. Which is the uncomfortable part: the keyless path costs
+nothing, takes an afternoon, and is still not what most tutorials teach.</p>
 </div>
 
-<div class="section" id="cleanup">
-<h2>Cleanup</h2>
+<div class="section" id="troubleshooting">
+<h2>Troubleshooting and Lessons</h2>
 
-<p><strong>None.</strong> This is permanent infrastructure — every later week
-runs through it.</p>
+<h3>The given credential is rejected by the attribute condition</h3>
 
-<p>One thing deliberately resists cleanup: the lien on the seed project. Removing
-it is a separate, explicit act requiring
-<code>resourcemanager.projects.updateLiens</code>. That is the point of it.</p>
-</div>
+<p><strong>Problem:</strong> every token exchange refused, with an error naming no
+claim. Both ends looked correct.</p>
 
-<div class="section" id="references">
-<h2>References</h2>
+<p><strong>Root cause:</strong> the HCP organization's real name is lowercase
+<code>katta</code>. Every human-facing surface shows it capitalised &mdash; the
+console URL, the <code>cloud {}</code> block, the workspace list &mdash; because
+HCP resolves those case-insensitively. The OIDC token carries the true value, and
+Google's CEL comparison is case-sensitive.</p>
 
-<ul>
-  <li><a href="https://docs.cloud.google.com/resource-manager/docs/manage-baseline-constraints">Manage Google Cloud security baseline constraints</a></li>
-  <li><a href="https://docs.cloud.google.com/iam/docs/workload-identity-federation">Workload Identity Federation</a></li>
-  <li><a href="https://docs.cloud.google.com/iam/docs/choose-predefined-roles">Find the right predefined roles</a></li>
-  <li><a href="https://docs.cloud.google.com/storage/docs/access-control/iam-roles">IAM roles for Cloud Storage</a></li>
-  <li><a href="https://docs.cloud.google.com/resource-manager/docs/project-liens">Liens</a></li>
-  <li><a href="https://developer.hashicorp.com/terraform/cloud-docs/dynamic-provider-credentials/gcp-configuration">HCP Terraform — dynamic credentials with the GCP provider</a></li>
-  <li><a href="https://developer.hashicorp.com/terraform/cloud-docs/workspaces/dynamic-provider-credentials/workload-identity-tokens">HCP Terraform — workload identity token claims</a></li>
-  <li><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/tree/main/week-02-keyless-ci">The code for this week</a></li>
-</ul>
+<p><strong>Lesson:</strong> when a comparison is case-sensitive on one side and
+not the other, the displayed value is not evidence. Cost roughly forty minutes.</p>
+
+<h3>A read-only role that could read every object in the estate</h3>
+
+<p><strong>Problem:</strong> the plan identity was given <code>roles/viewer</code>
+at the organization, on the reasoning that a plan only reads, so breadth costs
+nothing.</p>
+
+<p><strong>Root cause:</strong> documented, and worth reading before granting.
+<code>roles/viewer</code> confers
+<code>roles/storage.legacyObjectReader</code> on buckets. So it was not "read the
+hierarchy" &mdash; it was read every object in every project in the organization,
+including projects that did not exist yet.</p>
+
+<p><strong>Resolution:</strong> five specific read roles.</p>
+
 </div>
 
 <div class="section" id="takeaways">
-<h2>Key Takeaways</h2>
+<h2>Cleanup and Key Takeaways</h2>
+
+<h3>Cleanup</h3>
+
+<p><strong>None, deliberately.</strong> This is permanent infrastructure &mdash;
+every later week runs through it, and tearing it down would take the pipeline with
+it.</p>
+
+<p>One thing resists cleanup on purpose: the lien on the seed project. Removing it
+is a separate, explicit act requiring
+<code>resourcemanager.projects.updateLiens</code>. That is the point of it.</p>
+
+<p><strong>Ongoing charges:</strong> none. Nothing here bills per hour.</p>
+
+<h3>Key takeaways</h3>
 
 <ol>
   <li><strong>Read the organization policy before you write any.</strong> A
-  two-second command removed a planned section of this build. If your
-  organization was created on or after 3 May 2024, service account keys are
-  already impossible — and if it predates that, nothing turned the constraints on
-  for you.</li>
-
-  <li><strong>The issuer is public; the claims are the boundary.</strong>
-  Trusting <code>app.terraform.io</code> without an attribute condition trusts
-  every HCP Terraform customer alive. That expression is the security control,
-  not the configuration around it.</li>
-
-  <li><strong>Read-only is not harmless.</strong> <code>roles/viewer</code> reads
-  object data. Basic roles are the wrong tool at organization scope, in both
-  directions — too much power over data, and not enough over the hierarchy.</li>
-
-  <li><strong>A Terraform guard is not a cloud guard.</strong>
-  <code>prevent_destroy</code> protects one configuration. A lien protects the
-  resource.</li>
-
+    two-second command removed a planned section of this build. Organizations
+    created on or after 3 May 2024 already refuse service account keys &mdash; and
+    if yours predates that, nothing turned the constraints on for you.</li>
+  <li><strong>The issuer is public; the claims are the boundary.</strong> Trusting
+    <code>app.terraform.io</code> without an attribute condition trusts every HCP
+    Terraform customer alive. That CEL expression is the security control, not the
+    configuration around it.</li>
+  <li><strong>A denial must be attempted by an identity that holds the
+    permission.</strong> An under-privileged attempt fails with a permission error
+    indistinguishable from the control working.
+    <code>FAILED_PRECONDITION</code> rather than <code>PERMISSION_DENIED</code> is
+    what makes the evidence mean something.</li>
+  <li><strong>Read-only is not harmless</strong>, and a Terraform guard is not a
+    cloud guard. <code>roles/viewer</code> reads object data;
+    <code>prevent_destroy</code> protects one configuration while a lien protects
+    the resource.</li>
   <li><strong>Check where your plan actually ran.</strong> A remote workspace can
-  still be planned locally, and the output looks the same. <em>"Running plan in
-  HCP Terraform"</em> is the only proof the CI identity was involved at all.</li>
+    still be planned locally, and the output looks the same. <em>"Running plan in
+    HCP Terraform"</em> is the only proof the CI identity was involved at all.</li>
 </ol>
 
-<h3>What I&rsquo;d do differently in production</h3>
+<h3>What production would do differently</h3>
+
+<p>Condition on the workspace rather than a prefix, so one compromised workspace
+cannot assume the apply identity. Scope the write roles below the organization
+&mdash; <code>serviceAccountAdmin</code> at organization scope permits setting IAM
+policy on any service account, <em>including the apply identity itself</em>, which
+is a route to widening who may impersonate it. Use a variable set rather than
+per-workspace variables. Separate the identity per environment. And alert on token
+exchanges: a failed exchange is either a misconfiguration or somebody else trying,
+and both are worth knowing about.</p>
+
+<h3>References</h3>
 
 <ul>
-  <li><strong>Scope the write roles below the organization.</strong>
-  <code>tf-apply</code> holds <code>folderAdmin</code>,
-  <code>projectCreator</code> and <code>serviceAccountAdmin</code> at the
-  organization because a lab creates folders directly under it. In production
-  those belong on a folder, and <code>serviceAccountAdmin</code> at organization
-  scope is worth avoiding specifically — it permits setting IAM policy on any
-  service account, including the apply identity itself, which is a route to
-  widening who may impersonate it.</li>
-
-  <li><strong>Use a variable set, not per-workspace variables.</strong> Four
-  <code>TFC_GCP_*</code> variables copied into every workspace is four chances to
-  mistype a provider name in a way that fails at the next apply rather than now.</li>
-
-  <li><strong>Separate the identity per environment.</strong> One apply identity
-  spanning dev and prod means a dev workspace holds production write access. The
-  attribute condition already carries a workspace name — production would key on
-  it.</li>
-
-  <li><strong>Alert on token exchanges.</strong> The usage chart in the console
-  is pleasant to look at and nobody is watching it. A failed exchange is either a
-  misconfiguration or somebody else trying, and both are worth an alert.</li>
+  <li><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-02-keyless-ci/LAB.md">Lab guide</a> &mdash; the attribute condition, the phase split, the captured denial, known limitations</li>
+  <li><a href="https://docs.cloud.google.com/resource-manager/docs/manage-baseline-constraints">Manage Google Cloud security baseline constraints</a></li>
+  <li><a href="https://docs.cloud.google.com/iam/docs/workload-identity-federation">Workload Identity Federation</a></li>
+  <li><a href="https://docs.cloud.google.com/iam/docs/choose-predefined-roles">Find the right predefined roles</a></li>
+  <li><a href="https://docs.cloud.google.com/resource-manager/docs/project-liens">Liens</a></li>
+  <li><a href="https://developer.hashicorp.com/terraform/cloud-docs/dynamic-provider-credentials/gcp-configuration">HCP Terraform &mdash; dynamic credentials with the GCP provider</a></li>
+  <li><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/tree/main/week-02-keyless-ci">Source repository</a></li>
 </ul>
-
-<p>Next week: organization policy — writing constraints of my own onto the
-folders Week 1 created, now that there is a pipeline to write them through.</p>
 </div>
 
 </div>

@@ -23,635 +23,407 @@ verified_claims:
 
 <div class="post-header">
   <div class="post-eyebrow">GCP Platform Engineering Lab &middot; Week 3 of 58</div>
-  <div class="post-title">Twelve policies, or twenty-six?</div>
-  <div class="post-subtitle">My command line said this organization had twelve policies. The console, on the same screen I had been reading all week, said twenty-six were active. Both were right. <code>gcloud org-policies list</code> answers a question you did not ask &mdash; it reports what is <em>set</em>, not what is <em>enforced</em> &mdash; and I had already shipped a guardrail that was switched on before I wrote it.</div>
+  <div class="post-title">Organization policy guardrails, and what dry run is for</div>
+  <div class="post-subtitle">Find out what the platform already decided before adding anything — then deploy guardrails that report before they refuse.</div>
   <div class="post-meta">
     <span>4 September 2026</span>
-    <span>Organization Policy &middot; Terraform</span>
-    <span>$0 &middot; policy is metadata, not infrastructure</span>
+    <span>Organization Policy Service &middot; Managed and custom constraints</span>
+    <span>$0</span>
   </div>
 </div>
 
 <div class="toc">
   <h3>&#128203; In This Post</h3>
   <ol>
-    <li><a href="#why">Why — The Problem This Solves</a></li>
-    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
-    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
-    <li><a href="#build">How We Built It — Step by Step</a></li>
-    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
-    <li><a href="#security">Security — Controls at Every Layer</a></li>
-    <li><a href="#cost">Cost</a></li>
-    <li><a href="#cleanup">Cleanup</a></li>
-    <li><a href="#references">References</a></li>
-    <li><a href="#takeaways">Key Takeaways</a></li>
+    <li><a href="#overview">Lab Overview</a></li>
+    <li><a href="#services">Cloud Services and Concepts</a></li>
+    <li><a href="#architecture">Architecture and Workflow</a></li>
+    <li><a href="#prerequisites">Prerequisites</a></li>
+    <li><a href="#build">Implementation</a></li>
+    <li><a href="#validation">Validation and Evidence</a></li>
+    <li><a href="#security">Security and Cost</a></li>
+    <li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+    <li><a href="#takeaways">Cleanup and Key Takeaways</a></li>
   </ol>
 </div>
 
-<div class="section" id="why">
-<h2>Why — The Problem This Solves</h2>
+<div class="section" id="overview">
+<h2>Lab Overview</h2>
 
-<p>This week is the first one that runs entirely as the CI identity Week 2 built
-&mdash; no human credential anywhere, applying with a role that week granted in
-advance. That part worked. What did not work was the step before it: reading the
-organization I was about to change.</p>
+<p><strong>The problem.</strong> A guardrail that refuses something on its first
+day breaks whatever was already doing that thing, and you find out from an
+incident rather than a report. The other failure is quieter: adding a rule the
+platform already enforces, and believing you improved something.</p>
 
-<p>The instinct when you are handed an organization is to start hardening it.
-Pick the constraints that matter, switch them on, move on. That instinct assumes
-you can see the starting state, and on Google Cloud the obvious command does not
-show it to you.</p>
+<p><strong>Objective.</strong> Read what this organization already enforces,
+then add three managed constraints and one custom constraint in
+<strong>dry run</strong>, so violations are logged before anything is denied.</p>
 
-<p>There are two questions that sound identical and are not:</p>
+<p><strong>Expected outcome.</strong> Four policies reporting rather than
+refusing, one deliberate folder-level exception, and a measured figure for how
+long enforcement actually takes to take effect.</p>
 
-<ul>
-  <li><strong>What policy is set on this organization?</strong></li>
-  <li><strong>What policy is enforced on this organization?</strong></li>
-</ul>
-
-<p>I asked the first, believed I had answered the second, and added a guardrail
-that had been active the entire time. Everything below follows from getting that
-wrong and then finding out.</p>
+<div class="table-scroll">
+<table>
+  <tbody>
+    <tr><th>Difficulty</th><td>Intermediate &mdash; the policies are simple; the API's concurrency and lag behaviour are not</td></tr>
+    <tr><th>Deployment</th><td>Terraform via HCP Terraform &mdash; the first fully remote week, no hand-run apply</td></tr>
+    <tr><th>Reproduce it</th><td><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-03-org-policy-guardrails/LAB.md">Lab guide</a> &mdash; the baseline read, the 409, the lag measurement</td></tr>
+    <tr><th>Cost</th><td>$0 &mdash; organization policy is free</td></tr>
+  </tbody>
+</table>
+</div>
 </div>
 
-<div class="section" id="skills">
-<h2>What You Need to Know — Skills &amp; Tools</h2>
-<div class="grid-2">
-  <div class="card">
-    <h3>Google Cloud</h3>
-    <ul>
-      <li><strong>Organization Policy Service</strong> — v2, and the difference between managed and custom constraints</li>
-      <li><strong>Resource Manager</strong> — the organization, folder and project nodes a policy can attach to</li>
-      <li><strong>Cloud Logging</strong> — where a dry-run violation surfaces, since it denies nothing</li>
-    </ul>
-  </div>
-  <div class="card">
-    <h3>Tooling</h3>
-    <ul>
-      <li><strong>Terraform v2 resources</strong> — <code>google_org_policy_policy</code> and <code>google_org_policy_custom_constraint</code>, never the legacy <code>google_organization_policy</code></li>
-      <li><strong>gcloud org-policies</strong> — and specifically <code>--effective</code>, because a list of what is <em>set</em> is not a list of what is <em>enforced</em></li>
-      <li><strong>CEL</strong> — the expression language a custom constraint condition is written in</li>
-    </ul>
-  </div>
+<div class="section" id="services">
+<h2>Cloud Services and Concepts</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Service</th><th>Purpose in this lab</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Organization Policy Service</strong></td><td>Applies restrictions to a resource and everything beneath it. Evaluated when a resource is created or changed, so it refuses rather than reports after the fact.</td></tr>
+    <tr><td><strong>Managed constraints</strong></td><td>Rules Google ships, named <code>*.managed.*</code>. Some are enforced by a Google <em>default</em> you never set.</td></tr>
+    <tr><td><strong>Custom constraints</strong></td><td>A CEL expression over a resource's own fields, for rules Google does not ship.</td></tr>
+    <tr><td><strong>Dry-run policies</strong></td><td>Evaluate and log, without denying. The difference between a guardrail and an outage on day one.</td></tr>
+    <tr><td><strong>Cloud Audit Logs</strong></td><td>Where dry-run violations land — in the <em>project</em> log, not the organization's.</td></tr>
+  </tbody>
+</table>
 </div>
 
-<h3>Concepts to understand before starting</h3>
+<p><strong>Two concepts that decide how this week goes.</strong> First,
+<em>"set" and "enforced" are different</em>: a managed constraint can be fully
+in force because of a Google default, while appearing in no list of policies you
+configured. Only <code>describe --effective</code> tells the truth, and reading
+it first is the difference between adding a guardrail and re-adding one.</p>
 
-<div class="tag-grid">
-  <span>The closest policy wins</span>
-  <span>Inheritance replaces, it does not merge</span>
-  <span>A folder may loosen the organization</span>
-  <span>Dry run denies nothing</span>
-  <span>Set ≠ enforced</span>
-</div>
-
-
-<p>Three properties of the Organization Policy Service drive every decision in
-this build. They are worth stating before any code, because each one has a
-failure mode that looks like success.</p>
-
-<p><strong>Policy inherits downward, and the closest policy wins.</strong> A
-policy written on a folder replaces the organization's for everything beneath
-it. It does not merge, and &mdash; this is the part that catches people &mdash;
-it does not have to be stricter. A folder can loosen what the organization set.</p>
-
-<p><strong>Therefore, writing a policy at the organization on a constraint that
-is already set replaces that spec.</strong> Hardening and loosening are the same
-API call with different contents. There is no "add to the existing policy"
-operation. If you codify an inherited constraint slightly wrong, it applies
-cleanly, the organization is left less protected than it was, and your state
-file asserts that everything is managed.</p>
-
-<p><strong>A dry-run policy is evaluated on every request and logged when it
-would have denied, while denying nothing.</strong> This is the mechanism that
-makes the rest safe: you can find out what a constraint breaks before it breaks
-anything.</p>
-
-<p>One tooling note that is not optional. Everything here is written on the
-<strong>v2</strong> Terraform resources &mdash; <code>google_org_policy_policy</code>
-and <code>google_org_policy_custom_constraint</code>. The older
-<code>google_organization_policy</code> cannot express a <code>.managed.</code>
-constraint at all. Writing this week against legacy constraint names would not
-be a stylistic preference; it would teach an API that is on the way out.</p>
+<p>Second, <em>dry run is not a test mode you skip</em>. A constraint in dry run
+records what it <em>would</em> have refused. That log is the evidence you need
+before promoting it — and without a matching resource in the organization, it
+produces nothing at all, which looks exactly like a constraint that works.</p>
 </div>
 
 <div class="section" id="architecture">
-<h2>Architecture — How It Fits Together</h2>
+<h2>Architecture and Workflow</h2>
 
-<p>This organization did not start empty. It inherited <strong>seven enforced
-constraints</strong> at creation, and reading them back showed all seven
-carrying the same <code>updateTime</code> to within a fraction of a second
-&mdash; one batch, applied by Google, not a set that accumulated over time.</p>
-
-<p>So the shape of the week is not "turn on guardrails". It is: work out what
-the platform already decided, add only what it did not, and prove each addition
-is safe before it can deny anything.</p>
-
-<p>What went in:</p>
-
-<ul>
-  <li><code>compute.managed.requireOsLogin</code> &mdash; VM access goes through
-  IAM, not through keys pasted into instance metadata.</li>
-  <li><code>compute.managed.blockProjectSshKeys</code> &mdash; a project-wide key
-  must not silently grant access to VMs that do not exist yet.</li>
-  <li><code>compute.managed.disableSerialPortAccess</code> &mdash; the serial
-  console bypasses the network path entirely. No firewall rule, no VPC, no load
-  balancer observes it.</li>
-  <li><code>custom.requireTerraformLabelsOnBuckets</code> &mdash; a custom
-  constraint, covered below.</li>
-</ul>
-
-<p>All four landed as dry run. One has since been promoted.</p>
-
-<svg viewBox="0 0 880 520" xmlns="http://www.w3.org/2000/svg" role="img"
-     aria-label="Organization policy inheritance: seven inherited baseline constraints enforced at the organization, four added this week of which three are dry run and one enforced, inheriting down to the platform and workloads folders, with the dev folder overriding serial port access to enforce FALSE"
-     style="width:100%;height:auto;background:#ffffff;border:1px solid #e4e7ec;border-radius:8px">
+<svg viewBox="0 0 880 330" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="Four policies are set at the organization in dry run: three managed Compute constraints and one custom bucket-label constraint. The workloads slash dev folder carries a deliberate exception that disables the serial port constraint. Violations are logged to the project audit log, not the organization's."
+     style="width:100%;height:auto;border:1px solid #e4e7ec;border-radius:8px">
+  <rect x="0" y="0" width="880" height="330" fill="#ffffff"/>
   <defs>
     <marker id="w3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#5f6368"/>
     </marker>
-    <marker id="w3r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#DB4437"/>
-    </marker>
   </defs>
+  <text x="20" y="28" font-family="Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#202124">Report first, refuse later</text>
 
-  <text x="20" y="26" font-family="Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#202124">Week 3 &#8212; what is set, what is enforced, and where it stops</text>
+  <rect x="24" y="70" width="330" height="128" rx="7" fill="#ffffff" stroke="#1a73e8" stroke-width="1.6"/>
+  <text x="40" y="94" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="700" fill="#202124">organization &mdash; 4 policies, all DRY RUN</text>
+  <text x="40" y="116" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">compute.managed.requireOsLogin</text>
+  <text x="40" y="134" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">compute.managed.blockProjectSshKeys</text>
+  <text x="40" y="152" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">compute.managed.disableSerialPortAccess</text>
+  <text x="40" y="170" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">custom.requireTerraformLabelsOnBuckets</text>
+  <text x="40" y="190" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#b00020">plus 7 already enforced by Google's baseline</text>
 
-  <rect x="150" y="44" width="580" height="146" rx="8" fill="#f8f9fa" stroke="#4285F4" stroke-width="1.5"/>
-  <text x="166" y="64" font-family="Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#202124">organization</text>
+  <line x1="190" y1="198" x2="190" y2="236" stroke="#5f6368" stroke-width="1.3" marker-end="url(#w3a)"/>
+  <text x="198" y="222" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">inherited downward</text>
 
-  <rect x="166" y="74" width="264" height="44" rx="5" fill="#e6f4ea" stroke="#0F9D58" stroke-width="1.2"/>
-  <text x="178" y="92" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#0F9D58">7 inherited &#183; ENFORCED</text>
-  <text x="178" y="108" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">Google security baseline, applied at creation</text>
+  <rect x="24" y="236" width="330" height="62" rx="7" fill="#ffffff" stroke="#b00020" stroke-width="1.4"/>
+  <text x="40" y="260" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">workloads/dev &mdash; one exception</text>
+  <text x="40" y="280" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">disableSerialPortAccess: enforce = FALSE</text>
 
-  <rect x="446" y="74" width="268" height="44" rx="5" fill="#ffffff" stroke="#dadce0" stroke-width="1.2"/>
-  <text x="458" y="92" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">4 added this week</text>
-  <text x="458" y="108" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">3 dry run &#183; 1 enforced</text>
+  <line x1="354" y1="134" x2="452" y2="134" stroke="#5f6368" stroke-width="1.3" marker-end="url(#w3a)"/>
+  <text x="360" y="127" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">logs to</text>
 
-  <rect x="166" y="126" width="172" height="50" rx="5" fill="#ffffff" stroke="#F4B400" stroke-width="1.2" stroke-dasharray="4 3"/>
-  <text x="176" y="143" font-family="Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#F4B400">DRY RUN &#183; denies nothing</text>
-  <text x="176" y="157" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">requireOsLogin</text>
-  <text x="176" y="169" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">blockProjectSshKeys &#183; disableSerialPortAccess</text>
+  <rect x="452" y="96" width="394" height="78" rx="7" fill="#ffffff" stroke="#5f6368" stroke-width="1.3"/>
+  <text x="468" y="120" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">the PROJECT audit log</text>
+  <text x="468" y="140" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">OrgPolicyDryRunAuditMetadata</text>
+  <text x="468" y="158" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">dryRunResult &middot; liveResult</text>
 
-  <rect x="352" y="126" width="192" height="50" rx="5" fill="#fce8e6" stroke="#DB4437" stroke-width="1.4"/>
-  <text x="362" y="143" font-family="Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#DB4437">ENFORCED &#183; refuses requests</text>
-  <text x="362" y="158" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">custom.requireTerraformLabelsOnBuckets</text>
-  <text x="362" y="170" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">HTTP 412 on an unlabelled bucket</text>
-
-  <rect x="558" y="126" width="156" height="50" rx="5" fill="#f1f3f4" stroke="#dadce0" stroke-width="1"/>
-  <text x="568" y="143" font-family="Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#202124">what the tools say</text>
-  <text x="568" y="157" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">list &#8594; 12 policies</text>
-  <text x="568" y="169" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#DB4437">effective &#8594; 26 active</text>
-
-  <line x1="300" y1="190" x2="300" y2="238" stroke="#5f6368" stroke-width="1.4" marker-end="url(#w3a)"/>
-  <line x1="580" y1="190" x2="580" y2="238" stroke="#5f6368" stroke-width="1.4" marker-end="url(#w3a)"/>
-  <text x="312" y="216" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">inherits downward</text>
-
-  <rect x="190" y="240" width="220" height="46" rx="6" fill="#ffffff" stroke="#dadce0" stroke-width="1.2"/>
-  <text x="204" y="260" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">folder &#183; platform</text>
-  <text x="204" y="276" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">no policy set &#183; inherits everything above</text>
-
-  <rect x="470" y="240" width="220" height="46" rx="6" fill="#ffffff" stroke="#dadce0" stroke-width="1.2"/>
-  <text x="484" y="260" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">folder &#183; workloads</text>
-  <text x="484" y="276" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">no policy set &#183; inherits everything above</text>
-
-  <line x1="530" y1="286" x2="530" y2="330" stroke="#5f6368" stroke-width="1.4" marker-end="url(#w3a)"/>
-  <line x1="700" y1="286" x2="720" y2="330" stroke="#5f6368" stroke-width="1.4" marker-end="url(#w3a)"/>
-
-  <rect x="416" y="332" width="212" height="74" rx="6" fill="#fef7e0" stroke="#DB4437" stroke-width="1.6"/>
-  <text x="430" y="352" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">folder &#183; workloads/dev</text>
-  <text x="430" y="369" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" font-weight="700" fill="#DB4437">disableSerialPortAccess &#8594; enforce = FALSE</text>
-  <text x="430" y="384" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">the closest policy wins, and it is</text>
-  <text x="430" y="396" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">allowed to be the looser one</text>
-
-  <rect x="646" y="332" width="150" height="74" rx="6" fill="#ffffff" stroke="#dadce0" stroke-width="1.2"/>
-  <text x="658" y="352" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">folder &#183; prod</text>
-  <text x="658" y="369" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">no override</text>
-  <text x="658" y="384" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">serial console stays</text>
-  <text x="658" y="396" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">refused here</text>
-
-  <line x1="416" y1="369" x2="360" y2="369" stroke="#DB4437" stroke-width="1.4" marker-end="url(#w3r)"/>
-  <rect x="84" y="332" width="272" height="74" rx="6" fill="#ffffff" stroke="#DB4437" stroke-width="1" stroke-dasharray="4 3"/>
-  <text x="96" y="352" font-family="Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#DB4437">the exception, written down</text>
-  <text x="96" y="368" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">Undocumented, the first engineer with an</text>
-  <text x="96" y="380" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">unbootable VM asks for the policy off &#8212; and it</text>
-  <text x="96" y="392" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">goes off at the organization, for everything.</text>
-
-  <rect x="84" y="428" width="712" height="66" rx="6" fill="#f8f9fa" stroke="#dadce0" stroke-width="1"/>
-  <text x="96" y="448" font-family="Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#202124">The gap this week is about</text>
-  <text x="96" y="465" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">A managed constraint can be enforced with no policy set on it, from a Google default that appears in neither list nor describe.</text>
-  <text x="96" y="480" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">One of the four chosen here was already live. Only describe with the effective flag says so.</text>
+  <text x="452" y="206" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#b00020">Not the organization log - that stream does not exist here,</text>
+  <text x="452" y="224" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#b00020">and querying it returns empty WITHOUT an error.</text>
+  <text x="452" y="252" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">The record carries status.code 7 POLICY_VIOLATED</text>
+  <text x="452" y="270" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">on a request that SUCCEEDED.</text>
 </svg>
 
-<figure class="screenshot">
-  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-03-org-policy-guardrails/docs/blog/screenshots/01-dry-run-vs-active.png"
-       alt="Google Cloud organization policies list filtered to dry-run, showing four constraints with Enforcement state Inactive and Dry-run Active"/>
-  <figcaption>The two columns that matter, side by side: <strong>Enforcement
-  state &mdash; Inactive</strong> and <strong>Dry-run &mdash; Active</strong>.
-  Each of these is evaluated on every request and denies nothing. In a summary
-  view that shows only "there is a policy here", this is indistinguishable from
-  enforcement.</figcaption>
-</figure>
+<h3>The flow</h3>
 
-<h3>The exception, written down on purpose</h3>
+<ol>
+  <li>Read what is already enforced with <code>describe --effective</code>,
+    before designing anything.</li>
+  <li>Write three managed Compute constraints and one custom bucket-label
+    constraint, all in dry run.</li>
+  <li>Chain them with <code>depends_on</code>, because the API serializes policy
+    changes per parent.</li>
+  <li>Add one deliberate exception at <code>workloads/dev</code>, disabling the
+    serial-port constraint for that folder only.</li>
+  <li>Create a violating resource on purpose and confirm it is logged rather than
+    refused.</li>
+  <li>Leave them in dry run until there is evidence to promote on — which, for
+    the Compute constraints, meant waiting for Week 04.</li>
+</ol>
 
-<p>Serial console access is refused across the organization, and explicitly
-allowed in <code>workloads/dev</code>. That is not a compromise; the thing the
-constraint defends against and the thing dev genuinely needs are the same thing
-&mdash; a way to see a machine too broken to reach over the network.</p>
+<h3>Two decisions worth naming</h3>
 
-<p>The reason to write it as a folder-level exception rather than leave it
-implicit is what happens otherwise. The first engineer with an unbootable dev VM
-either waits, or asks for the policy to be turned off. And it gets turned off
-<em>at the organization</em>, for everything, because that is where it was set.
-An exception at the narrowest node is what keeps the enforcement at every other
-node credible.</p>
+<p><strong>Dry run, not enforce.</strong> Three of these constraints govern
+Compute Engine, and at this point the organization contained no Compute
+resources at all. A constraint with nothing to evaluate produces no violations,
+which is indistinguishable from a constraint that is working — so promoting on
+"no violations" would have proven nothing.</p>
 
-<p>It is written as <code>enforce = FALSE</code> at the folder, not as a reset.
-A reset would return dev to whatever it inherits, which is enforcement. The
-override has to be explicit.</p>
+<p><strong>One exception, named and scoped.</strong> <code>workloads/dev</code>
+overrides the serial-port constraint. An exception that exists is honest; an
+exception nobody can find is how a guardrail quietly stops applying.</p>
+</div>
 
-<h3>One custom constraint</h3>
+<div class="section" id="prerequisites">
+<h2>Prerequisites</h2>
 
-<p>Predefined constraints cover what Google anticipated. A custom constraint is
-how an organization's own rule becomes something the platform enforces, rather
-than something a reviewer has to notice.</p>
+<ul>
+  <li><strong>An organization with a folder hierarchy</strong> — Week 1 supplies
+    it, and the exception needs somewhere to live.</li>
+  <li><strong><code>roles/orgpolicy.policyAdmin</code></strong> at the
+    organization on the apply identity.</li>
+  <li><strong><code>roles/logging.viewer</code></strong> at the organization for
+    whoever reads dry-run violations — granted out of band, because the pipeline
+    identity cannot be impersonated.</li>
+  <li><strong><code>orgpolicy</code> and <code>logging</code> APIs</strong>
+    enabled on the quota project. <strong>A clean plan is not evidence the apply
+    will work</strong> — writing policy needs the API, reading it does not, and
+    a plan only reads.</li>
+  <li><strong>Terraform 1.9+</strong> with <code>hashicorp/google</code>
+    <code>~&gt; 6.0</code>.</li>
+</ul>
 
-<p>The rule I picked was mine: every resource in this lab carries
-<code>week</code>, <code>env</code> and <code>managed-by</code> labels. That has
-been written in the repository's contributing instructions since Week 1, which
-means it has been enforced by precisely nothing. A label convention that lives
-only in a document is a convention that is already half broken and nobody has
-looked.</p>
-
-<p>Buckets rather than VMs as the target, for a reason worth being honest about:
-this lab runs no compute, so a constraint on instances could not be tested
-without spending money to violate it. Bucket creation is free, so the denial is
-demonstrable &mdash; and a control you cannot demonstrate is a control you are
-taking on faith.</p>
-
-<figure class="screenshot">
-  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-03-org-policy-guardrails/docs/blog/screenshots/02-custom-constraint.png"
-       alt="Custom constraint detail page showing the CEL condition, resource type storage.googleapis.com/Bucket, method types CREATE and UPDATE, and action ALLOW"/>
-  <figcaption>The constraint as Google stores it. <code>CREATE</code> and
-  <code>UPDATE</code> both listed &mdash; without <code>UPDATE</code>, the labels
-  can be stripped the moment after the bucket exists and the rule would only ever
-  have been a formality at creation time.</figcaption>
-</figure>
+<p>The baseline-reading commands and the lag measurement are in the
+<a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-03-org-policy-guardrails/LAB.md">lab guide</a>.</p>
 </div>
 
 <div class="section" id="build">
-<h2>How We Built It — Step by Step</h2>
+<h2>Implementation</h2>
 
-<p>This is the first week in the lab that applies with <strong>no hand-run apply
-and no Google Cloud credential on the machine that starts it</strong>. HCP
-Terraform mints an OIDC token per run, Google's Security Token Service exchanges
-it, and the <code>tf-apply</code> identity built in Week 2 &mdash; which already
-holds <code>roles/orgpolicy.policyAdmin</code> at the organization &mdash; does
-the writing.</p>
+<p>Eight resources, all free. Commands are in the <a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-03-org-policy-guardrails/LAB.md">lab guide</a>.</p>
 
-<p>The order matters more than usual here:</p>
-
-<ol>
-  <li><strong>Read the current policy first</strong>, with
-  <code>--effective</code>. Not a formality. See the first challenge below.</li>
-  <li><strong>Apply.</strong> Everything lands as <code>dry_run_spec</code>.</li>
-  <li><strong>Read the violations</strong> out of the audit log.</li>
-  <li><strong>Promote one constraint</strong> &mdash; exactly one &mdash; and
-  apply again.</li>
-  <li><strong>Validate</strong> against a real request, after a wait.</li>
-</ol>
-
-<figure class="screenshot">
-  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-03-org-policy-guardrails/docs/blog/screenshots/06-run-applied.png"
-       alt="HCP Terraform run page showing a successful apply of the Week 3 configuration"/>
-  <figcaption>The apply that worked, on the third attempt. No Google Cloud
-  credential exists on the machine that started it &mdash; the workspace holds a
-  workload identity provider name and two service account emails, and no
-  key.</figcaption>
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-03-org-policy-guardrails/docs/blog/screenshots/03-repo-structure.png" alt="Repository structure: LAB.md, terraform, scripts and docs, each with a one-line responsibility." loading="lazy">
+  <figcaption>How the week is organised. <a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/tree/main/week-03-org-policy-guardrails">Full source on GitHub</a>.</figcaption>
 </figure>
 
-<p>Step 4 is the method, not a suggestion. The enforcement switch in the
-configuration is a map keyed by constraint name rather than a single boolean,
-specifically so that constraints graduate one at a time. Flipping the set
-together works, and gives up the only thing dry run was for: knowing which
-constraint an audit entry belonged to.</p>
+<h3>Step 1 &mdash; Read what the platform already decided</h3>
 
-<h3>What a dry-run violation actually looks like</h3>
+<p><strong>Why:</strong> because <code>list</code> shows what is <em>set</em>, not
+what is <em>enforced</em>. This organization already had <strong>seven enforced
+constraints</strong> from Google's security baseline, all carrying the same
+<code>updateTime</code> from the moment it was created.</p>
 
-<p>Every article about dry-run mode says it logs violations. Almost none show
-you the record. Here is the one this deployment produced, from creating a bucket
-with no labels while the custom constraint was in dry run:</p>
+<p><strong>Checkpoint:</strong> <code>list</code> reported 12 policies; the
+console reported 26 active. One constraint was added to this lab as a new
+guardrail and turned out to be enforced already — removing our policy left it
+enforced, which proves the default is independent of anything set here.</p>
 
-<pre><code>"metadata": {
-  "@type": "type.googleapis.com/google.cloud.audit.OrgPolicyDryRunAuditMetadata",
-  "constraint": "customConstraints/custom.requireTerraformLabelsOnBuckets",
-  "dryRunResult": "DENIED",
-  "liveResult": "ALLOWED",
-  "resourceType": "storage.googleapis.com/Bucket"
-},
-"status": { "code": 7, "message": "POLICY_VIOLATED" }</code></pre>
-
-<p>The bucket was created. <code>dryRunResult: DENIED</code> beside
-<code>liveResult: ALLOWED</code> is the entire value of dry run in two fields:
-what the rule would have done, and what actually happened. Promoting this
-constraint stopped being a hopeful decision at that moment and became an
-informed one.</p>
-
-<p>Two traps sit in that record, and both are the kind that cost an afternoon.</p>
-
-<p>The status reads <code>POLICY_VIOLATED</code> with gRPC <strong>code 7
-&mdash; PERMISSION_DENIED &mdash; on a request that succeeded</strong>. Anything
-alerting on <code>status.code != 0</code>, or grepping audit logs for
-<code>POLICY_VIOLATED</code>, will treat every dry-run evaluation as a live
-denial and report an outage that is not happening. That is a plausible way to
-lose confidence in a monitoring stack during exactly the week you need it.</p>
-
-<p>And the entry is written to the <strong>project's</strong> audit log, not to
-an organization-level policy stream. The policy is set at the organization; the
-log is written where the request was served. Querying the organization for a
-policy log stream returns nothing <em>and returns no error</em>, which is
-indistinguishable from "there were no violations".</p>
-</div>
-
-<div class="section" id="challenges">
-<h2>Challenges — What Actually Went Wrong</h2>
-
-<div class="challenge-card">
-  <h3>1. The command everyone uses does not show what is enforced</h3>
-  <p>I chose four constraints by listing what was already set and picking from
-  what was missing. <code>iam.managed.disableServiceAccountApiKeyCreation</code>
-  was one of them &mdash; the natural follow-on from Week 2, closing the
-  credential-in-a-file path that service account key constraints do not reach.</p>
-  <p>It was already enforced. Not by the inherited baseline &mdash; by a
-  <strong>Google default carried on the managed constraint itself</strong>, with
-  <code>parameters.allowedServices</code> exempting the Gemini API.</p>
-  <p><code>gcloud org-policies list</code> shows policies that are explicitly
-  <strong>set</strong>. A managed constraint can be fully enforced with no policy
-  set on it at all, and that default appears in neither <code>list</code> nor a
-  plain <code>describe</code>. Only <code>describe --effective</code> reveals
-  it.</p>
-  <p>The console had been telling me the whole time and I read straight past it:
-  <strong>26 active organization policies</strong>, against the twelve
-  <code>list</code> returned. I saw that number in a screenshot and did not chase
-  the discrepancy.</p>
-  <p>Adding a dry-run policy on top of an already-enforced constraint is not
-  harmless, either. It reports "dry-run" for something live &mdash; precisely the
-  confusion this week exists to remove. The constraint was removed. Deleting our
-  policy left it enforced, which is the proof that the default was never ours.</p>
-  <p>The mistake paid for itself in one respect: <code>--effective</code> also
-  prints the <em>parameter schema</em> of a managed constraint, which the
-  reference documentation describes without publishing.</p>
-</div>
-
-<div class="challenge-card">
-  <h3>2. A clean plan is not evidence that an apply will work</h3>
-  <p><code>terraform plan</code> reported <code>7 to add, 0 to change, 0 to
-  destroy</code>. The apply failed immediately: <code>Error 403 &mdash;
-  SERVICE_DISABLED</code> on <code>orgpolicy.googleapis.com</code>.</p>
-  <p>Organization policy is not stored in a project, so it is natural to assume
-  no project needs anything enabled. But the <em>write</em> goes through the
-  caller's quota project, and that project must have the Organization Policy API
-  on. The <em>read</em> does not &mdash; the seven baseline constraints had
-  listed perfectly, and the plan refreshed without complaint.</p>
-  <p>The dependency does not exist until the first write, so a plan can never
-  surface it.</p>
-  <figure class="screenshot">
-    <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-03-org-policy-guardrails/docs/blog/screenshots/04-run-service-disabled.png"
-         alt="HCP Terraform run page showing an errored apply with SERVICE_DISABLED on orgpolicy.googleapis.com"/>
-    <figcaption>The run that had just planned cleanly. Eight resources to create,
-    and the apply stops on an API that reading the same policies never
-    needed.</figcaption>
-  </figure>
-</div>
-
-<div class="challenge-card">
-  <h3>3. The API serializes policy changes, and the remote runner will not let you slow down</h3>
-  <p>With the API enabled, the next apply failed differently: <code>Error 409
-  &mdash; CONCURRENT_POLICY_CHANGES</code>. The Organization Policy API
-  serializes changes per parent. Terraform's default parallelism is 10, so it
-  opened several <code>SetPolicy</code> calls against the same organization at
-  once.</p>
-  <p>The failure is <strong>partial and non-deterministic</strong> &mdash; the
-  first attempt landed two of the four policies before failing, which is worse
-  than a clean failure because re-running appears to make progress.</p>
-  <p>The documented answer is <code>-parallelism=1</code>. It does not exist
-  here:</p>
-  <pre><code>Error: Custom parallelism values are currently not supported
-
-HCP Terraform does not support setting a custom parallelism value at
-this time.</code></pre>
-  <p>This is a consequence of the week running remotely rather than anything
-  about organization policy, and it forced the better fix. On local execution the
-  answer is a flag &mdash; which leaves the configuration wrong and moves the
-  correction into an operator's memory, where it works for exactly as long as the
-  person who learned it is the person running it. With no flag available, the
-  ordering has to be an edge in the dependency graph: each policy resource
-  depends on the one before it. That is a property of the code, and it survives
-  being run by someone who was never told.</p>
-  <p>The map-driven <code>for_each</code> version was shorter and read better. It
-  also did not work.</p>
-  <figure class="screenshot">
-    <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-03-org-policy-guardrails/docs/blog/screenshots/05-run-concurrent-policy-changes.png"
-         alt="HCP Terraform run page showing an errored apply with 409 CONCURRENT_POLICY_CHANGES"/>
-    <figcaption>Errored, triggered from the CLI, with the 409 in the diagnostics.
-    HCP keeps every run, which is why both of these failures are still readable
-    long after the configuration that caused them was fixed.</figcaption>
-  </figure>
-</div>
-
-<div class="challenge-card">
-  <h3>4. Enforcement lags the policy write, and the effective policy lies about it</h3>
-  <p>After promoting the custom constraint, I created an unlabelled bucket to
-  watch it be refused. It was created. Successfully. About a minute after the
-  flip, with <code>describe --effective</code> already reporting
-  <code>enforce: true</code>. The same request was refused a little later.</p>
-  <p>That is one success followed by one failure, which is not a measurement.
-  It is consistent with a lag, and equally consistent with a transient error or
-  a coincidence. So I wrote a script to repeat the cycle properly: return the
-  constraint to dry run, confirm an unlabelled bucket is allowed again, flip it
-  to enforced, and poll until a bucket is actually refused &mdash; timing from
-  the moment the apply returned.</p>
-  <p>Three trials, polling every ten seconds:</p>
-  <pre><code>dry run  -&gt; enforced    75s   99s   75s
-enforced -&gt; dry run    108s  103s   77s</code></pre>
-  <p>So <strong>roughly 75 to 100 seconds</strong> before a written policy
-  starts refusing anything, known to within one poll interval. The effective
-  policy reads <code>enforce: true</code> throughout that window. Those are two
-  different events and only one of them is observable from the API.</p>
-  <p>The second row is the one I did not go looking for. <strong>Turning a
-  constraint off lags just as much as turning it on</strong> &mdash; 77 to 108
-  seconds before a denied request starts succeeding again. That matters more
-  operationally than the first row: if a guardrail is blocking something during
-  an incident and you disable it, it keeps refusing for up to two minutes after
-  the apply returns green. Long enough to conclude the change did not work and
-  start making a second one.</p>
-  <p>A validation script that tests immediately after an apply reports a working
-  constraint as broken, and the natural conclusion &mdash; that the constraint is
-  wrong &mdash; sends you editing correct code. The validation script for this
-  week now waits.</p>
-</div>
-
-<div class="challenge-card">
-  <h3>5. The rule cannot be satisfied by the tool that trips it</h3>
-  <p>Having proven the denial, I went to prove the opposite &mdash; the same
-  request <em>with</em> the three labels, succeeding. It could not be done with
-  the same command. <code>gcloud storage buckets create</code> has <strong>no
-  label flag at all</strong>.</p>
-  <p>The compliant request had to go through the JSON API. That is worth knowing
-  before enforcing a label constraint organization-wide: the command your
-  engineers will reach for cannot produce a compliant bucket, and the error
-  message does not tell them that.</p>
-</div>
-
-<p>Here is the refusal itself, which is the single piece of evidence the rest of
-this week rests on:</p>
-
-<pre><code>$ gcloud storage buckets create gs://wk03-denytest-... --uniform-bucket-level-access
-
-ERROR: HTTPError 412: orgpolicy:projects/_/buckets/wk03-denytest-...
-violates customConstraints/custom.requireTerraformLabelsOnBuckets.
-
-Details: Storage buckets must carry the three labels this lab requires of
-every resource. managed-by must be terraform, so a bucket created by hand
-in the console is refused.
-
-- '@type': type.googleapis.com/google.rpc.PreconditionFailure</code></pre>
-
-<p><strong>412 Precondition Failed</strong>, not 403 &mdash; and the
-<code>description</code> field written in the Terraform is quoted straight back
-to whoever hits it. That is the argument for writing that field for the person
-who will be stopped by it, rather than as a change-log entry nobody reads.</p>
-
-<figure class="screenshot">
-  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-03-org-policy-guardrails/docs/blog/screenshots/07-custom-constraint-enforced.png"
-       alt="Google Cloud console showing the custom constraint after promotion, with enforcement state Active"/>
-  <figcaption>The same constraint after promotion. Compare with the first
-  screenshot, where it sat in the dry-run list denying nothing &mdash; one line
-  in a variable map is the whole difference between the two states.</figcaption>
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-03-org-policy-guardrails/docs/blog/screenshots/01-dry-run-vs-active.png" alt="Organization policies page showing policies in dry run alongside actively enforced ones." loading="lazy">
+  <figcaption><strong>Validates Step 1:</strong> dry-run policies alongside the baseline's enforced ones. The distinction is invisible to <code>gcloud org-policies list</code>, which is why the console and the CLI disagreed by fourteen policies.</figcaption>
 </figure>
+
+<h3>Step 2 &mdash; Write the constraints, chained</h3>
+
+<p><strong>Why chained:</strong> the Organization Policy API serializes changes
+per parent, and Terraform's default parallelism of 10 produces HTTP 409
+<code>CONCURRENT_POLICY_CHANGES</code> partially and non-deterministically. The
+CLI fix is <code>-parallelism=1</code>; HCP refuses it, so ordering has to be an
+edge in the dependency graph.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-03-org-policy-guardrails/docs/blog/screenshots/02-custom-constraint.png" alt="The custom constraint definition requiring Terraform labels on buckets." loading="lazy">
+  <figcaption><strong>Validates Step 2:</strong> the custom constraint, scoped to bucket CREATE and UPDATE. Custom constraints are where rules Google does not ship get written.</figcaption>
+</figure>
+
+<h3>Step 3 &mdash; Prove it reports rather than refuses</h3>
+
+<p><strong>Action:</strong> create an unlabelled bucket on purpose, as an
+identity that holds permission to create it.</p>
+
+<p><strong>Expected:</strong> the request succeeds and a violation is logged.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-03-org-policy-guardrails/docs/blog/screenshots/06-run-applied.png" alt="HCP Terraform run showing Applied with eight resources, after three failed attempts." loading="lazy">
+  <figcaption><strong>Validates deployment only:</strong> eight resources applied — on the fourth attempt. The three failures are in Troubleshooting and none was a flake.</figcaption>
+</figure>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-03-org-policy-guardrails/docs/blog/screenshots/07-custom-constraint-enforced.png" alt="The custom constraint later shown in enforced state." loading="lazy">
+  <figcaption><strong>The promotion, which came later:</strong> the custom constraint moved from dry run to enforce once there was violation evidence to justify it. The three Compute constraints had to wait for Week 04, because nothing in the organization used Compute yet.</figcaption>
+</figure>
+</div>
+
+<div class="section" id="validation">
+<h2>Validation and Evidence</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
+  <tbody>
+    <tr><td>Infrastructure deployed</td><td>8 resources</td><td>8 added, on the fourth attempt</td><td>Pass</td></tr>
+    <tr><td>What was already enforced</td><td>read before designing</td><td><strong>7 constraints</strong> from Google's baseline</td><td>Finding</td></tr>
+    <tr><td>This week's four, and each state</td><td>all dry run</td><td>all dry run</td><td>Pass</td></tr>
+    <tr><td>The custom constraint's definition</td><td>CEL expression present</td><td>present, CREATE + UPDATE on buckets</td><td>Pass</td></tr>
+    <tr><td>The deliberate exception at <code>workloads/dev</code></td><td><code>enforce = FALSE</code></td><td>present and scoped to one folder</td><td>Pass</td></tr>
+    <tr><td>A violating request is logged, not refused</td><td>bucket created, violation logged</td><td>created; <code>OrgPolicyDryRunAuditMetadata</code> in the project log</td><td>Pass</td></tr>
+    <tr><td>Enforcement lag, both directions</td><td>measured, not assumed</td><td><strong>75–100 s</strong> to enforce, <strong>77–108 s</strong> to un-enforce, 3 trials</td><td>Pass</td></tr>
+    <tr><td>The three Compute constraints deny anything</td><td>a real denial</td><td><strong>not tested this week</strong> — no Compute resource existed to evaluate; promoted in Week 04</td><td><strong>Unverified</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>Row two changed the week.</strong> Reading <code>--effective</code>
+first revealed seven constraints already enforced by Google's baseline — one of
+which this lab had been about to add as an improvement.</p>
+
+<p><strong>Row seven is a real measurement and it started as a bad one.</strong>
+The lag was first written up from a single success followed by a single failure,
+with the same confidence as the reproducible findings around it. One success and
+one failure cannot distinguish a propagation delay from a transient error.
+Repeating it three times produced a range — and turned up the reverse lag, which
+is the operationally dangerous direction, by accident.</p>
+
+<p>Row eight is honest about the limit: three of the four constraints govern
+Compute Engine, and nothing in the organization used Compute. They denied
+nothing because there was nothing to deny.</p>
 </div>
 
 <div class="section" id="security">
-<h2>Security — Controls at Every Layer</h2>
+<h2>Security and Cost</h2>
 
-<p><strong>Nothing here touches the inherited baseline.</strong> The obvious move
-on reading seven enforced constraints is to bring them into Terraform so the
-whole policy surface is in code. It is the wrong move. Writing them into the
-configuration does not adopt them &mdash; it issues <code>SetPolicy</code> with
-whatever the file says, replacing the inherited spec. Two of the seven carry
-parameters read out of the live organization, including a customer ID, so
-codifying them means either committing account identifiers to a public
-repository or plumbing them through variables to reproduce a spec Google already
-applies correctly. The failure mode is quiet: a transcription slip does not
-error, it applies.</p>
+<h3>Security decisions</h3>
 
-<p><strong>The denial was tested as an identity that holds the
-permission.</strong> This matters more than it sounds. An attempt made by an
-under-privileged identity fails with a permission error that looks identical to
-the constraint working. A test that asserts only on "the request failed" would
-pass against a completely broken control.</p>
-
-<p><strong>The constraint's description is written for the person who hits
-it.</strong> When the denial lands, Google quotes that field back to the caller
-verbatim. It is not a change-log entry; it is the error message.</p>
-
-<p><strong>Reading audit logs required a role that organization administrator
-does not include.</strong> <code>roles/logging.viewer</code> was granted out of
-band, by a human, and is not managed by this configuration &mdash; the same
-separation Week 2 applied to the billing grant. An identity should not manage
-the grants that govern it.</p>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Control</th><th>Decision and trade-off</th></tr></thead>
+  <tbody>
+    <tr><td>Dry run first</td><td>Report before refusing. A guardrail enforced on day one breaks whatever was already doing the thing, and you learn from an incident.</td></tr>
+    <tr><td>Read the baseline first</td><td>Seven constraints were already enforced. Adding a rule that already exists is not a security improvement, it is a false sense of one.</td></tr>
+    <tr><td>Scoped exception</td><td>One folder, one constraint, visible in the configuration. An exception nobody can find is how a guardrail silently stops applying.</td></tr>
+    <tr><td>Out-of-band grant</td><td><code>roles/logging.viewer</code> at the organization was granted by hand so violations could be read — read-only, reversible, and recorded with a removal command.</td></tr>
+    <tr><td>Accepted gap</td><td>The Compute constraints could not be tested here. "Deployed" and "demonstrated" are different, and this week only achieved the first.</td></tr>
+  </tbody>
+</table>
 </div>
 
-<div class="section" id="cost">
-<h2>Cost</h2>
+<p><strong>A monitoring trap worth repeating:</strong> the dry-run audit record
+carries <code>status.code 7 POLICY_VIOLATED</code> on a request that
+<strong>succeeded</strong>. Anything alerting on <code>status.code != 0</code>
+will report an outage that is not happening.</p>
 
-<p><strong>Zero.</strong> Organization policy is metadata on the resource
-hierarchy, not infrastructure. Nothing in this week bills per hour, per request,
-or per gigabyte.</p>
+<h3>Cost</h3>
 
-<p>Two APIs are enabled on the seed project &mdash; Organization Policy and
-Cloud Logging. Enabled APIs cost nothing on their own, and the log volume this
-generates sits inside the free tier.</p>
-
-<p>The buckets created to test the constraint existed for seconds and were
-deleted immediately, including by the validation script, which cleans up whether
-the request succeeded or failed.</p>
+<p><strong>$0.</strong> Organization policy is free, and this week creates no
+billable resource at all.</p>
 </div>
 
-<div class="section" id="cleanup">
-<h2>Cleanup</h2>
+<div class="section" id="troubleshooting">
+<h2>Troubleshooting and Lessons</h2>
 
-<p>There is nothing here worth tearing down to save money, so the teardown exists
-for correctness rather than cost. <code>scripts/cleanup.sh</code> destroys the
-policies and the custom constraint, and then states plainly what it does
-<em>not</em> undo: the two enabled APIs, the out-of-band logging role, and the
-Google security baseline, which was never managed here and should not be
-disturbed.</p>
+<h3>A clean plan, then `SERVICE_DISABLED`</h3>
 
-<p>One question remains genuinely open, and I would rather say so than assert it.
-Google's documentation contradicts itself on whether a deleted custom
-constraint's name can be reused &mdash; one page says never, another says within
-minutes. Which is true decides whether that script can honestly claim a clean
-teardown. It is scheduled as a measurement rather than quoted from either page,
-and it has not been run yet.</p>
-</div>
+<p><strong>Problem:</strong> <code>terraform plan</code> reported no problems and
+the apply failed immediately.</p>
 
-<div class="section" id="references">
-<h2>References</h2>
+<p><strong>Root cause:</strong> writing org policy needs
+<code>orgpolicy.googleapis.com</code> on the quota project. Reading it does not,
+and a plan only reads.</p>
 
-<p>Every source that settled something, and the questions none of them answered
-&mdash; the second list is the more useful one.</p>
+<p><strong>Lesson:</strong> a clean plan is not evidence an apply will work. This
+is the general form, and it recurs: the plan exercises read paths only.</p>
 
-<ul>
-  <li><a href="https://docs.cloud.google.com/compute/docs/access/managed-constraints">Managed constraints — Compute Engine</a>: confirmed the <code>compute.managed.*</code> names are current and replace the legacy ones.</li>
-  <li><a href="https://docs.cloud.google.com/organization-policy/restrict-service-accounts">Restrict IAM service account usage</a>: the line about the Gemini API being allowed by default, which I read before deploying and did not act on hard enough.</li>
-  <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/dry-run-policy">Dry-run policies</a>.</li>
-  <li><a href="https://docs.cloud.google.com/resource-manager/docs/custom-constraints">Custom constraints</a>.</li>
-  <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/understanding-hierarchy">Understanding hierarchy evaluation</a>: that the closest policy wins, which is what makes the folder exception work and what makes an organization-level write replace rather than merge.</li>
-  <li><a href="https://github.com/hashicorp/terraform-provider-google/issues/21401">terraform-provider-google #21401</a>: why this week is written on the v2 resources.</li>
-</ul>
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-03-org-policy-guardrails/docs/blog/screenshots/04-run-service-disabled.png" alt="HCP Terraform run failing with SERVICE_DISABLED." loading="lazy">
+  <figcaption>The first of three failures, each a different cause. Kept because none was a flake, and "it worked on the fourth try" is not a diagnosis.</figcaption>
+</figure>
 
-<p><strong>Not answered anywhere I looked, and measured instead:</strong> that
-<code>gcloud org-policies list</code> omits default-enforced managed constraints;
-where dry-run violations are actually logged; the parameter schemas of the
-parameterised managed constraints; and the delay between writing a policy and it
-being enforced.</p>
+<h3>HTTP 409 `CONCURRENT_POLICY_CHANGES`</h3>
+
+<p><strong>Problem:</strong> policies applied partially and non-deterministically.</p>
+
+<p><strong>Root cause:</strong> the API serializes changes per parent; Terraform
+runs ten in parallel by default.</p>
+
+<p><strong>Resolution:</strong> <code>-parallelism=1</code> fixes it on the CLI,
+and <strong>HCP Terraform refuses the flag</strong> — <em>"Custom parallelism
+values are currently not supported."</em> On remote execution the ordering must
+be an edge in the dependency graph, so the resources are chained with
+<code>depends_on</code>.</p>
+
+<p><strong>Lesson:</strong> applies to every later week that writes several
+policies to one parent.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-03-org-policy-guardrails/docs/blog/screenshots/05-run-concurrent-policy-changes.png" alt="HCP Terraform run failing with HTTP 409 CONCURRENT_POLICY_CHANGES." loading="lazy">
+  <figcaption>The second failure. The fix that works locally is unavailable remotely, which is the kind of difference worth knowing before an incident.</figcaption>
+</figure>
+
+<h3>A script that degraded a control and left it that way</h3>
+
+<p><strong>Problem:</strong> the first version of the lag-measurement script
+crashed mid-cycle, having already flipped a constraint back to dry run, and left
+the organization in a state the published post contradicted — live, until
+someone noticed.</p>
+
+<p><strong>Root cause of the crash:</strong> trivial. <code>subprocess</code>
+cannot launch a bare <code>gcloud</code> on Windows, because it is a
+<code>.CMD</code> shim and <code>CreateProcess</code> does not apply
+<code>PATHEXT</code>. Resolve with <code>shutil.which</code>.</p>
+
+<p><strong>The damage was the failure path</strong>, not the crash.</p>
+
+<p><strong>Lesson:</strong> a script that degrades a control must restore it in a
+<code>finally</code> block, never at the end of the happy path.</p>
 </div>
 
 <div class="section" id="takeaways">
-<h2>Key Takeaways</h2>
+<h2>Cleanup and Key Takeaways</h2>
+
+<h3>Cleanup</h3>
+
+<p><code>terraform destroy</code> removes all eight resources. Then, out of band,
+remove the operator's organization-level <code>roles/logging.viewer</code> if it
+is no longer needed — <code>scripts/cleanup.sh</code> carries the command,
+because a grant made by hand will not be removed by Terraform.</p>
+
+<p><strong>Consider keeping it.</strong> These constraints are the baseline every
+later week assumes, and the three Compute ones were promoted to enforce in Week
+04. Commands are in the <a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-03-org-policy-guardrails/LAB.md">lab guide</a>.</p>
+
+<p><strong>Ongoing charges:</strong> none.</p>
+
+<h3>Key takeaways</h3>
+
+<ol>
+  <li><strong><code>gcloud org-policies list</code> shows what is set, not what is
+    enforced.</strong> Always read <code>--effective</code> before concluding a
+    constraint is unset — seven were already in force here.</li>
+  <li><strong>One success followed by one failure is not a measurement.</strong>
+    The enforcement lag was first written up from n=1; repeating it three times
+    produced a range and revealed the reverse lag.</li>
+  <li><strong>A clean plan is not evidence an apply will work</strong>, because a
+    plan exercises only read paths.</li>
+  <li><strong>Dry-run violations land in the PROJECT audit log</strong>, and the
+    record reports <code>POLICY_VIOLATED</code> on a request that succeeded —
+    which will trip any alert keyed on a non-zero status code.</li>
+  <li><strong>A script that degrades a control must restore it in
+    <code>finally</code></strong>. The crash is never the damage; the failure
+    path is.</li>
+</ol>
+
+<h3>References</h3>
 
 <ul>
-  <li><strong>Read the effective policy, not the set policy.</strong> If you take
-  one thing from this week, take <code>--effective</code>. The default command
-  answers a question you were not asking.</li>
-  <li><strong>When two of your own tools disagree about a number, that is the
-  finding.</strong> Twenty-six against twelve. I saw both figures on the same
-  screen, read past the gap, and shipped a guardrail that was already
-  live.</li>
-  <li><strong>Dry run turns a guess into a decision.</strong> Two fields &mdash;
-  <code>dryRunResult</code> and <code>liveResult</code> &mdash; are the
-  difference between enforcing a constraint because you hope it is safe and
-  enforcing it because you watched what it would have blocked.</li>
-  <li><strong>Write the exception down.</strong> An undocumented exception
-  becomes a request to disable the policy at the level it was set, which is the
-  organization.</li>
-  <li><strong>A constraint you cannot demonstrate is one you are taking on
-  faith.</strong> Pick a target you can afford to violate.</li>
-  <li><strong>Constraints that force better code are a gift.</strong> Losing
-  <code>-parallelism</code> produced a configuration that is correct for whoever
-  runs it next, rather than one that depends on remembering a flag.</li>
-  <li><strong>One observation is not a measurement.</strong> The enforcement lag
-  in this post started as a single success followed by a single failure, written
-  up with the same confidence as everything reproducible around it. Repeating it
-  three times turned a vague "about two minutes" into 75 to 100 seconds, and
-  turned up the reverse lag &mdash; which is the more useful number &mdash;
-  entirely by accident.</li>
+  <li><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-03-org-policy-guardrails/LAB.md">Lab guide</a> &mdash; baseline read, the 409, lag measurement, known limitations</li>
+  <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/org-policy-constraints">Organization policy constraints</a></li>
+  <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/understanding-managed-constraints">Managed constraints</a></li>
+  <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/dry-run-policy">Dry-run policies</a></li>
+  <li><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/tree/main/week-03-org-policy-guardrails">Source repository</a></li>
 </ul>
-
-<p>Next week the hierarchy gets something to hold. Everything so far has been
-control plane &mdash; who may act, and what the platform refuses. That is the
-right order, and it is nearly finished.</p>
 </div>
 
 </div>

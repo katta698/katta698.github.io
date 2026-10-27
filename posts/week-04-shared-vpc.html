@@ -23,477 +23,405 @@ verified_claims:
 
 <div class="post-header">
   <div class="post-eyebrow">GCP Platform Engineering Lab &middot; Week 4 of 58</div>
-  <div class="post-title">The identity I built could not do this week</div>
-  <div class="post-subtitle">Three weeks of control plane, and the first time I asked it to build something that runs, it stopped. The CI identity from Week 2 held six roles and not one compute permission &mdash; and the fix could not go in this week's code, because the one rule it would have broken is the rule the whole arrangement rests on.</div>
+  <div class="post-title">Shared VPC hub and spoke</div>
+  <div class="post-subtitle">The first week anything actually runs — one network owned centrally, one workload project borrowing a subnet, and a firewall policy that has to be attached as well as created.</div>
   <div class="post-meta">
     <span>13 September 2026</span>
-    <span>Shared VPC &middot; Cloud NGFW &middot; Terraform</span>
-    <span>~$0 &middot; and four choices keep it that way</span>
+    <span>Shared VPC &middot; Cloud NGFW &middot; Compute Engine</span>
+    <span>~$0</span>
   </div>
 </div>
 
 <div class="toc">
   <h3>&#128203; In This Post</h3>
   <ol>
-    <li><a href="#why">Why — The Problem This Solves</a></li>
-    <li><a href="#skills">What You Need to Know — Skills &amp; Tools</a></li>
-    <li><a href="#architecture">Architecture — How It Fits Together</a></li>
-    <li><a href="#build">How We Built It — Step by Step</a></li>
-    <li><a href="#challenges">Challenges — What Actually Went Wrong</a></li>
-    <li><a href="#security">Security — Controls at Every Layer</a></li>
-    <li><a href="#cost">Cost</a></li>
-    <li><a href="#cleanup">Cleanup</a></li>
-    <li><a href="#references">References</a></li>
-    <li><a href="#takeaways">Key Takeaways</a></li>
+    <li><a href="#overview">Lab Overview</a></li>
+    <li><a href="#services">Cloud Services and Concepts</a></li>
+    <li><a href="#architecture">Architecture and Workflow</a></li>
+    <li><a href="#prerequisites">Prerequisites</a></li>
+    <li><a href="#build">Implementation</a></li>
+    <li><a href="#validation">Validation and Evidence</a></li>
+    <li><a href="#security">Security and Cost</a></li>
+    <li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+    <li><a href="#takeaways">Cleanup and Key Takeaways</a></li>
   </ol>
 </div>
 
-<div class="section" id="why">
-<h2>Why — The Problem This Solves</h2>
+<div class="section" id="overview">
+<h2>Lab Overview</h2>
 
-<p>This week was number twelve until nine days ago. It moved, and the reason is
-a dependency the original order had backwards.</p>
+<p><strong>The problem.</strong> Three weeks of hierarchy and policy, and
+nothing was running. A workload needs a network, and the obvious approach — a
+VPC per project — multiplies the number of places someone has to get firewall
+rules right, and makes private connectivity between projects a routing problem
+you have to solve yourself.</p>
 
-<p>Week 3 finished with three constraints sitting in dry run:
-<code>requireOsLogin</code>, <code>blockProjectSshKeys</code>,
-<code>disableSerialPortAccess</code>. A dry-run policy is evaluated on every
-request and logged when it <em>would</em> have denied &mdash; which means with no
-Compute Engine resource anywhere in the organization, it evaluates nothing and
-logs nothing. Those three could never be promoted on evidence, because there was
-no evidence to be had. Week 3's unfinished business was parked behind eight weeks
-of more control plane.</p>
+<p><strong>Objective.</strong> Put one network in a central host project and let
+a workload project attach to it, so the workload gets private addressing without
+owning any network configuration. Then filter it with a firewall policy applied
+at the folder, above the project.</p>
 
-<p>So this week exists to make the first request those rules can judge.</p>
+<p><strong>Expected outcome.</strong> A virtual machine in one project drawing
+its IP address from a subnet in another, reachable only through Identity-Aware
+Proxy, with no external address at all — and a measured cost of effectively
+zero.</p>
 
-<p>And the shape of the thing that makes it matters. One project owning the
-network, another owning the workload, and nothing owning both.</p>
+<div class="table-scroll">
+<table>
+  <tbody>
+    <tr><th>Difficulty</th><td>Advanced &mdash; five roles, two of which are not obvious, and a quota-project cascade</td></tr>
+    <tr><th>Deployment</th><td>Terraform via HCP Terraform remote execution, Workload Identity Federation</td></tr>
+    <tr><th>Reproduce it</th><td><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-04-shared-vpc/LAB.md">Lab guide</a> &mdash; roles, the free-tier shape, the quota cascade</td></tr>
+    <tr><th>Cost</th><td>~$0 &mdash; and that depends on four choices, any one of which starts billing</td></tr>
+  </tbody>
+</table>
+</div>
 </div>
 
-<div class="section" id="skills">
-<h2>What You Need to Know — Skills &amp; Tools</h2>
-<div class="grid-2">
-  <div class="card">
-    <h3>Google Cloud</h3>
-    <ul>
-      <li><strong>Shared VPC</strong> — host and service projects, and <code>compute.xpnAdmin</code>, which is grantable only at the organization</li>
-      <li><strong>VPC networks and subnets</strong> — custom mode, with ranges someone chose</li>
-      <li><strong>Cloud Next Generation Firewall</strong> — hierarchical policies on organization and folder nodes</li>
-      <li><strong>Service Usage</strong> — the quota project every client-based call is attributed to</li>
-    </ul>
-  </div>
-  <div class="card">
-    <h3>Tooling</h3>
-    <ul>
-      <li><strong>Terraform</strong> — <code>google_compute_shared_vpc_host_project</code> and its service-project counterpart</li>
-      <li><strong>gcloud compute networks</strong> — for reading what actually exists rather than what state claims</li>
-      <li><strong>CIDR planning</strong> — enough to write an address plan down before Google picks one</li>
-    </ul>
-  </div>
+<div class="section" id="services">
+<h2>Cloud Services and Concepts</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Service</th><th>Purpose in this lab</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Shared VPC</strong></td><td>Lets a <em>host</em> project own a network that <em>service</em> projects attach to. The workload gets addressing without owning configuration.</td></tr>
+    <tr><td><strong>Custom-mode VPC</strong></td><td>A network with no subnets until you create them, so every range is deliberate. Auto mode would create one subnet per region.</td></tr>
+    <tr><td><strong>Cloud NGFW hierarchical policies</strong></td><td>Firewall rules applied at a <em>folder</em>, above every project in it, so a project cannot opt out.</td></tr>
+    <tr><td><strong>Identity-Aware Proxy</strong></td><td>SSH to an instance with no public address, brokered by Google and governed by IAM.</td></tr>
+    <tr><td><strong>Compute Engine</strong></td><td>One <code>e2-micro</code> — the thing that proves the networking works.</td></tr>
+  </tbody>
+</table>
 </div>
 
-<h3>Concepts to understand before starting</h3>
-
-<div class="tag-grid">
-  <span>The host owns the network</span>
-  <span>Custom mode, never auto mode</span>
-  <span>Hierarchical rules evaluate first</span>
-  <span>goto_next hands the decision down</span>
-  <span>Creating ≠ attaching</span>
-</div>
-
-
-<p><strong>Shared VPC splits ownership of the network from ownership of what runs
-on it.</strong> A <em>host</em> project owns the VPC and its subnets. <em>Service</em>
-projects are attached to it and place resources into those subnets without owning
-any network of their own. The platform team holds addressing and firewall policy;
-application teams hold their workloads.</p>
-
-<p><strong>Custom mode, not auto mode.</strong> An auto-mode VPC creates a subnet
-in every region Google has &mdash; now, and in every region added later &mdash;
-each with a range nobody chose. That is an address plan decided by Google's
-expansion schedule. Custom mode means the only ranges that exist are the ones
-written down.</p>
-
-<p><strong>Hierarchical firewall policies attach to organization and folder
-nodes</strong>, and are evaluated <em>before</em> any VPC firewall rule. An
-<code>allow</code> or <code>deny</code> at that level is final;
-<code>goto_next</code> is what hands the decision downward. A policy written
-entirely in allow/deny at the top takes every firewall decision in the
-organization away from the teams below it.</p>
-
-<p>One thing worth checking rather than assuming, because the opposite is a
-plausible thing to write: the product is now <strong>Cloud Next Generation
-Firewall</strong>, and <strong>VPC firewall rules are not deprecated</strong>.
-The reference documentation presents them and network firewall policies as
-coexisting, and recommends neither over the other.</p>
+<p><strong>The concept worth getting straight: host and service projects.</strong>
+In Shared VPC, one project <em>owns</em> the network and others <em>borrow</em>
+it. A virtual machine in a service project gets an address from a subnet that
+lives in the host project, and the service project's administrators cannot
+change that subnet, its routes or its firewall rules. Network configuration
+becomes a central concern and workload teams get addressing without it — which
+is the opposite trade from a VPC per project, where every team owns a firewall
+they probably have not thought about.</p>
 </div>
 
 <div class="section" id="architecture">
-<h2>Architecture — How It Fits Together</h2>
+<h2>Architecture and Workflow</h2>
 
-<p>The network hub project has existed since Week 1 and had never had a VPC in
-it &mdash; Week 1 set <code>auto_create_network = false</code>, so not even the
-permissive default network Google would otherwise create.</p>
-
-<figure class="screenshot">
-  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-04-shared-vpc/docs/blog/screenshots/00-before-no-vpc.png"
-       alt="Google Cloud console showing the VPC networks list for the network hub project, empty"/>
-  <figcaption>The host project before this week. Empty, deliberately, since
-  Week 1 &mdash; captured before the apply, because an empty list is exactly the
-  state that stops existing the moment you deploy.</figcaption>
-</figure>
-
-<svg viewBox="0 0 880 470" xmlns="http://www.w3.org/2000/svg" role="img"
-     aria-label="Shared VPC hub and spoke: the host project owns the hub VPC with dev and prod subnets, the service project under workloads slash dev owns the VM which draws its address from the host's dev subnet, and a hierarchical firewall policy attaches at the workloads folder"
-     style="width:100%;height:auto;background:#ffffff;border:1px solid #e4e7ec;border-radius:8px">
+<svg viewBox="0 0 880 340" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="A host project owns a custom-mode VPC with two subnets. A service project in the workloads folder attaches to it, and its virtual machine draws an address from the host's dev subnet with no external IP. A hierarchical firewall policy attached to the workloads folder allows IAP ingress on port 22 and denies everything else."
+     style="width:100%;height:auto;border:1px solid #e4e7ec;border-radius:8px">
+  <rect x="0" y="0" width="880" height="340" fill="#ffffff"/>
   <defs>
     <marker id="w4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#5f6368"/>
     </marker>
-    <marker id="w4b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4285F4"/>
-    </marker>
   </defs>
+  <text x="20" y="28" font-family="Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#202124">One network, owned centrally, borrowed by a workload</text>
 
-  <text x="20" y="26" font-family="Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#202124">Week 4 &#8212; one project owns the network, another owns the workload</text>
+  <rect x="24" y="76" width="300" height="118" rx="7" fill="#ffffff" stroke="#1a73e8" stroke-width="1.6"/>
+  <text x="40" y="100" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="700" fill="#202124">host project &mdash; net-hub</text>
+  <text x="40" y="120" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">hub &mdash; custom-mode VPC</text>
+  <text x="40" y="142" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">dev-us-central1 &nbsp; 10.20.0.0/24</text>
+  <text x="40" y="160" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">prod-us-central1 10.20.1.0/24 (reserved)</text>
+  <text x="40" y="182" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">flow logs &middot; Private Google Access</text>
 
-  <!-- host -->
-  <rect x="40" y="48" width="360" height="188" rx="8" fill="#e8f0fe" stroke="#4285F4" stroke-width="1.6"/>
-  <text x="56" y="70" font-family="Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#202124">HOST project &#183; platform folder</text>
-  <text x="56" y="86" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">owns all addressing &#183; runs nothing</text>
+  <line x1="324" y1="135" x2="408" y2="135" stroke="#5f6368" stroke-width="1.3" marker-end="url(#w4a)"/>
+  <text x="330" y="128" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">attached</text>
 
-  <rect x="56" y="96" width="328" height="124" rx="6" fill="#ffffff" stroke="#4285F4" stroke-width="1.2"/>
-  <text x="68" y="116" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#4285F4">hub &#183; custom-mode VPC</text>
-  <text x="68" y="131" font-family="Segoe UI,Arial,sans-serif" font-size="9" fill="#5f6368">auto_create_subnetworks = false</text>
+  <rect x="408" y="76" width="300" height="118" rx="7" fill="#ffffff" stroke="#5f6368" stroke-width="1.3"/>
+  <text x="424" y="100" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="700" fill="#202124">service project &mdash; dev-app-01</text>
+  <text x="424" y="120" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">dev-app-01 &mdash; e2-micro</text>
+  <text x="424" y="142" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">address 10.20.0.2 &mdash; from the HOST's subnet</text>
+  <text x="424" y="164" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#b00020">no external IP</text>
+  <text x="424" y="182" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">owns no network configuration</text>
 
-  <rect x="68" y="140" width="146" height="40" rx="5" fill="#e6f4ea" stroke="#0F9D58" stroke-width="1.2"/>
-  <text x="78" y="157" font-family="Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#0F9D58">dev-us-central1</text>
-  <text x="78" y="171" font-family="Segoe UI,Arial,sans-serif" font-size="9" fill="#5f6368">10.20.0.0/24 &#183; flow logs</text>
+  <rect x="24" y="222" width="684" height="72" rx="7" fill="#ffffff" stroke="#b00020" stroke-width="1.4"/>
+  <text x="40" y="246" font-family="Segoe UI,Arial,sans-serif" font-size="11.5" font-weight="700" fill="#202124">hierarchical firewall policy &mdash; attached to the workloads FOLDER</text>
+  <text x="40" y="266" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">1000  allow ingress  35.235.240.0/20  tcp:22   (Identity-Aware Proxy)</text>
+  <text x="40" y="284" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">65000 deny  ingress  0.0.0.0/0        all</text>
 
-  <rect x="226" y="140" width="146" height="40" rx="5" fill="#f1f3f4" stroke="#dadce0" stroke-width="1.2"/>
-  <text x="236" y="157" font-family="Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#5f6368">prod-us-central1</text>
-  <text x="236" y="171" font-family="Segoe UI,Arial,sans-serif" font-size="9" fill="#5f6368">10.20.1.0/24 &#183; reserved</text>
-
-  <text x="68" y="200" font-family="Segoe UI,Arial,sans-serif" font-size="9" fill="#5f6368">Private Google Access on &#8212; without it a VM with</text>
-  <text x="68" y="212" font-family="Segoe UI,Arial,sans-serif" font-size="9" fill="#5f6368">no external address reaches no Google API at all.</text>
-
-  <!-- service -->
-  <rect x="490" y="48" width="350" height="188" rx="8" fill="#fef7e0" stroke="#F4B400" stroke-width="1.6"/>
-  <text x="506" y="70" font-family="Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#202124">SERVICE project &#183; workloads/dev</text>
-  <text x="506" y="86" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">owns the workload &#183; owns no network</text>
-
-  <rect x="506" y="104" width="318" height="80" rx="6" fill="#ffffff" stroke="#dadce0" stroke-width="1.2"/>
-  <text x="518" y="124" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">dev-app-01 &#183; e2-micro</text>
-  <text x="518" y="140" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#0F9D58">internal 10.20.0.2 &#8212; from the HOST's subnet</text>
-  <text x="518" y="155" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" font-weight="700" fill="#DB4437">no external IP</text>
-  <text x="518" y="170" font-family="Segoe UI,Arial,sans-serif" font-size="9" fill="#5f6368">enable-oslogin = TRUE &#183; pd-standard 10GB</text>
-
-  <text x="506" y="204" font-family="Segoe UI,Arial,sans-serif" font-size="9" fill="#5f6368">networkUser granted on the SUBNET, not the project &#8212;</text>
-  <text x="506" y="216" font-family="Segoe UI,Arial,sans-serif" font-size="9" fill="#5f6368">so dev can use dev and cannot reach prod.</text>
-
-  <line x1="400" y1="160" x2="486" y2="160" stroke="#4285F4" stroke-width="1.8" marker-end="url(#w4b)"/>
-  <text x="404" y="152" font-family="Segoe UI,Arial,sans-serif" font-size="9" fill="#4285F4">borrows a subnet</text>
-
-  <!-- firewall policy -->
-  <rect x="40" y="260" width="800" height="86" rx="8" fill="#fce8e6" stroke="#DB4437" stroke-width="1.5"/>
-  <text x="56" y="282" font-family="Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#202124">hierarchical firewall policy &#183; attached at the <tspan font-weight="700" fill="#DB4437">workloads folder</tspan></text>
-  <text x="56" y="300" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">1000&#160;&#160;allow&#160;&#160;INGRESS&#160;&#160;35.235.240.0/20 tcp:22&#160;&#160;&#8212; IAP only. No bastion, no public address.</text>
-  <text x="56" y="315" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">65000&#160;deny&#160;&#160;&#160;INGRESS&#160;&#160;0.0.0.0/0 all&#160;&#160;&#8212; everything else, before any VPC rule is consulted.</text>
-  <text x="56" y="333" font-family="Segoe UI,Arial,sans-serif" font-size="9" fill="#5f6368">Governs every project under workloads, including ones that do not exist yet. That is what makes it different from a VPC firewall rule.</text>
-
-  <!-- footer -->
-  <rect x="40" y="362" width="800" height="86" rx="8" fill="#f8f9fa" stroke="#dadce0" stroke-width="1"/>
-  <text x="56" y="384" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">What the CI identity could not do</text>
-  <text x="56" y="402" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">tf-apply held six roles &#8212; folders, projects, service usage, service accounts, org policy &#8212; and no compute permission at all.</text>
-  <text x="56" y="417" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">The grants could not go in this week's configuration: an identity must not manage its own grants. They went into Week 2,</text>
-  <text x="56" y="432" font-family="Segoe UI,Arial,sans-serif" font-size="9.5" fill="#5f6368">the human-run layer, applied from a person's credentials. Widening CI became a separate, reviewable act.</text>
+  <text x="24" y="320" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">Applied above the project, so a project cannot opt out. Creating the policy and ATTACHING it are different permissions.</text>
 </svg>
 
-<figure class="screenshot">
-  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-04-shared-vpc/docs/blog/screenshots/01-hub-vpc-subnets.png"
-       alt="The hub VPC detail page showing custom subnet mode with the dev and prod subnets and their ranges"/>
-  <figcaption>Two subnets, both written down. <code>prod</code> is attached to
-  nothing and exists anyway &mdash; reserving the range is the point, because an
-  address plan made in a hurry six months from now takes whatever is free rather
-  than what was intended.</figcaption>
-</figure>
+<h3>The flow</h3>
+
+<ol>
+  <li>Create a custom-mode VPC in the host project, with no subnets until each
+    range is chosen deliberately.</li>
+  <li>Create two regional subnets with flow logs and Private Google Access —
+    one for dev, one reserved for prod.</li>
+  <li>Enable the host project as a Shared VPC host and attach the workload
+    project as a service project.</li>
+  <li>Grant the service project's identities use of <em>one</em> subnet, not the
+    whole network.</li>
+  <li>Attach a hierarchical firewall policy to the workloads folder: allow IAP's
+    range on port 22, deny everything else.</li>
+  <li>Create one <code>e2-micro</code> with no external address, and confirm it
+    draws its IP from the host project's subnet.</li>
+</ol>
+
+<h3>Two decisions worth naming</h3>
+
+<p><strong>The firewall policy sits on the folder, not the project.</strong> A
+project-level rule can be changed by whoever administers the project. A
+hierarchical policy above it cannot be opted out of, which is the point of
+putting it there.</p>
+
+<p><strong>No external IP, deliberately.</strong> It is both a security choice
+and a cost one — an ephemeral public address has been billed per hour since
+2020, so "no public IP" is simultaneously the hardened option and the free one.</p>
+</div>
+
+<div class="section" id="prerequisites">
+<h2>Prerequisites</h2>
+
+<ul>
+  <li><strong>A host project</strong> with <code>compute</code> and
+    <code>oslogin</code> enabled — Week 1 supplies one with
+    <code>auto_create_network = false</code>.</li>
+  <li><strong>A free billing slot</strong> for the spoke project.</li>
+  <li><strong>Five roles</strong>, two of which are easy to miss:
+    <code>compute.xpnAdmin</code> (organization-scoped, unavoidably),
+    <code>compute.networkAdmin</code>, <code>compute.instanceAdmin.v1</code>,
+    <code>compute.orgSecurityPolicyAdmin</code> to <em>create</em> a firewall
+    policy and <code>compute.orgSecurityResourceAdmin</code> to
+    <em>attach</em> it.</li>
+  <li><strong>A quota project</strong> with <code>cloudresourcemanager</code>,
+    <code>serviceusage</code> and <code>cloudbilling</code> enabled — needed
+    because a folder-scoped firewall policy belongs to no project.</li>
+  <li><strong>Terraform 1.9+</strong> with <code>hashicorp/google</code>
+    <code>~&gt; 6.0</code>.</li>
+</ul>
+
+<p>Exact roles, the quota cascade and the free-tier conditions are in the
+<a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-04-shared-vpc/LAB.md">lab guide</a>.</p>
 </div>
 
 <div class="section" id="build">
-<h2>How We Built It — Step by Step</h2>
+<h2>Implementation</h2>
 
-<p>The build order was forced by something I did not anticipate, and it is the
-most interesting thing in the week.</p>
+<p>Fourteen resources. Commands are in the <a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-04-shared-vpc/LAB.md">lab guide</a>.</p>
 
-<h3>The CI identity could not do this week</h3>
-
-<p>Reading state before writing code &mdash; which this lab now does as a rule
-&mdash; turned up that <code>tf-apply</code> held six roles covering folders,
-projects, service usage, service accounts and organization policy, and
-<strong>not one compute permission</strong>. It could not create a network,
-enable Shared VPC hosting, write a firewall policy or create an instance.</p>
-
-<p>The obvious fix is to grant those roles in this week's configuration, next to
-the resources that need them. That is the one thing this lab will not do. Week 2
-established the rule and the reason: <strong>an identity must not manage its own
-grants.</strong> A configuration applied by <code>tf-apply</code> that also
-widens <code>tf-apply</code> is one where CI can give itself anything it later
-decides it wants, and no reviewer sees a difference between that and a
-legitimate feature.</p>
-
-<p>So the grants went into Week 2's configuration &mdash; the human-run layer,
-applied from a person's credentials &mdash; and this week consumes them. That is
-the two-layer split working rather than an obstacle to route around. It also
-means every widening of CI is a separate, separately-reviewed act instead of a
-line buried in whichever week happened to need it.</p>
-
-<p>Scope where scope was possible: <code>compute.networkAdmin</code> and
-<code>compute.instanceAdmin.v1</code> on folders, not the organization. One role
-resisted. <strong><code>compute.xpnAdmin</code> cannot be folder-scoped</strong>
-&mdash; designating a project as a Shared VPC host is checked at the
-organization &mdash; so it is now the widest permission this lab has given CI,
-and that is worth stating plainly rather than glossing.</p>
-
-<figure class="screenshot">
-  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-04-shared-vpc/docs/blog/screenshots/02-shared-vpc-attachment.png"
-       alt="The Shared VPC page for the host project showing the attached service project"/>
-  <figcaption>Host enablement and attachment are two separate operations. A host
-  with no attachments lends nothing.</figcaption>
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-04-shared-vpc/docs/blog/screenshots/04-repo-structure.png" alt="Repository structure: LAB.md, terraform, scripts and docs, each with a one-line responsibility." loading="lazy">
+  <figcaption>How the week is organised. <a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/tree/main/week-04-shared-vpc">Full source on GitHub</a>.</figcaption>
 </figure>
 
-<h3>The instance, and why every attribute of it is a cost decision</h3>
-
-<p>One <code>e2-micro</code>, <code>us-central1</code>, <code>pd-standard</code>
-10&nbsp;GB, and no external IP. None of those is a preference:</p>
-
-<ul>
-  <li><code>e2-micro</code> &mdash; the only machine type in the Always Free tier</li>
-  <li><code>us-central1</code> &mdash; the free tier covers <code>us-west1</code>,
-  <code>us-central1</code> and <code>us-east1</code> only</li>
-  <li><code>pd-standard</code> &mdash; the free 30&nbsp;GB-month allowance is
-  <strong>standard</strong> disk. <code>pd-balanced</code> is the default and
-  bills from the first byte</li>
-  <li><strong>no external IP</strong> &mdash; an external IPv4 address is billed
-  per hour whether traffic flows or not, and is not in the free tier</li>
-</ul>
-
-<p>Get any one wrong and a free week quietly becomes a billed one. The
-validation script asserts the absent external address as a <em>cost</em> check
-rather than a connectivity one, because an accidental external IP is a bill that
-appears without anything appearing broken.</p>
-
-<figure class="screenshot">
-  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-04-shared-vpc/docs/blog/screenshots/03-instance-no-external-ip.png"
-       alt="VM instances list showing dev-app-01 with internal IP 10.20.0.2 and an empty External IP column"/>
-  <figcaption>Internal IP <strong>10.20.0.2</strong>, External IP
-  <strong>empty</strong>. The address comes from a subnet in a different project
-  &mdash; that one value is the whole of Shared VPC.</figcaption>
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-04-shared-vpc/docs/blog/screenshots/00-before-no-vpc.png" alt="Google Cloud console showing the host project with no VPC networks." loading="lazy">
+  <figcaption><strong>The starting point, which cannot be recaptured:</strong> the host project with zero networks. Week 1 created it with <code>auto_create_network = false</code>, so the permissive default VPC never existed and nothing had to be deleted.</figcaption>
 </figure>
 
-<h3>Then the point of the week</h3>
+<h3>Step 1 &mdash; A custom-mode network, then subnets chosen deliberately</h3>
 
-<p>With a Compute resource finally in existence, Week 3's three constraints had
-something to evaluate and were promoted out of dry run. The effective policy, at
-three scopes, evaluated by Google rather than asserted by me:</p>
+<p><strong>Why:</strong> auto mode creates a subnet in every region with ranges
+you did not choose. Custom mode starts empty, so each range is a decision.</p>
 
-<pre><code>constraint                                 org    dev    prod
-compute.managed.requireOsLogin             True   True   True
-compute.managed.blockProjectSshKeys        True   True   True
-compute.managed.disableSerialPortAccess    True   False  True</code></pre>
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-04-shared-vpc/docs/blog/screenshots/01-hub-vpc-subnets.png" alt="The hub VPC with two regional subnets, flow logs and Private Google Access." loading="lazy">
+  <figcaption><strong>Validates Step 1:</strong> custom mode, two subnets, flow logs and Private Google Access on the dev range. The prod range is reserved and attached to nothing.</figcaption>
+</figure>
 
-<p>One row, one column. Week 3 wrote a deliberate exception at
-<code>workloads/dev</code> for serial console access &mdash; because the thing
-the constraint defends against and the thing a developer needs when a machine
-will not boot are the same thing. Until this week that was a claim. Now it is
-inheritance everywhere else and an override exactly where it was written.</p>
+<h3>Step 2 &mdash; Make the host a host, and attach the spoke</h3>
+
+<p><strong>Why:</strong> this one value is the whole of Shared VPC — a project
+is a host, and others may attach to it. Note that
+<code>compute.xpnAdmin</code> <strong>cannot be folder-scoped</strong>; host
+enablement is checked at the organization, so it is the widest grant the
+pipeline holds.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-04-shared-vpc/docs/blog/screenshots/02-shared-vpc-attachment.png" alt="Shared VPC page showing the host project and the attached service project." loading="lazy">
+  <figcaption><strong>Validates Step 2:</strong> the spoke is attached. Subnet IAM then grants use of <em>one</em> subnet rather than the whole network.</figcaption>
+</figure>
+
+<h3>Step 3 &mdash; Filter above the project, then run something</h3>
+
+<p><strong>Why:</strong> a hierarchical policy on the folder cannot be opted out
+of by a project administrator. <strong>Watch for:</strong> creating the policy
+and <em>attaching</em> it are different permissions, and only the attachment
+filters anything.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-04-shared-vpc/docs/blog/screenshots/03-instance-no-external-ip.png" alt="The virtual machine showing an internal address from the host project's subnet and no external IP." loading="lazy">
+  <figcaption><strong>Validates the whole week:</strong> an instance in the service project holding <code>10.20.0.2</code> — an address from a subnet in a <em>different</em> project — with no external IP. The borrowing works.</figcaption>
+</figure>
 </div>
 
-<div class="section" id="challenges">
-<h2>Challenges — What Actually Went Wrong</h2>
+<div class="section" id="validation">
+<h2>Validation and Evidence</h2>
 
-<div class="challenge-card">
-  <h3>1. Creating a firewall policy and attaching it are different roles</h3>
-  <p>The policy created cleanly. The association was refused:</p>
-  <pre><code>Error 403: Required 'compute.organizations.setFirewallPolicy'
-permission for 'folders/...', forbidden</code></pre>
-  <p>The error names a permission and no role that grants it. Reading both role
-  definitions settled it:</p>
-  <pre><code>roles/compute.orgSecurityPolicyAdmin    firewallPolicies.create/update/use
-                                        NOT organizations.setFirewallPolicy
-roles/compute.orgSecurityResourceAdmin  organizations.setFirewallPolicy</code></pre>
-  <p>The split is reasonable once stated &mdash; a policy attached to nothing is
-  inert, so attachment is the act that actually changes behaviour. Nothing in the
-  names says so.</p>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
+  <tbody>
+    <tr><td>Infrastructure deployed</td><td>14 resources</td><td>14 added, 0 changed, 0 destroyed</td><td>Pass</td></tr>
+    <tr><td>Network is custom mode</td><td>not auto</td><td>custom</td><td>Pass</td></tr>
+    <tr><td>Host enabled and spoke attached</td><td>both</td><td>both</td><td>Pass</td></tr>
+    <tr><td><strong>Instance draws its address from another project's subnet</strong></td><td>an address in <code>10.20.0.0/24</code></td><td><code>10.20.0.2</code></td><td>Pass</td></tr>
+    <tr><td>Free-tier shape</td><td>all four conditions</td><td><code>e2-micro</code>, <code>us-central1</code>, <code>pd-standard</code> 10 GB, no external IP</td><td>Pass</td></tr>
+    <tr><td>Firewall policy <strong>attached</strong>, not merely created</td><td>association present on the folder</td><td>attached</td><td>Pass</td></tr>
+    <tr><td>Week 03's dry-run constraints now have something to evaluate</td><td>violations reported</td><td>promoted to enforce on the evidence</td><td>Pass</td></tr>
+    <tr><td>SSH actually reaches the instance through IAP</td><td>a session established</td><td><strong>not tested</strong> — the rule and the association were verified, a connection was not made</td><td><strong>Unverified</strong></td></tr>
+  </tbody>
+</table>
 </div>
 
-<div class="challenge-card">
-  <h3>2. A resource owned by no project still needs a project</h3>
-  <p>A hierarchical firewall policy hangs off a folder. The Compute API is
-  client-based, meaning it attributes calls to the <em>caller's</em> quota
-  project rather than the resource's &mdash; and with none set:</p>
-  <pre><code>Error 404: The resource 'projects/null' was not found</code></pre>
-  <p>Which reads like a missing resource rather than a missing header. The fix is
-  <code>user_project_override</code> plus <code>billing_project</code> on the
-  provider; the provider does not send <code>X-Goog-User-Project</code> unless
-  the override is true, so setting the billing project alone does nothing.</p>
-  <p>The bootstrap hit the identical thing on the Budgets API in August. Knowing
-  that did not make this recognisable, because the error text is different and
-  points somewhere else.</p>
-</div>
+<p><strong>Row four is the week.</strong> A virtual machine in one project
+holding an address from a subnet in another is Shared VPC working — everything
+else is scaffolding around that one fact.</p>
 
-<div class="challenge-card">
-  <h3>3. And that fix cascades</h3>
-  <p>Once every call is attributed to the host project, that project needs APIs
-  enabled that it does not itself use. Three of them, discovered one failed apply
-  at a time: <code>cloudresourcemanager</code>, then <code>serviceusage</code>,
-  then <code>cloudbilling</code>.</p>
-  <p>Each is chicken-and-egg &mdash; the call that enables the API is itself
-  attributed to the project that needs it &mdash; so the first enablement of each
-  had to be done by hand before Terraform could manage it.</p>
-</div>
-
-<div class="challenge-card">
-  <h3>4. A billing account caps how many projects it will fund</h3>
-  <p>Project creation failed with <code>Cloud billing quota exceeded</code> at
-  five linked projects. The number is not documented anywhere I could find; it
-  surfaces as a failure.</p>
-  <p>Freeing a slot meant unlinking an old sandbox project &mdash; and the
-  organization administrator <strong>could not do it</strong>, because that
-  project sits outside the organization. Only the identity that owns it could.
-  A useful reminder that "I am the admin" is scoped to a hierarchy, and things
-  outside that hierarchy do not care.</p>
-</div>
-
-<div class="challenge-card">
-  <h3>5. Enforcement lag is a property of the policy system, not of one constraint</h3>
-  <p>Week 3 measured 75&ndash;100 seconds between writing a policy and it
-  actually refusing anything, on a custom constraint. I assumed that was specific
-  to custom constraints.</p>
-  <p>It is not. The first attempt to violate <code>blockProjectSshKeys</code>
-  &mdash; a Google-managed constraint, a completely different generation &mdash;
-  <strong>succeeded</strong>, one to two minutes after promotion. The same request
-  minutes later was refused. Two different constraint types, same window.</p>
-  <p>Worth internalising before you test a control and conclude it does not work.</p>
-</div>
-
-<div class="challenge-card">
-  <h3>6. Enforcement is not retroactive, and Google says so in the refusal</h3>
-  <p>The denial text carries a caveat that deserves more attention than it gets:</p>
-  <blockquote>Enforcing this constraint does not affect existing VMs where
-  <code>block-project-ssh-keys</code> is already set to false; they will retain
-  access unless their metadata is updated.</blockquote>
-  <p>A machine weakened before the rule went on stays weakened. This is the same
-  property that put governance before workloads in this roadmap in the first
-  place &mdash; organization policy is evaluated at request time, and a
-  constraint added later does not go back and fix what already exists.</p>
-</div>
+<p>Row eight is the gap. The IAP ingress rule exists and the policy is attached,
+which the console confirms; <em>no SSH session was ever established through
+it</em>. The path is configured and unexercised, and calling it "SSH works" would
+be a claim the evidence does not support.</p>
 </div>
 
 <div class="section" id="security">
-<h2>Security — Controls at Every Layer</h2>
+<h2>Security and Cost</h2>
 
-<p><strong>No external address, and no bastion either.</strong> SSH arrives
-through Identity-Aware Proxy from <code>35.235.240.0/20</code>, which is the one
-ingress path the firewall policy leaves open. IAP brokers the connection,
-authenticates it against IAM and logs it. A bastion host would be a second
-machine to patch, and a public address to defend.</p>
+<h3>Security decisions</h3>
 
-<p><strong>Default-deny at the folder, before any VPC rule.</strong> The
-hierarchical policy governs every project under <code>workloads</code> including
-ones that do not exist yet. A VPC firewall rule protects one network; this
-protects a branch of the hierarchy.</p>
-
-<p><strong><code>networkUser</code> granted on the subnet, not the
-project.</strong> At project scope, the service project could place resources in
-any subnet the host owns &mdash; including <code>prod</code>. Scoped to one
-subnet, dev can use dev.</p>
-
-<p><strong>The widening of CI is visible.</strong> Six roles became eleven, in a
-configuration a human applies, with the reasoning written next to each one. The
-alternative &mdash; granting them where they were needed &mdash; would have been
-shorter, would have worked, and would have made CI its own privilege
-administrator.</p>
-
-<p>One thing I will flag rather than dress up: <code>compute.xpnAdmin</code> is
-organization-wide because the API gives no choice. It permits designating any
-project in the organization as a Shared VPC host and attaching any project to
-it. It does not permit changing the networks themselves. That is the honest
-boundary.</p>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Control</th><th>Decision and trade-off</th></tr></thead>
+  <tbody>
+    <tr><td>No public address</td><td>The instance has no external IP at all, so it is not reachable from the internet by any route. Administrative access is brokered by IAP and governed by IAM.</td></tr>
+    <tr><td>Filtering above the project</td><td>A hierarchical policy on the folder cannot be opted out of by a project administrator — unlike a VPC firewall rule.</td></tr>
+    <tr><td>Default deny</td><td>Rule 65000 denies all ingress; rule 1000 allows only IAP's documented range on port 22.</td></tr>
+    <tr><td>Narrow subnet grant</td><td>The service project's identities may use one subnet, not the whole network.</td></tr>
+    <tr><td><strong>Accepted over-grant</strong></td><td><code>compute.xpnAdmin</code> is organization-scoped and cannot be narrowed. It is the widest permission the pipeline holds, and it is required for host enablement.</td></tr>
+    <tr><td>Accepted gap</td><td>No egress control at all. Cloud NAT and egress policy arrive in Week 16.</td></tr>
+  </tbody>
+</table>
 </div>
 
-<div class="section" id="cost">
-<h2>Cost</h2>
+<h3>Cost</h3>
 
-<p><strong>Approximately zero</strong>, and the roadmap was wrong to promise
-otherwise. This was pencilled in as the first week with a real bill; a careful
-design keeps it inside the Always Free tier, which is more useful to a reader
-than a number.</p>
+<p><strong>~$0, and the shape is deliberate.</strong> Four conditions keep this
+inside Always Free, and <strong>changing any one of them silently starts
+billing</strong>:</p>
 
-<p>Free: Shared VPC, subnets, hierarchical firewall policies, the extra project,
-Private Google Access, flow logs at this volume. Free <em>because chosen
-carefully</em>: the machine type, the region, the disk type and the absence of an
-external IP.</p>
-
-<p>The one thing to watch is that the free tier is one <code>e2-micro</code> per
-<strong>billing account per month</strong>, not per project. A second instance
-anywhere bills normally.</p>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Condition</th><th>Why it matters</th></tr></thead>
+  <tbody>
+    <tr><td><code>e2-micro</code></td><td>the only Always Free machine type</td></tr>
+    <tr><td><code>us-central1</code></td><td>one of three eligible regions</td></tr>
+    <tr><td><code>pd-standard</code>, 10 GB</td><td>balanced or larger is billed</td></tr>
+    <tr><td>no external IP</td><td>an ephemeral public address has been billed hourly since 2020</td></tr>
+  </tbody>
+</table>
 </div>
 
-<div class="section" id="cleanup">
-<h2>Cleanup</h2>
-
-<p>This week is meant to stay running &mdash; it is the thing later weeks build
-on, and it costs nothing to leave. What matters more than teardown is what the
-teardown would <em>not</em> undo: the compute grants in Week 2 persist, because
-they define what CI is rather than what this week built.</p>
-
-<p>If you do tear it down, delete the instance before the subnet and the subnet
-before the network, and expect the service project detachment to need the same
-<code>xpnAdmin</code> that attached it.</p>
+<p>All four are asserted by <code>validate.sh</code>, because a cost property
+that is not checked is a cost property that drifts. <strong>Flow logs are the
+one to watch:</strong> they bill by volume, and they are free here only because
+a single idle instance generates almost no traffic.</p>
 </div>
 
-<div class="section" id="references">
-<h2>References</h2>
+<div class="section" id="troubleshooting">
+<h2>Troubleshooting and Lessons</h2>
 
-<ul>
-  <li><a href="https://docs.cloud.google.com/vpc/docs/shared-vpc">Shared VPC overview</a> &mdash; host and service project model.</li>
-  <li><a href="https://docs.cloud.google.com/firewall/docs/firewall-policies">Hierarchical firewall policies</a> &mdash; and the detail that in a Shared VPC, a VM is governed by the <em>host</em> project's hierarchical rules.</li>
-  <li><a href="https://docs.cloud.google.com/firewall/docs/firewall-policies-overview">Cloud NGFW policy types</a> &mdash; confirms VPC firewall rules are not deprecated.</li>
-  <li><a href="https://docs.cloud.google.com/iap/docs/using-tcp-forwarding">IAP TCP forwarding</a> &mdash; the 35.235.240.0/20 range.</li>
-  <li><a href="https://docs.cloud.google.com/free/docs/free-cloud-features">Always Free tier</a> &mdash; every cost decision here traces to this page.</li>
-</ul>
+<h3>The firewall policy existed and filtered nothing</h3>
 
-<p><strong>Not answered anywhere I looked, and measured instead:</strong> which
-role attaches a firewall policy to a folder; that a folder-scoped policy needs a
-quota project; that the override then makes the quota project accumulate unused
-APIs; the billing account's project cap; that enforcement lag applies to managed
-constraints too; and that an organization administrator cannot read a
-hierarchical firewall policy without <code>compute.orgFirewallPolicyUser</code>.</p>
+<p><strong>Problem:</strong> the policy and its rules were created successfully,
+and traffic was unaffected.</p>
+
+<p><strong>Root cause:</strong>
+<code>roles/compute.orgSecurityPolicyAdmin</code> carries
+<code>firewallPolicies.create</code>, <code>update</code> and <code>use</code> —
+but <strong>not</strong> <code>organizations.setFirewallPolicy</code>. The policy
+had never been associated with the folder.</p>
+
+<p><strong>Resolution:</strong> grant
+<code>roles/compute.orgSecurityResourceAdmin</code> on the folder, and assert the
+<em>association</em> in validation rather than the policy's existence.</p>
+
+<p><strong>Lesson:</strong> "created" and "attached" are different things, and
+only one of them does anything. The same create-versus-attach split appears with
+tags in Week 05.</p>
+
+<h3>`Error 404: The resource 'projects/null' was not found`</h3>
+
+<p><strong>Problem:</strong> creating the folder-scoped firewall policy failed
+with a 404 naming a project called <code>null</code>.</p>
+
+<p><strong>Root cause:</strong> a folder-scoped policy is owned by no project, so
+the API has no project to attribute the call to.</p>
+
+<p><strong>Resolution:</strong> <code>user_project_override = true</code> plus
+<code>billing_project</code> on the provider — <strong>and that cascades</strong>.
+Every call is then attributed to the quota project, which must have
+<code>cloudresourcemanager</code>, <code>serviceusage</code> and
+<code>cloudbilling</code> enabled: APIs it does not itself use. The first
+enablement is chicken-and-egg and has to be done by hand.</p>
+
+<h3>A violation succeeded, then the same action was refused minutes later</h3>
+
+<p><strong>Problem:</strong> after promoting Week 03's constraints, a
+<code>blockProjectSshKeys</code> violation succeeded, and an identical attempt
+failed a few minutes afterwards.</p>
+
+<p><strong>Root cause:</strong> enforcement lags the write — measured at 75–100
+seconds in Week 03, and managed constraints are no different.</p>
+
+<p><strong>Lesson:</strong> a validator that tests a constraint immediately after
+an apply will report a working control as broken. Ours waits 120 seconds. And
+separately: <strong>enforcement is not retroactive</strong> — Google's own denial
+text says an instance already set to <code>block-project-ssh-keys=false</code>
+keeps access until its metadata changes.</p>
 </div>
 
 <div class="section" id="takeaways">
-<h2>Key Takeaways</h2>
+<h2>Cleanup and Key Takeaways</h2>
+
+<h3>Cleanup</h3>
+
+<p><code>terraform destroy</code> removes the spoke. <strong>Keep the hub</strong>
+— the VPC, both subnets and the firewall policy occupy no project slot and Weeks
+13–19 build on them.</p>
+
+<p><strong>Expect the first destroy to fail</strong> if constraints were promoted
+in the meantime. Week 03's <code>blockProjectSshKeys</code> was enforced after
+this lab deployed, and the destroy then failed because Terraform wanted to remove
+metadata that the now-enforced constraint refused to release. Commands are in the
+<a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-04-shared-vpc/LAB.md">lab guide</a>.</p>
+
+<p><strong>What actually happened:</strong> Week 05 destroyed this spoke to free
+a billing slot. The hub survived, which is why <code>validate.sh</code>'s
+instance checks no longer pass while its network checks still do.</p>
+
+<p><strong>Ongoing charges:</strong> none. A custom-mode VPC with no instances
+costs nothing.</p>
+
+<h3>Key takeaways</h3>
+
+<ol>
+  <li><strong>Creating a firewall policy and attaching it are different
+    permissions.</strong> Only the attachment filters traffic, so validate the
+    association rather than the policy.</li>
+  <li><strong>A folder-scoped resource needs a quota project</strong>, and
+    setting one cascades into enabling APIs that resource does not use.</li>
+  <li><strong>"No public IP" is both the hardened choice and the free
+    one</strong> — ephemeral external addresses have been billed hourly since
+    2020.</li>
+  <li><strong>Org policy enforcement lags, and is not retroactive.</strong> Wait
+    before validating, and do not assume promotion fixes existing resources.</li>
+  <li><strong>`compute.xpnAdmin` cannot be narrowed.</strong> Shared VPC host
+    enablement is checked at the organization, so this grant is as small as it
+    can be and still the widest the pipeline holds.</li>
+</ol>
+
+<h3>References</h3>
 
 <ul>
-  <li><strong>An identity that can widen itself is not a boundary.</strong> The
-  most useful thing this week did was fail early, because the failure landed in
-  the human-run layer where it belonged.</li>
-  <li><strong>Scope to a folder where the API allows it, and say so when it does
-  not.</strong> Three of four compute grants narrowed. The fourth could not, and
-  pretending otherwise would be worse than admitting it.</li>
-  <li><strong>Every attribute of a VM is a cost decision.</strong> Machine type,
-  region, disk type, external address. Four values between free and billed, none
-  of which announce themselves.</li>
-  <li><strong>Test a control twice before believing it.</strong> A guardrail that
-  lets something through may simply not have taken effect yet &mdash; and the
-  wrong conclusion sends you editing correct code.</li>
-  <li><strong>Governance before workloads is not pedantry.</strong> Enforcement
-  does not reach backwards. Anything created before the rule stays as it was.</li>
+  <li><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-04-shared-vpc/LAB.md">Lab guide</a> &mdash; roles, quota cascade, free-tier conditions, known limitations</li>
+  <li><a href="https://docs.cloud.google.com/vpc/docs/shared-vpc">Shared VPC overview</a></li>
+  <li><a href="https://docs.cloud.google.com/firewall/docs/firewall-policies">Hierarchical firewall policies</a></li>
+  <li><a href="https://docs.cloud.google.com/iap/docs/using-tcp-forwarding">IAP for TCP forwarding</a></li>
+  <li><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/tree/main/week-04-shared-vpc">Source repository</a></li>
 </ul>
-
-<p>Next week the projects stop being hand-written. Four exist now, each created a
-slightly different way, which is exactly the point at which a factory starts
-being worth having.</p>
 </div>
 
 </div>

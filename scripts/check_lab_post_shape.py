@@ -94,10 +94,6 @@ MIGRATION_PENDING = {
     "week-8-s3-intelligent-storage-platform",
     "week-9-ecs-fargate-self-service",
 
-    "week-01-gcp-landing-zone",
-    "week-02-keyless-ci",
-    "week-03-org-policy-guardrails",
-    "week-04-shared-vpc",
 }
 
 # The standard's section order. Presence is checked; order is not, because the
