@@ -1,4 +1,5 @@
 ---
+
 title: 'Week 14 - VPC Flow Logs + Network Intelligence: The Logs Everyone Enables and Nobody Reads'
 date: '2026-08-16T19:59:00'
 labels:
@@ -74,74 +75,80 @@ verified_claims:
   <div class="toc">
     <h3>&#128203; In This Post</h3>
     <ol>
-      <li><a href="#why">Why &mdash; The Problem This Solves</a></li>
-      <li><a href="#what">What You Need to Know &mdash; Skills &amp; Tools</a></li>
-      <li><a href="#architecture">Architecture &mdash; How It Fits Together</a></li>
-      <li><a href="#how">How We Built It &mdash; Step by Step</a></li>
-      <li><a href="#challenges">Challenges &mdash; What Actually Went Wrong</a></li>
-      <li><a href="#security">Security &mdash; Controls at Every Layer</a></li>
-      <li><a href="#cost">Cost</a></li>
-      <li><a href="#cleanup">Cleanup</a></li>
-      <li><a href="#references">References</a></li>
-      <li><a href="#takeaways">Key Takeaways</a></li>
+      <li><a href="#overview">Lab Overview</a></li>
+      <li><a href="#services">Cloud Services and Concepts</a></li>
+      <li><a href="#architecture">Architecture and Workflow</a></li>
+      <li><a href="#prerequisites">Prerequisites</a></li>
+      <li><a href="#implementation">Implementation</a></li>
+      <li><a href="#validation">Validation and Evidence</a></li>
+      <li><a href="#security-cost">Security and Cost</a></li>
+      <li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+      <li><a href="#cleanup">Cleanup and Key Takeaways</a></li>
     </ol>
   </div>
 
-  <div class="section" id="why">
-    <h2>Why &mdash; The Problem This Solves</h2>
-    <p>Someone turns on flow logs account-wide during a compliance push. The logs land in a bucket. Nobody has permission to read that bucket, and nobody has built a table over it, so nothing is ever queried.</p>
-    <p>Months later a NAT bill quadruples, or a host starts talking to somewhere it should not. The answer is technically sitting in S3. Getting it out means writing a Glue table definition, working out a partition strategy, and hand-writing SQL against a 30-field record format &mdash; under incident pressure, by someone who has not done it before.</p>
-    <p>The specific gap: <strong>flow logs are pure cost until someone builds the query layer, and the query layer is the part that always gets deferred.</strong> You pay $0.25 per GB ingested whether or not a single query ever runs.</p>
+  <div class="section" id="overview">
+    <h2>Lab Overview</h2>
 
-    <h3>Why teams do not already have this</h3>
-    <ul>
-      <li><strong>The failure is silent.</strong> No alarm fires for "your logs are unqueryable". There is no red status anywhere. You find out mid-incident.</li>
-      <li><strong>It is unglamorous.</strong> A table definition, a partition template, and a handful of saved queries. No console button produces it, and it is nobody's sprint goal until it is urgently everybody's problem.</li>
-      <li><strong>The default destination costs double.</strong> CloudWatch Logs feels like the natural choice and is $0.50/GB against S3's $0.25/GB &mdash; and it cannot store Parquet at all.</li>
-    </ul>
+    <p>Someone turns on flow logs account-wide during a compliance push. The logs land in a
+    bucket. Nobody has permission to read that bucket, and nobody has built a table over it, so
+    nothing is ever queried.</p>
 
-    <h3>Is this not just GuardDuty?</h3>
-    <p>Worth settling early, because GuardDuty consumes these exact same flow logs and <a href="https://jayanthkatta.com/blog/week-11-security-hub-guardduty/">Week 11</a> already has it running in this account.</p>
-    <p>GuardDuty matches flow logs against known-bad IPs and behavioural patterns, and tells you when something matches. It does not give you a queryable table, and it cannot tell you which team's traffic drove your NAT gateway bill. Those are the two things this week is for &mdash; complementary, not overlapping.</p>
+    <p><strong>The problem.</strong> Months later a NAT bill quadruples, or a host starts talking
+    to somewhere it should not. The answer is technically sitting in S3. Getting it out means
+    writing a Glue table definition, working out a partition strategy, and hand-writing SQL against
+    a 30-field record format &mdash; under incident pressure, by someone who has not done it
+    before. <strong>Flow logs are pure cost until someone builds the query layer, and the query
+    layer is the part that always gets deferred.</strong> You pay $0.25 per GB ingested whether or
+    not a single query ever runs.</p>
+
+    <p><strong>The objective.</strong> Build the query layer: a small VPC that produces
+    identifiable traffic, capture into Parquet on S3, and a query layer with a hard spend
+    ceiling.</p>
+
+    <p><strong>The outcome.</strong> It works &mdash; and two of the three things that went wrong
+    produced zero rows and a green "succeeded", which is indistinguishable from a working
+    system.</p>
+
+    <table>
+      <tbody>
+        <tr><td><strong>Difficulty</strong></td><td>Advanced</td></tr>
+        <tr><td><strong>Lab runtime</strong></td><td>About 48 hours before teardown</td></tr>
+        <tr><td><strong>Cost</strong></td><td><strong>Estimated</strong> ~$3 for the build; ~$33/month if left running</td></tr>
+        <tr><td><strong>Deployment</strong></td><td>Terraform via HCP Terraform with OIDC</td></tr>
+        <tr><td><strong>Full lab guide</strong></td><td><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-14-vpc-flow-logs-intelligence/README.md">GitHub &mdash; prerequisites, Terraform, commands, validation, cleanup</a></td></tr>
+      </tbody>
+    </table>
   </div>
 
-  <div class="section" id="what">
-    <h2>What You Need to Know &mdash; Skills &amp; Tools</h2>
-    <p>Nothing here is exotic, but a few concepts decide whether this build works or quietly does nothing at all.</p>
-    <div class="grid-2">
-      <div class="card">
-        <h4>Flow log record versions</h4>
-        <p>The record format is versioned and has moved well past what most tutorials show. v3 added <code>pkt-srcaddr</code>, v5 added <code>traffic-path</code>, v8 added <code>reject-reason</code>, and <strong>v11</strong> added interface types, the next-hop family, and embedded EC2 tag values.</p>
-      </div>
-      <div class="card">
-        <h4>Vended log pricing</h4>
-        <p>Flow logs bill as "vended logs": <strong>$0.25/GB to S3, $0.50/GB to CloudWatch Logs</strong>. The destination is a one-field decision with a 2&times; cost consequence.</p>
-      </div>
-      <div class="card">
-        <h4>Parquet and columnar scanning</h4>
-        <p>Athena bills on data <em>scanned</em>, not stored. Columnar Parquet means a query reads only the columns it names, so the storage format is the cost model rather than an optimisation.</p>
-      </div>
-      <div class="card">
-        <h4>Partition projection</h4>
-        <p>An alternative to a Glue crawler: rather than discovering partitions on a schedule, you state the pattern and Athena computes them at query time. No DPU charge, no lag &mdash; but it fails silently if the template is wrong.</p>
-      </div>
-      <div class="card">
-        <h4>Service-linked roles</h4>
-        <p>Some AWS features create their own IAM role on first use. The v11 tag fields are one: they are served by <code>AWSServiceRoleForVPCFlowLogs</code>, not by any role you write yourself.</p>
-      </div>
-      <div class="card">
-        <h4>Anomaly detection vs static alarms</h4>
-        <p>CloudWatch can learn a band around a metric and alert on deviation, or compare against a fixed number. Knowing which question each answers is what keeps an alarm set both useful and cheap.</p>
-      </div>
-    </div>
-    <p><strong>Tools used:</strong> Terraform via HCP Terraform (VCS-driven), Python 3.12 on Lambda, Athena SQL, and the AWS CLI for verification.</p>
+  <div class="section" id="services">
+    <h2>Cloud Services and Concepts</h2>
+
+    <table>
+      <thead><tr><th>Service</th><th>Purpose in this lab</th></tr></thead>
+      <tbody>
+        <tr><td><strong>VPC Flow Logs</strong></td><td>The raw record of who talked to whom. Delivered to S3 in Parquet, not to CloudWatch Logs &mdash; half the ingest cost and the only path to columnar storage.</td></tr>
+        <tr><td><strong>Amazon S3</strong></td><td>Where the logs land, with Hive-style partitioning so Athena can skip what it does not need.</td></tr>
+        <tr><td><strong>AWS Glue Data Catalog</strong></td><td>The table definition over those logs, using partition projection rather than a crawler.</td></tr>
+        <tr><td><strong>Amazon Athena</strong></td><td>The query layer, inside a workgroup carrying a hard per-query scan ceiling.</td></tr>
+        <tr><td><strong>NAT Gateway</strong></td><td>Both a cost centre and a subject: attributing its charges is one of the week's findings.</td></tr>
+        <tr><td><strong>CloudWatch</strong></td><td>Anomaly detection where normal is unknown, static thresholds where zero is the right answer.</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>Two fields that look interchangeable and are not.</strong>
+    <code>traffic_path</code> describes the path a packet took <em>within</em> AWS;
+    <code>next_hop_interface_type</code> names what the traffic actually went through. Only the
+    second can attribute NAT gateway cost, and the first is the one that sounds right.</p>
+
+    <p><strong>Partition projection</strong> computes partitions from the S3 path rather than
+    recording them. For flow logs that matters: the alternative is a crawler you pay to rediscover
+    a layout that is fixed and documented.</p>
   </div>
 
   <div class="section" id="architecture">
-    <h2>Architecture &mdash; How It Fits Together</h2>
-    <p>A small VPC built specifically to produce identifiable traffic, capture into Parquet on S3, and a query layer with a hard spend ceiling on top.</p>
-
-    <div class="arch-container">
+    <h2>Architecture and Workflow</h2>
+<figure class="diagram">
 <svg style="width:100%;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 780" width="100%" role="img"
      aria-label="Week 14 architecture: VPC flow logs to S3 in Parquet, queried through Glue and Athena, analysed hourly by Lambda into CloudWatch alarms.">
 <defs>
@@ -352,213 +359,163 @@ verified_claims:
 <text class="t ns" x="44" y="732">Only the v11 next_hop_interface_type puts the team and the NAT on one row,</text>
 <text class="t ns" x="44" y="748">which is what turns NAT spend from unallocatable into a GROUP BY.</text>
 </svg>
-    </div>
+    </figure>
 
-    <p>Every resource in the top band exists to produce one specific, recognisable shape of traffic. That is deliberate &mdash; it is the data source for the whole build, not scaffolding around it:</p>
-    <ul>
-      <li>The <strong>generator</strong> in the private subnet reaches the internet through the NAT gateway, and reaches S3 through a gateway endpoint. Same instance, two destinations, two very different prices.</li>
-      <li>The <strong>exposed</strong> instance in the public subnet has a security group with <em>no ingress rules at all</em>. It is internet-reachable and nothing can connect to it. Those denials are what produce the REJECT records this week analyses &mdash; removing them would not harden anything, it would delete the signal.</li>
-    </ul>
+    <ol>
+      <li>A <strong>generator instance</strong> in a private subnet reaches the internet through
+      the <strong>NAT gateway</strong>, and reaches S3 through a <strong>gateway
+      endpoint</strong>. Same instance, two destinations, two very different prices.</li>
+      <li>An <strong>exposed instance</strong> in the public subnet has a security group with
+      <strong>no ingress rules at all</strong>. It is internet-reachable and nothing can connect
+      to it.</li>
+      <li>Those refused connections produce the <strong>REJECT records</strong> the detection
+      queries analyse. Removing them would not harden anything &mdash; it would delete the
+      signal.</li>
+      <li><strong>Flow logs capture to S3 in Parquet</strong>, Hive-partitioned by date.</li>
+      <li>A <strong>Glue table with partition projection</strong> makes it queryable without a
+      crawler.</li>
+      <li><strong>Athena</strong> queries it inside a workgroup with a <strong>per-query scan
+      ceiling</strong>, so a careless <code>SELECT *</code> cannot run up a bill.</li>
+      <li>A <strong>daily analyzer</strong> publishes metrics; CloudWatch alarms watch them.</li>
+    </ol>
 
-    <h3>The one configuration field that halves the bill</h3>
-    <div class="grid-2">
-      <div class="card">
-        <h4>CloudWatch Logs</h4>
-        <p><strong>$0.50/GB</strong> ingested, plus $0.03/GB-month storage. Plain text only. The right choice if you need metric filters and sub-minute alerting on individual flows.</p>
-      </div>
-      <div class="card">
-        <h4>Amazon S3</h4>
-        <p><strong>$0.25/GB</strong> ingested, plus $0.023/GB-month storage. Supports <strong>Parquet</strong>, which is what makes querying affordable.</p>
-      </div>
-    </div>
-    <p>For an organisation producing 500&nbsp;GB of flow logs a month, that is $250 against $125 &mdash; <strong>$1,500 a year</strong> from changing one field.</p>
+    <h3>Design decisions</h3>
 
-    <h3>Why the field list is generated rather than typed</h3>
-    <p><code>instance_tag</code> embeds the <em>value</em> of an EC2 tag directly into every flow record, turning "who owns this traffic" from a join against an already-stale inventory into a plain <code>GROUP BY</code>.</p>
-    <div class="callout amber">
-      <strong>The field order is load-bearing</strong>
-      <p>Parquet columns are matched to the Glue schema <em>positionally</em>. If the flow log's format string and the table's column list disagree on order, every query still runs, still succeeds, and returns values under the wrong column names &mdash; bytes reported as packets, source port under destination port. Nothing errors.</p>
-      <p>So the field list is declared once in Terraform and generates <em>both</em> the <code>log_format</code> string and the Glue columns, which makes that class of bug unrepresentable rather than merely unlikely.</p>
-    </div>
-    <div class="code-block"><pre><code>flow_log_fields = [
-  { field = "version",      column = "version",      type = "int" },
-  { field = "srcaddr",      column = "srcaddr",      type = "string" },
-  # ... 30 more ...
-  { field = "instance-tag", column = "instance_tag", type = "string" },
-]
+    <p><strong>S3, not CloudWatch Logs.</strong> Half the ingest cost, and the only route to
+    Parquet. CloudWatch Logs is right only if you specifically need metric filters on individual
+    flows.</p>
 
-log_format   = join(" ", [for f in local.flow_log_fields : "$${${f.field}}"])
-glue_columns = [for f in local.flow_log_fields : { name = f.column, type = f.type }]</code></pre></div>
+    <p><strong>A spend ceiling on the workgroup, not a convention.</strong> Athena has no default
+    limit. The ceiling is enforced before anyone else touches the account.</p>
+
+    <p><strong>Mixed alarm types, on purpose.</strong> Anomaly detection where normal is genuinely
+    unknown; static thresholds where zero is the right answer. Using anomaly detection everywhere
+    costs about 30&times; more and detects less.</p>
   </div>
 
-  <div class="section" id="how">
-    <h2>How We Built It &mdash; Step by Step</h2>
+  <div class="section" id="prerequisites">
+    <h2>Prerequisites</h2>
 
-    <h3>Step 1 &mdash; Deploy via HCP Terraform</h3>
-    <p>Fifty-eight resources across four modules, VCS-driven, the same pattern as every week since Week 5.</p>
+    <table>
+      <thead><tr><th>Requirement</th><th>Detail</th></tr></thead>
+      <tbody>
+        <tr><td>AWS account</td><td>Permission for VPC, EC2, S3, Glue, Athena, Lambda, CloudWatch</td></tr>
+        <tr><td>Terraform</td><td>>= 1.10</td></tr>
+        <tr><td>HCP Terraform</td><td>Workspace with OIDC to AWS. No static keys</td></tr>
+        <tr><td>Instance access</td><td>SSM Session Manager &mdash; no SSH, no key pairs</td></tr>
+        <tr><td>Region</td><td><code>us-east-1</code></td></tr>
+      </tbody>
+    </table>
 
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-14-vpc-flow-logs-intelligence/docs/blog/screenshots/01b-hcp-workspace-variables.png" alt="HCP workspace variables showing the two OIDC environment variables">
-      <figcaption>The two environment variables every new HCP workspace needs before its first plan: <code>TFC_AWS_PROVIDER_AUTH</code> and <code>TFC_AWS_RUN_ROLE_ARN</code>. Without them the first plan fails with &ldquo;No valid credential sources found&rdquo;.</figcaption>
+    <p><strong>Check which availability zone you land in.</strong>
+    <code>data.aws_availability_zones</code> with <code>state = "available"</code> also returns
+    <strong>opted-in Local Zones</strong>, which carry a deliberately reduced subset of regional
+    services. One wrong AZ can look like three unrelated failures &mdash; see Troubleshooting.
+    Filter on zone type.</p>
+
+    <p><strong>The NAT gateway is the cost.</strong> About $33/month if left running, roughly
+    three quarters of the total, and it bills whether or not a single packet flows. <strong>On this
+    build, forgetting is the risk &mdash; not the rate.</strong></p>
+  </div>
+
+  <div class="section" id="implementation">
+    <h2>Implementation</h2>
+
+    <p>A small VPC built specifically to produce identifiable traffic, flow logs to S3 in Parquet,
+    a Glue table, an Athena workgroup with a ceiling, and a daily analyzer with alarms. The
+    <a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-14-vpc-flow-logs-intelligence/README.md">lab guide</a> carries the full Terraform and every query.</p>
+
+    <figure class="diagram">
+<pre><code>week-14-vpc-flow-logs-intelligence/
+|
++-- terraform/
+|   +-- environments/dev/   HCP backend, OIDC, wires the modules
+|   +-- modules/network/    VPC, subnets, NAT, the two traffic generators
+|   +-- modules/capture/    flow logs to S3, Parquet, Hive partitioning
+|   +-- modules/catalog/    Glue table with partition projection
+|   +-- modules/analyzer/   workgroup ceiling, queries, Lambda, alarms
+|
++-- queries/                the detection and attribution SQL
++-- scripts/                teardown verification</code></pre>
+      <figcaption>Only the directories that matter.
+      <a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-14-vpc-flow-logs-intelligence">The full repository is on GitHub.</a></figcaption>
     </figure>
 
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-14-vpc-flow-logs-intelligence/docs/blog/screenshots/01-hcp-runs.png" alt="HCP Terraform run list showing one errored run and one applied run">
-      <figcaption>Both runs, kept deliberately. The first apply errored after creating 55 of 58 resources &mdash; see Challenges for what it caught.</figcaption>
-    </figure>
+    <p><strong>One configuration field halves the cost</strong> &mdash; delivering to S3 rather
+    than CloudWatch Logs. It is set once and never mentioned again, which is exactly why it is
+    worth saying out loud.</p>
 
-    <h3>Step 2 &mdash; Capture into Parquet, partitioned by hour</h3>
-    <p>Delivery takes about ten minutes and is written in five-minute batches, so an empty bucket immediately after apply is expected rather than broken.</p>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-14-vpc-flow-logs-intelligence/docs/blog/screenshots/03-s3-hive-partitions.png" alt="S3 console breadcrumb showing hive-style partition prefixes down to hour">
-      <figcaption>Hive-compatible prefixes, partitioned to the hour. The breadcrumb is the delivered structure the projection template has to reproduce exactly.</figcaption>
-    </figure>
-
-    <h3>Step 3 &mdash; Define the table without a crawler</h3>
-    <p>Flow log prefixes are perfectly deterministic &mdash; region, year, month, day, hour, all knowable in advance. A crawler would pay DPU-time on a schedule to rediscover a structure we can simply state, and would lag behind new partitions until its next run. Partition projection computes them at query time instead: no schedule, no DPU charge, no lag.</p>
-
-    <figure class="screenshot">
+<figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-14-vpc-flow-logs-intelligence/docs/blog/screenshots/05-glue-table-projection.png" alt="AWS Glue table details showing Parquet classification and 37 columns">
       <figcaption>37 columns: 32 data fields plus 5 partition keys. Nothing crawled this table &mdash; the definition states where the data is.</figcaption>
     </figure>
+  </div>
 
-    <h3>Verifying it actually works</h3>
-    <p>This is the step most worth doing properly, because <strong>every failure mode in this build is silent</strong>. "It deployed" and "it works" are completely different claims here:</p>
-    <ul>
-      <li>A projection template that does not match the delivered prefixes returns <strong>zero rows and reports <code>SUCCEEDED</code></strong>. A dashboard on top shows a flat, healthy-looking zero line indefinitely.</li>
-      <li>Missing tag permissions produce a column of <code>-</code> rather than an error.</li>
-      <li>A field-order mismatch returns plausible numbers under the wrong column names.</li>
-    </ul>
-    <p>None of these raise anything, and none are findable by re-reading the Terraform. So the build ships a <code>verify_pipeline.sh</code> that compares a <em>real delivered S3 key</em> against the projection template, confirms the subscription is <code>ACTIVE</code> with no delivery error, and runs a query that must return rows.</p>
+  <div class="section" id="validation">
+    <h2>Validation and Evidence</h2>
 
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-14-vpc-flow-logs-intelligence/docs/blog/screenshots/08-partition-sanity-check.png" alt="Athena result showing record count, hours present, and distinct instance tag values">
-      <figcaption>The sanity query, and the one to run before trusting anything else. Records readable through the table means projection resolves; more than one distinct <code>instance_tag</code> means the version 11 tag fields are populating.</figcaption>
-    </figure>
+    <p>Every failure mode in this build is silent: zero rows and a green "succeeded" look
+    identical to a working system. So each check asks for a number, not a status.</p>
 
-    <h3>Step 4 &mdash; Attribute NAT spend to a team</h3>
-    <p>NAT gateway charges $0.045 per GB processed, and those charges arrive in Cost Explorer attached to <em>the NAT gateway</em> &mdash; not to the instance, service, or team whose traffic caused them. There is no tag on the charge that says who did it.</p>
-    <div class="code-block"><pre><code>SELECT
-    url_decode(instance_tag)  AS owning_team,
-    instance_id,
-    SUM(bytes)                AS bytes_via_nat,
-    ROUND(SUM(bytes) / 1073741824.0 * 0.045, 6) AS estimated_nat_usd
-FROM flow_logs
-WHERE concat(year,'-',month,'-',day) &gt;= date_format(current_date - interval '1' day, '%Y-%m-%d')
-  AND flow_direction = 'egress'
-  AND next_hop_interface_type = 'nat_gateway'   -- the whole trick
-GROUP BY 1, 2</code></pre></div>
+    <table>
+      <thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Partitions resolve</td><td>Rows returned for today</td><td>Returned</td><td><strong>Pass</strong></td></tr>
+        <tr><td>Both traffic paths visible</td><td>NAT and gateway-endpoint traffic distinguishable</td><td>Distinguishable &mdash; via <code>next_hop_interface_type</code></td><td><strong>Pass</strong></td></tr>
+        <tr><td>NAT cost attribution via <code>traffic_path</code></td><td>Rows naming NAT traffic</td><td><strong>Zero rows; analyzer published nat_bytes = 0</strong></td><td><strong>Fail &mdash; wrong field</strong></td></tr>
+        <tr><td>REJECT records captured</td><td>Refused connections appear</td><td>Appeared, at scale</td><td><strong>Pass</strong></td></tr>
+        <tr><td>Port-scan alarm fires</td><td>Notification sent</td><td>Fired and delivered</td><td><strong>Pass</strong></td></tr>
+        <tr><td>Scan ceiling enforced</td><td>An oversized query is refused</td><td>Refused at workgroup level</td><td><strong>Pass</strong></td></tr>
+      </tbody>
+    </table>
 
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-14-vpc-flow-logs-intelligence/docs/blog/screenshots/09-nat-cost-attribution.png" alt="Athena results attributing NAT gateway bytes to the platform-engineering team">
-      <figcaption>NAT egress with an owner on it. Filtering on the sender's hop rather than the NAT's also avoids double-counting the same bytes at two capture points.</figcaption>
-    </figure>
-
-    <figure class="screenshot">
+<figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-14-vpc-flow-logs-intelligence/docs/blog/screenshots/10-traffic-path-contrast.png" alt="Athena results showing egress grouped by traffic path, including free gateway endpoint rows and billed NAT rows">
       <figcaption>Path 7 to S3 costs nothing and has an owner. Path 1 rows are NAT-bound and have an owner. Path 8 rows are the NAT's own egress &mdash; the same bytes, with no team attached.</figcaption>
     </figure>
-    <p>Scaled up: a team quietly pulling 2&nbsp;TB a month through a NAT gateway for something an S3 gateway endpoint would carry for free is <strong>$90 a month</strong> that Cost Explorer cannot attribute to them.</p>
 
-    <h3>Step 5 &mdash; Detect scanning without a SIEM</h3>
-    <p>Within twenty minutes of getting a public IP, the exposed instance had been probed by <strong>200 distinct source addresses</strong> &mdash; ordinary internet background scanning, no provocation needed.</p>
-
-    <figure class="screenshot">
+<figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-14-vpc-flow-logs-intelligence/docs/blog/screenshots/12-rejected-traffic-scale.png" alt="Athena results listing source IPs with reject counts and the ports they probed">
       <figcaption>Real unsolicited inbound: SSH and telnet sweeps, and probes at 8008, 8161, 9090. The top row with 36 distinct ports is my own generated test signal, included so the port-scan query had something deterministic to catch.</figcaption>
     </figure>
-    <p>The discriminator between a scan and a broken client is <strong>fan-out</strong>, not volume &mdash; a stuck client retries one port forever, a scanner walks the range. And a rejected connection is not evidence of an attack; it is equally often a health check pointed at a port that moved.</p>
 
-    <h3>Step 6 &mdash; Turn queries into alarms</h3>
-    <p>An hourly Lambda runs a handful of aggregate queries and publishes the results as CloudWatch custom metrics.</p>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-14-vpc-flow-logs-intelligence/docs/blog/screenshots/15-cloudwatch-metrics.png" alt="CloudWatch metrics console showing five custom metrics in the FlowLogIntelligence namespace">
-      <figcaption>Five custom metrics from the hourly analyzer. Sparse here because the function had only run twice at capture time.</figcaption>
-    </figure>
-    <div class="grid-2">
-      <div class="card">
-        <h4>Anomaly detection band</h4>
-        <p><strong>Traffic volume, NAT egress.</strong> Nobody knows a VPC's normal byte volume at deploy time, and it varies by hour of day. A static threshold is either a guess that alarms constantly or a guess that never fires.</p>
-      </div>
-      <div class="card">
-        <h4>Static threshold</h4>
-        <p><strong>Port scans, DLQ depth, analyzer silence.</strong> These have a correct value that is a fact rather than a pattern: zero. Anomaly detection would learn a comfortable baseline rate of port scanning and stop reporting it.</p>
-      </div>
-    </div>
-    <p>Two alarms exist purely to catch the monitoring itself failing: a dead letter queue with a depth alarm, because otherwise a broken analyzer and a quiet network are indistinguishable; and an invocation alarm with <code>treat_missing_data = "breaching"</code>, because a missing datapoint <em>is</em> the failure when the question is "did this run at all".</p>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-14-vpc-flow-logs-intelligence/docs/blog/screenshots/17-cloudwatch-alarms.png" alt="CloudWatch alarms list showing the anomaly and static alarms for this build">
-      <figcaption>Five alarms: two anomaly bands, three static.</figcaption>
-    </figure>
-
-    <figure class="screenshot">
+<figure class="screenshot">
       <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-14-vpc-flow-logs-intelligence/docs/blog/screenshots/18-alarm-email-port-scan.png" alt="SNS notification email for the port-scan-detected alarm entering ALARM state">
       <figcaption>The detection path, end to end: flow log &rarr; Athena &rarr; custom metric &rarr; alarm &rarr; SNS &rarr; inbox. Account IDs redacted.</figcaption>
     </figure>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-14-vpc-flow-logs-intelligence/docs/blog/screenshots/19-ok-email-analyzer-recovered.png" alt="SNS notification email for the analyzer-not-running alarm returning to OK">
-      <figcaption>Better evidence than I would have staged deliberately. <code>analyzer-not-running</code> uses <code>treat_missing_data = &quot;breaching&quot;</code>, so it correctly alarmed while nothing had run yet &mdash; then cleared eighteen minutes later when the analyzer reported in.</figcaption>
-    </figure>
-
-    <h3>Step 7 &mdash; Cap the query spend</h3>
-    <p>Athena bills <strong>$5 per TB scanned</strong> with no built-in spend limit, so the workgroup carries a hard per-query ceiling, enforced at workgroup level where no client can opt out of it.</p>
-
-    <figure class="screenshot">
-      <img src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-14-vpc-flow-logs-intelligence/docs/blog/screenshots/07-athena-workgroup-scan-ceiling.png" alt="Athena workgroup details showing a 10 GB data scanned limit">
-      <figcaption>A 10&nbsp;GB per-query ceiling. Queries exceeding it are cancelled, not billed to completion.</figcaption>
-    </figure>
-    <p>Every saved query filters on partitions, and the numbers in the screenshots above show why it matters: the real queries in this post scanned <strong>0.01&ndash;0.03&nbsp;MiB</strong> each.</p>
   </div>
 
-  <div class="section" id="challenges">
-    <h2>Challenges &mdash; What Actually Went Wrong</h2>
+  <div class="section" id="security-cost">
+    <h2>Security and Cost</h2>
 
-    <div class="challenge-card">
-      <h4>One wrong availability zone, wearing three disguises</h4>
-      <p>The first apply failed with three unrelated-looking errors at once: <code>NatGateway NotAvailableInZone</code>, <code>gp3 VolumeTypeNotAvailableInZone</code>, and <code>t4g.nano</code> not offered.</p>
-      <p>One cause. <code>data.aws_availability_zones</code> with <code>state = "available"</code> also returns opted-in <strong>Local Zones</strong>. This account has the Dallas Local Zone enabled, so <code>names[0]</code> resolved to <code>us-east-1-dfw-1a</code>, and Local Zones carry a deliberately reduced subset of regional services.</p>
-      <p>The fix filters on zone type and intersects with the instance type's actual offering list. Worth keeping the second half even with the filter: among genuine AZs, <code>us-east-1e</code> offers neither Graviton nor gp3.</p>
-    </div>
+    <h3>Security</h3>
 
-    <div class="challenge-card">
-      <h4><code>traffic_path</code> cannot attribute NAT cost</h4>
-      <p>The NAT attribution query returned zero rows and the analyzer published a permanent <code>nat_bytes = 0</code>. Both looked like a broken pipeline. Neither was.</p>
-      <p><strong><code>traffic_path</code> is relative to the capture point, not the journey.</strong> Measured at the sending instance's own ENI, traffic heading to a NAT gateway records <code>traffic_path = 1</code> &mdash; "another resource in the same VPC" &mdash; because from that ENI, that is literally what the next hop is. The NAT gateway's <em>own</em> ENI separately records <code>traffic_path = 8</code> for the same bytes, but a NAT gateway is not an instance and carries no tag. And <code>traffic_path = 2</code>, the documented "internet or NAT gateway" value, never appeared in real data at all.</p>
-      <p>The v11 field <code>next_hop_interface_type</code> is what actually solves it, putting the instance's tag and the NAT destination on the same record.</p>
-    </div>
+    <p><strong>One deliberate exception runs through this build:</strong> the exposed instance is
+    internet-reachable on purpose. Its security group has <strong>no ingress rules at all</strong>,
+    so nothing can connect &mdash; and those denials are what generate the REJECT records the
+    detection queries analyse. It holds no data and was destroyed with the rest of the stack.</p>
 
-    <div class="challenge-card">
-      <h4>An S3-destination flow log cannot take a delivery role</h4>
-      <p><code>InvalidParameter: DeliverLogsPermissionArn is not applicable for s3 delivery</code>. A delivery role applies only to the CloudWatch Logs destination; for S3 the permissions come from the bucket policy.</p>
-      <p>The role was there to grant <code>ec2:DescribeTags</code> for the v11 tag fields, which was the wrong mechanism entirely. Calling <code>CreateFlowLogs</code> with <code>TagFieldSpecifications</code> makes VPC Flow Logs create the service-linked role <code>AWSServiceRoleForVPCFlowLogs</code> automatically, and that role carries the tag-reading permissions. The only grant that matters is <code>iam:CreateServiceLinkedRole</code> on whatever runs Terraform.</p>
-    </div>
+    <p><strong>No SSH, no key pairs, no inbound ports.</strong> Instance access is SSM Session
+    Manager only. IMDSv2 required on both instances, encrypted root volumes.</p>
 
-    <div class="challenge-card">
-      <h4>Tag values arrive percent-encoded</h4>
-      <p><code>platform-engineering</code> is delivered as <code>platform%2Dengineering</code>. The field documentation does say special characters are percent-encoded, but it is easy to skim past and the symptom is subtle &mdash; values look almost right, while any <code>GROUP BY</code> on a tag containing a hyphen, space or slash quietly splits. Every tag column needs <code>url_decode()</code>.</p>
-    </div>
-  </div>
+    <p><strong>Bucket hardening:</strong> all public access blocked,
+    <code>BucketOwnerEnforced</code>, SSE-S3 with bucket keys, and a policy denying any non-TLS
+    request.</p>
 
-  <div class="section" id="security">
-    <h2>Security &mdash; Controls at Every Layer</h2>
-    <p>One deliberate exception runs through this build: the exposed instance is internet-reachable on purpose. Its security group has <strong>no ingress rules at all</strong>, so nothing can connect &mdash; and those denials are what generate the REJECT records the detection queries analyse. It holds no data and was destroyed with the rest of the stack.</p>
-    <ul>
-      <li><strong>No SSH, no key pairs, no inbound ports.</strong> Instance access is SSM Session Manager only.</li>
-      <li><strong>IMDSv2 required</strong> on both instances, and encrypted root volumes.</li>
-      <li><strong>Bucket hardening:</strong> all public access blocked, <code>BucketOwnerEnforced</code> ownership, SSE-S3 with bucket keys, and a bucket policy that <em>denies</em> any non-TLS request.</li>
-      <li><strong>Confused-deputy protection:</strong> the log delivery statement is scoped by both <code>aws:SourceAccount</code> and <code>aws:SourceArn</code>, so another account cannot point its flow logs at this bucket.</li>
-      <li><strong>Least-privilege IAM.</strong> The analyzer's Athena permissions are scoped to the single workgroup that carries the scan ceiling &mdash; a broad <code>athena:*</code> would let it run queries outside the guardrail the whole design depends on. <code>PutMetricData</code> supports no resource-level permission, so it is constrained by a namespace condition instead.</li>
-      <li><strong>Spend treated as a security control.</strong> The 10&nbsp;GB per-query ceiling is enforced at workgroup level, so a shared workgroup cannot be turned into an unbounded bill by someone who has not read the docs.</li>
-    </ul>
-  </div>
+    <p><strong>Confused-deputy protection:</strong> the log delivery statement is scoped by both
+    <code>aws:SourceAccount</code> and <code>aws:SourceArn</code>, so another account cannot point
+    its flow logs at this bucket.</p>
 
-  <div class="section" id="cost">
-    <h2>Cost</h2>
-    <p>Prices as of August 2026 &mdash; verify at aws.amazon.com/vpc/pricing and aws.amazon.com/cloudwatch/pricing before quoting them.</p>
+    <p><strong>Least privilege.</strong> The analyzer's Athena permissions are scoped to the one
+    workgroup carrying the scan ceiling &mdash; a broad grant would let it bypass the guardrail the
+    design depends on.</p>
+
+    <h3>Cost</h3>
+
+    <p><strong>These are rates and an estimate, not a measurement.</strong> This post was published
+    before the charges posted and no Cost Explorer figure was recorded afterwards, so it says which
+    it is rather than letting arithmetic read as a bill.</p>
+
     <table>
       <thead><tr><th>Item</th><th>Rate</th><th>48-hour build</th></tr></thead>
       <tbody>
@@ -566,60 +523,98 @@ GROUP BY 1, 2</code></pre></div>
         <tr><td>2 &times; t4g.nano</td><td>$0.0042/hr each</td><td>~$0.40</td></tr>
         <tr><td>Flow log ingest to S3</td><td>$0.25/GB</td><td>&lt; $0.10</td></tr>
         <tr><td>Athena</td><td>$5/TB scanned</td><td>cents</td></tr>
-        <tr><td>Anomaly alarms &times; 2</td><td>$0.30/month each, prorated hourly</td><td>~$0.02</td></tr>
-        <tr><td><strong>Total</strong></td><td></td><td><strong>~$3</strong></td></tr>
-        <tr><td><strong>Destroyed</strong></td><td></td><td><strong>$0</strong></td></tr>
+        <tr><td>Anomaly alarms &times; 2</td><td>$0.30/month each</td><td>~$0.02</td></tr>
       </tbody>
     </table>
-    <p><strong>Left running: about $33 a month, roughly three quarters of it NAT gateway.</strong> The NAT bills whether or not a single packet flows and produces no usage signal to remind you it exists. On this build, forgetting is the risk &mdash; not the rate.</p>
-    <p>The cost controls are in the code rather than in advice: a 30-day expiry on raw logs, a <em>noncurrent-version</em> expiry alongside it (versioning is on, so expiry alone would only create delete markers while the billed bytes stayed), a multipart-upload abort for orphaned partial writes that are invisible in the console listing and billed anyway, and the Athena scan ceiling.</p>
+
+    <p><strong>Left running: about $33 a month, roughly three quarters of it NAT gateway.</strong>
+    The NAT bills whether or not a single packet flows and produces no usage signal to remind you it
+    exists.</p>
+
+    <p>The cost controls are in the code rather than in advice: a 30-day expiry on raw logs, a
+    <em>noncurrent-version</em> expiry alongside it (versioning is on, so expiry alone would create
+    delete markers while the billed bytes stayed), and a multipart-upload abort for orphaned partial
+    writes.</p>
+  </div>
+
+  <div class="section" id="troubleshooting">
+    <h2>Troubleshooting and Lessons</h2>
+
+    <h3>One wrong availability zone, wearing three disguises</h3>
+    <p><strong>Problem.</strong> The first apply failed with three unrelated-looking errors at
+    once: <code>NatGateway NotAvailableInZone</code>, <code>gp3
+    VolumeTypeNotAvailableInZone</code>, and <code>t4g.nano</code> not offered.<br>
+    <strong>Root cause.</strong> One cause.
+    <code>data.aws_availability_zones</code> with <code>state = "available"</code> also returns
+    <strong>opted-in Local Zones</strong>. This account has the Dallas Local Zone enabled, so
+    <code>names[0]</code> resolved to <code>us-east-1-dfw-1a</code>, and Local Zones carry a
+    deliberately reduced subset of regional services.<br>
+    <strong>Resolution.</strong> Filter on zone type and intersect with the instance type's actual
+    offering list. Worth keeping the second half even with the filter: among genuine AZs,
+    <code>us-east-1e</code> offers neither Graviton nor gp3.<br>
+    <strong>Lesson.</strong> Three errors in three services, one cause. Check which AZ you landed
+    in before debugging any of them.</p>
+
+    <h3><code>traffic_path</code> cannot attribute NAT cost</h3>
+    <p><strong>Problem.</strong> The NAT attribution query returned zero rows and the analyzer
+    published a permanent <code>nat_bytes = 0</code>. Both looked like a broken pipeline.<br>
+    <strong>Root cause.</strong> <code>traffic_path</code> describes the path a packet took within
+    AWS. It is not the field that names what traffic went <em>through</em>.<br>
+    <strong>Resolution.</strong> <code>next_hop_interface_type</code>.<br>
+    <strong>Lesson.</strong> <strong>The field that looks right is measuring something
+    else</strong> &mdash; and a wrong field returns zero rows, not an error.</p>
+
+    <h3>Every failure here is silent</h3>
+    <p><strong>Problem.</strong> A broken table, a wrong field and an empty partition all present
+    identically: zero rows, query succeeded.<br>
+    <strong>Root cause.</strong> Athena reports on the query, not on whether the answer is
+    plausible.<br>
+    <strong>Resolution.</strong> Verify against delivered data rather than against your
+    configuration &mdash; count rows for a window you know had traffic.<br>
+    <strong>Lesson.</strong> <strong>No alarm fires for "your logs are unqueryable."</strong></p>
   </div>
 
   <div class="section" id="cleanup">
-    <h2>Cleanup</h2>
-    <p>The workspace is VCS-connected, which blocks <code>terraform destroy</code> from a CLI checkout but <strong>not</strong> a destroy queued through HCP &mdash; either from the UI (Workspace &rarr; Settings &rarr; Destruction and Deletion &rarr; Queue destroy plan) or the API with <code>is-destroy: true</code>.</p>
-    <div class="code-block"><pre><code>./scripts/cleanup.sh</code></pre></div>
-    <p>The script does not destroy anything; it verifies a destroy actually finished and reports what survived. It distinguishes three outcomes rather than two &mdash; gone, still present, and <em>could not verify</em> &mdash; because an expired session returning an empty result otherwise reads as a clean teardown while having checked nothing at all.</p>
-    <p>What tends to linger on this build, and why:</p>
-    <ul>
-      <li><strong>The NAT gateway</strong> &mdash; the expensive one, with no usage signal to remind you it exists.</li>
-      <li><strong>The Elastic IP</strong> &mdash; billed hourly once detached, and it outlives the NAT gateway it belonged to.</li>
-      <li><strong>Anomaly detectors</strong> &mdash; a separate API from alarms, so they survive alarm deletion and quietly confuse a later rebuild with a stale trained band.</li>
-    </ul>
-    <p>One thing that is <em>not</em> leftover state: <code>AWSServiceRoleForVPCFlowLogs</code> survives the destroy by design. AWS wants all tag-using subscriptions gone and roughly an hour to pass before it can be removed.</p>
-  </div>
+    <h2>Cleanup and Key Takeaways</h2>
 
-  <div class="section" id="references">
-    <h2>References</h2>
-    <ul>
-      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/week-14-vpc-flow-logs-intelligence">Week 14 source on GitHub</a> &mdash; Terraform modules, the seven saved queries, analyzer Lambda, verification script</li>
-      <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-log-records.html">VPC Flow Logs record fields</a> &mdash; the version table, including the v11 tag and next-hop fields</li>
-      <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-s3-path.html">Flow log file layout in S3</a> &mdash; the Hive-compatible and hourly prefix structures</li>
-      <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-slr.html">Service-linked roles for VPC Flow Logs</a> &mdash; what <code>AWSServiceRoleForVPCFlowLogs</code> does, and why no delivery role is needed</li>
-      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/partition-projection.html">Athena partition projection</a> &middot; <a href="https://docs.aws.amazon.com/athena/latest/ug/vpc-flow-logs-partition-projection-parquet-example.html">Parquet flow log example</a></li>
-      <li><a href="https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/flow_log">Terraform <code>aws_flow_log</code></a> &mdash; <code>destination_options</code> and <code>tag_field_specification</code></li>
-      <li><a href="https://aws.amazon.com/vpc/pricing/">Amazon VPC pricing</a> &middot; <a href="https://aws.amazon.com/cloudwatch/pricing/">CloudWatch pricing</a> &middot; <a href="https://aws.amazon.com/athena/pricing/">Athena pricing</a></li>
-    </ul>
-  </div>
+    <p>The workspace is VCS-connected, which blocks <code>terraform destroy</code> from a CLI
+    checkout but not a destroy queued through HCP. The verification script does not destroy
+    anything; it checks what survived, and <strong>distinguishes three outcomes rather than
+    two</strong> &mdash; gone, still present, and <em>could not verify</em>. An expired session
+    returning an empty result otherwise reads as a clean teardown while having checked nothing.</p>
 
-  <div class="section" id="takeaways">
-    <h2>Key Takeaways</h2>
+    <p>What tends to linger, and why:</p>
     <ul>
-      <li><strong>Pick S3, not CloudWatch Logs</strong>, unless you specifically need metric filters on individual flows. Half the ingest cost, and the only path to Parquet.</li>
-      <li><strong>Verify against delivered data, not against your config.</strong> Every failure mode here is silent &mdash; zero rows and a green "succeeded" look identical to a working system.</li>
-      <li><strong>Do not filter on <code>traffic_path</code> to find NAT cost.</strong> Use <code>next_hop_interface_type</code>. The field that looks right is measuring something else.</li>
-      <li><strong>Put a scan ceiling on the workgroup before anyone else touches it.</strong> Athena has no default spend limit.</li>
-      <li><strong>Mix your alarm types on purpose.</strong> Anomaly detection where normal is genuinely unknown; static thresholds where zero is the right answer. Using anomaly detection everywhere costs 30&times; more and detects less.</li>
-      <li><strong>Check which AZ you landed in.</strong> <code>data.aws_availability_zones</code> returns Local Zones too, and one wrong AZ can look like three unrelated failures.</li>
+      <li><strong>The NAT gateway</strong> &mdash; the expensive one, with no usage signal to
+      remind you it exists.</li>
+      <li><strong>The Elastic IP</strong> &mdash; billed hourly once detached, and it outlives the
+      NAT gateway it belonged to.</li>
+      <li><strong>Anomaly detectors</strong> &mdash; a separate resource that survives a careless
+      destroy.</li>
     </ul>
 
-    <h3>What I'd do differently in production</h3>
+    <h3>Key takeaways</h3>
+
     <ul>
-      <li><strong>Send flow logs from every VPC to one account, not one bucket per VPC.</strong> This build is single-VPC because it is a lab. At organisation scale the value is cross-account, and the table definition is the same either way.</li>
-      <li><strong>Raise the aggregation interval, or accept the bill.</strong> A 1-minute interval gives tighter incident timelines and produces far more billable GB. At real traffic volumes that trade-off deserves a deliberate decision rather than a default.</li>
-      <li><strong>Convert to a partitioned summary table.</strong> Querying raw records is fine at lab volume. At terabytes, a nightly rollup of the handful of aggregates the alarms need would cost less than scanning raw Parquet every hour.</li>
-      <li><strong>Give the anomaly bands weeks, not hours.</strong> Both detectors here sat at <code>INSUFFICIENT_DATA</code> for the life of the build, which is honest but not useful &mdash; a band needs real diurnal history before it means anything.</li>
-      <li><strong>Alarm on the cost metric, not just the traffic metric.</strong> The analyzer already publishes a projected monthly NAT figure; in production that is the number a platform team actually wants paging them, not raw bytes.</li>
+      <li><strong>Pick S3, not CloudWatch Logs</strong>, unless you specifically need metric filters
+      on individual flows. Half the ingest cost, and the only path to Parquet.</li>
+      <li><strong>Verify against delivered data, not against your config.</strong> Every failure
+      mode here is silent &mdash; zero rows and a green "succeeded" look identical to a working
+      system.</li>
+      <li><strong>Do not filter on <code>traffic_path</code> to find NAT cost.</strong> Use
+      <code>next_hop_interface_type</code>.</li>
+      <li><strong>Put a scan ceiling on the workgroup before anyone else touches it.</strong>
+      Athena has no default spend limit.</li>
+      <li><strong>Check which AZ you landed in.</strong> <code>data.aws_availability_zones</code>
+      returns Local Zones too, and one wrong AZ can look like three unrelated failures.</li>
+    </ul>
+
+    <h3>References</h3>
+    <ul>
+      <li><a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/blob/main/week-14-vpc-flow-logs-intelligence/README.md"><strong>The full lab guide</strong></a></li>
+      <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs.html">VPC Flow Logs</a></li>
+      <li><a href="https://docs.aws.amazon.com/athena/latest/ug/partition-projection.html">Athena partition projection</a></li>
+      <li><a href="https://aws.amazon.com/vpc/pricing/">Amazon VPC pricing</a></li>
     </ul>
   </div>
 
