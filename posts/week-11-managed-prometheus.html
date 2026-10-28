@@ -28,6 +28,10 @@ verified_claims:
     source: "https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/azure-monitor-workspace-overview"
   - claim: "Quota limits available on a Log Analytics workspace, such as a daily cap or configurable data retention, cannot be used on an Azure Monitor workspace"
     source: "https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/azure-monitor-workspace-overview"
+  - claim: "When a Terraform check block's assertion fails, Terraform reports a warning and continues executing the current operation, and the check block executes as the last step of a plan or apply operation after Terraform has planned or provisioned the infrastructure"
+    source: "https://developer.hashicorp.com/terraform/language/checks"
+  - claim: "If a Terraform precondition fails, Terraform throws an error with the error_message argument and stops the current operation; preconditions are evaluated after generating a plan but before creating the resource, and are delayed to the apply phase when the value is only known after applying"
+    source: "https://developer.hashicorp.com/terraform/language/expressions/custom-conditions"
 ---
 <div id="jk-post">
 
@@ -177,7 +181,7 @@ outright, which makes the choice automatic rather than clever.</p>
   <strong>User Access Administrator</strong> &mdash; the lab creates three role
   assignments and Contributor alone cannot.</li>
   <li>Terraform <strong>&ge; 1.10</strong> and <code>hashicorp/azurerm</code>
-  <strong>~&gt; 5.2</strong>. The <code>check</code> block below needs 1.5+.</li>
+  <strong>~&gt; 5.2</strong>. The <code>precondition</code> below needs 1.2+.</li>
   <li>An <strong>existing</strong> SSH public key. Azure requires a key or a
   password on a Linux VM; Terraform does not generate one here, because a
   generated key puts its private half in state.</li>
@@ -238,15 +242,35 @@ source also exposes a <code>metrics_ingestion_endpoint</code> attribute, and
 for a workspace-managed rule it comes back <strong>empty</strong>. Terraform
 cheerfully joins an empty host onto a path, applies, boots &mdash; and
 Prometheus fails hours later with <code>unsupported protocol scheme ""</code>.
-An empty string is a valid string, so nothing warns. So the plan now
-refuses:</p>
+An empty string is a valid string, so nothing warns. So the VM that bakes
+this URL into its cloud-init refuses to be built with a broken one:</p>
 
-<pre><code>check "remote_write_url_is_absolute" {
-  assert {
-    condition     = startswith(local.remote_write_url, "https://")
-    error_message = "The assembled remote_write URL has no scheme - the DCE's metrics_ingestion_endpoint came back empty."
+<pre><code>resource "azurerm_linux_virtual_machine" "prometheus" {
+  # ...
+  lifecycle {
+    precondition {
+      condition     = startswith(local.remote_write_url, "https://")
+      error_message = "The assembled remote_write URL has no scheme, ..."
+    }
   }
 }</code></pre>
+
+<p><strong>It must be a <code>precondition</code>, not a <code>check</code>
+block &mdash; and this lab got that wrong first.</strong> A failed check
+assertion only makes Terraform <em>"report a warning and continue executing
+the current operation"</em>, and the block runs <em>"as the last step of plan
+or apply operation, after Terraform has planned or provisioned your
+infrastructure"</em>. It would have warned once the broken VM already existed.
+Measured against an empty host: the check plans <code>1 to add</code> and
+exits <strong>0</strong>; the precondition errors and exits
+<strong>1</strong>.</p>
+
+<p>A precondition is evaluated <em>"after generating a plan but before
+creating the resource"</em> and stops the operation. Against existing state it
+fails at <strong>plan</strong>; on a first apply the workspace does not exist
+yet, so the value is unknown and Terraform <em>"delays checking that
+validation until the apply phase"</em> &mdash; still before the VM is created.
+Either way the broken VM is never built.</p>
 
 <figure class="screenshot" data-prereq>
   <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-11-managed-prometheus/docs/blog/screenshots/03-remote-write-config.png" alt="The remote_write section of prometheus.yml read off the running host, showing the assembled ingestion URL with the data collection rule id masked, an azuread block naming a managed identity client id, promtool check config reporting the file is valid, and a grep for password, client_secret or private key returning zero matches" style="width:100%" />
@@ -384,12 +408,12 @@ Terraform reported success.</strong><br/>
 <em>Root cause:</em> the ingestion host was read from the data collection
 <em>rule</em>, where that attribute is empty for a workspace-managed rule,
 instead of from the <em>endpoint</em>.<br/>
-<em>Resolution:</em> read it from the endpoint, and add the <code>check</code>
-block shown above.<br/>
+<em>Resolution:</em> read it from the endpoint, and guard it with the
+<code>precondition</code> shown above.<br/>
 <em>Lesson learned:</em> an attribute existing on a data source does not mean it is
-populated for your resource. Where a value is composed from several lookups,
-assert the shape of the result &mdash; four lines moved a runtime failure to
-plan time.</p>
+populated for your resource &mdash; and the instrument you assert it with must
+be one that blocks. <code>check</code> is for continuous health reporting;
+stopping a bad build is what preconditions are for.</p>
 
 <p><strong>Problem: cloud-init failed to download Prometheus.</strong><br/>
 <em>Root cause:</em> it ran before the VM had outbound connectivity, failing
@@ -441,7 +465,9 @@ every count zero, including orphaned role assignments. Grafana alone took
   asserts the subscription-scope count is zero.</li>
   <li><strong>An empty string is a valid string.</strong> The most expensive
   defect here applied cleanly, booted cleanly, and failed hours later. A
-  <code>check</code> block costs four lines and moves that to plan time.</li>
+  <code>precondition</code> on the consuming resource costs six lines and
+  stops the build; a <code>check</code> block, which this lab tried first,
+  only warns.</li>
   <li><strong>Creating a resource is not being granted access to it.</strong>
   Managed Grafana has its own authorisation model, and deploying it grants the
   deployer nothing inside it.</li>
@@ -465,7 +491,8 @@ delivered.</p>
   <li><a href="https://prometheus.io/docs/prometheus/latest/configuration/configuration/">Prometheus configuration reference</a></li>
   <li><a href="https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/monitor_alert_prometheus_rule_group">
   <code>azurerm_monitor_alert_prometheus_rule_group</code></a></li>
-  <li><a href="https://developer.hashicorp.com/terraform/language/checks">Terraform <code>check</code> blocks</a></li>
+  <li><a href="https://developer.hashicorp.com/terraform/language/expressions/custom-conditions">Terraform custom conditions &mdash; preconditions and postconditions</a></li>
+  <li><a href="https://developer.hashicorp.com/terraform/language/checks">Terraform <code>check</code> blocks</a> &mdash; and why they do not block</li>
   <li><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-11-managed-prometheus">Source for this week</a> &middot; <a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/blob/main/week-11-managed-prometheus/LAB.md">LAB.md runbook</a></li>
 </ul>
 

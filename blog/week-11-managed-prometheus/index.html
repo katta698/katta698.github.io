@@ -171,7 +171,7 @@ anywhere, and not one secret in the config file.</p>
       <div class="post-info">
         <span>Oct 28, 2026</span>
         <span class="post-info-dot"></span>
-        <span>13 min read</span>
+        <span>14 min read</span>
       </div>
     </header>
     <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 28 October 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
@@ -445,7 +445,7 @@ outright, which makes the choice automatic rather than clever.</p>
   <strong>User Access Administrator</strong> — the lab creates three role
   assignments and Contributor alone cannot.</li>
 <li>Terraform <strong>≥ 1.10</strong> and <code>hashicorp/azurerm</code>
-<strong>~&gt; 5.2</strong>. The <code>check</code> block below needs 1.5+.</li>
+<strong>~&gt; 5.2</strong>. The <code>precondition</code> below needs 1.2+.</li>
 <li>An <strong>existing</strong> SSH public key. Azure requires a key or a
   password on a Linux VM; Terraform does not generate one here, because a
   generated key puts its private half in state.</li>
@@ -499,14 +499,32 @@ source also exposes a <code>metrics_ingestion_endpoint</code> attribute, and
 for a workspace-managed rule it comes back <strong>empty</strong>. Terraform
 cheerfully joins an empty host onto a path, applies, boots — and
 Prometheus fails hours later with <code>unsupported protocol scheme ""</code>.
-An empty string is a valid string, so nothing warns. So the plan now
-refuses:</p>
-<pre><code>check "remote_write_url_is_absolute" {
-  assert {
-    condition     = startswith(local.remote_write_url, "https://")
-    error_message = "The assembled remote_write URL has no scheme - the DCE's metrics_ingestion_endpoint came back empty."
+An empty string is a valid string, so nothing warns. So the VM that bakes
+this URL into its cloud-init refuses to be built with a broken one:</p>
+<pre><code>resource "azurerm_linux_virtual_machine" "prometheus" {
+  # ...
+  lifecycle {
+    precondition {
+      condition     = startswith(local.remote_write_url, "https://")
+      error_message = "The assembled remote_write URL has no scheme, ..."
+    }
   }
 }</code></pre>
+<p><strong>It must be a <code>precondition</code>, not a <code>check</code>
+block — and this lab got that wrong first.</strong> A failed check
+assertion only makes Terraform <em>"report a warning and continue executing
+the current operation"</em>, and the block runs <em>"as the last step of plan
+or apply operation, after Terraform has planned or provisioned your
+infrastructure"</em>. It would have warned once the broken VM already existed.
+Measured against an empty host: the check plans <code>1 to add</code> and
+exits <strong>0</strong>; the precondition errors and exits
+<strong>1</strong>.</p>
+<p>A precondition is evaluated <em>"after generating a plan but before
+creating the resource"</em> and stops the operation. Against existing state it
+fails at <strong>plan</strong>; on a first apply the workspace does not exist
+yet, so the value is unknown and Terraform <em>"delays checking that
+validation until the apply phase"</em> — still before the VM is created.
+Either way the broken VM is never built.</p>
 <figure class="screenshot" data-prereq="">
 <img alt="The remote_write section of prometheus.yml read off the running host, showing the assembled ingestion URL with the data collection rule id masked, an azuread block naming a managed identity client id, promtool check config reporting the file is valid, and a grep for password, client_secret or private key returning zero matches" src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-11-managed-prometheus/docs/blog/screenshots/03-remote-write-config.png"/>
 <figcaption><strong>The week's whole claim, in one config block</strong>
@@ -624,12 +642,12 @@ Terraform reported success.</strong><br/>
 <em>Root cause:</em> the ingestion host was read from the data collection
 <em>rule</em>, where that attribute is empty for a workspace-managed rule,
 instead of from the <em>endpoint</em>.<br/>
-<em>Resolution:</em> read it from the endpoint, and add the <code>check</code>
-block shown above.<br/>
+<em>Resolution:</em> read it from the endpoint, and guard it with the
+<code>precondition</code> shown above.<br/>
 <em>Lesson learned:</em> an attribute existing on a data source does not mean it is
-populated for your resource. Where a value is composed from several lookups,
-assert the shape of the result — four lines moved a runtime failure to
-plan time.</p>
+populated for your resource — and the instrument you assert it with must
+be one that blocks. <code>check</code> is for continuous health reporting;
+stopping a bad build is what preconditions are for.</p>
 <p><strong>Problem: cloud-init failed to download Prometheus.</strong><br/>
 <em>Root cause:</em> it ran before the VM had outbound connectivity, failing
 after 132 seconds against <code>github.com</code>. The network came up shortly
@@ -674,7 +692,9 @@ every count zero, including orphaned role assignments. Grafana alone took
   asserts the subscription-scope count is zero.</li>
 <li><strong>An empty string is a valid string.</strong> The most expensive
   defect here applied cleanly, booted cleanly, and failed hours later. A
-  <code>check</code> block costs four lines and moves that to plan time.</li>
+  <code>precondition</code> on the consuming resource costs six lines and
+  stops the build; a <code>check</code> block, which this lab tried first,
+  only warns.</li>
 <li><strong>Creating a resource is not being granted access to it.</strong>
   Managed Grafana has its own authorisation model, and deploying it grants the
   deployer nothing inside it.</li>
@@ -695,7 +715,8 @@ delivered.</p>
 <li><a href="https://prometheus.io/docs/prometheus/latest/configuration/configuration/">Prometheus configuration reference</a></li>
 <li><a href="https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/monitor_alert_prometheus_rule_group">
 <code>azurerm_monitor_alert_prometheus_rule_group</code></a></li>
-<li><a href="https://developer.hashicorp.com/terraform/language/checks">Terraform <code>check</code> blocks</a></li>
+<li><a href="https://developer.hashicorp.com/terraform/language/expressions/custom-conditions">Terraform custom conditions — preconditions and postconditions</a></li>
+<li><a href="https://developer.hashicorp.com/terraform/language/checks">Terraform <code>check</code> blocks</a> — and why they do not block</li>
 <li><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-11-managed-prometheus">Source for this week</a> · <a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/blob/main/week-11-managed-prometheus/LAB.md">LAB.md runbook</a></li>
 </ul>
 </div>
@@ -901,4 +922,4 @@ delivered.</p>
   hljs.highlightAll();
 </script>
 </body></html>
-<!-- src-sha256 10485572ad872ef3ec89af9d13fcb79fbeab9e14d655afe6d6bd1ce31ccde80e -->
+<!-- src-sha256 4a8a39a5b46216028af37f97e3814ddb31b40b27b3c645cfeab42f4caa5073ab -->
