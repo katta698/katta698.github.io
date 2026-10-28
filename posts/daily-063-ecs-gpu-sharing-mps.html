@@ -1,0 +1,322 @@
+---
+title: "AWS Daily Intelligence #63 - It packs by memory and shares everything else"
+date: '2026-10-28T17:30:00'
+slug: aws-daily-intelligence-ecs-gpu-sharing-mps
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-10-28'
+verified_claims:
+  - claim: "Amazon Elastic Container Service now supports GPU sharing with NVIDIA Multi-Process Service (MPS), enabling you to run multiple Amazon ECS tasks concurrently on a single NVIDIA GPU"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-ecs-gpu-sharing-nvidia-mps/
+  - claim: "You define the GPU memory each container needs and can optionally set a maximum share of GPU compute, and Amazon ECS places tasks on GPUs with available capacity as your services scale and deploy"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-ecs-gpu-sharing-nvidia-mps/
+  - claim: "GPU sharing is supported on Amazon ECS Managed Instances and Amazon ECS on Amazon EC2"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-ecs-gpu-sharing-nvidia-mps/
+  - claim: "On Amazon ECS Managed Instances, Amazon ECS also monitors the MPS control daemon that enables sharing on each instance, and if the daemon stops or becomes unhealthy, Amazon ECS automatically replaces the instance and moves your tasks to healthy capacity"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-ecs-gpu-sharing-nvidia-mps/
+  - claim: "This capability is available in all AWS commercial and AWS GovCloud (US) Regions"
+    source: https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-ecs-gpu-sharing-nvidia-mps/
+  - claim: "The memory parameter is required and is the GPU memory limit for the container in MiB, a hard ceiling on the GPU memory that the container can use, and the value must be greater than 0"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html
+  - claim: "The maxComputePercent parameter is not required, is the maximum percentage of GPU compute that the container can use as an integer from 1 to 100, and sets a ceiling on the container's GPU compute usage, not a reservation"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html
+  - claim: "When a container is idle, its unused compute is available to other containers on the same GPU, up to each of their own maxComputePercent values, and if you don't specify this parameter the container can use up to 100 percent"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html
+  - claim: "Amazon ECS places tasks based on GPU memory only, so it doesn't account for compute when making placement decisions"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html
+  - claim: "GPU sharing is not recommended for workloads that are sensitive to GPU faults from neighboring containers, because MPS is software-level sharing and all containers on a GPU share the same CUDA context"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html
+  - claim: "If one container triggers a fatal GPU error, such as an illegal memory access from a faulty GPU kernel, the containers sharing that physical GPU could be affected, and containers on other GPUs on the same instance aren't affected"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html
+  - claim: "GPU sharing is not recommended for large model training that needs the full GPU memory, or for workloads that require hardware-level isolation between processes"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html
+  - claim: "You should run a single GPU process per container when you use NVIDIA MPS for GPU sharing, and for applications that require multiple GPU processes you configure the GPU memory requirement based on the combined peak memory usage of all processes"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html
+  - claim: "Multi-process applications can consume more GPU memory than configured, which can cause memory contention"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html
+  - claim: "When Amazon ECS places a task that uses GPU sharing, it adds up the GPU memory requested by all GPU containers in the task and looks for a GPU with enough free memory, and all GPU containers within a single task are placed on the same physical GPU"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html
+  - claim: "GPU sharing with MPS is supported on the G4dn, G5, G6, G6e, G7, G7e, P3, P4d, P5, P5e, P5en, and P6-B200 instance families, and is not supported on AWS Fargate, Amazon ECS Express Mode, or Amazon ECS managed daemon tasks"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html
+  - claim: "GPU sharing with MPS on Amazon ECS on Amazon EC2 requires Amazon ECS container agent version 1.107.0 or later and the Amazon ECS AL2023 GPU-optimized AMI version 20261019 or later"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html
+  - claim: "Amazon ECS sets reserved environment variables in each container that shares a GPU, namely CUDA_MPS_PINNED_DEVICE_MEM_LIMIT for the memory limit and CUDA_MPS_ACTIVE_THREAD_PERCENTAGE for the compute ceiling, and you should not set these variables in your container definition"
+    source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html
+---
+<div id="jk-post">
+
+<p class="lead">
+  ECS can now run several tasks on one NVIDIA GPU through MPS, which is a real utilisation win for small-model
+  inference. The documentation is unusually candid about what is shared and what is not, and the three
+  constraints worth reading before you pack anything are all in the same page.
+</p>
+
+<p>
+  <em>&ldquo;Amazon ECS places tasks based on <strong>GPU memory only</strong>, so it doesn't account for
+  compute when making placement decisions.&rdquo;</em>
+</p>
+
+<div class="section" id="what-changed">
+  <h2>Executive summary</h2>
+  <p>
+    <em>&ldquo;Amazon Elastic Container Service (Amazon ECS) now supports GPU sharing with NVIDIA Multi-Process
+    Service (MPS), enabling you to run <strong>multiple Amazon ECS tasks concurrently on a single NVIDIA
+    GPU</strong>.&rdquo;</em>
+  </p>
+  <p>
+    You declare memory, optionally cap compute, and ECS does the packing. The three things to understand before
+    enabling it are that memory is the only thing the scheduler considers, compute is a ceiling rather than a
+    floor, and the fault domain is the physical GPU.
+  </p>
+
+  <h2>What changed</h2>
+  <p>
+    <em>&ldquo;You define the GPU memory each container needs and can optionally set a maximum share of GPU
+    compute, and Amazon ECS places tasks on GPUs with available capacity as your services scale and
+    deploy.&rdquo;</em>
+  </p>
+  <p>
+    Two capacity types:
+    <em>&ldquo;GPU sharing is supported on Amazon ECS Managed Instances and Amazon ECS on Amazon
+    EC2&rdquo;</em>, and the operational burden differs between them &mdash; see below. Availability is
+    <em>&ldquo;all AWS commercial and AWS GovCloud (US) Regions&rdquo;</em>.
+  </p>
+
+  <h2>Architecture</h2>
+  <p>
+    The two parameters are asymmetric in a way the announcement does not convey.
+  </p>
+
+  <figure class="screenshot">
+    <img src="/blog/assets/diagrams/daily-063-ecs-gpu-sharing-mps.svg" alt="Diagram: how Amazon ECS GPU sharing with NVIDIA MPS allocates memory and compute, and what it does not isolate. Amazon ECS now supports GPU sharing with NVIDIA Multi-Process Service, enabling multiple ECS tasks to run concurrently on a single NVIDIA GPU, with the customer defining the GPU memory each container needs and optionally setting a maximum share of GPU compute while ECS places tasks on GPUs with available capacity. The two parameters are asymmetric. The memory parameter is required, is the GPU memory limit for the container in MiB, is a hard ceiling on the GPU memory the container can use, and must be greater than zero. The maxComputePercent parameter is not required, is an integer from 1 to 100, and sets a ceiling on the container's GPU compute usage rather than a reservation; when a container is idle its unused compute is available to other containers on the same GPU up to each of their own maxComputePercent values, and if the parameter is not specified the container can use up to 100 percent. Most consequentially, Amazon ECS places tasks based on GPU memory only, so it does not account for compute when making placement decisions, which means the scheduler can co-locate two containers that each expect most of the GPU's compute as long as their memory fits. On fault isolation the documentation is candid: GPU sharing is not recommended for workloads that are sensitive to GPU faults from neighbouring containers, because MPS is software-level sharing and all containers on a GPU share the same CUDA context. If one container triggers a fatal GPU error, such as an illegal memory access from a faulty GPU kernel, the containers sharing that physical GPU could be affected, although containers on other GPUs on the same instance are not affected, so the blast radius is exactly one physical GPU. GPU sharing is also not recommended for large model training that needs the full GPU memory, or for workloads that require hardware-level isolation between processes. The memory limit carries a condition that is easy to miss: customers should run a single GPU process per container when using MPS, and for applications requiring multiple GPU processes they configure the GPU memory requirement based on the combined peak memory usage of all processes and use application-level controls to keep total consumption within the configured value, because multi-process applications can consume more GPU memory than configured, which can cause memory contention. So the hard ceiling is reliable for single-process containers and advisory for multi-process ones. On placement mechanics, when ECS places a task using GPU sharing it adds up the GPU memory requested by all GPU containers in the task and looks for a GPU with enough free memory, and all GPU containers within a single task are placed on the same physical GPU. Support is limited to the G4dn, G5, G6, G6e, G7, G7e, P3, P4d, P5, P5e, P5en and P6-B200 instance families, and GPU sharing is not supported on AWS Fargate, Amazon ECS Express Mode, or Amazon ECS managed daemon tasks, nor for task definitions requiring EXTERNAL compatibility. On ECS on EC2 it requires container agent version 1.107.0 or later and the ECS AL2023 GPU-optimized AMI version 20261019 or later. ECS sets reserved environment variables in each sharing container, CUDA_MPS_PINNED_DEVICE_MEM_LIMIT for the memory limit and CUDA_MPS_ACTIVE_THREAD_PERCENTAGE for the compute ceiling, and these should not be set in the container definition. The operational burden differs by capacity type: on ECS Managed Instances, ECS monitors the MPS control daemon that enables sharing on each instance, and if the daemon stops or becomes unhealthy ECS automatically replaces the instance and moves tasks to healthy capacity, whereas the announcement describes that monitoring only for Managed Instances, so on ECS on EC2 the daemon is part of what the customer operates. The recommended actions are to set maxComputePercent deliberately rather than leaving it at the default of 100 percent, to treat the physical GPU as the fault domain and avoid co-locating workloads of different criticality on one GPU, to run one GPU process per container or else size memory on combined peak usage and enforce it in the application, and to note which capacity type is in use because the daemon monitoring differs." />
+    <figcaption>Memory is required and decides placement. Compute is optional, capped, and invisible to the scheduler.</figcaption>
+  </figure>
+
+  <h3>Two parameters, three different kinds of guarantee</h3>
+  <div class="table-scroll">
+  <table>
+    <tr><th></th><th><code>memory</code></th><th><code>maxComputePercent</code></th></tr>
+    <tr>
+      <td>Required</td>
+      <td>Yes</td>
+      <td>No &mdash; defaults to 100 percent</td>
+    </tr>
+    <tr>
+      <td>What it is</td>
+      <td><em>&ldquo;a hard ceiling on the GPU memory that the container can use&rdquo;</em></td>
+      <td><em>&ldquo;a ceiling on the container's GPU compute usage, not a reservation&rdquo;</em></td>
+    </tr>
+    <tr>
+      <td>Affects placement</td>
+      <td>Yes &mdash; it is the only input</td>
+      <td><strong>No</strong></td>
+    </tr>
+    <tr>
+      <td>Idle capacity</td>
+      <td>Not shared</td>
+      <td><em>&ldquo;available to other containers on the same GPU&rdquo;</em></td>
+    </tr>
+  </table>
+  </div>
+  <p>
+    The placement row is the one with consequences. Because
+    <em>&ldquo;Amazon ECS places tasks based on GPU memory only&rdquo;</em>, the scheduler will happily
+    co-locate two containers that each expect most of the GPU's compute, provided their memory fits. Compute
+    contention is something you prevent by how you size memory, not by what you declare about compute.
+  </p>
+
+  <h3>The fault domain is the physical GPU</h3>
+  <p>
+    AWS is direct about this rather than burying it:
+    <em>&ldquo;GPU sharing is not recommended for &hellip; Workloads that are sensitive to GPU faults from
+    neighboring containers, because <strong>MPS is software-level sharing and all containers on a GPU share the
+    same CUDA context</strong>.&rdquo;</em>
+  </p>
+  <p>
+    And the blast radius, stated exactly:
+    <em>&ldquo;If one container triggers a fatal GPU error, such as an illegal memory access from a faulty GPU
+    kernel, <strong>the containers sharing that physical GPU could be affected</strong>. Containers on other
+    GPUs on the same instance aren't affected.&rdquo;</em>
+  </p>
+  <p>
+    One physical GPU, no more and no less. That is a usefully precise boundary to design against: it means
+    mixing criticality levels within a GPU is the thing to avoid, while mixing them across GPUs on the same
+    instance is fine.
+  </p>
+
+  <h3>The hard limit has a condition</h3>
+  <p>
+    <em>&ldquo;<strong>Run a single GPU process per container</strong> when you use NVIDIA MPS for GPU
+    sharing.&rdquo;</em> And for the case where you cannot:
+    <em>&ldquo;configure the GPU memory requirement based on the <strong>combined peak memory usage of all
+    processes</strong>. Use application-level controls to keep total consumption within the configured
+    value.&rdquo;</em>
+  </p>
+  <p>
+    With the consequence spelled out:
+    <em>&ldquo;As a result, <strong>multi-process applications can consume more GPU memory than
+    configured</strong>, which can cause memory contention.&rdquo;</em>
+  </p>
+  <p>
+    So the hard ceiling is hard for a single-process container and advisory for a multi-process one. That is a
+    meaningful distinction to carry into a design review, because <em>we set a memory limit</em> means two
+    different things depending on what is inside the container.
+  </p>
+
+  <h2>Business value</h2>
+  <p>
+    The case AWS makes is utilisation:
+    <em>&ldquo;GPU sharing helps you increase GPU utilization and reduce infrastructure costs for workloads
+    that use only part of a GPU's capacity, such as small-model inference, AV/ADAS simulations, embedding
+    generation, and multi-model serving.&rdquo;</em>
+  </p>
+  <p>
+    And the adoption cost is low:
+    <em>&ldquo;you can pack more workloads onto each GPU instance <strong>without changing your application
+    code</strong>&rdquo;</em>. For a fleet of inference containers each using a fraction of a card, that is a
+    straightforwardly good trade.
+  </p>
+
+  <h2>Security considerations</h2>
+  <p>
+    The shared CUDA context is the thing to raise with a security reviewer, not because AWS hides it but
+    because it is the kind of boundary people assume containers provide. If your isolation requirement is
+    between tenants rather than between workloads, the documentation already answers the question: GPU sharing
+    is not recommended for <em>&ldquo;Workloads that require hardware-level isolation between
+    processes&rdquo;</em>.
+  </p>
+  <p>
+    Also worth noting that ECS owns two environment variables inside your container &mdash;
+    <code>CUDA_MPS_PINNED_DEVICE_MEM_LIMIT</code> and <code>CUDA_MPS_ACTIVE_THREAD_PERCENTAGE</code> &mdash;
+    and <em>&ldquo;Don't set these variables in your container definition&rdquo;</em>.
+  </p>
+
+  <h2>Cost considerations</h2>
+  <p>
+    The saving is the point of the feature: fewer GPU instances for the same number of inference containers.
+    Neither page prices the feature separately, so treat the saving as the instance count rather than as a line
+    item.
+  </p>
+  <p>
+    The cost risk is the opposite of the usual one. Packing by memory alone means you can land in a state where
+    the GPUs are memory-full and compute-starved, so you are paying for cards whose throughput is contended.
+    That shows up as latency, not as a bill, which makes it harder to attribute.
+  </p>
+
+  <h2>Operational considerations</h2>
+  <p>
+    <strong>The daemon monitoring is capacity-type specific.</strong>
+    <em>&ldquo;On Amazon ECS Managed Instances, Amazon ECS also monitors the MPS control daemon that enables
+    sharing on each instance. If the daemon stops or becomes unhealthy, Amazon ECS automatically replaces the
+    instance and moves your tasks to healthy capacity.&rdquo;</em>
+  </p>
+  <p>
+    The announcement attributes that monitoring to Managed Instances specifically. It does not say the
+    equivalent is absent on ECS on EC2, so read this as a question to settle rather than a difference I have
+    confirmed &mdash; but settle it before assuming the daemon is somebody else's to watch.
+  </p>
+  <p>
+    <strong>There are version floors.</strong>
+    <em>&ldquo;GPU sharing with MPS on Amazon ECS on Amazon EC2 requires Amazon ECS container agent version
+    1.107.0 or later and the Amazon ECS AL2023 GPU-optimized AMI version 20261019 or later.&rdquo;</em>
+  </p>
+  <p>
+    <strong>And a list of places it does not work:</strong>
+    <em>&ldquo;GPU sharing is not supported on AWS Fargate, Amazon ECS Express Mode, or Amazon ECS managed
+    daemon tasks&rdquo;</em>, nor for task definitions requiring <code>EXTERNAL</code> compatibility.
+  </p>
+
+  <h2>Tradeoffs</h2>
+  <div class="table-scroll">
+  <table>
+    <tr><th>Choice</th><th>What you gain</th><th>What it costs</th></tr>
+    <tr>
+      <td>Enabling GPU sharing</td>
+      <td>Higher utilisation, no application changes</td>
+      <td>A shared CUDA context, so a neighbour's fatal GPU error can reach you</td>
+    </tr>
+    <tr>
+      <td>Leaving <code>maxComputePercent</code> unset</td>
+      <td>Bursty containers can use the whole card when it is free</td>
+      <td>Every container defaults to 100 percent, so nothing caps contention</td>
+    </tr>
+    <tr>
+      <td>Setting it low</td>
+      <td>Predictable ceilings per container</td>
+      <td>It is still not a reservation, and idle capacity goes to whoever asks</td>
+    </tr>
+    <tr>
+      <td>Multi-process containers</td>
+      <td>Works, with care</td>
+      <td>The memory ceiling becomes advisory &mdash; enforcement moves into your application</td>
+    </tr>
+  </table>
+  </div>
+
+  <h2>Implementation guidance</h2>
+  <ol>
+    <li>
+      <strong>Measure peak GPU memory per container first.</strong> It is the required parameter and the only
+      input to placement, so an inaccurate figure misplaces tasks rather than merely wasting memory.
+    </li>
+    <li>
+      <strong>Set <code>maxComputePercent</code> deliberately</strong> rather than leaving the 100 percent
+      default, on any GPU where you intend to co-locate workloads with different latency expectations.
+    </li>
+    <li>
+      <strong>Group by criticality, per GPU.</strong> The fault domain is one physical GPU, so keep workloads
+      you would not want failing together off the same card &mdash; the same instance is fine.
+    </li>
+    <li>
+      <strong>Confirm one GPU process per container</strong>, or size memory on combined peak usage and enforce
+      it in the application. The hard ceiling is only hard in the first case.
+    </li>
+    <li>
+      <strong>Check agent and AMI versions</strong> before planning a rollout on ECS on EC2, and note that the
+      MPS daemon is yours to monitor there.
+    </li>
+  </ol>
+
+  <h2>Best practices</h2>
+  <ul>
+    <li>Record which capacity type each GPU service runs on, because daemon monitoring differs between them.</li>
+    <li>Watch GPU compute contention as a latency signal; the scheduler will not see it coming.</li>
+    <li>Keep the reserved environment variables out of your task definitions.</li>
+    <li>Revisit memory figures after model changes &mdash; placement is only as good as the number you declared.</li>
+  </ul>
+
+  <h2>Who should adopt this and when</h2>
+  <p>
+    <strong>Now, for small-model inference fleets.</strong> This is the case the feature is built for, and the
+    utilisation gain is immediate with no code change.
+  </p>
+  <p>
+    <strong>Carefully, for mixed-criticality workloads.</strong> Possible, but group by GPU and set compute
+    ceilings rather than relying on the scheduler.
+  </p>
+  <p>
+    <strong>Not for training that needs the whole card,</strong> nor where you need
+    <em>&ldquo;hardware-level isolation between processes&rdquo;</em> &mdash; both are on AWS's own
+    not-recommended list.
+  </p>
+
+  <h2>Key takeaways</h2>
+  <ul>
+    <li>Multiple ECS tasks per NVIDIA GPU via MPS, on Managed Instances and ECS on EC2, in all commercial and
+      GovCloud (US) Regions.</li>
+    <li><code>memory</code> is required and is a hard ceiling; <code>maxComputePercent</code> is optional, is a
+      ceiling and not a reservation, and defaults to 100 percent.</li>
+    <li>Placement considers memory only, so compute contention is not something the scheduler prevents.</li>
+    <li>All containers on a GPU share one CUDA context; a fatal GPU error can affect the others on that
+      physical GPU, but not on other GPUs in the instance.</li>
+    <li>The memory ceiling is reliable for single-process containers and advisory for multi-process ones.</li>
+  </ul>
+
+  <h2>Official AWS references</h2>
+  <ul>
+    <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-ecs-gpu-sharing-nvidia-mps/" target="_blank" rel="noopener">Amazon ECS now supports GPU sharing with NVIDIA Multi-Process Service (MPS) &mdash; the capability, the memory and optional compute parameters, the two supported capacity types, the Managed Instances daemon monitoring, and Region availability (5 claims)</a></li>
+    <li><a href="https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu-sharing.html" target="_blank" rel="noopener">Share GPUs on Amazon ECS &mdash; the memory and maxComputePercent parameter definitions, the memory-only placement rule, the not-recommended list and the shared CUDA context, the fatal-GPU-error blast radius, the single-process guidance and multi-process caveat, task placement mechanics, supported instance families and unsupported launch types, agent and AMI version floors, and the reserved environment variables (13 claims)</a></li>
+    <li><a href="https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-gpu.html" target="_blank" rel="noopener">Working with GPUs on Amazon ECS &mdash; further reading on dedicated GPU task definitions; no claims in this post are drawn from it</a></li>
+  </ul>
+</div>
+
+</div>

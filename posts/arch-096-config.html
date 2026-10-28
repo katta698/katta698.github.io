@@ -1,0 +1,400 @@
+---
+title: "AWS Architecture Series #96 — Nothing non-compliant is three different answers"
+date: '2026-10-28T09:00:00'
+slug: aws-architecture-config
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-10-28'
+verified_claims:
+  - claim: "The configuration recorder stores the configuration changes to the resource types in scope as configuration items (CIs)"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/stop-start-recorder.html
+  - claim: "By default, a customer managed configuration recorder records all supported resources in the AWS Region where AWS Config is running"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/stop-start-recorder.html
+  - claim: "For a customer managed configuration recorder the resource types in scope are set by you"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/stop-start-recorder.html
+  - claim: "A service-linked configuration recorder is a configuration recorder that is linked to a specific AWS service, and the resource types in scope are set by the linked service"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/stop-start-recorder.html
+  - claim: "With AWS Config, you are charged based on the number of configuration items recorded, the number of active AWS Config rule evaluations, and the number of conformance pack evaluations in your account"
+    source: https://aws.amazon.com/config/pricing/
+  - claim: "A configuration item is a record of the configuration state of a resource in your AWS account"
+    source: https://aws.amazon.com/config/pricing/
+  - claim: "An AWS Config rule evaluation is a compliance state evaluation of a resource by an AWS Config rule in your AWS account"
+    source: https://aws.amazon.com/config/pricing/
+  - claim: "A conformance pack evaluation is the evaluation of a resource by an AWS Config rule within the conformance pack"
+    source: https://aws.amazon.com/config/pricing/
+  - claim: "AWS Config rule evaluations are priced per rule evaluation per region"
+    source: https://aws.amazon.com/config/pricing/
+  - claim: "With consolidated billing, AWS will measure the total number of AWS Config rules evaluations from all of your accounts"
+    source: https://aws.amazon.com/config/pricing/
+  - claim: "If you are running a rule in both detective mode and proactive mode, you will be charged for only the evaluations in detective mode"
+    source: https://aws.amazon.com/config/pricing/
+  - claim: "A conformance pack is a collection of AWS Config rules and remediation actions that can be easily deployed as a single entity in an account and a Region or across an organization in AWS Organizations"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/conformance-packs.html
+  - claim: "Conformance packs are created by authoring a YAML template that contains the list of AWS Config managed or custom rules and remediation actions"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/conformance-packs.html
+  - claim: "You can also use AWS Systems Manager documents (SSM documents) to store your conformance pack templates on AWS and directly deploy conformance packs using SSM document names"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/conformance-packs.html
+  - claim: "A NON_COMPLIANT evaluation result means the rule fails the conditions of the compliance check"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/evaluate-config-rules.html
+  - claim: "An ERROR evaluation result means one of the required or optional parameters is not valid, not of the correct type, or is formatted incorrectly"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/evaluate-config-rules.html
+  - claim: "NOT_APPLICABLE is used to filter out resources that the logic of the rule cannot be applied to, for example the alb-desync-mode-check rule only checks Application Load Balancers and ignores Network Load Balancers and Gateway Load Balancers"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/evaluate-config-rules.html
+  - claim: "AWS Config can also check all of your resources for account-wide requirements, for example whether the number of EC2 volumes in an account stays within a desired total, or whether an account uses AWS CloudTrail for logging"
+    source: https://docs.aws.amazon.com/config/latest/developerguide/evaluate-config-rules.html
+problem: "A Config dashboard showing nothing non-compliant is not one statement. It can mean the rule checked and passed, that the rule's logic did not apply, that the rule's parameters were malformed, or that the resource was never recorded in the first place. Only the first is the one people read it as."
+builds: "A reading of what the recorder decides and what that costs, what a conformance pack is as an artefact, and the four evaluation results that a compliance view collapses into green."
+catch: "The evaluation result list has four entries and only one of them is a failure. 'NON_COMPLIANT — the rule fails the conditions of the compliance check.' 'ERROR — one of the required/optional parameters is not valid.' 'NOT_APPLICABLE — used to filter out resources that the logic of the rule cannot be applied to.' A rule in ERROR is not telling you that you are fine. It is not telling you anything."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #096 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">Nothing non-compliant is three different answers</h1>
+  <p class="post-subtitle">What Config can tell you is bounded twice over: by what the recorder captured, and by whether the rule managed to evaluate it at all.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Config is usually introduced as a compliance dashboard, and a dashboard implies that green means checked.
+      Two layers sit under that word, and each can produce green for a reason that is not compliance.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The recorder decides what exists to be evaluated, one Region at a time</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;The configuration recorder stores the configuration changes to the resource types in scope
+          as <strong>configuration items (CIs)</strong>.&rdquo;</em> And the default:
+          <em>&ldquo;By default, a customer managed configuration recorder records <strong>all supported
+          resources in the AWS Region where AWS Config is running</strong>.&rdquo;</em>
+        </p>
+        <p>
+          Two things follow. The scope is per Region, so a resource in a Region with no recorder generates no
+          configuration items and therefore nothing to evaluate. And the default is everything, which is the
+          safe default for coverage and the expensive one for cost &mdash; which is why the scope gets narrowed,
+          usually by somebody optimising a bill rather than by somebody thinking about what the rules need.
+        </p>
+        <p>
+          There is also a second recorder type worth knowing exists:
+          a service-linked recorder, which AWS describes as
+          <em>&ldquo;A configuration recorder that is linked to a specific AWS service&rdquo;</em> whose
+          <em>&ldquo;resource types in scope are set by the linked service&rdquo;</em>.
+          Where the customer managed one has its scope <em>&ldquo;set by you&rdquo;</em>, this one does not.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat recorder scope as a security control, not a cost setting, and review changes to it the way you would review deleting a rule. Narrowing scope and deleting a rule have the same observable effect on the dashboard: fewer findings.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Four evaluation results, and the dashboard shows two colours</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;<strong>NON_COMPLIANT</strong> &mdash; The rule fails the conditions of the compliance
+          check.&rdquo;</em> That is the one everybody expects. The other two non-compliant-adjacent results are
+          the interesting ones.
+        </p>
+        <p>
+          <em>&ldquo;<strong>ERROR</strong> &mdash; The one of the required/optional parameters is not valid,
+          not of the correct type, or is formatted incorrectly.&rdquo;</em>
+        </p>
+        <p>
+          A rule in <code>ERROR</code> is not telling you that you are compliant. It is not telling you
+          anything, and it got into that state through a configuration mistake rather than through a resource
+          problem &mdash; which means the person who introduced it was editing a rule, not touching the resource
+          the rule protects.
+        </p>
+        <p>
+          <em>&ldquo;<strong>NOT_APPLICABLE</strong> &mdash; Used to filter out resources that the logic of the
+          rule cannot be applied to. For example, the <code>alb-desync-mode-check</code> rule only checks
+          Application Load Balancers, and ignores Network Load Balancers and Gateway Load
+          Balancers.&rdquo;</em>
+        </p>
+        <p>
+          That one is correct behaviour and still worth counting. A rule returning <code>NOT_APPLICABLE</code>
+          for everything is indistinguishable, on a compliance summary, from a rule that is passing &mdash; and
+          one common cause is a rule scoped to a resource type you do not have, which is what a copied
+          conformance pack produces.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Report the four results separately rather than as compliant and non-compliant. The number worth watching is rules in <code>ERROR</code> and rules whose evaluations are entirely <code>NOT_APPLICABLE</code>, because both look like success and neither is a check.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>A conformance pack is a template, and the bill is per evaluation</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;A conformance pack is a collection of AWS Config rules <strong>and remediation
+          actions</strong> that can be easily deployed as a single entity in an account and a Region or across
+          an organization in AWS Organizations.&rdquo;</em>
+        </p>
+        <p>
+          The remediation half is the part that gets skimmed. A pack is not only a set of checks; it can carry
+          the actions that fix what the checks find. And it is an authored artefact rather than a product:
+          <em>&ldquo;Conformance packs are created by authoring a <strong>YAML template</strong> that contains
+          the list of AWS Config managed or custom rules and remediation actions.&rdquo;</em>
+        </p>
+        <p>
+          Charging follows evaluations rather than packs:
+          <em>&ldquo;you are charged based on the number of configuration items recorded, the number of active
+          AWS Config rule evaluations, and the number of <strong>conformance pack evaluations</strong> in your
+          account&rdquo;</em>, where
+          <em>&ldquo;A conformance pack evaluation is the evaluation of a resource by an AWS Config rule within
+          the conformance pack.&rdquo;</em>
+        </p>
+        <p>
+          So deploying a pack of forty rules across an organisation is forty rules' worth of evaluations in
+          every account and Region it lands in &mdash; including, by the logic above, the rules that will return
+          <code>NOT_APPLICABLE</code> because that account has none of the resource type.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Trim sample packs to the resource types an account actually has before deploying them widely. An always-<code>NOT_APPLICABLE</code> rule costs evaluations and contributes a reassuring green tile, which is the worst combination available.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      A recorder that decides what is visible, rules that decide what is checked, and a compliance view that
+      collapses four results into two.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-096-config.svg" alt="Diagram: why an AWS Config compliance view showing nothing non-compliant can mean four different things, and how recording scope and pricing interact. The configuration recorder stores the configuration changes to the resource types in scope as configuration items, and by default a customer managed configuration recorder records all supported resources in the AWS Region where AWS Config is running. Two consequences follow: the scope is per Region, so a resource in a Region with no recorder generates no configuration items and therefore nothing to evaluate, and the default is everything, which is the safe default for coverage and the expensive one for cost, which is why scope gets narrowed, usually by somebody optimising a bill rather than by somebody thinking about what the rules need. There is also a second recorder type: a service-linked configuration recorder is linked to a specific AWS service and its resource types in scope are set by the linked service, whereas the customer managed recorder has its scope set by the customer. Recorder scope should therefore be treated as a security control rather than a cost setting, because narrowing scope and deleting a rule have the same observable effect on the dashboard, which is fewer findings. On evaluation, AWS Config publishes four results and a compliance view typically shows two colours. NON_COMPLIANT means the rule fails the conditions of the compliance check, which is the result everybody expects. ERROR means one of the required or optional parameters is not valid, not of the correct type, or is formatted incorrectly, so a rule in ERROR is not reporting compliance, it is reporting nothing, and it reached that state through a configuration mistake rather than a resource problem, meaning the person who introduced it was editing a rule rather than touching the resource the rule protects. NOT_APPLICABLE is used to filter out resources that the logic of the rule cannot be applied to, with AWS giving the example that the alb-desync-mode-check rule only checks Application Load Balancers and ignores Network Load Balancers and Gateway Load Balancers; that is correct behaviour and still worth counting, because a rule returning NOT_APPLICABLE for everything is indistinguishable on a compliance summary from a rule that is passing, and a common cause is a rule scoped to a resource type the account does not have, which is what a copied conformance pack produces. The recommendation is to report the four results separately rather than as compliant and non-compliant, watching in particular the count of rules in ERROR and rules whose evaluations are entirely NOT_APPLICABLE, because both look like success and neither is a check. On conformance packs, a pack is a collection of AWS Config rules and remediation actions that can be deployed as a single entity in an account and a Region or across an organization in AWS Organizations; the remediation half is the part that gets skimmed, since a pack is not only a set of checks but can carry the actions that fix what the checks find. Packs are authored artefacts rather than products, created by authoring a YAML template containing the list of managed or custom rules and remediation actions, and AWS Systems Manager documents can be used to store pack templates and deploy packs directly using SSM document names. Charging follows evaluations rather than packs: customers are charged based on the number of configuration items recorded, the number of active rule evaluations, and the number of conformance pack evaluations in the account, where a configuration item is a record of the configuration state of a resource, a rule evaluation is a compliance state evaluation of a resource by a rule, and a conformance pack evaluation is the evaluation of a resource by a rule within the pack. Rule evaluations are priced per rule evaluation per region, and with consolidated billing AWS measures the total number of rule evaluations from all of the customer's accounts, so the decision about what to record is made per Region while the volume that sets the tier is measured across the organisation. If a rule runs in both detective mode and proactive mode, the customer is charged only for the evaluations in detective mode. Deploying a pack of forty rules across an organisation is therefore forty rules worth of evaluations in every account and Region it lands in, including the rules that will return NOT_APPLICABLE because that account has none of the resource type, so sample packs should be trimmed to the resource types an account actually has, since an always-NOT_APPLICABLE rule costs evaluations and contributes a reassuring green tile. Config can also check resources for account-wide requirements, for example whether the number of EC2 volumes in an account stays within a desired total or whether an account uses AWS CloudTrail for logging. The recommended actions are to treat recorder scope as a security control and review narrowing the way a rule deletion would be reviewed, to report the four evaluation results separately, to trim conformance packs before wide deployment, and to audit for rules in ERROR and rules evaluating entirely as NOT_APPLICABLE." />
+      <figcaption>Two filters sit above the dashboard, and both of them produce green.</figcaption>
+    </figure>
+
+    <h3>What green can mean</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>The dashboard shows</th><th>What actually happened</th><th>Is it a check?</th></tr>
+      <tr>
+        <td>Compliant</td>
+        <td>The rule evaluated the resource and it passed</td>
+        <td>Yes</td>
+      </tr>
+      <tr>
+        <td>Nothing</td>
+        <td><code>NOT_APPLICABLE</code> &mdash; <em>&ldquo;the logic of the rule cannot be applied&rdquo;</em></td>
+        <td>No, and correctly so</td>
+      </tr>
+      <tr>
+        <td>Nothing</td>
+        <td><code>ERROR</code> &mdash; a parameter is <em>&ldquo;not valid, not of the correct type, or is formatted incorrectly&rdquo;</em></td>
+        <td><strong>No, and it is broken</strong></td>
+      </tr>
+      <tr>
+        <td>Nothing</td>
+        <td>The resource was never recorded &mdash; no configuration item exists</td>
+        <td><strong>No, and the rule never saw it</strong></td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      Only the first row is the statement people take the dashboard to be making. The fourth is the one that
+      does not appear anywhere in Config at all, because a resource outside recorder scope leaves no trace in
+      the service to be counted.
+    </p>
+
+    <div class="callout amber">
+      <strong>The decision is per Region; the volume that sets your tier is not</strong>
+      <p>Rule evaluations are priced <em>&ldquo;per rule evaluation per region&rdquo;</em>. But: <em>&ldquo;With consolidated billing, AWS will measure the total number of AWS Config rules evaluations <strong>from all of your accounts</strong>&rdquo;</em>.</p>
+      <p>So the recording and rule decisions are made account by account and Region by Region, while the volume those decisions produce is aggregated across the organisation. One team's enthusiastic conformance pack moves everybody's position on the curve, and nobody owns that number.</p>
+    </div>
+
+    <h3>One pricing detail worth knowing before you duplicate a rule</h3>
+    <p>
+      <em>&ldquo;If you are running a rule in both detective mode and proactive mode, you will be charged for
+      <strong>only the evaluations in detective mode</strong>.&rdquo;</em>
+    </p>
+    <p>
+      Which removes the obvious argument against running both. If you were going to pick one to save money,
+      AWS has already decided you should not have to.
+    </p>
+
+    <h3>Packs can come from SSM, not just from a file</h3>
+    <p>
+      <em>&ldquo;You can also use AWS Systems Manager documents (SSM documents) to store your conformance pack
+      templates on AWS and <strong>directly deploy conformance packs using SSM document names</strong>.&rdquo;</em>
+    </p>
+    <p>
+      Useful if you want the pack itself versioned and distributable as an AWS object rather than as a file in
+      somebody's repository &mdash; which is the difference between a standard you can point at and a standard
+      somebody copied once.
+    </p>
+
+    <h3>Not every rule is about one resource</h3>
+    <p>
+      <em>&ldquo;AWS Config can also check all of your resources for <strong>account-wide requirements</strong>.
+      For example, AWS Config can check whether the number of EC2 volumes in an account stays within a desired
+      total, or whether an account uses AWS CloudTrail for logging.&rdquo;</em>
+    </p>
+    <p>
+      Worth knowing because those are the rules most likely to be genuinely useful and least likely to be in a
+      sample pack &mdash; a count across an account is a different kind of question from a property of a single
+      resource.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Separating recording from evaluation is the right split</h3>
+    <p>
+      A recorder that captured only what the current rules needed would silently change coverage every time
+      somebody edited a rule, and would have no history for a rule added tomorrow. Recording everything by
+      default and evaluating selectively means the configuration history is complete even when the rule set is
+      not &mdash; which is what makes a retrospective question answerable.
+    </p>
+    <p>
+      The cost is that the expensive half is the half with no visible benefit until something goes wrong, so it
+      is the half that gets trimmed.
+    </p>
+
+    <h3>Publishing four evaluation results rather than two is honest</h3>
+    <p>
+      AWS could have folded <code>ERROR</code> and <code>NOT_APPLICABLE</code> into a single &ldquo;no
+      result&rdquo; and nobody would have complained. Keeping them separate is what lets you distinguish a rule
+      that correctly ignored a resource from a rule that is misconfigured, and that distinction is the entire
+      difference between a working control and a decoration.
+    </p>
+
+    <div class="callout red">
+      <strong>The silent failure here is a rule that is broken rather than a resource that is</strong>
+      <p>Every other failure mode in Config announces itself: a non-compliant resource appears in a list, a remediation action fails visibly, a recorder that is stopped is stopped.</p>
+      <p>A rule in <code>ERROR</code> does none of that. It occupies a slot on the dashboard, it is counted among your controls, it has a name that describes something useful, and it is evaluating nothing. The audit for it is a query, not an alarm, which means somebody has to decide to look.</p>
+    </div>
+
+    <h3>Charging per evaluation makes the incentives honest, mostly</h3>
+    <p>
+      Paying per evaluation means an unused rule costs something, which is the right pressure &mdash; a rule
+      nobody reads should not be free to keep. The exception is the
+      <code>NOT_APPLICABLE</code> case, where you pay for a rule to confirm repeatedly that it has nothing to
+      look at, and the pressure to remove it is financial rather than operational because it never shows up as
+      a problem.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Recorder scope</td>
+        <td>Treat changes as a security review</td>
+        <td>Narrowing scope and deleting a rule look identical on the dashboard.</td>
+      </tr>
+      <tr>
+        <td>Regions</td>
+        <td>Decide recording per Region, deliberately</td>
+        <td>The default records <em>&ldquo;all supported resources in the AWS Region&rdquo;</em> &mdash; and no others.</td>
+      </tr>
+      <tr>
+        <td>Compliance reporting</td>
+        <td>Four results, not two</td>
+        <td><code>ERROR</code> and <code>NOT_APPLICABLE</code> both read as success.</td>
+      </tr>
+      <tr>
+        <td>Sample conformance packs</td>
+        <td>Trim before deploying widely</td>
+        <td>Evaluations are charged whether or not the rule applies.</td>
+      </tr>
+      <tr>
+        <td>Pack distribution</td>
+        <td>Consider SSM documents</td>
+        <td>They make the pack a versioned AWS object rather than a copied file.</td>
+      </tr>
+      <tr>
+        <td>Detective and proactive</td>
+        <td>Run both where useful</td>
+        <td>You are charged <em>&ldquo;for only the evaluations in detective mode&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Cost ownership</td>
+        <td>Name an owner for org-wide evaluation volume</td>
+        <td>Consolidated billing measures evaluations <em>&ldquo;from all of your accounts&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Service-linked recorders</td>
+        <td>Know which exist and what they cover</td>
+        <td>Their scope is <em>&ldquo;set by the linked service&rdquo;</em>, not by you.</td>
+      </tr>
+      <tr>
+        <td>Account-wide rules</td>
+        <td>Write them deliberately</td>
+        <td>They answer questions a per-resource rule cannot, and are rarely in sample packs.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>Count your rules in <code>ERROR</code>, and your rules whose evaluations are entirely
+      <code>NOT_APPLICABLE</code>.</strong> Both groups occupy space on a compliance dashboard and check
+      nothing. The first is a defect; the second is usually a conformance pack deployed somewhere it does not
+      fit.
+    </p>
+    <p>
+      <strong>Then list the Regions with no recorder.</strong> Resources there are not compliant or
+      non-compliant &mdash; they are absent, and absence is the one state no Config view will show you.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The useful question to ask of a Config dashboard is not <em>what is non-compliant</em> but <em>what did
+      this actually check</em>. Between a resource and a finding sit two filters: the recorder decides
+      whether the resource exists as far as Config is concerned, and the rule decides whether it got evaluated.
+      Both filters fail quietly, and both failures look like good news.
+    </p>
+    <p>
+      That is not a flaw in the service. Config publishes every one of these states, names them, and bills you
+      in a way that makes the waste visible if you look. It simply does not put them on the tile, and the tile
+      is what gets screenshotted into the compliance report.
+    </p>
+    <p>
+      <a href="/blog/aws-architecture-certificate-manager/">#95</a> was about a service that maintains what you
+      use and quietly lets the rest lapse. This is a service that reports on what it recorded, with rules that
+      may not have run. The shared move is the same one: read the states the service publishes, not the summary
+      it renders.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; Amazon Macie: what a sensitive data discovery job actually samples, why an automated discovery result is not a full scan, and what it costs to be wrong about which buckets matter.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/config/latest/developerguide/stop-start-recorder.html" target="_blank" rel="noopener">Working with the configuration recorder &#8212; configuration items, the per-Region default scope of a customer managed recorder, and the service-linked recorder whose scope is set by the linked service</a></li>
+      <li><a href="https://docs.aws.amazon.com/config/latest/developerguide/evaluate-config-rules.html" target="_blank" rel="noopener">Evaluating resources with AWS Config rules &#8212; the NON_COMPLIANT, ERROR and NOT_APPLICABLE evaluation results with the alb-desync-mode-check example, and account-wide requirement rules</a></li>
+      <li><a href="https://docs.aws.amazon.com/config/latest/developerguide/conformance-packs.html" target="_blank" rel="noopener">Conformance Packs for AWS Config &#8212; what a pack contains and where it deploys, the YAML template authoring model, and SSM document storage and deployment</a></li>
+      <li><a href="https://aws.amazon.com/config/pricing/" target="_blank" rel="noopener">AWS Config pricing &#8212; the three charging dimensions and their definitions, per-region rule evaluation pricing, consolidated billing measurement across all accounts, and the detective-mode-only charge when a rule runs in both modes</a></li>
+      <li><a href="https://docs.aws.amazon.com/config/latest/developerguide/WhatIsConfig.html" target="_blank" rel="noopener">What is AWS Config? &#8212; further reading on the service overview; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
