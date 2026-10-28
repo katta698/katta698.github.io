@@ -1,0 +1,469 @@
+---
+title: 'Week 11 — Managed Prometheus, With No Cluster and No Password'
+date: '2026-10-28T10:00:00'
+labels:
+- Azure
+- Terraform
+- Azure Weekly Lab
+slug: week-11-managed-prometheus
+verified: '2026-10-28'
+verified_claims:
+  - claim: "Prometheus remote_write can send metrics from self-managed Prometheus running in Kubernetes clusters or virtual machines to an Azure Monitor workspace"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/prometheus-remote-write"
+  - claim: "User-assigned managed identity authentication for remote-write supports Azure VM and VMSS, not only Kubernetes clusters"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/prometheus-remote-write"
+  - claim: "Prometheus version 2.45 or greater is required for user-assigned managed identity authentication, and 3.5.0 or greater for system-assigned managed identity authentication"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/prometheus-remote-write"
+  - claim: "The identity must be granted the Monitoring Metrics Publisher role on the data collection rule that is automatically created when the Azure Monitor workspace is created"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/prometheus-remote-write"
+  - claim: "It takes about 30 minutes for the assignment of the role to take effect, during which an HTTP 403 error may appear in the Prometheus log"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/prometheus-remote-write"
+  - claim: "The Microsoft Entra ID authentication option for remote-write requires a client secret from the Entra application"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/prometheus-remote-write"
+  - claim: "Microsoft recommends transitioning from the Azure Monitor sidecar container to a direct Prometheus remote-write configuration"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/prometheus-remote-write"
+  - claim: "Log Analytics workspaces contain logs and metrics from multiple Azure resources, whereas Azure Monitor workspaces currently contain only metrics related to Prometheus"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/azure-monitor-workspace-overview"
+  - claim: "Data in an Azure Monitor workspace is retained for 18 months and is encrypted at rest using a Microsoft-managed key"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/azure-monitor-workspace-overview"
+  - claim: "Quota limits available on a Log Analytics workspace, such as a daily cap or configurable data retention, cannot be used on an Azure Monitor workspace"
+    source: "https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/azure-monitor-workspace-overview"
+---
+<div id="jk-post">
+
+<div class="meta">
+  <span class="stack-badge">Azure Monitor Workspace</span>
+  <span class="stack-badge">Managed Prometheus</span>
+  <span class="stack-badge">Managed Grafana</span>
+  <span class="stack-badge">Managed Identity</span>
+  <span class="stack-badge">Terraform</span>
+</div>
+
+<div class="post-eyebrow">Azure Platform Engineering Lab &middot; Week 11 of 52</div>
+
+<h1>Week 11 &mdash; Managed Prometheus, With No Cluster and No Password</h1>
+
+<p class="post-subtitle">A Prometheus on a plain Linux VM writes into an Azure
+Monitor workspace, authenticated by a managed identity &mdash; no Kubernetes
+anywhere, and not one secret in the config file.</p>
+
+<div class="post-meta">
+  <span>28 October 2026</span>
+  <span>Terraform &middot; HCP Terraform, local execution</span>
+  <span>7/7 validation &middot; 796,849 samples ingested</span>
+</div>
+
+<div class="toc">
+  <h2>&#128203; In This Post</h2>
+  <ol>
+    <li><a href="#overview">Lab Overview</a></li>
+    <li><a href="#services">Cloud Services and Concepts</a></li>
+    <li><a href="#architecture">Architecture and Workflow</a></li>
+    <li><a href="#prereqs">Prerequisites</a></li>
+    <li><a href="#build">Implementation</a></li>
+    <li><a href="#validation">Validation and Evidence</a></li>
+    <li><a href="#seccost">Security and Cost</a></li>
+    <li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+    <li><a href="#cleanup">Cleanup and Key Takeaways</a></li>
+  </ol>
+</div>
+
+<h2 id="overview">Lab Overview</h2>
+
+<p>Almost everything written about Azure Monitor managed service for Prometheus
+assumes Kubernetes. The add-on scrapes AKS. The sample dashboards are cluster
+dashboards. The rule groups take a <code>clusterName</code>. Read enough of it
+and you come away believing the managed service <em>is</em> a Kubernetes
+feature.</p>
+
+<p>It isn't, and this week is the test. <strong>There is no cluster anywhere in
+it.</strong> A self-managed Prometheus runs on one ordinary Linux VM, and it
+pushes its metrics into an Azure Monitor workspace using Prometheus's own
+<code>remote_write</code>. Microsoft documents exactly this: remote-write sends
+metrics <em>"from self-managed Prometheus running in your Kubernetes clusters
+or virtual machines"</em>, and user-assigned managed identity authentication
+lists <em>Azure VM/VMSS</em> among its supported targets.</p>
+
+<p><strong>The objective, in one sentence:</strong> get a metric that was
+produced on a VM into Azure's managed Prometheus store, prove it arrived by
+querying it back out with PromQL, and do it without a password, a certificate
+or a client secret existing anywhere.</p>
+
+<p><strong>Expected outcome:</strong> a series queryable from the workspace
+carrying labels that identify the VM it came from; a Terraform-defined alert
+rule and recording rule evaluating against it; and a Grafana panel drawing the
+same data.</p>
+
+<table>
+  <tr><th>Difficulty</th><td>Intermediate</td></tr>
+  <tr><th>Completion time</th><td>About 90 minutes, of which <strong>30 is waiting</strong> &mdash; see Troubleshooting</td></tr>
+  <tr><th>Deployment</th><td>Terraform, one apply, state in HCP Terraform (local execution)</td></tr>
+  <tr><th>Source</th><td><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-11-managed-prometheus">week-11-managed-prometheus</a> &middot; runbook in <a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/blob/main/week-11-managed-prometheus/LAB.md">LAB.md</a></td></tr>
+</table>
+
+<h2 id="services">Cloud Services and Concepts</h2>
+
+<table>
+  <tr>
+    <th>Service</th><th>Its job here</th><th>What it is</th>
+  </tr>
+  <tr>
+    <td><strong>Azure Monitor workspace</strong></td>
+    <td>stores the Prometheus time series</td>
+    <td>A metrics store queried with PromQL. <strong>Not</strong> a Log Analytics workspace &mdash; Microsoft's own note is that Log Analytics workspaces hold logs and metrics from many resources, while Azure Monitor workspaces <em>"currently contain only metrics related to Prometheus"</em>.</td>
+  </tr>
+  <tr>
+    <td><strong>Data collection rule</strong> (DCR)</td>
+    <td>accepts the write</td>
+    <td>Created automatically <em>by</em> the workspace. It exposes the ingestion endpoint Prometheus posts to, and it is the object the publishing permission is granted on.</td>
+  </tr>
+  <tr>
+    <td><strong>User-assigned managed identity</strong></td>
+    <td>what Prometheus authenticates as</td>
+    <td>An Entra identity attached to the VM. Because it is attached, Prometheus asks the instance metadata service for a token and never stores one.</td>
+  </tr>
+  <tr>
+    <td><strong>Prometheus <code>remote_write</code></strong></td>
+    <td>ships the samples</td>
+    <td>A Prometheus feature that forwards samples to remote storage. The <code>azuread:</code> block is what makes it speak to Azure.</td>
+  </tr>
+  <tr>
+    <td><strong>Prometheus rule group</strong></td>
+    <td>alerts and recording rules, as code</td>
+    <td>An Azure resource evaluating PromQL against the workspace. <code>clusterName</code> is optional &mdash; which is the whole point here.</td>
+  </tr>
+  <tr>
+    <td><strong>Azure Managed Grafana</strong></td>
+    <td>draws it</td>
+    <td>Hosted Grafana that can be wired to the workspace as a data source at deploy time.</td>
+  </tr>
+</table>
+
+<h2 id="architecture">Architecture and Workflow</h2>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-11-managed-prometheus/docs/blog/diagrams/week-11-architecture.svg" alt="Diagram: a self-managed Prometheus on an Ubuntu 24.04 D2als_v7 virtual machine in sub-lab-dev, with no inbound port open and a public IP used only for egress. A user-assigned managed identity is attached to the VM so Prometheus gets a token from the instance metadata service and holds no credential. Prometheus remote-writes over HTTPS to the metrics ingestion endpoint of the data collection rule the Azure Monitor workspace creates for itself; the identity holds Monitoring Metrics Publisher on that rule and nothing wider, a grant that takes about thirty minutes to take effect and returns HTTP 403 until it does. The workspace stores Prometheus time series queried with PromQL and retains them eighteen months. Managed Grafana reads the workspace through its own identity, and a Prometheus rule group evaluates one recording rule and one alert rule with no cluster named." style="width:100%;max-width:900px" />
+  <figcaption><strong>The whole week on one page.</strong> Follow the blue line:
+  scrape, write, store. Everything purple is a read. Note what is missing from
+  the picture entirely &mdash; there is no cluster, and no credential.</figcaption>
+</figure>
+
+<ol>
+  <li>Prometheus on the VM scrapes its own <code>/metrics</code> every 30 seconds.</li>
+  <li>It asks the instance metadata service for a token, because a user-assigned managed identity is attached to the VM.</li>
+  <li>It <code>remote_write</code>s the samples over HTTPS to the metrics ingestion endpoint of the workspace's data collection rule.</li>
+  <li>The DCR accepts the write &mdash; but only because the identity holds <strong>Monitoring Metrics Publisher</strong> on that rule.</li>
+  <li>The workspace stores the series and stamps its own resource id onto every one of them.</li>
+  <li>A Prometheus rule group evaluates one recording rule and one alert rule against the workspace.</li>
+  <li>Grafana reads the workspace through a separate identity holding Monitoring Data Reader.</li>
+</ol>
+
+<p><strong>The decisions worth defending.</strong> The permission is granted on
+the <em>data collection rule</em>, not the workspace and not the subscription,
+because the rule is the thing that accepts the write &mdash; anything wider is
+scope nobody needs. The identity is <em>user-assigned</em> rather than
+system-assigned so it outlives the VM; rebuild the host and the grant still
+points at something that exists. And the authentication is a managed identity
+rather than the Entra ID option Microsoft also documents, because that option
+requires a <strong>client secret</strong> &mdash; the lab forbids those
+outright, which makes the choice automatic rather than clever.</p>
+
+<h2 id="prereqs">Prerequisites</h2>
+
+<ul>
+  <li>An Azure subscription, with <strong>Contributor</strong> plus
+  <strong>User Access Administrator</strong> &mdash; the lab creates three role
+  assignments and Contributor alone cannot.</li>
+  <li>Terraform <strong>&ge; 1.10</strong> and <code>hashicorp/azurerm</code>
+  <strong>~&gt; 5.2</strong>. The <code>check</code> block below needs 1.5+.</li>
+  <li>An <strong>existing</strong> SSH public key. Azure requires a key or a
+  password on a Linux VM; Terraform does not generate one here, because a
+  generated key puts its private half in state.</li>
+  <li>Resource providers <code>Microsoft.Monitor</code>,
+  <code>Microsoft.Dashboard</code>, <code>Microsoft.AlertsManagement</code>,
+  <code>Microsoft.Insights</code>, <code>Microsoft.Compute</code>,
+  <code>Microsoft.Network</code>, <code>Microsoft.ManagedIdentity</code>.</li>
+  <li><strong>No cluster, no Entra licence, no prior lab.</strong> This week
+  stands alone.</li>
+</ul>
+
+<p>One prerequisite is a trap rather than a checkbox: <strong>VM size</strong>.
+Three separate walls decided this lab's, and none announced itself clearly.
+<code>Standard_B2s</code> is simply not offered in the region, but fails with
+<code>SkuNotAvailable ... Capacity Restrictions</code>, which reads like a
+temporary shortage. Every v2 B-series family had a vCPU quota of
+<strong>zero</strong> on this subscription &mdash; while
+<code>az vm list-skus</code> reported them unrestricted, because SKU
+restrictions and quota are different systems and quota is only evaluated at
+create time. And the sizes carrying a <code>p</code> are ARM64, which boot
+perfectly and then cannot run an <code>amd64</code> binary.</p>
+
+<h2 id="build">Implementation</h2>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-11-managed-prometheus/docs/blog/screenshots/01-hcp-workspace.png" alt="HCP Terraform workspace azure-week-11-dev showing execution mode Local, the resource count, and the outputs for the week" style="width:100%" />
+  <figcaption><strong>Checkpoint:</strong> the workspace reports <em>Local</em>
+  execution. A new HCP workspace defaults to <em>remote</em>, which would need
+  Azure credentials stored in HCP &mdash; the thing this lab refuses to
+  do.</figcaption>
+</figure>
+
+<figure class="screenshot" data-prereq>
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-11-managed-prometheus/docs/blog/screenshots/02-terraform-layout.png" alt="Repository structure for week 11: a terraform directory holding main.tf, vm.tf, grafana.tf, alerts.tf and the cloud-init template, a scripts directory with deploy, validate and cleanup, and a docs directory, each annotated with what it is responsible for" />
+  <figcaption><strong>How the implementation is organised.</strong> Four
+  Terraform files, one per concern, and the cloud-init template that renders
+  the Prometheus config. Full source on
+  <a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-11-managed-prometheus">GitHub</a>.</figcaption>
+</figure>
+
+<p><strong>The remote-write URL is assembled, never pasted.</strong> Its host
+comes from the data collection <em>endpoint</em>; its path names the data
+collection <em>rule</em> by its <em>immutable</em> id, which is not the rule's
+resource name. Both are read back from the deployed workspace, so a rebuild in
+another subscription renders a correct config with nothing to hand-edit:</p>
+
+<pre><code>locals {
+  remote_write_url = join("", [
+    data.azurerm_monitor_data_collection_endpoint.metrics.metrics_ingestion_endpoint,
+    "/dataCollectionRules/",
+    data.azurerm_monitor_data_collection_rule.metrics.immutable_id,
+    "/streams/Microsoft-PrometheusMetrics/api/v1/write?api-version=2023-04-24",
+  ])
+}</code></pre>
+
+<p>That join hides a trap worth four lines of defence. The <em>rule</em> data
+source also exposes a <code>metrics_ingestion_endpoint</code> attribute, and
+for a workspace-managed rule it comes back <strong>empty</strong>. Terraform
+cheerfully joins an empty host onto a path, applies, boots &mdash; and
+Prometheus fails hours later with <code>unsupported protocol scheme ""</code>.
+An empty string is a valid string, so nothing warns. So the plan now
+refuses:</p>
+
+<pre><code>check "remote_write_url_is_absolute" {
+  assert {
+    condition     = startswith(local.remote_write_url, "https://")
+    error_message = "The assembled remote_write URL has no scheme - the DCE's metrics_ingestion_endpoint came back empty."
+  }
+}</code></pre>
+
+<figure class="screenshot" data-prereq>
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-11-managed-prometheus/docs/blog/screenshots/03-remote-write-config.png" alt="The remote_write section of prometheus.yml read off the running host, showing the assembled ingestion URL with the data collection rule id masked, an azuread block naming a managed identity client id, promtool check config reporting the file is valid, and a grep for password, client_secret or private key returning zero matches" style="width:100%" />
+  <figcaption><strong>The week's whole claim, in one config block</strong>
+  &mdash; read off the running host, not from the template.
+  <code>managed_identity</code> names a client id, and a client id is an
+  identifier, not a credential. The grep for passwords and secrets returns
+  <strong>0</strong>.</figcaption>
+</figure>
+
+<p>The alert and recording rules are the other half. Both live in one
+<code>azurerm_monitor_alert_prometheus_rule_group</code> whose
+<code>scopes</code> is the workspace and whose <code>cluster_name</code> is
+deliberately unset &mdash; the provider makes it optional, and leaving it empty
+is what demonstrates that managed Prometheus rules do not require a
+cluster.</p>
+
+<h2 id="validation">Validation and Evidence</h2>
+
+<p><code>./scripts/validate.sh</code> &mdash; <strong>7 passed, 0
+failed</strong>.</p>
+
+<table>
+  <tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr>
+  <tr><td>ARM type of the workspace</td><td><code>microsoft.monitor/accounts</code></td><td><code>microsoft.monitor/accounts</code></td><td>PASS</td></tr>
+  <tr><td>Scope of Monitoring Metrics Publisher</td><td>on the DCR, <strong>0</strong> at subscription scope</td><td>1 on the DCR, 0 at subscription</td><td>PASS</td></tr>
+  <tr><td><code>prometheus.yml</code> on the running host</td><td>no password, secret or private key</td><td>0 matches</td><td>PASS</td></tr>
+  <tr><td>NSG inbound allow rules</td><td>none</td><td>none</td><td>PASS</td></tr>
+  <tr><td>A VM-written series queryable from the workspace</td><td>at least one series</td><td><code>up{job="prometheus"}</code> = 1</td><td>PASS</td></tr>
+  <tr><td>Rule group contents</td><td>2 rules, no <code>clusterName</code></td><td>1 recording + 1 alert, no cluster</td><td>PASS</td></tr>
+  <tr><td>Grafana data source</td><td>points at this week's workspace</td><td><code>Managed_Prometheus_amw-wk11-...</code></td><td>PASS</td></tr>
+</table>
+
+<p>Two of those deserve a note. The config check reads the file
+<em>on the running host</em> through <code>az vm run-command</code> rather than
+from the template, because the question is what actually deployed &mdash; and
+no SSH port is open to read it any other way. And the series check
+<strong>polls</strong>, 40 times at 60-second intervals, for reasons the next
+section explains.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-11-managed-prometheus/docs/blog/screenshots/04-metrics-arriving.png" alt="A token request for the prometheus.monitor.azure.com resource followed by three PromQL queries against the workspace query endpoint, returning up with labels instance localhost:9090, job prometheus, source self-managed-vm and week 11 plus a microsoft.amwresourceid label, then scrape_duration_seconds and prometheus_remote_storage_samples_total at 780487" style="width:100%" />
+  <figcaption><strong>The proof the pipeline worked.</strong>
+  <code>instance: localhost:9090</code> is the VM talking about itself.
+  <code>source: self-managed-vm</code> is an <code>external_label</code> from
+  <code>prometheus.yml</code>, so provenance survives the whole journey. And
+  this is the <em>query</em> endpoint &mdash; a different host from the one the
+  write used, so both halves are demonstrated.</figcaption>
+</figure>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-11-managed-prometheus/docs/blog/screenshots/05-prometheus-rule-group.png" alt="Azure portal Prometheus rule groups blade showing the week 11 rule group with one recording rule and one alert rule, scoped to the Azure Monitor workspace, with no cluster named" style="width:100%" />
+  <figcaption><strong>Alerts as code, with no cluster.</strong> Both rules exist
+  in Azure because Terraform put them there, scoped to the workspace rather
+  than to a cluster that does not exist.</figcaption>
+</figure>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-11-managed-prometheus/docs/blog/screenshots/06-grafana-dashboard.png" alt="Grafana Explore querying prometheus_remote_storage_samples_total against the data source named Managed_Prometheus_amw-wk11-dev-scus-001, drawing a steadily rising line from about 550 thousand to about 800 thousand over three hours, legend reading self-managed-vm to prometheus" style="width:100%" />
+  <figcaption><strong>The loop closed.</strong> The same counter the API query
+  read, drawn &mdash; rising from roughly 550K to 800K over three hours. The
+  data source names the workspace, and the legend names the VM the samples came
+  from.</figcaption>
+</figure>
+
+<h2 id="seccost">Security and Cost</h2>
+
+<p><strong>No secret exists to leak.</strong> That is a design property, not a
+discipline: the only credential-shaped thing in <code>prometheus.yml</code> is
+a client <em>id</em>, which identifies an identity without granting anything.
+The token comes from the instance metadata service at runtime and is never
+written down. Microsoft's alternative Entra ID path would have put a
+<code>client_secret</code> in that file.</p>
+
+<p><strong>Least privilege is enforced by scope.</strong> Monitoring Metrics
+Publisher sits on the data collection rule &mdash; not the workspace, not the
+subscription &mdash; and the validation asserts the subscription-scope count is
+zero rather than just checking the grant exists. <strong>No inbound port is
+open at all</strong>, not even SSH; the public IP exists purely because Azure's
+default outbound access is retired and the VM must reach the ingestion endpoint.
+Data in the workspace is encrypted at rest with a Microsoft-managed key.</p>
+
+<p><strong>What it cost, and the part that surprised me.</strong> By the last
+query before teardown, Prometheus had shipped <strong>796,849 samples</strong>
+&mdash; read from <code>prometheus_remote_storage_samples_total</code>, not
+estimated. (The counter reads 780,487 in the evidence figure above, captured
+about an hour earlier; it is a counter, so it only climbs.) At
+Azure's published $0.16 per 10M samples ingested, that is about
+<strong>$0.013</strong>. One and a third cents.</p>
+
+<p>The two machines that produced and displayed those samples bill at
+<strong>$0.1784/hour</strong> combined &mdash; the VM at $0.0962 and Grafana
+at $0.0411 per node-hour across two nodes. So the metrics pipeline, the entire
+subject of this week, cost roughly <strong>one percent</strong> of the compute
+standing around it. The expensive part of observability here was not the
+observability.</p>
+
+<p>The honest caveat: this is <em>one</em> Prometheus scraping
+<em>itself</em> every 30 seconds. A real fleet multiplies the sample count
+without multiplying the VM count, and the ratio moves. The transferable lesson
+is to measure where the money actually is before optimising &mdash; not that
+ingestion is free.</p>
+
+<p>All rates above were read from the Azure retail price API for
+<code>southcentralus</code> on 28 October 2026, not from a pricing page. The
+<strong>measured total is not in yet</strong>: Azure posts usage on a delay,
+teardown happened the same day, and a number invented before the bill arrives
+is not a measurement. It will be added here once the charges land &mdash;
+including whether Grafana's 30-day free trial, which is one instance per
+subscription, applied.</p>
+
+<p>One cost control that exists for Log Analytics is simply unavailable here:
+Microsoft states that quota limits such as a daily cap or configurable
+retention <em>cannot</em> be used on an Azure Monitor workspace. Retention is
+18 months, and that is not a dial.</p>
+
+<h2 id="troubleshooting">Troubleshooting and Lessons</h2>
+
+<p><strong>Problem: HTTP 403 for half an hour after a clean apply.</strong><br/>
+<em>Root cause:</em> the Monitoring Metrics Publisher grant had not propagated.
+Microsoft documents this precisely &mdash; <em>"It takes about 30 minutes for
+the assignment of the role to take effect. During this time, you may see an
+HTTP 403 error in the Prometheus log."</em> That is roughly six times longer
+than the equivalent grant took in week 08.<br/>
+<em>Resolution:</em> wait, and make the validation poll rather than ask
+once.<br/>
+<em>Lesson:</em> a check that cannot distinguish <em>wrong</em> from <em>not
+yet</em> teaches the wrong lesson. The apply finishes long before the pipeline
+works, and in between, an empty query is indistinguishable from a broken
+one.</p>
+
+<p><strong>Problem: <code>unsupported protocol scheme ""</code>, hours after
+Terraform reported success.</strong><br/>
+<em>Root cause:</em> the ingestion host was read from the data collection
+<em>rule</em>, where that attribute is empty for a workspace-managed rule,
+instead of from the <em>endpoint</em>.<br/>
+<em>Resolution:</em> read it from the endpoint, and add the <code>check</code>
+block shown above.<br/>
+<em>Lesson:</em> an attribute existing on a data source does not mean it is
+populated for your resource. Where a value is composed from several lookups,
+assert the shape of the result &mdash; four lines moved a runtime failure to
+plan time.</p>
+
+<p><strong>Problem: cloud-init failed to download Prometheus.</strong><br/>
+<em>Root cause:</em> it ran before the VM had outbound connectivity, failing
+after 132 seconds against <code>github.com</code>. The network came up shortly
+after and worked fine.<br/>
+<em>Resolution:</em> a wait-for-egress probe loop ahead of the download, plus
+<code>curl --retry</code> on top.<br/>
+<em>Lesson:</em> <code>runcmd</code> running "late in boot" is not a promise of
+connectivity, and one successful probe does not promise the next request
+succeeds. Wait <em>and</em> retry.</p>
+
+<p><strong>Problem: Grafana deployed, and nobody could open it.</strong><br/>
+<em>Root cause:</em> the Azure RBAC that <em>creates</em> the resource and the
+Grafana RBAC that authorises a <em>login</em> are separate systems. Listing
+role assignments on the healthy instance returned nothing.<br/>
+<em>Resolution:</em> an explicit <code>Grafana Admin</code> assignment on the
+instance for the deploying principal.<br/>
+<em>Lesson:</em> easy to miss precisely because every other resource in this lab
+is usable by whoever deployed it. A resource with its own internal
+authorisation model needs that model configured too.</p>
+
+<h2 id="cleanup">Cleanup and Key Takeaways</h2>
+
+<pre><code># teardown is the only irreversible step - check the figures first
+python scripts/check_figures_before_destroy.py week-11-managed-prometheus
+./scripts/cleanup.sh</code></pre>
+
+<p>Three things bill by the hour and none stops on its own: the Grafana
+instance, the VM, and the public IP. <code>cleanup.sh</code> does not trust the
+destroy's exit code &mdash; it counts what survives by resource type and prints
+the number, because an earlier week in this lab had a destroy report success
+while a firewall kept billing. Observed: <strong>16 resources destroyed</strong>,
+every count zero, including orphaned role assignments. Grafana alone took
+10m12s to delete; that is normal, not a hang. Nothing shared was touched.</p>
+
+<p><strong>What this week taught:</strong></p>
+
+<ol>
+  <li><strong>Managed Prometheus is not a Kubernetes feature.</strong> The
+  add-on scrapes clusters, but <code>remote_write</code> accepts anything that
+  can speak it &mdash; including one VM with no cluster in sight, and a rule
+  group with <code>clusterName</code> empty.</li>
+  <li><strong>An Azure Monitor workspace is not a Log Analytics
+  workspace.</strong> Different ARM type, different query language, different
+  bill, and none of the retention or daily-cap controls carry over.</li>
+  <li><strong>Grant on the rule, not the workspace.</strong> The data collection
+  rule is what accepts the write, so it is the narrowest scope that works
+  &mdash; and "narrowest that works" is testable, which is why the validation
+  asserts the subscription-scope count is zero.</li>
+  <li><strong>An empty string is a valid string.</strong> The most expensive
+  defect here applied cleanly, booted cleanly, and failed hours later. A
+  <code>check</code> block costs four lines and moves that to plan time.</li>
+  <li><strong>Creating a resource is not being granted access to it.</strong>
+  Managed Grafana has its own authorisation model, and deploying it grants the
+  deployer nothing inside it.</li>
+</ol>
+
+<p><strong>What production does differently:</strong> it scrapes a workload
+rather than itself; it runs collection with redundancy instead of one VM; it
+routes egress through a NAT gateway or private endpoint rather than a public
+IP; and its alert rules point at an action group that actually notifies
+someone. This week's action group has <em>no receiver</em> &mdash; it proves a
+Terraform-defined rule becomes a rule Azure evaluates, and deliberately does
+not claim a notification was delivered.</p>
+
+<h2>References</h2>
+
+<ul>
+  <li><a href="https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/prometheus-remote-write">Connect self-managed Prometheus to Azure Monitor managed service for Prometheus</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/azure-monitor/metrics/azure-monitor-workspace-overview">Azure Monitor workspace overview</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/prometheus-rule-groups">Prometheus rule groups in Azure Monitor</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/managed-grafana/how-to-share-grafana-workspace">Share access to Azure Managed Grafana</a></li>
+  <li><a href="https://prometheus.io/docs/prometheus/latest/configuration/configuration/">Prometheus configuration reference</a></li>
+  <li><a href="https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/monitor_alert_prometheus_rule_group">
+  <code>azurerm_monitor_alert_prometheus_rule_group</code></a></li>
+  <li><a href="https://developer.hashicorp.com/terraform/language/checks">Terraform <code>check</code> blocks</a></li>
+  <li><a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-11-managed-prometheus">Source for this week</a> &middot; <a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/blob/main/week-11-managed-prometheus/LAB.md">LAB.md runbook</a></li>
+</ul>
+
+</div>
