@@ -298,9 +298,28 @@ def self_test():
     if bad:
         print("\nSELF-TEST FAILED: the check cannot detect the defect it exists for.")
         return 1
+    # The zero-match guard, exercised the only way it can be: by running this
+    # script the way a caller does. check_text() cannot see it -- the defect
+    # lives in main()'s exit path, not in any single post -- so three deletions
+    # of that guard went unnoticed by a self-test that reported "passed".
+    import subprocess
+    probe = subprocess.run(
+        [sys.executable, os.path.abspath(__file__), "no-such-post-xyzzy"],
+        capture_output=True, text=True)
+    ok = probe.returncode != 0
+    bad += not ok
+    print("  [%s] a filename substring that matches no post: exit %d, want nonzero"
+          % (" ok " if ok else "FAIL", probe.returncode))
+    if not ok:
+        print("         it printed: %s" % probe.stdout.strip().splitlines()[-1:])
+    if bad:
+        print("\nSELF-TEST FAILED: the check cannot detect the defect it exists for.")
+        return 1
+
     print("\nself-test passed: a missing section, a section missing the form its")
-    print("heading promises, a validation claim with no Status column, and the")
-    print("retired line-count tree card are all detected.")
+    print("heading promises, a validation claim with no Status column, the")
+    print("retired line-count tree card, and a run that matched no post at all")
+    print("are all detected.")
     return 0
 
 
@@ -340,6 +359,27 @@ def main():
     print("\n".join(report))
     print(f"\n{checked} post(s) checked against the standard; "
           f"{pending} awaiting rewrite.")
+
+    # A CHECK THAT INSPECTED NOTHING HAS NOT PASSED (restored 2026-10-29)
+    #
+    # Third time this guard has been written. It was added 2026-10-25, lost to a
+    # `git reset --hard`, restored 2026-10-27, and lost again. Each time the
+    # symptom was the same and entirely silent: a filename substring that matches
+    # no post -- a typo, a renamed slug, a week whose file is not where the caller
+    # thought -- walked the loop zero times, printed "0 post(s) checked", and
+    # exited 0. The caller reads a green line and believes a post was vetted.
+    #
+    # Zero is only legitimate when nothing was asked for AND nothing is pending:
+    # an empty posts/ directory is a different problem than a bad argument.
+    if checked == 0 and pending == 0:
+        if args.posts:
+            print("NOTHING MATCHED %s. A check that inspected no post has not "
+                  "passed -- fix the filename substring." % ", ".join(args.posts))
+        else:
+            print("NO POSTS FOUND in %s. A check that inspected no post has "
+                  "not passed." % POSTS)
+        return 1
+
     if failures:
         print(f"{failures} problem(s). See the documentation standard "
               "(CLAUDE.md in the lab repo).")
