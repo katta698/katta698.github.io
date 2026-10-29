@@ -1,0 +1,403 @@
+---
+title: "AWS Architecture Series #97 — Twenty kilobytes is an architecture decision"
+date: '2026-10-29T09:00:00'
+slug: aws-architecture-s3-access-grants
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-10-29'
+verified_claims:
+  - claim: "The simplest approach for managing access to small-to-medium numbers of datasets in Amazon S3 by AWS Identity and Access Management (IAM) principals is to define IAM permission policies and S3 bucket policies, and this strategy works so long as the necessary policies fit within the policy size limits of S3 bucket policies (20 KB) and IAM policies (5 KB)"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html
+  - claim: "As your number of datasets and use cases scales, you might require more policy space"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html
+  - claim: "An approach that offers significantly more space for policy statements is to use S3 Access Points as additional endpoints for S3 buckets, because each access point can have its own policy, and you can have thousands of access points per AWS Region per account, with a policy up to 20 KB in size for each access point"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html
+  - claim: "Although S3 Access Points increases the amount of policy space available, it requires a mechanism for clients to discover the right access point for the right dataset"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html
+  - claim: "A third approach is to implement an IAM session broker pattern, and while the IAM session broker approach supports arbitrarily dynamic permissions patterns and scales effectively, you must build the access-pattern logic"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html
+  - claim: "S3 Access Grants provides a simplified model for defining access permissions to data in Amazon S3 by prefix, bucket, or object"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html
+  - claim: "You can use S3 Access Grants to grant access to both IAM principals and directly to users or groups from your corporate directory"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html
+  - claim: "With the simplified access scheme in S3 Access Grants, you can grant read-only, write-only, or read-write access on a per-S3-prefix basis"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html
+  - claim: "With these S3 Access Grants capabilities, applications can request data from Amazon S3 on behalf of the application's current authenticated user"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html
+  - claim: "When you integrate S3 Access Grants with the trusted identity propagation feature of AWS IAM Identity Center, your applications can make requests to AWS services directly on behalf of an authenticated corporate directory user, and your applications no longer need to first map the user to an IAM principal"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html
+  - claim: "Because end-user identities are propagated all the way to Amazon S3, auditing which user accessed which S3 object is simplified, and you no longer need to reconstruct the relationship between different users and IAM sessions"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html
+  - claim: "When you're using S3 Access Grants with IAM Identity Center trusted identity propagation, each AWS CloudTrail data event for Amazon S3 contains a direct reference to the end user on whose behalf the data was accessed"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html
+  - claim: "Setting up trusted identity propagation requires collaboration between the administrators of connected AWS services and the IAM Identity Center administrators"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html
+  - claim: "You can create 1 S3 Access Grants instance per AWS Region per account"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants-limitations.html
+  - claim: "You can register 1,000 S3 Access Grants locations per S3 Access Grants instance"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants-limitations.html
+  - claim: "You can create 100,000 grants per S3 Access Grants instance"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants-limitations.html
+  - claim: "If your use case exceeds these limitations, you can contact AWS support to request higher limits"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants-limitations.html
+problem: "The S3 access-control story is usually told as a question of policy design. The documentation tells it as a question of capacity: bucket policies hold 20 KB, IAM policies hold 5 KB, and every approach after those two exists because somebody ran out of room."
+builds: "A reading of the four documented approaches as a ladder driven by policy size, what S3 Access Grants trades those bytes for, and the second problem it solves that has nothing to do with capacity."
+catch: "AWS introduces the whole topic with a number. 'This strategy works, so long as the necessary policies fit within the policy size limits of S3 bucket policies (20 KB) and IAM policies (5 KB).' Everything after that sentence is a way of buying more room, and the one you choose determines who can be a principal at all."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #097 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">Twenty kilobytes is an architecture decision</h1>
+  <p class="post-subtitle">AWS presents four ways to control access to S3 data, and the thing that moves you along the list is not policy complexity. It is running out of bytes.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The documentation opens the whole subject with a size limit rather than a principle:
+    </p>
+    <p>
+      <em>&ldquo;The simplest approach for managing access to small-to-medium numbers of datasets in Amazon S3
+      by AWS Identity and Access Management (IAM) principals is to define IAM permission policies and S3 bucket
+      policies. This strategy works,
+      <strong>so long as the necessary policies fit within the policy size limits of S3 bucket policies (20 KB)
+      and IAM policies (5 KB)</strong>&rdquo;</em>
+    </p>
+    <p>
+      That is an unusual way to introduce an access-control model, and it is the honest one. Everything that
+      follows is a way of buying more room.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The ladder is driven by capacity, and each rung costs something different</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;As your number of datasets and use cases scales, <strong>you might require more policy
+          space</strong>.&rdquo;</em> The second rung buys it by multiplying the number of policies:
+        </p>
+        <p>
+          <em>&ldquo;An approach that offers significantly more space for policy statements is to use S3 Access
+          Points as additional endpoints for S3 buckets, because each access point can have its own policy
+          &hellip; you can have <strong>thousands of access points per AWS Region per account, with a policy up
+          to 20 KB in size for each access point</strong>.&rdquo;</em>
+        </p>
+        <p>
+          With a cost that is not about bytes at all:
+          <em>&ldquo;Although S3 Access Points increases the amount of policy space available, <strong>it
+          requires a mechanism for clients to discover the right access point for the right
+          dataset</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So rung two solves a capacity problem and creates a routing problem. Rung three solves both and
+          creates a build problem:
+          <em>&ldquo;while the IAM session broker approach supports arbitrarily dynamic permissions patterns
+          and scales effectively, <strong>you must build the access-pattern logic</strong>.&rdquo;</em>
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Work out which rung you are on before designing anything. If your policies fit comfortably in 20 KB and 5 KB, the first approach is not a compromise &mdash; it is the recommended one, and the other three exist to solve a problem you do not have.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>What Access Grants trades the bytes for</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;S3 Access Grants provides a simplified model for defining access permissions to data in
+          Amazon S3 <strong>by prefix, bucket, or object</strong>.&rdquo;</em> And the capacity, stated as
+          counts rather than kilobytes:
+        </p>
+        <p>
+          <em>&ldquo;You can create <strong>1 S3 Access Grants instance per AWS Region per
+          account</strong>.&rdquo;</em><br/>
+          <em>&ldquo;You can register <strong>1,000 S3 Access Grants locations</strong> per S3 Access Grants
+          instance.&rdquo;</em><br/>
+          <em>&ldquo;You can create <strong>100,000 grants</strong> per S3 Access Grants instance.&rdquo;</em>
+        </p>
+        <p>
+          That is the trade in one line: you stop measuring permissions in bytes and start counting them. A
+          grant is a row rather than a statement, so the ceiling moves from a document size to a quota &mdash;
+          and the quota is negotiable, since
+          <em>&ldquo;If your use case exceeds these limitations, contact AWS support to request higher
+          limits&rdquo;</em>, which a 20 KB policy limit is not.
+        </p>
+        <p>
+          The one instance per Region per account is the constraint to notice. Everything else here is plural;
+          the instance is not, which makes it a shared object that every team in that account depends on.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat the Access Grants instance as account infrastructure with an owner, not as something a team creates for its own dataset. There is exactly one per Region per account, so the first team to need it is setting it up for everybody.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The second problem it solves is attribution, and that one is not about scale</strong></div>
+      <div class="challenge-body">
+        <p>
+          The capacity argument would justify Access Grants on its own. The audit argument is the one that
+          changes what you can answer afterwards.
+        </p>
+        <p>
+          <em>&ldquo;When you integrate S3 Access Grants with the <strong>trusted identity propagation</strong>
+          feature of AWS IAM Identity Center, your applications can make requests to AWS services &hellip;
+          directly on behalf of an authenticated corporate directory user. <strong>Your applications no longer
+          need to first map the user to an IAM principal.</strong>&rdquo;</em>
+        </p>
+        <p>
+          And the consequence in the log:
+          <em>&ldquo;each AWS CloudTrail data event for Amazon S3 contains a <strong>direct reference to the end
+          user</strong> on whose behalf the data was accessed&rdquo;</em>, so
+          <em>&ldquo;you <strong>no longer need to reconstruct the relationship</strong> between different users
+          and IAM sessions&rdquo;</em>.
+        </p>
+        <p>
+          Anybody who has answered <em>which person read this object</em> from CloudTrail knows what that
+          reconstruction costs. The role is in the log; the human is in a session the log does not describe, and
+          joining them is an exercise in correlation that gets harder the longer ago it happened.
+        </p>
+        <p>
+          It is not free, though, and the cost is organisational:
+          <em>&ldquo;Setting up trusted identity propagation <strong>requires collaboration between the
+          administrators of connected AWS services and the IAM Identity Center administrators</strong>.&rdquo;</em>
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>If attribution is why you want this, confirm the Identity Center side has an owner who will engage before you design around it. The documentation names the dependency explicitly, which usually means it is the step that stalls.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Four approaches, presented as a progression, with the thing that moves you along it stated in kilobytes.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/arch-097-s3-access-grants.svg" alt="Diagram: the four documented approaches to granular access control for Amazon S3 data, presented as a ladder driven by policy capacity rather than by policy complexity. AWS introduces the subject with a size limit: the simplest approach for managing access to small-to-medium numbers of datasets in Amazon S3 by IAM principals is to define IAM permission policies and S3 bucket policies, and that strategy works so long as the necessary policies fit within the policy size limits of S3 bucket policies at 20 KB and IAM policies at 5 KB. As the number of datasets and use cases scales, more policy space may be required. The second approach offers significantly more space for policy statements by using S3 Access Points as additional endpoints for S3 buckets, because each access point can have its own policy, with thousands of access points per AWS Region per account and a policy up to 20 KB in size for each access point; its cost is not about bytes, because although S3 Access Points increases the amount of policy space available it requires a mechanism for clients to discover the right access point for the right dataset, so it solves a capacity problem and creates a routing problem. The third approach is an IAM session broker pattern, in which access-decision logic is implemented and short-term IAM session credentials are generated dynamically for each access session; it supports arbitrarily dynamic permissions patterns and scales effectively, but the customer must build the access-pattern logic, so it solves both earlier problems and creates a build problem. The fourth approach is S3 Access Grants, which provides a simplified model for defining access permissions to data in Amazon S3 by prefix, bucket, or object, and allows granting read-only, write-only or read-write access on a per-S3-prefix basis to both IAM principals and directly to users or groups from a corporate directory. Its capacity is expressed as counts rather than kilobytes: one S3 Access Grants instance per AWS Region per account, 1,000 Access Grants locations per instance, and 100,000 grants per instance, with the note that customers whose use case exceeds these limitations can contact AWS support to request higher limits, which a 20 KB policy size limit does not allow. That is the trade in one line: permissions stop being measured in bytes and start being counted, so the ceiling moves from a document size to a quota, and the quota is negotiable. The single instance per Region per account is the constraint worth noticing, because everything else is plural while the instance is not, which makes it shared account infrastructure that every team depends on rather than something a team creates for its own dataset. The second problem Access Grants solves is attribution, and that one is not about scale. With these capabilities applications can request data from Amazon S3 on behalf of the application's current authenticated user, and when S3 Access Grants is integrated with the trusted identity propagation feature of AWS IAM Identity Center, applications can make requests directly on behalf of an authenticated corporate directory user and no longer need to first map the user to an IAM principal. The consequence appears in the log: because end-user identities are propagated all the way to Amazon S3, auditing which user accessed which S3 object is simplified, each AWS CloudTrail data event for Amazon S3 contains a direct reference to the end user on whose behalf the data was accessed, and the customer no longer needs to reconstruct the relationship between different users and IAM sessions. That reconstruction is the expensive part of answering which person read an object, because the role is in the log while the human is in a session the log does not describe. The cost of trusted identity propagation is organisational rather than technical, since setting it up requires collaboration between the administrators of connected AWS services and the IAM Identity Center administrators. The recommended actions are to establish which rung of the ladder the organisation is actually on before designing anything, since policies that fit comfortably in 20 KB and 5 KB make the first approach the recommended one rather than a compromise; to treat the Access Grants instance as account infrastructure with a named owner because there is exactly one per Region per account and the first team to need it sets it up for everybody; and to confirm that the Identity Center side has an owner who will engage before designing around attribution, because the documentation names that collaboration explicitly, which usually means it is the step that stalls." />
+      <figcaption>Four rungs. What moves you up is a size limit; what each one costs is different.</figcaption>
+    </figure>
+
+    <h3>The ladder, with its prices</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Approach</th><th>Policy capacity</th><th>What it costs you</th></tr>
+      <tr>
+        <td>IAM policies and bucket policies</td>
+        <td><em>&ldquo;20 KB&rdquo;</em> per bucket policy, <em>&ldquo;5 KB&rdquo;</em> per IAM policy</td>
+        <td>Nothing &mdash; until you run out</td>
+      </tr>
+      <tr>
+        <td>S3 Access Points</td>
+        <td><em>&ldquo;thousands&hellip; per AWS Region per account&rdquo;</em>, 20 KB each</td>
+        <td><em>&ldquo;a mechanism for clients to discover the right access point&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>IAM session broker</td>
+        <td>Unbounded, effectively</td>
+        <td><em>&ldquo;you must build the access-pattern logic&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>S3 Access Grants</td>
+        <td>100,000 grants per instance, one instance per Region per account</td>
+        <td>A shared account-level object, and an Identity Center dependency for the audit benefit</td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      Read down the middle column and the progression is a capacity argument. Read down the right and it is
+      four different kinds of work. Those are the two axes a design review should actually weigh, and the
+      documentation gives you both.
+    </p>
+
+    <div class="callout amber">
+      <strong>A quota is negotiable in a way a policy size limit is not</strong>
+      <p><em>&ldquo;If your use case exceeds these limitations, contact AWS support to request higher limits.&rdquo;</em></p>
+      <p>That note sits above the three Access Grants limits and quietly changes their character. 100,000 grants is a starting position; 20 KB is a fact about a document. Moving from bytes to counts is not only more room, it is room that can be asked for.</p>
+    </div>
+
+    <h3>What a grant actually expresses</h3>
+    <p>
+      <em>&ldquo;you can grant <strong>read-only, write-only, or read-write</strong> access on a
+      <strong>per-S3-prefix basis</strong> to both IAM principals and directly to users or groups from a
+      corporate directory.&rdquo;</em>
+    </p>
+    <p>
+      Three permission levels and a prefix. That is deliberately less expressive than a bucket policy, which can
+      condition on anything in the request. The simplification is the point &mdash; it is what makes a grant a
+      countable row rather than a document to be parsed and merged &mdash; but it means a bucket policy
+      expressing something conditional does not translate into a grant, and will still be needed alongside.
+    </p>
+
+    <h3>The directory identity is the part that is genuinely new</h3>
+    <p>
+      <em>&ldquo;applications can request data from Amazon S3 <strong>on behalf of the application's current
+      authenticated user</strong>&rdquo;</em>, and with trusted identity propagation
+      <em>&ldquo;Your applications no longer need to first map the user to an IAM principal&rdquo;</em>.
+    </p>
+    <p>
+      The approaches above this one all reach S3 through an IAM principal, so a directory user has to become
+      one somewhere along the way. Removing that step is the structural change, and the CloudTrail benefit
+      follows from it rather than being a separate feature.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Presenting the alternatives first is unusually good documentation</h3>
+    <p>
+      AWS could have led with Access Grants and described the others as legacy. Instead the page spends three
+      paragraphs explaining when you do not need it, and names the specific cost of each alternative rather than
+      dismissing it. The first approach is described as <em>&ldquo;the simplest&rdquo;</em>, not as the
+      deprecated one.
+    </p>
+    <p>
+      That matters because the failure mode here is adopting a scaling solution before you have a scaling
+      problem, and paying the shared-instance and Identity Center costs for an estate that three bucket policies
+      would have covered.
+    </p>
+
+    <h3>Counting grants instead of measuring policies is the right abstraction</h3>
+    <p>
+      A policy document is parsed, merged and evaluated as a unit, which is why its size is bounded. A grant is
+      a record. Moving to records is what lets the ceiling be a quota, lets the quota be raised on request, and
+      lets permissions be managed by a system rather than edited as text.
+    </p>
+    <p>
+      The cost is expressiveness, and AWS does not pretend otherwise &mdash; three permission levels on a prefix
+      is the whole vocabulary.
+    </p>
+
+    <div class="callout red">
+      <strong>One instance per Region per account makes this a platform decision, not a team one</strong>
+      <p><em>&ldquo;You can create 1 S3 Access Grants instance per AWS Region per account.&rdquo;</em></p>
+      <p>Locations are plural, grants are plural, the instance is not. Whoever creates it is creating the object every other team in that account will have to register their locations against, and there is no second one to fall back to if its ownership is unclear.</p>
+      <p>That is the right design &mdash; a per-team instance would reproduce the discovery problem Access Points has &mdash; and it means the thing to settle first is who owns it, which is a conversation rather than a configuration.</p>
+    </div>
+
+    <h3>Naming the Identity Center dependency is honest</h3>
+    <p>
+      <em>&ldquo;requires collaboration between the administrators of connected AWS services and the IAM
+      Identity Center administrators&rdquo;</em> is the kind of sentence that gets skipped, and it is describing
+      the step most likely to take a quarter. The audit benefit is real and it is gated on two teams agreeing to
+      work together.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Decision</th>
+        <th>Choice</th>
+        <th>Reasoning</th>
+      </tr>
+      <tr>
+        <td>Which approach</td>
+        <td>Measure your policy size first</td>
+        <td>The ladder is driven by <em>&ldquo;more policy space&rdquo;</em>, not by elegance.</td>
+      </tr>
+      <tr>
+        <td>Staying on rung one</td>
+        <td>Legitimate while you fit</td>
+        <td>AWS calls it <em>&ldquo;the simplest approach&rdquo;</em>, not the outdated one.</td>
+      </tr>
+      <tr>
+        <td>Access Points</td>
+        <td>Only with a discovery mechanism</td>
+        <td>It <em>&ldquo;requires a mechanism for clients to discover the right access point&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Session broker</td>
+        <td>Only if the logic is genuinely yours</td>
+        <td><em>&ldquo;you must build the access-pattern logic&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Access Grants instance</td>
+        <td>Name an owner before creating it</td>
+        <td>There is <em>&ldquo;1 &hellip; per AWS Region per account&rdquo;</em>.</td>
+      </tr>
+      <tr>
+        <td>Capacity planning</td>
+        <td>Count grants, and ask early if you will exceed</td>
+        <td>100,000 per instance, and higher limits are available on request.</td>
+      </tr>
+      <tr>
+        <td>Conditional access</td>
+        <td>Keep the bucket policy</td>
+        <td>A grant expresses three permission levels on a prefix, and nothing conditional.</td>
+      </tr>
+      <tr>
+        <td>Attribution</td>
+        <td>Requires trusted identity propagation</td>
+        <td>The CloudTrail end-user reference follows from it, not from Access Grants alone.</td>
+      </tr>
+      <tr>
+        <td>Identity Center</td>
+        <td>Confirm an engaged owner first</td>
+        <td>The documentation names the cross-team collaboration as a requirement.</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>Measure your largest bucket policy and your largest relevant IAM policy against 20 KB and 5
+      KB.</strong> That single number tells you which rung you are on and whether this whole topic is urgent or
+      theoretical. Most estates discover they are nowhere near, and a few discover they are at 19 KB and did not
+      know.
+    </p>
+    <p>
+      <strong>Then ask who would own the Access Grants instance.</strong> If the answer is <em>whichever team gets there
+      first</em>, settle it before anybody creates one &mdash; there is only the one.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      It is rare for documentation to lead with the constraint rather than the capability, and rarer for the
+      constraint to be a byte count. But it is the honest framing: bucket policies and IAM policies are
+      documents, documents have sizes, and every other approach on that page exists because somebody's
+      permissions stopped fitting.
+    </p>
+    <p>
+      What Access Grants adds beyond room is the part worth wanting for its own sake. Removing the mapping from
+      human to IAM principal is not a capacity improvement at all &mdash; it is the difference between a log
+      that records which role read an object and one that records which person did.
+    </p>
+    <p>
+      <a href="/blog/aws-architecture-config/">#96</a> was about the gap between a result and a finding. This is
+      about the gap between a permission model and the thing it is made of. In both cases the useful move is to
+      read what the service is counting: evaluations there, kilobytes and grants here.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; AWS Backup: why a vault lock has two modes and only one of them is reversible, what a backup plan's lifecycle actually moves, and how tag-based resource selection decides coverage silently.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants.html" target="_blank" rel="noopener">Managing access with S3 Access Grants &#8212; the 20 KB and 5 KB policy size limits, the four documented approaches and the specific cost of each, the per-prefix grant model and its three permission levels, grants to corporate directory identities, trusted identity propagation and the end-user reference in CloudTrail data events, and the cross-team collaboration requirement</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants-limitations.html" target="_blank" rel="noopener">S3 Access Grants limitations &#8212; one instance per Region per account, 1,000 locations per instance, 100,000 grants per instance, and the note that higher limits can be requested from AWS support</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants-instance.html" target="_blank" rel="noopener">Working with S3 Access Grants instances &#8212; further reading on creating and configuring the instance; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-grants-location.html" target="_blank" rel="noopener">Working with S3 Access Grants locations &#8212; further reading on registering locations; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
