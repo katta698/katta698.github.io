@@ -41,9 +41,21 @@ STORE = os.path.join(ROOT, "intelligence", "events.json")
 # The city list, not the home page. The home page stopped listing cities when
 # Microsoft moved to the 2027 tour: 8 links, none of them a city. This page
 # carries one citylanding anchor per stop, which is what SCRAPE below reads.
-# The year is in the path, so the 2028 tour will need this updated -- the
-# floor in check_events_coverage.py is what will report it.
-TOUR = "https://aitour.microsoft.com/flow/microsoft/aitour27/citydirectory"
+#
+# Measured 2026-10-29: the AI Tour was renamed the Microsoft Frontier Tour
+# and moved host. The old address
+# aitour.microsoft.com/flow/microsoft/aitour27/citydirectory still 302s here,
+# so a status check on it passes -- but the anchors it serves are on the new
+# host, and the old host filter in SCRAPE rejected every one of them. The
+# reader returned zero stops while the page listed thirty-three, which is
+# exactly the reading the floor in check_events_coverage.py exists to catch,
+# and did.
+#
+# The year is gone from this path, so a tour rollover no longer needs this
+# line changed. It is still in the per-city paths, which is why city_from()
+# below matches two digits rather than a literal year.
+TOUR = ("https://frontiertour.microsoft.com"
+        "/flow/microsoft/tour/citydirectory/page/citydirectory")
 
 # The slug is the only reliable name for the twenty-five "notify me" stops --
 # those cards carry a date and a button, and no city text of their own. These
@@ -105,7 +117,10 @@ SCRAPE = r"""() => {
   var MON = /(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s*20\d\d/;
   var out = [];
   document.querySelectorAll('a[href]').forEach(function (a) {
-    if (a.href.indexOf('aitour.microsoft.com') < 0) return;
+    // 'tour.microsoft.com' matches both the old aitour host and the
+    // frontiertour one it was renamed to. Naming either exactly is
+    // what turned a rename into a reader that found nothing.
+    if (a.href.indexOf('tour.microsoft.com') < 0) return;
     if (!/citylanding|notifyme[a-z]+/.test(a.href)) return;
     var box = a.closest('div,li,article') || a;
     var t = (box.innerText || '').trim();
@@ -129,7 +144,7 @@ def city_from(href, text):
         return text
     m = re.search(r"/(?:notifyme)([a-z]+)/", href)
     if not m:
-        m = re.search(r"/([a-z]+)27/citylanding", href)
+        m = re.search(r"/([a-z]+)(?:\d\d)?/citylanding", href)
     if not m:
         return ""
     slug = m.group(1)
@@ -208,9 +223,13 @@ def main():
         return 0
 
     data = json.load(io.open(STORE, encoding="utf-8"))
+    # Both hosts, or a --write after the rename leaves the old aitour rows
+    # in place beside the new frontiertour ones and every stop is listed
+    # twice.
+    TOUR_HOSTS = ("https://aitour.microsoft.com/",
+                  "https://frontiertour.microsoft.com/")
     others = [e for e in data["events"]
-              if not (e.get("url") or "").startswith(
-                  "https://aitour.microsoft.com/")]
+              if not (e.get("url") or "").startswith(TOUR_HOSTS)]
     data["events"] = others + rows
     data["verified"] = today
     with io.open(STORE, "w", encoding="utf-8", newline="\n") as fh:
