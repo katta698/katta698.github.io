@@ -92,6 +92,28 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 29 October 2026 — covered by post #65
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Workflows become MCP tools via Bedrock AgentCore Gateway. "Your agent decides when to run a workflow and what input to pass, and Step Functions runs each step exactly as you defined it." The finding is that the determinism is scoped to the inside of the workflow: all three execution models are exposed to a caller that can retry, and only Standard is exactly-once with idempotency keyed on the execution name | AWS Step Functions | **#65** | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/step-functions-workflows-ai-agent-tools/) |
+| Cross-account management and cross-account backup in the AWS European Sovereign Cloud. Worth a look alongside arch #98 — cross-account copy is one of the two reasons AWS names for exempting backup roles from the EBS snapshot deny policy | AWS Backup | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-backup-cross-account-esc/) |
+| Post-quantum TLS key exchange. A security-posture item with a long shelf life and a natural pairing with the other PQC rollouts | Amazon Aurora | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aurora-postgresql-post-quantum-tls-key-exchange/) |
+| SOCI-indexed images "to start training jobs in seconds" — a real cold-start reduction for large training containers | Amazon SageMaker AI | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/sagemaker-ai-soci-images-training/) |
+| ACME support for public certificates in GovCloud (US). Follows arch #95; ACME is the mechanism that makes renewal unattended | AWS Certificate Manager | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/acm-acme-support-govcloud-us/) |
+| Enhanced mode adds FSx for Windows File Server, FSx for NetApp ONTAP and Red Hat OpenShift Virtualization | AWS DataSync | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/datasync-enhanced-fsx-openshift/) |
+| Connector plugins and worker configurations can now be updated in place, which removes a delete-and-recreate cycle | Amazon MSK Connect | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-msk-connect-update-plugin-worker-configurations) |
+| Storage autoscaling extended to additional storage volumes | Amazon RDS for Oracle and SQL Server | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-rds-oracle-sqlserver-autoscaling-additional-storage-volumes) |
+| Partners can list once and sell through multiple subsidiary accounts | AWS Marketplace | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-marketplace-subsidiary-account-authorization) |
+| In-place upgrade to Grafana 13.2 | Amazon Managed Grafana | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/managed-grafana-upgrade-version-13-2/) |
+| Now available in additional Regions | Amazon DynamoDB Accelerator (DAX) | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/dax-additional-regions/) |
+
+Eleven announcements. Step Functions as agent tools was the clear pick: it changes
+who may start an existing workflow, which is an architecture question rather than a
+feature addition, and it reaches every workflow already deployed.
+
+---
+
 ## 23 October 2026 — covered by post #61
 
 | Item | Service | Status | Importance | Reference |
