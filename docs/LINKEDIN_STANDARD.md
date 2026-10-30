@@ -25,11 +25,21 @@ marketing article, and not AI-generated promotional content.**
 **1. Series and title.** The correct series name and week number from the
 source material, plus a short technical topic title.
 
+Use the form the series already uses. Do not re-style it; open the previous
+week's draft and copy the line.
+
 ```
-AWS Architecture Series | Week 24
-Azure Platform Engineering Lab | Week 10
-GCP Platform Engineering Lab | Week 10
+Week 25 of my 52-week AWS Platform Engineering Lab
+Week 12 of my 52-week Azure Platform Engineering Lab
+Week 11 of my 52-week GCP Platform Engineering Lab
 ```
+
+The AWS lab has opened this way for fifteen consecutive weeks (9 through 23).
+Week 24 shipped as "AWS Architecture Series | Week 24", which is both a
+different shape and the wrong series name for a lab post, and this document
+had been carrying that one-off as its example -- so the error propagated into
+week 25. The weekly lab and the daily architecture series are different
+series; a lab post never announces itself as the architecture one.
 
 **2. Opening hook.** An interesting technical finding, unexpected behaviour,
 real engineering problem, or misconception the lab demonstrated. **Never**
