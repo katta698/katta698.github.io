@@ -41,6 +41,20 @@ had been carrying that one-off as its example -- so the error propagated into
 week 25. The weekly lab and the daily architecture series are different
 series; a lab post never announces itself as the architecture one.
 
+**The lab's title goes on the next line, always** (confirmed by Jay
+2026-10-30). Weeks 9-24 omitted it and went straight from the series line into
+the hook, so a reader scrolling past learned the week number but not the
+subject. Use the article's topic title without the week prefix:
+
+```
+Week 25 of my 52-week AWS Platform Engineering Lab
+Serverless Microservices: The Neighbour That Starved Checkout
+```
+
+The blog's front matter reads "Week 25 - Serverless Microservices: The
+Neighbour That Starved Checkout"; drop the "Week NN - " because the line above
+already carries it. The title counts towards the 120-180 word budget.
+
 **2. Opening hook.** An interesting technical finding, unexpected behaviour,
 real engineering problem, or misconception the lab demonstrated. **Never**
 "Excited to share", "Thrilled to announce", "Another amazing week".
