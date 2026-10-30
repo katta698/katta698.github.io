@@ -52,8 +52,13 @@ Earlier requirements that do not conflict still stand.
 1. **Lab Overview** — descriptive technical title; problem; objective; expected
    outcome; technology/deployment method. Purpose clear **within one minute**.
    Use a descriptive subtitle when the title is creative.
-2. **Cloud Services and Concepts** — compact table: *Service | Purpose in this
-   lab*. Plain English. Explain **why** each is needed, not generic blurb.
+2. **Cloud Services and Concepts** — compact table, one row per service, each
+   giving **both**: a one-line plain-English definition of what the service
+   *is*, then what it does *in this lab* (an `*Here:*` clause). A reader who
+   has never used the service must not finish the row still not knowing what it
+   is. "Not generic blurb" bans vendor marketing copy — it does not ban
+   defining the thing; the section is called Services **and Concepts**.
+   Then 1–3 paragraphs on the concepts the findings depend on.
 3. **Architecture and Workflow** — **one** primary diagram, drawn in the
    **vendor's own reference-architecture style** (see below);
    application/network/identity/security/observability boundaries; labelled
