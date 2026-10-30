@@ -54,10 +54,35 @@ Earlier requirements that do not conflict still stand.
    Use a descriptive subtitle when the title is creative.
 2. **Cloud Services and Concepts** — compact table: *Service | Purpose in this
    lab*. Plain English. Explain **why** each is needed, not generic blurb.
-3. **Architecture and Workflow** — **one** primary diagram; official icons where
-   appropriate; application/network/identity/security/observability boundaries;
-   labelled flows; no decorative clutter; **4–7 numbered steps**; important
-   design decisions. **Must represent what was actually implemented.**
+3. **Architecture and Workflow** — **one** primary diagram, drawn in the
+   **vendor's own reference-architecture style** (see below);
+   application/network/identity/security/observability boundaries; labelled
+   flows; no decorative clutter; **4–7 numbered steps**; important design
+   decisions. **Must represent what was actually implemented.**
+### The diagram follows the vendor's own convention (confirmed 2026-10-30)
+
+Every lab diagram is drawn the way the cloud provider draws its own reference
+architectures, so a reader moving between this series and the vendor's
+documentation does not have to learn a second visual language:
+
+- **Official service icons, never redrawn.** The colours carry meaning — in AWS,
+  orange is Compute, purple Networking, magenta Databases — so an approximated
+  icon is a wrong icon. AWS's icon package permits exactly this use; the
+  extracted set lives in `_assets/aws-icons/` with its release and date recorded
+  in `SOURCE.json`.
+- **A cloud boundary**, and inside it the account, Region or VPC groupings that
+  actually apply.
+- **The service name printed under each icon**, with a short qualifier when the
+  distinction matters (`checkout` / `50 ms → 1 slot`).
+- **Numbered step circles on the flow**, matching the numbered list beneath.
+- **Right-angled or straight connectors** that do not cross labels or enclose
+  an unrelated icon.
+
+`scripts/aws_arch.py` composes these for the AWS series: it emits each icon as a
+nested `<svg>`, so the finished diagram is one self-contained element with no
+external references and renders anywhere the post does. Azure and GCP take the
+same approach with their own official icon sets.
+
 4. **Prerequisites** — only what is actually needed: accounts, IAM/RBAC, tools
    and versions, existing infrastructure, region/config assumptions, quotas.
    Make cross-week dependencies explicit.
