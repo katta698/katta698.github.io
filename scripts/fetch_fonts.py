@@ -70,12 +70,16 @@ SRC = ("https://fonts.googleapis.com/css2"
        "&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;"
        "0,9..40,700;1,9..40,400"
        "&family=DM+Mono:wght@400;500"
+       # Caveat is the handwriting on the chalkboard architecture diagrams.
+       # Those are INLINE svg, so the page font applies; an <img>-embedded
+       # svg would silently fall back to Arial and lose the whole effect.
+       "&family=Caveat:wght@400;500;600"
        "&display=swap")
 
 KEEP = ("latin", "latin-ext")
 
 SHORT = {"DM Sans": "dm-sans", "DM Mono": "dm-mono",
-         "Playfair Display": "playfair"}
+         "Playfair Display": "playfair", "Caveat": "caveat"}
 
 
 def get(url):
