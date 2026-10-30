@@ -70,7 +70,17 @@ SERIES = {
     "AWS Weekly Lab": ["overview", "services", "architecture", "prerequisites",
                        "implementation", "validation", "security-cost",
                        "troubleshooting", "cleanup"],
-    "Azure Weekly Lab": None,   # not migrated yet; set the list to switch on
+    # Switched on 2026-10-30. All eleven Azure posts were migrated on
+    # 2026-10-25 and every one uses this exact id set, verified by reading
+    # the <h2 id> of each. Until now the entry was None, so pointing this
+    # check at an Azure post inspected nothing and failed with "NOTHING
+    # MATCHED" -- which is how the gap was finally noticed.
+    # Note "prereqs" and "seccost": Azure diverges from both siblings, the
+    # same drift the comment above describes. Converging the three is a
+    # separate job; recording the truth here is not.
+    "Azure Weekly Lab": ["overview", "services", "architecture", "prereqs",
+                         "build", "validation", "seccost",
+                         "troubleshooting", "cleanup"],
 }
 
 # Slugs not yet rewritten to the 2026-10-25 standard. Shrinks only.
@@ -89,6 +99,34 @@ MIGRATION_PENDING = {
     "week-8-s3-intelligent-storage-platform",
     "week-9-ecs-fargate-self-service",
 
+    # Azure weeks 01-09, added 2026-10-30 when this check first covered the
+    # Azure series. These are NOT a free pass: the check read them for the
+    # first time and found twelve real deviations from the standard.
+    #
+    #   all nine   section 2 is a <ul>, not the compact TABLE the standard
+    #              asks for (service / purpose / plain-English definition)
+    #   07, 08, 09 still carry the retired file-tree card, the one with
+    #              per-file line counts: "75-line main.tf", "144-line
+    #              main.tf", "41-line versions.tf"
+    #
+    # Weeks 10 and 11 already satisfy the standard and are deliberately absent
+    # from this list. Remove a line here by fixing its post, never by widening
+    # a rule.
+    #
+    # Worth recording why this was invisible until now: the Azure lab's own
+    # audit_standard.py reports all eleven weeks at 9/9, because it checks that
+    # the nine HEADINGS exist. It never asked whether the content under a
+    # heading takes the form the heading promises. That is the gap this check
+    # exists to close, and it was switched off for Azure the whole time.
+    "week-01-azure-landing-zone",
+    "week-02-policy-as-code",
+    "week-03-module-factory",
+    "week-04-subscription-vending",
+    "week-05-hub-network",
+    "week-06-deployment-stacks",
+    "week-07-workload-identity",
+    "week-08-log-analytics",
+    "week-09-container-apps",
 }
 
 # The standard's section order. Presence is checked; order is not, because the
@@ -105,8 +143,14 @@ SECTION_SHAPE = {
     # let the exact failure this check exists for walk through in a different
     # costume: an ASCII schematic rendered to PNG arrived as an <img> of a
     # command prompt under an architecture heading.
-    "architecture": ("an inline <svg> diagram (an <img> does not count)",
-                     re.compile(r"<svg", re.I)),
+    # An SVG counts whether it is inlined or referenced with <img src="....svg">.
+    # A RASTER image does not, which is the costume above. This used to demand
+    # an inline <svg> and so failed nine Azure posts that reference a perfectly
+    # good SVG diagram by URL -- the lab repo holds the images, the blog links
+    # them. The newer schema further down already drew this line correctly; the
+    # two disagreed, and the stricter one was simply older.
+    "architecture": ("an SVG diagram (a raster <img> does not count)",
+                     re.compile(r"<svg|<img[^>]+\.svg", re.I)),
     # "compact table containing service name, purpose, definition"
     "services":      ("a services table", re.compile(r"<table", re.I)),
     # "Required accounts, permissions, software and version requirements..."
@@ -131,7 +175,22 @@ SECTION_SHAPE = {
 # Retired 2026-09-30 rule: a tree WITH per-file line counts. The master
 # standard permits a COMPACT structure figure and forbids line counts, so
 # what is banned is the old card, not a structure figure as such.
-RETIRED_TREE_CARD = "terraform-layout"
+#
+# MATCHED ON LINE COUNTS, NOT ON A FILENAME (2026-10-30)
+# ------------------------------------------------------
+# This used to be `if "terraform-layout" in text`, which banned the figure by
+# name. That contradicted the paragraph above it: the standard permits a
+# compact structure figure, and several are named terraform-layout. Measured
+# across the site, five posts carry such a figure and all five are Azure:
+# weeks 07, 08 and 09 are the retired card -- their alt text reads "The
+# Terraform file tree ... a 144-line main.tf" -- while weeks 10 and 11 are the
+# compact form, "Repository structure ...", with no counts anywhere.
+#
+# The post HTML cannot see inside a PNG, but the alt text has to describe it,
+# and a per-file line count is exactly the thing the retired rule demanded. So
+# that is the signal: `\d+-line <file>`. A compact figure now passes, and a
+# tree that still lists how big each file is still fails.
+RETIRED_TREE_PATTERN = re.compile(r"\d+-line\s+[\w.-]+\.(tf|py|ya?ml|sh|tftpl)", re.I)
 
 WEEK_RE = re.compile(r"week-(\d+)")
 
@@ -147,7 +206,23 @@ def slug_of(text, filename):
 
 
 def section(text, sid):
+    """A section's markup, located by id.
+
+    TWO MARKUPS ARE IN PLAY, AND BOTH ARE LEGITIMATE (2026-10-30)
+    ------------------------------------------------------------
+    GCP and AWS wrap each section in <div class="section" id="...">. The Azure
+    series does not: it writes a bare <h2 id="..."> and runs to the next <h2>.
+
+    The div form is tried first, so GCP and AWS are untouched by this fallback.
+    Without it, switching the Azure series on reported all nine sections
+    missing on all eleven posts while their <h2 id>s sat right there -- the
+    checker accusing a series whose markup it simply could not read.
+    """
     m = re.search(r'<div class="section" id="%s".*?(?=<div class="section"|\Z)'
+                  % re.escape(sid), text, re.S)
+    if m:
+        return m.group(0)
+    m = re.search(r'<h2[^>]*id="%s"[^>]*>.*?(?=<h2|\Z)'
                   % re.escape(sid), text, re.S)
     return m.group(0) if m else None
 
@@ -219,11 +294,13 @@ def check_text(text, name, report, slug=None, required=None):
     problems = []
     required = required or REQUIRED_SECTIONS
 
-    if RETIRED_TREE_CARD in text:
+    retired = RETIRED_TREE_PATTERN.search(text)
+    if retired:
         problems.append(
-            f"carries the retired file-tree card (*{RETIRED_TREE_CARD}*), which "
-            "listed per-file line counts. The master standard allows a COMPACT "
-            "structure figure and forbids line counts and exhaustive inventories")
+            f'carries the retired file-tree card (its alt text says '
+            f'"{retired.group(0)}"). The master standard allows a COMPACT '
+            "structure figure and forbids per-file line counts and exhaustive "
+            "inventories")
 
     for sid in required:
         if section(text, sid) is None:
@@ -274,8 +351,16 @@ def self_test():
          1, "validation with a figure but no Test/Expected/Actual/Status table"),
         (good.replace("<p>Root cause: x</p>", "<p>some things broke</p>"),
          1, "troubleshooting not in Problem/Root cause form"),
-        (good + '<img src="05-terraform-layout.png">',
+        # The fixture carries the thing that was retired -- a per-file line
+        # count in the alt text -- not merely a figure called terraform-layout.
+        # A compact structure figure with that same filename is permitted, and
+        # the case below proves this check no longer confuses the two.
+        (good + '<img src="05-terraform-layout.png" alt="The Terraform file '
+                'tree: versions.tf, a 144-line main.tf holding the workspace">',
          1, "still carrying the retired line-count tree card"),
+        (good + '<img src="05-terraform-layout.png" alt="Repository structure: '
+                'a terraform directory split by the decision each file makes">',
+         0, "a COMPACT structure figure, same filename, no line counts"),
         (good.replace('<div class="section" id="takeaways"><h2>takeaways</h2></div>', ""),
          1, "a missing section"),
         (good.replace("<svg></svg>", '<img src="arch.png">'),
