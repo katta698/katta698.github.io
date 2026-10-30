@@ -81,7 +81,6 @@ SERIES = {
 MIGRATION_PENDING = {
     "week-1-from-ticket-to-ec2-in-6-minutes-enterprise-self-servi",
     "week-10-centralized-logging",
-    "week-11-security-hub-guardduty",
     "week-2-automating-postgresql-provisioning-with-servicenow-an",
     "week-3-self-service-ec2-fleet-patching-with-aws-ssm",
     "week-4-building-a-fleet-intelligence-platform-with-aws-glue-",
