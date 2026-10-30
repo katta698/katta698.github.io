@@ -1,0 +1,521 @@
+---
+title: 'Week 11 — Just-in-Time Privileged Access with Privileged Access Manager'
+date: '2026-10-29T22:00:00'
+draft: false
+labels:
+- GCP
+- Terraform
+- GCP Weekly Lab
+slug: week-11-jit-access
+verified: '2026-10-29'
+verified_claims:
+  - claim: "Privileged Access Manager lets you control just-in-time temporary privilege elevation for select principals, and view audit logs afterwards to find out who had access to what and when"
+    source: https://docs.cloud.google.com/iam/docs/pam-overview
+  - claim: "Privileged Access Manager supports creating entitlements and requesting grants for projects, folders, and organizations"
+    source: https://docs.cloud.google.com/iam/docs/pam-overview
+  - claim: "The maximum duration you can set for an entitlement is 7 days, and the supported range for maximum request duration is between 30 minutes (1800s) and 168 hours (604800s)"
+    source: https://docs.cloud.google.com/iam/docs/pam-create-entitlements
+  - claim: "Creating an organization-level entitlement requires the Privileged Access Manager Admin role and the Security Admin role, and folder-level entitlements require Privileged Access Manager Admin and Folder IAM Admin"
+    source: https://docs.cloud.google.com/iam/docs/pam-create-entitlements
+  - claim: "Role recommendations for non-basic roles, recommendations that suggest custom roles, and policy insights require a project-level or organization-level activation of the Premium or Enterprise tier of Security Command Center"
+    source: https://docs.cloud.google.com/policy-intelligence/docs/billing-questions
+---
+<div id="jk-post">
+
+<div class="post-header">
+  <div class="post-eyebrow">GCP Platform Engineering Lab &middot; Week 11 of 58</div>
+  <div class="post-title">Access that ends without anybody ending it</div>
+  <div class="post-subtitle">Make a privileged role something a principal requests, holds briefly and loses &mdash; then measure whether the losing half actually happens.</div>
+  <div class="post-meta">
+    <span>29 October 2026</span>
+    <span>Privileged Access Manager &middot; Cloud IAM &middot; Terraform</span>
+    <span>$0</span>
+  </div>
+</div>
+
+<div class="toc">
+  <h3>&#128203; In This Post</h3>
+  <ol>
+    <li><a href="#overview">Lab Overview</a></li>
+    <li><a href="#services">Cloud Services and Concepts</a></li>
+    <li><a href="#architecture">Architecture and Workflow</a></li>
+    <li><a href="#prerequisites">Prerequisites</a></li>
+    <li><a href="#build">Implementation</a></li>
+    <li><a href="#validation">Validation and Evidence</a></li>
+    <li><a href="#security">Security and Cost</a></li>
+    <li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+    <li><a href="#takeaways">Cleanup and Key Takeaways</a></li>
+  </ol>
+</div>
+
+<div class="section" id="overview">
+<h2>Lab Overview</h2>
+
+<p><strong>The problem.</strong> Ten weeks of this lab granted roles that stay
+granted. A role is written once and then holds until somebody writes a change to
+remove it, and nobody is scheduled to. That is fine for a pipeline identity whose
+job never changes. It is wrong for the access a person needs twice a year &mdash;
+the permission to read every IAM policy during an incident, say, which is
+indispensable that afternoon and a standing liability every other day.</p>
+
+<p><strong>Objective.</strong> Make one privileged role requestable rather than
+held: an entitlement on a folder that a principal may ask for, a human must
+approve, and Google removes on a timer.</p>
+
+<p><strong>Expected outcome.</strong> The same command, as the same principal,
+refused &rarr; permitted &rarr; refused, with nothing running in between. And a
+number for how long the role binding actually takes to leave the policy after
+the grant expires, because <em>"access ended"</em> is false for however long
+that lag is.</p>
+
+<div class="table-scroll">
+<table>
+  <tbody>
+    <tr><th>Difficulty</th><td>Intermediate &mdash; five resources, but two prerequisites that are easy to miss and fail unhelpfully</td></tr>
+    <tr><th>Deployment</th><td>Terraform via HCP Terraform, plus one hand-run amendment to the pipeline's own permissions</td></tr>
+    <tr><th>Reproduce it</th><td><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-11-jit-access/LAB.md">Lab guide</a> &mdash; the onboarding step, the 30-minute floor, six troubleshooting entries</td></tr>
+    <tr><th>Cost</th><td>$0 &mdash; PAM has no charge and this week creates no billable resource</td></tr>
+  </tbody>
+</table>
+</div>
+</div>
+
+<div class="section" id="services">
+<h2>Cloud Services and Concepts</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Service or tool</th><th>Purpose in this lab</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Privileged Access Manager</strong></td><td>Holds the entitlement, runs the approval workflow, and writes and removes the temporary role binding.</td></tr>
+    <tr><td><strong>Cloud IAM</strong></td><td>Where the grant actually lands. A PAM grant is an ordinary role binding on the folder, with an owner that takes it away.</td></tr>
+    <tr><td><strong>Resource Manager</strong></td><td>The folder the entitlement attaches to, and the policy the test reads.</td></tr>
+    <tr><td><strong>Service accounts</strong></td><td>The test subject &mdash; a principal created to hold nothing, so the before/after means something.</td></tr>
+    <tr><td><strong>Terraform + HCP Terraform</strong></td><td>Builds it. The entitlement, the onboarding grant and the subject are all code.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>An entitlement is a template, not a grant.</strong> It describes
+access that <em>may</em> be requested: who is eligible, which roles, for how
+long, and who must approve. Creating one changes nobody's permissions. The
+folder's IAM policy is untouched until somebody requests a grant against it and
+an approver says yes &mdash; at which point a binding appears that nothing in the
+Terraform created.</p>
+
+<p><strong>The approval is only a control if two principals are involved.</strong>
+If the same identity requests and approves, the step is a form filled in twice.
+That shapes the whole design here: the requester is a service account holding
+nothing, and the approver is a human. Multi-party approval &mdash; a quorum
+rather than one person's judgement &mdash; is in Preview and requires Security
+Command Center Premium or Enterprise, so this lab uses the strongest version the
+free tier allows and says so rather than implying more.</p>
+
+<p><strong>Thirty minutes is the floor.</strong> <code>max_request_duration</code>
+accepts 1800s to 604800s. There is no way to hand someone five minutes of
+elevated access. Worth knowing before designing a workflow that assumes
+short-lived elevation &mdash; and it sets the minimum cost of testing expiry at
+half an hour per trial.</p>
+</div>
+
+<div class="section" id="architecture">
+<h2>Architecture and Workflow</h2>
+
+<svg viewBox="0 0 880 360" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="A service account holding no roles requests a grant against an entitlement on the platform folder. A human approver accepts. Privileged Access Manager writes a role binding into the folder's IAM policy, and removes it when the grant expires thirty minutes later."
+     style="width:100%;height:auto;border:1px solid #e4e7ec;border-radius:8px">
+  <rect x="0" y="0" width="880" height="360" fill="#ffffff"/>
+  <defs>
+    <marker id="w11a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5f6368"/>
+    </marker>
+  </defs>
+  <text x="20" y="28" font-family="Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#202124">Requested, approved, expired &mdash; nothing held</text>
+
+  <rect x="24" y="56" width="190" height="64" rx="7" fill="#ffffff" stroke="#5f6368" stroke-width="1.4"/>
+  <text x="40" y="80" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">subject (service account)</text>
+  <text x="40" y="100" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#b00020">holds no roles at all</text>
+
+  <line x1="214" y1="88" x2="300" y2="88" stroke="#5f6368" stroke-width="1.3" marker-end="url(#w11a)"/>
+  <text x="220" y="80" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">requests</text>
+
+  <rect x="300" y="48" width="250" height="80" rx="7" fill="#ffffff" stroke="#1a73e8" stroke-width="1.6"/>
+  <text x="316" y="72" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">entitlement (a template)</text>
+  <text x="316" y="92" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">roles/iam.securityReviewer</text>
+  <text x="316" y="110" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">max 30 min &middot; approval required</text>
+
+  <line x1="550" y1="88" x2="636" y2="88" stroke="#5f6368" stroke-width="1.3" marker-end="url(#w11a)"/>
+  <rect x="636" y="56" width="214" height="64" rx="7" fill="#ffffff" stroke="#0f9d58" stroke-width="1.5"/>
+  <text x="652" y="80" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">human approver</text>
+  <text x="652" y="100" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">a different principal</text>
+
+  <line x1="743" y1="120" x2="743" y2="168" stroke="#5f6368" stroke-width="1.3" marker-end="url(#w11a)"/>
+  <rect x="300" y="168" width="550" height="64" rx="7" fill="#ffffff" stroke="#f4b400" stroke-width="1.6"/>
+  <text x="316" y="192" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">folder IAM policy &mdash; binding written by PAM</text>
+  <text x="316" y="212" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">nothing in the Terraform creates it; the entitlement is not the binding</text>
+
+  <line x1="575" y1="232" x2="575" y2="276" stroke="#5f6368" stroke-width="1.3" marker-end="url(#w11a)"/>
+  <text x="585" y="260" font-family="Segoe UI,Arial,sans-serif" font-size="10" fill="#5f6368">30 minutes later, with nobody acting</text>
+
+  <rect x="300" y="276" width="550" height="56" rx="7" fill="#ffffff" stroke="#b00020" stroke-width="1.5"/>
+  <text x="316" y="300" font-family="Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#202124">binding removed &mdash; measured within ~13s of expiry, 3 trials</text>
+  <text x="316" y="320" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#5f6368">the same command is refused again, with the same error as before</text>
+
+  <text x="24" y="300" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#b00020">PAM needs</text>
+  <text x="24" y="316" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#b00020">setIamPolicy</text>
+  <text x="24" y="332" font-family="Segoe UI,Arial,sans-serif" font-size="10.5" fill="#b00020">on the folder</text>
+</svg>
+
+<h3>The flow</h3>
+
+<ol>
+  <li>Amend Week 02 so the pipeline may create entitlements &mdash; it cannot
+    grant itself that.</li>
+  <li>Enable the API, <em>and</em> onboard the folder, which is a separate step.</li>
+  <li>Create a subject that holds nothing, and the entitlement.</li>
+  <li>Confirm the subject is refused.</li>
+  <li>Request a grant as the subject; a human approves it.</li>
+  <li>Confirm access appeared, then measure its removal across three expiries.</li>
+</ol>
+
+<h3>The decision worth naming</h3>
+
+<p><strong>The entitlement attaches to a folder, not the organization.</strong>
+Creating one requires <code>setIamPolicy</code> on the parent. At the
+organization that permission lives only in
+<code>roles/resourcemanager.organizationAdmin</code>, which the pipeline
+deliberately does not hold, because an identity that can grant itself anything
+is the thing this lab's second week exists to prevent. At a folder it lives in
+<code>folderAdmin</code>, which the pipeline does hold. Narrower is the better
+answer anyway; here it is also the only answer the pipeline can execute.</p>
+</div>
+
+<div class="section" id="prerequisites">
+<h2>Prerequisites</h2>
+
+<ul>
+  <li><strong>Week 01's folder hierarchy and Week 02's federated pipeline.</strong></li>
+  <li><strong>A Week 02 amendment</strong> granting <code>tf-apply</code>
+    <code>roles/privilegedaccessmanager.admin</code>. This is a separate,
+    hand-run apply: the identity that runs every other week cannot grant itself
+    the role this week needs.</li>
+  <li><strong>An operator with PAM permissions on the folder</strong>, to approve
+    grants. Holding <code>organizationAdmin</code> is <em>not</em> enough &mdash;
+    it does not include PAM permissions at all.</li>
+  <li><strong><code>privilegedaccessmanager.googleapis.com</code></strong>, which
+    this week enables &mdash; and which is <strong>not</strong> the same as
+    enabling PAM for the resource. See Troubleshooting.</li>
+  <li><strong>Terraform 1.9+</strong> with <code>hashicorp/google</code>
+    <code>~&gt; 6.0</code>.</li>
+</ul>
+</div>
+
+<div class="section" id="build">
+<h2>Implementation</h2>
+
+<p>Five resources, all free. Commands are in the
+<a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-11-jit-access/LAB.md">lab guide</a>.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-11-jit-access/docs/blog/screenshots/02-repo-structure.png" alt="Repository structure: LAB.md, terraform, scripts and docs, each with a one-line responsibility." loading="lazy">
+  <figcaption>How the week is organised. <a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/tree/main/week-11-jit-access">Full source on GitHub</a>.</figcaption>
+</figure>
+
+<h3>Step 1 &mdash; Onboard the folder, which the API enablement does not do</h3>
+
+<p><strong>Why:</strong> because the apply fails otherwise, with
+<code>PAM has not been enabled for this resource</code> &mdash; after the API is
+already on. Ask the API what is missing rather than guessing:</p>
+
+<pre class="code-block"><code>gcloud pam check-onboarding-status --folder=&lt;FOLDER&gt; --location=global
+
+serviceAccount: service-org-&lt;ORG&gt;@gcp-sa-pam.iam.gserviceaccount.com
+missingPermissions:
+  resourcemanager.folders.get
+  resourcemanager.folders.getIamPolicy
+  resourcemanager.folders.setIamPolicy</code></pre>
+
+<p><strong>Two things in that list are worth reading twice.</strong> The service
+agent is <em>organization</em>-scoped even though the entitlement is attached to
+a folder. And the permission it needs is <code>setIamPolicy</code> &mdash; PAM
+adds and removes grant bindings by rewriting the folder's IAM policy, so turning
+PAM on hands a Google service agent the ability to change who can do what there.
+That is the actual trade, and clicking <strong>Enable</strong> in the console
+never says so.</p>
+
+<h3>Step 2 &mdash; A subject that holds nothing</h3>
+
+<p><strong>Why:</strong> a revocation test run as a principal that can reach the
+permission another way proves nothing. The obvious human here holds
+<code>organizationAdmin</code>, so no entitlement could make them more able to
+read a policy and no expiry could make them less.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-11-jit-access/docs/blog/screenshots/01-denied-before.png" alt="Terminal: the subject holds nothing on the folder, the entitlement exists, and reading the folder IAM policy as the subject is refused." loading="lazy">
+  <figcaption><strong>Validates Steps 1&ndash;2:</strong> the entitlement
+  <em>exists</em> and the folder's policy still carries nothing for the subject,
+  which is the template/instance split shown rather than asserted. The read is
+  refused.</figcaption>
+</figure>
+
+<h3>Step 3 &mdash; The entitlement</h3>
+
+<p><strong>Why:</strong> <code>eligible_users</code> is who may <em>ask</em>, not
+who has access; the approval workflow names a different principal entirely.</p>
+
+<pre class="code-block"><code>eligible_users {
+  principals = ["serviceAccount:${google_service_account.jit_subject.email}"]
+}
+
+approval_workflow {
+  manual_approvals {
+    require_approver_justification = true
+    steps {
+      approvals_needed = 1
+      approvers { principals = ["user:${var.operator_principal}"] }
+    }
+  }
+}</code></pre>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-11-jit-access/docs/blog/screenshots/03-entitlement.png" alt="Privileged Access Manager console listing the folder-security-review entitlement: Security Reviewer, 30 minutes maximum duration, a requester, an approver, status Available." loading="lazy">
+  <figcaption><strong>Validates Step 3:</strong> the entitlement in the console
+  &mdash; Security Reviewer, <strong>30 minutes</strong>, one requester, one
+  approver, status <strong>Available</strong>. Available means requestable, not
+  granted.</figcaption>
+</figure>
+
+<h3>Step 4 &mdash; Request, and wait for a human</h3>
+
+<p><strong>Action:</strong> request a grant <em>as the subject</em>, by
+impersonation. <strong>Expected:</strong> the request stops and waits.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-11-jit-access/docs/blog/screenshots/04-grant-pending.png" alt="The Approve grants tab showing one request pending approval, with requester, role, resource, requested duration and an Approve or Deny action." loading="lazy">
+  <figcaption><strong>Validates Step 4 &mdash; the control, in one line:</strong>
+  the request sits in <em>Pending approval</em> with the requester named and an
+  Approve/Deny waiting. This state is perishable: approving destroys it, so it
+  was captured before anyone clicked.</figcaption>
+</figure>
+
+<h3>Step 5 &mdash; Access appears</h3>
+
+<p><strong>Expected:</strong> a binding in the folder policy that no
+configuration declares.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-11-jit-access/docs/blog/screenshots/05-granted.png" alt="Terminal: grant state ACTIVE, the folder policy now carries roles/iam.securityReviewer for the subject, and the previously refused command returns the policy." loading="lazy">
+  <figcaption><strong>Validates Step 5:</strong> the binding is present and the
+  command from figure 01 now succeeds. Nothing in <code>main.tf</code> creates
+  that binding &mdash; PAM wrote it.</figcaption>
+</figure>
+
+<h3>Step 6 &mdash; Access ends, and nobody ends it</h3>
+
+<p><strong>Action:</strong> poll the folder's IAM policy across the expiry
+boundary. <strong>Expected:</strong> the binding disappears on its own, and the
+denial returns.</p>
+
+<figure>
+  <img src="https://raw.githubusercontent.com/katta698/GCP-Platform-Engineering-Lab/main/week-11-jit-access/docs/blog/screenshots/06-expired.png" alt="Terminal: three trials showing the binding last seen about six seconds before the documented expiry and gone about six seconds after, followed by the grant state ENDED and the original permission error." loading="lazy">
+  <figcaption><strong>Validates Step 6 &mdash; the figure the post rests on:</strong>
+  three trials, the binding gone within roughly 13 seconds of expiry each time,
+  and the error byte-for-byte identical to figure 01.</figcaption>
+</figure>
+</div>
+
+<div class="section" id="validation">
+<h2>Validation and Evidence</h2>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
+  <tbody>
+    <tr><td>Infrastructure deployed</td><td>5 resources</td><td>5 added, on the third attempt</td><td>Pass</td></tr>
+    <tr><td>Entitlement is a template, not a binding</td><td>exists; folder policy unchanged</td><td>confirmed</td><td>Pass</td></tr>
+    <tr><td>Requester and approver differ</td><td>different principals</td><td>confirmed, asserted by the validator</td><td>Pass</td></tr>
+    <tr><td>Subject holds nothing directly</td><td>no bindings anywhere</td><td>none</td><td>Pass</td></tr>
+    <tr><td>Access <strong>before</strong> the grant</td><td>refused</td><td><code>does not have permission</code></td><td>Pass</td></tr>
+    <tr><td>Approval is required</td><td>request waits</td><td><code>APPROVAL_AWAITED</code> until a human acted</td><td>Pass</td></tr>
+    <tr><td>Access <strong>during</strong> the grant</td><td>permitted</td><td>policy returned</td><td>Pass</td></tr>
+    <tr><td>Who wrote the binding</td><td>PAM, not Terraform</td><td>confirmed &mdash; absent from state and config</td><td>Pass</td></tr>
+    <tr><td>Access <strong>after</strong> expiry</td><td>refused again</td><td>identical error to the first test</td><td>Pass</td></tr>
+    <tr><td><strong>Removal lag</strong></td><td>measured over 3 trials</td><td>binding gone within <strong>~13s</strong> of expiry in all three</td><td><strong>Pass</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>The last row is the week.</strong> Trials ran at 23:01, 01:24 and
+02:34 UTC. In each, the binding was still present about six seconds before the
+documented expiry and gone about six seconds after. There is no meaningful
+window in which the grant has ended and the access has not.</p>
+
+<p><strong>What that number is not.</strong> Two pollers watching the
+<em>same</em> expiry reported 7s and 13s, differing only in where their polls
+landed. The defensible claim is <em>within roughly 13 seconds</em> &mdash;
+bounded by the poll interval, not by the precision of the result.</p>
+
+<p><strong>And a limit worth stating plainly:</strong> this demonstrates the
+<em>mechanism</em>, not evidence that anything here needed it. Finding standing
+grants that should be entitlements is the IAM recommender's job, and
+recommendations for non-basic roles sit behind Security Command Center Premium
+&mdash; so on the free tier it would have reported nothing at all.</p>
+</div>
+
+<div class="section" id="security">
+<h2>Security and Cost</h2>
+
+<h3>Security decisions</h3>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Control</th><th>Decision and trade-off</th></tr></thead>
+  <tbody>
+    <tr><td>Requester holds nothing</td><td>The subject is a service account with no bindings, so the entitlement is its only route. A test run by a principal that can reach the permission another way proves nothing.</td></tr>
+    <tr><td>Requester &ne; approver</td><td>Enforced in the configuration and asserted by the validator. One identity doing both makes the approval a form filled in twice.</td></tr>
+    <tr><td>Justification required</td><td><code>unstructured{}</code> rather than <code>not_mandatory</code>. The reason is the only part of the audit trail that records <em>why</em>.</td></tr>
+    <tr><td>Folder scope, not organization</td><td>Narrower, and the only scope the pipeline can write &mdash; organization-level <code>setIamPolicy</code> lives in a role it deliberately lacks.</td></tr>
+    <tr><td>The pipeline cannot grant itself this</td><td><code>privilegedaccessmanager.admin</code> was added in the human-run layer, as a separate apply.</td></tr>
+    <tr><td><strong>Accepted trade</strong></td><td>Onboarding gives a Google service agent <code>setIamPolicy</code> on the folder. PAM cannot add and remove bindings without it, and the console's Enable button never mentions it.</td></tr>
+    <tr><td><strong>Accepted gaps</strong></td><td>Single-approver workflow &mdash; a quorum needs SCC Premium. And the operator holds <code>privilegedaccessmanager.admin</code> on the folder, granted out of band so grants could be approved at all; recorded for cleanup.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Cost</h3>
+
+<p><strong>$0.</strong> Privileged Access Manager has no charge of its own, and
+this week creates an API enablement, a service account, two IAM bindings and one
+entitlement &mdash; none of which bills. Nothing runs continuously.</p>
+</div>
+
+<div class="section" id="troubleshooting">
+<h2>Troubleshooting and Lessons</h2>
+
+<h3>Enabling the API is not enabling PAM</h3>
+
+<p><strong>Problem:</strong> the apply got past the API and failed with
+<code>Error 400: PAM has not been enabled for this resource</code>.</p>
+
+<p><strong>Root cause:</strong> onboarding a resource is a separate step from
+enabling the service. The org-scoped PAM service agent needs three permissions
+on the folder, which <code>roles/privilegedaccessmanager.folderServiceAgent</code>
+contains exactly.</p>
+
+<p><strong>Lesson:</strong> <code>check-onboarding-status</code> names precisely
+what is missing. Run it before writing the configuration, not after the apply
+fails. Note that it needs a PAM permission of its own, so an operator holding
+only <code>organizationAdmin</code> cannot run it.</p>
+
+<h3>An HTTP 404 with an HTML body</h3>
+
+<p><strong>Problem:</strong> entitlement creation returned a Google error page
+rather than an API error.</p>
+
+<p><strong>Root cause:</strong> the <code>folders/</code> prefix was applied
+twice, producing a request to
+<code>/v1/folders/folders/NNN/locations/global/entitlements</code>.</p>
+
+<p><strong>Lesson:</strong> a malformed path gets a generic HTML 404 &mdash; no
+field named, no hint the path is wrong. Read the URL in the error rather than the
+message. The variable's own description was wrong too, which is how the mistake
+survived review.</p>
+
+<h3>A clean plan that never authenticated</h3>
+
+<p><strong>Problem:</strong> <code>terraform plan</code> succeeded, then the
+apply died at token exchange: <em>"The issuer in ID Token
+https://app.terraform.io does not match the expected one in config:
+https://token.actions.githubusercontent.com"</em>.</p>
+
+<p><strong>Root cause:</strong> two things at once. The workspace pointed at the
+<em>GitHub Actions</em> provider, because this project has two workload identity
+pools and a lookup took the first match. And the plan had passed because it ran
+against <strong>empty state</strong> &mdash; nothing to refresh, so it never
+called Google at all.</p>
+
+<p><strong>Lesson:</strong> a plan over empty state does not even exercise
+authentication. And <strong>one item is not evidence of uniqueness</strong>
+&mdash; select by the property you mean, here the issuer URI, not by position.</p>
+
+<h3>A measurement script that destroyed its own window</h3>
+
+<p><strong>Problem:</strong> the first measurement run crashed on
+<code>json.decoder.JSONDecodeError: Extra data</code>, and by the time it was
+noticed, 25 of a 30-minute window were gone.</p>
+
+<p><strong>Root cause:</strong> a helper concatenated <code>stdout</code> and
+<code>stderr</code>. <code>gcloud</code> writes progress lines such as
+<code>Parsed [entitlement] resource: ...</code> to stderr, so every
+<code>--format=json</code> reply came back with prose stapled on.</p>
+
+<p><strong>Lesson:</strong> keep them separate. And a second bug in the same
+function was worth more than the crash: the grant's expiry is <em>not</em>
+<code>timeline.requested.expireTime</code>, which is when the <em>request</em>
+lapses if nobody approves &mdash; 24 hours out. It is
+<code>accessGrantTime + requestedDuration</code>. A reference point most of a day
+wrong would have produced a confident, meaningless number.</p>
+</div>
+
+<div class="section" id="takeaways">
+<h2>Cleanup and Key Takeaways</h2>
+
+<h3>Cleanup</h3>
+
+<p><code>terraform destroy</code> removes the entitlement, the subject, the
+impersonation binding and the service-agent grant. The API enablement stays
+(<code>disable_on_destroy = false</code>) and costs nothing.</p>
+
+<p>Then, out of band, remove the operator's folder-level
+<code>roles/privilegedaccessmanager.admin</code> if grants no longer need
+approving &mdash; it was granted by hand and Terraform will not remove it.</p>
+
+<p><strong>Ongoing charges:</strong> none.</p>
+
+<h3>Key takeaways</h3>
+
+<ol>
+  <li><strong>An entitlement is not a grant.</strong> Creating one changes
+    nobody's access. The folder's policy stays untouched until a request is
+    approved, and the binding that appears is written by PAM rather than by your
+    configuration.</li>
+  <li><strong>Access really does end on its own</strong>, and quickly &mdash; the
+    binding was gone within roughly 13 seconds of expiry in all three trials.
+    The feared window where the grant has ended and the access has not did not
+    materialise.</li>
+  <li><strong>Enabling an API is not enabling a feature for a resource.</strong>
+    PAM needed its service agent granted <code>setIamPolicy</code> on the folder,
+    and that trade &mdash; a Google service agent that can rewrite who has access
+    &mdash; is invisible if you enable it by clicking a button.</li>
+  <li><strong>Thirty minutes is the shortest grant PAM will issue.</strong> It is
+    a ceiling requesters can come in under, but there is no five-minute
+    elevation.</li>
+  <li><strong>An approval between two of the same principal is not a control.</strong>
+    Design the test so the requester cannot approve, or the figure proves
+    nothing.</li>
+</ol>
+
+<h3>What production would do differently</h3>
+
+<p>Require multi-party approval so elevation is never one person's judgement.
+Write one entitlement per <em>task</em> rather than per role &mdash; "read IAM
+policies during an incident" rather than a role name &mdash; so the justification
+and the scope match the reason someone is asking. Alert on every request and
+approval, because a grant nobody notices is a standing role with extra steps. And
+pair it with detection: entitlements are worth most where they replace standing
+grants somebody identified, which needs the IAM recommender and therefore
+Security Command Center Premium.</p>
+
+<h3>References</h3>
+
+<ul>
+  <li><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/blob/main/week-11-jit-access/LAB.md">Lab guide</a> &mdash; the onboarding step, the 30-minute floor, six troubleshooting entries</li>
+  <li><a href="https://docs.cloud.google.com/iam/docs/pam-overview">Privileged Access Manager overview</a></li>
+  <li><a href="https://docs.cloud.google.com/iam/docs/pam-create-entitlements">Create entitlements</a></li>
+  <li><a href="https://docs.cloud.google.com/iam/docs/pam-approve-deny-grants">Approve or deny grants</a></li>
+  <li><a href="https://docs.cloud.google.com/policy-intelligence/docs/billing-questions">Policy Intelligence billing &mdash; which recommender features need SCC Premium</a></li>
+  <li><a href="https://github.com/katta698/GCP-Platform-Engineering-Lab/tree/main/week-11-jit-access">Source repository</a></li>
+</ul>
+</div>
+
+</div>
