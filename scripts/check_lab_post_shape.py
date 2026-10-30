@@ -36,6 +36,7 @@ shrink. An advisory warning would have been ignored - the account-id warning
 was true and ignored for twelve days - so this blocks.
 """
 import argparse
+import io
 import os
 import re
 import sys
@@ -320,6 +321,45 @@ SERVICES_HEADER_PENDING = {
 }
 
 
+# THE REST OF THE SHAPE (added 2026-10-30)
+#
+# Jay's question was not "is this post wrong", it was "how do I know you will
+# keep following the pattern?". The only answer that holds is a check that
+# fails, because every variant so far was introduced by me believing I was
+# following the standard. These rules were measured against all 17 restructured
+# posts before being switched on, so the gate starts green and any future
+# failure means something actually drifted -- a gate that fails from day one is
+# one people learn to skip.
+VALIDATION_HEADER = ["Test", "Expected", "Actual", "Status"]
+CHROME = ('id="jk-post"', "post-header", "post-meta", 'class="toc"')
+WORDS_MIN, WORDS_MAX = 1500, 2500
+FIGS_MIN, FIGS_MAX = 4, 7
+
+# Measured over-length when the rule was introduced. Named, not waived.
+WORDS_PENDING = {"week-24-chaos-engineering-fis"}
+
+
+def _body(text):
+    return text.split("---", 2)[2] if text.count("---") >= 2 else text
+
+
+def _words(body):
+    import re as _re
+    return len(_re.sub(r"<[^>]+>", " ",
+                       _re.sub(r"<svg.*?</svg>", "", body, flags=_re.S)).split())
+
+
+def _table_header(text, sid):
+    sec = section(text, sid)
+    if sec is None:
+        return None
+    m = re.search(r"<thead>(.*?)</thead>", sec, re.S)
+    if not m:
+        return None
+    return [re.sub(r"<[^>]+>", "", h).strip()
+            for h in re.findall(r"<th>(.*?)</th>", m.group(1), re.S)]
+
+
 def _services_header(text, sid):
     sec = section(text, sid)
     if sec is None:
@@ -331,7 +371,7 @@ def _services_header(text, sid):
             for h in re.findall(r"<th>(.*?)</th>", m.group(1), re.S)]
 
 
-def check_text(text, name, report, slug=None, required=None):
+def check_text(text, name, report, slug=None, required=None, series=None):
     problems = []
     required = required or REQUIRED_SECTIONS
 
@@ -358,6 +398,19 @@ def check_text(text, name, report, slug=None, required=None):
         if not pattern.search(sec):
             problems.append(f"#{sid} is missing {want}")
 
+    # ---- rules below are the AWS series' own conventions -------------------
+    # Scoped deliberately. Run unscoped they failed every GCP post, which uses
+    # "Service or tool", a different figure class and its own length budget --
+    # that series belongs to another window and converging it is a conversation,
+    # not something to impose from here. docs/QA_HANDOFF.md is where that goes.
+    if series != "AWS Weekly Lab":
+        if problems:
+            for p in problems:
+                report.append(f"  [FAIL] {name}: {p}")
+        else:
+            report.append(f"  [ ok ] {name}")
+        return len(problems)
+
     # the services table's columns, unless this post predates the rule
     if slug not in SERVICES_HEADER_PENDING:
         got = _services_header(text, alias.get("services", "services"))
@@ -366,6 +419,35 @@ def check_text(text, name, report, slug=None, required=None):
                 "services table header is %s; the series uses %s. Match the "
                 "previous post rather than inventing a shape"
                 % (" | ".join(got), " | ".join(SERVICES_HEADER)))
+
+    # the validation table's columns
+    got = _table_header(text, alias.get("validation", "validation"))
+    if got is not None and got != VALIDATION_HEADER:
+        problems.append("validation table header is %s; the series uses %s"
+                        % (" | ".join(got), " | ".join(VALIDATION_HEADER)))
+
+    # the post chrome a reader navigates by
+    body = _body(text)
+    missing = [c for c in CHROME if c not in body]
+    if missing:
+        problems.append("missing post chrome: %s" % ", ".join(missing))
+
+    # length and figure budget
+    if slug not in WORDS_PENDING:
+        w = _words(body)
+        if not (WORDS_MIN <= w <= WORDS_MAX):
+            problems.append("%d words, outside the %d-%d the standard sets"
+                            % (w, WORDS_MIN, WORDS_MAX))
+    figs = body.count('class="screenshot"')
+    if not (FIGS_MIN <= figs <= FIGS_MAX):
+        problems.append("%d screenshots, outside the %d-%d the standard sets"
+                        % (figs, FIGS_MIN, FIGS_MAX))
+
+    # the lab guide is the first reference, so a reader who wants the repo
+    # does not have to hunt for it
+    rm = re.search(r"<h3>References</h3>\s*<ul>\s*<li>(.*?)</li>", body, re.S)
+    if rm and "lab guide" not in rm.group(1).lower() and "README" not in rm.group(1):
+        problems.append("the first reference is not the full lab guide")
 
     if problems:
         for p in problems:
@@ -431,6 +513,68 @@ def self_test():
     if bad:
         print("\nSELF-TEST FAILED: the check cannot detect the defect it exists for.")
         return 1
+    # The AWS-series rules. Built as a conforming AWS post, then broken one
+    # way at a time -- a rule nobody has watched fail is a rule you are
+    # trusting, not using.
+    AWS_IDS = SERIES["AWS Weekly Lab"]
+    SERV = ("<table><thead><tr><th>Service</th><th>Purpose here</th>"
+            "<th>What it is</th></tr></thead></table>")
+    VAL = ("<table><thead><tr><th>Test</th><th>Expected</th><th>Actual</th>"
+           "<th>Status</th></tr></thead></table>")
+    chrome = ('<div id="jk-post"><div class="post-header">'
+              '<div class="post-meta">m</div></div><div class="toc"></div>')
+    figs = '<figure class="screenshot"></figure>' * 5
+    refs = "<h3>References</h3><ul><li>The full lab guide</li></ul>"
+
+    def aws_post(**kw):
+        parts = ["---", "fm", "---", chrome]
+        for sid in AWS_IDS:
+            extra = kw.get(sid, "")
+            if sid == "architecture":
+                extra += "<svg></svg>"
+            if sid == "services":
+                extra += kw.get("services_tbl", SERV)
+            if sid == "validation":
+                extra += kw.get("validation_tbl", VAL)
+            if sid == "troubleshooting":
+                extra += "<p>Root cause: x</p>"
+            if sid == "prerequisites":
+                extra += "<table></table>"
+            if sid == "cleanup":
+                extra += kw.get("refs", refs)
+            parts.append('<div class="section" id="%s"><h2>%s</h2>%s</div>'
+                         % (sid, sid, extra))
+        parts.append(kw.get("figs", figs))
+        parts.append("word " * 1600)
+        return "".join(parts)
+
+    aws_cases = [
+        (aws_post(), 0, "a conforming AWS post"),
+        (aws_post(services_tbl="<table><thead><tr><th>Service</th>"
+                               "<th>Purpose in this lab</th></tr></thead></table>"),
+         1, "the old two-column services header"),
+        (aws_post(validation_tbl="<table><thead><tr><th>Test</th><th>Result</th>"
+                                 "<th>Actual</th><th>Status</th></tr></thead></table>"),
+         1, "a renamed validation column"),
+        (aws_post().replace('<div class="toc"></div>', ""),
+         1, "a post that lost its table of contents"),
+        (aws_post(figs='<figure class="screenshot"></figure>' * 9),
+         1, "too many screenshots"),
+        (aws_post(refs="<h3>References</h3><ul><li>Some AWS doc</li></ul>"),
+         1, "references not led by the lab guide"),
+    ]
+    for text, want, label in aws_cases:
+        r = []
+        got = check_text(text, "synthetic-aws", r, slug="synthetic-aws",
+                         required=AWS_IDS, series="AWS Weekly Lab")
+        ok = got == want
+        bad += not ok
+        print("  [%s] %s: %d problem(s), want %d"
+              % (" ok " if ok else "FAIL", label, got, want))
+        if not ok:
+            for line in r:
+                print("        ", line.strip())
+
     # The zero-match guard, exercised the only way it can be: by running this
     # script the way a caller does. check_text() cannot see it -- the defect
     # lives in main()'s exit path, not in any single post -- so three deletions
@@ -456,15 +600,69 @@ def self_test():
     return 0
 
 
+def report_shapes():
+    """One table showing the shape of every restructured AWS lab post.
+
+    The point is not to find failures -- the gate does that. It is so a reader
+    can SEE that twenty posts agree, without opening twenty posts. Drift shows
+    up as a column that stops lining up.
+    """
+    rows = []
+    for fn in sorted(os.listdir(POSTS)):
+        if not (fn.startswith("week-") and fn.endswith(".html")):
+            continue
+        text = io.open(os.path.join(POSTS, fn), encoding="utf-8").read()
+        if "AWS Weekly Lab" not in front_matter(text):
+            continue
+        body = _body(text)
+        if 'id="overview"' not in body:
+            continue
+        sh = _services_header(text, "services") or []
+        vh = _table_header(text, "validation") or []
+        rows.append((
+            fn.replace(".html", "")[:30],
+            _words(body),
+            body.count('class="screenshot"'),
+            "yes" if all(c in body for c in CHROME) else "NO",
+            " | ".join(sh)[:34] or "-",
+            " | ".join(vh)[:30] or "-",
+        ))
+
+    if not rows:
+        print("no restructured AWS lab posts found -- nothing to report")
+        return 1
+
+    print("%-32s %6s %5s %7s  %-34s %s"
+          % ("post", "words", "figs", "chrome", "services header",
+             "validation header"))
+    for r in rows:
+        print("%-32s %6d %5d %7s  %-34s %s" % r)
+
+    uniq_s = {r[4] for r in rows}
+    uniq_v = {r[5] for r in rows}
+    print(chr(10) + "%d post(s). services header: %d distinct. "
+          "validation header: %d distinct."
+          % (len(rows), len(uniq_s), len(uniq_v)))
+    if len(uniq_s) > 1:
+        print("  services headers in use: %s" % "  /  ".join(sorted(uniq_s)))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("posts", nargs="*", help="substring of a post filename")
     ap.add_argument("--series", help="accepted and ignored; scope is fixed")
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--report", action="store_true",
+                    help="print what every AWS lab post looks like, "
+                         "side by side, so drift is visible at a glance")
     args = ap.parse_args()
 
     if args.self_test:
         return self_test()
+
+    if args.report:
+        return report_shapes()
 
     report, failures, checked, pending = [], 0, 0, 0
     for fn in sorted(os.listdir(POSTS)):
@@ -487,7 +685,7 @@ def main():
             report.append(f"  [ -- ] {fn}: awaiting rewrite to the 2026-10-25 standard")
             continue
         checked += 1
-        failures += check_text(text, fn, report, slug, required)
+        failures += check_text(text, fn, report, slug, required, series)
 
     print("\n".join(report))
     print(f"\n{checked} post(s) checked against the standard; "
