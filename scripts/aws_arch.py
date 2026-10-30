@@ -77,6 +77,10 @@ class Diagram:
     def __init__(self, width: int, height: int, description: str):
         self.w, self.h, self.desc = width, height, description
         self.parts = []
+        # Everything that must not collide with anything else, as
+        # (x1, y1, x2, y2, what). Checked by assert_clean() before render.
+        self.claims = []
+        self.containers = []   # boxes that text is ALLOWED to sit inside
 
     # -- containers ---------------------------------------------------------
     def cloud(self, x, y, w, h, label="AWS Cloud"):
@@ -123,15 +127,22 @@ class Diagram:
         self.parts.append(
             '<g transform="translate(%d,%d) scale(%.5f)">%s</g>'
             % (x, y, k, inner))
+        self._claim(x, y, x + size, y + size, "icon:" + slug, group=label)
+        lw = self._text_w(label, 11.5)
         self.parts.append(
             '<text x="%d" y="%d" text-anchor="middle" font-family="Arial,sans-serif" '
             'font-size="11.5" fill="%s">%s</text>'
             % (x + size // 2, y + size + 16, SQUID, label))
+        self._claim(x + size // 2 - lw / 2, y + size + 5,
+                    x + size // 2 + lw / 2, y + size + 20, "label:" + label, group=label)
         if sub:
+            sw = self._text_w(sub, 10.5)
             self.parts.append(
                 '<text x="%d" y="%d" text-anchor="middle" '
                 'font-family="Arial,sans-serif" font-size="10.5" fill="%s">%s</text>'
                 % (x + size // 2, y + size + 31, MUTED, sub))
+            self._claim(x + size // 2 - sw / 2, y + size + 21,
+                        x + size // 2 + sw / 2, y + size + 35, "sub:" + sub, group=label)
 
     def arrow(self, x1, y1, x2, y2, step=None, colour=None, dashed=False):
         c = colour or LINE
@@ -154,6 +165,7 @@ class Diagram:
 
     def step(self, cx, cy, n):
         """A numbered circle on the flow."""
+        self._claim(cx - 11, cy - 11, cx + 11, cy + 11, "step " + str(n))
         self.parts.append(
             '<circle cx="%d" cy="%d" r="11" fill="%s"/>' % (cx, cy, SQUID))
         self.parts.append(
@@ -172,6 +184,51 @@ class Diagram:
             '<rect x="%d" y="%d" width="%d" height="%d" rx="3" fill="%s" '
             'stroke="%s" stroke-width="1.4"/>'
             % (x, y, w, h, fill, stroke or "#D5DBDB"))
+
+    # -- the check -----------------------------------------------------------
+    @staticmethod
+    def _text_w(text, size, weight="400"):
+        """Approximate Arial advance width. Deliberately generous: this check
+        exists to catch collisions, so it should over-estimate rather than
+        pass something that will touch."""
+        per = 0.60 if str(weight) >= "600" else 0.56
+        return len(text) * size * per
+
+    def _claim(self, x1, y1, x2, y2, what, group=None):
+        # `group` ties an icon to its own label and sub-label. Those are
+        # stacked deliberately and must not be reported against each other.
+        self.claims.append((x1, y1, x2, y2, what, group))
+
+    def assert_clean(self, pad=2):
+        """Refuse to render a diagram whose labels collide.
+
+        Added 2026-10-30 after a review found a step circle sitting on top of a
+        service's sub-label and a connector ending in empty space. Reading a
+        diagram for overlaps by eye does not scale and does not survive edits:
+        move one icon and two labels you were not looking at can touch.
+        """
+        bad = []
+        n = len(self.claims)
+        for i in range(n):
+            ax1, ay1, ax2, ay2, aw, ag = self.claims[i]
+            for j in range(i + 1, n):
+                bx1, by1, bx2, by2, bw, bg = self.claims[j]
+                if ag is not None and ag == bg:
+                    continue
+                if (ax1 - pad < bx2 and bx1 - pad < ax2
+                        and ay1 - pad < by2 and by1 - pad < ay2):
+                    bad.append("%s  <->  %s" % (aw, bw))
+        # text must also stay inside the box it was placed in
+        for (bx1, by1, bx2, by2, label, tw) in self.containers:
+            if tw > (bx2 - bx1) - 16:
+                bad.append("text overflows its box: %r needs %dpx, box is %dpx"
+                           % (label, int(tw), bx2 - bx1))
+        if bad:
+            raise SystemExit(
+                "diagram is not clean -- %d collision(s):%s%s"
+                % (len(bad), chr(10) + "  ",
+                   (chr(10) + "  ").join(bad)))
+        return self
 
     # -- output -------------------------------------------------------------
     def render(self, indent="      ") -> str:
