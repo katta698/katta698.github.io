@@ -1,0 +1,397 @@
+---
+title: "AWS Architecture Series #98 — Ignored is not refused"
+date: '2026-10-30T09:00:00'
+slug: aws-architecture-backup
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-10-30'
+verified_claims:
+  - claim: "Vaults locked in governance mode can have the lock removed by users with sufficient IAM permissions"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/vault-lock.html
+  - claim: "Vaults locked in compliance mode cannot be deleted once the cooling-off period (grace time) expires if any recovery points are in the vault"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/vault-lock.html
+  - claim: "Once the grace time expires, the vault and its lock are immutable and cannot be changed or deleted by any user or by AWS"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/vault-lock.html
+  - claim: "True means that AWS Backup Vault Lock causes delete or update operations to the recovery points stored in the vault to fail (regardless of whether you are still in the cooling-off grace time period)"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/vault-lock.html
+  - claim: "You choose the duration of this period (called grace time), though it must be at least 3 days (72 hours)"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/vault-lock.html
+  - claim: "It must be a number no less than 3 and no greater than 36,500; otherwise, an error will return"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/vault-lock.html
+  - claim: "Recovery points that were present in the vault prior to the vault lock being enabled will follow their previous lifecycle settings"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/vault-lock.html
+  - claim: "These retention periods are defined when each backup is created and are independent of the vault lock minimum and maximum retention settings"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/vault-lock.html
+  - claim: "If you do not reopen your account during those 90 days, AWS deletes the contents of your backup vault, even if AWS Backup Vault Lock was in place"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/vault-lock.html
+  - claim: "Amazon EBS snapshot recovery points can still be shared with ModifySnapshotAttribute, and their storage tier can be changed with ModifySnapshotTier"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/vault-lock.html
+  - claim: "Backups transitioned to cold storage must be stored in cold storage for a minimum of 90 days"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/API_Lifecycle.html
+  - claim: "Therefore, on the console, the retention setting must be 90 days greater than the transition to cold after days setting"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/API_Lifecycle.html
+  - claim: "Cold storage adds a minimum of 90 days to the earliest a recovery point may be deleted"
+    derive: "30 + 90"
+    expect: "120"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/API_Lifecycle.html
+  - claim: "The transition to cold after days setting can't be changed after a backup has been transitioned to cold"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/API_Lifecycle.html
+  - claim: "AWS Backup ignores this expression for other resource types"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/API_Lifecycle.html
+  - claim: "To remove the existing lifecycle and retention periods and keep your recovery points indefinitely, specify -1 for MoveToColdStorageAfterDays and DeleteAfterDays"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/API_Lifecycle.html
+  - claim: "If you only use tags for resource assignment, then the service opt-in settings will still apply"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/assigning-resources.html
+  - claim: "500 Amazon Resource Names (ARNs) without wildcards"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/assigning-resources.html
+  - claim: "30 ARNs with wildcard expressions"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/assigning-resources.html
+  - claim: "30 tags per resource assignment (and an unlimited number of resources per tag)"
+    source: https://docs.aws.amazon.com/aws-backup/latest/devguide/assigning-resources.html
+problem: "A backup configuration can be wrong in a way that produces no error. AWS Backup will accept a lifecycle rule for a resource type that cannot use it and ignore the rule, accept a tag-based assignment for a service you have not opted into and back nothing up, and call a vault immutable in a document that also says when AWS will delete it."
+builds: "A reading of AWS Backup's three main controls — vault lock, lifecycle and resource assignment — around the thing each one does silently, and the audit that makes the silence visible."
+catch: "One sentence in the Lifecycle API reference does more work than it looks like: 'AWS Backup ignores this expression for other resource types.' Not rejects. Not warns. Ignores — so a cold-storage tiering plan applied to a resource type that cannot tier is a valid configuration that does nothing, and the console shows it to you as configured."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #098 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">Ignored is not refused</h1>
+  <p class="post-subtitle">AWS Backup&rsquo;s three main controls each have a way of doing nothing without telling you: a lifecycle that is ignored, an assignment gated somewhere else, and a lock whose immutability has a documented end.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Oct 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Reliability</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      Most services tell you when a setting is wrong. The request fails, the plan will not save, the console
+      turns red. AWS Backup does that for some things and not for others, and the ones it does not are the
+      ones worth knowing about, because a configuration that is accepted and ignored looks exactly like a
+      configuration that is working.
+    </p>
+    <p>
+      The clearest example is one sentence in the Lifecycle API reference:
+    </p>
+    <p>
+      <em>&ldquo;Resource types that can transition to cold storage are listed in the Feature availability by
+      resource table. <strong>AWS Backup ignores this expression for other resource types.</strong>&rdquo;</em>
+    </p>
+    <p>
+      Not rejects. Not warns. <strong>Ignores.</strong> A backup plan that tiers to cold storage at 30 days,
+      applied to a resource type that cannot tier, is a valid plan that does nothing &mdash; and the plan still
+      displays the setting you typed. Three of AWS Backup&rsquo;s main controls have a version of this, and
+      each one is silent in a different way.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The vault lock mode decides who can remove the lock, not when the data becomes protected</strong></div>
+      <div class="challenge-body">
+        <p>
+          The two modes are usually summarised as reversible and irreversible, which is right as far as it
+          goes:
+        </p>
+        <p>
+          <em>&ldquo;Vaults locked in <strong>governance mode</strong> can have the lock removed by users with
+          sufficient IAM permissions.&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;Vaults locked in <strong>compliance mode</strong> cannot be deleted once the cooling-off
+          period (&ldquo;grace time&rdquo;) expires if any recovery points are in the vault. During grace time,
+          you can still remove the vault lock and change the lock configuration.&rdquo;</em>
+        </p>
+        <p>
+          The misreading is about what grace time suspends. Being able to remove the lock during grace time
+          reads easily as the lock not yet doing anything, which turns the first three days into a trial
+          period. The <code>DescribeBackupVault</code> documentation says otherwise, in a parenthesis:
+        </p>
+        <p>
+          <em>&ldquo;<code>True</code> means that AWS Backup Vault Lock causes delete or update operations to
+          the recovery points stored in the vault to fail <strong>(regardless of whether you are still in the
+          cooling-off grace time period)</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So the lock protects recovery points from the moment it exists. What grace time governs is whether
+          <em>you</em> can still get rid of the lock. Those are two different clocks and only one of them is
+          ticking down.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Read <code>LockDate</code> as the deadline for changing your mind, not as the date protection starts. Protection starts at <code>Locked: true</code>. Grace time is <em>&ldquo;at least 3 days (72 hours)&rdquo;</em> and <code>ChangeableForDays</code> <em>&ldquo;must be a number no less than 3 and no greater than 36,500&rdquo;</em> &mdash; so you can buy years of reversibility if you want it, and most teams who want a trial should.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>The lifecycle moves two things, refuses to move one of them twice, and ignores you on resource types that cannot tier</strong></div>
+      <div class="challenge-body">
+        <p>
+          A lifecycle is two numbers, and they are not independent:
+        </p>
+        <p>
+          <em>&ldquo;Backups transitioned to cold storage <strong>must be stored in cold storage for a minimum
+          of 90 days</strong>. Therefore, on the console, the retention setting must be 90 days greater than
+          the transition to cold after days setting.&rdquo;</em>
+        </p>
+        <p>
+          That is a floor on retention imposed by a tiering choice. Tier at 30 days and the earliest you may
+          delete is day 120, whatever your retention policy says &mdash; the 90 is added to the transition, not
+          to the creation date. A team that tiers aggressively to save money has lengthened the minimum time it
+          holds data, which is the opposite of what the change was for if the goal was deleting sooner.
+        </p>
+        <p>
+          The second number is one-way:
+          <em>&ldquo;The transition to cold after days setting <strong>can&rsquo;t be changed after a backup has
+          been transitioned to cold</strong>.&rdquo;</em> Editing the plan changes what happens to future
+          recovery points; the ones already cold keep the schedule they were created under.
+        </p>
+        <p>
+          And then the silent one, quoted above: on a resource type that cannot tier,
+          <em>&ldquo;AWS Backup ignores this expression&rdquo;</em>. No error, no warning, no difference in how
+          the plan renders.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Check your resource types against the feature availability table before trusting a tiering plan to be doing anything, and read the 90-day floor as part of your retention decision rather than as a detail of the storage tier. If you want recovery points kept indefinitely the documented way to say so is explicit: <em>&ldquo;specify -1 for <code>MoveToColdStorageAfterDays</code> and <code>DeleteAfterDays</code>&rdquo;</em>.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Tag-based selection has two gates and only one of them is in the backup plan</strong></div>
+      <div class="challenge-body">
+        <p>
+          Resource assignment offers three ways to choose what gets backed up:
+          <em>&ldquo;Explicitly assign resource types to the backup plan&rdquo;</em>,
+          <em>&ldquo;Include all resources (AWS Backup will then scan for all supported resource
+          types)&rdquo;</em>, and
+          <em>&ldquo;Use tags to include or exclude resources&rdquo;</em>.
+        </p>
+        <p>
+          Two of those cover a resource created tomorrow &mdash; tags and &ldquo;include all resources&rdquo;
+          &mdash; and tags are the one estates actually use, because they let coverage follow intent rather
+          than inventory. They also carry a condition that lives in a different part of the console
+          altogether:
+        </p>
+        <p>
+          <em>&ldquo;<strong>If you only use tags for resource assignment, then the service opt-in settings
+          will still apply.</strong>&rdquo;</em>
+        </p>
+        <p>
+          So a correctly tagged resource in a service you have not opted into is not backed up, and nothing in
+          the backup plan says so. The plan is right, the tag is right, and the coverage is zero. Service
+          opt-in is set under Settings, per account and per Region &mdash; which means the same plan, deployed
+          to two Regions, can protect different things.
+        </p>
+        <p>
+          The quotas are generous enough that they are rarely the problem, which is worth knowing so you do not
+          go looking there first: <em>&ldquo;500 Amazon Resource Names (ARNs) without wildcards&rdquo;</em>,
+          <em>&ldquo;30 ARNs with wildcard expressions&rdquo;</em>, 30 conditions, and
+          <em>&ldquo;30 tags per resource assignment (and an unlimited number of resources per tag)&rdquo;</em>.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat service opt-in as part of the backup plan even though it is not stored with it. Check it per Region, not once per account, and check it again whenever you adopt a new service &mdash; a tag rule written a year ago silently does not extend to a resource type you started using last week.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-098-backup.svg" alt="Diagram: three AWS Backup controls and how each one fails without producing an error &#8212; a lifecycle expression that AWS Backup ignores on unsupported resource types, a tag-based assignment still gated by per-Region service opt-in, and a vault lock that fails new jobs loudly but leaves existing recovery points on their previous lifecycle. Also the 90-day cold storage minimum that forces a retention floor, and three documented boundaries on compliance-mode immutability.">
+
+    <h3>Three controls, three silences</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Control</th><th>What it does when you get it wrong</th><th>What makes it visible</th></tr>
+      <tr>
+        <td>Lifecycle on an unsupported resource type</td>
+        <td><em>&ldquo;AWS Backup ignores this expression&rdquo;</em> &mdash; plan valid, setting shown, nothing tiers</td>
+        <td>The feature availability by resource table</td>
+      </tr>
+      <tr>
+        <td>Tag assignment without service opt-in</td>
+        <td>Plan matches nothing in that service; no error on the plan</td>
+        <td><code>describe-region-settings</code>, per Region</td>
+      </tr>
+      <tr>
+        <td>Vault lock retention vs. existing points</td>
+        <td><em>&ldquo;Recovery points that were present in the vault prior to the vault lock being enabled will follow their previous lifecycle settings&rdquo;</em></td>
+        <td>Comparing recovery point lifecycles against the lock&rsquo;s min and max</td>
+      </tr>
+      <tr>
+        <td>Vault lock min/max vs. new jobs</td>
+        <td>This one <em>is</em> loud: <em>&ldquo;New backup and copy jobs created in the vault will fail if they do not conform to the retention periods you set&rdquo;</em></td>
+        <td>Failed backup jobs</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>What &ldquo;immutable&rdquo; is bounded by</h3>
+    <p>
+      Compliance mode is described in unusually strong terms &mdash;
+      <em>&ldquo;the vault and its lock are immutable and cannot be changed or deleted by any user or by
+      AWS&rdquo;</em>. The same page then documents three boundaries on that sentence, and all three are worth
+      reading before a compliance-mode lock is used as the answer to an audit question.
+    </p>
+    <p>
+      <strong>Closing the account ends it.</strong>
+      <em>&ldquo;When you close an AWS account that contains a backup vault, AWS and AWS Backup suspend your
+      account for 90 days with your backups intact. If you do not reopen your account during those 90 days,
+      AWS deletes the contents of your backup vault, even if AWS Backup Vault Lock was in place.&rdquo;</em>
+      Immutability is a property of the vault, not of the account that owns it.
+    </p>
+    <p>
+      <strong>The lock governs AWS Backup, not every API that can reach the data.</strong>
+      <em>&ldquo;Vault Lock and vault access policies govern actions taken through AWS Backup. They don&rsquo;t
+      govern sharing or storage tier changes made directly through Amazon EC2 APIs. Amazon EBS snapshot
+      recovery points can still be shared with <code>ModifySnapshotAttribute</code>, and their storage tier can
+      be changed with <code>ModifySnapshotTier</code>.&rdquo;</em> Deletion is still blocked &mdash;
+      <em>&ldquo;Amazon EC2 still can&rsquo;t delete snapshots managed by AWS Backup&rdquo;</em> &mdash; but
+      sharing a snapshot out of the account is not deletion, and a vault lock does not stop it.
+    </p>
+    <p>
+      <strong>A recovery point can be intact and unrestorable.</strong> The EC2 disable-AMI setting
+      <em>&ldquo;can temporarily block the ability to restore backups of EC2 instances&rdquo;</em>, and
+      <em>&ldquo;this affects all EC2 recovery points, even backups affected by a vault lock or a legal
+      hold&rdquo;</em>. The backup is still there, still undeletable, and still not something you can restore
+      from until the AMI is re-enabled.
+    </p>
+
+    <h3>The retention periods that do not apply</h3>
+    <p>
+      A vault lock&rsquo;s minimum and maximum retention are not a retention policy for the vault. They are a
+      filter on what may enter it:
+      <em>&ldquo;These retention periods are defined when each backup is created and are
+      <strong>independent of</strong> the vault lock minimum and maximum retention settings.&rdquo;</em>
+    </p>
+    <p>
+      Each recovery point keeps the lifecycle it was created with. The lock rejects new jobs whose lifecycle
+      falls outside the window, and leaves everything already in the vault alone. So locking a vault with a
+      seven-year minimum does not extend anything currently in it to seven years &mdash; it only guarantees
+      that nothing arriving afterwards is set to less.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Documenting the account-closure limit is the honest choice</h3>
+    <p>
+      A feature assessed against SEC 17a-4, CFTC and FINRA could reasonably have left the account-closure case
+      to a support article. Putting it on the same page as the word immutable, in plain terms, is what lets a
+      reader design around it &mdash; and the design is obvious once stated: a compliance-mode vault whose
+      account can be closed by one team is not the control the auditor thinks it is.
+    </p>
+
+    <h3>The 90-day floor is stated as arithmetic rather than as a policy</h3>
+    <p>
+      <em>&ldquo;the retention setting must be 90 days greater than the transition to cold after days
+      setting&rdquo;</em> is a sentence you can check a plan against without interpreting anything. That is the
+      right shape for a constraint. It also makes the trade-off visible at design time: cold storage is cheaper
+      per byte and it buys that discount by taking away your ability to delete early.
+    </p>
+
+    <h3>Opt-in as a separate gate is defensible, even though it is the silent one</h3>
+    <p>
+      It would be worse if a tag rule silently started backing up a newly supported service the day AWS shipped
+      support for it &mdash; new charges, new recovery points, nobody asked. Opt-in is the control that
+      prevents that. The cost is that it makes coverage a function of two settings in two places, and the
+      documentation is clear about which way that cuts.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Vault lock mode</td>
+        <td>Governance unless a regulation names immutability</td>
+        <td>Compliance mode <em>&ldquo;cannot be altered or deleted by any user or by AWS&rdquo;</em>, which is the point and also the risk</td>
+      </tr>
+      <tr>
+        <td>Grace time</td>
+        <td>Longer than the 3-day minimum</td>
+        <td>It is the only window in which a mistake is fixable, and it costs nothing &mdash; protection is already active</td>
+      </tr>
+      <tr>
+        <td>Tiering to cold storage</td>
+        <td>Only where the resource type supports it</td>
+        <td>Elsewhere the setting is <em>&ldquo;ignored&rdquo;</em>, and an ignored setting reads as a working one</td>
+      </tr>
+      <tr>
+        <td>Retention vs. tiering</td>
+        <td>Decide retention first, then see what tiering forces</td>
+        <td>The 90-day cold minimum raises your retention floor; it does not lower your bill on data you wanted gone</td>
+      </tr>
+      <tr>
+        <td>Resource selection</td>
+        <td>Tags, plus an opt-in check per Region</td>
+        <td>Tags cover resources created later without naming them, and opt-in is the gate they do not show</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>For every backup plan, answer three questions that the plan itself will not answer.</strong>
+      Which of its resource types can actually transition to cold storage? Which services are opted in, in each
+      Region this plan is deployed to? And for any locked vault, what is <code>LockDate</code> and has it
+      passed?
+    </p>
+    <p>
+      None of those is visible from the plan, and all three decide whether it is doing what it says. The
+      cheapest version is <code>describe-region-settings</code> per Region and <code>describe-backup-vault</code>
+      per vault, both of which return the answer directly.
+    </p>
+    <p>
+      <strong>Then check one thing that is not about configuration at all.</strong> If your recovery points are
+      EBS snapshots, deny <code>ec2:ModifySnapshotAttribute</code> and <code>ec2:ModifySnapshotTier</code> by
+      policy and exempt the roles your backup plans use &mdash; AWS names those two actions, and names the
+      exemption, because the service itself needs them for cross-account copy and cold storage transitions.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      A backup configuration is a promise about a day that has not happened yet, which is what makes silent
+      failure so expensive here. Nothing tests the promise until you need it, and the three silences in this
+      post all produce a plan that looks finished.
+    </p>
+    <p>
+      The pattern worth taking away is the difference between a setting that is refused and a setting that is
+      ignored. A refusal is feedback. An ignored setting is a claim the system has quietly declined to honour
+      while continuing to display it, and the only way to find one is to go and read what the service says it
+      supports.
+    </p>
+    <p>
+      <a href="/blog/aws-architecture-s3-access-grants/">#97</a> was about a limit that is stated plainly and
+      then simplified in the telling. This one is about limits that are stated plainly and then not surfaced
+      anywhere you would look. Both are read the same way: go to the page that defines the thing, not the page
+      that uses it.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Reliability &mdash; AWS Backup restore testing: what a restore testing plan actually proves, and why a successful backup job and a restorable recovery point are two different claims.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/aws-backup/latest/devguide/vault-lock.html" target="_blank" rel="noopener">AWS Backup Vault Lock &#8212; the two lock modes and who can remove each, the grace time minimum of 3 days and the 3 to 36,500 day range on ChangeableForDays, the statement that protection applies regardless of grace time, the independence of recovery point lifecycles from the lock&#8217;s retention window, the account-closure behaviour after 90 days, and the EC2 APIs the lock does not govern</a></li>
+      <li><a href="https://docs.aws.amazon.com/aws-backup/latest/devguide/API_Lifecycle.html" target="_blank" rel="noopener">Lifecycle API reference &#8212; the 90-day cold storage minimum and the retention arithmetic it forces, the one-way nature of the transition setting once a backup has tiered, the sentence stating that the expression is ignored for unsupported resource types, and the -1 convention for keeping recovery points indefinitely</a></li>
+      <li><a href="https://docs.aws.amazon.com/aws-backup/latest/devguide/assigning-resources.html" target="_blank" rel="noopener">Select AWS services to backup &#8212; the three ways to assign resources, the statement that service opt-in still applies when only tags are used, and the per-assignment quotas of 500 ARNs, 30 wildcard ARNs, 30 conditions and 30 tags</a></li>
+      <li><a href="https://docs.aws.amazon.com/aws-backup/latest/devguide/backup-feature-availability.html" target="_blank" rel="noopener">Feature availability by resource &#8212; the table the lifecycle reference points to for which resource types can transition to cold storage; further reading, no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
