@@ -290,6 +290,47 @@ def section_by_heading(text, heading):
     return m.group(0) if m else None
 
 
+# THE SERVICES TABLE HAS ONE SHAPE (added 2026-10-30)
+#
+# Five different headers were in use across the AWS lab series at once:
+# "Service | Purpose in this lab" (weeks 12-23), "Service | Purpose here |
+# What it is" (week 24), "Service or concept | Its job here" (weeks 9-10),
+# "Service | Its job here" (week 11) and, freshly invented the same morning,
+# "Service | What it is, and what it does here" (week 25). Three of those were
+# written within two days, by me, each time without looking at the last post.
+#
+# Jay asked the fair question: why is there no consistency? Because consistency
+# was left to whoever was writing, and a standard that lives only in prose gets
+# re-interpreted every time it is read. Week 24's shape wins because it is the
+# one that answers both questions a reader has -- what IS this service, and why
+# is it here.
+SERVICES_HEADER = ["Service", "Purpose here", "What it is"]
+
+# Posts written before the shape was fixed. Listed by name rather than skipped
+# silently, so the backlog is visible and shrinks.
+SERVICES_HEADER_PENDING = {
+    "week-09-ecs-fargate-self-service", "week-10-centralized-logging",
+    "week-11-security-hub-guardduty", "week-12-config-compliance-automation",
+    "week-13-waf-shield-protection", "week-14-vpc-flow-logs-intelligence",
+    "week-15-cloudtrail-audit-forensics", "week-16-devops-agent-investigations",
+    "week-17-mcp-platform-ops", "week-18-eks-self-service",
+    "week-19-gitops-argocd", "week-20-eventbridge-accountable-bus",
+    "week-21-bluegreen-ecs", "week-22-container-image-security",
+    "week-23-service-networking-lattice",
+}
+
+
+def _services_header(text, sid):
+    sec = section(text, sid)
+    if sec is None:
+        return None
+    m = re.search(r"<thead>(.*?)</thead>", sec, re.S)
+    if not m:
+        return None
+    return [re.sub(r"<[^>]+>", "", h).strip()
+            for h in re.findall(r"<th>(.*?)</th>", m.group(1), re.S)]
+
+
 def check_text(text, name, report, slug=None, required=None):
     problems = []
     required = required or REQUIRED_SECTIONS
@@ -316,6 +357,15 @@ def check_text(text, name, report, slug=None, required=None):
             continue  # already reported as missing above
         if not pattern.search(sec):
             problems.append(f"#{sid} is missing {want}")
+
+    # the services table's columns, unless this post predates the rule
+    if slug not in SERVICES_HEADER_PENDING:
+        got = _services_header(text, alias.get("services", "services"))
+        if got is not None and got != SERVICES_HEADER:
+            problems.append(
+                "services table header is %s; the series uses %s. Match the "
+                "previous post rather than inventing a shape"
+                % (" | ".join(got), " | ".join(SERVICES_HEADER)))
 
     if problems:
         for p in problems:
