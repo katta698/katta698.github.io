@@ -665,11 +665,13 @@ def main():
         return report_shapes()
 
     report, failures, checked, pending = [], 0, 0, 0
+    named = 0          # requested substrings that matched a real file
     for fn in sorted(os.listdir(POSTS)):
         if not fn.endswith(".html"):
             continue
         if args.posts and not any(a in fn for a in args.posts):
             continue
+        named += 1
         with open(os.path.join(POSTS, fn), encoding="utf-8") as fh:
             text = fh.read()
         fm = front_matter(text)
@@ -702,13 +704,28 @@ def main():
     #
     # Zero is only legitimate when nothing was asked for AND nothing is pending:
     # an empty posts/ directory is a different problem than a bad argument.
+    # Two different zeros, and only one of them is a fault (2026-10-31).
+    #
+    # The guard above is right and stays: a substring matching NO file is a
+    # typo or a renamed slug, and must never read as a pass. But prepublish.py
+    # scopes every per-post check to the changed posts regardless of series, so
+    # a push carrying only an architecture post hands this lab-only check an
+    # arch slug. That matched a real file; the file simply is not in a series
+    # this check covers, which is "not applicable", not "inspected nothing".
+    #
+    # Conflating the two blocked every non-lab push from all three cloud
+    # windows. Distinguish them by whether the request matched a file at all.
     if checked == 0 and pending == 0:
-        if args.posts:
+        if args.posts and named == 0:
             print("NOTHING MATCHED %s. A check that inspected no post has not "
                   "passed -- fix the filename substring." % ", ".join(args.posts))
-        else:
-            print("NO POSTS FOUND in %s. A check that inspected no post has "
-                  "not passed." % POSTS)
+            return 1
+        if args.posts:
+            print("NOT APPLICABLE: %s matched %d post(s), none of them in a "
+                  "series this check covers." % (", ".join(args.posts), named))
+            return 0
+        print("NO POSTS FOUND in %s. A check that inspected no post has "
+              "not passed." % POSTS)
         return 1
 
     if failures:
