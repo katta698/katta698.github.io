@@ -144,6 +144,28 @@ class Diagram:
             self._claim(x + size // 2 - sw / 2, y + size + 21,
                         x + size // 2 + sw / 2, y + size + 35, "sub:" + sub, group=label)
 
+    def component(self, x, y, w, h, title, sub=None, accent=None):
+        """A box for something that is not an AWS service.
+
+        ServiceNow, Terraform, a caller's own code. AWS draws these as plain
+        labelled boxes rather than inventing an icon, and so do we: a made-up
+        icon beside real ones reads as if AWS ships the thing.
+        """
+        self.parts.append(
+            '<rect x="%d" y="%d" width="%d" height="%d" rx="6" fill="#fff" '
+            'stroke="%s" stroke-width="%s"/>'
+            % (x, y, w, h, accent or "#D5DBDB", "1.8" if accent else "1.4"))
+        self._claim(x, y, x + w, y + h, "box:" + title, group=title)
+        self.parts.append(
+            '<text x="%d" y="%d" font-family="Arial,sans-serif" font-size="12.5" '
+            'font-weight="600" fill="%s">%s</text>'
+            % (x + 12, y + (22 if sub else h // 2 + 4), SQUID, title))
+        if sub:
+            self.parts.append(
+                '<text x="%d" y="%d" font-family="Arial,sans-serif" '
+                'font-size="10.5" fill="%s">%s</text>'
+                % (x + 12, y + 38, MUTED, sub))
+
     def arrow(self, x1, y1, x2, y2, step=None, colour=None, dashed=False):
         c = colour or LINE
         self.parts.append(
@@ -173,7 +195,16 @@ class Diagram:
             'font-size="11.5" font-weight="700" fill="#FFFFFF">%s</text>'
             % (cx, cy + 4, n))
 
-    def note(self, x, y, text, colour=None, weight="400", size=11.5, anchor="start"):
+    def note(self, x, y, text, colour=None, weight="400", size=11.5,
+             anchor="start", group=None):
+        # Notes claim space too. Without this, assert_clean() passed a week 24
+        # rebuild in which three captions sat on top of service sub-labels --
+        # the check only knew about icons, their labels and step circles, so
+        # the free-floating text was invisible to it.
+        w = self._text_w(text, size, weight)
+        x1 = x - w / 2 if anchor == "middle" else (x - w if anchor == "end" else x)
+        self._claim(x1, y - size * 0.8, x1 + w, y + size * 0.25,
+                    "note:" + text[:30], group=group)
         self.parts.append(
             '<text x="%d" y="%d" text-anchor="%s" font-family="Arial,sans-serif" '
             'font-size="%s" font-weight="%s" fill="%s">%s</text>'
