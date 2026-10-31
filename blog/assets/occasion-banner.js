@@ -320,8 +320,25 @@
       window.addEventListener('resize', setOffset);
     }
 
+    /* Run `fn` once there is a <body> to attach to.
+     *
+     * This file is a plain <script> in the HEAD of the blog index and a
+     * deferred one elsewhere, so document.body is sometimes null when it
+     * executes. The seasonal effects below used to simply `return` in that
+     * case -- which meant the snow, for the whole of December, never once
+     * appeared on /blog/. Nothing errored; the effect was just absent on the
+     * one page with the most readers, and the banner still rendered because
+     * its own insert falls back to documentElement.
+     */
+    var whenBody = function (fn) {
+      if (document.body) { fn(); return; }
+      document.addEventListener('DOMContentLoaded', function () {
+        if (document.body) fn();
+      });
+    };
+
     // Falling snow effect during Christmas season (Dec 1 - Dec 26).
-    if (today.getMonth() === 11 && today.getDate() <= 26) {
+    if (today.getMonth() === 11 && today.getDate() <= 26) { whenBody(function () {
       var snowContainer = document.createElement('div');
       snowContainer.id = 'snowfall';
       snowContainer.setAttribute('aria-hidden', 'true');
@@ -355,5 +372,132 @@
           'snowfall-sway ' + swayDuration + 's ease-in-out ' + (-Math.random() * swayDuration) + 's infinite alternate';
         snowContainer.appendChild(flake);
       }
-    }
+    }); }
+
+    // ── HALLOWEEN: ground fog, and one bat ─────────────────────────────
+    //
+    // 31 October, every year. Date-gated like the snow above, which is the
+    // whole reason this shape was chosen: it expires by itself at midnight
+    // and there is no cleanup commit for anyone to forget.
+    //
+    // Two effects and no third. The alternatives considered -- a cobweb over
+    // the nav, an ember accent for the day, eyes behind the tree on /connect/
+    // -- were each rejected for a measured reason. The ember accent moves a
+    // colour, so it has to clear check_contrast.py on the STRICT pages; the
+    // eyes need darkness and all but vanish in light mode; the cobweb is a
+    // rendering artefact at the wrong opacity. Fog and a bat touch no colour
+    // the stylesheet owns, so they cannot make any page less readable.
+    if (today.getMonth() === 9 && today.getDate() === 31) { whenBody(function () {
+        if (document.getElementById('jk-halloween')) return;
+
+        // Motion that cannot be opted out of is motion inflicted. Fog still
+        // renders -- it is atmosphere, not movement -- but it holds still,
+        // and the bat does not fly at all.
+        var calm = window.matchMedia &&
+                   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        var wrap = document.createElement('div');
+        wrap.id = 'jk-halloween';
+        wrap.setAttribute('aria-hidden', 'true');
+        wrap.style.cssText = 'position:fixed;inset:0;overflow:hidden;' +
+          'pointer-events:none;z-index:998;';
+
+        var css = document.createElement('style');
+        css.textContent =
+          '#jk-halloween .hwf{position:absolute;left:0;bottom:-30px;' +
+            'width:200%;height:110px;filter:blur(14px);' +
+            'background:radial-gradient(ellipse at 50% 100%,' +
+            'var(--hw-fog) 0%,transparent 70%)}' +
+          '#jk-halloween .hwf2{bottom:-46px;height:145px;opacity:.75}' +
+          '#jk-halloween .hwf3{bottom:-10px;height:80px;opacity:.6}' +
+          '#jk-halloween .hwbat{position:absolute;width:52px;left:-8%;' +
+            'top:68%;opacity:0}' +
+          '#jk-halloween .hwbat svg{display:block;width:100%;height:auto}' +
+          '#jk-halloween .hwbat path,#jk-halloween .hwbat ellipse{' +
+            'fill:var(--hw-ink)}' +
+          '#jk-halloween .hwg{transform-origin:32px 14px}' +
+          '#jk-halloween .hwg.r{transform:scaleX(-1)}' +
+          (calm ? '' :
+            '@keyframes jkhwDrift{from{transform:translateX(-50%)}' +
+              'to{transform:translateX(0)}}' +
+            '#jk-halloween .hwf1{animation:jkhwDrift 26s linear infinite}' +
+            '#jk-halloween .hwf2{animation:jkhwDrift 38s linear infinite reverse}' +
+            '#jk-halloween .hwf3{animation:jkhwDrift 19s linear infinite}' +
+            // Flapping is a hard cut between two wing angles, stepped --
+            // the same decision the connect card made for its walk poses.
+            // A smoothly tweened wing reads as a bird gliding, not a bat.
+            '@keyframes jkhwFlapL{from{transform:rotate(-16deg)}' +
+              'to{transform:rotate(22deg)}}' +
+            '@keyframes jkhwFlapR{from{transform:scaleX(-1) rotate(-16deg)}' +
+              'to{transform:scaleX(-1) rotate(22deg)}}' +
+            '#jk-halloween .hwg.l{animation:jkhwFlapL .22s steps(1,end) infinite alternate}' +
+            '#jk-halloween .hwg.r{animation:jkhwFlapR .22s steps(1,end) infinite alternate}' +
+            // One crossing per 56 seconds, not a loop of bats. It sits
+            // off-stage for the first two thirds of the cycle; the whole
+            // point is that it happens once while you are reading.
+            //
+            // Confined to the lower band. Crossing at headline height put a
+            // bat through the title of the post -- distracting rather than
+            // atmospheric, and visible only once it was rendered at size.
+            '@keyframes jkhwCross{' +
+              '0%,66%{left:-8%;top:68%;opacity:0}' +
+              '70%{opacity:.9}' +
+              '78%{top:57%}' +
+              '87%{top:75%}' +
+              '95%{top:60%;opacity:.9}' +
+              '100%{left:104%;top:68%;opacity:0}}' +
+            '#jk-halloween .hwbat{animation:jkhwCross 56s linear infinite}');
+        document.head.appendChild(css);
+
+        var BAT =
+          '<svg viewBox="0 0 64 28" focusable="false">' +
+          '<g class="hwg l"><path d="M31 11 C41 3 54 3 62 9 C53 9 49 13 45 20 ' +
+            'C41 14 36 11 31 13 Z"/></g>' +
+          '<g class="hwg r"><path d="M31 11 C41 3 54 3 62 9 C53 9 49 13 45 20 ' +
+            'C41 14 36 11 31 13 Z"/></g>' +
+          '<path d="M29 8 L30.6 3 L32.6 7.4 Z"/>' +
+          '<path d="M35 8 L33.4 3 L31.4 7.4 Z"/>' +
+          '<ellipse cx="32" cy="14" rx="3.4" ry="6.4"/></svg>';
+
+        wrap.innerHTML =
+          '<i class="hwf hwf1"></i><i class="hwf hwf2"></i><i class="hwf hwf3"></i>' +
+          (calm ? '' : '<div class="hwbat">' + BAT + '</div>');
+        document.body.appendChild(wrap);
+
+        /* Both tones are derived from the colour the page is ACTUALLY
+         * painted, not from a theme class.
+         *
+         * This site marks dark mode three different ways depending on the
+         * surface -- body.dark on the blog, body.light on the portfolio,
+         * data-theme on /connect/ -- so a selector written against one of
+         * them is a selector that silently fails on another. The failure is
+         * not subtle and it is not visible in review: a dark bat on a dark
+         * page is simply not there, which is exactly how it rendered the
+         * first time it was tried.
+         *
+         * So: measure the body's background luminance and pick a tone that
+         * contrasts with it. A light page gets the conventional silhouette;
+         * a dark page gets a shape LIGHTER than the page -- something
+         * catching moonlight rather than blocking it, which is the only way
+         * a bat reads at all against #1D2322.
+         */
+        var tone = function () {
+          var bg = getComputedStyle(document.body).backgroundColor || '';
+          var m = bg.match(/[\d.]+/g);
+          var L = 1;
+          if (m && m.length >= 3) {
+            L = (0.2126 * +m[0] + 0.7152 * +m[1] + 0.0722 * +m[2]) / 255;
+          }
+          var dark = L < 0.45;
+          wrap.style.setProperty('--hw-ink', dark ? '#4E5A56' : '#2A2522');
+          wrap.style.setProperty('--hw-fog',
+            dark ? 'rgba(200,210,205,.28)' : 'rgba(110,110,105,.24)');
+        };
+        tone();
+        // The reader can flip the theme while the page is open.
+        if (window.MutationObserver) {
+          new MutationObserver(tone).observe(document.body,
+            { attributes: true, attributeFilter: ['class', 'data-theme'] });
+        }
+    }); }
   })();
