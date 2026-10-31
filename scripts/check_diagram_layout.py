@@ -76,9 +76,16 @@ def texts(svg: str):
         else:
             cls = re.search(r'class="([^"]+)"', attrs)
             if cls:
-                css = re.search(r"\.%s\s*\{[^}]*font:[^}]*?([0-9.]+)px" % cls.group(1), svg)
-                if css:
-                    size = _f(css.group(1), 12.0)
+                # Both spellings are in use across the series: the "font:"
+                # shorthand and a plain "font-size:". Reading only the first
+                # left every class-styled label at the 12px default, which
+                # over-measured them by up to 15% and reported strikes that
+                # are not on the page.
+                rule = re.search(r"\.%s\s*\{([^}]*)\}" % re.escape(cls.group(1)), svg)
+                if rule:
+                    fs2 = re.search(r"font-size:\s*([0-9.]+)px", rule.group(1))                         or re.search(r"font:[^;]*?([0-9.]+)px", rule.group(1))
+                    if fs2:
+                        size = _f(fs2.group(1), 12.0)
 
         bold = "font-weight" in attrs and re.search(r"font-weight[:=]\"?\s*(6|7|8|9|bold)", attrs)
         w = len(content) * size * (BOLD if bold else NARROW)
@@ -118,6 +125,65 @@ def inside(t, r, slack=1.0):
             and t[1] >= r[1] - slack and t[3] <= r[3] + slack)
 
 
+
+def connectors(svg: str):
+    """Connector geometry as a list of segments [(x1,y1,x2,y2), ...].
+
+    Only <line> and the straight/elbow <path> forms these diagrams use. Curves
+    are approximated by the polyline through their control points, which is
+    close enough to tell whether a stroke runs across a word.
+
+    Icon artwork is excluded: an AWS icon is dozens of tiny filled paths and
+    none of them is a connector. They are the paths WITHOUT a stroke colour.
+    """
+    segs = []
+    for m in re.finditer(r"<line\b([^>]*)>", svg):
+        a = m.group(1)
+        if "stroke" not in a:
+            continue
+        g = lambda k: _f((re.search(r'\b%s="([^"]+)"' % k, a) or [None, "0"])[1])
+        segs.append((g("x1"), g("y1"), g("x2"), g("y2")))
+
+    for m in re.finditer(r"<path\b([^>]*)>", svg):
+        a = m.group(1)
+        if "stroke=" not in a or 'fill="none"' not in a.replace("'", '"'):
+            continue
+        d = re.search(r'\bd="([^"]+)"', a)
+        if not d:
+            continue
+        pts = [float(v) for v in re.findall(r"-?\d+\.?\d*", d.group(1))]
+        xy = list(zip(pts[0::2], pts[1::2]))
+        for i in range(len(xy) - 1):
+            segs.append((xy[i][0], xy[i][1], xy[i + 1][0], xy[i + 1][1]))
+    return segs
+
+
+def _seg_hits_box(seg, box, inset=2.0):
+    """Does a segment pass through a box, ignoring a mere touch at the edge?"""
+    x1, y1, x2, y2 = seg
+    bx1, by1, bx2, by2 = box[0] + inset, box[1] + inset, box[2] - inset, box[3] - inset
+    if bx1 >= bx2 or by1 >= by2:
+        return False
+    # Liang-Barsky
+    dx, dy = x2 - x1, y2 - y1
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, x1 - bx1), (dx, bx2 - x1), (-dy, y1 - by1), (dy, by2 - y1)):
+        if p == 0:
+            if q < 0:
+                return False
+        else:
+            r = q / p
+            if p < 0:
+                if r > t1:
+                    return False
+                t0 = max(t0, r)
+            else:
+                if r < t0:
+                    return False
+                t1 = min(t1, r)
+    return t0 <= t1
+
+
 def analyse(svg: str):
     """(collisions, escapes, out_of_canvas) for one diagram."""
     ts, rs = texts(svg), rects(svg)
@@ -144,6 +210,17 @@ def analyse(svg: str):
                         escapes.append((t[4], (r[2] - r[0], r[3] - r[1])))
                         break
 
+    # A connector running across a word is the defect Jay actually sees, and
+    # the first version of this file could not detect it: every one of the five
+    # diagrams fixed on 2026-10-30 was found by eye, not by this check.
+    struck = []
+    segs = connectors(svg)
+    for t_ in ts:
+        for s in segs:
+            if _seg_hits_box(s, t_[:4]):
+                struck.append(t_[4])
+                break
+
     vb = re.search(r'viewBox="([^"]+)"', svg)
     out = []
     if vb:
@@ -153,7 +230,7 @@ def analyse(svg: str):
                 if t[0] < p[0] - 1 or t[2] > p[0] + p[2] + 1 \
                         or t[1] < p[1] - 1 or t[3] > p[1] + p[3] + 1:
                     out.append(t[4])
-    return collisions, escapes, out
+    return collisions, escapes, out, struck
 
 
 def biggest_svg(text: str):
@@ -176,12 +253,20 @@ def self_test() -> int:
              '<text x="20" y="30" font-size="12">far too long for that box</text></svg>')
     off = ('<svg viewBox="0 0 200 100">'
            '<text x="190" y="35" font-size="12">runs past the edge</text></svg>')
+    struck = ('<svg viewBox="0 0 200 100">'
+              '<text x="20" y="35" font-size="10">a label with a line through it</text>'
+              '<line x1="60" y1="10" x2="60" y2="90" stroke="#333"/></svg>')
+    beside = ('<svg viewBox="0 0 200 100">'
+              '<text x="20" y="35" font-size="10">a label with a line beside it</text>'
+              '<line x1="190" y1="10" x2="190" y2="90" stroke="#333"/></svg>')
 
     cases = [
-        ("a clean diagram", good, (0, 0, 0)),
-        ("two texts on top of each other", clash, (1, 0, 0)),
-        ("text wider than its box", spill, (0, 1, 0)),
-        ("text past the canvas edge", off, (0, 0, 1)),
+        ("a clean diagram", good, (0, 0, 0, 0)),
+        ("two texts on top of each other", clash, (1, 0, 0, 0)),
+        ("text wider than its box", spill, (0, 1, 0, 0)),
+        ("text past the canvas edge", off, (0, 0, 1, 0)),
+        ("a connector drawn through a label", struck, (0, 0, 0, 1)),
+        ("a connector that merely passes nearby", beside, (0, 0, 0, 0)),
     ]
     bad = 0
     for label, svg, want in cases:
@@ -222,19 +307,21 @@ def main() -> int:
         if not svg:
             continue
         checked += 1
-        col, esc, out = analyse(svg)
-        if not (col or esc or out):
+        col, esc, out, hit = analyse(svg)
+        if not (col or esc or out or hit):
             print("  [ ok ] %s" % fn.replace(".html", ""))
             continue
         dirty += 1
-        print("  [LOOK] %-34s %d overlap, %d out-of-box, %d off-canvas"
-              % (fn.replace(".html", ""), len(col), len(esc), len(out)))
+        print("  [LOOK] %-34s %d overlap, %d out-of-box, %d off-canvas, %d struck"
+              % (fn.replace(".html", ""), len(col), len(esc), len(out), len(hit)))
         for a, b in col[:4]:
             print("           overlap : %r  <->  %r" % (a[:38], b[:38]))
         for s, box in esc[:4]:
             print("           out-of-box: %r  (box %dx%d)" % (s[:38], box[0], box[1]))
         for s in out[:3]:
             print("           off-canvas: %r" % s[:46])
+        for s in hit[:5]:
+            print("           LINE THROUGH: %r" % s[:46])
 
     if not checked:
         print("no lab diagrams found -- a run that inspected nothing has not passed.")
