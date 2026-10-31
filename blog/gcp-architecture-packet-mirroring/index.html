@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>GCP Architecture Series #78 — Packet Mirroring | Jayanth Katta Blog</title>
+<meta name="description" content="Three posts established that firewall logs, Firewall Insights and flow logs are all estimates with gaps that lean the same way. Packet Mirroring is the instrument that does not estimate, and the four posts' worth of caveats are replaced by a different set. The mirror is taken on the VM rather than on the network, so it spends the workload's own bandwidth and captures the payload before the hypervisor encrypts it. Its ordering model is not priority. And Google now recommends a different product, whose adoption silently disables this one."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="Packet Mirroring"/>
+<meta property="og:description" content="Three posts established that firewall logs, Firewall Insights and flow logs are all estimates with gaps that lean the same way. Packet Mirroring is the instrument that does not estimate, and the four posts' worth of caveats are replaced by a different set. The mirror is taken on the VM rather than on the network, so it spends the workload's own bandwidth and captures the payload before the hypervisor encrypts it. Its ordering model is not priority. And Google now recommends a different product, whose adoption silently disables this one."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/gcp-architecture-packet-mirroring/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="Packet Mirroring"/>
+<meta name="twitter:description" content="Three posts established that firewall logs, Firewall Insights and flow logs are all estimates with gaps that lean the same way. Packet Mirroring is the instrument that does not estimate, and the four posts' worth of caveats are replaced by a different set. The mirror is taken on the VM rather than on the network, so it spends the workload's own bandwidth and captures the payload before the hypervisor encrypts it. Its ordering model is not priority. And Google now recommends a different product, whose adoption silently disables this one."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/gcp-architecture-packet-mirroring/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=74deaf40"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=1274c0a4" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=1274c0a4">
+<script src="/blog/assets/site-footer.js?v=1274c0a4" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>GCP Architecture Series #78 — Packet Mirroring…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span></div>
+      <h1>GCP Architecture Series #78 — Packet Mirroring</h1>
+      <p class="post-description">Three posts established that firewall logs, Firewall Insights and flow logs are all estimates with gaps that lean the same way. Packet Mirroring is the instrument that does not estimate, and the four posts' worth of caveats are replaced by a different set. The mirror is taken on the VM rather than on the network, so it spends the workload's own bandwidth and captures the payload before the hypervisor encrypts it. Its ordering model is not priority. And Google now recommends a different product, whose adoption silently disables this one.</p>
+      <div class="post-info">
+        <span>Oct 30, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>16 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 30 October 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="gcp-architecture-packet-mirroring" data-topics="GCP,Architecture,GCP Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official Google Cloud Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #75, #76 and #77 all ended in the same place: the record is incomplete, and the incompleteness leans toward silence. Packet Mirroring is the escape from that. It <em>clones the traffic of specified instances in your VPC network and forwards it for examination</em>, and the scope is total &mdash; <em>Packet Mirroring captures all traffic and packet data, including payloads and headers.</em> Against #77 specifically: <em>it exports all traffic, not only the traffic between sampling periods.</em>
+    </p>
+    <p>
+      That solves the evidence problem and creates three new ones. The mirror is taken in a place that costs you bandwidth, it copies data in a state you may not be allowed to copy, and the product is on its way out in favour of a replacement whose adoption switches this one off.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"It is a network feature, so the VMs will not notice"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          They will. <em>The mirroring happens on the virtual machine (VM) instances, not on the network.</em> And therefore: <em>consequently, Packet Mirroring consumes additional bandwidth on the VMs.</em> Google quantifies it &mdash; <em>if a mirrored instance experiences 1 Gbps of ingress traffic and 1 Gbps of egress traffic, the total traffic on the instances is 1 Gbps of ingress and 3 Gbps of egress (1 Gbps of normal egress traffic and 2 Gbps of mirrored egress traffic).</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Budget egress at three times the workload's own before enabling it, and filter aggressively from the start. #77 could say flow logs introduce no delay or performance penalty; this is the opposite trade, and it is paid on the machine you are trying to observe.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"VPC traffic is encrypted, so the mirrored copy is too"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It is not, and this follows directly from where the mirror is taken. <em>Mirrored traffic is encrypted only if the VM encrypts that traffic at the application layer.</em> The platform encryption does not help, because <em>the encryption and decryption happens in the hypervisors</em>, and so <em>from the perspective of the VM, this traffic is not encrypted.</em> The mirror is taken on the VM's side of that boundary.
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Treat the collector fleet as a system holding full plaintext payloads of everything the mirrored workloads send and receive, and scope its access accordingly. If a workload handles regulated data and speaks a protocol without TLS internally, mirroring it duplicates that data onto machines whose threat model was probably never reviewed for it.
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"We will migrate to the new mirroring product one workload at a time"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          There is no such migration. <em>On the workload level, the Network Security Integration Packet Mirroring takes precedence over VPC Packet Mirroring</em>, and the scope of that precedence is not per-workload at all: <em>the data plane disregards all VPC Packet Mirroring configurations for all workloads.</em> It applies <em>even when the Network Security Integration Packet Mirroring configuration is applied implicitly to the workload.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Plan it as a single cutover with the full rule set in place before the first NSI rule exists. Google's own worked example is a team mirroring HTTP the new way and discovering that <em>the ICMP traffic mirroring configured in the VPC Packet Mirroring policy is terminated, and ICMP traffic is no longer mirrored</em> &mdash; with the understatement that <em>this change in behavior can have significant implications on your network.</em>
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      Sources on one side, a load-balanced collector fleet on the other, and a policy that is not ordered the way anything else in this block is ordered.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-078-packet-mirroring.svg" alt="Diagram: why Packet Mirroring answers the sampling problem by capturing every packet including payloads and headers, and what that costs, since mirroring happens on the virtual machine rather than on the network and therefore triples egress bandwidth on a mirrored instance; why the mirrored copy is plaintext because VPC encryption happens in the hypervisor and the mirror is taken before it; the ordering model where policy priority is fixed at 1000 and specificity decides instead, unlike every firewall rule in this block; and the migration trap where creating a single Network Security Integration mirroring rule makes the data plane disregard every VPC Packet Mirroring configuration for every workload" />
+      <figcaption>Full capture taken on the VM, in plaintext, with an ordering model that is not priority.</figcaption>
+    </figure>
+
+    <h3>Choosing sources, and the trap in choosing a subnet</h3>
+    <p>
+      <em>Mirrored sources are Compute Engine VM instances that you can select by specifying subnets, network tags, or instance names.</em> Those are the same three axes #72 established for firewall targeting, minus service accounts, and they compose permissively: <em>you can specify one or more source types</em>, and an instance matching any one of them is mirrored.
+    </p>
+    <p>
+      The subnet option carries a consequence worth stating plainly: <em>if you specify a subnet, all existing and future instances in that subnet are mirrored.</em> So a mirroring policy written once silently extends to every machine anyone deploys into that subnet afterwards, in plaintext, at triple egress. That is the right default for a security mandate and a poor one for a time-boxed investigation.
+    </p>
+    <p>
+      Coverage is per interface, not per machine: <em>in cases where an instance has multiple network interfaces, the other interfaces aren't mirrored unless another policy has been configured to do so.</em> That is the third post in a row where a multi-NIC VM needs enabling more than once. And the familiar container caveat returns &mdash; <em>to mirror traffic passing between Pods on the same Google Kubernetes Engine (GKE) node, you must enable Intranode visibility for the cluster.</em>
+    </p>
+
+    <h3>The collector, and the loop you must not build</h3>
+    <p>
+      <em>A collector destination is an instance group that is behind an internal load balancer</em>, reached through a forwarding rule configured specifically for mirroring. That specialisation has a sharp edge: <em>any non-mirrored traffic that is sent to the load balancer is dropped.</em> It is not a general-purpose load balancer that also takes mirrored traffic.
+    </p>
+    <p>
+      The placement rules are tight. <em>All mirrored sources must be in the same project, VPC network, and Google Cloud region</em>, and <em>a collector destination must be in the same region as the mirrored sources</em> &mdash; though it may sit in a peered VPC, which is what makes a centralised collector in a hub network possible. The cardinality is one-way: <em>each mirroring policy can only reference a single collector destination</em>, but <em>however, a single collector destination can be referenced by multiple mirroring policies.</em> So a central collector serving several networks means one policy per network, not one policy with several sources.
+    </p>
+    <p>
+      And the configuration error that looks reasonable: <em>you cannot mirror and collect traffic on the same network interface of a VM instance because doing this would cause a mirroring loop.</em> A collector that is itself inside a mirrored subnet would mirror the mirror. The subnet-wide source selection above makes this easy to do by accident, which is the argument for putting collectors in their own subnet from the start.
+    </p>
+
+    <h3>The ordering model is the opposite of every firewall rule in this block</h3>
+    <p>
+      This is the detail I found most striking. #70 established that for firewall rules priority is the only ordering and specificity never decides. Here, priority does not exist as a control: <em>the priority of a packet mirroring policy is always 1000 and cannot be changed.</em>
+    </p>
+    <p>
+      So overlapping policies resolve by specificity, using exactly the longest-prefix logic the firewall explicitly refuses. <em>If policies have different but overlapping CIDR ranges and the same exact protocols, Google Cloud chooses the policy that uses the most specific CIDR range.</em> Protocol breaks the next tie: <em>if policies specify the same exact CIDR range with overlapping protocols, Google Cloud chooses a policy with the most specific protocol.</em> And where there is no overlap at all there is no contest &mdash; <em>if policies have the same exact CIDR range but distinct protocols, these policies don't overlap.</em>
+    </p>
+    <p>
+      Then the honest admission at the end of that ladder. <em>Identical policies are not supported</em>, and if you build them anyway, <em>Google Cloud can send traffic to any of the load balancers that have been configured with identical packet mirroring policies</em> &mdash; worse, <em>Google Cloud might choose the same policy or a different policy each time that matching traffic is re-evaluated against these policies.</em> Documented non-determinism, in a security capture path.
+    </p>
+
+    <div class="callout">
+      <strong>Why two ordering models in one product area is a real cost</strong>
+      <p>An engineer who has internalised eight posts of "priority decides, specificity never does" will reason incorrectly about mirroring policies, and the failure is quiet: traffic goes to a collector, just not the one intended, and nothing errors. The practical rule from the documentation is to make policies distinct rather than relying on the tie-breaks &mdash; non-overlapping ranges, or unique protocols where ranges must overlap. Then the resolution order never has to be invoked.</p>
+    </div>
+
+    <h3>What it cannot see, and what sees it</h3>
+    <p>
+      Two interactions with #77 matter. <em>VPC Flow Logs doesn't log mirrored packets</em>, so turning on mirroring does not inflate your flow log bill through the mirror traffic itself. But the collector is a normal destination for normal purposes: <em>if a collector instance is on a subnet that has VPC Flow Logs enabled, traffic that is sent directly to the collector instance is logged, including traffic from mirrored instances.</em> Flow logs on the collector subnet therefore produce an entry per mirrored flow, which is a straightforward way to double your logging costs without intending to.
+    </p>
+    <p>
+      The limits are small enough to design around rather than discover. Per policy: <em>5 subnets 5 tags 50 instances</em>. And the filter budget is multiplicative, which is the part that bites &mdash; <em>the maximum number of packet mirroring filters is 30, which is the number of IPv4 and IPv6 address ranges multiplied by the number of protocols.</em> Google spells out the arithmetic: <em>you cannot specify 30 ranges and 2 protocols, which would be 60 filters and greater than the maximum.</em> Thirty ranges with one protocol is legal; fifteen ranges with two protocols is the equivalent budget.
+    </p>
+    <p>
+      On protocols it is the broadest instrument in the block: <em>all layer 4 protocols are supported by Packet Mirroring</em>, against #77's six and #76's two. Address families need help, though &mdash; <em>by default, Packet Mirroring collects all IPv4 traffic of mirrored instances</em>, and IPv6 requires an explicit filter, where <em>you can mirror all IPv6 traffic by using a CIDR range filter of ::/0.</em>
+    </p>
+    <p>
+      One last counting trap, the same shape as #77's: <em>if two VM instances that are being mirrored send traffic to each other, Google Cloud collects two versions of the same packet.</em> East-west traffic inside a mirrored subnet is captured twice, so volume estimates built from a single VM's traffic will understate the collector's load.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <p>
+      Both of these change the decision, and the first one changes it before you start.
+    </p>
+
+    <h3>Google recommends a different product</h3>
+    <p>
+      The overview opens by pointing elsewhere. <em>If you want to analyze your workloads' network traffic at scale and monitor network traffic using third-party virtual appliances, use Network Security Integration Packet Mirroring</em>, and more directly: <em>we recommend that you use Network Security Integration Packet Mirroring for new deployments.</em>
+    </p>
+    <p>
+      What the replacement does differently is interesting in its own right, because it folds mirroring into the object this block spent five posts on. <em>Packet Mirroring clones the network traffic based on the filtering criteria specified in the mirroring rules of the firewall policy</em> &mdash; <em>you can specify mirroring rules as part of your firewall policy.</em> So mirroring stops being a separate policy type with its own ordering rules and becomes rules inside the global network firewall policy from #74, with the priority model that implies. It also gains a negative form, which the old product has no equivalent of: <em>you can use the DO_NOT_MIRROR action in your mirroring rules to define negative filters.</em>
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>&nbsp;</th>
+            <th>VPC Packet Mirroring</th>
+            <th>Network Security Integration Packet Mirroring</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Encapsulation</td>
+            <td><em>Packets are mirrored without encapsulation</em></td>
+            <td><em>Mirrored traffic is encapsulated using Geneve</em></td>
+          </tr>
+          <tr>
+            <td>Rule semantics</td>
+            <td><em>Mirroring rules are evaluated on a per-packet basis</em></td>
+            <td><em>Mirroring is session based</em></td>
+          </tr>
+          <tr>
+            <td>Negative filters</td>
+            <td>No</td>
+            <td><code>DO_NOT_MIRROR</code></td>
+          </tr>
+          <tr>
+            <td>Where the rules live</td>
+            <td>Its own packet mirroring policy</td>
+            <td>Global network firewall policy; <em>regional network firewall policies don't support Packet Mirroring</em></td>
+          </tr>
+          <tr>
+            <td>Secure tags as a source</td>
+            <td>Network tags supported</td>
+            <td><em>Mirroring rules don't support source secure tags</em></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Two rows deserve a note. The Geneve encapsulation is not cosmetic &mdash; <em>it adds a unique Virtual Private Cloud (VPC) network identifier to each packet redirected to the mirroring endpoint group for deep packet inspection</em>, which is what makes a shared collector safe when several networks use overlapping RFC 1918 ranges. With the unencapsulated product, a central collector receiving the same private address from two peered networks cannot tell them apart. And the regional-policy row is the fourth capability this series has found missing from regional network firewall policies, after Layer 7 inspection in #74.
+    </p>
+    <p>
+      The performance picture is also worse than the old product's, and stated more bluntly. <em>When network packets match any mirroring rule, Compute Engine processes both the original and mirrored packets at a slower rate</em>, and then the recommendation that should decide platform choices: <em>enabling mirroring is not recommended for 3rd generation machine families and later because the rate of the slower route cancels out their high-bandwidth networking benefits.</em> So on modern machine types, mirroring and high-bandwidth networking are close to mutually exclusive.
+    </p>
+
+    <div class="callout">
+      <strong>The migration rule, restated because it is the most consequential thing here</strong>
+      <p>You cannot run the two side by side. <em>If a workload has an Network Security Integration Packet Mirroring configuration, the data plane disregards any existing VPC Packet Mirroring configuration</em> &mdash; and the blast radius is total: <em>the data plane disregards all VPC Packet Mirroring configurations for all workloads.</em> It triggers <em>even when the Network Security Integration Packet Mirroring configuration is applied implicitly to the workload</em>, which means an NSI rule added at the policy level by someone else is enough. Write the complete replacement rule set first, verify it covers every protocol the old policies covered, and cut over once.</p>
+    </div>
+
+    <h3>The cost, and why the cheap rate is misleading</h3>
+    <p>
+      The pricing shape is unusually simple. <em>You are charged for the amount of data processed by Packet Mirroring</em>, while <em>you are not charged for Packet Mirroring forwarding rules</em> and <em>currently, there is no additional per-VM charge for using Packet Mirroring.</em> The rate, in us-central1 and the regions grouped with it, is <em>inbound data processed by load balancer for Packet Mirroring $0.008 / 1 gibibyte.</em>
+    </p>
+    <p>
+      Compared with #76 and #77 that looks almost free. Those were vended logs &mdash; <em>vended logs include VPC Flow Logs, Firewall Rules Logging, and Cloud NAT logs</em> &mdash; billed twice at a combined $0.50 per GiB in the first tier. At $0.008, mirroring is roughly 62 times cheaper per gibibyte.
+    </p>
+    <p>
+      And that comparison is a trap, because the denominators are not comparable. Flow logs charge for a sampled, aggregated, metadata-trimmed summary; mirroring charges for every byte of every packet including payloads. A workload producing a few megabytes of flow logs a day produces its entire traffic volume in mirrored data. The per-unit rate is 62 times lower and the unit count is orders of magnitude higher, so the mirroring bill is the larger one in almost every real case &mdash; and that is before the collector VMs, which you pay for as ordinary compute, and before cross-zone transfer. For the NSI product the zone placement is called out explicitly: <em>you are charged for cross-zonal traffic if the consumer and producer of your mirroring deployment are in different zones.</em>
+    </p>
+    <p>
+      Which makes the practical cost model: filter hard, mirror narrowly, keep collectors zone-local to their sources, and treat subnet-wide mirroring as a deliberate, reviewed expense rather than a default. The $0.008 is the least of it.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Situation</th>
+            <th>Decision</th>
+            <th>Because</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>IDS, deep packet inspection, or PCI forensics</td>
+            <td>Packet Mirroring, not flow logs</td>
+            <td>Signatures need every packet of a flow; flow logs sample and estimate.</td>
+          </tr>
+          <tr>
+            <td>Starting a new mirroring deployment</td>
+            <td>Network Security Integration Packet Mirroring</td>
+            <td>Google recommends it for new deployments, and it brings Geneve and negative filters.</td>
+          </tr>
+          <tr>
+            <td>Moving from the old product to the new one</td>
+            <td>One cutover, complete rule set first</td>
+            <td>One NSI configuration makes the data plane disregard all VPC mirroring for all workloads.</td>
+          </tr>
+          <tr>
+            <td>Mirroring a regulated workload</td>
+            <td>Scope the collector fleet as a data store for that regulated data</td>
+            <td>The copy is plaintext unless the application itself encrypted it.</td>
+          </tr>
+          <tr>
+            <td>Sizing a mirrored instance</td>
+            <td>Budget three times the egress</td>
+            <td>Google's example: 1 Gbps in and out becomes 3 Gbps of egress.</td>
+          </tr>
+          <tr>
+            <td>Third-generation or newer machine families</td>
+            <td>Reconsider mirroring those workloads</td>
+            <td>The slower processing route cancels out their high-bandwidth networking.</td>
+          </tr>
+          <tr>
+            <td>Choosing sources for a time-boxed investigation</td>
+            <td>Instance names or tags, not a subnet</td>
+            <td>A subnet source silently includes every future instance.</td>
+          </tr>
+          <tr>
+            <td>Placing collector instances</td>
+            <td>Their own subnet, never a mirrored one</td>
+            <td>Mirroring and collecting on one interface creates a mirroring loop.</td>
+          </tr>
+          <tr>
+            <td>Flow logs on the collector subnet</td>
+            <td>Turn them off unless you need them</td>
+            <td>Traffic sent directly to a collector is logged, one entry per mirrored flow.</td>
+          </tr>
+          <tr>
+            <td>Two policies whose ranges overlap</td>
+            <td>Make them distinct instead of relying on tie-breaks</td>
+            <td>Priority is fixed at 1000, and identical policies resolve non-deterministically.</td>
+          </tr>
+          <tr>
+            <td>Needing more than 30 range-protocol combinations</td>
+            <td>Redesign the filter, or split policies</td>
+            <td>The filter cap is ranges multiplied by protocols.</td>
+          </tr>
+          <tr>
+            <td>A central collector for several networks</td>
+            <td>One policy per source network, and prefer the Geneve product</td>
+            <td>A policy references one collector, and only Geneve carries a network identifier for overlapping ranges.</td>
+          </tr>
+          <tr>
+            <td>IPv6 traffic</td>
+            <td>Add an explicit <code>::/0</code> filter</td>
+            <td>The default collects IPv4 only.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      For every packet mirroring policy you have, answer two questions. Which subnets are named as sources, and therefore which machines deployed since the policy was written are now being mirrored in plaintext at triple egress? And is there any Network Security Integration mirroring configuration anywhere in the project &mdash; because if one exists, every one of those policies is already being disregarded, and the capture you believe is running is not.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Four posts have now circled one question: what does it cost to know what your network did? The answer this block has produced is a straight line. Firewall logs are cheap, capped and blind to most protocols. Flow logs are cheaper per unit of insight and twice sampled. Mirroring is complete, and it charges you in the workload's own bandwidth, in plaintext exposure, and in a collector fleet you operate. There is no instrument here that is complete, cheap and unobtrusive, and the useful skill is knowing which of the three you are giving up.
+    </p>
+    <p>
+      The specific thing I will carry forward is the encryption sentence, because it is a reminder that an abstraction's boundary is a real location. Google encrypts VM-to-VM traffic, and that is true and worth having. It happens in the hypervisor, and the mirror is taken on the other side of it, so the sentence "our VPC traffic is encrypted" and the sentence "our mirrored traffic is encrypted" are both about the same packets and only one is true. Eighteen posts into this block, that is the pattern in its purest form: the guarantee is real, the guarantee's boundary is documented, and almost nothing in the interface makes you look for it.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#79 leaves observability for structure: Shared VPC, host projects and service projects &mdash; the model whose host-and-service split has already turned up in three of the last four posts.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official Google Cloud Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/packet-mirroring" target="_blank" rel="noopener">Packet Mirroring overview</a></li>
+      <li><a href="https://docs.cloud.google.com/network-security-integration/docs/out-of-band/out-of-band-integration-overview" target="_blank" rel="noopener">Out-of-band integration overview</a></li>
+      <li><a href="https://cloud.google.com/vpc/network-pricing" target="_blank" rel="noopener">VPC network pricing</a></li>
+      <li><a href="https://cloud.google.com/products/observability/pricing" target="_blank" rel="noopener">Google Cloud Observability pricing</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/using-packet-mirroring" target="_blank" rel="noopener">Configure Packet Mirroring</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/monitoring-packet-mirroring" target="_blank" rel="noopener">Monitor Packet Mirroring</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/packet-mirroring-partners" target="_blank" rel="noopener">Packet Mirroring partners</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/flow-logs" target="_blank" rel="noopener">VPC Flow Logs overview</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/quota" target="_blank" rel="noopener">VPC quotas and limits</a></li>
+      <li><a href="https://docs.cloud.google.com/security/encryption-in-transit" target="_blank" rel="noopener">Encryption in transit in Google Cloud</a></li>
+      <li><a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/intranode-visibility" target="_blank" rel="noopener">Configure intranode visibility</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-architecture-backup/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Architecture Series #98 — Ignored is not refused</span></a><a href="/blog/week-25-serverless-microservices/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">Week 25 - Serverless Microservices: The Neighbour That Starved Checkout</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/gcp-architecture-packet-mirroring/';
+      this.page.identifier = 'gcp-architecture-packet-mirroring';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=1274c0a4"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
