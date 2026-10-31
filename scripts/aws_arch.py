@@ -254,6 +254,16 @@ class Diagram:
             if tw > (bx2 - bx1) - 16:
                 bad.append("text overflows its box: %r needs %dpx, box is %dpx"
                            % (label, int(tw), bx2 - bx1))
+        # Nothing may hang off the canvas either. assert_clean() only
+        # compared claims against each other, so week 8's SNS caption sat
+        # below the viewBox and the icon was clipped on the page while the
+        # check reported the diagram clean.
+        for (x1, y1, x2, y2, what, _g) in self.claims:
+            if x1 < 0 or y1 < 0 or x2 > self.w or y2 > self.h:
+                bad.append("%s runs outside the %dx%d canvas "
+                           "(x %.0f..%.0f, y %.0f..%.0f)"
+                           % (what, self.w, self.h, x1, x2, y1, y2))
+
         if bad:
             raise SystemExit(
                 "diagram is not clean -- %d collision(s):%s%s"

@@ -92,6 +92,33 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 30 October 2026 — covered by post #66
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Four Oracle options stop mandating automatic minor version upgrades. The finding is that the upgrade did not become optional, the obligation did — AWS pairs the freedom with a recommendation to keep applying minor versions for Oracle security fixes, and the documented reason to want it off is that a Multi-AZ engine upgrade takes both nodes at once | Amazon RDS for Oracle | **#66** | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/oracle-jvm-spatial-locator-olap-options-amvu-optional/) |
+| Viewer ISP and post-quantum TLS details as two new optional origin headers. The third post-quantum item of the week and the one that signals the others are meant to be measured | Amazon CloudFront | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/cloudfront-viewer-isp-post-quantum-visbility/) |
+| GPU partitioning for real-time endpoints — the inference-side sibling of Tuesday's ECS MPS item, and worth writing alongside it | Amazon SageMaker AI | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/sagemaker-gpu-partitioning/) |
+| TLS 1.3 for data in transit on Provisioned clusters, through encryption policies | Amazon MSK | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-msk-tls/) |
+| Automatic SDK integration for CloudFront distributions — removes a manual integration step for client-side WAF | AWS WAF | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-waf-automatic-sdk-integration-amazon-cloudfront/) |
+| Consumer-group metrics for MSK, into Managed Prometheus and CloudWatch | Managed Prometheus | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/prometheus-collectors-msk-metrics/) |
+| Versioning and aliasing for flows and flow modules, to deploy without disturbing live traffic | Amazon Connect | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/connect-flows-versioning-aliasing/) |
+| OpenAI GPT-5.6 models on the bedrock-runtime endpoint with Responses, Converse and Chat Completions, in GovCloud (US) | Amazon Bedrock | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/bedrock-openai-runtime-govcloud/) |
+| Daybreak Red from OpenAI for eligible customers in GovCloud (US-East) | Amazon Bedrock | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/openai-daybreak-red-govcloud-east/) |
+| Web Search now available in GovCloud (US) | Kiro | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/kiro-web-search-aws-govcloud-us/) |
+| In-progress emails saved automatically as drafts | Amazon Connect | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-connect-email-draft-save/) |
+| Iceberg table optimization in US West (N. California) | AWS Glue Data Catalog | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/glue-data-catalog-optimizers-us-west-1/) |
+
+Twelve announcements. RDS for Oracle won on the strength of the question it raises rather than the size
+of the change: a safety default that the platform used to enforce is now yours to hold.
+
+**Covered in weekly #13.** The 26–30 October window is now closed and written up as AWS Weekly
+Intelligence #13, with all 62 What's New announcements inventoried and every link verified 200.
+Dailies #62–#66 covered one announcement from each of the five working days, so nothing needed
+reconciling across the window edge.
+
+---
+
 ## 29 October 2026 — covered by post #65
 
 | Item | Service | Status | Importance | Reference |
