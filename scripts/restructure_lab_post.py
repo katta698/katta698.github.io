@@ -117,7 +117,9 @@ INBOUND = [
     (r"^Why Implement",                     "overview"),
     (r"^Skills (&amp;|&) Tools",            "services"),
     (r"^What Gets Deployed",                "architecture"),
-    (r"^How It Works",                      "architecture"),
+    # Week 2's six-step flow IS its implementation; the architecture section
+    # is the Aurora and isolation discussion that follows it.
+    (r"^How It Works",                      "build"),
     (r"^Multi-Tenant",                      "architecture"),
     (r"^Aurora Architecture",               "architecture"),
     (r"^How to Implement",                  "build"),
