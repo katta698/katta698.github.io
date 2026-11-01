@@ -98,7 +98,6 @@ MIGRATION_PENDING = {
     "week-6-account-vending-machine-with-aws-organizations-and-scps",
     "week-7-iam-identity-center-sso-multi-account-permission-sets",
     "week-8-s3-intelligent-storage-platform",
-    "week-9-ecs-fargate-self-service",
 
     # Azure weeks 01-09, added 2026-10-30 when this check first covered the
     # Azure series. These are NOT a free pass: the check read them for the
@@ -310,14 +309,6 @@ SERVICES_HEADER = ["Service", "Purpose here", "What it is"]
 # Posts written before the shape was fixed. Listed by name rather than skipped
 # silently, so the backlog is visible and shrinks.
 SERVICES_HEADER_PENDING = {
-    "week-09-ecs-fargate-self-service", "week-10-centralized-logging",
-    "week-11-security-hub-guardduty", "week-12-config-compliance-automation",
-    "week-13-waf-shield-protection", "week-14-vpc-flow-logs-intelligence",
-    "week-15-cloudtrail-audit-forensics", "week-16-devops-agent-investigations",
-    "week-17-mcp-platform-ops", "week-18-eks-self-service",
-    "week-19-gitops-argocd", "week-20-eventbridge-accountable-bus",
-    "week-21-bluegreen-ecs", "week-22-container-image-security",
-    "week-23-service-networking-lattice",
 }
 
 
