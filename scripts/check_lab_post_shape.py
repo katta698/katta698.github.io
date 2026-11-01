@@ -90,14 +90,6 @@ SERIES = {
 # AWS series. Weeks 20-24 are migrated; the rest are in progress. Remove a
 # line as its post lands, never add one back.
 MIGRATION_PENDING = {
-    "week-1-from-ticket-to-ec2-in-6-minutes-enterprise-self-servi",
-    "week-2-automating-postgresql-provisioning-with-servicenow-an",
-    "week-3-self-service-ec2-fleet-patching-with-aws-ssm",
-    "week-4-building-a-fleet-intelligence-platform-with-aws-glue-",
-    "week-5-cost-anomaly-detection-with-aws-cost-explorer-sns-and",
-    "week-6-account-vending-machine-with-aws-organizations-and-scps",
-    "week-7-iam-identity-center-sso-multi-account-permission-sets",
-    "week-8-s3-intelligent-storage-platform",
 
     # Azure weeks 01-09, added 2026-10-30 when this check first covered the
     # Azure series. These are NOT a free pass: the check read them for the
