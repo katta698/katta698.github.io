@@ -77,11 +77,13 @@ def w10():
                 "shares logs and metrics in place \u2014 no copy is made")
     # Leave from the icon's right edge, not from under it: a connector dropped
     # straight down from an icon runs through its own label and sub-label.
-    d.elbow(416, 134, 448, 262)
+    d.elbow(428, 134, 448, 262)
 
     d.group(508, 58, 408, 330, "Management account \u00b7 monitoring sink")
     d.icon(548, 110, "cloudwatch", "Central log group", "30-day retention")
-    d.arrow(470, 134, 540, 134, step="3")
+    # Both paths leave the same icon edge, so the split is visible as a fork
+    # rather than as a second arrow appearing out of the account boundary.
+    d.arrow(428, 134, 540, 134, step="3")
     d.icon(720, 110, "s3", "S3 bucket", "the queryable copy")
     d.arrow(604, 134, 712, 134, step="4")
     d.icon(788, 258, "athena", "Athena", "one query, every account")
@@ -147,7 +149,7 @@ def w11():
 
 # ---------------------------------------------------------------- week 12 ---
 def w12():
-    d = Diagram(960, 470,
+    d = Diagram(960, 520,
         "An AWS Config recorder records all resource types and evaluates a "
         "conformance pack of three rules. A required-tags rule notifies only. "
         "Two Amazon S3 rules, for versioning and server-side encryption, are "
@@ -155,8 +157,8 @@ def w12():
         "automatically through AWS Systems Manager Automation. A reporter AWS "
         "Lambda function on a daily Amazon EventBridge schedule discovers the "
         "rules from the pack and sends an Amazon SNS digest.")
-    d.cloud(14, 14, 932, 400)
-    d.group(44, 58, 380, 330, "Recording and evaluation")
+    d.cloud(14, 14, 932, 450)
+    d.group(44, 58, 380, 380, "Recording and evaluation")
 
     d.icon(80, 110, "config", "AWS Config", "all resource types")
     d.arrow(136, 134, 232, 134, step="1")
@@ -165,7 +167,7 @@ def w12():
     d.note(80, 254, "so there is no standalone rule", size=11, colour=MUTED)
     d.note(80, 272, "left behind to drift apart from it.", size=11, colour=MUTED)
 
-    d.group(468, 58, 448, 330, "Outcome per rule")
+    d.group(468, 58, 448, 380, "Outcome per rule")
     d.component(500, 86, 384, 56, "required-tags \u2014 notify only",
                 "scope: every resource, so a fix would be a guess")
     d.component(500, 166, 384, 56, "s3-bucket-versioning-enabled",
@@ -174,17 +176,22 @@ def w12():
     d.component(500, 246, 384, 56, "s3-bucket-sse-enabled",
                 "scope: auto-remediate=true \u2014 fixed automatically",
                 accent=GREEN)
-    d.arrow(306, 150, 492, 114, step="2")
-    d.arrow(306, 166, 492, 194)
-    d.arrow(306, 182, 492, 274)
+    # From the icon's edge, not from its caption: starting the fan-out at
+    # x=306 put all three arrowheads on top of the words "Conformance pack".
+    d.arrow(288, 134, 492, 114, step="2")
+    d.arrow(288, 134, 492, 194)
+    d.arrow(288, 134, 492, 274)
 
-    d.icon(500, 322, "systems-manager", "SSM Automation", "applies the fix",
+    d.icon(500, 340, "systems-manager", "SSM Automation", "applies the fix",
            size=44)
-    d.icon(700, 322, "lambda", "reporter", "daily digest", size=44)
-    d.icon(856, 322, "sns", "SNS", "plain text", size=44)
-    d.arrow(754, 344, 848, 344)
+    d.arrow(522, 302, 522, 334)
+    d.icon(640, 340, "eventbridge", "EventBridge", "daily schedule", size=44)
+    d.icon(760, 340, "lambda", "reporter", "reads the pack", size=44)
+    d.icon(860, 340, "sns", "SNS", "plain text", size=44)
+    d.arrow(690, 362, 752, 362)
+    d.arrow(810, 362, 852, 362)
 
-    d.note(20, 452, "The two rules that get fixed are the two whose correct "
+    d.note(20, 496, "The two rules that get fixed are the two whose correct "
            "state is not in dispute. The one about ownership only notifies.",
            size=11.5, colour=MUTED)
     d.assert_clean()
