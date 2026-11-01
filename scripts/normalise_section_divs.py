@@ -100,6 +100,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("weeks", nargs="+", type=int)
     ap.add_argument("--write", action="store_true")
+    # Run --unwrap-only BEFORE restructuring. A section div opens before its
+    # h2 and closes after it, so reordering the h2s leaves those pairs crossed
+    # and the document one </div> short.
+    ap.add_argument("--unwrap-only", action="store_true",
+                    help="remove the section divs and stop")
     a = ap.parse_args()
 
     for wk in a.weeks:
@@ -107,7 +112,10 @@ def main() -> int:
         t = io.open(p, encoding="utf-8").read()
         before = re.findall(r'<div class="section"[^>]*id="([^"]+)"', t)
         t2, removed = unwrap(t)
-        t3, added = rewrap(t2)
+        if a.unwrap_only:
+            t3, added = t2, 0
+        else:
+            t3, added = rewrap(t2)
         after = re.findall(r'<div class="section"[^>]*id="([^"]+)"', t3)
         # A post whose divs do not balance renders with sections nested inside
         # one another, and nothing downstream notices. Refuse rather than write.
