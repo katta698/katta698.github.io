@@ -75,13 +75,24 @@ SKIP_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff",
             ".woff2", ".ttf", ".zip", ".pdf", ".mp3", ".mp4"}
 
 
-def findings_in(text):
+# The site footer publishes a contact address on purpose: it is the "get in
+# touch" link every page carries, and it is already public by design. That is a
+# different thing from an address pasted into a copyable terraform command,
+# which is what this check exists to catch. Narrow, and named, so the exception
+# cannot quietly widen.
+INTENTIONAL_CONTACT = "var CONTACT = "
+
+
+def findings_in(text, allow_site_contact=False):
     out = []
     for m in ACCOUNT_RE.finditer(text):
         if m.group(0) in ALLOWED or _looks_like_timestamp(m.group(0)):
             continue
         out.append(("account id", m.group(0), m.start()))
     for m in EMAIL_RE.finditer(text):
+        before = text[max(0, m.start() - 40):m.start()]
+        if allow_site_contact and INTENTIONAL_CONTACT in before:
+            continue
         out.append(("personal email", m.group(0), m.start()))
     return out
 
@@ -93,6 +104,8 @@ def self_test() -> int:
         ("in an S3 prefix", "accountid=684346483786/region=us-east-1/", 1),
         ("AWS's own placeholder", "arn:aws:iam::111122223333:role/x", 0),
         ("a personal email", "write to someone@gmail.com please", 1),
+        ("the footer's deliberate contact constant",
+         "var CONTACT = 'someone@gmail.com';", 0),
         ("a long digit run that is not an id", "1234567890123456", 0),
         ("clean text", "the fleet had 1,200 instances", 0),
         ("a timestamp, not an id", "findings-202610081601.json", 0),
@@ -100,7 +113,7 @@ def self_test() -> int:
     ]
     bad = 0
     for label, text, want in cases:
-        got = len(findings_in(text))
+        got = len(findings_in(text, allow_site_contact=True))
         ok = got == want
         bad += not ok
         print("  [%s] %s -> %d, want %d"
@@ -137,7 +150,8 @@ def main() -> int:
                 except OSError:
                     continue
                 scanned += 1
-                for kind, value, pos in findings_in(text):
+                allow = rel_is_footer = fn == "site-footer.js"
+                for kind, value, pos in findings_in(text, allow_site_contact=allow):
                     hits += 1
                     rel = os.path.relpath(p, ROOT).replace("\\", "/")
                     ctx = re.sub(r"\s+", " ", text[max(0, pos - 60):pos + 40])
