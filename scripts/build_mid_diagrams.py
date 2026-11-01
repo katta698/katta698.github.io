@@ -382,7 +382,176 @@ def w16():
             "reach is one association wide.")
 
 
-BUILDERS = [w09, w10, w11, w12, w13, w14, w15, w16]
+# ---------------------------------------------------------------- week 17 ---
+def w17():
+    d = Diagram(1000, 420,
+        "An MCP client signs its requests with SigV4 and calls an AWS Lambda "
+        "function URL protected by AWS_IAM authentication; an unsigned call is "
+        "refused with 403. The function exposes four read-only tools, which "
+        "read AWS Cost Explorer, the Resource Groups Tagging API and Amazon "
+        "CloudWatch alarm state. Cost Explorer charges per request, so answers "
+        "are cached in an Amazon DynamoDB table with a one-hour time to live "
+        "and the cache is checked first.")
+    d.component(20, 110, 150, 52, "MCP client", "signs with SigV4")
+    d.cloud(190, 14, 796, 360)
+    d.group(220, 58, 736, 290, "Region: us-east-1")
+
+    d.arrow(174, 134, 252, 134, step="1")
+    d.icon(260, 110, "lambda", "Function URL", "AWS_IAM auth")
+    d.note(244, 212, "four read-only tools", size=11, colour=MUTED)
+    d.note(244, 232, "unsigned = 403", size=11, colour=RED, weight="600")
+
+    d.icon(520, 86, "cost-explorer", "Cost Explorer", "$0.01 per request",
+           size=44)
+    d.component(480, 170, 260, 52, "Resource Groups Tagging",
+                "what runs, and what has no owner")
+    d.icon(520, 250, "cloudwatch", "CloudWatch", "alarm state", size=44)
+    d.arrow(308, 134, 512, 100)
+    d.arrow(308, 134, 472, 190)
+    d.arrow(308, 134, 512, 264)
+
+    d.icon(800, 86, "dynamodb", "DynamoDB", "TTL 1 hour", size=44)
+    d.arrow(586, 108, 792, 108)
+    d.note(760, 230, "A repeated cost question", size=11, weight="600")
+    d.note(760, 248, "costs $0.00.", size=11, colour=MUTED)
+
+    d.note(20, 400, "An LLM decides when to call a tool, so a metered read "
+           "needs a cache rather than only a budget.", size=11.5, colour=MUTED)
+    d.assert_clean()
+    return ("week-17-mcp-platform-ops", d.render(),
+            "Four read-only tools behind a signed URL, and the one of them "
+            "that costs money every time it runs.")
+
+
+# ---------------------------------------------------------------- week 18 ---
+def w18():
+    d = Diagram(1000, 480,
+        "One Amazon EKS cluster running Kubernetes 1.36 hosts two tenants. "
+        "Tenant A runs on a managed Amazon EC2 node and uses EKS Pod Identity. "
+        "Tenant B runs on AWS Fargate and must use IRSA, because the Pod "
+        "Identity agent is a privileged DaemonSet and Fargate runs neither "
+        "DaemonSets nor privileged pods. Each namespace has its own "
+        "ResourceQuota, NetworkPolicy and ServiceAccount.")
+    d.cloud(14, 14, 972, 410)
+    d.group(44, 58, 912, 350,
+            "One EKS cluster · $0.10/hr from the moment it exists")
+
+    d.icon(76, 92, "eks", "EKS cluster", "Kubernetes 1.36", size=44)
+
+    d.group(76, 190, 400, 200, "tenant-a · on EC2")
+    d.icon(110, 230, "ec2", "Managed node", "t3.small", size=44)
+    d.component(230, 224, 220, 56, "Pod Identity", "what AWS recommends")
+    d.arrow(164, 252, 222, 252)
+    d.note(110, 340, "namespace tenant-a", size=11, weight="600")
+    d.note(110, 358, "ResourceQuota · NetworkPolicy", size=11, colour=MUTED)
+    d.note(110, 376, "ServiceAccount", size=11, colour=MUTED)
+
+    d.group(524, 190, 400, 200, "tenant-b · on Fargate")
+    d.icon(558, 230, "fargate", "Fargate", "no node to manage", size=44)
+    d.component(678, 224, 220, 56, "IRSA", "one OIDC provider per cluster")
+    d.arrow(612, 252, 670, 252)
+    d.note(558, 340, "namespace tenant-b", size=11, weight="600")
+    d.note(558, 358, "ResourceQuota · NetworkPolicy", size=11, colour=MUTED)
+    d.note(558, 376, "ServiceAccount", size=11, colour=MUTED)
+
+    d.note(20, 452, "Pod Identity cannot run on Fargate: its agent is a "
+           "privileged DaemonSet, and Fargate runs neither. The namespace is "
+           "a quota, not a boundary.", size=11.5, colour=RED)
+    d.assert_clean()
+    return ("week-18-eks-self-service", d.render(),
+            "Two tenants, one cluster, and two different identity mechanisms "
+            "for the same reason.")
+
+
+# ---------------------------------------------------------------- week 19 ---
+def w19():
+    d = Diagram(1000, 480,
+        "The same Git repository drives two ways of running Argo CD against "
+        "one Amazon EKS cluster. The EKS capability for Argo CD runs its "
+        "controllers in AWS infrastructure, costs per hour and per "
+        "application-hour, places no pods on your nodes, and signs in only "
+        "through IAM Identity Center. The self-managed Helm install runs seven "
+        "pods on your own nodes and needs a larger one. Either way the Argo CD "
+        "CRDs end up installed in the cluster, cluster-scoped and shared.")
+    d.component(20, 200, 180, 52, "Git repository",
+                "gitops/workloads/podinfo")
+    d.cloud(220, 14, 766, 420)
+
+    d.group(250, 58, 706, 160, "AWS-managed · outside your cluster")
+    d.icon(290, 96, "eks", "EKS capability", "Argo CD, run by AWS", size=44)
+    d.note(400, 120, "$0.03/hr + $0.0015 per Application-hour", size=11,
+           weight="600")
+    d.note(400, 140, "0 pods on your nodes", size=11, colour=GREEN)
+    d.note(400, 160, "Identity Center is the only sign-in", size=11,
+           colour=MUTED)
+    d.note(400, 180, "its CRDs are still installed in your cluster", size=11,
+           colour=RED)
+
+    d.group(250, 248, 706, 160, "Self-managed · on your nodes")
+    d.icon(290, 286, "eks", "Argo CD 3.5.3", "Helm chart 10.9.1", size=44)
+    d.note(400, 310, "Free software, not free to run", size=11, weight="600")
+    d.note(400, 330, "7 pods on your nodes", size=11, colour=MUTED)
+    d.note(400, 350, "needs a bigger node: +$0.0208/hr", size=11, colour=MUTED)
+    d.note(400, 370, "every feature upstream has", size=11, colour=GREEN)
+
+    d.arrow(204, 214, 282, 120)
+    d.arrow(204, 238, 282, 300)
+
+    d.note(20, 462, "The CRDs are cluster-scoped either way, so the choice is "
+           "about who runs the controllers — not about staying out of the "
+           "cluster.", size=11.5, colour=MUTED)
+    d.assert_clean()
+    return ("week-19-gitops-argocd", d.render(),
+            "One repository, two places to run the controllers, and the same "
+            "CRDs in the cluster at the end of both.")
+
+
+# ---------------------------------------------------------------- week 20 ---
+def w20():
+    d = Diagram(1000, 500,
+        "A publisher calls PutEvents against a custom Amazon EventBridge bus. "
+        "An orders rule matches on source and detail-type and invokes a "
+        "consumer AWS Lambda function, with an Amazon SQS dead-letter queue "
+        "for delivery failures. A catch-all rule matches everything else into "
+        "an Amazon CloudWatch log group, so no event is unaccounted for. An "
+        "archive keeps what was published rather than what was delivered.")
+    d.component(20, 180, 150, 52, "publisher", "PutEvents → 200")
+    d.cloud(190, 14, 796, 440)
+    d.group(220, 58, 736, 370, "Region: us-east-1")
+
+    d.arrow(174, 204, 252, 204, step="1")
+    d.icon(260, 180, "eventbridge", "week20-bus", "a custom bus")
+
+    d.component(560, 120, 380, 56, "rule: orders",
+                "source and detail-type must both match")
+    d.arrow(316, 192, 552, 150, step="2")
+    d.icon(600, 210, "lambda", "consumer", "the function", size=44)
+    d.arrow(622, 180, 622, 204)
+    d.icon(760, 210, "sqs", "DLQ", "delivery failures only", size=44)
+    d.arrow(646, 232, 752, 232)
+
+    d.component(560, 352, 280, 52, "rule: catch-all",
+                "so nothing is unaccounted for")
+    d.elbow(316, 216, 560, 348)
+    d.icon(870, 330, "cloudwatch", "log group", "unmatched = 0", size=44)
+    d.arrow(844, 374, 866, 356)
+
+    d.component(240, 300, 280, 52, "archive",
+                "keeps what was published")
+    d.elbow(308, 204, 360, 294)
+    d.note(252, 382, "published is not delivered:", size=11, weight="600")
+    d.note(252, 400, "the archive holds the first,", size=11, colour=MUTED)
+    d.note(252, 418, "the DLQ reports the second.", size=11, colour=MUTED)
+
+    d.note(20, 482, "A catch-all rule is what turns “nobody wanted it” "
+           "into a number you can alarm on.", size=11.5, colour=MUTED)
+    d.assert_clean()
+    return ("week-20-eventbridge-accountable-bus", d.render(),
+            "Every event lands somewhere: a rule, a queue, or the log group "
+            "that proves nothing was dropped.")
+
+
+BUILDERS = [w09, w10, w11, w12, w13, w14, w15, w16, w17, w18, w19, w20]
 
 
 def install(prefix, svg, caption):
