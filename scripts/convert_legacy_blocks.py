@@ -79,6 +79,69 @@ def convert_flow(t):
     return t, n
 
 
+def convert_numbered_cards(t, outer, inner, drop_classes):
+    """<div class=outer><div class=inner>[<div class=drop>N</div>]<h4>..</h4><p>..</p>
+
+    Week 5 renders its "why" list, and its security controls, as nested divs
+    with an icon or an ordinal in one child and the content in another. Both
+    are lists. An <ol>/<ul> says the same thing, needs no bespoke CSS, and is
+    what a screen reader announces.
+    """
+    n = 0
+    tag = "ol" if outer == "steps" else "ul"
+    while True:
+        m = re.search(r'<div class="%s">' % re.escape(outer), t)
+        if not m:
+            return t, n
+        end = _balanced(t, m.start())
+        if end < 0:
+            return t, n
+        block = t[m.start():end]
+        items = []
+        for im in re.finditer(r'<div class="%s">' % re.escape(inner), block):
+            iend = _balanced(block, im.start())
+            chunk = block[im.start():iend]
+            for d in drop_classes:
+                chunk = re.sub(r'<div class="%s">.*?</div>' % re.escape(d), "",
+                               chunk, flags=re.S)
+            h4 = re.search(r"<h4>(.*?)</h4>", chunk, re.S)
+            ps = re.findall(r"<p>(.*?)</p>", chunk, re.S)
+            if not ps:
+                continue
+            title = re.sub(r"<[^>]+>", "", h4.group(1)).strip() if h4 else ""
+            body = " ".join(x.strip() for x in ps)
+            items.append("  <li><strong>%s</strong> %s</li>" % (title, body)
+                         if title else "  <li>%s</li>" % body)
+        if not items:
+            return t, n
+        t = (t[:m.start()]
+             + "<%s>\n%s\n</%s>" % (tag, "\n".join(items), tag)
+             + t[end:])
+        n += 1
+
+
+def plain_ref_list(t):
+    """Strip the decorative tag chip from each reference."""
+    n = t.count('class="ref-list"') + t.count('class="ref-tag"')
+    t = t.replace('<ul class="ref-list">', "<ul>")
+    t = re.sub(r'<span class="ref-tag">.*?</span>\s*', "", t, flags=re.S)
+    return t, n
+
+
+def unwrap_class(t, cls):
+    """Remove a purely presentational wrapper, keeping its contents."""
+    n = 0
+    while True:
+        m = re.search(r'<div class="%s">' % re.escape(cls), t)
+        if not m:
+            return t, n
+        end = _balanced(t, m.start())
+        if end < 0:
+            return t, n
+        t = t[:m.start()] + t[m.end():end - 6] + t[end:]
+        n += 1
+
+
 def drop_post_footer(t):
     n = 0
     while True:
@@ -109,8 +172,14 @@ def main() -> int:
         p = paths.for_week(wk)
         t = io.open(p, encoding="utf-8").read()
         t, nf = convert_flow(t)
+        t, ns = convert_numbered_cards(t, "steps", "step", ("step-num",))
+        t, nsec = convert_numbered_cards(t, "security-grid", "security-item",
+                                         ("security-icon",))
+        t, nr = plain_ref_list(t)
+        t, nw = unwrap_class(t, "arch-wrap")
         t, nd = drop_post_footer(t)
-        if not (nf or nd):
+        nf += ns + nsec + nw
+        if not (nf or nd or nr):
             print("  week %-2d nothing to convert" % wk)
             continue
         if a.write:

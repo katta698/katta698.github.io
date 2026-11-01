@@ -109,6 +109,35 @@ INBOUND = [
     (r"^Key Takeaways",                     "cleanup"),
     (r"^Takeaways",                         "cleanup"),
     (r"^References",                        "cleanup"),
+    # Weeks 1-3 and 5 name their sections for what they contain rather than
+    # for the standard's section. Each of these is a real section and has to
+    # map, or the tool refuses the post rather than dropping it silently.
+    (r"^The Challenge",                     "overview"),
+    (r"^The Problem This Solves",           "overview"),
+    (r"^Why Implement",                     "overview"),
+    (r"^Skills (&amp;|&) Tools",            "services"),
+    (r"^What Gets Deployed",                "architecture"),
+    (r"^How It Works",                      "architecture"),
+    (r"^Multi-Tenant",                      "architecture"),
+    (r"^Aurora Architecture",               "architecture"),
+    (r"^How to Implement",                  "build"),
+    (r"^Step \d+",                          "build"),
+    (r"^Patching All Three",                "build"),
+    (r"^The Onboard Story",                 "build"),
+    (r"^ServiceNow Integration",            "build"),
+    (r"^No NAT Gateway",                    "build"),
+    (r"^The Demo",                          "validation"),
+    (r"^Full Audit Trail",                  "validation"),
+    (r"^Real Challenges",                   "troubleshooting"),
+    (r"^Bugs That Taught Me",               "troubleshooting"),
+    (r"^The Real Debugging Journey",        "troubleshooting"),
+    (r"^Known Limitation",                  "troubleshooting"),
+    (r"^Security Best Practices",           "seccost"),
+    (r"^Security Patterns",                 "seccost"),
+    (r"^What&rsquo;s New in SSM",           "cleanup"),
+    (r"^What's New in SSM",                 "cleanup"),
+    (r"^What&rsquo;s Next",                 "cleanup"),
+    (r"^What's Next",                       "cleanup"),
 ]
 
 # Within section 9, these keep their own h3 and must appear in this order.
@@ -120,6 +149,10 @@ def plain(frag):
 
 
 def classify(heading):
+    # Week 5 numbers its headings ("1. The Challenge", "8. Cost & Cleanup").
+    # Every INBOUND pattern is anchored at the start, so a numbered post maps
+    # nothing at all and the tool refuses it as entirely unmapped.
+    heading = re.sub(r"^\s*\d+\.\s*", "", heading)
     for pat, sid in INBOUND:
         if re.search(pat, heading):
             return sid
