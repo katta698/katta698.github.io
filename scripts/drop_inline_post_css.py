@@ -32,15 +32,25 @@ sys.path.insert(0, HERE)
 
 import aws_post_path as paths            # noqa: E402
 
-# Classes the injected stylesheet is known to define. A post using something
-# outside this set would lose its styling, so the removal refuses.
-COVERED = {
-    "toc", "screenshot", "section", "card", "callout", "code-block",
-    "code-header", "code-lang", "code-dots", "code-dot", "tag-grid", "tag",
-    "grid-2", "grid-3", "post-header", "post-eyebrow", "post-title",
-    "post-subtitle", "post-meta", "inline", "icon", "icon-lg", "container",
-    "amber", "red", "green", "blue", "table-scroll", "diagram", "muted",
-}
+# What the builder actually injects, read from a built page rather than listed
+# here by hand. The first version of this carried a hand-maintained set and
+# refused weeks 3 and 5 for classes the stylesheet defines perfectly well --
+# an allow-list of someone else's output is a copy that goes stale the day it
+# is written.
+BUILT_SAMPLE = os.path.join(
+    os.path.dirname(HERE), "blog", "week-25-serverless-microservices",
+    "index.html")
+
+
+def injected_classes():
+    try:
+        page = io.open(BUILT_SAMPLE, encoding="utf-8").read()
+    except OSError:
+        return None
+    css = "\n".join(re.findall(r"<style[^>]*>(.*?)</style>", page, re.S))
+    if not css.strip():
+        return None
+    return set(re.findall(r"\.([A-Za-z][\w-]*)", css))
 
 
 def classes_used(html):
@@ -65,7 +75,13 @@ def main() -> int:
             print("  week %-2d no inline style" % wk)
             continue
         stripped = re.sub(r"<style[^>]*>.*?</style>\s*", "", t, flags=re.S)
-        unknown = sorted(classes_used(stripped) - COVERED)
+        covered = injected_classes()
+        if covered is None:
+            print("  week %-2d REFUSED - cannot read the built stylesheet to "
+                  "check against; run sync_blog.py first" % wk)
+            rc = 1
+            continue
+        unknown = sorted(classes_used(stripped) - covered)
         if unknown:
             print("  week %-2d REFUSED - classes not known to be covered: %s"
                   % (wk, ", ".join(unknown)))
