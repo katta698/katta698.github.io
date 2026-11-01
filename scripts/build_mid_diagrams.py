@@ -200,7 +200,189 @@ def w12():
             "needs a human.")
 
 
-BUILDERS = [w09, w10, w11, w12]
+# ---------------------------------------------------------------- week 13 ---
+def w13():
+    d = Diagram(960, 500,
+        "A normal user reaches an Amazon CloudFront distribution carrying a "
+        "web ACL in CLOUDFRONT scope, which forwards to an Amazon API Gateway "
+        "REST API carrying a second web ACL in REGIONAL scope with the same "
+        "rules. A caller who knows the origin URL skips CloudFront and meets "
+        "the second web ACL instead. AWS Shield Standard protects both at "
+        "layers 3 and 4. Blocked and counted requests raise Amazon CloudWatch "
+        "alarms that notify through Amazon SNS.")
+    d.component(20, 96, 164, 52, "Normal user", "via the CloudFront URL")
+    d.component(20, 300, 164, 52, "Origin URL holder", "skips the edge")
+    d.cloud(200, 14, 746, 450)
+    d.group(230, 58, 686, 380, "Region: us-east-1")
+
+    d.arrow(188, 124, 274, 124, step="1")
+    d.icon(280, 110, "cloudfront", "CloudFront", "the edge")
+    d.component(230, 210, 170, 56, "Edge web ACL", "CLOUDFRONT scope")
+    d.elbow(280, 134, 250, 204)
+
+    d.arrow(334, 134, 492, 134, step="2")
+    d.icon(500, 110, "api-gateway", "API Gateway", "REST, not HTTP")
+    d.component(440, 210, 170, 56, "Origin web ACL", "REGIONAL scope")
+    d.elbow(500, 134, 460, 204)
+
+    d.icon(690, 110, "lambda", "echo", "answers if it got through")
+    d.arrow(554, 134, 682, 134, step="3")
+
+    # The bypass meets the second web ACL, which is the whole point: it lands
+    # on that box, not on the API behind it.
+    d.elbow(188, 326, 524, 272)
+
+    d.component(640, 210, 270, 56, "Shield Standard",
+                "L3/L4, always on, nothing to deploy")
+    d.icon(590, 310, "cloudwatch", "CloudWatch", "Blocked + Counted", size=44)
+    d.icon(750, 310, "sns", "SNS", "email alert", size=44)
+    d.arrow(634, 332, 742, 332)
+    d.arrow(570, 266, 608, 304)
+
+    d.note(20, 482, "The same five rules sit at both scopes, so knowing the "
+           "origin URL buys nothing — which is the only way the edge is "
+           "worth deploying.", size=11.5, colour=MUTED)
+    d.assert_clean()
+    return ("week-13-waf-shield-protection", d.render(),
+            "Two web ACLs, the same five rules. The bypass meets the second "
+            "one.")
+
+
+# ---------------------------------------------------------------- week 14 ---
+def w14():
+    d = Diagram(1040, 520,
+        "Inside one Amazon VPC, an exposed Amazon EC2 instance in a public "
+        "subnet is scanned from the internet and rejects every unsolicited "
+        "packet, while a generator instance in a private subnet reaches out "
+        "through a NAT gateway that carries most of the build's cost. VPC "
+        "flow logs in record version 11 are delivered to Amazon S3 in Parquet "
+        "format, partitioned, and queried with Amazon Athena.")
+    d.component(20, 110, 120, 52, "The internet", "200 scanning IPs")
+    d.cloud(160, 14, 864, 450)
+    d.group(190, 58, 440, 380, "VPC — the observed network")
+
+    d.arrow(144, 132, 222, 132)
+    d.icon(230, 110, "ec2", "exposed host", "public subnet", size=44)
+    d.note(214, 212, "every packet REJECTed", size=11, colour=RED,
+           weight="600")
+    d.note(214, 230, "— the denial is the signal", size=11, colour=MUTED)
+
+    d.icon(230, 282, "ec2", "generator", "private subnet", size=44)
+    d.component(400, 276, 200, 56, "NAT gateway", "$0.045/hr + per GB")
+    d.arrow(276, 304, 392, 304)
+
+    d.group(670, 58, 324, 380, "The record, and the query")
+    d.arrow(630, 132, 702, 132, step="1")
+    d.icon(710, 110, "vpc", "Flow logs", "v11 · 32 fields", size=44)
+    d.icon(890, 110, "s3", "S3", "Parquet", size=44)
+    d.arrow(754, 132, 882, 132, step="2")
+    d.icon(936, 282, "athena", "Athena", "one query", size=44)
+    d.elbow(934, 132, 958, 274)
+
+    d.note(690, 230, "Record version 11 carries the", size=11, weight="600")
+    d.note(690, 248, "instance tag and the next-hop", size=11, colour=MUTED)
+    d.note(690, 266, "family — so the bill has an owner.", size=11,
+           colour=MUTED)
+
+    d.note(20, 500, "The NAT gateway is most of this build's cost, and "
+           "nothing on the charge itself says who caused it. The flow log "
+           "does.", size=11.5, colour=MUTED)
+    d.assert_clean()
+    return ("week-14-vpc-flow-logs-intelligence", d.render(),
+            "Two instances, two shapes of traffic. The expensive one is the "
+            "one with no name on the bill.")
+
+
+# ---------------------------------------------------------------- week 15 ---
+def w15():
+    d = Diagram(960, 400,
+        "A management account defines an AWS CloudTrail organization trail "
+        "covering six member accounts and any account created later. The "
+        "trail records management events only, across every Region, with "
+        "log-file validation on. Events are delivered to an Amazon S3 bucket "
+        "that is private, versioned, TLS-only and set to expire after 365 "
+        "days, and are queried with Amazon Athena.")
+    d.cloud(14, 14, 932, 330)
+    d.group(44, 58, 380, 240, "The organization")
+
+    d.icon(80, 104, "organizations", "Organizations", "management account")
+    d.component(230, 104, 170, 56, "6 member accounts", "no per-account setup")
+    d.note(64, 236, "One trail covers every account,", size=11, weight="600")
+    d.note(64, 254, "including ones created tomorrow.", size=11, colour=MUTED)
+
+    d.arrow(424, 128, 492, 128, step="1")
+    d.icon(500, 104, "cloudtrail", "CloudTrail", "org trail · multi-Region")
+
+    d.group(620, 58, 296, 240, "The delivered log")
+    d.icon(660, 104, "s3", "S3", "365-day expiry")
+    d.arrow(556, 128, 652, 128, step="2")
+    d.icon(820, 104, "athena", "Athena", "the query layer")
+    d.arrow(708, 128, 812, 128, step="3")
+    d.note(640, 236, "Management events only.", size=11, weight="600")
+    d.note(640, 254, "Data events are off: they bill", size=11, colour=MUTED)
+    d.note(640, 272, "from the very first copy.", size=11, colour=MUTED)
+
+    d.note(20, 372, "The bucket outlives the console's own 90-day history, "
+           "which is the only reason the trail answers a question asked a "
+           "year later.", size=11.5, colour=MUTED)
+    d.assert_clean()
+    return ("week-15-cloudtrail-audit-forensics", d.render(),
+            "One trail, every account, including the ones that do not exist "
+            "yet.")
+
+
+# ---------------------------------------------------------------- week 16 ---
+def w16():
+    d = Diagram(1000, 520,
+        "An Amazon EventBridge schedule invokes an order processor AWS Lambda "
+        "function every five minutes. The function reads its configuration "
+        "from an AWS Systems Manager parameter and writes order records to "
+        "Amazon S3, with an Amazon CloudWatch alarm on errors. A human "
+        "deletes the inline policy that allowed the configuration read, and "
+        "the AWS DevOps Agent investigates from an operator app through an "
+        "agent space scoped to one account association.")
+    d.cloud(14, 14, 972, 450)
+    d.group(44, 58, 500, 380, "The observed workload")
+
+    d.icon(80, 110, "eventbridge", "EventBridge", "rate(5 minutes)", size=44)
+    d.icon(240, 110, "lambda", "order processor", "reads its config", size=44)
+    d.arrow(126, 132, 232, 132, step="1")
+    d.icon(400, 110, "systems-manager", "SSM Parameter", "processing-mode",
+           size=44)
+    d.arrow(286, 132, 392, 132, step="2")
+
+    d.icon(298, 264, "s3", "S3", "order records", size=44)
+    d.elbow(286, 132, 320, 256)
+    d.icon(440, 264, "cloudwatch", "CloudWatch", "Errors, 300 s", size=44)
+    d.arrow(364, 286, 432, 286)
+
+    d.note(64, 356, "The break: a human deletes the config-read policy.",
+           size=11.5, colour=RED, weight="600")
+    d.note(64, 376, "The code never changed.", size=11, colour=MUTED)
+
+    d.group(584, 58, 392, 380,
+            "The agent — the association is the blast radius")
+    d.component(620, 120, 320, 56, "Operator App",
+                "where a human asks the question")
+    d.component(620, 200, 320, 56, "AgentSpace · week16-agent",
+                "no budget or duration cap")
+    d.component(620, 280, 320, 56, "Association · one AWS account",
+                "everything the agent can reach")
+    d.arrow(780, 180, 780, 196)
+    d.arrow(780, 260, 780, 276)
+    d.note(620, 376, "It found the cause. I still had to check it.",
+           size=11.5, weight="600")
+
+    d.note(20, 500, "Deployed through awscc, not the AWS provider: the "
+           "hashicorp/aws provider ships no DevOps Agent resources.",
+           size=11.5, colour=MUTED)
+    d.assert_clean()
+    return ("week-16-devops-agent-investigations", d.render(),
+            "The workload, the break a human caused, and the agent whose "
+            "reach is one association wide.")
+
+
+BUILDERS = [w09, w10, w11, w12, w13, w14, w15, w16]
 
 
 def install(prefix, svg, caption):
