@@ -1,0 +1,366 @@
+---
+title: "AWS Architecture Series #102 — Blocked is not unshared"
+date: '2026-11-03T09:00:00'
+slug: aws-architecture-ebs-snapshot-public-access
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-03'
+verified_claims:
+  - claim: "After you enable block public access for snapshots in a Region, any attempt to publicly share snapshots in that Region is automatically blocked"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "Block all sharing - Blocks all public sharing of your snapshots. Users in the account can't request new public sharing. Additionally, snapshots that were already publicly shared are treated as private and are no longer publicly available"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "Block new sharing - Blocks only new public sharing of your snapshots. Users in the account can't request new public sharing. However, snapshots that were already publicly shared, remain publicly available"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "Enabling block public access for snapshots in block all sharing mode does not change the permissions for snapshots that are already publicly shared"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "Therefore, the attributes for these snapshots still indicate that they are publicly shared, even though they are not publicly available"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "If you later disable block public access or change the mode to block new sharing, these snapshots will become publicly available again"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "Block public access for snapshots does not prevent private snapshot sharing"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "Block public access for snapshots is a Regional setting. It applies to all snapshots in the Region in which it is enabled"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "Block public access is an account-level setting. It applies to all users, including administrator users, in the account. You can't enable block public access for snapshots at the organization level"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "When a declarative policy is in use, you can't modify the setting directly within an account"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "Block public access for snapshots does not prevent the public sharing of EBS-backed AMIs"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "If an EBS-backed AMI is publicly shared, users with access to that AMI can create volumes from its associated snapshots"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "Block public access for snapshots can be enabled at no additional cost"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "Note that enabling block public access does not affect your AMIs that are already publicly available; they remain publicly available"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/sharingamis-intro.html
+  - claim: "To publicly share an AMI, block public access for AMIs must be disabled in each Region in which the AMI will be publicly shared"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/sharingamis-intro.html
+  - claim: "By default, the deprecation date of all public AMIs is set to two years from the AMI creation date"
+    source: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/sharingamis-intro.html
+  - claim: "When you apply block public access settings to an account, the settings apply to all AWS Regions globally"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+  - claim: "Block public access settings don't alter existing policies or ACLs"
+    source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+problem: "Three AWS features are called block public access, and the two questions that matter — does it reach across Regions, and what happens to what is already public — have different answers in all three. A team that learned the S3 one and assumes it transfers will get both answers wrong for EBS snapshots."
+builds: "A reading of block public access for EBS snapshots against the S3 and AMI settings that share its name, what its stronger mode actually does to an already-public snapshot, and the documented route around it."
+catch: "The stronger mode hides rather than revokes. AWS is explicit: it 'does not change the permissions for snapshots that are already publicly shared', so 'the attributes for these snapshots still indicate that they are publicly shared, even though they are not publicly available'. Turn the setting off and they are public again, because they never stopped being public — they stopped being reachable."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #102 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">Blocked is not unshared</h1>
+  <p class="post-subtitle">Block public access for EBS snapshots can make a public snapshot unreachable without making it private, and three AWS features with that name behave differently on the two questions you most need answered.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The feature does what the name says:
+      <em>&ldquo;After you enable block public access for snapshots in a Region, any attempt to publicly share
+      snapshots in that Region is automatically blocked.&rdquo;</em> It is free, it is one setting, and it
+      closes a real exposure.
+    </p>
+    <p>
+      The care is needed in two places. What it does to snapshots that are <em>already</em> public, and how
+      far the setting reaches &mdash; because the answers are not the ones you learned from S3.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The stronger mode hides the snapshot; it does not unshare it</strong></div>
+      <div class="challenge-body">
+        <p>
+          There are two modes, and the difference is entirely about history:
+        </p>
+        <p>
+          <em>&ldquo;<strong>Block all sharing</strong> &mdash; Blocks all public sharing of your snapshots.
+          Users in the account can't request new public sharing. Additionally, snapshots that were already
+          publicly shared are treated as private and are no longer publicly available.&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;<strong>Block new sharing</strong> &mdash; Blocks only new public sharing of your
+          snapshots &hellip; However, snapshots that were already publicly shared, remain publicly
+          available.&rdquo;</em>
+        </p>
+        <p>
+          So block all sharing looks like remediation. The considerations say precisely what it is instead:
+        </p>
+        <p>
+          <em>&ldquo;Enabling block public access for snapshots in block all sharing mode <strong>does not
+          change the permissions</strong> for snapshots that are already publicly shared. Instead, it prevents
+          these snapshots from be publicly visible and publicly accessible. Therefore, <strong>the attributes
+          for these snapshots still indicate that they are publicly shared</strong>, even though they are not
+          publicly available.&rdquo;</em>
+        </p>
+        <p>
+          Two consequences follow, and both bite. An inventory script that reads snapshot attributes will
+          report those snapshots as public &mdash; and it will be right, because they are. And the masking is
+          only as durable as the setting:
+          <em>&ldquo;If you later disable block public access or change the mode to block new sharing, these
+          snapshots will become publicly available again.&rdquo;</em>
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat block all sharing as containment, not as the fix. Use it to stop the bleeding, then go and actually revoke the public permission on each snapshot it is masking &mdash; the attribute tells you which ones those are. Until you do, the exposure is one setting change away from returning, and it will not be in anyone's change log as a data exposure.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Three features, one name, and no shared behaviour on the two questions that matter</strong></div>
+      <div class="challenge-body">
+        <p>
+          S3's block public access is the one most teams met first, and
+          <a href="/blog/aws-architecture-account-baseline/">#40</a> quoted its scope:
+          <em>&ldquo;When you apply block public access settings to an account, the settings apply to
+          <strong>all AWS Regions globally</strong>.&rdquo;</em>
+        </p>
+        <p>
+          The snapshot setting is the opposite:
+          <em>&ldquo;Block public access for snapshots is <strong>a Regional setting</strong>. It applies to
+          all snapshots in the Region in which it is enabled. You need to enable block public access for
+          snapshots <strong>in each Region</strong> in which you want to prevent the public sharing of your
+          snapshots.&rdquo;</em>
+        </p>
+        <p>
+          One call for S3 across the world; one call per Region for snapshots, including the Regions nobody
+          uses, which are exactly where an unnoticed public snapshot would sit.
+        </p>
+        <p>
+          And on already-public resources the three diverge again. S3:
+          <em>&ldquo;Block public access settings don't alter existing policies or ACLs.&rdquo;</em> AMIs:
+          <em>&ldquo;enabling block public access does not affect your AMIs that are already publicly
+          available; <strong>they remain publicly available</strong>.&rdquo;</em> Snapshots in block all
+          sharing mode are the only one of the three that makes existing public resources unreachable &mdash;
+          and, as above, without changing their permissions.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Do not carry an assumption from one of these to another. Write down, per feature, whether it is Regional and what it does to what is already public; those two answers determine everything about how you roll it out and what your evidence looks like afterwards.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>AWS documents the route around it</strong></div>
+      <div class="challenge-body">
+        <p>
+          The snapshot setting has a stated limit that is not a subtlety:
+        </p>
+        <p>
+          <em>&ldquo;Block public access for snapshots <strong>does not prevent the public sharing of
+          EBS-backed AMIs</strong>. If you enable block public access for snapshots, users can still publicly
+          share EBS-backed AMIs. <strong>If an EBS-backed AMI is publicly shared, users with access to that
+          AMI can create volumes from its associated snapshots.</strong>&rdquo;</em>
+        </p>
+        <p>
+          The snapshot data reaches the public through the AMI, with the snapshot setting on and reporting
+          success. AWS names the remedy in the same bullet &mdash; the separate block public access for AMIs
+          &mdash; which is also Regional:
+          <em>&ldquo;block public access for AMIs must be disabled <strong>in each Region</strong> in which
+          the AMI will be publicly shared.&rdquo;</em>
+        </p>
+        <p>
+          One more gap worth stating plainly, because the name invites the wrong reading:
+          <em>&ldquo;Block public access for snapshots does not prevent <strong>private</strong> snapshot
+          sharing.&rdquo;</em> Sharing a snapshot with a named external account is untouched. The setting is
+          about the <em>public</em> group, not about egress.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Enable both settings, in every Region, or you have enabled neither in any meaningful sense. And if your concern is data leaving the organisation rather than data becoming world-readable, neither setting addresses it &mdash; that is a job for an SCP or a resource control policy on the sharing API.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-102-snapshot-public-access.svg" alt="Diagram: three AWS features named block public access behave differently on two questions. S3 block public access applies to all AWS Regions globally and does not alter existing policies or ACLs. Block public access for EBS snapshots is a Regional setting with two modes, where block all sharing treats already-public snapshots as private without changing their permissions, so their attributes still indicate public sharing, and disabling the setting makes them publicly available again. Block public access for AMIs is also per Region and does not affect AMIs that are already publicly available. The diagram also shows the documented route around the snapshot setting: it does not prevent public sharing of EBS-backed AMIs, and users with access to a publicly shared AMI can create volumes from its associated snapshots.">
+
+    <h3>The same name, three behaviours</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>S3</th><th>EBS snapshots</th><th>AMIs</th></tr>
+      <tr>
+        <td>Scope</td>
+        <td><em>&ldquo;all AWS Regions globally&rdquo;</em></td>
+        <td><em>&ldquo;a Regional setting&rdquo;</em> &mdash; enable per Region</td>
+        <td>Per Region</td>
+      </tr>
+      <tr>
+        <td>Already public</td>
+        <td>Unchanged &mdash; <em>&ldquo;don't alter existing policies or ACLs&rdquo;</em></td>
+        <td>Block all sharing: <em>&ldquo;treated as private&rdquo;</em>. Block new sharing: <em>&ldquo;remain publicly available&rdquo;</em></td>
+        <td><em>&ldquo;they remain publicly available&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Permissions actually changed?</td>
+        <td>No</td>
+        <td>No &mdash; <em>&ldquo;does not change the permissions&rdquo;</em></td>
+        <td>No</td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      The bottom row is the one constant: none of these three revokes anything. They are all gates in front of
+      a permission that remains where it was, which is why turning any of them off restores the exposure.
+    </p>
+
+    <h3>Where the setting lives, and who can move it</h3>
+    <p>
+      <em>&ldquo;Block public access is an account-level setting. It applies to all users, including
+      administrator users, in the account. <strong>You can't enable block public access for snapshots at the
+      organization level.</strong>&rdquo;</em>
+    </p>
+    <p>
+      That reads like a gap and has an answer in the next bullet: a declarative policy
+      <em>&ldquo;allows you to apply the setting across multiple Regions simultaneously, as well as across
+      multiple accounts simultaneously&rdquo;</em>, and it changes who holds the switch &mdash;
+      <em>&ldquo;When a declarative policy is in use, you can't modify the setting directly within an
+      account.&rdquo;</em>
+    </p>
+    <p>
+      For an estate of any size that is the only version worth deploying. Set per account and per Region, this
+      is a control that drifts the moment a new account or a new Region appears; set by declarative policy, it
+      arrives with them.
+    </p>
+
+    <h3>Why the masked state is worse than it sounds</h3>
+    <p>
+      Consider the sequence. A snapshot is shared publicly in 2024. Block public access goes on in block all
+      sharing mode in 2026, and the snapshot stops being reachable. An audit in 2027 reads snapshot attributes,
+      sees <code>public</code>, and raises a finding. Somebody investigates, confirms the data is not
+      reachable, and closes it as a false positive.
+    </p>
+    <p>
+      It was not a false positive. The permission is still there, and the only thing standing between it and
+      the internet is a setting that a future cleanup, a Region rebuild, or a declarative policy change can
+      flip. The attribute was telling the truth.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Not changing permissions is the right default, even though it surprises</h3>
+    <p>
+      A setting that silently rewrote the ACLs of every public snapshot in a Region would be a far more
+      dangerous thing to enable. Keeping the permission and gating access means enabling the control is
+      reversible and auditable, and it means AWS never destroys configuration you did not ask it to destroy.
+      The cost is that remediation and containment look identical from the outside, which is why the
+      documentation says so twice.
+    </p>
+
+    <h3>Regional scope is consistent with the resource</h3>
+    <p>
+      Snapshots and AMIs are Regional resources; S3 buckets sit in a global namespace. Each setting matches
+      the shape of what it protects, which is defensible even though it means the operational burden differs.
+      The lesson is not that the snapshot setting is worse &mdash; it is that the name promises a uniformity
+      the services do not have.
+    </p>
+
+    <h3>Naming the AMI bypass in the feature's own considerations is good practice</h3>
+    <p>
+      It would have been easy to leave the AMI path to a security bulletin. Putting
+      <em>&ldquo;does not prevent the public sharing of EBS-backed AMIs&rdquo;</em> in the considerations list
+      of the feature it bypasses is the difference between a reader who enables one setting and a reader who
+      enables two.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>How to apply it</td>
+        <td>Declarative policy, not per account</td>
+        <td>It covers <em>&ldquo;multiple Regions&rdquo;</em> and <em>&ldquo;multiple accounts simultaneously&rdquo;</em>, and removes the in-account switch</td>
+      </tr>
+      <tr>
+        <td>Which mode</td>
+        <td>Block all sharing, then revoke</td>
+        <td>It is containment with a known half-life; the permission survives it</td>
+      </tr>
+      <tr>
+        <td>Region coverage</td>
+        <td>Every Region, including unused ones</td>
+        <td>The setting is Regional, and an unused Region is where an unnoticed public snapshot lives</td>
+      </tr>
+      <tr>
+        <td>AMIs</td>
+        <td>Enable block public access for AMIs as well</td>
+        <td>Otherwise a public AMI reaches the same snapshot data by a documented path</td>
+      </tr>
+      <tr>
+        <td>Preventing data leaving the org</td>
+        <td>An SCP or RCP on the sharing calls</td>
+        <td>Neither setting touches private sharing to named accounts</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List snapshots whose attributes say public, in every Region, and do not stop at the block
+      public access setting.</strong> If the setting is on in block all sharing mode, that list is your
+      remediation backlog rather than a list of exposures &mdash; but it is a backlog, and today it is being
+      held closed by one boolean.
+    </p>
+    <p>
+      <strong>Check both settings, per Region, in every account.</strong> Snapshots and AMIs are separate
+      switches on separate pages protecting the same bytes.
+    </p>
+    <p>
+      <strong>Then ask who can turn either off.</strong> Under a declarative policy the answer is a short
+      list in the management account. Without one, it is every administrator in every account, and the
+      control is a convention rather than a guarantee.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The pattern across all three of these settings is the same, and it is worth holding onto beyond EBS: a
+      block is a gate in front of a permission, not a change to it. That is good engineering &mdash;
+      reversible, non-destructive, auditable &mdash; and it means that <em>we blocked public access</em> and
+      <em>nothing is public</em> describe different states.
+    </p>
+    <p>
+      The snapshot documentation is unusually direct about the consequence, to the point of telling you that
+      your own attributes will disagree with your own security posture. That sentence is the whole post, and
+      it is in the considerations list of a free feature most people enable without reading.
+    </p>
+    <p>
+      <a href="/blog/aws-architecture-ebs-snapshot-lock/">#101</a> was about a lock that defends existence and
+      not readability. This is about a block that defends reachability and not permission. Both are narrow
+      guarantees described precisely, and both are read as wider than they are.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; AWS Organizations declarative policies: what makes them different from an SCP, which settings they can hold, and what it means that an account can no longer change a value locally.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html" target="_blank" rel="noopener">Block public access for Amazon EBS snapshots &#8212; the two modes and what each does to snapshots already shared, the statement that permissions are not changed and that attributes still indicate public sharing, the re-exposure on disabling, the Regional and account-level scope, declarative policies, the absence of protection for private sharing and for EBS-backed AMIs, and the no-cost note</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/sharingamis-intro.html" target="_blank" rel="noopener">Make your AMI publicly available for use in Amazon EC2 &#8212; block public access for AMIs not affecting AMIs already public, the per-Region requirement, and the two-year default deprecation date for public AMIs</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html" target="_blank" rel="noopener">Blocking public access to your Amazon S3 storage &#8212; the global Region scope and the statement that the settings do not alter existing policies or ACLs, used for the comparison above</a></li>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html" target="_blank" rel="noopener">Declarative policies in AWS Organizations &#8212; further reading on applying the setting across accounts and Regions; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/block-public-access-to-amis.html" target="_blank" rel="noopener">Understand block public access for AMIs &#8212; further reading on the AMI-side setting; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
