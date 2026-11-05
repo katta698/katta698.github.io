@@ -20,11 +20,35 @@ name: Ingest cloud announcements
 
 on:
   schedule:
-    # 05:10 UTC daily = just after midnight in CDT, when none of the four
-    # publishing windows is mid-rebase. Daily rather than weekly because the
-    # AWS window is 12 days: a weekly run leaves only five days of slack, and
-    # one skipped week loses announcements permanently.
-    - cron: "10 5 * * *"
+    # Three times a day, not once. Daily rather than weekly because the AWS
+    # window is 12 days: a weekly run leaves only five days of slack, and one
+    # skipped week loses announcements permanently.
+    #
+    # Once a day was not enough, and the way it failed is the point: it did
+    # not fail. Measured 2026-11-05, with the single 05:10 run in place --
+    #
+    #   ingest ran 2026-11-04  ->  newest announcement in store: 2026-11-03
+    #   ingest ran 2026-11-03  ->  newest announcement in store: 2026-11-03
+    #   ingest ran 2026-11-02  ->  newest announcement in store: 2026-11-02
+    #   ingest ran 2026-11-01  ->  newest announcement in store: 2026-10-30
+    #
+    # Every one of those runs succeeded. GitHub starts this cron around
+    # 12:45-13:25 UTC rather than 05:10, and AWS publishes across a US working
+    # day -- 4 November ran to 21:29 GMT. So a single morning run structurally
+    # cannot see the afternoon, and whether it catches a given day is a race
+    # it sometimes wins. An irregular lag is worse than a constant one: the
+    # page looks current, and only a reader counting days notices.
+    #
+    # Reported as "no new AWS posts yesterday?", which is exactly the question
+    # a page carrying a day-old inventory invites.
+    #
+    # Re-running is cheap and safe. The store merges on record_id and
+    # preserves first_seen, so a run with nothing new is a no-op -- see the
+    # 1 November commit, "Ingest cloud announcements (0 new)". The cost is
+    # that deploy-pages.yml lists this workflow in its workflow_run, so the
+    # site now deploys up to three times a day instead of once. That is about
+    # a minute each since the checks moved into preflight.yml.
+    - cron: "10 5,13,21 * * *"
   workflow_dispatch:
 
 permissions:
@@ -59,7 +83,15 @@ jobs:
         # month, a corrupt line, duplicate ids, future dates and a tagging
         # regression -- all of which are silent, and all of which would
         # otherwise be published straight to the page.
-        run: python scripts/check_news.py
+        #
+        # --online here and nowhere else. It reconciles the store against
+        # AWS's own What's New feed, and this is the one moment the
+        # comparison is unambiguous: the store was built from that feed
+        # seconds ago, so a finished day the feed has and the store does not
+        # is a defect rather than a timing artefact. Running it from
+        # prepublish instead would put a network fetch on every window's
+        # push and answer a question none of them asked.
+        run: python scripts/check_news.py --online
 
       - name: Commit and push, regenerating rather than merging on a conflict
         run: |
@@ -116,7 +148,7 @@ jobs:
             python scripts/news_store.py ingest
             python scripts/news_tag.py apply
             python scripts/build_news_page.py
-            python scripts/check_news.py
+            python scripts/check_news.py --online
             if git diff --quiet -- intelligence/; then
               echo "Nothing left to add after rebasing."
               exit 0
