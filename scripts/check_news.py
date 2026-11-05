@@ -168,6 +168,128 @@ def configured_feeds(cloud):
     return out
 
 
+# ── is the store LEVEL with the source, or merely recent? ───────────
+#
+# The two checks above ask different questions from this one, and on
+# 4 November 2026 both answered "fine" while the page was a day behind:
+#
+#   ingest ran 2026-11-04  ->  newest announcement in store: 2026-11-03
+#
+# check_ingest_ran asks whether anything fetched. It had, successfully.
+# check_freshness asks whether the newest announcement is OLD, against a
+# six-day ceiling tuned to catch a feed that has died. One day is not old.
+# So the store sat a day behind AWS, the page said "107 announcements" with
+# no hint that the newest day in it was yesterday's, and the thing that
+# eventually noticed was a person asking "no new AWS posts yesterday?".
+#
+# Neither check could have caught it, because neither looks at the source.
+# "Is anything missing?" is a different question from "is this right?", and
+# only the first one needs the feed.
+#
+# A date-arithmetic rule cannot answer it either. "Newest must be within 24
+# hours" fires every Monday, and on US holidays, and a checker that cries
+# wolf gets switched off -- which is how this site loses checks. Comparing
+# against the feed cannot cry wolf: if AWS published nothing, the feed's
+# newest is old too and the two still agree.
+#
+# COMPLETED DAYS ONLY. This runs straight after the ingest, seconds later,
+# and an item landing in that gap would otherwise read as a lag. Today is
+# therefore excluded from both sides: the question is whether the store has
+# every day AWS has FINISHED publishing.
+AWS_FEED = "https://aws.amazon.com/about-aws/whats-new/recent/feed/"
+
+
+def feed_lag_problem(store_newest, feed_dates, today):
+    """Return a message when the feed holds a finished day the store lacks.
+
+    Pure, and shared by the check and its canary so the two cannot drift
+    apart -- the failure mode where a rule passes its own test and nothing
+    else.
+    """
+    # fetch_week.parse hands back datetime.date; the store holds ISO
+    # strings. Normalise rather than trusting either -- comparing the two
+    # raises TypeError, which is a crash and not a verdict.
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else str(d)[:10]
+    store_newest = iso(store_newest) if store_newest else None
+    cutoff = today.isoformat()
+    completed = [iso(d) for d in feed_dates]
+    completed = [d for d in completed if d < cutoff]
+    if not completed:
+        # Every item in the feed is from today. Nothing has finished, so
+        # there is nothing to be behind on.
+        return None
+    newest_completed = max(completed)
+    if not store_newest:
+        return ("the store holds no AWS announcements at all, while AWS's "
+                "What's New feed carries items from %s" % newest_completed)
+    if store_newest < newest_completed:
+        return ("the store's newest AWS announcement is %s, but AWS's own "
+                "What's New feed carries %s -- a day AWS has finished "
+                "publishing and the store does not have. The ingest ran and "
+                "the store is not stale by the six-day rule, so nothing else "
+                "here reports this. Run: python scripts/news_store.py ingest"
+                % (store_newest, newest_completed))
+    return None
+
+
+def canary_feed_lag():
+    """Runs on every invocation. A check that cannot fail is worse than none."""
+    d = datetime.date(2026, 11, 5)
+    behind = feed_lag_problem("2026-11-03", ["2026-11-03", "2026-11-04"], d)
+    level = feed_lag_problem("2026-11-04", ["2026-11-03", "2026-11-04"], d)
+    today_only = feed_lag_problem("2026-11-03", ["2026-11-05"], d)
+    # The crash this check shipped with for ten minutes: fetch_week.parse
+    # returns datetime.date and the store holds strings, so the comparison
+    # raised TypeError instead of returning a verdict. A crash is not a
+    # pass and it is not a failure; it is the check not existing.
+    mixed = feed_lag_problem("2026-11-03",
+                             [datetime.date(2026, 11, 4)], d)
+    if not mixed:
+        problems.append("canary: feed_lag_problem did not handle date "
+                        "objects from the feed alongside the store's "
+                        "strings -- it cannot read its own inputs")
+    if not behind:
+        problems.append("canary: feed_lag_problem did not report a store a "
+                        "day behind the feed -- this check cannot fail")
+    if level:
+        problems.append("canary: feed_lag_problem reported a store that is "
+                        "level with the feed -- it would cry wolf daily")
+    if today_only:
+        problems.append("canary: feed_lag_problem counted an unfinished day "
+                        "as a lag -- it would fire on the ingest's own race")
+
+
+def check_store_matches_feed(data):
+    """Network. Opt-in with --online, because every other check here is not.
+
+    Its home is ingest-news.yml, immediately after the ingest: at that
+    moment the store has just been built from this very feed, so anything
+    the feed has and the store does not is a real defect rather than a
+    timing artefact.
+    """
+    import fetch_week
+    try:
+        rows = fetch_week.parse(fetch_week.fetch(AWS_FEED))
+    except Exception as exc:                      # noqa: BLE001
+        # Loud, not silent. An unreachable feed is not a pass -- but it is
+        # also not evidence the store is wrong, so it is a warning.
+        warnings.append("could not reach AWS What's New to reconcile the "
+                        "store against it: %s" % exc)
+        return
+    feed_dates = [r[0] for r in rows]
+    aws = data.get("aws") or []
+    store_newest = max((r["date"] for r in aws), default=None)
+    msg = feed_lag_problem(store_newest, feed_dates,
+                           datetime.date.today())
+    if msg:
+        problems.append(msg)
+    else:
+        newest_feed = max((d.isoformat() if hasattr(d, "isoformat")
+                           else str(d)[:10]) for d in feed_dates)             if feed_dates else "-"
+        notes.append("aws: store is level with the What's New feed "
+                     "(store %s, feed %s)" % (store_newest, newest_feed))
+
+
 def check_feed_silence(data):
     """A single feed going quiet, which cloud-level freshness cannot see.
 
@@ -382,9 +504,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--strict", action="store_true",
                     help="treat warnings as failures")
+    ap.add_argument("--online", action="store_true",
+                    help="also reconcile the store against AWS's live feed")
     args = ap.parse_args()
 
     data = load_all()
+    canary_feed_lag()
     check_not_empty(data)
     check_feed_silence(data)
     check_no_empty_months(data)
@@ -397,6 +522,8 @@ def main():
     check_tagging(data)
     check_page_matches_store(data)
     check_golden()
+    if args.online:
+        check_store_matches_feed(data)
 
     for n in notes:
         print("  ok    %s" % n)
