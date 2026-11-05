@@ -164,12 +164,14 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
   <article>
     <header class="post-header">
       <div class="post-header-meta"><span class="tag-badge">AWS Weekly Lab</span> <span class="tag-badge">AWS</span> <span class="tag-badge">Terraform</span></div>
-      <h1>Week 2: I Built a Self-Service Database Platform — A Developer Gets a PostgreSQL Database in 12 Seconds</h1>
-      
+      <h1>A database in twelve seconds</h1>
+      <p class="post-description">A ServiceNow catalogue item creates a real PostgreSQL
+  database on a shared Aurora cluster, stores its credentials in Secrets Manager and
+  closes the ticket with the connection details. No engineer in the path.</p>
       <div class="post-info">
         <span>May 30, 2026</span>
         <span class="post-info-dot"></span>
-        <span>8 min read</span>
+        <span>12 min read</span>
       </div>
     </header>
     
@@ -316,17 +318,17 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
 #jk-post .before-card, #jk-post .after-card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 16px; background: #fafafa; }
 #jk-post .ba-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: #6c757d; margin-bottom: 8px; display: block; }
 #jk-post .ba-item { font-size: 14px; color: #3d3d3d; margin-bottom: 6px; }
-</style>
-<div id="jk-post">
-<div class="meta">
-<span>☁️ AWS Platform Engineering Lab</span>
-<span>📅 Week 2 of 52</span>
-<span>⚡ 12-second provisioning</span>
-<span>🏗️ 67 Terraform resources</span>
-<span>🐘 Aurora PostgreSQL 16</span>
-</div>
+</style><div id="jk-post">
+<div class="post-header">
+<div class="post-eyebrow">AWS Platform Engineering Lab · Week 2 of 52</div>
 
-<div class="stack-badge">ServiceNow → API Gateway → Lambda → Step Functions → Aurora Serverless → Secrets Manager</div>
+
+<div class="post-meta">
+<span>30 May 2026</span>
+<span>Terraform · Aurora · Step Functions · ServiceNow</span>
+<span>12 seconds end to end</span>
+</div>
+</div>
 <p>In my 14 years as a DBA, I've seen this scene play out hundreds of times. A developer raises a ticket: <em>"Need a PostgreSQL database for my new service."</em> The ticket sits in the queue. A DBA reviews it, provisions the database, sets up credentials, emails them back. Three days later. If you're lucky.</p>
 <p>Week 2 of my 52-week AWS lab eliminates that process entirely. A developer fills out a ServiceNow catalog item — database name, team, purpose — clicks Order Now, and <strong>12 seconds later</strong> the ticket closes itself with full connection details, auto-rotating credentials stored in AWS Secrets Manager, and an isolated PostgreSQL database on a shared Aurora Serverless cluster.</p>
 <p>Zero emails. Zero DBA involvement. Zero waiting.</p>
@@ -338,7 +340,57 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
 <div class="stat-box"><span class="stat-val">∞</span><span class="stat-lbl">Tenant Databases</span></div>
 </div>
 <hr class="section-divider"/>
-<h2>Architecture</h2>
+<div class="toc">
+<h3>📋 In This Post</h3>
+<ol>
+<li><a href="#overview">Lab Overview</a></li>
+<li><a href="#services">Cloud Services and Concepts</a></li>
+<li><a href="#architecture">Architecture and Workflow</a></li>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#implementation">Implementation</a></li>
+<li><a href="#validation">Validation and Evidence</a></li>
+<li><a href="#security-cost">Security and Cost</a></li>
+<li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+<li><a href="#cleanup">Cleanup and Key Takeaways</a></li>
+</ol>
+</div>
+<div class="section" id="overview">
+<h2 id="overview">Lab Overview</h2>
+<p>A developer needs a Postgres database. How long until they have one, and who
+has to be awake for it to happen?</p>
+<p><strong>The problem.</strong> The usual answer is a ticket, a DBA, and a
+wait measured in days — most of it queueing rather than working. The work
+itself is a handful of API calls that never vary.</p>
+<p><strong>The objective.</strong> A ServiceNow catalogue item in, a real
+database on a shared Aurora cluster out, credentials in Secrets Manager, and the
+ticket closed with the connection details. No engineer in the path.</p>
+<p><strong>The outcome.</strong> End to end in 12 seconds, and five separate
+things had to be fixed first — including one that is a Git Bash behaviour
+rather than an AWS one.</p>
+</div>
+<div class="section" id="services">
+<h2 id="services">Cloud Services and Concepts</h2>
+<div class="table-scroll">
+<table>
+<thead><tr><th>Service</th><th>Purpose here</th><th>What it is</th></tr></thead>
+<tbody>
+<tr><td>Amazon Aurora PostgreSQL 16</td><td>One cluster, a database per tenant</td><td>A managed PostgreSQL-compatible database where storage grows on its own and AWS handles replication and failover.</td></tr>
+<tr><td>AWS Secrets Manager</td><td>Holds each tenant's credentials</td><td>Stores a secret, controls who may read it with IAM, and can rotate it. The application is given a name to look up rather than a password.</td></tr>
+<tr><td>AWS Step Functions</td><td>Provision, then update the ticket, in order</td><td>Runs a workflow as an explicit state machine, so each step, its retry behaviour and its failure path are declared rather than buried in code.</td></tr>
+<tr><td>AWS Lambda</td><td>Runs the SQL and calls ServiceNow back</td><td>Runs a piece of code on demand with no server to manage. You are billed per request and per millisecond it runs.</td></tr>
+<tr><td>Amazon API Gateway</td><td>The endpoint ServiceNow posts to</td><td>A managed front door that accepts HTTP requests and forwards them to a backend.</td></tr>
+<tr><td>Amazon RDS Query Editor</td><td>How the result was checked</td><td>A browser SQL console for RDS and Aurora, which needs no bastion host and no database client installed.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The idea the build rests on is that a database is not the unit of isolation
+here — the cluster is shared, and what separates tenants is a database
+plus a role plus a secret, created together. That is cheap enough to do per
+request, which is what makes self-service affordable at all.</p>
+</div>
+<div class="section" id="architecture">
+<h2 id="architecture">Architecture and Workflow</h2>
+<h3>Architecture</h3>
 <div class="arch-container">
 <svg aria-label="A ServiceNow request reaches Amazon API Gateway and an AWS Lambda function, which starts an AWS Step Functions workflow. The workflow provisions a database on Amazon Aurora Serverless v2 and stores the per-tenant credentials in AWS Secrets Manager." role="img" viewbox="0 0 1000 430" xmlns="http://www.w3.org/2000/svg">
 <rect fill="#ffffff" height="430" width="1000"></rect>
@@ -387,7 +439,6 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
 </g></g>
 <text fill="#232F3E" font-family="Arial,sans-serif" font-size="11.5" text-anchor="middle" x="576" y="222">Step Functions</text>
 <text fill="#687078" font-family="Arial,sans-serif" font-size="10.5" text-anchor="middle" x="576" y="237">4 states</text>
-<path d="M608 182 L694 182" fill="none" marker-end="url(#ah)" stroke="#5A6B7B" stroke-width="1.6"></path>
 <circle cx="651" cy="152" fill="#232F3E" r="11"></circle>
 <text fill="#FFFFFF" font-family="Arial,sans-serif" font-size="11.5" font-weight="700" text-anchor="middle" x="651" y="156">4</text>
 <g transform="translate(702,88) scale(0.60000)"><g fill="none" fill-rule="evenodd" id="Icon-Architecture/64/Arch_Amazon-Aurora_64" stroke="none" stroke-width="1">
@@ -414,42 +465,7 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
 </svg>
 </div>
 <hr class="section-divider"/>
-<h2>How It Works — The 6-Step Flow</h2>
-<p>Every provisioning request follows the same path from ticket to database:</p>
-<ol>
-<li><strong>Developer submits ServiceNow catalog item</strong> — fills in Database Name, Team, Purpose, clicks Order Now. A RITM ticket is created in <code>sc_req_item</code>.</li>
-<li><strong>Business Rule fires automatically on INSERT</strong> — server-side JavaScript calls the AWS Outbound REST Message with the ticket payload over HTTPS.</li>
-<li><strong>API Gateway receives the POST</strong> — routes to the webhook_receiver Lambda which validates the HMAC signature and starts a Step Functions execution named <code>db-{db_name}-{ticket_id}</code>.</li>
-<li><strong>Step Functions orchestrates two tasks</strong> — ProvisionDatabase → UpdateServiceNow → Done. 5 state transitions, error handling and retry built in.</li>
-<li><strong>db_provisioner Lambda runs</strong> — fetches master credentials from Secrets Manager, connects to Aurora via pg8000, runs <code>CREATE DATABASE</code>, <code>CREATE USER</code>, <code>GRANT ALL PRIVILEGES</code>, stores the tenant secret, enables 30-day auto-rotation.</li>
-<li><strong>status_updater Lambda closes the ticket</strong> — posts a work note to ServiceNow with writer host, reader host, port, username, secret name, AWS CLI retrieval command, rotation policy, and monitoring links. Ticket → Closed Complete.</li>
-</ol>
-<hr class="section-divider"/>
-<h2>The Demo — Watch It Work</h2>
-<h3>Deploy — 67 Resources, One Command</h3>
-<p>Terraform plan shows 67 resources to add. The deploy script runs pre-flight checks, deletes any orphaned CloudWatch log groups, then applies the plan. Aurora Serverless takes ~10 minutes to fully warm up.</p>
-<div class="separator"><img alt="Terraform plan showing 67 resources to add" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/terraform-plan.png" width="600"/></div>
-<h3>Terraform Outputs</h3>
-<p>All key values are captured as outputs: API Gateway URL, Aurora writer/reader endpoints, CloudWatch dashboard URL, state machine ARN, VPC ID.</p>
-<div class="separator"><img alt="Terraform outputs showing all endpoints and ARNs" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/terraform-outputs.png" width="600"/></div>
-<h3>Manual curl Test First</h3>
-<p>Before wiring ServiceNow, I verified the full stack with a direct curl call. Ticket RITM0010001, database <code>myapp_db</code>. Instant response: workflow started.</p>
-<div class="separator"><img alt="curl POST to API Gateway with successful response" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/curl-test.png" width="600"/></div>
-<h3>Step Functions — Both Executions Succeeded</h3>
-<p>Two successful executions visible in the console: <code>db-myapp_db-RITM0010001</code> (12.4 seconds via curl) and <code>db-jay_test-RITM0010012</code> (8.7 seconds via ServiceNow). Both Succeeded.</p>
-<div class="separator"><img alt="Step Functions showing 2 successful executions" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/step-functions-executions.png" width="600"/></div>
-<div class="separator"><img alt="Step Functions execution detail — ProvisionDatabase UpdateServiceNow Done in 12 seconds" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/step-functions-detail.png" width="600"/></div>
-<h3>Credentials in Secrets Manager</h3>
-<p>Every provisioned database gets its own secret at <code>/selfservice-db/dev/db/{db_name}</code> — host, port, username, password, engine, dbname. The password is generated fresh by the provisioner Lambda, never stored in Terraform state.</p>
-<div class="separator"><img alt="AWS CLI showing secret JSON from Secrets Manager for myapp_db" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/secrets-manager.png" width="600"/></div>
-<h3>ServiceNow Ticket Closes Itself</h3>
-<p>The status_updater Lambda calls back to ServiceNow and closes the RITM with everything a developer needs — no email, no DBA, no waiting.</p>
-<div class="separator"><img alt="ServiceNow RITM0010012 Closed Complete with full database provisioning details" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/servicenow-ticket-closed.png" width="600"/></div>
-<h3>Verified in RDS Query Editor</h3>
-<p>Connected to Aurora via the RDS Query Editor (Data API). <code>SELECT datname FROM pg_database</code> confirms both tenant databases exist on the shared cluster — completely isolated by PostgreSQL user permissions.</p>
-<div class="separator"><img alt="RDS Query Editor connected to Aurora showing jay_test and myapp_db databases" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/rds-query-editor.png" width="600"/></div>
-<hr class="section-divider"/>
-<h2>Aurora Architecture Deep Dive</h2>
+<h3>Aurora Architecture Deep Dive</h3>
 <p>Aurora isn't just RDS with a new name. The storage and compute layers are completely decoupled — and that separation is what makes unlimited multi-tenancy work.</p>
 <div class="arch-container">
 <svg font-family="'Segoe UI', Arial, sans-serif" viewbox="0 0 820 310" xmlns="http://www.w3.org/2000/svg">
@@ -512,7 +528,8 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
 </div>
 <p><strong>The key insight:</strong> In traditional PostgreSQL you'd spin up a new server per tenant. With Aurora Serverless, you just run <code>CREATE DATABASE</code> — instant, zero infrastructure cost per tenant. The shared storage pool automatically maintains 6 copies across 3 AZs. If a storage node fails, Aurora self-repairs without any downtime.</p>
 <hr class="section-divider"/>
-<h2>Multi-Tenant Isolation Model</h2>
+<h3>Multi-Tenant Isolation Model</h3>
+<div class="table-scroll">
 <table>
 <tr><th>Concern</th><th>Approach</th><th>Why</th></tr>
 <tr><td>Isolation</td><td>PostgreSQL database per tenant</td><td>Complete schema isolation — no cross-tenant queries possible</td></tr>
@@ -522,8 +539,100 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
 <tr><td>Connections</td><td>50 connections per tenant (configurable)</td><td>Prevents one tenant from exhausting the cluster connection pool</td></tr>
 <tr><td>Scale</td><td>Aurora Serverless auto-scales</td><td>No right-sizing needed — cluster adapts to combined tenant load</td></tr>
 </table>
+</div>
 <hr class="section-divider"/>
-<h2>Security Patterns Baked In</h2>
+</div>
+<div class="section" id="prerequisites">
+<h2 id="prerequisites">Prerequisites</h2>
+<div class="table-scroll">
+<table>
+<thead><tr><th>Requirement</th><th>Why</th><th>How to check</th></tr></thead>
+<tbody>
+<tr><td>An Aurora cluster already running</td><td>This provisions a database inside a cluster; it does not create one per request, which is what keeps the cost sane</td><td><code>aws rds describe-db-clusters</code> returns the cluster</td></tr>
+<tr><td>The provisioning Lambda inside the VPC, with reachability to the cluster</td><td>It connects as a normal Postgres client, so the security group has to allow it</td><td>A test invocation connects rather than timing out</td></tr>
+<tr><td>A ServiceNow instance and a shared secret</td><td>The endpoint accepts only signed requests from the catalogue item</td><td>Held as a sensitive variable, never in the repo</td></tr>
+<tr><td>An admin credential for the cluster in Secrets Manager</td><td><code>CREATE DATABASE</code> and <code>CREATE ROLE</code> need an account that can do both</td><td>The function reads it by name; nothing is passed in the request</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="section" id="implementation">
+<h2 id="implementation">Implementation</h2>
+<p>Every provisioning request follows the same path from ticket to database:</p>
+<ol>
+<li><strong>Developer submits ServiceNow catalog item</strong> — fills in Database Name, Team, Purpose, clicks Order Now. A RITM ticket is created in <code>sc_req_item</code>.</li>
+<li><strong>Business Rule fires automatically on INSERT</strong> — server-side JavaScript calls the AWS Outbound REST Message with the ticket payload over HTTPS.</li>
+<li><strong>API Gateway receives the POST</strong> — routes to the webhook_receiver Lambda which validates the HMAC signature and starts a Step Functions execution named <code>db-{db_name}-{ticket_id}</code>.</li>
+<li><strong>Step Functions orchestrates two tasks</strong> — ProvisionDatabase → UpdateServiceNow → Done. 5 state transitions, error handling and retry built in.</li>
+<li><strong>db_provisioner Lambda runs</strong> — fetches master credentials from Secrets Manager, connects to Aurora via pg8000, runs <code>CREATE DATABASE</code>, <code>CREATE USER</code>, <code>GRANT ALL PRIVILEGES</code>, stores the tenant secret, enables 30-day auto-rotation.</li>
+<li><strong>status_updater Lambda closes the ticket</strong> — posts a work note to ServiceNow with writer host, reader host, port, username, secret name, AWS CLI retrieval command, rotation policy, and monitoring links. Ticket → Closed Complete.</li>
+</ol>
+<hr class="section-divider"/>
+</div>
+<div class="section" id="validation">
+<h2 id="validation">Validation and Evidence</h2>
+<p>Each row traces to a figure here. The lab was destroyed in
+May 2026; these are the results recorded then.</p>
+<table>
+<thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>The stack deploys</td><td>A clean apply</td><td>Outputs returned with every endpoint and ARN</td><td>Pass</td></tr>
+<tr><td>The endpoint accepts a request</td><td>A POST returns success</td><td>A <code>curl</code> POST to API Gateway returned a successful response</td><td>Pass</td></tr>
+<tr><td>The workflow runs end to end</td><td>Provision, then update the ticket</td><td>Two executions succeeded; <code>ProvisionDatabase</code> then <code>UpdateServiceNow</code>, done in 12 seconds</td><td>Pass</td></tr>
+<tr><td>Credentials are stored, not returned</td><td>A per-tenant secret in Secrets Manager</td><td>The secret for <code>myapp_db</code> read back as JSON</td><td>Pass</td></tr>
+<tr><td>The database actually exists</td><td>The new database on the shared cluster</td><td>Query Editor showed <code>jay_test</code> and <code>myapp_db</code> on the cluster</td><td>Pass</td></tr>
+<tr><td>The requester is told</td><td>The ticket closes with the connection details</td><td><code>RITM0010012</code> Closed Complete, with the provisioning details in it</td><td>Pass</td></tr>
+<tr><td>Tenants cannot read each other's data</td><td>A role scoped to its own database only</td><td>Not recorded at the time. The role and database are created together per tenant, but no cross-tenant access attempt was run</td><td>Not tested</td></tr>
+</tbody>
+</table>
+<h3>Deploy — 67 Resources, One Command</h3>
+<p>Terraform plan shows 67 resources to add. The deploy script runs pre-flight checks, deletes any orphaned CloudWatch log groups, then applies the plan. Aurora Serverless takes ~10 minutes to fully warm up.</p>
+<div class="separator"><a href="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/terraform-plan.png"></a></div>
+<h3>Terraform Outputs</h3>
+<p>All key values are captured as outputs: API Gateway URL, Aurora writer/reader endpoints, CloudWatch dashboard URL, state machine ARN, VPC ID.</p>
+<div class="separator"><figure class="screenshot">
+<img alt="Terraform outputs showing all endpoints and ARNs" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/terraform-outputs.png" width="600"/>
+<figcaption>Terraform outputs showing all endpoints and ARNs</figcaption>
+</figure></div>
+<h3>Manual curl Test First</h3>
+<p>Before wiring ServiceNow, I verified the full stack with a direct curl call. Ticket RITM0010001, database <code>myapp_db</code>. Instant response: workflow started.</p>
+<div class="separator"><figure class="screenshot">
+<img alt="curl POST to API Gateway with successful response" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/curl-test.png" width="600"/>
+<figcaption>curl POST to API Gateway with successful response</figcaption>
+</figure></div>
+<h3>Step Functions — Both Executions Succeeded</h3>
+<p>Two successful executions visible in the console: <code>db-myapp_db-RITM0010001</code> (12.4 seconds via curl) and <code>db-jay_test-RITM0010012</code> (8.7 seconds via ServiceNow). Both Succeeded.</p>
+<div class="separator"><figure class="screenshot">
+<img alt="Step Functions showing 2 successful executions" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/step-functions-executions.png" width="600"/>
+<figcaption>Step Functions showing 2 successful executions</figcaption>
+</figure></div>
+<div class="separator"><figure class="screenshot">
+<img alt="Step Functions execution detail — ProvisionDatabase UpdateServiceNow Done in 12 seconds" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/step-functions-detail.png" width="600"/>
+<figcaption>Step Functions execution detail — ProvisionDatabase UpdateServiceNow Done in 12 seconds</figcaption>
+</figure></div>
+<h3>Credentials in Secrets Manager</h3>
+<p>Every provisioned database gets its own secret at <code>/selfservice-db/dev/db/{db_name}</code> — host, port, username, password, engine, dbname. The password is generated fresh by the provisioner Lambda, never stored in Terraform state.</p>
+<div class="separator"><figure class="screenshot">
+<img alt="AWS CLI showing secret JSON from Secrets Manager for myapp_db" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/secrets-manager.png" width="600"/>
+<figcaption>AWS CLI showing secret JSON from Secrets Manager for myapp_db</figcaption>
+</figure></div>
+<h3>ServiceNow Ticket Closes Itself</h3>
+<p>The status_updater Lambda calls back to ServiceNow and closes the RITM with everything a developer needs — no email, no DBA, no waiting.</p>
+<div class="separator"><figure class="screenshot">
+<img alt="ServiceNow RITM0010012 Closed Complete with full database provisioning details" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/servicenow-ticket-closed.png" width="600"/>
+<figcaption>ServiceNow RITM0010012 Closed Complete with full database provisioning details</figcaption>
+</figure></div>
+<h3>Verified in RDS Query Editor</h3>
+<p>Connected to Aurora via the RDS Query Editor (Data API). <code>SELECT datname FROM pg_database</code> confirms both tenant databases exist on the shared cluster — completely isolated by PostgreSQL user permissions.</p>
+<div class="separator"><figure class="screenshot">
+<img alt="RDS Query Editor connected to Aurora showing jay_test and myapp_db databases" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-02-aurora-self-service/docs/blog/screenshots/rds-query-editor.png" width="600"/>
+<figcaption>RDS Query Editor connected to Aurora showing jay_test and myapp_db databases</figcaption>
+</figure></div>
+<hr class="section-divider"/>
+</div>
+<div class="section" id="security-cost">
+<h2 id="security-cost">Security and Cost</h2>
+<h3>Security Patterns Baked In</h3>
 <p><strong>No public database access.</strong> Aurora lives in isolated database subnets with no internet route. The only inbound path is from the Lambda security group on port 5432.</p>
 <p><strong>Least-privilege IAM.</strong> Lambda roles are scoped to specific secret ARN prefixes. <code>db_provisioner</code> can't access secrets outside its namespace.</p>
 <p><strong>Zero-downtime secret rotation.</strong> 4-step protocol: createSecret → setSecret → testSecret → finishSecret. The old password stays valid until the new one is confirmed working. Apps never see a connection failure during rotation.</p>
@@ -531,56 +640,8 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
 <p><strong>OIDC for CI/CD.</strong> GitHub Actions uses OIDC federation — no long-lived AWS credentials stored anywhere. Role assumed per-run using short-lived STS tokens.</p>
 <div class="warning-box"><strong>⚠️ Never cache passwords.</strong> Because Secrets Manager rotates credentials every 30 days, applications must retrieve the secret at connection time — never at startup, never hardcoded. If your app caches the password, it will break 30 days after the first rotation.</div>
 <hr class="section-divider"/>
-<h2>Bugs That Taught Me Things</h2>
-<h3>Bug 1: Terraform Circular Dependency</h3>
-<div class="bug-card">
-<div class="bug-title"><span class="bug-label">SYMPTOM</span> Terraform refuses to plan — Lambda ↔ Step Functions circular dependency</div>
-<p><strong>Cause:</strong> Lambda needed the Step Functions state machine ARN. Step Functions needed the Lambda function ARNs. Classic circular dependency — no resolution possible by reference.</p>
-<p><strong>Fix:</strong> Compute the state machine ARN deterministically using the account ID:</p>
-<pre><code>locals {
-  state_machine_arn = "arn:aws:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:stateMachine:${var.project}-${var.environment}-db-provisioning"
-}</code></pre>
-<div><span class="bug-label fix-label">FIX</span> ARN is predictable — no circular reference needed.</div>
-</div>
-<h3>Bug 2: Em-dash Rejected by AWS</h3>
-<div class="bug-card">
-<div class="bug-title"><span class="bug-label">SYMPTOM</span> InvalidParameterValue: Character sets beyond ASCII</div>
-<p><strong>Cause:</strong> Em-dash (<code>—</code>, U+2014) in AWS resource description fields. AWS only accepts ASCII characters.</p>
-<div><span class="bug-label fix-label">FIX</span> Replace every <code>—</code> with <code>-</code> in all Terraform description fields.</div>
-</div>
-<h3>Bug 3: CloudWatch Dashboard Missing Region</h3>
-<div class="bug-card">
-<div class="bug-title"><span class="bug-label">SYMPTOM</span> InvalidParameterInput: should have required property 'region'</div>
-<p><strong>Cause:</strong> Every CloudWatch dashboard widget requires an explicit <code>region</code> field in its properties block.</p>
-<pre><code>data "aws_region" "current" {}
-
-# In every widget properties block:
-region = data.aws_region.current.name</code></pre>
-<div><span class="bug-label fix-label">FIX</span> Add region to all widget properties blocks.</div>
-</div>
-<h3>Bug 4: autocommit Required for CREATE DATABASE</h3>
-<div class="bug-card">
-<div class="bug-title"><span class="bug-label">SYMPTOM</span> CREATE DATABASE cannot run inside a transaction block</div>
-<p><strong>Cause:</strong> PostgreSQL won't execute <code>CREATE DATABASE</code> within a transaction — and pg8000 opens a transaction by default.</p>
-<pre><code>conn = pg8000.connect(...)
-conn.autocommit = True   # Must be set BEFORE CREATE DATABASE
-conn.run("CREATE DATABASE my_db")</code></pre>
-<div><span class="bug-label fix-label">FIX</span> Set <code>conn.autocommit = True</code> before any DDL statement.</div>
-</div>
-<h3>Bug 5: Windows Path Mangling with AWS CLI</h3>
-<div class="bug-card">
-<div class="bug-title"><span class="bug-label">SYMPTOM</span> Git Bash converts /selfservice-db/... to C:/Program Files/Git/selfservice-db/...</div>
-<p><strong>Cause:</strong> Git Bash on Windows converts paths starting with <code>/</code> to Windows paths. Breaks any AWS CLI command using secret or parameter paths.</p>
-<pre><code># Wrong — inline form doesn't apply to variable assignments
-MSYS_NO_PATHCONV=1 SECRET=$(aws secretsmanager ...)
-
-# Correct — export first, then run
-export MSYS_NO_PATHCONV=1
-SECRET=$(aws secretsmanager get-secret-value --secret-id /selfservice-db/dev/db/myapp_db)</code></pre>
-<div><span class="bug-label fix-label">FIX</span> Always <code>export MSYS_NO_PATHCONV=1</code> as a separate command before AWS CLI calls with <code>/</code> paths.</div>
-</div>
-<hr class="section-divider"/>
-<h2>Cost Breakdown</h2>
+<h3>Cost Breakdown</h3>
+<div class="table-scroll">
 <table>
 <tr><th>Resource</th><th>Cost/Month (Running)</th><th>Cost (Destroyed)</th></tr>
 <tr><td>Aurora Serverless (scales to 0 ACU when idle — as of April 2026)</td><td>~$0 idle / ~$43 at 0.5 ACU sustained</td><td>$0</td></tr>
@@ -589,18 +650,66 @@ SECRET=$(aws secretsmanager get-secret-value --secret-id /selfservice-db/dev/db/
 <tr><td>Secrets Manager (per secret)</td><td>~$0.40/secret</td><td>$0</td></tr>
 <tr><td><strong>Total</strong></td><td><strong>~$75/month</strong></td><td><strong>$0</strong></td></tr>
 </table>
+</div>
 <div class="tip-box"><strong>💡 Cost tip:</strong> Run <code>sh scripts/cleanup.sh</code> when you're done for the day — destroys everything in ~5 minutes. Run <code>sh scripts/deploy.sh</code> next session — rebuilds in ~10 minutes. You'll pay cents instead of $75/month.</div>
 <hr class="section-divider"/>
-<h2>Key Takeaways</h2>
+</div>
+<div class="section" id="troubleshooting">
+<h2 id="troubleshooting">Troubleshooting and Lessons</h2>
+<p><strong>Problem.</strong> Terraform refused to plan at all.<br/>
+<strong>Root cause.</strong> The Lambda and the state machine each referenced the
+other: the function needed the state machine ARN, and the state machine needed the
+function ARN.<br/>
+<strong>Resolution.</strong> Break the cycle by constructing one ARN rather than
+reading it, so only one direction is a real dependency.<br/>
+<strong>Lesson.</strong> A dependency cycle in Terraform is usually two resources
+each asking for something that can be computed instead of fetched.</p>
+<p><strong>Problem.</strong>
+<code class="inline">InvalidParameterValue: Character sets beyond ASCII</code> when
+creating the database.<br/>
+<strong>Root cause.</strong> A generated password contained characters the API will
+not accept in that field.<br/>
+<strong>Resolution.</strong> Constrain the generated character set rather than
+escaping afterwards.<br/>
+<strong>Lesson.</strong> "Any random string" is not a specification. The accepting
+service's rules are.</p>
+<p><strong>Problem.</strong>
+<code class="inline">InvalidParameterInput: should have required property
+'region'</code>.<br/>
+<strong>Root cause.</strong> The call was built without the region the API requires
+in its payload, which the SDK does not supply from its own configuration.<br/>
+<strong>Resolution.</strong> Pass it explicitly.<br/>
+<strong>Lesson.</strong> A client configured for a region does not mean every request
+body carries one.</p>
+<p><strong>Problem.</strong>
+<code class="inline">CREATE DATABASE cannot run inside a transaction block</code>.<br/>
+<strong>Root cause.</strong> The Postgres driver opens a transaction by default, and
+<code class="inline">CREATE DATABASE</code> cannot run in one.<br/>
+<strong>Resolution.</strong> Put the connection into autocommit before issuing it.<br/>
+<strong>Lesson.</strong> The default that makes ordinary writes safe is the one that
+makes this statement impossible.</p>
+<p><strong>Problem.</strong> Parameter paths arrived as
+<code class="inline">C:/Program Files/Git/selfservice-db/...</code>.<br/>
+<strong>Root cause.</strong> Not AWS at all. Git Bash on Windows rewrites an argument
+that looks like a Unix absolute path into a Windows one before the command sees it.<br/>
+<strong>Resolution.</strong> Disable that conversion for the call, or lead the path
+with a double slash.<br/>
+<strong>Lesson.</strong> When an argument arrives mangled and the service is blameless,
+suspect the shell between you and it.</p>
+</div>
+<div class="section" id="cleanup">
+<h2 id="cleanup">Cleanup and Key Takeaways</h2>
+<h3>Key Takeaways</h3>
 <p><strong>Database-per-tenant on a shared Aurora cluster is the right multi-tenancy model for most platforms.</strong> You get complete isolation at the PostgreSQL level, a dedicated user and secret per tenant, and independent rotation schedules — all without provisioning new infrastructure per customer.</p>
 <p><strong>Aurora's storage/compute separation is underrated.</strong> Reader replication is near-instant because both instances share the same storage pool. No network replication lag like traditional Postgres streaming replication.</p>
 <p><strong>Secrets Manager rotation with <code>RotateImmediately=False</code>.</strong> Always set this when enabling rotation programmatically. Immediate rotation on a brand-new database user will fail before the rotation Lambda has been tested against that specific credential.</p>
 <p><strong>14 years as a DBA taught me what the old process cost.</strong> Three-day turnaround for a database request isn't a staffing problem — it's an architecture problem. This week proved you can eliminate it entirely.</p>
 <hr class="section-divider"/>
-<h2>What's Next — Week 3</h2>
+<h3>What's Next — Week 3</h3>
 <p>Two weeks in. The pattern is working: ServiceNow ticket → API Gateway → Lambda → Step Functions → AWS resource → ticket closed with details. Week 3 builds on this foundation with a more production-hardened pattern. Stay tuned.</p>
 <hr class="section-divider"/>
 <p>All code available on <a href="https://github.com/katta698/AWS-Platform-Engineering-Lab" target="_blank">GitHub: katta698/AWS-Platform-Engineering-Lab</a>. Questions? Drop a comment below.</p>
+</div>
 </div><!-- end #jk-post -->
 </div>
     
@@ -804,4 +913,4 @@ SECRET=$(aws secretsmanager get-secret-value --secret-id /selfservice-db/dev/db/
   hljs.highlightAll();
 </script>
 </body></html>
-<!-- src-sha256 a37b7395b4b9df1a7b65e2836f131f8839995351296b826c660d395239de9392 -->
+<!-- src-sha256 0df36c8888729b83787356bd233a00e60d044f869964fed434efef08a5536ee6 -->

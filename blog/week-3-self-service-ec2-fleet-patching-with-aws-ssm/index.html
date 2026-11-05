@@ -164,12 +164,12 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
   <article>
     <header class="post-header">
       <div class="post-header-meta"><span class="tag-badge">AWS Weekly Lab</span> <span class="tag-badge">AWS</span> <span class="tag-badge">Terraform</span></div>
-      <h1>Week 3: From Invisible to Fully Managed — Self-Service EC2 Fleet Patching with AWS SSM</h1>
-      
+      <h1>From invisible to fully managed</h1>
+      <p class="post-description">An inherited fleet with no consistent tagging and no known patch state. A ticket onboards an unmanaged instance or patches the fleet, and no one opens an SSH session.</p>
       <div class="post-info">
         <span>Jun 6, 2026</span>
         <span class="post-info-dot"></span>
-        <span>8 min read</span>
+        <span>12 min read</span>
       </div>
     </header>
     
@@ -316,17 +316,17 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
 #jk-post .before-card, #jk-post .after-card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 16px; background: #fafafa; }
 #jk-post .ba-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: #6c757d; margin-bottom: 8px; display: block; }
 #jk-post .ba-item { font-size: 14px; color: #3d3d3d; margin-bottom: 6px; }
-</style>
-<div id="jk-post">
-<div class="meta">
-<span>☁️ AWS Platform Engineering Lab</span>
-<span>📅 Week 3 of 52</span>
-<span>🖥️ 7 SSM Services</span>
-<span>🏗️ 80+ Terraform resources</span>
-<span>🔒 Zero SSH</span>
-</div>
+</style><div id="jk-post">
+<div class="post-header">
+<div class="post-eyebrow">AWS Platform Engineering Lab · Week 3 of 52</div>
 
-<div class="stack-badge">ServiceNow → API Gateway → Lambda → Step Functions → SSM Automation → Patch Manager</div>
+
+<div class="post-meta">
+<span>6 June 2026</span>
+<span>Terraform · SSM · Step Functions · ServiceNow</span>
+<span>Zero SSH · no NAT gateway</span>
+</div>
+</div>
 <p>Every enterprise inherits a fleet, not a blank slate. Servers were launched months ago by different teams — no consistent tagging, unknown patch state, no baseline assigned. You can't patch what you can't identify.</p>
 <p>Week 3 of my 52-week AWS lab solves both problems: a self-service platform where an ops engineer submits a ServiceNow ticket to either <strong>onboard an unmanaged EC2 instance</strong> into the managed fleet, or <strong>trigger a patch run</strong> across the entire environment. The ticket closes itself with a full compliance report. Zero SSH. Zero manual steps.</p>
 <div class="stat-row">
@@ -337,7 +337,22 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
 <div class="stat-box"><span class="stat-val">472</span><span class="stat-lbl">Patches Installed</span></div>
 </div>
 <hr class="section-divider"/>
-<h2>The Problem This Solves</h2>
+<div class="toc">
+<h3>📋 In This Post</h3>
+<ol>
+<li><a href="#overview">Lab Overview</a></li>
+<li><a href="#services">Cloud Services and Concepts</a></li>
+<li><a href="#architecture">Architecture and Workflow</a></li>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#implementation">Implementation</a></li>
+<li><a href="#validation">Validation and Evidence</a></li>
+<li><a href="#security-cost">Security and Cost</a></li>
+<li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+<li><a href="#cleanup">Cleanup and Key Takeaways</a></li>
+</ol>
+</div>
+<div class="section" id="overview">
+<h2 id="overview">Lab Overview</h2>
 <div class="before-after">
 <div class="before-card">
 <div class="ba-label">❌ Before</div>
@@ -359,7 +374,30 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
 </div>
 </div>
 <hr class="section-divider"/>
-<h2>Architecture</h2>
+</div>
+<div class="section" id="services">
+<h2 id="services">Cloud Services and Concepts</h2>
+<div class="table-scroll">
+<table>
+<thead><tr><th>Service</th><th>Purpose here</th><th>What it is</th></tr></thead>
+<tbody>
+<tr><td>AWS Systems Manager</td><td>Does the patching, and reports who is compliant</td><td>A set of tools for managing instances through an agent already on them: running commands, applying patches and reporting what state each one is in.</td></tr>
+<tr><td>Patch Manager and patch baselines</td><td>Decides what "patched" means, per group</td><td>A baseline is the rule for which patches are approved; a patch group is the tag that says which baseline an instance follows.</td></tr>
+<tr><td>Maintenance window</td><td>Decides when patching may happen</td><td>A recurring schedule Systems Manager runs tasks inside, so patching lands in a window someone has agreed to rather than whenever a ticket arrives.</td></tr>
+<tr><td>AWS Step Functions</td><td>Routes the three request types and keeps the audit trail</td><td>Runs a workflow as an explicit state machine, so each step, its retry behaviour and its failure path are declared rather than buried in code.</td></tr>
+<tr><td>AWS Lambda</td><td>Receives the webhook, onboards, reports back</td><td>Runs a piece of code on demand with no server to manage. You are billed per request and per millisecond it runs.</td></tr>
+<tr><td>Amazon API Gateway</td><td>The signed endpoint ServiceNow calls</td><td>A managed front door that accepts HTTP requests and forwards them to a backend.</td></tr>
+<tr><td>VPC interface endpoints</td><td>Lets private instances reach Systems Manager with no NAT gateway</td><td>Private doors from your network to an AWS service. Traffic reaches the service without crossing the internet, and no per-GB NAT charge applies.</td></tr>
+</tbody>
+</table>
+</div>
+<p>One idea runs through the build: in Systems Manager a tag is not
+documentation, it is configuration. <code class="inline">PatchGroup</code> is
+what binds an instance to a baseline, so an untagged instance is not
+mis-patched — it is unmanaged, and reports nothing at all.</p>
+</div>
+<div class="section" id="architecture">
+<h2 id="architecture">Architecture and Workflow</h2>
 <div class="arch-container">
 <svg aria-label="A ServiceNow request reaches Amazon API Gateway and an AWS Lambda function, which starts an AWS Step Functions workflow. The workflow runs an AWS Systems Manager automation that onboards or patches the Amazon EC2 fleet, with no SSH access anywhere." role="img" viewbox="0 0 1000 430" xmlns="http://www.w3.org/2000/svg">
 <rect fill="#ffffff" height="430" width="1000"></rect>
@@ -436,16 +474,115 @@ document.documentElement.setAttribute('data-palette',p);})();</script>
 </svg>
 </div>
 <hr class="section-divider"/>
-<h2>The Demo — Watch It Work</h2>
+</div>
+<div class="section" id="prerequisites">
+<h2 id="prerequisites">Prerequisites</h2>
+<div class="table-scroll">
+<table>
+<thead><tr><th>Requirement</th><th>Why</th><th>How to check</th></tr></thead>
+<tbody>
+<tr><td>The SSM agent running, with an instance profile that allows it</td><td>Systems Manager reaches an instance through its agent and the agent's role. Without the role the instance is simply invisible, with no error anywhere</td><td>It appears in Fleet Manager as <code>Online</code></td></tr>
+<tr><td>A network path to the Systems Manager endpoints</td><td>The agent has to reach the service. This build uses VPC interface endpoints rather than a NAT gateway, which removes the per-GB charge entirely</td><td>The instance registers without a public route</td></tr>
+<tr><td>A <code>PatchGroup</code> tag on anything you expect to be patched</td><td>The tag is what associates an instance with a baseline. An untagged instance reports no compliance state rather than a bad one</td><td>Patch Manager lists the instance against a baseline</td></tr>
+<tr><td>A shared secret for the webhook</td><td>The endpoint accepts only signed requests</td><td>Held as a sensitive variable, never in the repo</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="section" id="implementation">
+<h2 id="implementation">Implementation</h2>
+<h3>The Onboard Story — Making an Invisible Instance Visible</h3>
+<p>This is the most important feature of Week 3. I created an EC2 instance manually — the way most instances in a real enterprise already exist. No <code>PatchGroup</code> tag, no <code>ManagedBy</code> tag. Completely invisible to Patch Manager from a management perspective.</p>
+<div class="separator"><figure class="screenshot">
+<img alt="EC2 Tags tab showing only Name tag — no PatchGroup, no ManagedBy" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/06-manual-ec2-no-tags.png" width="600"/>
+<figcaption>EC2 Tags tab showing only Name tag — no PatchGroup, no ManagedBy</figcaption>
+</figure></div>
+<p>In Patch Manager, the instance appears but has no patch baseline assigned — Patch configuration name shows "-". It's visible but unmanaged.</p>
+<div class="separator"><a href="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/07-patch-manager-2-instances.png"></a></div>
+<p>One onboard ticket changes everything. The SSM Automation runbook runs 5 steps:</p>
+<ol>
+<li>Wait for SSM agent to come online</li>
+<li>Apply tags — <code>PatchGroup=fleet-mgmt-dev-linux</code>, <code>ManagedBy=fleet-mgmt-dev</code>, <code>OnboardedAt=timestamp</code></li>
+<li>Run baseline config via Run Command (yum update, confirm SSM agent running)</li>
+<li>Run initial patch scan to establish compliance baseline</li>
+<li>Collect compliance summary and return results</li>
+</ol>
+<div class="separator"><a href="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/08-stepfunctions-onboard-succeeded.png"></a></div>
+<p>After onboard — all three tags applied automatically. The instance is now a first-class member of the managed fleet.</p>
+<div class="separator"><figure class="screenshot">
+<img alt="EC2 Tags tab after onboard — PatchGroup, ManagedBy, and OnboardedAt all applied" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/09-manual-ec2-tags-after-onboard.png" width="600"/>
+<figcaption>EC2 Tags tab after onboard — PatchGroup, ManagedBy, and OnboardedAt all applied</figcaption>
+</figure></div>
+<div class="separator"><figure class="screenshot">
+<img alt="Patch Manager showing 3 instances — manual-test-instance now alongside fleet instances" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/10-patch-manager-3-instances.png" width="600"/>
+<figcaption>Patch Manager showing 3 instances — manual-test-instance now alongside fleet instances</figcaption>
+</figure></div>
+<hr class="section-divider"/>
+<h3>Patching All Three Instances in One Operation</h3>
+<p>With the manual instance onboarded, all three share <code>PatchGroup=fleet-mgmt-dev-linux</code>. A single Install request patches all of them simultaneously — the platform can't tell which instances were ASG-launched and which was manually created.</p>
+<div class="separator"><a href="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/11-stepfunctions-install-succeeded.png"></a></div>
+<p>Result: all 3 instances fully patched. 472 patches installed across the fleet. 0 missing. 0 failed.</p>
+<div class="separator"><figure class="screenshot">
+<img alt="Patch Manager Compliance reporting — all 3 instances Compliant, MissingCount 0" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/12-patch-manager-all-compliant.png" width="600"/>
+<figcaption>Patch Manager Compliance reporting — all 3 instances Compliant, MissingCount 0</figcaption>
+</figure></div>
+<div class="tip-box"><strong>💡 The result:</strong> 3 instances — 2 from the ASG, 1 created manually — all patched to 100% compliance in a single Step Functions execution. Zero SSH connections made.</div>
+<hr class="section-divider"/>
+<h3>ServiceNow Integration — End to End</h3>
+<p>When fully wired, a user never touches AWS. They open the Service Catalog, fill in a form, and submit. The entire flow is invisible to them.</p>
+<div class="separator"><a href="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/16-servicenow-ticket-submitted.png"></a></div>
+<p>The status_updater Lambda calls back to ServiceNow and closes the ticket with a full compliance report — instance count, compliant/non-compliant, patch details, link to Patch Manager console.</p>
+<div class="separator"><figure class="screenshot">
+<img alt="ServiceNow RITM closed with compliance report in work notes — 6 compliant, 472 patches installed, 100% rate" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/17-servicenow-ticket-closed.png" width="600"/>
+<figcaption>ServiceNow RITM closed with compliance report in work notes — 6 compliant, 472 patches installed, 100% rate</figcaption>
+</figure></div>
+<hr class="section-divider"/>
+<h3>No NAT Gateway — VPC Endpoints Only</h3>
+<p>This is the enterprise pattern. NAT gateways cost ~$32/month and route all SSM traffic through the public internet. SSM is an AWS service — there's no reason for that traffic to leave the AWS network.</p>
+<div class="table-scroll">
+<table>
+<tr><th>Endpoint</th><th>Purpose</th><th>Type</th></tr>
+<tr><td><code>ssm</code></td><td>Main SSM API — commands, parameters, registrations</td><td>Interface</td></tr>
+<tr><td><code>ssmmessages</code></td><td>Session Manager WebSocket channel</td><td>Interface</td></tr>
+<tr><td><code>ec2messages</code></td><td>Run Command delivery channel</td><td>Interface</td></tr>
+<tr><td><code>logs</code></td><td>CloudWatch Logs for Lambda and SSM agent</td><td>Interface</td></tr>
+<tr><td><code>s3</code></td><td>Patch downloads and log uploads</td><td>Gateway</td></tr>
+</table>
+</div>
+<div class="warning-box"><strong>⚠️ Gotcha:</strong> Not all AZs in us-east-1 support VPC interface endpoints. Use an <code>aws_vpc_endpoint_service</code> data source to filter to only supported AZs before creating subnets — otherwise Terraform fails with a cryptic AZ error.</div>
+<hr class="section-divider"/>
+</div>
+<div class="section" id="validation">
+<h2 id="validation">Validation and Evidence</h2>
+<p>Each row traces to a figure here. The lab was destroyed in June 2026; these
+are the results recorded then.</p>
+<div class="table-scroll">
+<table>
+<thead><tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>Starting state is honest</td><td>Instances that have never been scanned report as such</td><td>Patch Manager showed <code>Never reported</code> before any scan ran</td><td>Pass</td></tr>
+<tr><td>An unmanaged instance is invisible, not wrong</td><td>An instance with only a <code>Name</code> tag has no baseline</td><td>No <code>PatchGroup</code>, no <code>ManagedBy</code>, and no baseline assigned in Patch Manager</td><td>Pass</td></tr>
+<tr><td>Onboarding tags it</td><td>The workflow applies the tags that make it managed</td><td><code>PatchGroup</code>, <code>ManagedBy</code> and <code>OnboardedAt</code> all present afterwards</td><td>Pass</td></tr>
+<tr><td>The fleet grows by one</td><td>Patch Manager counts the new instance with the others</td><td>Three instances listed, the manual one alongside the fleet</td><td>Pass</td></tr>
+<tr><td>Patching reaches compliance</td><td>Every instance compliant, nothing missing</td><td>All three <code>Compliant</code>, <code>MissingCount</code> zero</td><td>Pass</td></tr>
+<tr><td>Every request is auditable</td><td>One execution per request, each with a timestamp</td><td>All three executions <code>SUCCEEDED</code> in the executions list</td><td>Pass</td></tr>
+<tr><td>The requester gets the answer</td><td>The ticket closes carrying the compliance result</td><td>Closed with the report in its work notes: 6 compliant, 472 patches installed</td><td>Pass</td></tr>
+</tbody>
+</table>
+</div>
+<h3>The Demo — Watch It Work</h3>
 <h3>Step 1 — Deploy: 80+ Resources, One Command</h3>
 <p>Terraform deploys the entire platform: VPC with SSM interface endpoints (no NAT gateway), EC2 fleet in private subnets, 4 Lambda functions, Step Functions state machine, patch baselines for Amazon Linux 2023 and Windows Server, maintenance window, and API Gateway.</p>
-<div class="separator"><img alt="Terraform outputs — API Gateway URL, ASG name, state machine ARN, maintenance window ID" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/01-terraform-output.png" width="600"/></div>
+<div class="separator"><a href="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/01-terraform-output.png"></a></div>
 <h3>Step 2 — Fleet Manager: Instances Online</h3>
 <p>Within 5 minutes of launch, both ASG instances register with SSM automatically — no configuration needed. Fleet Manager gives a real-time view: online status, OS type, SSM agent version, last ping time. No SSH required to confirm they're healthy.</p>
-<div class="separator"><img alt="SSM Fleet Manager showing both instances Online" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/02-fleet-manager-online.png" width="600"/></div>
+<div class="separator"><a href="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/02-fleet-manager-online.png"></a></div>
 <h3>Step 3 — Patch Manager: The Before State</h3>
 <p>Fresh instances — no scan has run yet. This is the starting point the platform is designed to fix.</p>
-<div class="separator"><img alt="Patch Manager Compliance reporting — instances showing Never reported before any scan" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/03-patch-noncompliant-before.png" width="600"/></div>
+<div class="separator"><figure class="screenshot">
+<img alt="Patch Manager Compliance reporting — instances showing Never reported before any scan" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/03-patch-noncompliant-before.png" width="600"/>
+<figcaption>Patch Manager Compliance reporting — instances showing Never reported before any scan</figcaption>
+</figure></div>
 <h3>Step 4 — Simulate ServiceNow: Trigger a Patch Scan</h3>
 <p>A single curl command simulates what a ServiceNow business rule does — signs the payload with HMAC, posts to API Gateway, and starts a Step Functions execution.</p>
 <pre><code>BODY='{"ticket_id":"RITM0030001","request_type":"patch",
@@ -457,84 +594,20 @@ curl -X POST "$API_URL" \
   -H "Content-Type: application/json" \
   -H "x-servicenow-signature: $SIG" \
   -d "$BODY"</code></pre>
-<div class="separator"><img alt="Step Functions execution patch-RITM0030001 — all steps green: RouteRequest, PatchFleet, MergePatchResult, UpdateServiceNow, Done" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/04-stepfunctions-scan-succeeded.png" width="600"/></div>
+<div class="separator"><a href="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/04-stepfunctions-scan-succeeded.png"></a></div>
 <hr class="section-divider"/>
-<h2>The Onboard Story — Making an Invisible Instance Visible</h2>
-<p>This is the most important feature of Week 3. I created an EC2 instance manually — the way most instances in a real enterprise already exist. No <code>PatchGroup</code> tag, no <code>ManagedBy</code> tag. Completely invisible to Patch Manager from a management perspective.</p>
-<div class="separator"><img alt="EC2 Tags tab showing only Name tag — no PatchGroup, no ManagedBy" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/06-manual-ec2-no-tags.png" width="600"/></div>
-<p>In Patch Manager, the instance appears but has no patch baseline assigned — Patch configuration name shows "-". It's visible but unmanaged.</p>
-<div class="separator"><img alt="Patch Manager showing manual-test-instance with no patch baseline assigned" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/07-patch-manager-2-instances.png" width="600"/></div>
-<p>One onboard ticket changes everything. The SSM Automation runbook runs 5 steps:</p>
-<ol>
-<li>Wait for SSM agent to come online</li>
-<li>Apply tags — <code>PatchGroup=fleet-mgmt-dev-linux</code>, <code>ManagedBy=fleet-mgmt-dev</code>, <code>OnboardedAt=timestamp</code></li>
-<li>Run baseline config via Run Command (yum update, confirm SSM agent running)</li>
-<li>Run initial patch scan to establish compliance baseline</li>
-<li>Collect compliance summary and return results</li>
-</ol>
-<div class="separator"><img alt="Step Functions onboard-RITM0030002 execution — all steps green in 33 seconds" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/08-stepfunctions-onboard-succeeded.png" width="600"/></div>
-<p>After onboard — all three tags applied automatically. The instance is now a first-class member of the managed fleet.</p>
-<div class="separator"><img alt="EC2 Tags tab after onboard — PatchGroup, ManagedBy, and OnboardedAt all applied" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/09-manual-ec2-tags-after-onboard.png" width="600"/></div>
-<div class="separator"><img alt="Patch Manager showing 3 instances — manual-test-instance now alongside fleet instances" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/10-patch-manager-3-instances.png" width="600"/></div>
-<hr class="section-divider"/>
-<h2>Patching All Three Instances in One Operation</h2>
-<p>With the manual instance onboarded, all three share <code>PatchGroup=fleet-mgmt-dev-linux</code>. A single Install request patches all of them simultaneously — the platform can't tell which instances were ASG-launched and which was manually created.</p>
-<div class="separator"><img alt="Step Functions patch-RITM0030003 Install execution — all steps green" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/11-stepfunctions-install-succeeded.png" width="600"/></div>
-<p>Result: all 3 instances fully patched. 472 patches installed across the fleet. 0 missing. 0 failed.</p>
-<div class="separator"><img alt="Patch Manager Compliance reporting — all 3 instances Compliant, MissingCount 0" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/12-patch-manager-all-compliant.png" width="600"/></div>
-<div class="tip-box"><strong>💡 The result:</strong> 3 instances — 2 from the ASG, 1 created manually — all patched to 100% compliance in a single Step Functions execution. Zero SSH connections made.</div>
-<hr class="section-divider"/>
-<h2>Full Audit Trail + CloudWatch Dashboard</h2>
-<div class="separator"><img alt="CloudWatch dashboard showing Lambda invocations, errors, duration, Step Functions executions" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/14-cloudwatch-dashboard-full.png" width="600"/></div>
+<h3>Full Audit Trail + CloudWatch Dashboard</h3>
+<div class="separator"><a href="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/14-cloudwatch-dashboard-full.png"></a></div>
 <p>Every operation is traceable. Step Functions records every execution with the ticket ID, start time, and result. In production this maps directly to a ServiceNow RITM — you can look up any patch run and know exactly who requested it, when it ran, and what the outcome was.</p>
-<div class="separator"><img alt="Step Functions executions list showing all 3 executions SUCCEEDED with timestamps" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/15-stepfunctions-audit-trail.png" width="600"/></div>
+<div class="separator"><figure class="screenshot">
+<img alt="Step Functions executions list showing all 3 executions SUCCEEDED with timestamps" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/15-stepfunctions-audit-trail.png" width="600"/>
+<figcaption>Step Functions executions list showing all 3 executions SUCCEEDED with timestamps</figcaption>
+</figure></div>
 <hr class="section-divider"/>
-<h2>ServiceNow Integration — End to End</h2>
-<p>When fully wired, a user never touches AWS. They open the Service Catalog, fill in a form, and submit. The entire flow is invisible to them.</p>
-<div class="separator"><img alt="ServiceNow Fleet Management Request catalog item submitted — RITM in Open state" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/16-servicenow-ticket-submitted.png" width="600"/></div>
-<p>The status_updater Lambda calls back to ServiceNow and closes the ticket with a full compliance report — instance count, compliant/non-compliant, patch details, link to Patch Manager console.</p>
-<div class="separator"><img alt="ServiceNow RITM closed with compliance report in work notes — 6 compliant, 472 patches installed, 100% rate" border="0" src="https://raw.githubusercontent.com/katta698/AWS-Platform-Engineering-Lab/main/week-03-ssm-fleet-management/docs/blog/screenshots/17-servicenow-ticket-closed.png" width="600"/></div>
-<hr class="section-divider"/>
-<h2>No NAT Gateway — VPC Endpoints Only</h2>
-<p>This is the enterprise pattern. NAT gateways cost ~$32/month and route all SSM traffic through the public internet. SSM is an AWS service — there's no reason for that traffic to leave the AWS network.</p>
-<table>
-<tr><th>Endpoint</th><th>Purpose</th><th>Type</th></tr>
-<tr><td><code>ssm</code></td><td>Main SSM API — commands, parameters, registrations</td><td>Interface</td></tr>
-<tr><td><code>ssmmessages</code></td><td>Session Manager WebSocket channel</td><td>Interface</td></tr>
-<tr><td><code>ec2messages</code></td><td>Run Command delivery channel</td><td>Interface</td></tr>
-<tr><td><code>logs</code></td><td>CloudWatch Logs for Lambda and SSM agent</td><td>Interface</td></tr>
-<tr><td><code>s3</code></td><td>Patch downloads and log uploads</td><td>Gateway</td></tr>
-</table>
-<div class="warning-box"><strong>⚠️ Gotcha:</strong> Not all AZs in us-east-1 support VPC interface endpoints. Use an <code>aws_vpc_endpoint_service</code> data source to filter to only supported AZs before creating subnets — otherwise Terraform fails with a cryptic AZ error.</div>
-<hr class="section-divider"/>
-<h2>Bugs That Taught Me Things</h2>
-<div class="bug-card">
-<div class="bug-title"><span class="bug-label">SYMPTOM</span> SSM Parameter Store path rejected</div>
-<p>AWS rejects any parameter path starting with <code>/ssm</code> (case-insensitive). Project was named <code>ssm-fleet</code> creating paths like <code>/ssm-fleet/dev/servicenow/password</code>.</p>
-<p><span class="bug-label fix-label">FIX</span> Renamed project to <code>fleet-mgmt</code>. Never use <code>ssm</code> as a project name prefix.</p>
 </div>
-<div class="bug-card">
-<div class="bug-title"><span class="bug-label">SYMPTOM</span> VPC endpoint AZ not supported</div>
-<p>Some us-east-1 AZs (like us-east-1e) don't support SSM interface endpoints. <code>slice(AZs, 0, 2)</code> was picking an unsupported AZ — Terraform failed with a cryptic error.</p>
-<p><span class="bug-label fix-label">FIX</span> Added <code>aws_vpc_endpoint_service</code> data source to filter only supported AZs before subnet creation.</p>
-</div>
-<div class="bug-card">
-<div class="bug-title"><span class="bug-label">SYMPTOM</span> SSM Automation — CommandId is a reserved output name</div>
-<p><code>CommandId</code> is reserved in SSM Automation output names. Custom output in the patch-fleet document used that name and the document validation failed.</p>
-<p><span class="bug-label fix-label">FIX</span> Renamed custom output to <code>PatchCommandId</code>.</p>
-</div>
-<div class="bug-card">
-<div class="bug-title"><span class="bug-label">SYMPTOM</span> AL2023 volume size too small</div>
-<p>AL2023 AMI snapshot requires minimum 30GB. Launch template specified 20GB. Instances failed to launch.</p>
-<p><span class="bug-label fix-label">FIX</span> Changed to 30GB gp2 volume. Also switched from gp3 — not supported in all us-east-1 AZs.</p>
-</div>
-<div class="bug-card">
-<div class="bug-title"><span class="bug-label">SYMPTOM</span> ServiceNow operation case mismatch</div>
-<p>ServiceNow sent <code>"scan"</code> (lowercase) but SSM Automation only accepts <code>"Scan"</code> or <code>"Install"</code> with capital first letter. Caused <code>InvalidAutomationExecutionParametersException</code>.</p>
-<p><span class="bug-label fix-label">FIX</span> Added <code>.capitalize()</code> in the patch_orchestrator Lambda: <code>operation = event.get("operation", "Scan").capitalize()</code></p>
-</div>
-<hr class="section-divider"/>
-<h2>Cost Breakdown</h2>
+<div class="section" id="security-cost">
+<h2 id="security-cost">Security and Cost</h2>
+<div class="table-scroll">
 <table>
 <tr><th>Resource</th><th>Cost/Month (Running)</th><th>Cost (Destroyed)</th></tr>
 <tr><td>EC2 t3.micro x2</td><td>~$17</td><td>$0</td></tr>
@@ -545,25 +618,76 @@ curl -X POST "$API_URL" \
 <tr><td>S3 session logs</td><td>~$0.02</td><td>$0</td></tr>
 <tr><td><strong>Total</strong></td><td><strong>~$48/month</strong></td><td><strong>$0</strong></td></tr>
 </table>
+</div>
 <div class="tip-box"><strong>💡 VPC endpoints are the biggest cost driver.</strong> For a lab you can swap them for a NAT Gateway, but VPC endpoints are the enterprise pattern — SSM traffic never leaves the AWS network. Run <code>sh scripts/cleanup.sh</code> when done for the day.</div>
 <hr class="section-divider"/>
-<h2>Key Takeaways</h2>
+</div>
+<h2 id="troubleshooting">Troubleshooting and Lessons</h2>
+<p><strong>Problem.</strong> Every SSM Parameter Store path the project tried to
+create was rejected.<br/>
+<strong>Root cause.</strong> AWS reserves any parameter path beginning
+<code class="inline">/ssm</code>, case-insensitively, and the project was named
+<code class="inline">ssm-fleet</code> — so every path began
+<code class="inline">/ssm-fleet/</code>.<br/>
+<strong>Resolution.</strong> Renamed the project to
+<code class="inline">fleet-mgmt</code>.<br/>
+<strong>Lesson.</strong> A project name becomes a path prefix, and a reserved prefix
+is a naming decision you cannot undo cheaply later.</p>
+<p><strong>Problem.</strong> Terraform failed with a cryptic error while creating
+VPC endpoints.<br/>
+<strong>Root cause.</strong> Not every Availability Zone offers the Systems Manager
+interface endpoints — <code class="inline">us-east-1e</code> does not — and
+<code class="inline">slice(AZs, 0, 2)</code> was picking whichever two came first.<br/>
+<strong>Resolution.</strong> Query <code class="inline">aws_vpc_endpoint_service</code>
+and build subnets only in the zones that actually offer the endpoint.<br/>
+<strong>Lesson.</strong> "Pick the first two AZs" assumes the zones are
+interchangeable. For endpoints they are not.</p>
+<p><strong>Problem.</strong> The patch-fleet automation document failed
+validation.<br/>
+<strong>Root cause.</strong> <code class="inline">CommandId</code> is a reserved
+output name in SSM Automation, and the document declared a custom output using
+it.<br/>
+<strong>Resolution.</strong> Renamed it to
+<code class="inline">PatchCommandId</code>.<br/>
+<strong>Lesson.</strong> Reserved names are rarely listed where you are looking; the
+validation error is the documentation.</p>
+<p><strong>Problem.</strong> Instances would not launch at all.<br/>
+<strong>Root cause.</strong> The AL2023 AMI snapshot needs at least 30 GB and the
+launch template asked for 20.<br/>
+<strong>Resolution.</strong> 30 GB, on gp2 — gp3 is not offered in every
+us-east-1 zone either.<br/>
+<strong>Lesson.</strong> The second AZ-availability surprise in one build. Zone
+capability is worth checking before the template, not after it fails.</p>
+<p><strong>Problem.</strong>
+<code class="inline">InvalidAutomationExecutionParametersException</code> on every
+patch request from ServiceNow.<br/>
+<strong>Root cause.</strong> ServiceNow sent <code class="inline">scan</code>;
+SSM Automation accepts <code class="inline">Scan</code> or
+<code class="inline">Install</code>, capitalised.<br/>
+<strong>Resolution.</strong> Normalise the operation in the orchestrator rather than
+relying on the sender's casing.<br/>
+<strong>Lesson.</strong> Anything arriving from another system is input to be
+validated and normalised, not a value to pass through.</p>
+<div class="section" id="cleanup">
+<h2 id="cleanup">Cleanup and Key Takeaways</h2>
+<h3>Key Takeaways</h3>
 <p><strong>SSM is a platform, not a tool.</strong> Seven distinct services — Fleet Manager, Patch Manager, Run Command, Session Manager, State Manager, Automation, Inventory — each solving a different operations problem. Most teams use one or two. Using all seven turns your EC2 fleet into a properly managed, audited, self-healing environment.</p>
 <p><strong>Tags are the source of truth for Patch Manager.</strong> No <code>PatchGroup</code> tag = no baseline = invisible to Patch Manager. The onboard workflow exists specifically to fix this for instances that predate your tagging strategy.</p>
 <p><strong>Session Manager eliminates SSH entirely.</strong> No port 22, no key pairs, no bastion hosts. Every session is logged to S3 and CloudWatch. For compliance-heavy environments this is not a nice-to-have — it's the only acceptable access pattern.</p>
 <p><strong>14 years as a DBA showed me what manual patching costs.</strong> An ops engineer patching 200 servers manually takes a full day — and produces no audit trail. This platform patches 200 servers in the same time it takes to patch 2, and every operation is traceable to a ticket ID and timestamp.</p>
 <hr class="section-divider"/>
-<h2>What's New in SSM Patch Manager (2025–2026)</h2>
+<h3>What's New in SSM Patch Manager (2025–2026)</h3>
 <p>Since this post was written, two updates are worth knowing:</p>
 <ul>
 <li><strong>Patch now (on-demand)</strong> — you can now trigger a scan or install operation immediately on any managed node without setting up a maintenance window first. Useful for emergency patching outside the scheduled window.</li>
 <li><strong>Quick Setup patch policies</strong> — AWS now recommends using Quick Setup to configure patching across your organization. It eliminates manual patch group setup and provides centralized control from a single place.</li>
 </ul>
-<h2>What's Next — Week 4</h2>
+<h3>What's Next — Week 4</h3>
 <p>Week 3 automates patching. Week 4 answers the harder question: <em>did it work across the entire estate?</em></p>
 <p>Week 4 is a <strong>Fleet Intelligence Platform</strong> — using AWS Glue to crawl SSM inventory and patch data synced to S3, transform it with PySpark ETL, and make it queryable via Athena SQL. Instead of "2 instances compliant" you get: <em>"Show me every instance that hasn't been patched in 30 days, sorted by severity."</em></p>
 <hr class="section-divider"/>
 <p>All code available on <a href="https://github.com/katta698/AWS-Platform-Engineering-Lab/tree/main/week-03-ssm-fleet-management" target="_blank">GitHub: katta698/AWS-Platform-Engineering-Lab</a>. Questions? Drop a comment below.</p>
+</div>
 </div><!-- end #jk-post -->
 </div>
     
@@ -767,4 +891,4 @@ curl -X POST "$API_URL" \
   hljs.highlightAll();
 </script>
 </body></html>
-<!-- src-sha256 30d4606d887c67cc9bb12b5ea62bd38fe421616bfdf687ddb8015dc6ae508fa0 -->
+<!-- src-sha256 97500c435c55236de437a267e1f8cd6f03347045409e4e52501ebdf14765b45b -->

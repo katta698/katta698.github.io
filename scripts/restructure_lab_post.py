@@ -34,7 +34,13 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 NL = chr(10)
 
 # Target order, with the id and the heading each section carries.
-TARGET = [
+#
+# The ids differ per series and always have: the standard specifies HEADINGS,
+# not ids, so GCP settled on build/security/takeaways and AWS on
+# implementation/security-cost/cleanup. check_lab_post_shape.py keys on each
+# series' own ids, so emitting the GCP set into an AWS post makes the shape
+# check report three sections missing from a post that plainly has them.
+TARGET_GCP = [
     ("overview",        "Lab Overview"),
     ("services",        "Cloud Services and Concepts"),
     ("architecture",    "Architecture and Workflow"),
@@ -45,6 +51,33 @@ TARGET = [
     ("troubleshooting", "Troubleshooting and Lessons"),
     ("cleanup",         "Cleanup and Key Takeaways"),
 ]
+
+TARGET_AWS = [
+    ("overview",        "Lab Overview"),
+    ("services",        "Cloud Services and Concepts"),
+    ("architecture",    "Architecture and Workflow"),
+    ("prerequisites",   "Prerequisites"),
+    ("implementation",  "Implementation"),
+    ("validation",      "Validation and Evidence"),
+    ("security-cost",   "Security and Cost"),
+    ("troubleshooting", "Troubleshooting and Lessons"),
+    ("cleanup",         "Cleanup and Key Takeaways"),
+]
+
+# The internal keys the rest of this file uses stay the GCP ones, because the
+# INBOUND table and every spec are written against them. Only what is EMITTED
+# changes.
+TARGET = TARGET_GCP
+EMIT_IDS = {g: a for (g, _), (a, _) in zip(TARGET_GCP, TARGET_AWS)}
+
+
+def set_series(series):
+    """Choose which id set build() writes out."""
+    global EMIT_IDS
+    if series == "AWS Weekly Lab":
+        EMIT_IDS = {g: a for (g, _), (a, _) in zip(TARGET_GCP, TARGET_AWS)}
+    else:
+        EMIT_IDS = {g: g for g, _ in TARGET_GCP}
 
 # How the old headings map onto the new sections. Order matters: first match
 # wins, so the more specific patterns come first.
@@ -76,6 +109,37 @@ INBOUND = [
     (r"^Key Takeaways",                     "cleanup"),
     (r"^Takeaways",                         "cleanup"),
     (r"^References",                        "cleanup"),
+    # Weeks 1-3 and 5 name their sections for what they contain rather than
+    # for the standard's section. Each of these is a real section and has to
+    # map, or the tool refuses the post rather than dropping it silently.
+    (r"^The Challenge",                     "overview"),
+    (r"^The Problem This Solves",           "overview"),
+    (r"^Why Implement",                     "overview"),
+    (r"^Skills (&amp;|&) Tools",            "services"),
+    (r"^What Gets Deployed",                "architecture"),
+    # Week 2's six-step flow IS its implementation; the architecture section
+    # is the Aurora and isolation discussion that follows it.
+    (r"^How It Works",                      "build"),
+    (r"^Multi-Tenant",                      "architecture"),
+    (r"^Aurora Architecture",               "architecture"),
+    (r"^How to Implement",                  "build"),
+    (r"^Step \d+",                          "build"),
+    (r"^Patching All Three",                "build"),
+    (r"^The Onboard Story",                 "build"),
+    (r"^ServiceNow Integration",            "build"),
+    (r"^No NAT Gateway",                    "build"),
+    (r"^The Demo",                          "validation"),
+    (r"^Full Audit Trail",                  "validation"),
+    (r"^Real Challenges",                   "troubleshooting"),
+    (r"^Bugs That Taught Me",               "troubleshooting"),
+    (r"^The Real Debugging Journey",        "troubleshooting"),
+    (r"^Known Limitation",                  "troubleshooting"),
+    (r"^Security Best Practices",           "seccost"),
+    (r"^Security Patterns",                 "seccost"),
+    (r"^What&rsquo;s New in SSM",           "cleanup"),
+    (r"^What's New in SSM",                 "cleanup"),
+    (r"^What&rsquo;s Next",                 "cleanup"),
+    (r"^What's Next",                       "cleanup"),
 ]
 
 # Within section 9, these keep their own h3 and must appear in this order.
@@ -87,6 +151,10 @@ def plain(frag):
 
 
 def classify(heading):
+    # Week 5 numbers its headings ("1. The Challenge", "8. Cost & Cleanup").
+    # Every INBOUND pattern is anchored at the start, so a numbered post maps
+    # nothing at all and the tool refuses it as entirely unmapped.
+    heading = re.sub(r"^\s*\d+\.\s*", "", heading)
     for pat, sid in INBOUND:
         if re.search(pat, heading):
             return sid
@@ -218,9 +286,13 @@ def build(fm, head, preamble, sections, spec, tail):
     # Regenerated table of contents, in target order, listing only what exists.
     present = [(sid, title) for sid, title in TARGET
                if spec.get(sid) or spec.get(sid + "_after") or sections.get(sid)]
-    toc = ['<div class="toc">', '  <h2>&#128203; In This Post</h2>', "  <ol>"]
+    # h3, not h2. Every compliant post in the series uses h3 here, and the
+    # section-sequence checks read the h2 list: emitting an h2 for the table of
+    # contents inserts a tenth heading that is not a section.
+    toc = ['<div class="toc">', '  <h3>&#128203; In This Post</h3>', "  <ol>"]
     for sid, title in present:
-        toc.append('    <li><a href="#%s">%s</a></li>' % (sid, title))
+        toc.append('    <li><a href="#%s">%s</a></li>'
+                   % (EMIT_IDS.get(sid, sid), title))
     toc += ["  </ol>", "</div>", ""]
     out.append(NL.join(toc) + NL)
 
@@ -229,7 +301,8 @@ def build(fm, head, preamble, sections, spec, tail):
         injected = spec.get(sid)
         if not inbound and not injected and not spec.get(sid + "_after"):
             continue
-        out.append(NL + '<h2 id="%s">%s</h2>' % (sid, title) + NL)
+        out.append(NL + '<h2 id="%s">%s</h2>'
+                   % (EMIT_IDS.get(sid, sid), title) + NL)
         if injected:
             out.append(injected.rstrip() + NL)
         for idx, (orig, content) in enumerate(inbound):
@@ -292,6 +365,14 @@ def main():
     sp.loader.exec_module(mod)
     spec = mod.SPEC
     post = spec["post"]
+    # Pick the id set from the post's own series rather than a flag, so a spec
+    # cannot be run against the wrong one by accident.
+    _fm = open(post, "rb").read().decode("utf-8", "replace")
+    _fm = _fm.split("---", 2)[1] if _fm.count("---") >= 2 else ""
+    for _s in ("AWS Weekly Lab", "GCP Weekly Lab", "Azure Weekly Lab"):
+        if _s in _fm:
+            set_series(_s)
+            break
 
     raw = open(post, "rb").read().decode("utf-8")
     term = "\r\n" if "\r\n" in raw else NL

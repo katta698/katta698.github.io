@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>GCP Architecture Series #80 — Shared VPC IAM, and the Network Admin Split | Jayanth Katta Blog</title>
+<meta name="description" content="#79 established the Shared VPC shape and ended on the Network Admin versus Security Admin split. This post is what that division actually costs to operate. Three findings make it more than a role table: the role that grants the broadest power is not the one named after Shared VPC, the lock that stops someone deleting the host project can be removed by that project's own owner by default, and the principals that need grants in the host project include two robot accounts per service project that no runbook mentions."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="Shared VPC IAM, and the Network Admin Split"/>
+<meta property="og:description" content="#79 established the Shared VPC shape and ended on the Network Admin versus Security Admin split. This post is what that division actually costs to operate. Three findings make it more than a role table: the role that grants the broadest power is not the one named after Shared VPC, the lock that stops someone deleting the host project can be removed by that project's own owner by default, and the principals that need grants in the host project include two robot accounts per service project that no runbook mentions."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/gcp-architecture-shared-vpc-iam-and-the-network-admin-split/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="Shared VPC IAM, and the Network Admin Split"/>
+<meta name="twitter:description" content="#79 established the Shared VPC shape and ended on the Network Admin versus Security Admin split. This post is what that division actually costs to operate. Three findings make it more than a role table: the role that grants the broadest power is not the one named after Shared VPC, the lock that stops someone deleting the host project can be removed by that project's own owner by default, and the principals that need grants in the host project include two robot accounts per service project that no runbook mentions."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/gcp-architecture-shared-vpc-iam-and-the-network-admin-split/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=89515ecd"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=c039b840" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=c039b840">
+<script src="/blog/assets/site-footer.js?v=c039b840" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>GCP Architecture Series #80 — Shared VPC IAM, and the Network Admin Split…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span></div>
+      <h1>GCP Architecture Series #80 — Shared VPC IAM, and the Network Admin Split</h1>
+      <p class="post-description">#79 established the Shared VPC shape and ended on the Network Admin versus Security Admin split. This post is what that division actually costs to operate. Three findings make it more than a role table: the role that grants the broadest power is not the one named after Shared VPC, the lock that stops someone deleting the host project can be removed by that project's own owner by default, and the principals that need grants in the host project include two robot accounts per service project that no runbook mentions.</p>
+      <div class="post-info">
+        <span>Nov 1, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>16 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 1 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="gcp-architecture-shared-vpc-iam-and-the-network-admin-split" data-topics="GCP,Architecture,GCP Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official Google Cloud Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      #79 ended on the division of labour Google draws inside a host project: <em>Network Admins have full control over all network resources except for firewall rules and SSL certificates</em>, because <em>Security Admins manage firewall rules and SSL certificates.</em> This post is what operating that division costs, and the honest answer is that the role table is the easy part.
+    </p>
+    <p>
+      <em>Preparing your organization, setting up Shared VPC host projects, and using Shared VPC networks involves a minimum of three different administrative Identity and Access Management (IAM) roles.</em> "Minimum" and "three" are both doing work there. Three findings turned out to matter more than the table: the broadest power sits in the role that is not named after Shared VPC, the protection on the host project is removable by the person most likely to break it, and the list of principals needing grants is longer than the list of people.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">1</div>
+        <strong>"The Shared VPC Admin role is the powerful one"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          It is half of the powerful one. <em>An Organization Admin can grant one or more IAM principals the Shared VPC Admin and Project IAM Admin roles</em> &mdash; a pair, not a choice. And the capability people actually worry about lives in the second: <em>the Project IAM Admin role grants Shared VPC Admins permission to share all existing and future subnets, not just individual subnets.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Review the two grants separately. <code>compute.xpnAdmin</code> lets someone enable hosts and attach projects; <code>resourcemanager.projectIamAdmin</code> is what turns selective sharing into blanket sharing, because delegating subnet access <em>is</em> an IAM binding. If you want attachment without blanket sharing, that is the role to withhold. Both are bound high up &mdash; <em>this grant creates a binding at the organization or folder level, not the project level</em>, and consequently <em>the IAM principals must be defined in the organization, not just a project therein.</em>
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">2</div>
+        <strong>"The lien protects the host project from deletion"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Only from accident, and only until someone with project owner decides otherwise. The stakes first: <em>the accidental deletion of a host project would lead to outages in all service projects attached to it.</em> So enabling a host places a lock, <em>called a lien</em>, and <em>as long as the lien is present, it prevents the project from being deleted accidentally.</em> Then the gap, stated by Google rather than inferred: <em>by default, a project owner can remove a lien from a project, including a Shared VPC host project, unless an organization-level policy is defined to limit lien removal.</em> And explicitly: <em>the project owner for the host project could remove the lien then delete the Shared VPC project.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Set the constraint, once. <em>A user with the orgpolicy.policyAdmin role can define an organization-level policy constraint (constraints/compute.restrictXpnProjectLienRemoval) that limits the removal of liens</em>, and the cost is trivially low: <em>because an organization policy applies to all projects in the organization, you only need to follow these steps once to restrict lien removal.</em>
+        </p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header">
+        <div class="num">3</div>
+        <strong>"We granted Network User to the teams, so the service projects can build"</strong>
+      </div>
+      <div class="challenge-body">
+        <p>
+          Not if they run GKE. Beyond the humans, <em>each service project's GKE service agent must have a binding for the Host Service Agent User ( roles/container.hostServiceAgentUser ) role on the host project</em>, which exists so that the agent can <em>perform network management operations in the host project, as if it were the host project's GKE service agent.</em> And that binding alone is not enough: <em>however, you must add the Compute Network User IAM permission manually to the GKE service agent of the service project to access the host network.</em>
+        </p>
+        <span class="fix-label">Correct approach</span>
+        <p>
+          Enumerate machine principals alongside human ones. Two service accounts per service project appear in Google's own summary table of subnet grants &mdash; the GKE agent at <code>@container-engine-robot.iam.gserviceaccount.com</code> and the Google APIs agent at <code>@cloudservices.gserviceaccount.com</code> &mdash; and both need Network User on the subnets the cluster uses.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      A two-role admin at the top, three similarly named roles in the middle, and a set of robot accounts underneath that the org chart does not contain.
+    </p>
+
+    <figure class="screenshot">
+      <img src="/blog/assets/diagrams/gcp-080-shared-vpc-iam-and-the-network-admin-split.svg" alt="Diagram: the Shared VPC IAM model, where the Shared VPC Admin is a pair of roles and the second one is what grants the power to share all existing and future subnets; the network admin split in which Network Admin controls every network resource except firewall rules and SSL certificates which belong to Security Admin, and Network User is a different role again; the lien that protects a host project from deletion and which a project owner can remove by default unless an organization constraint restricts it; the billing link whose disconnection shuts down every dependent service project; and the machine principals, where each service project needs two service agents granted in the host project and the console grants one of them silently while the CLI does not" />
+      <figcaption>A two-role admin, a three-way network split, a removable lien, and two robot accounts per service project.</figcaption>
+    </figure>
+
+    <h3>Three roles whose names are nearly the same</h3>
+    <p>
+      Google puts an explicit warning in the provisioning page, which is usually a sign that something has cost people time: <em>the Network User and Network Admin roles are different.</em> Setting them beside the Security Admin gives the real shape.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>What it actually controls</th>
+            <th>Granted on</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Network Admin (<code>compute.networkAdmin</code>)</td>
+            <td><em>Full control over all network resources except for firewall rules and SSL certificates</em></td>
+            <td>Host project, or the organization</td>
+          </tr>
+          <tr>
+            <td>Security Admin (<code>compute.securityAdmin</code>)</td>
+            <td><em>Firewall rules and SSL certificates</em> &mdash; exactly the exception above</td>
+            <td>Host project, or the organization</td>
+          </tr>
+          <tr>
+            <td>Network User (<code>compute.networkUser</code>)</td>
+            <td>Not administration at all &mdash; the grant that lets a service project <em>consume</em> a subnet</td>
+            <td>Whole host project, or named subnets</td>
+          </tr>
+          <tr>
+            <td>Shared VPC Admin (<code>compute.xpnAdmin</code>)</td>
+            <td>Enabling hosts, attaching service projects</td>
+            <td>Organization or folder only</td>
+          </tr>
+          <tr>
+            <td>Project IAM Admin (<code>resourcemanager.projectIamAdmin</code>)</td>
+            <td>The half that permits <em>sharing all existing and future subnets</em></td>
+            <td>Organization or folder only</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Read that as three separable jobs rather than five roles. Deciding where packets may go is Network Admin. Deciding which packets are allowed is Security Admin. Being allowed to put a workload on a subnet at all is Network User. Most estates I have seen collapse the first two into one platform team grant, which is understandable and throws away the only structural control Google offers over the nine posts of firewall material this block has covered: the person who writes a deny rule need not be the person who can route around it.
+    </p>
+    <p>
+      The Shared VPC Admin's scope has a practical consequence worth naming because it bites in the console. Without the role you cannot even look: <em>if you don't yet have the Compute Shared VPC Admin role ( roles/compute.xpnAdmin ), then you cannot view this page in the Google Cloud console.</em> And because the binding is organization- or folder-scoped, the console misbehaves if you pick the wrong scope &mdash; <em>if you select a project, the Roles menu shows incorrect entries.</em> An engineer who cannot find the role in the menu is usually looking at a project, not at the organization.
+    </p>
+    <p>
+      One more grant often travels with the pair without being discussed: <em>Shared VPC Admins can also create and delete projects if they have the Project Creator role and Project Deleter role</em>. Project Deleter on the organization, held by the same principal that administers Shared VPC, is worth a second look given the next section.
+    </p>
+
+    <h3>The lien, and the one constraint that makes it real</h3>
+    <p>
+      This is the finding I would act on today. The protection is automatic and well designed: a lien is placed when the project becomes a host, and <em>the lien is automatically removed from the host project when it is no longer configured for Shared VPC.</em> Nobody has to remember either step.
+    </p>
+    <p>
+      The weakness is in who may lift it. <em>Lien removal requires an IAM principal with the resourcemanager.projects.get and resourcemanager.projects.updateLiens permissions on the project</em> &mdash; and a project owner has those. So the default posture is that the host project's own owner can remove the safety catch and then delete the project, with the blast radius from the first sentence of this section: outages in every attached service project.
+    </p>
+    <p>
+      The remedy confines removal to the organization level: with <code>compute.restrictXpnProjectLienRemoval</code> enforced, only principals holding <code>roles/owner</code> or <code>roles/resourcemanager.lienModifier</code> <em>at the organization level</em>, or a custom role with those two permissions at that level, can lift a lien. A project owner who is not also an organization owner loses the ability entirely.
+    </p>
+
+    <div class="callout">
+      <strong>Why this is worth a calendar entry rather than a backlog ticket</strong>
+      <p>Three properties make it unusual. It is a single organization-wide switch, so the work is minutes. It is almost certainly not set, because nothing prompts you and the lien's existence reads as sufficient protection. And the failure it prevents is not gradual &mdash; it is every attached service project at once, caused by a legitimate action taken by someone with legitimate authority over their own project. There is no partial version of this outage.</p>
+    </div>
+
+    <h3>The other way to take it all down</h3>
+    <p>
+      The lien guards deletion. Nothing equivalent guards payment. <em>Disconnecting billing on a Shared VPC network can lead to a complete shutdown of all dependent resources including service projects.</em>
+    </p>
+    <p>
+      That matters because it is a different person. Deleting a project is an action a project owner or network administrator takes; detaching a billing account is an action a billing administrator takes, usually during a cost exercise, usually without reading a network runbook. The host project in a hub-and-spoke estate is exactly the project that looks odd on a cost report &mdash; it owns the gateways and, per #79, carries VPN egress generated by service projects it cannot see. So it is both the project most likely to attract billing attention and the one whose billing must not be touched.
+    </p>
+
+    <h3>What the defaults are, after you finish setting up</h3>
+    <p>
+      Two post-setup defaults are permissive and both have a constraint available. On attachment: <em>by default, a Shared VPC Admin can attach a non-host to any host project in the same organization.</em> On consumption: <em>by default, after you configure Shared VPC, IAM principals in service projects can use any subnet in the host project if they have the appropriate IAM permissions.</em> Those are <code>compute.restrictSharedVpcHostProjects</code> and <code>compute.restrictSharedVpcSubnetworks</code>, both of which #79 established are prospective only.
+    </p>
+    <p>
+      It is worth being precise about what enabling a host project does and does not do, because the words suggest more than happens. <em>When you enable a host project, the project's network resources are not automatically shared with service projects.</em> Attaching does not grant either: in the console flow, Service Project Admins are added in a separate step, and <em>these users will be granted the IAM role of compute.networkUser for the shared subnets.</em> Until that binding exists nobody can build, since <em>only Service Project Admins can create resources in the subnets of the Shared VPC host project.</em> Enable, attach, grant &mdash; three steps, and the first two produce no capability at all.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <p>
+      This is the part of Shared VPC IAM that breaks clusters, and it is documented in the GKE pages rather than the Shared VPC ones, which is part of why it gets missed.
+    </p>
+    <p>
+      <em>Each service project's GKE service agent must have a binding for the Host Service Agent User ( roles/container.hostServiceAgentUser ) role on the host project.</em> What it confers is unusually broad, and the documentation does not soften it: the binding lets the agent <em>perform network management operations in the host project, as if it were the host project's GKE service agent.</em> There is one safeguard &mdash; <em>this role can only be granted to a service project's GKE service agent</em> &mdash; so it cannot be handed to a human or to an arbitrary service account.
+    </p>
+    <p>
+      Then the trap. Attaching with GKE access enabled does part of the job: <em>when attaching a service project, enabling GKE access grants the service project's GKE service agent the permissions to perform network management operations in the host project.</em> But not all of it: <em>however, you must add the Compute Network User IAM permission manually to the GKE service agent of the service project to access the host network.</em> So the automatic step grants the host-service-agent half and leaves the subnet-consumption half to you.
+    </p>
+    <p>
+      And there are two agents, not one. Google's summary of roles granted on subnets lists, per service project, both the GKE agent at <code>@container-engine-robot.iam.gserviceaccount.com</code> and the Google APIs service agent at <code>@cloudservices.gserviceaccount.com</code>, each needing Compute Network User on the subnet that service project's cluster uses. A grant list built from the team roster is therefore missing two entries per project.
+    </p>
+
+    <div class="callout">
+      <strong>The console does more than the CLI, for the third time</strong>
+      <p>On the Host Service Agent User binding: <em>if you have been using the Google Cloud console, you do not have to grant the Host Service Agent User role explicitly</em>, because <em>that was done automatically when you used the Google Cloud console to attach service projects to your host project.</em> Via <code>gcloud</code> you grant it yourself. This is the same divergence #73 found in hierarchical firewall policy defaults and #77 found in flow log sampling rates &mdash; a guided path that configures more than the primitive, with the result that a console-built estate and a Terraform-built estate differ in ways neither artifact records. The practical rule by now: for anything in this product area, assume infrastructure-as-code produces the barer configuration, and write the difference down explicitly.</p>
+    </div>
+
+    <p>
+      One related manual step belongs in the same mental bucket, because it has the same shape &mdash; something a managed service usually does for you, which here it does not. For internal Application Load Balancer traffic in a Shared VPC cluster, on the firewall rule permitting the proxy subnet: <em>you must create this firewall rule manually.</em> The Ingress controller does create rules for Google Cloud health checks, but not that one. After nine posts on firewall rules, a rule that a controller declines to create is worth knowing about before the first failed deployment rather than during it.
+    </p>
+
+    <h3>The vocabulary, and where to look things up</h3>
+    <p>
+      Two naming facts save real time. First, the API name: <em>Shared VPC is also referred to as "XPN" in the API and command-line interface</em> &mdash; which is why the role is <code>compute.xpnAdmin</code>, the constraint is <code>compute.restrictXpnProjectLienRemoval</code>, and the API methods are <code>enableXpnHost</code> and <code>listXpnHosts</code>. Searching the documentation for "shared" finds the concept pages; searching for "xpn" finds the reference material.
+    </p>
+    <p>
+      Second, the framing in the provisioning page is narrower and more accurate than the overview's: <em>Shared VPC lets you export subnets from a Virtual Private Cloud (VPC) network in a host project to other service projects in the same organization.</em> Export, not share &mdash; a subnet is offered outward and consumed by a grant, which is exactly how the IAM model works. And it is address-family agnostic: <em>Shared VPC supports exporting subnets of any stack type.</em>
+    </p>
+    <p>
+      The structural limits from #79 still bound everything here. The quota page fixes the fan-in at <em>number of host projects to which a service project can attach 1</em> and the fan-out ceiling at <em>number of Shared VPC host projects in a single organization 100</em>; in the provisioning page's words, <em>a service project can only attach to one host project, but a host project supports multiple service project attachments</em>, and cross-folder work needs breadth of authority, since <em>a Shared VPC Admin can link projects in two different folders only if the admin has the role for both folders.</em>
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Situation</th>
+            <th>Decision</th>
+            <th>Because</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Any organization with a Shared VPC host project</td>
+            <td>Enforce <code>compute.restrictXpnProjectLienRemoval</code> today</td>
+            <td>A project owner can otherwise remove the lien and delete the host, taking every service project down.</td>
+          </tr>
+          <tr>
+            <td>Securing the host project generally</td>
+            <td>Secure the billing link as a separate task</td>
+            <td>Disconnecting billing can shut down all dependent resources including service projects.</td>
+          </tr>
+          <tr>
+            <td>Wanting attachment without blanket sharing</td>
+            <td>Withhold Project IAM Admin, grant <code>compute.xpnAdmin</code> alone</td>
+            <td>Project IAM Admin is what permits sharing all existing and future subnets.</td>
+          </tr>
+          <tr>
+            <td>Granting network duties to a platform team</td>
+            <td>Split Network Admin and Security Admin deliberately</td>
+            <td>Network Admin excludes firewall rules and SSL certificates by design.</td>
+          </tr>
+          <tr>
+            <td>Writing a Shared VPC grant list</td>
+            <td>Include two service agents per service project</td>
+            <td>The GKE agent and the Google APIs agent both need Network User on the subnets.</td>
+          </tr>
+          <tr>
+            <td>Attaching a service project with GKE</td>
+            <td>Add Compute Network User to the GKE agent by hand</td>
+            <td>Enabling GKE access grants Host Service Agent User, not Network User.</td>
+          </tr>
+          <tr>
+            <td>Provisioning with Terraform or gcloud</td>
+            <td>Grant Host Service Agent User explicitly</td>
+            <td>Only the console does it automatically on attach.</td>
+          </tr>
+          <tr>
+            <td>An engineer cannot find the Shared VPC Admin role</td>
+            <td>Check they selected the organization, not a project</td>
+            <td>Selecting a project makes the Roles menu show incorrect entries.</td>
+          </tr>
+          <tr>
+            <td>An engineer cannot open the Shared VPC page at all</td>
+            <td>They lack <code>compute.xpnAdmin</code></td>
+            <td>The page is not viewable without it.</td>
+          </tr>
+          <tr>
+            <td>Internal Application Load Balancer in a Shared VPC cluster</td>
+            <td>Create the proxy-subnet firewall rule yourself</td>
+            <td>The Ingress controller creates health-check rules only.</td>
+          </tr>
+          <tr>
+            <td>Expecting capability after enabling and attaching</td>
+            <td>Expect none until the Network User grant exists</td>
+            <td>Enabling shares nothing and only Service Project Admins can create resources.</td>
+          </tr>
+          <tr>
+            <td>Searching the documentation</td>
+            <td>Search for "xpn" for reference material</td>
+            <td>The API and CLI call Shared VPC XPN throughout.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The one to look at today</h3>
+    <p>
+      Check whether <code>compute.restrictXpnProjectLienRemoval</code> is enforced on your organization. It is one command to read and one to set, it applies organization-wide so you only do it once, and until it is set the documented position is that a host project's owner can remove the lien and delete the project. Then list who holds <code>roles/owner</code> on each host project, because that is the set of people the default currently trusts with every attached service project's availability.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The thing worth taking from this one is that Shared VPC's IAM model is better designed than it is defaulted. The separations are real and thoughtful: routing apart from filtering, administration apart from consumption, a lock placed and lifted automatically as the configuration changes, a service agent role that can be granted to nothing except the one agent it is for. Somebody thought carefully about each of those.
+    </p>
+    <p>
+      And then every default leans open. The lien can be lifted by the project's owner. Any non-host can attach to any host. Any principal with permissions can use any subnet. The console quietly grants a binding the CLI does not. Twenty posts in, that is the clearest statement of the pattern this whole block keeps producing: the mechanism is sound, the documentation is honest about its limits, and the shipped configuration is the permissive one. Reading the defaults is the work. Nothing warns you, because from the platform's point of view nothing is wrong.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>#81 moves from sharing one network to joining two: VPC Network Peering, and its non-transitivity &mdash; why A peered to B and B peered to C never gives you A to C.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official Google Cloud Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official Google Cloud Reference</h2>
+    <ul>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/provisioning-shared-vpc" target="_blank" rel="noopener">Provision Shared VPC</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/shared-vpc" target="_blank" rel="noopener">Shared VPC overview</a></li>
+      <li><a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/cluster-shared-vpc" target="_blank" rel="noopener">Set up GKE clusters with Shared VPC</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/deprovisioning-shared-vpc" target="_blank" rel="noopener">Deprovision Shared VPC</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/project-liens" target="_blank" rel="noopener">Placing a lien on a project</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/org-policy-constraints" target="_blank" rel="noopener">Organization policy constraints</a></li>
+      <li><a href="https://docs.cloud.google.com/resource-manager/docs/organization-policy/overview" target="_blank" rel="noopener">Organization policy overview</a></li>
+      <li><a href="https://docs.cloud.google.com/compute/docs/access/iam" target="_blank" rel="noopener">Compute Engine IAM roles and permissions</a></li>
+      <li><a href="https://docs.cloud.google.com/iam/docs/roles-permissions/compute" target="_blank" rel="noopener">Compute Engine IAM roles reference</a></li>
+      <li><a href="https://docs.cloud.google.com/vpc/docs/quota" target="_blank" rel="noopener">VPC quotas and limits</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">GCP</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">GCP Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/azure-architecture-bgp-on-azure-gateways/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">Azure Architecture Series #80 — BGP on Azure Gateways</span></a><a href="/blog/aws-architecture-ebs-snapshot-lock/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">AWS Architecture Series #101 — You cannot delete the snapshot; you can delete its key</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/gcp-architecture-shared-vpc-iam-and-the-network-admin-split/';
+      this.page.identifier = 'gcp-architecture-shared-vpc-iam-and-the-network-admin-split';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=c039b840"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

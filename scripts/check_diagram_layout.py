@@ -196,19 +196,60 @@ def analyse(svg: str):
 
     # A text "escapes" when it straddles a rect's edge: partly in, partly out.
     # Fully inside is correct, fully outside is simply elsewhere on the canvas.
+    canvas = None
+    vb0 = re.search(r'viewBox="([^"]+)"', svg)
+    if vb0:
+        p0 = [_f(v) for v in vb0.group(1).split()]
+        if len(p0) == 4:
+            canvas = (p0[0], p0[1], p0[0] + p0[2], p0[1] + p0[3])
+
+    def is_background(r):
+        return canvas is not None and inside(canvas, r, slack=2.0)
+
+    # A frame that spans nearly the whole canvas is the background or the AWS
+    # Cloud border. Captions sit under those on purpose, so they are never the
+    # box a label "fell out of".
+    cw = (canvas[2] - canvas[0]) if canvas else 0
+
+    def is_frame(r):
+        return is_background(r) or (cw and (r[2] - r[0]) > 0.85 * cw)
+
+    def is_title_of(t, r):
+        """A frame's own name, printed just inside its top-left corner."""
+        return (r[2] - r[0] >= 200 and t[2] <= r[2] + 1
+                and r[0] - 1 <= t[0] <= r[0] + 60
+                and r[1] - 1 <= t[1] <= r[1] + 34)
+
     escapes = []
     for t in ts:
+        if any(inside(t, r) for r in rs if not is_frame(r)):
+            continue
+        if any(is_title_of(t, r) for r in rs):
+            continue
+        hit = None
         for r in rs:
             if inside(t, r):
+                continue
+            # A label that sits squarely within a box's width, just outside its
+            # top or bottom line, has fallen out of that box. The old rule here
+            # looked for an overlap with a SMALL box, and caught neither half of
+            # week 12's bottom row: the frame was a 448-wide group, and the
+            # three sub-labels cleared its border entirely rather than
+            # straddling it, so there was no overlap to find.
+            # Only the bottom edge, and only a frame wide enough to be holding
+            # a row: a heading printed ABOVE a box is how these diagrams label
+            # a section, and counting that as an escape reported eleven places
+            # that are correct on screen.
+            if (not is_frame(r) and (r[2] - r[0]) >= 260
+                    and t[0] >= r[0] - 1 and t[2] <= r[2] + 1
+                    and r[3] - 6 <= t[1] <= r[3] + 24):
+                hit = (t[4], (r[2] - r[0], r[3] - r[1]))
                 break
-        else:
-            for r in rs:
-                if overlap(t, r) and not inside(t, r):
-                    # the big background rect and group frames legitimately sit
-                    # under text; only flag when the text crosses a SMALL box
-                    if (r[2] - r[0]) < 420 and (r[3] - r[1]) < 220:
-                        escapes.append((t[4], (r[2] - r[0], r[3] - r[1])))
-                        break
+            if overlap(t, r) and (r[2] - r[0]) < 420 and (r[3] - r[1]) < 220:
+                hit = (t[4], (r[2] - r[0], r[3] - r[1]))
+                break
+        if hit:
+            escapes.append(hit)
 
     # A connector running across a word is the defect Jay actually sees, and
     # the first version of this file could not detect it: every one of the five
@@ -260,7 +301,21 @@ def self_test() -> int:
               '<text x="20" y="35" font-size="10">a label with a line beside it</text>'
               '<line x1="190" y1="10" x2="190" y2="90" stroke="#333"/></svg>')
 
+    # The fault that shipped: a sub-label hanging below a GROUP frame. The box
+    # is 600 wide, so the old size filter skipped it and the row rendered with
+    # three captions sitting under the border.
+    dropped = ('<svg viewBox="0 0 900 300">'
+               '<rect x="20" y="20" width="600" height="200" fill="none"/>'
+               '<text x="60" y="228" font-size="11">hangs below the group line</text>'
+               '</svg>')
+    seated = ('<svg viewBox="0 0 900 300">'
+              '<rect x="20" y="20" width="600" height="200" fill="none"/>'
+              '<text x="60" y="150" font-size="11">sits inside the group</text>'
+              '</svg>')
+
     cases = [
+        ("a sub-label hanging below a group frame", dropped, (0, 1, 0, 0)),
+        ("a label seated inside a group frame", seated, (0, 0, 0, 0)),
         ("a clean diagram", good, (0, 0, 0, 0)),
         ("two texts on top of each other", clash, (1, 0, 0, 0)),
         ("text wider than its box", spill, (0, 1, 0, 0)),

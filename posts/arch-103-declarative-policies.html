@@ -1,0 +1,370 @@
+---
+title: "AWS Architecture Series #103 — It does not deny the API; it sets the value"
+date: '2026-11-04T09:00:00'
+slug: aws-architecture-declarative-policies
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-04'
+verified_claims:
+  - claim: "Declarative policies allow you to centrally declare and enforce your desired configuration for a given AWS service at scale across an organization"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html
+  - claim: "Declarative policies are enforced in the service's control plane, which is an important distinction from authorization policies such as service control policies (SCPs) and resource control policies (RCPs)"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html
+  - claim: "While authorization policies regulate access to APIs, declarative policies are applied directly at the service level to enforce durable intent"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html
+  - claim: "By enforcing the desired configuration of an AWS service without using API actions"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html
+  - claim: "By controlling the maximum available access permissions of principals at an API level"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html
+  - claim: "Once attached, the configuration is always maintained when the service adds new features or APIs"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html
+  - claim: "The baseline configuration is also maintained when new accounts are added to an organization or when new principals and resources are created"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html
+  - claim: "Accounts joining an organization will automatically inherit the declarative policy in the organization"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html
+  - claim: "If a declarative policy is detached, the attribute state will roll back to its previous state before the declarative policy was attached"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html
+  - claim: "The effective policy is the set of rules that are inherited from the organization root and OUs along with those directly attached to the account"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html
+  - claim: "The account status report allows you to review the current status of all attributes supported by declarative policies for the accounts in scope"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html
+  - claim: "You can also create customizable error messages, which can help administrators redirect end users to internal wiki pages or provide a descriptive message that can help end users understand why an action failed"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html
+  - claim: "Declarative policies can be applied to an entire organization, organizational units (OUs), or accounts"
+    source: https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html
+  - claim: "When a declarative policy is in use, you can't modify the setting directly within an account"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+  - claim: "Using a declarative policy allows you to apply the setting across multiple Regions simultaneously, as well as across multiple accounts simultaneously"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html
+problem: "An SCP and a declarative policy both arrive from the organization and both stop people doing things, so they get filed together. They work in different places: one decides whether an API call is allowed, the other decides what the service's configuration is. That difference explains which one covers service-linked roles, what each one guarantees as a service's APIs evolve, and what happens when you take it away."
+builds: "A reading of declarative policies against SCPs and RCPs, what enforcing in the control plane buys that an API denial cannot, and the rollback behaviour on detach that makes a declarative policy a held position rather than a change."
+catch: "One sentence sets the whole mental model: declarative policies are 'applied directly at the service level to enforce durable intent' rather than regulating access to APIs. One consequence is in the comparison table and easy to miss — SCPs and RCPs do not govern service-linked roles, and declarative policies do."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #103 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">It does not deny the API; it sets the value</h1>
+  <p class="post-subtitle">A declarative policy and an SCP both come down from the organization and both stop things happening. They do it in different places, and everything that is surprising about declarative policies follows from where.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The distinction is stated in one sentence and it is worth reading twice:
+    </p>
+    <p>
+      <em>&ldquo;Declarative policies are enforced in <strong>the service's control plane</strong>, which is
+      an important distinction from authorization policies such as service control policies (SCPs) and
+      resource control policies (RCPs). While authorization policies <strong>regulate access to APIs</strong>,
+      declarative policies are <strong>applied directly at the service level to enforce durable
+      intent</strong>.&rdquo;</em>
+    </p>
+    <p>
+      An SCP answers <em>may this principal make this call?</em> A declarative policy answers
+      <em>what is this service's setting?</em> The first is a gate on the path; the second is the value
+      at the destination. Three consequences follow, and none of them is obvious from the policy editor.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>It covers service-linked roles, and the authorization policies do not</strong></div>
+      <div class="challenge-body">
+        <p>
+          AWS's own comparison table has a row that is easy to scroll past. Against
+          <em>&ldquo;Governs service-linked roles?&rdquo;</em>, service control policies answer
+          <strong>No</strong>, resource control policies answer <strong>No</strong>, and declarative policies
+          answer <strong>Yes</strong>.
+        </p>
+        <p>
+          That is a real gap closed. An SCP is evaluated against a principal, and a service-linked role acting
+          on the service's own behalf is outside what it constrains &mdash; which is why an estate that
+          believes an SCP covers everything has a category of activity it has never governed. A declarative
+          policy does not care which principal acted, because it is not evaluating a principal. It is
+          asserting what the configuration is.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>If a control genuinely must hold regardless of who or what acts &mdash; including AWS services operating in your account &mdash; an SCP is the wrong instrument and a declarative policy may be the right one. Check the supported list first; the mechanism only covers the attributes AWS has onboarded.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>It keeps its guarantee as a service's APIs and features evolve</strong></div>
+      <div class="challenge-body">
+        <p>
+          SCPs and RCPs enforce authorization restrictions rather than service configuration. A policy
+          that enumerates specific denied actions may need updating when AWS introduces new API actions
+          &mdash; though that is a property of how the policy is written rather than of the mechanism.
+          Wildcard patterns and well-designed allow-list policies can restrict newly introduced actions too.
+          What declarative policies offer is a different kind of guarantee, for the configuration attributes
+          they support:
+        </p>
+        <p>
+          <em>&ldquo;Once attached, the configuration is <strong>always maintained when the service adds new
+          features or APIs</strong>.&rdquo;</em>
+        </p>
+        <p>
+          AWS calls this <em>&ldquo;Set once and forget&rdquo;</em>, and extends it in the direction that
+          usually costs estates the most:
+          <em>&ldquo;The baseline configuration is also maintained <strong>when new accounts are added to an
+          organization</strong> or when new principals and resources are created&rdquo;</em>, with
+          <em>&ldquo;Accounts joining an organization will automatically inherit the declarative policy in
+          the organization.&rdquo;</em>
+        </p>
+        <p>
+          That is the answer to the drift problem in
+          <a href="/blog/aws-architecture-ebs-snapshot-public-access/">#102</a>, where a Regional,
+          account-level setting has to be re-applied in every new account and every new Region to mean
+          anything. The declarative version arrives with the account.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Where a setting exists in both forms, prefer the declarative one even for a single account, because the property you are buying is not today's value &mdash; it is that tomorrow's accounts, Regions and features inherit it without anybody remembering.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Detaching it does not leave the setting where the policy put it</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;If a declarative policy is detached, <strong>the attribute state will roll back to its
+          previous state before the declarative policy was attached</strong>.&rdquo;</em>
+        </p>
+        <p>
+          So a declarative policy is a position held, not a change applied. While it is attached the value is
+          what you declared; remove it and the account returns to whatever it had before &mdash; which, for
+          an account that was non-compliant when the policy landed, means returning to non-compliant.
+        </p>
+        <p>
+          That is the same shape as the block public access settings in
+          <a href="/blog/aws-architecture-ebs-snapshot-public-access/">#102</a>, and it is worth noticing
+          that AWS has now built the pattern twice: the control suppresses a state rather than overwriting
+          it, and the suppressed state is still underneath. Detaching a declarative policy during an incident
+          to unblock a team does not leave the estate at the declared baseline. It restores the configuration
+          the policy was hiding.
+        </p>
+        <p>
+          The other half of the same coin, from the services that implement it:
+          <em>&ldquo;When a declarative policy is in use, <strong>you can't modify the setting directly
+          within an account</strong>.&rdquo;</em> While attached, the local switch is gone.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat detaching as a configuration change with a blast radius, not as turning off a guardrail. Before you detach, know what each account's prior state was &mdash; the account status report is the tool for that, and the time to read it is before you need it.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-103-declarative-policies.svg" alt="Diagram: declarative policies are enforced in the service's control plane while service control policies and resource control policies regulate access to APIs. The comparison shows that SCPs control the maximum available access permissions of principals at an API level and do not govern service-linked roles, RCPs do the same for resources and also do not govern service-linked roles, and declarative policies enforce the desired configuration of an AWS service without using API actions and do govern service-linked roles. Once attached, the configuration is always maintained when the service adds new features or APIs, and is maintained when new accounts join the organization, which inherit the policy automatically. If a declarative policy is detached, the attribute state rolls back to its previous state before the policy was attached, so the policy is a position held rather than a change applied, and while it is attached an account cannot modify the setting locally.">
+
+    <h3>Three organization policies, three places they act</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Service control policy</th><th>Resource control policy</th><th>Declarative policy</th></tr>
+      <tr>
+        <td>What it governs</td>
+        <td>Principals</td>
+        <td>Resources</td>
+        <td>A service's configuration</td>
+      </tr>
+      <tr>
+        <td>How</td>
+        <td><em>&ldquo;controlling the maximum available access permissions of principals at an API level&rdquo;</em></td>
+        <td>The same, <em>&ldquo;for resources at an API level&rdquo;</em></td>
+        <td><em>&ldquo;enforcing the desired configuration of an AWS service <strong>without using API actions</strong>&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Governs service-linked roles?</td>
+        <td>No</td>
+        <td>No</td>
+        <td><strong>Yes</strong></td>
+      </tr>
+      <tr>
+        <td>Survives a new API</td>
+        <td>Only if the policy anticipated it</td>
+        <td>Only if the policy anticipated it</td>
+        <td>Yes &mdash; <em>&ldquo;always maintained when the service adds new features or APIs&rdquo;</em></td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      The second row is the whole thing. An authorization policy produces a denial at the moment of a call; a
+      declarative policy produces a value that is simply true of the service. That is why the third row can
+      say yes: there is no principal to exempt.
+    </p>
+
+    <h3>What they can hold, which is the real constraint</h3>
+    <p>
+      Declarative policies are not a general configuration language. They cover the services AWS has onboarded
+      and the attributes within them, and the current set is a good map of where this mechanism is going:
+      EC2, Backup, Tag, chat applications, AI services opt-out, Security Hub, Amazon Bedrock, Amazon
+      Inspector, upgrade rollout, Amazon S3, Shield Network Security Director and Amazon GuardDuty policies.
+    </p>
+    <p>
+      Three of those have appeared in this series in the past week, which is the clearest signal of how much
+      this mechanism is now carrying. The Allowed Images setting AWS gives as its example policy is the
+      control from <a href="/blog/aws-daily-intelligence-inspector-ami-scanning/">Daily #67</a>; the upgrade
+      rollout policy is the middle path in
+      <a href="/blog/aws-daily-intelligence-rds-oracle-amvu-optional/">Daily #66</a>; and the S3 and EC2
+      policies are how the block public access settings in
+      <a href="/blog/aws-architecture-ebs-snapshot-public-access/">#102</a> stop being per-account chores.
+    </p>
+
+    <h3>Inheritance, and the report that tells you what is actually in force</h3>
+    <p>
+      <em>&ldquo;Declarative policies can be applied to an entire organization, organizational units (OUs),
+      or accounts&rdquo;</em>, and what lands on an account is the combination:
+      <em>&ldquo;The <strong>effective policy</strong> is the set of rules that are inherited from the
+      organization root and OUs along with those directly attached to the account.&rdquo;</em>
+    </p>
+    <p>
+      Because the mechanism sets values rather than denying calls, the question <em>what is in force here?</em> has an answer you can read rather than compute:
+      <em>&ldquo;The account status report allows you to review the current status of all attributes
+      supported by declarative policies for the accounts in scope.&rdquo;</em> That is a materially better
+      position than SCP evaluation, where the effective permission is the intersection of several documents
+      and a simulation is the only honest way to know.
+    </p>
+
+    <h3>The failure message is configurable, and that matters more than it sounds</h3>
+    <p>
+      <em>&ldquo;You can also create customizable error messages, which can help administrators redirect end
+      users to internal wiki pages or provide a descriptive message that can help end users understand why an
+      action failed.&rdquo;</em>
+    </p>
+    <p>
+      Anyone who has watched an engineer lose an afternoon to an unexplained <code>AccessDenied</code> from an
+      SCP they cannot read will recognise what this is worth. A control that explains itself at the point of
+      failure is a control that generates fewer tickets and less resentment, and resentment is what gets
+      guardrails removed.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Enforcing configuration is a different guarantee from enumerating actions</h3>
+    <p>
+      Deny policies that rely on enumerating specific API actions can become incomplete as services
+      introduce new operations. Declarative policies avoid that particular maintenance problem for the
+      configuration attributes they support: moving enforcement into the control plane makes the guarantee
+      about the service's state rather than about a list of calls, so it does not need revisiting when a new
+      call appears. That is a different durability profile, and it is narrower than it sounds &mdash; it
+      holds only for the attributes AWS has onboarded.
+    </p>
+
+    <h3>Rolling back on detach is defensible, and must be understood</h3>
+    <p>
+      The alternative would be for AWS to leave accounts permanently mutated by a policy you removed, which
+      would make attaching one far more frightening than it is. Reverting is the conservative choice. It does
+      mean a declarative policy is a thing you hold rather than a thing you did, and the only real mistake is
+      modelling it as the latter.
+    </p>
+
+    <h3>Covering service-linked roles closes a gap most people do not know they have</h3>
+    <p>
+      The limits of SCPs around service-linked roles are documented but rarely front of mind, and an estate
+      can run for years believing its guardrails are universal. A mechanism that sidesteps principal
+      evaluation entirely is the clean answer, and putting the comparison in a table beside the authorization
+      policies is the right place to tell people.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Which policy type</td>
+        <td>Declarative for a configuration baseline; SCP for who may act</td>
+        <td>One sets a value <em>&ldquo;without using API actions&rdquo;</em>; the other bounds permissions at an API level</td>
+      </tr>
+      <tr>
+        <td>A control that must hold against AWS services too</td>
+        <td>Declarative</td>
+        <td>It is the only one of the three that governs service-linked roles</td>
+      </tr>
+      <tr>
+        <td>A per-account, per-Region setting</td>
+        <td>Declarative, even for one account</td>
+        <td>New accounts inherit it automatically; the local switch disappears while it is attached</td>
+      </tr>
+      <tr>
+        <td>Emergency removal</td>
+        <td>Plan it before you need it</td>
+        <td>Detaching rolls the attribute back to its prior state, which may be the non-compliant one</td>
+      </tr>
+      <tr>
+        <td>Explaining a denial</td>
+        <td>Write the custom error message when you attach</td>
+        <td>It is the difference between a guardrail people route around and one they understand</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>Pull the account status report and read it as an inventory of what is actually in force.</strong>
+      It covers all supported attributes for the accounts in scope, which makes it the one document that
+      answers the question your SCPs cannot answer without simulation.
+    </p>
+    <p>
+      <strong>For every attached declarative policy, record what each account's prior state was.</strong>
+      That is the state you return to on detach. Without it, removing a policy is an action whose outcome you
+      cannot predict per account.
+    </p>
+    <p>
+      <strong>Then look at your SCPs and ask which of them are really configuration statements.</strong>
+      One that enumerates every API which could turn a setting off is approximating a declarative policy by
+      hand, and that form needs maintaining whenever the service adds an operation. A wildcard or allow-list
+      form may not &mdash; check how yours are written before rewriting anything.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The useful way to hold these three apart is by the question each one answers. An SCP answers whether a
+      principal may call. An RCP answers whether a resource may be reached. A declarative policy answers what
+      the setting is. Only the third is immune to somebody inventing a new way to ask.
+    </p>
+    <p>
+      The cost of that immunity is the rollback on detach. Because the mechanism asserts a value rather than
+      changing one, the account's own value is still underneath, waiting. That is the same design as the
+      block public access settings in <a href="/blog/aws-architecture-ebs-snapshot-public-access/">#102</a>,
+      and seeing it twice in a week suggests it is becoming the house pattern for AWS guardrails: suppress,
+      do not overwrite, and make removal safe by making it reversible.
+    </p>
+    <p>
+      Which is fine, as long as nobody reads <em>compliant while the policy is attached</em> as
+      <em>compliant</em>.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; AWS Organizations tag policies: what a tag policy evaluates, what it does when a resource does not comply, and where the boundary sits between reporting and preventing.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_declarative.html" target="_blank" rel="noopener">Declarative policies in AWS Organizations &#8212; enforcement in the service's control plane versus authorization policies at the API level, the comparison table including the service-linked roles row, the maintenance of configuration across new features and new accounts, automatic inheritance, the rollback on detach, the effective policy, the account status report, customizable error messages, and the list of supported policy types</a></li>
+      <li><a href="https://docs.aws.amazon.com/ebs/latest/userguide/block-public-access-snapshots.html" target="_blank" rel="noopener">Block public access for Amazon EBS snapshots &#8212; the statements that a declarative policy applies a setting across multiple Regions and accounts simultaneously and that an account cannot modify the setting directly while one is in use</a></li>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_inheritance_mgmt.html" target="_blank" rel="noopener">Understanding declarative policy inheritance &#8212; further reading on how root, OU and account attachments combine; no claims in this post are drawn from it</a></li>
+      <li><a href="https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_ec2.html" target="_blank" rel="noopener">EC2 declarative policies &#8212; further reading on the EC2 attributes available, including the Allowed Images setting; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

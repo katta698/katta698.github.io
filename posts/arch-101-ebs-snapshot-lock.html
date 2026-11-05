@@ -1,0 +1,400 @@
+---
+title: "AWS Architecture Series #101 — You cannot delete the snapshot; you can delete its key"
+date: '2026-11-02T09:00:00'
+slug: aws-architecture-ebs-snapshot-lock
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-02'
+verified_claims:
+  - claim: "While a snapshot is locked, it can't be deleted by any user, regardless of their IAM permissions"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/ebs-snapshot-lock.html
+  - claim: "You can continue to use a locked snapshot in the same way that you would use any other snapshot"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/ebs-snapshot-lock.html
+  - claim: "You can lock and unlock snapshots at no additional cost. You pay the standard Amazon EBS snapshot storage costs for locked snapshots"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/ebs-snapshot-lock.html
+  - claim: "After a snapshot is locked, users with appropriate IAM permissions can unlock the snapshot and modify the lock mode and lock duration or expiry date at any time"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-concepts.html
+  - claim: "When you lock a snapshot in governance mode, the snapshot is locked immediately; there is no cooling-off period"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-concepts.html
+  - claim: "After the cooling-off period expires, you can't unlock the snapshot, change the lock mode, or decrease the lock duration or expire date; you can only increase the lock duration or expiry date"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-concepts.html
+  - claim: "You can lock a snapshot in compliance mode without a cooling-off period by omitting the cooling-off period in the request"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-concepts.html
+  - claim: "The cooling-off period can range from 1 to 72 hours"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-concepts.html
+  - claim: "The duration can range from 1 day to 36500 days (100 years)"
+    derive: "36500 / 365"
+    expect: "100"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-concepts.html
+  - claim: "A snapshot can't be deleted during the cooling-off period"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-concepts.html
+  - claim: "expired - The snapshot was locked in compliance or governance mode but the lock has expired. The snapshot is not locked and can be deleted"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-concepts.html
+  - claim: "You can delete the KMS key used to encrypt a locked snapshot"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-considerations.html
+  - claim: "You can deregister an AMI that has associated snapshots that are locked"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-considerations.html
+  - claim: "We recommend that you do not lock snapshots created by AWS Backup. AWS Backup already ensures that its snapshots are not deleted before their retention period expires"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-considerations.html
+  - claim: "You can lock archived snapshots. And you can archive locked snapshots"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-considerations.html
+  - claim: "You can't lock snapshots during creation or during AMI registration"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-considerations.html
+  - claim: "If you lock a snapshot while it is in the pending state, and you lock it for a specific duration, the lock duration starts only when the snapshot reaches the completed state"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-considerations.html
+  - claim: "If you lock a snapshot while it is in the pending state and the snapshot creation fails for any reason, the lock is canceled"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-considerations.html
+  - claim: "The only way to delete a snapshot that is locked in compliance mode before its lock expires is to close the associated AWS account"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-considerations.html
+  - claim: "If you do not reopen your account within the 90 days, AWS deletes your snapshots, even if they are locked"
+    source: https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-considerations.html
+  - claim: "After a KMS key is deleted, you can no longer decrypt the data that was encrypted under that KMS key, which means that data becomes unrecoverable"
+    source: https://docs.aws.amazon.com/kms/latest/developerguide/deleting-keys.html
+  - claim: "AWS KMS requires you to set a waiting period of 7 - 30 days. The default waiting period is 30 days"
+    source: https://docs.aws.amazon.com/kms/latest/developerguide/deleting-keys.html
+  - claim: "To recover the KMS key, you can cancel key deletion before the waiting period ends"
+    source: https://docs.aws.amazon.com/kms/latest/developerguide/deleting-keys.html
+problem: "Snapshot lock is described in one sentence that is easy to read as larger than it is: a locked snapshot can't be deleted by any user, regardless of their IAM permissions. The next sentence is the boundary, and it is just as plain — you can continue to use a locked snapshot in the same way as any other. The lock defends existence, and existence only."
+builds: "A reading of EBS snapshot lock against the backup vault lock it resembles, what a locked snapshot still permits, the operations the lock does not reach, and the one AWS names that leaves a snapshot undeletable and unreadable at the same time."
+catch: "Three bullets in the considerations list, read together, describe a state worth designing against. You can't delete a snapshot locked in compliance mode. You can deregister the AMI that uses it. And you can delete the KMS key that encrypts it. The lock is on the object, not on the things the object needs."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #101 &middot; Security &amp; Identity</div>
+  <h1 class="post-title">You cannot delete the snapshot; you can delete its key</h1>
+  <p class="post-subtitle">EBS snapshot lock does exactly one thing, and the documentation is clear about both halves of that: deletion is impossible, and everything else is unchanged.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Security &middot; Reliability</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      The opening sentence is the one people quote:
+    </p>
+    <p>
+      <em>&ldquo;While a snapshot is locked, <strong>it can't be deleted by any user, regardless of their IAM
+      permissions</strong>.&rdquo;</em>
+    </p>
+    <p>
+      The next sentence is the scope, and it is just as plain:
+      <em>&ldquo;You can continue to use a locked snapshot <strong>in the same way that you would use any
+      other snapshot</strong>.&rdquo;</em>
+    </p>
+    <p>
+      Both are accurate. Together they say the lock defends the object's existence and nothing else &mdash;
+      not its readability, not its distribution, not the things it depends on. That boundary is where the
+      design work is.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The lock is on the snapshot, not on the things the snapshot needs</strong></div>
+      <div class="challenge-body">
+        <p>
+          Three bullets from the considerations list, each unremarkable alone:
+        </p>
+        <ul>
+          <li><em>&ldquo;<strong>You can delete the KMS key used to encrypt a locked snapshot.</strong>&rdquo;</em></li>
+          <li><em>&ldquo;You can deregister an AMI that has associated snapshots that are locked.&rdquo;</em></li>
+          <li><em>&ldquo;The only way to delete a snapshot that is locked in compliance mode before its lock
+            expires is to close the associated AWS account.&rdquo;</em></li>
+        </ul>
+        <p>
+          Read together they describe a reachable state. KMS is explicit about the consequence:
+          <em>&ldquo;After a KMS key is deleted, you can no longer decrypt the data that was encrypted under
+          that KMS key, which means that <strong>data becomes unrecoverable</strong>.&rdquo;</em> So the end
+          state is a snapshot that cannot be deleted by anyone, for up to a century, and cannot be read
+          either. The WORM guarantee holds perfectly and protects nothing you can use.
+        </p>
+        <p>
+          The saving grace is that key deletion is not instant.
+          <em>&ldquo;AWS KMS requires you to set a waiting period of 7 &ndash; 30 days. The default waiting
+          period is 30 days.&rdquo;</em> and
+          <em>&ldquo;To recover the KMS key, you can cancel key deletion before the waiting period
+          ends.&rdquo;</em> That window is the whole of your protection here, and nothing about the snapshot
+          lock will tell you the clock is running.
+        </p>
+        <p>
+          This is the same shape as the disabled-AMI case in
+          <a href="/blog/aws-architecture-backup/">#98</a>, where a recovery point stays intact and
+          undeletable while being unrestorable. The lock is a statement about one object's lifecycle, and a
+          restore is a statement about a chain of dependencies.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Protect the key with the same seriousness as the snapshot, and alarm on the waiting period rather than relying on noticing. A compliance-mode lock whose KMS key can be scheduled for deletion by one role is a retention control with a single point of failure that the lock itself will never report &mdash; but the 7 to 30 day window before the key actually goes is long enough to catch, if something is watching.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Compliance mode can be irreversible from the first second, which the vault lock cannot</strong></div>
+      <div class="challenge-body">
+        <p>
+          The two modes split the way they do for backup vaults. Governance mode is reversible:
+          <em>&ldquo;users with appropriate IAM permissions can unlock the snapshot and modify the lock mode
+          and lock duration or expiry date at any time&rdquo;</em>, and
+          <em>&ldquo;the snapshot is locked immediately; there is no cooling-off period&rdquo;</em>.
+        </p>
+        <p>
+          Compliance mode has a cooling-off period, and the detail that matters is that it is optional:
+          <em>&ldquo;You can lock a snapshot in compliance mode <strong>without a cooling-off period</strong>
+          by omitting the cooling-off period in the request.&rdquo;</em> Do that and there is no window at
+          all &mdash; <em>&ldquo;you can't unlock the snapshot, change the lock mode, or decrease the lock
+          duration or expire date; you can only increase&rdquo;</em>, from the moment the call returns.
+        </p>
+        <p>
+          Where a window exists it is short:
+          <em>&ldquo;The cooling-off period can range from <strong>1 to 72 hours</strong>.&rdquo;</em> Put
+          that next to <a href="/blog/aws-architecture-backup/">#98</a>'s backup vault lock, where grace time
+          <em>&ldquo;must be <strong>at least</strong> 3 days (72 hours)&rdquo;</em>, and the comparison is
+          exact: the vault lock's shortest possible grace period is the snapshot lock's longest.
+        </p>
+        <p>
+          The duration on the other side is generous:
+          <em>&ldquo;The duration can range from 1 day to 36500 days (100 years)&rdquo;</em>, or an expiry
+          date instead.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Use governance mode unless a regulation names immutability, and if you reach for compliance mode, specify a cooling-off period rather than omitting it. Omission is a valid request that produces an unrecoverable state with no confirmation step, and the longest window on offer is three days.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>AWS tells you not to use it where you probably first thought to</strong></div>
+      <div class="challenge-body">
+        <p>
+          The guidance is unusually direct:
+        </p>
+        <p>
+          <em>&ldquo;<strong>We recommend that you do not lock snapshots created by AWS Backup.</strong> AWS
+          Backup already ensures that its snapshots are not deleted before their retention period expires. To
+          add an additional layer of security for snapshots managed by AWS Backup, we recommend that you use
+          AWS Backup Vault Lock.&rdquo;</em>
+        </p>
+        <p>
+          That draws the line cleanly. If a snapshot is managed by AWS Backup, its retention is the vault's
+          business and the vault has its own lock. Snapshot lock is for snapshots you own directly &mdash;
+          taken by hand, by Data Lifecycle Manager, or by your own automation.
+        </p>
+        <p>
+          Two more boundaries worth knowing before you plan around it:
+          <em>&ldquo;You can't lock snapshots during creation or during AMI registration&rdquo;</em>, so
+          locking is always a second step, and a snapshot locked while still being written carries a
+          condition &mdash;
+          <em>&ldquo;If you lock a snapshot while it is in the <code>pending</code> state and the snapshot
+          creation fails for any reason, the lock is canceled.&rdquo;</em>
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Decide which system owns retention for each snapshot before locking anything. Two retention mechanisms on one object is not twice the protection; it is two sources of truth, and AWS has told you which one it expects to win.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-101-ebs-snapshot-lock.svg" alt="Diagram: Amazon EBS snapshot lock blocks deletion and nothing else. AWS states that while a snapshot is locked it cannot be deleted by any user regardless of IAM permissions, and that you can continue to use a locked snapshot in the same way as any other snapshot. The diagram contrasts what the lock stops with what it still permits, compares the four lock states, sets the snapshot lock's 1 to 72 hour cooling-off period against the backup vault lock's minimum grace time of 3 days, and lists the operations the lock does not reach including deleting the KMS key that encrypts the snapshot and deregistering an associated AMI.">
+
+    <h3>What the lock stops, and what it leaves alone</h3>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Operation</th><th>Under a lock</th><th>AWS's words</th></tr>
+      <tr>
+        <td>Delete the snapshot</td>
+        <td>Blocked, for everyone</td>
+        <td><em>&ldquo;can't be deleted by any user, regardless of their IAM permissions&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Use it &mdash; create volumes, copy, share</td>
+        <td>Unchanged</td>
+        <td><em>&ldquo;use a locked snapshot in the same way that you would use any other snapshot&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Archive it</td>
+        <td>Allowed, both directions</td>
+        <td><em>&ldquo;You can lock archived snapshots. And you can archive locked snapshots&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Deregister the associated AMI</td>
+        <td>Allowed</td>
+        <td><em>&ldquo;You can deregister an AMI that has associated snapshots that are locked&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Delete the KMS key that encrypts it</td>
+        <td>Allowed</td>
+        <td><em>&ldquo;You can delete the KMS key used to encrypt a locked snapshot&rdquo;</em></td>
+      </tr>
+    </table>
+    </div>
+
+    <p>
+      The bottom two rows are the ones to design around. Everything that makes the snapshot <em>useful</em>
+      lives outside the lock.
+    </p>
+
+    <h3>The four states, and which one is a one-way door</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>State</th><th>Can be deleted?</th><th>Can be unlocked?</th></tr>
+      <tr><td><code>governance</code></td><td>No</td><td>Yes, with permissions</td></tr>
+      <tr><td><code>compliance-cooloff</code></td><td>No &mdash; <em>&ldquo;A snapshot can't be deleted during the cooling-off period&rdquo;</em></td><td>Yes, with permissions</td></tr>
+      <tr><td><code>compliance</code></td><td>No</td><td><strong>No</strong> &mdash; duration can only be increased</td></tr>
+      <tr><td><code>expired</code></td><td>Yes &mdash; <em>&ldquo;The snapshot is not locked and can be deleted&rdquo;</em></td><td>n/a</td></tr>
+    </table>
+    </div>
+    <p>
+      Only <code>compliance</code> is a one-way door, and a snapshot enters it either when a cooling-off
+      period elapses or immediately, if the request omitted one.
+    </p>
+
+    <h3>How it compares with the backup vault lock</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>EBS snapshot lock</th><th>AWS Backup Vault Lock</th></tr>
+      <tr><td>Unit of protection</td><td>One snapshot</td><td>A vault and everything in it</td></tr>
+      <tr><td>Reversible window</td><td>Cooling-off, <em>&ldquo;1 to 72 hours&rdquo;</em>, optional</td><td>Grace time, <em>&ldquo;at least 3 days (72 hours)&rdquo;</em>, required for compliance mode</td></tr>
+      <tr><td>Can be immediate and irreversible</td><td>Yes, by omitting the cooling-off period</td><td>No</td></tr>
+      <tr><td>Ends on its own</td><td>Yes &mdash; the lock expires and the snapshot becomes deletable</td><td>No; the vault stays locked while it holds recovery points</td></tr>
+      <tr><td>Escape hatch</td><td colspan="2">The same one: close the account, and after 90 days AWS deletes the data regardless</td></tr>
+    </table>
+    </div>
+    <p>
+      The row that matters operationally is the fourth. A snapshot lock has an end date by construction, so it
+      is a retention <em>period</em>. A vault lock is a property of the container, so it is a retention
+      <em>regime</em>. Choosing between them is choosing which of those you actually need.
+    </p>
+
+    <h3>The escape hatch is identical, and it is worth stating plainly</h3>
+    <p>
+      <em>&ldquo;If you close your AWS account while you have locked snapshots, AWS suspends your account for
+      90 days with your snapshots intact. <strong>If you do not reopen your account within the 90 days, AWS
+      deletes your snapshots, even if they are locked.</strong>&rdquo;</em>
+    </p>
+    <p>
+      Word for word the same behaviour as a locked backup vault. Immutability is a property of the object
+      inside the account, never of the account.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>A narrow guarantee, stated narrowly</h3>
+    <p>
+      AWS could have described snapshot lock as protecting your data. It describes it as preventing deletion,
+      and then says in the next sentence that everything else is normal. A control that claims exactly what
+      it does is one you can reason about; the KMS-key bullet exists in the documentation rather than in an
+      incident report because of that habit.
+    </p>
+
+    <h3>Pointing customers away from the feature is the right call</h3>
+    <p>
+      <em>&ldquo;We recommend that you do not lock snapshots created by AWS Backup&rdquo;</em> costs AWS a
+      use case and saves customers a conflict between two retention systems. It also implies the useful
+      design rule: the thing that created the backup should be the thing that governs its lifetime.
+    </p>
+
+    <h3>Letting the lock expire is a real design choice</h3>
+    <p>
+      A lock that ends on its own matches how retention obligations actually work &mdash; keep this for seven
+      years, then stop. The alternative, a lock that never lifts, converts every retention requirement into a
+      permanent storage cost. The <code>expired</code> state is what makes snapshot lock usable for ordinary
+      compliance rather than only for the extreme case.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Which lock</td>
+        <td>Vault Lock for AWS Backup snapshots; snapshot lock for everything else</td>
+        <td>AWS says so directly, and two retention systems on one object is two sources of truth</td>
+      </tr>
+      <tr>
+        <td>Mode</td>
+        <td>Governance unless a regulation names immutability</td>
+        <td>It is the only mode you can undo, and AWS offers it as the way to <em>&ldquo;test your lock configuration before locking a snapshot in compliance mode&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Cooling-off period</td>
+        <td>Always specify one; prefer the 72-hour maximum</td>
+        <td>Omitting it is a valid request with no confirmation step and no way back</td>
+      </tr>
+      <tr>
+        <td>Lock duration</td>
+        <td>The retention obligation, not the 36500-day ceiling</td>
+        <td>You can only ever increase it once compliance mode is effective</td>
+      </tr>
+      <tr>
+        <td>KMS key policy</td>
+        <td>Protect it as part of the retention control</td>
+        <td>The key can be deleted while the snapshot cannot, and nothing in the lock reports that</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>For every locked snapshot, find the key that encrypts it and ask who can schedule that key for
+      deletion.</strong> That set of principals is the real blast radius of your retention control, and it is
+      usually wider than the set who could have deleted the snapshot before you locked it.
+    </p>
+    <p>
+      <strong>List locks by state and look for <code>compliance</code> with a long duration.</strong> Those
+      are the irreversible ones. A snapshot in that state with a 36,500-day duration is a decision nobody can
+      revisit, and it should have been deliberate.
+    </p>
+    <p>
+      <strong>Check whether any locked snapshot was created by AWS Backup.</strong> AWS recommends against it,
+      and a snapshot governed by both a vault lifecycle and an independent lock will eventually surprise
+      whoever is trying to clean up.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      Snapshot lock is a good control, and the reason it is a good one is that it does not overstate itself.
+      It says deletion is impossible and that everything else is normal, and both halves are true.
+    </p>
+    <p>
+      The work it leaves you is the work the sentence implies. A snapshot that cannot be deleted is not the
+      same as data you will be able to read in seven years, because reading it depends on a key, and the key
+      has its own lifecycle, its own policy, and its own set of people who can end it.
+    </p>
+    <p>
+      <a href="/blog/aws-architecture-ebs-snapshots/">#100</a> was about a number that measures something
+      other than what you want to know. This is about a guarantee that covers something narrower than it
+      sounds. Both are answered the same way: read the sentence after the one you were quoting.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Security &amp; Identity &mdash; Block public access for Amazon EBS snapshots: what the account-level setting blocks, what it does not undo about snapshots already shared, and how it interacts with copies in other Regions.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/ebs/latest/userguide/ebs-snapshot-lock.html" target="_blank" rel="noopener">Amazon EBS snapshot lock &#8212; the statement that a locked snapshot cannot be deleted by any user regardless of IAM permissions, the statement that it can still be used in the same way as any other snapshot, and the pricing note that locking is free while standard snapshot storage costs apply</a></li>
+      <li><a href="https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-concepts.html" target="_blank" rel="noopener">Amazon EBS snapshot lock concepts &#8212; governance mode being reversible and immediate, compliance mode and its optional cooling-off period of 1 to 72 hours, what can and cannot be changed after that period expires, the lock duration range of 1 to 36,500 days, and the four lock states including expired</a></li>
+      <li><a href="https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-considerations.html" target="_blank" rel="noopener">Considerations for Amazon EBS snapshot lock &#8212; that you can delete the KMS key encrypting a locked snapshot, deregister an associated AMI, lock and archive in either order, the recommendation against locking AWS Backup snapshots, the inability to lock during creation or AMI registration, the pending-state conditions, and the account-closure behaviour after 90 days</a></li>
+      <li><a href="https://docs.aws.amazon.com/aws-backup/latest/devguide/vault-lock.html" target="_blank" rel="noopener">AWS Backup Vault Lock &#8212; the grace time minimum of 3 days (72 hours) used in the comparison above, and the vault-level equivalent AWS recommends for snapshots it manages</a></li>
+      <li><a href="https://docs.aws.amazon.com/kms/latest/developerguide/deleting-keys.html" target="_blank" rel="noopener">Delete an AWS KMS key &#8212; the statement that data encrypted under a deleted key becomes unrecoverable, the mandatory waiting period of 7 to 30 days with a 30-day default, and the ability to cancel deletion before that period ends</a></li>
+      <li><a href="https://docs.aws.amazon.com/ebs/latest/userguide/unlock-snapshot.html" target="_blank" rel="noopener">Unlock a snapshot &#8212; further reading on the unlock operation and its permissions; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
