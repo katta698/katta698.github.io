@@ -65,9 +65,14 @@ SERIES_LABEL = "GCP Weekly Lab"
 # docs/MASTER_STANDARD.md; a series converges by changing its entry here when
 # it next touches those posts.
 SERIES = {
+    # Converged on 2026-11-06. GCP used build/security/takeaways across all
+    # twelve posts; every one was migrated to the canonical ids in the same
+    # change that made this entry true. GCP and AWS are now identical, which
+    # is what the comment above asks a series to do when it next touches its
+    # posts. Azure, below, is still the odd one out.
     "GCP Weekly Lab": ["overview", "services", "architecture", "prerequisites",
-                       "build", "validation", "security", "troubleshooting",
-                       "takeaways"],
+                       "implementation", "validation", "security-cost",
+                       "troubleshooting", "cleanup"],
     "AWS Weekly Lab": ["overview", "services", "architecture", "prerequisites",
                        "implementation", "validation", "security-cost",
                        "troubleshooting", "cleanup"],
