@@ -1,0 +1,372 @@
+---
+title: "AWS Daily Intelligence #70 - It consumes no capacity, which is not the same as no impact"
+date: '2026-11-06T17:30:00'
+slug: aws-daily-intelligence-dynamodb-bulk-put-items
+labels: [AWS, "AWS Daily Intelligence"]
+verified: '2026-11-06'
+verified_claims:
+  - claim: "Bulk put items loads data from Amazon Simple Storage Service (Amazon S3) into an existing Amazon DynamoDB table"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.HowItWorks.html
+  - claim: "The writes run on a separate path and consume none of the table's read or write capacity, so your application traffic sees no impact from these bulk put items"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.HowItWorks.html
+  - claim: "Import from Amazon S3 creates a new table from data in Amazon S3, while bulk put items writes into a table that already exists"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.HowItWorks.html
+  - claim: "Items become available for reading as they're written"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.HowItWorks.html
+  - claim: "When no condition expression is specified on a record, the item is written unconditionally, overwriting any existing item with the same key"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.HowItWorks.html
+  - claim: "The report lists items that were not written and the reason for their failure"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.HowItWorks.html
+  - claim: "On a table with DynamoDB Streams or a Kinesis data stream enabled, every bulk write produces a stream record, delivered at the operation's write rate"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.Considerations.html
+  - claim: "Consumers sized for normal traffic can fall behind. DynamoDB Streams retains records for 24 hours, so a consumer more than 24 hours behind loses records"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.Considerations.html
+  - claim: "Bulk writes do not appear in the table's ConsumedWriteCapacityUnits metric or in Contributor Insights, because they do not consume capacity"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.Considerations.html
+  - claim: "Bulk writes bypass DAX, so items cached in DAX stay stale until their DAX TTL expires"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.Considerations.html
+  - claim: "AWS CloudTrail logs the StartBulkPutItems call with the event name StartBulkOperation and resource type AWS::DynamoDB::BulkOperation. Individual item writes are not logged"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.Considerations.html
+  - claim: "Bulk put items does not support global tables"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.Considerations.html
+  - claim: "During an operation, DynamoDB can write some records a second time after an internal failover"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.Considerations.html
+  - claim: "Items already written to the table remain in place and are immediately readable. DynamoDB does not roll back items that were written before the cancellation"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.Considerations.html
+  - claim: "Items rejected by validation before a table write is attempted are not billed as table writes. Items that reach the table and fail a condition check are billed"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.Considerations.html
+  - claim: "Total input size per operation, Standard performance tier | 100 GB"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ServiceQuotas.html
+  - claim: "Total input size per operation, Accelerated performance tier | 1 TB"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ServiceQuotas.html
+  - claim: "The Accelerated tier accepts roughly ten times the input of the Standard tier"
+    derive: "1024 / 100"
+    expect: "10.24"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ServiceQuotas.html
+  - claim: "Input objects per operation | 50,000"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ServiceQuotas.html
+  - claim: "Size of each input object | 5 GB"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ServiceQuotas.html
+  - claim: "Active bulk put items operations per table | 1"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ServiceQuotas.html
+  - claim: "Minimum MaxWriteRequestUnits | 1,024"
+    source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ServiceQuotas.html
+---
+<div id="jk-post">
+
+<p class="lead">
+  DynamoDB can now load S3 data straight into an existing table, on a path that uses none of the table's
+  capacity. That headline is true and precisely scoped. The considerations page then lists four things your
+  table is connected to that still feel the write, and in three of them what you lose is visibility.
+</p>
+
+<p>
+  <em>&ldquo;<strong>The writes run on a separate path and consume none of the table's read or write
+  capacity</strong>, so your application traffic sees no impact from these bulk put items.&rdquo;</em>
+</p>
+
+<div class="section" id="summary">
+  <h2>Executive summary</h2>
+  <p>
+    <em>&ldquo;Bulk put items loads data from Amazon Simple Storage Service (Amazon S3) into an existing
+    Amazon DynamoDB table.&rdquo;</em> The distinction from the feature it resembles is stated directly:
+    <em>&ldquo;Import from Amazon S3 creates a <strong>new</strong> table from data in Amazon S3, while bulk
+    put items writes into a table that <strong>already exists</strong>.&rdquo;</em>
+  </p>
+  <p>
+    That is the gap it fills. Until now, getting a large S3 dataset into a live table meant your own
+    ingestion pipeline competing with production traffic for capacity, or an import into a new table and a
+    cutover.
+  </p>
+</div>
+
+<div class="section" id="what-changed">
+  <h2>What changed</h2>
+  <p>
+    A write path that bypasses table capacity, with per-item conditions, a managed retry loop and a failure
+    report: <em>&ldquo;The report lists items that were not written and the reason for their
+    failure.&rdquo;</em> Items land progressively &mdash;
+    <em>&ldquo;Items become available for reading as they're written&rdquo;</em> &mdash; so there is no
+    atomic switch-over and no point at which the table is half-updated and hidden.
+  </p>
+  <p>
+    The default behaviour is the one to notice first:
+    <em>&ldquo;When no condition expression is specified on a record, the item is written
+    <strong>unconditionally, overwriting any existing item with the same key</strong>.&rdquo;</em> Safety is
+    per item and opt-in.
+  </p>
+</div>
+
+<div class="section" id="architecture">
+  <h2>Architecture</h2>
+
+  <img src="/blog/assets/diagrams/daily-070-dynamodb-bulk-put-items.svg" alt="Diagram: DynamoDB bulk put items loads data from S3 into an existing table on a separate write path that consumes none of the table's read or write capacity, unlike Import from S3 which creates a new table. The capacity claim is precisely scoped, and four things connected to the table still feel the write. DynamoDB Streams and Kinesis data streams receive a record for every bulk write at the operation's write rate, so consumers sized for normal traffic can fall behind and a consumer more than 24 hours behind loses records, which MaxWriteRequestUnits can cap. Bulk writes do not appear in the table's ConsumedWriteCapacityUnits metric or Contributor Insights. Bulk writes bypass DAX, so cached items stay stale until their DAX TTL expires. CloudTrail logs the StartBulkOperation call but not individual item writes. The diagram also notes that with no condition expression an item is written unconditionally and overwrites any existing item with the same key, that DynamoDB can write some records a second time after an internal failover, that cancellation does not roll back items already written, and that global tables are not supported.">
+
+  <h3>What the capacity claim covers, and what it does not</h3>
+  <div class="table-scroll">
+  <table>
+    <tr><th>Connected to your table</th><th>What a bulk write does</th></tr>
+    <tr>
+      <td>Table read/write capacity</td>
+      <td>Nothing &mdash; <em>&ldquo;consume none of the table's read or write capacity&rdquo;</em></td>
+    </tr>
+    <tr>
+      <td>DynamoDB Streams / Kinesis</td>
+      <td><em>&ldquo;every bulk write produces a stream record, delivered at the operation's write rate&rdquo;</em></td>
+    </tr>
+    <tr>
+      <td><code>ConsumedWriteCapacityUnits</code>, Contributor Insights</td>
+      <td>Nothing appears &mdash; <em>&ldquo;because they do not consume capacity&rdquo;</em></td>
+    </tr>
+    <tr>
+      <td>DAX</td>
+      <td>Bypassed &mdash; <em>&ldquo;items cached in DAX stay stale until their DAX TTL expires&rdquo;</em></td>
+    </tr>
+    <tr>
+      <td>CloudTrail</td>
+      <td>The start call only &mdash; <em>&ldquo;Individual item writes are not logged&rdquo;</em></td>
+    </tr>
+    <tr>
+      <td>GSIs and LSIs</td>
+      <td>Updated automatically; each index write is metered independently</td>
+    </tr>
+  </table>
+  </div>
+  <p>
+    Rows two to five are the post. The operation is invisible to the metric you would watch, invisible to
+    the audit trail at item level, stale to the cache in front of the table &mdash; and highly visible to
+    the one consumer least able to absorb it.
+  </p>
+
+  <h3>The stream is where this actually hurts</h3>
+  <p>
+    <em>&ldquo;Consumers sized for normal traffic can fall behind. <strong>DynamoDB Streams retains records
+    for 24 hours, so a consumer more than 24 hours behind loses records.</strong>&rdquo;</em>
+  </p>
+  <p>
+    A write path that deliberately ignores your table's capacity ceiling will outrun a Lambda consumer
+    provisioned for ordinary traffic, and the penalty for falling far enough behind is not latency but data
+    loss on the stream. AWS gives the control in the same paragraph: use
+    <code>MaxWriteRequestUnits</code> in the <code>StartBulkPutItems</code> call
+    <em>&ldquo;to cap the bulk operation's write rate and protect downstream consumers&rdquo;</em>. The
+    minimum you can set is <em>&ldquo;1,024&rdquo;</em>.
+  </p>
+  <p>
+    Note which way that trades. The feature's selling point is that it does not throttle itself to your
+    table; the safe way to run it on a streamed table is to throttle it anyway.
+  </p>
+
+  <h3>Idempotency is per item, and failover makes it matter</h3>
+  <p>
+    <em>&ldquo;During an operation, DynamoDB can write some records <strong>a second time</strong> after an
+    internal failover.&rdquo;</em> Combined with the unconditional default, that is a documented path to a
+    bulk write overwriting a newer application write. AWS spells out the remedy: carry a version attribute
+    and use a condition such as <code>attribute_not_exists(#v) OR #v &lt; :new</code> so a repeated write
+    cannot replace newer data.
+  </p>
+  <p>
+    Conditions are the same language you already know &mdash;
+    <em>&ldquo;Condition expressions use the same syntax, operators, and functions as
+    <code>PutItem</code>&rdquo;</em> &mdash; and <code>attribute_not_exists(pk)</code> gives insert-only
+    semantics.
+  </p>
+
+  <h3>The sizes, and the one that is not a size</h3>
+  <p>
+    Standard takes <em>&ldquo;100 GB&rdquo;</em> of input per operation and Accelerated
+    <em>&ldquo;1 TB&rdquo;</em> &mdash; roughly ten times, in DynamoDB's binary units. Either way,
+    <em>&ldquo;Input objects per operation | 50,000&rdquo;</em> and
+    <em>&ldquo;Size of each input object | 5 GB&rdquo;</em>.
+  </p>
+  <p>
+    The quota that shapes scheduling rather than sizing is
+    <em>&ldquo;Active bulk put items operations per table | 1&rdquo;</em>. One table, one operation at a
+    time, so a nightly refresh and an ad-hoc backfill on the same table are a queue, not a race.
+  </p>
+</div>
+
+<div class="section" id="business-value">
+  <h2>Business value</h2>
+  <p>
+    The pipeline you no longer write is the value. A daily catalogue refresh into a live table has
+    historically meant a Lambda or Glue job, a concurrency setting tuned against production capacity,
+    retry handling, and a dead-letter path &mdash; all of it bespoke, all of it competing with user traffic.
+  </p>
+  <p>
+    Per-item conditions are what make it safe to re-run. An insert-only load that skips what already exists
+    turns a backfill from a careful one-shot into something you can repeat after a failure without
+    reasoning about what got through.
+  </p>
+</div>
+
+<div class="section" id="security">
+  <h2>Security considerations</h2>
+  <p>
+    <strong>The audit trail is coarse.</strong>
+    <em>&ldquo;AWS CloudTrail logs the <code>StartBulkPutItems</code> call with the event name
+    <code>StartBulkOperation</code> &hellip; <strong>Individual item writes are not logged.</strong>&rdquo;</em>
+    One API call can rewrite a hundred gigabytes of table data and leave one CloudTrail event. If your
+    controls assume per-item write auditability, this path does not provide it.
+  </p>
+  <p>
+    <strong>The caller's own credentials reach S3.</strong> DynamoDB uses the caller's credentials rather
+    than a service principal, so the human or role starting the job needs the bucket access directly &mdash;
+    and the permission check continues during the run. Losing <code>dynamodb:BulkPutItems</code> or KMS
+    access mid-operation ends it <code>FAILED</code>, with items already written left in place.
+  </p>
+  <p>
+    <strong>Condition-check report records contain the existing item.</strong> If you write the output report
+    to a bucket in another account, the bucket owner can read the <code>oldImage</code> of items that failed
+    their condition &mdash; which is table data leaving in the error report.
+  </p>
+</div>
+
+<div class="section" id="cost">
+  <h2>Cost considerations</h2>
+  <p>
+    No table capacity is consumed, but the writes are metered for the bulk operation, and index writes count
+    too. The billing rule for failures is worth knowing before a large conditional load:
+    <em>&ldquo;Items rejected by validation before a table write is attempted are not billed as table
+    writes. <strong>Items that reach the table and fail a condition check are billed.</strong>&rdquo;</em>
+  </p>
+  <p>
+    So an insert-only refresh of a mostly-unchanged catalogue pays for the skips. That is reasonable &mdash;
+    the condition was evaluated at the table &mdash; and it means the cost of a repeatable load is closer to
+    the full load than to the delta.
+  </p>
+</div>
+
+<div class="section" id="operations">
+  <h2>Operational considerations</h2>
+  <p>
+    <strong>Global tables are excluded.</strong>
+    <em>&ldquo;Bulk put items does not support global tables.&rdquo;</em> You cannot start one on a table
+    that is part of a global table, and you cannot add a replica while an operation is running. AWS's
+    alternative is the ordinary one: <code>BatchWriteItem</code> or <code>PutItem</code>.
+  </p>
+  <p>
+    <strong>Cancelling is not undoing.</strong>
+    <em>&ldquo;Items already written to the table remain in place and are immediately readable. DynamoDB does
+    not roll back items that were written before the cancellation.&rdquo;</em> There is no transaction here;
+    stopping the job stops future writes only.
+  </p>
+  <p>
+    <strong>Watch the operation, not the table.</strong> Since bulk writes do not appear in
+    <code>ConsumedWriteCapacityUnits</code>, use <code>DescribeBulkOperation</code> and the S3 output for
+    progress and failures.
+  </p>
+</div>
+
+<div class="section" id="tradeoffs">
+  <h2>Tradeoffs</h2>
+  <div class="table-scroll">
+  <table>
+    <tr><th>What you gain</th><th>What it costs</th></tr>
+    <tr>
+      <td>Loads that never compete with production for table capacity</td>
+      <td>Loads that are invisible in the table's capacity metrics</td>
+    </tr>
+    <tr>
+      <td>No ingestion pipeline to build, retry or monitor</td>
+      <td>A stream consumer that can be outrun, with 24-hour retention as the loss boundary</td>
+    </tr>
+    <tr>
+      <td>Per-item conditions, so loads are repeatable</td>
+      <td>Condition failures are billed, and the default is an unconditional overwrite</td>
+    </tr>
+    <tr>
+      <td>One API call instead of millions</td>
+      <td>One CloudTrail event instead of millions</td>
+    </tr>
+  </table>
+  </div>
+</div>
+
+<div class="section" id="implementation">
+  <h2>Implementation guidance</h2>
+  <p>
+    <strong>Decide the condition expression before the first run, not after.</strong> The default overwrites.
+    <code>attribute_not_exists(pk)</code> for insert-only, or a version guard for conditional overwrites, is
+    the difference between a repeatable job and a destructive one.
+  </p>
+  <p>
+    <strong>If the table has a stream, set <code>MaxWriteRequestUnits</code>.</strong> Work out what your
+    consumer sustains and cap the operation below it. The 24-hour retention is the deadline, not a buffer.
+  </p>
+  <p>
+    <strong>If the table is behind DAX, plan the staleness.</strong> Cached items will not reflect the load
+    until their TTL expires, and nothing invalidates them for you.
+  </p>
+  <p>
+    <strong>Keep input buckets in the table's Region.</strong> A cross-Region bucket bills data transfer and
+    an impaired Region stalls the operation until it times out.
+  </p>
+  <p>
+    <strong>Hold the caller's permissions for the whole run.</strong> Revoking mid-flight ends the operation
+    failed, with partial data in the table.
+  </p>
+</div>
+
+<div class="section" id="best-practices">
+  <h2>Best practices</h2>
+  <p>
+    Carry a version attribute on every item in the input and guard on it. It costs a field and it removes
+    the entire class of problem created by failover re-writes landing on top of newer application data.
+  </p>
+  <p>
+    Read the output report every run, not only on failure. It is the only per-item record that exists, and
+    CloudTrail will not supply one later.
+  </p>
+  <p>
+    Treat one operation per table as a scheduling constraint in whatever orchestrates your loads, rather
+    than discovering it as a <code>ResourceInUseException</code>.
+  </p>
+</div>
+
+<div class="section" id="adoption">
+  <h2>Who should adopt this and when</h2>
+  <p>
+    <strong>Adopt now</strong> if you maintain a custom S3-to-DynamoDB loader against a live table. This
+    replaces it with a managed path that cannot starve your application of capacity.
+  </p>
+  <p>
+    <strong>Adopt carefully</strong> if the table has Streams, Kinesis or DAX attached. All three still see
+    the load, or fail to, and each needs a decision before the first run.
+  </p>
+  <p>
+    <strong>Not available</strong> for global tables, which remains <code>BatchWriteItem</code> territory.
+  </p>
+</div>
+
+<div class="section" id="takeaways">
+  <h2>Key takeaways</h2>
+  <p>
+    <strong>No capacity is not no impact.</strong> The claim is specifically about the table's read and write
+    capacity; Streams, DAX, metrics and CloudTrail all behave differently.
+  </p>
+  <p>
+    <strong>The stream is the real constraint.</strong> Every bulk write emits a record at the operation's
+    rate, and a consumer more than 24 hours behind loses them.
+  </p>
+  <p>
+    <strong>The default is a destructive overwrite.</strong> Insert-only and version-guarded semantics are
+    per-item opt-ins.
+  </p>
+  <p>
+    <strong>It writes into an existing table</strong> &mdash; that is the whole difference from Import from
+    S3, which creates a new one.
+  </p>
+</div>
+
+<div class="section" id="references">
+  <h2>Official AWS references</h2>
+  <ul>
+    <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-dynamodb-now-supports-bulk-put-items/" target="_blank" rel="noopener">Amazon DynamoDB now supports bulk put items &#8212; the announcement, the Standard and Accelerated tiers, and Region availability</a></li>
+    <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.HowItWorks.html" target="_blank" rel="noopener">Working with bulk put items &#8212; the separate write path that consumes no table capacity, the distinction from Import from Amazon S3, items becoming readable as they are written, per-item condition expressions using PutItem syntax, the unconditional overwrite default, and the failure report</a></li>
+    <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.Considerations.html" target="_blank" rel="noopener">Bulk put items considerations, quotas, and permissions &#8212; stream records at the operation's write rate and the 24-hour retention boundary, absence from ConsumedWriteCapacityUnits and Contributor Insights, DAX bypass, CloudTrail logging the start call but not item writes, no global table support, repeated writes after internal failover, no rollback on cancellation, and the billing rule for condition-check failures</a></li>
+    <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ServiceQuotas.html" target="_blank" rel="noopener">Quotas in Amazon DynamoDB &#8212; the bulk put items quotas: 100 GB Standard and 1 TB Accelerated input per operation, 50,000 input objects, 5 GB per object, one active operation per table, and a minimum MaxWriteRequestUnits of 1,024</a></li>
+    <li><a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BulkPutItems.Output.html" target="_blank" rel="noopener">Bulk put items output and reconciliation &#8212; further reading on the report format; no claims in this post are drawn from it</a></li>
+  </ul>
+</div>
+
+</div>
