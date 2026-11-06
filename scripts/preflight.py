@@ -75,19 +75,42 @@ BROWSER = {
     "check_bar_settle", "check_feed_theme", "check_sheet_align",
     "check_pull_refresh",
     "check_audio_glyph",
-    "check_blog_filters", "check_dark_theme", "check_footer_clear",
+    "check_blog_filters", "check_footer_clear",
     "check_map_devices", "check_map_alignment", "check_map_search",
     "check_news_reserve", "check_feedback", "check_region_suggest",
-    "check_filter_state", "check_theme_strip", "check_instrument_glyphs",
-    "check_shell_parts", "check_reachable",
+    "check_filter_state", "check_theme_strip",
+    "check_reachable",
     "check_player_overlays", "check_no_orphan_music",
-    "check_narration_true",
-    "check_ai_fresh",
     "check_reinvent_fits", "check_reinvent_clock",
     "check_reinvent_scroll",
     "check_tap_targets", "check_reinvent_counts",
     "check_reinvent_countdown", "check_reinvent_live",
     "check_connect_card", "check_one_panel", "check_solar_theme",
+    # Added 2026-11-06, and this is the THIRD time this exact defect has
+    # been written up in this file -- see check_shift above. Both of these
+    # drive Playwright and serve a local copy of the site, and neither was
+    # listed here, so --fast ran them both. Each hit PER_CHECK_TIMEOUT and
+    # died: 420s + 420s against a hook that is supposed to finish in about
+    # 150s. Every push from every lab failed on it, with the only visible
+    # symptom being "failed to push some refs", which reads like a network
+    # or race problem and is not one. It cost most of a day before anyone
+    # read the hook output instead of the git output.
+    #
+    # The recurrence is the real finding: membership of this set is
+    # asserted by hand and nothing checks it against whether the script
+    # imports sync_playwright. That check is worth writing.
+    "check_status_feed", "check_subscribe",
+    # Added 2026-11-06 by check_browser_set.py, which is the check the note
+    # above said was worth writing. It parses every check with `ast` and
+    # compares a real playwright import against this set, and the first run
+    # found ten disagreements -- five in each direction. These five launch
+    # Chromium and were not listed, so `--fast` ran them, and three of them
+    # were the unexplained PER_CHECK_TIMEOUT hits that made the push hook
+    # take 95 minutes. They are NOT in HOOK_BROWSER: a check that cannot
+    # finish inside 420s has not earned a place in the push path until it
+    # can.
+    "check_architecture_map", "check_events", "check_events_coverage",
+    "check_navbar_ink", "check_theme_render",
 }
 
 # check_colophon_built was in BROWSER and drives no browser at all -- it
@@ -102,8 +125,24 @@ BROWSER = {
 # out, so it now runs on every push from every window.
 
 # Not run here. Each needs the network or an API and fails on a train.
+#
+# check_gcp_identifiers joined them 2026-11-06. It derives the real project
+# IDs by shelling out to `gcloud projects list` with a 120s timeout and then
+# greps the tree for them, which is a genuinely useful gate -- and a cloud API
+# call in a push hook. On 2026-11-06 the call timed out and the check exited 2,
+# "CANNOT RUN: gcloud projects list timed out after 120 seconds". Nothing below
+# distinguishes exit 2 from exit 1, so a check saying "I proved nothing" blocked
+# the push as hard as one that found something, in every worktree, for a slow
+# network.
+#
+# The general defect is that exit 2 is not modelled here at all; a check that
+# cannot run should be reported loudly and not block. That is a change to this
+# gate's semantics for every lab and wants its own piece of work. Skipping the
+# one check that makes a network call is the narrow fix. It still runs when
+# invoked directly, and secret-sweep.sh remains the gate that actually blocks
+# an identifier leak.
 SKIP = {"check_links", "check_query_shapes", "check_status_fresh",
-        "check_freshness", "doc_freshness"}
+        "check_freshness", "doc_freshness", "check_gcp_identifiers"}
 
 # Run and reported, but not allowed to stop a push.
 #
@@ -148,8 +187,25 @@ SKIP = {"check_links", "check_query_shapes", "check_status_fresh",
 # rather than a defect. They still run and still print. The real fix is moving
 # the browser checks out of the push hook into CI -- preflight already has
 # --fast for exactly this, and the installed hook does not use it.
+# check_instrument_glyphs, check_narration_true and check_shell_parts were
+# listed in BROWSER and drive no browser at all -- the check_colophon_built
+# defect again, three more times. Being listed there meant --fast and the push
+# hook both skipped them, so none had ever run. Run on 2026-11-06, all three
+# fail, in 4s, 21s and 3s: an emoji the device cannot draw, a number spoken in
+# a voiceover that no tool can see, and a control whose CSS ships without the
+# control. Those are real and they are not this week's Azure work.
+#
+# Advisory rather than blocking for the reason given above -- a gate that is
+# red on arrival gets uninstalled on arrival -- and advisory rather than left
+# in BROWSER because that is how they stayed invisible. They now print on
+# every push, so the three have to become two.
+#
+# check_ai_fresh and check_dark_theme came out of BROWSER in the same pass and
+# are NOT here: both pass, in about a second each, so they simply block now.
 ADVISORY = {"validate_arch_post", "check_news_reserve", "check_contrast",
-            "check_nav", "check_footer_clear"}
+            "check_nav", "check_footer_clear",
+            "check_instrument_glyphs", "check_narration_true",
+            "check_shell_parts"}
 
 # What the pre-push hook runs: everything needing no browser, plus the browser
 # checks that guard the things a reader actually reports.
