@@ -84,8 +84,13 @@ SERIES = {
     # Note "prereqs" and "seccost": Azure diverges from both siblings, the
     # same drift the comment above describes. Converging the three is a
     # separate job; recording the truth here is not.
-    "Azure Weekly Lab": ["overview", "services", "architecture", "prereqs",
-                         "build", "validation", "seccost",
+    # Converged on 2026-11-06, the same day as GCP. All eleven Azure posts
+    # were migrated off prereqs/build/seccost in the change that made this
+    # entry true. All three series now declare the SAME nine ids, so the
+    # alias machinery above is an identity mapping and the drift the comment
+    # at the top of this block describes is closed.
+    "Azure Weekly Lab": ["overview", "services", "architecture", "prerequisites",
+                         "implementation", "validation", "security-cost",
                          "troubleshooting", "cleanup"],
 }
 

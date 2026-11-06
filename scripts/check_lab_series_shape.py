@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Every GCP lab post carries the same anchors, headings and services columns.
+"""Converged lab series carry the same anchors, headings and services columns.
 
-    python scripts/check_gcp_post_shape.py
-    python scripts/check_gcp_post_shape.py --self-test
+    python scripts/check_lab_series_shape.py
+    python scripts/check_lab_series_shape.py --self-test
 
 Why this exists (2026-11-06)
 ----------------------------
@@ -34,10 +34,18 @@ tolerate the thing being checked here. This file is narrow on purpose --
 GCP lab posts only, no browser, pure text -- so it stays fast enough to
 sit in the pre-push hook without costing a push.
 
-Scoped to the GCP series because that is the series being standardised.
-Extending it to Azure, which diverges further (bare <h2> instead of
-section wrappers, #prereqs / #seccost, its own References section), is a
-separate decision about somebody else's posts.
+Azure converged the same day: eleven posts moved off prereqs/build/seccost,
+its table-of-contents heading dropped from <h2> to <h3>, and the one stray
+top-level <h2>References</h2> became an <h3> inside Cleanup, as AWS and GCP
+already had it. Its services columns needed nothing - they already matched.
+
+AWS is deliberately NOT checked here, and this is not an oversight. Its
+back catalogue predates the master standard: 17 of its 25 lab posts have
+not been migrated, and check_lab_post_shape.py already tracks them in
+MIGRATION_PENDING. Listing them here as well would report the same
+outstanding work twice and make this check noisy enough to ignore. Add
+"AWS Weekly Lab" to SERIES_LABELS below on the day that migration
+finishes.
 """
 import argparse
 import os
@@ -48,7 +56,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POSTS = os.path.join(ROOT, "posts")
-SERIES_LABEL = "- GCP Weekly Lab"
+# The series that have converged. AWS joins when its back catalogue does.
+SERIES_LABELS = ("- GCP Weekly Lab", "- Azure Weekly Lab")
 
 ANCHORS = ["overview", "services", "architecture", "prerequisites",
            "implementation", "validation", "security-cost",
@@ -123,14 +132,14 @@ def inspect(text):
     return problems
 
 
-def gcp_posts():
+def lab_posts():
     for fn in sorted(os.listdir(POSTS)):
         if not fn.endswith(".html"):
             continue
         path = os.path.join(POSTS, fn)
         with open(path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
-        if SERIES_LABEL in text:
+        if any(label in text for label in SERIES_LABELS):
             yield fn, text
 
 
@@ -183,7 +192,7 @@ def main():
         return self_test()
 
     checked = failed = 0
-    for fn, text in gcp_posts():
+    for fn, text in lab_posts():
         checked += 1
         problems = inspect(text)
         if problems:
@@ -196,11 +205,11 @@ def main():
 
     print()
     if failed:
-        print("%d of %d GCP lab post(s) do not match the shared shape." % (failed, checked))
+        print("%d of %d lab post(s) do not match the shared shape." % (failed, checked))
         print("AWS is the reference: anchors %s," % " ".join(ANCHORS))
         print("and a services table of %s." % " | ".join(COLUMNS))
         return 1
-    print("%d GCP lab post(s) checked; all match the shared AWS/Azure/GCP shape." % checked)
+    print("%d lab post(s) checked across the converged series; all match." % checked)
     return 0
 
 
