@@ -1,0 +1,414 @@
+---
+title: 'Week 12 — Detections as Code, and the Rule That Had to Stay Silent'
+date: '2026-11-07T18:00:00'
+labels:
+- Azure
+- Terraform
+- Azure Weekly Lab
+slug: week-12-detections-as-code
+verified: '2026-11-07'
+verified_claims:
+  - claim: "Enabling Microsoft Sentinel on a Log Analytics workspace makes the first 10 GB/day ingested using the Analytics logs plan free for 31 days, waiving both Log Analytics data ingestion and Microsoft Sentinel analysis charges, subject to a 20 workspace limit per Azure tenant"
+    source: "https://learn.microsoft.com/en-us/azure/sentinel/billing"
+  - claim: "Charges for automation and bring your own machine learning are still applicable during the Sentinel free trial, as are any Microsoft Sentinel data lake related charges"
+    source: "https://learn.microsoft.com/en-us/azure/sentinel/billing"
+  - claim: "Removing Microsoft Sentinel doesn't remove the Log Analytics workspace Microsoft Sentinel was deployed on, or any separate charges that workspace might be incurring"
+    source: "https://learn.microsoft.com/en-us/azure/sentinel/billing"
+  - claim: "AzureActivity is listed as a free data type for the Azure Activity data connector in Microsoft Sentinel and Log Analytics"
+    source: "https://learn.microsoft.com/en-us/azure/sentinel/billing"
+  - claim: "After March 31, 2027, Microsoft Sentinel will no longer be supported in the Azure portal and will be available only in the Microsoft Defender portal"
+    source: "https://learn.microsoft.com/en-us/azure/sentinel/billing"
+  - claim: "Data ingested into a Sentinel workspace is retained at no charge for the first 90 days, and retention beyond 90 days is charged per the standard Log Analytics retention prices"
+    source: "https://learn.microsoft.com/en-us/azure/sentinel/billing"
+  - claim: "Microsoft Sentinel commitment tier pricing starts at 100 GB per day"
+    source: "https://learn.microsoft.com/en-us/azure/sentinel/billing"
+  - claim: "The Azure Activity connector uses the diagnostic settings pipeline; subscription-level diagnostic settings send Azure Activity logs to the target Log Analytics workspace, where they land in the AzureActivity table"
+    source: "https://learn.microsoft.com/en-us/azure/sentinel/connect-services-diagnostic-setting-based"
+  - claim: "A Terraform depends_on argument declares a dependency that Terraform cannot infer automatically, for resources that depend on another resource's behaviour without accessing any of its data"
+    source: "https://developer.hashicorp.com/terraform/language/meta-arguments/depends_on"
+  - claim: "Terraform's uuidv5 function generates a name-based UUID that is deterministic for a given namespace and name, unlike uuid() which produces a new value on every evaluation"
+    source: "https://developer.hashicorp.com/terraform/language/functions/uuidv5"
+---
+<div id="jk-post">
+
+<div class="meta">
+  <span class="stack-badge">Microsoft Sentinel</span>
+  <span class="stack-badge">Log Analytics</span>
+  <span class="stack-badge">Azure Activity</span>
+  <span class="stack-badge">Analytics Rules</span>
+  <span class="stack-badge">Terraform</span>
+</div>
+
+<div class="post-eyebrow">Azure Platform Engineering Lab &middot; Week 12 of 52</div>
+
+<h1>Week 12 &mdash; Detections as Code, and the Rule That Had to Stay Silent</h1>
+
+<p class="post-subtitle">Two Sentinel analytics rules in Terraform: one
+deliberately triggered, one that must not fire. A detection nobody has ever
+seen fire is indistinguishable from one that cannot.</p>
+
+<h2>&#128203; In This Post</h2>
+<ul>
+  <li><a href="#overview">Lab Overview</a></li>
+  <li><a href="#services">Cloud Services and Concepts</a></li>
+  <li><a href="#architecture">Architecture and Workflow</a></li>
+  <li><a href="#prereqs">Prerequisites</a></li>
+  <li><a href="#build">Implementation</a></li>
+  <li><a href="#validation">Validation and Evidence</a></li>
+  <li><a href="#seccost">Security and Cost</a></li>
+  <li><a href="#troubleshooting">Troubleshooting and Lessons</a></li>
+  <li><a href="#cleanup">Cleanup and Key Takeaways</a></li>
+</ul>
+
+<h2 id="overview">Lab Overview</h2>
+
+<p><strong>The problem.</strong> A SIEM rule is code, and it ships like code
+&mdash; reviewed, merged, deployed. Then it is never tested. A scheduled
+analytics rule with a typo in a column name deploys perfectly. So does one
+whose query window is shorter than the ingestion delay it has to span. Both
+report healthy forever, and a detector that never fires looks exactly like an
+environment nobody is attacking.</p>
+
+<p><strong>The objective.</strong> Declare two Sentinel analytics rules in
+Terraform, then prove the pipeline end to end by generating a real attack-shaped
+event and watching it become an incident &mdash; while a second rule, pointed at
+something that did <em>not</em> happen, stays silent.</p>
+
+<p><strong>The outcome.</strong> Seven resources, eight validation checks,
+<strong>13 alerts grouped into 3 incidents</strong>, zero false positives from the
+negative control, and a measured cost of effectively nothing.</p>
+
+<h2 id="services">Cloud Services and Concepts</h2>
+
+<table>
+  <thead>
+    <tr><th>Service</th><th>Purpose here</th><th>What it is</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Microsoft Sentinel</strong></td>
+      <td>Evaluates the two detection rules and raises incidents</td>
+      <td>A SIEM that is <em>enabled on</em> a Log Analytics workspace rather than deployed as its own thing. The workspace holds the data; Sentinel adds detection, incidents and automation on top.</td>
+    </tr>
+    <tr>
+      <td><strong>Log Analytics workspace</strong></td>
+      <td>Stores the Activity log the rules query</td>
+      <td>The table store and query engine behind Azure Monitor. Sentinel has no storage of its own &mdash; this is it.</td>
+    </tr>
+    <tr>
+      <td><strong>Azure Activity log</strong></td>
+      <td>The only signal in this lab, and it is free</td>
+      <td>The subscription's control-plane record: who created, changed or deleted what. It lands in the <code>AzureActivity</code> table.</td>
+    </tr>
+    <tr>
+      <td><strong>Diagnostic setting</strong></td>
+      <td>Forwards the Activity log into the workspace</td>
+      <td>The routing rule that says "send these log categories from this scope to that destination". Attached to the subscription, not to a resource.</td>
+    </tr>
+    <tr>
+      <td><strong>Scheduled analytics rule</strong></td>
+      <td>The detection itself &mdash; a KQL query on a timer</td>
+      <td>A saved query, a frequency, a lookback window and a threshold. When the query returns more rows than the threshold, it raises an alert and opens an incident.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><strong>Alert versus incident.</strong> Worth holding before the numbers
+later make no sense. An <em>alert</em> is one firing of one rule. An
+<em>incident</em> is the case an analyst works. Sentinel's grouping decides how
+many alerts become one incident, and that ratio is the thing this lab ends up
+measuring.</p>
+
+<h2 id="architecture">Architecture and Workflow</h2>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-12-detections-as-code/docs/blog/diagrams/week-12-architecture.svg" alt="Architecture diagram. At the subscription, a diagnostic setting forwards three Azure Activity log categories — Administrative, Policy and Security — into a Log Analytics workspace that has Microsoft Sentinel enabled on it. Sentinel has no icon in Microsoft's published set, so it is named on the workspace node rather than drawn with a borrowed logo, and the Sentinel-specific objects are plain cards for the same reason. Two scheduled analytics rules read the AzureActivity table every five minutes over a one-hour window: a positive control on role assignment creation, which is deliberately triggered, and a negative control on policy assignment deletion, which must stay silent. The positive control raised thirteen alerts, which incident grouping collapsed into three incidents, and an automation rule applied three labels to each without a Logic App." style="width:100%;max-width:900px" />
+  <figcaption><strong>The whole week on one page.</strong> The diagnostic
+  setting sits at <em>subscription</em> scope, outside the resource group
+  everything else lives in &mdash; which is why teardown has to remove it
+  separately.</figcaption>
+</figure>
+
+<ol>
+  <li>A diagnostic setting on the subscription forwards the
+      <strong>Administrative</strong>, <strong>Policy</strong> and
+      <strong>Security</strong> Activity categories into the workspace.</li>
+  <li>Enabling Sentinel on that workspace starts the 31-day free trial and
+      turns the table store into a SIEM.</li>
+  <li>Two analytics rules query <code>AzureActivity</code> every five minutes,
+      each looking back one hour.</li>
+  <li>A role assignment is created deliberately. The positive control matches
+      it and raises an alert.</li>
+  <li>Incident grouping collapses repeated alerts for the same event into one
+      incident instead of one per run.</li>
+  <li>An automation rule labels each new incident the moment it is created.</li>
+  <li>The negative control &mdash; policy assignment deletion &mdash; matches
+      nothing, and must report zero.</li>
+</ol>
+
+<p><strong>Three design decisions worth stating.</strong></p>
+
+<p><em>The lookback is twelve times the frequency, on purpose.</em> Activity
+records reach a workspace minutes after the operation, and that delay is not a
+documented constant. A rule whose window equals its frequency inspects five
+minutes that have probably not been filled yet, finds nothing, and reports
+healthy forever. A one-hour window over a five-minute cadence costs duplicate
+evaluation to buy immunity from a delay nobody controls.</p>
+
+<p><em>No playbook.</em> The obvious way to automate incident handling is a
+playbook, which is a Logic App &mdash; and Microsoft documents that automation
+charges are <strong>not</strong> waived by the Sentinel trial. An automation
+rule does what this lab needs, costs nothing, and keeps a zero-cost week
+honestly zero.</p>
+
+<p><em>The negative control is not padding.</em> It is half the experiment.</p>
+
+<h2 id="prereqs">Prerequisites</h2>
+
+<ul>
+  <li>An Azure subscription where you hold <strong>Owner</strong> or
+      <strong>User Access Administrator</strong> &mdash; the test creates a role
+      assignment.</li>
+  <li>Four resource providers registered:
+      <code>Microsoft.OperationalInsights</code>,
+      <code>Microsoft.Insights</code>,
+      <code>Microsoft.SecurityInsights</code> and
+      <code>Microsoft.OperationsManagement</code>. The fourth is the one that
+      catches people out.</li>
+  <li>Terraform &ge; 1.10, <code>hashicorp/azurerm</code> ~&gt; 5.2.</li>
+  <li>Region: <code>southcentralus</code>. Nothing here is region-specific.</li>
+  <li><strong>No cross-week dependency.</strong> Week 08 built a Log Analytics
+      workspace for cost design; this week builds its own, because the Sentinel
+      free trial is granted per workspace.</li>
+</ul>
+
+<h2 id="build">Implementation</h2>
+
+<h3>Step 1 &mdash; Price it before building it</h3>
+
+<p><strong>Why.</strong> Week 11 of this lab shipped a cost note that never
+mentioned Managed Grafana's flat $6/user/month meter. It was in the price API
+the whole time. The fix is not "read more carefully" &mdash; it is a gate.</p>
+
+<p><strong>Action.</strong>
+<code>python scripts/price_check.py week-12-detections-as-code</code>. It
+enumerates every meter the week's services can bill on, separates the
+<em>flat recurring</em> ones &mdash; those that charge while a thing merely
+exists &mdash; and refuses to pass until each is acknowledged in a committed
+<code>meters.json</code> with a written reason.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-12-detections-as-code/docs/blog/screenshots/01-price-check.png" alt="Terminal output of price_check.py for week 12, listing 43 flat recurring meters across Sentinel, Log Analytics and Azure Monitor grouped into 13 families, each marked ack, with the dearest being a Sentinel commitment tier at 117,990 per day" style="width:100%" />
+  <figcaption><strong>43 flat meters, 13 decisions, every one acknowledged.</strong>
+  The dearest is a Sentinel commitment tier at <strong>$117,990 per day</strong>.
+  It cannot be reached by accident &mdash; which is exactly what I believed
+  about the $6.</figcaption>
+</figure>
+
+<h3>Step 2 &mdash; The workspace, and Sentinel on top of it</h3>
+
+<p><strong>Why.</strong> These are two objects, not one, and the distinction
+has a teardown consequence later.</p>
+
+<pre><code>resource "azurerm_sentinel_log_analytics_workspace_onboarding" "detections" {
+  workspace_id = azurerm_log_analytics_workspace.detections.id
+}</code></pre>
+
+<p><strong>Validation.</strong> Ask the SecurityInsights API for the onboarding
+state rather than inferring it &mdash; a workspace without Sentinel looks
+identical from every other angle.
+Full source: <a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/blob/main/week-12-detections-as-code/terraform/main.tf">main.tf</a>.</p>
+
+<h3>Step 3 &mdash; The signal</h3>
+
+<p><strong>Why.</strong> Sentinel's dedicated Azure Activity connector is
+gone. The legacy forwarding solution was retired on <strong>30 September
+2026</strong>; the current path is an ordinary subscription-scope diagnostic
+setting. The provider still ships
+<code>azurerm_sentinel_data_connector_*</code> resources, and they are the
+wrong answer now.</p>
+
+<p><strong>Action.</strong> One
+<a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/blob/main/week-12-detections-as-code/terraform/activity.tf"><code>azurerm_monitor_diagnostic_setting</code></a>
+targeting the subscription id.</p>
+
+<h3>Step 4 &mdash; The matched pair</h3>
+
+<pre><code>AzureActivity
+| where OperationNameValue =~ "MICROSOFT.AUTHORIZATION/ROLEASSIGNMENTS/WRITE"
+| where ActivityStatusValue =~ "Success"</code></pre>
+
+<p>The second rule is identical in shape and points at
+<code>POLICYASSIGNMENTS/DELETE</code> &mdash; removing a guardrail, which is
+quieter than violating one. Both map the caller and source IP as entities, so
+an incident arrives with something to pivot on.</p>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-12-detections-as-code/docs/blog/screenshots/03-analytics-rules.png" alt="The Microsoft Sentinel Analytics blade listing both scheduled rules deployed by Terraform: Role assignment created at Medium severity and Policy assignment deleted at High severity, both enabled" style="width:100%" />
+  <figcaption><strong>Both rules, declared in Terraform.</strong> Medium for the
+  role assignment, High for guardrail removal.</figcaption>
+</figure>
+
+<h3>Step 5 &mdash; Attack it</h3>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-12-detections-as-code/docs/blog/screenshots/04-trigger.png" alt="Terminal output showing a Reader role assignment created through the ARM REST API at the week's resource group scope, with the created timestamp, because the az role assignment subcommand fails with MissingSubscription on this CLI version" style="width:100%" />
+  <figcaption><strong>The input to the test, not evidence of detection.</strong>
+  A Reader assignment at the week's own resource group, revoked by cleanup
+  before the destroy.</figcaption>
+</figure>
+
+<h2 id="validation">Validation and Evidence</h2>
+
+<table>
+  <thead>
+    <tr><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Workspace exists</td><td>present</td><td><code>law-wk12-dev-scus-001</code></td><td>PASS</td></tr>
+    <tr><td>Sentinel enabled on it</td><td>onboarding state present</td><td>present</td><td>PASS</td></tr>
+    <tr><td>Both detections enabled</td><td>2 enabled</td><td>2 enabled</td><td>PASS</td></tr>
+    <tr><td>Activity log reached the workspace</td><td>&gt; 0 rows</td><td>3 role-assignment rows</td><td>PASS</td></tr>
+    <tr><td><strong>Positive control fired</strong></td><td>&ge; 1 incident</td><td><strong>3 incidents, 13 alerts</strong></td><td>PASS</td></tr>
+    <tr><td><strong>Negative control silent</strong></td><td><strong>exactly 0</strong></td><td><strong>0</strong></td><td>PASS</td></tr>
+    <tr><td>Automation rule labelled it</td><td>3 labels</td><td>3 labels</td><td>PASS</td></tr>
+  </tbody>
+</table>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-12-detections-as-code/docs/blog/screenshots/06-validation.png" alt="validate.sh output showing eight checks passing, including POSITIVE control fired with three incidents and NEGATIVE control stayed silent with zero incidents as required" style="width:100%" />
+  <figcaption><strong>What each result proves.</strong> Rows 1&ndash;3 prove
+  Terraform ran. Row 4 proves the data arrived. Only the last three say the
+  detection works, and the script fails if the negative control is noisy even
+  when the positive one passes.</figcaption>
+</figure>
+
+<p><strong>Note on what is missing.</strong> There is no console screenshot of
+the incident itself. The Azure portal's Sentinel Incidents page rendered a full
+grid once and then, twenty minutes later, served <em>"This page has been moved
+to the Defender portal"</em> on three consecutive attempts; its Overview tile
+separately reported <code>Incidents (0)</code> while the API returned two. The
+Defender portal needs a sign-in this subscription's identity cannot complete.
+Rather than publish a frame that contradicts the data, the slot is retired and
+the gap recorded.</p>
+
+<h2 id="seccost">Security and Cost</h2>
+
+<p><strong>Security.</strong> No secrets exist in this week &mdash; there is
+nothing to authenticate. The deliberately-created role assignment is Reader, at
+the week's own resource group, revoked explicitly before teardown rather than
+left to disappear with the group. The detection is deliberately untuned: a real
+tenant writes role assignments constantly through automation, and shipping this
+as-is would page someone hourly. <strong>Production adds a baseline</strong>
+&mdash; known automation principals excluded by object id, scope narrowed to
+privileged roles. That is a watchlist, and it is next week's problem.</p>
+
+<p><strong>Cost: effectively zero, and here is each leg of it.</strong></p>
+
+<ul>
+  <li><code>AzureActivity</code> is a <strong>free data type</strong> in both
+      Log Analytics ingestion and Sentinel analysis.</li>
+  <li>Enabling Sentinel grants <strong>10 GB/day free for 31 days</strong>.</li>
+  <li>Retention stays at the <strong>90 free days</strong>; a Terraform
+      <code>validation</code> block refuses a higher value rather than trusting
+      a comment.</li>
+  <li><strong>No Logic App</strong> and <strong>no data lake tier</strong>
+      &mdash; both are explicitly outside the trial's waiver.</li>
+</ul>
+
+<p>The measured invoice figure is not in yet; this post will carry it rather
+than a rate-card estimate. What <em>is</em> established is the complete list of
+meters that could have applied, written down before deployment.</p>
+
+<h2 id="troubleshooting">Troubleshooting and Lessons</h2>
+
+<p><strong>Problem.</strong> Sentinel onboarding failed with
+<code>MissingSubscriptionRegistration</code> after the workspace was already
+built.<br />
+<strong>Root cause.</strong> <code>Microsoft.OperationsManagement</code> &mdash;
+a <em>fourth</em> provider, beyond the three you would predict.<br />
+<strong>Resolution.</strong> Register it; 50 seconds.<br />
+<strong>Lesson.</strong> Provider registration is a deployment precondition, and
+the list is not guessable. Check before applying, not after.</p>
+
+<p><strong>Problem.</strong> The analytics rules failed with <em>"Workspace is
+not onboarded to Microsoft Sentinel"</em> &mdash; which reads like the
+onboarding resource failed. It had not.<br />
+<strong>Root cause.</strong> Every Sentinel resource references the
+<em>workspace</em> id, so the only dependency in the graph was on the workspace.
+Nothing said Sentinel had to be <em>enabled</em> first, and Terraform created
+the rules in parallel with the onboarding.<br />
+<strong>Resolution.</strong> An explicit <code>depends_on</code>.<br />
+<strong>Lesson.</strong> <strong>A semantic dependency with no value flowing
+across it is not a dependency until you declare it.</strong></p>
+
+<p><strong>Problem.</strong> I reported "one incident from three rows, grouping
+working." Eighteen minutes later there were two. Seven hours later, three.<br />
+<strong>Root cause.</strong> I was measuring the wrong thing. The incident count
+slides as the query window moves.<br />
+<strong>Resolution.</strong> Measure the ratio: <strong>13 alerts into 3
+incidents</strong>, one of which absorbed eleven by itself.<br />
+<strong>Lesson.</strong> A number that changes when you look again was never the
+measurement. Ungrouped, this would have been thirteen incidents for one thing
+that happened.</p>
+
+<p><strong>Problem.</strong> The portal would have produced a screenshot
+asserting the opposite of the truth &mdash; twice.<br />
+<strong>Root cause.</strong> The Overview tile is an aggregate with its own
+refresh, not a view of the data; and the Incidents page is mid-migration to the
+Defender portal.<br />
+<strong>Lesson.</strong> <strong>Validate against the API and the table, not
+against a console tile.</strong> Sentinel loses Azure portal support after
+31 March 2027; on this tenant the incident views went first.</p>
+
+<h2 id="cleanup">Cleanup and Key Takeaways</h2>
+
+<figure class="screenshot">
+  <img src="https://raw.githubusercontent.com/katta698/Azure-Platform-Engineering-Lab/main/week-12-detections-as-code/docs/blog/screenshots/07-teardown.png" alt="cleanup.sh output showing the role assignment revoked, seven resources destroyed, and three post-destroy checks confirming against Azure that the resource group, the Log Analytics workspace and the subscription diagnostic setting are all gone" style="width:100%" />
+  <figcaption><strong>Verified against Azure, not against an exit code.</strong>
+  The soft-delete note is correct behaviour: a deleted workspace is recoverable
+  by name for 14 days. It stops billing; the name stays reserved.</figcaption>
+</figure>
+
+<p><strong>The teardown trap</strong>, in Microsoft's words: <em>"Removing
+Microsoft Sentinel doesn't remove the Log Analytics workspace Microsoft Sentinel
+was deployed on, or any separate charges that workspace might be incurring."</em>
+Offboarding Sentinel is not cleanup. The workspace is the billable object.</p>
+
+<p>The subscription-scope diagnostic setting is also outside the resource group,
+so deleting the group leaves it behind, pointed at a workspace that no longer
+exists. Both are checked explicitly.</p>
+
+<h3>Takeaways</h3>
+
+<ol>
+  <li><strong>A detection is only proved by a pair.</strong> One that fires and
+      one that must not. A rule that fires on a true positive might fire on
+      anything; a rule silent on a true negative might simply be broken.</li>
+  <li><strong>The query window must exceed the ingestion delay.</strong> Set it
+      equal to the frequency and the rule silently never fires &mdash; and looks
+      exactly like peace.</li>
+  <li><strong>Measure the ratio, not the count.</strong> 13 alerts into 3
+      incidents says what grouping did. "3 incidents" says almost nothing.</li>
+  <li><strong>Price the week before you build it.</strong> Not by reading
+      carefully &mdash; by a gate that will not pass until every flat recurring
+      meter is acknowledged in writing.</li>
+  <li><strong>Trust the API over the console.</strong> Here the portal
+      disagreed with the data twice in one afternoon.</li>
+</ol>
+
+<p><strong>Repository:</strong>
+<a href="https://github.com/katta698/Azure-Platform-Engineering-Lab/tree/main/week-12-detections-as-code">week-12-detections-as-code</a>
+&mdash; Terraform, validation, cleanup, and the committed
+<code>meters.json</code> recording every charge this week accepted.</p>
+
+<h2>References</h2>
+<ul>
+  <li><a href="https://learn.microsoft.com/en-us/azure/sentinel/billing">Plan costs and understand pricing and billing &mdash; Microsoft Sentinel</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/sentinel/connect-services-diagnostic-setting-based">Connect Microsoft Sentinel using diagnostic settings-based connections</a></li>
+  <li><a href="https://learn.microsoft.com/en-us/azure/sentinel/detect-threats-custom">Create custom analytics rules to detect threats</a></li>
+  <li><a href="https://developer.hashicorp.com/terraform/language/meta-arguments/depends_on">Terraform &mdash; the depends_on meta-argument</a></li>
+  <li><a href="https://developer.hashicorp.com/terraform/language/functions/uuidv5">Terraform &mdash; uuidv5</a></li>
+</ul>
+
+</div>
