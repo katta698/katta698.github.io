@@ -1,0 +1,93 @@
+# Keep the Azure and Google Cloud service catalogues current, the way the AWS
+# one already is.
+#
+# refresh-aws-services.yml has regenerated aws_services.json from botocore
+# every Monday since August, and it now carries 687 names. The Azure and GCP
+# catalogues were written by hand on 17 August 2026 and refreshed by nothing:
+# 24 names and 27. Nothing reported that, because a thin catalogue does not
+# raise an error -- it just stops recognising services, and the result reads
+# as a cloud that has gone quiet.
+#
+# The visible cost, measured 2026-11-07: Azure OpenAI showed as 0.0% of
+# Microsoft's quarter on a draft page. Microsoft had not stopped shipping AI.
+# The service had been renamed to Azure AI Foundry and the catalogue had no
+# entry for either name, so every announcement about it was tagged with
+# whatever phrase the fallback could pull out of the headline.
+#
+# Separate from the AWS workflow rather than bolted onto it: that one
+# upgrades botocore and keys its commit message on the botocore version,
+# neither of which means anything here.
+name: Refresh Azure and GCP service catalogues
+
+on:
+  schedule:
+    # Mondays, 06:30 UTC -- half an hour after the AWS catalogue, so the two
+    # never race for the same push.
+    - cron: "30 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-cloud-services
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Both scripts refuse to write a catalogue of fewer than 40 names and
+      # exit non-zero, so an unreachable source fails the job instead of
+      # silently replacing a good file with a stub. That is the failure this
+      # whole workflow exists to prevent, and it would be ironic to
+      # reintroduce it here.
+      - name: Regenerate the Azure catalogue
+        run: python scripts/refresh_azure_services.py
+
+      - name: Regenerate the Google Cloud catalogue
+        run: python scripts/refresh_gcp_services.py
+
+      - name: Commit only if something changed
+        run: |
+          if git diff --quiet -- scripts/azure_services.json scripts/gcp_services.json; then
+            echo "No catalogue changes this week."
+            exit 0
+          fi
+          python - <<'PY'
+          import json, subprocess
+          def load(path):
+              out = subprocess.run(["git", "show", "HEAD:" + path],
+                                   capture_output=True, text=True).stdout
+              try:
+                  return json.loads(out).get("services", {})
+              except ValueError:
+                  return {}
+          lines = []
+          for cloud in ("azure", "gcp"):
+              path = "scripts/%s_services.json" % cloud
+              old = load(path)
+              new = json.load(open(path, encoding="utf-8"))["services"]
+              added = sorted(set(new) - set(old))
+              removed = sorted(set(old) - set(new))
+              lines.append("%s: %d names (%+d)"
+                           % (cloud, len(new), len(new) - len(old)))
+              if added:
+                  lines.append("  added: " + ", ".join(added[:20]))
+              if removed:
+                  lines.append("  removed: " + ", ".join(removed[:20]))
+          open("/tmp/msg.txt", "w", encoding="utf-8").write(
+              "Refresh Azure and GCP service catalogues\n\n%s\n"
+              % "\n".join(lines))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/azure_services.json scripts/gcp_services.json
+          git commit -F /tmp/msg.txt
+          git push

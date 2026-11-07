@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Regenerate the Google Cloud service catalogue the tagger matches on.
+
+    python scripts/refresh_gcp_services.py
+
+The same gap as Azure, and the same consequences -- see the long note at the
+top of refresh_azure_services.py. Measured 2026-11-07: aws_services.json
+carried 687 names and refreshed itself weekly from botocore, while this
+file carried 27 names hand-written on 17 August and refreshed by nothing.
+
+Google makes this easier than Microsoft does. status.cloud.google.com
+publishes products.json -- Google's own list of every product the status
+dashboard tracks, with the display title for each, in the form Google
+writes it in release notes. That is exactly the vocabulary this catalogue
+has to match, from the vendor, in one request.
+
+It is a status-dashboard list, so it covers products Google operates rather
+than every SKU, and a handful of names arrive in forms the release notes do
+not use. Both are fine for a tagger: an unused name costs nothing, and the
+existing curated entries are kept as a floor so nothing already working can
+be lost to a bad fetch.
+"""
+import io
+import json
+import os
+import re
+import sys
+import urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.path.join(ROOT, "scripts", "gcp_services.json")
+
+PRODUCTS_URL = "https://status.cloud.google.com/products.json"
+UA = {"User-Agent": "Mozilla/5.0 (refresh_gcp_services.py)"}
+
+# Google product names that are also ordinary English. A bare mention is not
+# evidence of the service; the tagger wants a qualifier first. "Support",
+# "Build" and "Run" are the dangerous ones -- every third sentence about any
+# cloud contains one.
+ENGLISH_COLLISIONS = {
+    "Support", "Build", "Run", "Tasks", "Trace", "Logging", "Monitoring",
+    "Scheduler", "Billing", "Composer", "Dataflow", "Dataproc", "Datastore",
+    "Functions", "Storage", "Filestore", "Endpoints", "Deploy", "Domains",
+    "Identity", "Looker", "Profiler", "Shell", "Source", "Spanner", "Talent",
+    "Transcoder", "Translation", "Workflows", "Agent Assist",
+    "Access Approval", "Backup and DR", "Batch", "Healthcare",
+    "Recommender", "Security Command Center", "Service Health",
+}
+
+# Entries on the status dashboard that are not a product anyone writes about.
+SKIP = {
+    "Google Cloud", "Google Cloud Platform", "Multiple Products",
+    "Other", "Various", "Google Cloud Console",
+}
+
+
+def fetch(url, cap=4_000_000):
+    req = urllib.request.Request(url, headers=UA)
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read(cap).decode("utf-8", "replace")
+
+
+def from_status():
+    try:
+        raw = fetch(PRODUCTS_URL)
+    except Exception as exc:                                  # noqa: BLE001
+        print("  products.json unreachable: %s" % exc)
+        return {}
+    try:
+        doc = json.loads(raw)
+    except ValueError as exc:
+        print("  products.json is not JSON: %s" % exc)
+        return {}
+    rows = doc if isinstance(doc, list) else doc.get("products", [])
+    out = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        title = (r.get("title") or r.get("current_title") or "").strip()
+        title = re.sub(r"\s+", " ", title)
+        if not title or title in SKIP or len(title) < 3 or len(title) > 70:
+            continue
+        out[title] = "gcp status products.json"
+        # Release notes drop the 'Google ' / 'Cloud ' prefix about as often
+        # as they keep it, so both forms earn an entry.
+        for pref in ("Google Cloud ", "Google ", "Cloud "):
+            if title.startswith(pref) and len(title) - len(pref) >= 4:
+                out.setdefault(title[len(pref):],
+                               "gcp status products.json")
+                break
+    print("  products.json: %d row(s) -> %d name(s)" % (len(rows), len(out)))
+    return out
+
+
+def existing():
+    if not os.path.isfile(OUT):
+        return {}
+    return json.load(io.open(OUT, encoding="utf-8")).get("services", {})
+
+
+def main():
+    print("Refreshing the Google Cloud service catalogue")
+    prior = existing()
+    print("  existing file: %d name(s)" % len(prior))
+
+    found = from_status()
+    if len(found) < 40:
+        print("\n  REFUSING TO WRITE: only %d name(s) found, which is not a "
+              "catalogue.\n  The source is probably unreachable. The "
+              "existing file is left alone." % len(found))
+        return 1
+
+    services = {}
+    for name, meta in prior.items():
+        services[name] = (dict(meta) if isinstance(meta, dict)
+                          else {"ambiguous": False})
+        services[name].setdefault("source", "curated")
+    for name, src in found.items():
+        if name in services:
+            continue
+        services[name] = {"ambiguous": name in ENGLISH_COLLISIONS,
+                          "source": src}
+
+    payload = {
+        "_comment": [
+            "Generated by scripts/refresh_gcp_services.py from Google's own",
+            "status dashboard product list. Do not edit by hand -- re-run",
+            "the script. Names curated before 2026-11-07 are kept and",
+            "marked source=curated.",
+        ],
+        "count": len(services),
+        "services": services,
+    }
+    with io.open(OUT, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(payload, fh, indent=1, sort_keys=True, ensure_ascii=False)
+        fh.write("\n")
+
+    print("\nwrote %s" % OUT)
+    print("  %d name(s), %d new, %d need a qualifier before a bare mention "
+          "counts" % (len(services), len(services) - len(prior),
+                      sum(1 for v in services.values()
+                          if v.get("ambiguous"))))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
