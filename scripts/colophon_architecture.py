@@ -181,10 +181,10 @@ ARCHITECTURE = """
   </g>
   <path class="aa a7" d="M 156 375H 236"/>
   <g class="ab bld">
-    <rect x="236" y="452" width="176" height="34" rx="6"/>
-    <text class="at" x="250" y="473">build_services_page.py</text>
+    <rect x="236" y="548" width="176" height="34" rx="6"/>
+    <text class="at" x="250" y="569">build_services_page.py</text>
   </g>
-  <path class="aa a7" d="M 156 469H 236"/>
+  <path class="aa a7" d="M 156 565H 236"/>
 
   <g class="ab bld">
     <rect x="236" y="400" width="176" height="46" rx="6"/>
@@ -253,10 +253,7 @@ ARCHITECTURE = """
   <g class="ab page">
     <rect x="492" y="352" width="180" height="30" rx="6"/>
     <text class="at" x="506" y="371">The three clouds</text>
-  </g>
-  <g class="ab pg">
-    <rect x="492" y="388" width="180" height="30" rx="6"/>
-    <text class="at" x="506" y="407">Service attention</text>
+
   </g>
   <path class="aa b8" d="M 412 375H 470V 367H 492"/>
 
