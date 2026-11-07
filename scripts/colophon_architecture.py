@@ -47,6 +47,7 @@ CLAIMS = {
     "build_ai_page.py": "scripts/build_ai_page.py",
     "cloud-economics.json": "intelligence/cloud-economics.json",
     "build_clouds_page.py": "scripts/build_clouds_page.py",
+    "build_services_page.py": "scripts/build_services_page.py",
     "fetch_cloud_economics.py": "scripts/fetch_cloud_economics.py",
     "reinvent2026.json": "intelligence/reinvent2026.json",
     "build_reinvent_page.py": "scripts/build_reinvent_page.py",
@@ -180,6 +181,12 @@ ARCHITECTURE = """
   </g>
   <path class="aa a7" d="M 156 375H 236"/>
   <g class="ab bld">
+    <rect x="236" y="452" width="176" height="34" rx="6"/>
+    <text class="at" x="250" y="473">build_services_page.py</text>
+  </g>
+  <path class="aa a7" d="M 156 469H 236"/>
+
+  <g class="ab bld">
     <rect x="236" y="400" width="176" height="46" rx="6"/>
     <text class="at" x="250" y="418">build_sitemap.py</text>
     <text class="as" x="250" y="431">run by sync_blog.py,</text>
@@ -246,6 +253,10 @@ ARCHITECTURE = """
   <g class="ab page">
     <rect x="492" y="352" width="180" height="30" rx="6"/>
     <text class="at" x="506" y="371">The three clouds</text>
+  </g>
+  <g class="ab pg">
+    <rect x="492" y="388" width="180" height="30" rx="6"/>
+    <text class="at" x="506" y="407">Service attention</text>
   </g>
   <path class="aa b8" d="M 412 375H 470V 367H 492"/>
 
