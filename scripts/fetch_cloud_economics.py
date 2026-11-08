@@ -95,6 +95,66 @@ MSFT_SEGMENT_CANDIDATES = [
 
 SEGMENT_AXIS = "StatementBusinessSegmentsAxis"
 
+# Azure IS tagged -- on the PRODUCT axis, not the segment axis.
+#
+# This whole file was built on the premise that Microsoft does not publish
+# an Azure figure, and for years that was true. As of the quarter ended
+# 2026-09-30 Microsoft tags msft:AzureMember on us-gaap:ProductOrServiceAxis
+# in its own 10-Q: $33.165B against $22.384B a year earlier. The page was
+# still printing "not disclosed", which had quietly stopped being true.
+#
+# It was missed because segment_members() only ever looked at the segment
+# axis, so a product-axis disclosure was invisible no matter how prominent.
+# Prompted by Jayanth pointing at Microsoft's investor-relations page and
+# asking why we could not read the numbers off it. We can do better than
+# that page: the same figure is in the filing, which needs no browser, is
+# not 403 to a script, and is the audited source rather than a summary of it.
+PRODUCT_AXIS = "ProductOrServiceAxis"
+AZURE_MEMBER = "msft:AzureMember"
+
+
+def product_revenue(instance_url, member):
+    """Quarterly revenue for one product line on the product axis.
+
+    Operating income is deliberately not sought. A product line has no
+    segment P&L -- Microsoft publishes no Azure margin and inventing one
+    from the enclosing segment would be the exact failure this file exists
+    to avoid.
+    """
+    root = ET.fromstring(get(instance_url))
+    ctx = {}
+    for c in root.iter(X + "context"):
+        hit = False
+        for e in c.iter():
+            if (e.tag.endswith("explicitMember")
+                    and PRODUCT_AXIS in (e.get("dimension") or "")
+                    and (e.text or "").strip() == member):
+                hit = True
+        if not hit:
+            continue
+        per = c.find(X + "period")
+        start = per.findtext(X + "startDate")
+        end = per.findtext(X + "endDate")
+        if start and end:
+            ctx[c.get("id")] = (start, end)
+
+    out = {}
+    for el in root.iter():
+        if not el.tag.endswith("}RevenueFromContractWithCustomerExcludingAssessedTax"):
+            continue
+        if el.get("contextRef") not in ctx:
+            continue
+        start, end = ctx[el.get("contextRef")]
+        span = days_between(start, end)
+        if not 80 <= span <= 100:
+            continue
+        try:
+            out[end] = {"start": start, "end": end, "days": span,
+                        "usd": int(el.text)}
+        except (TypeError, ValueError):
+            continue
+    return out
+
 
 def segment_members(instance_url):
     """Every reportable-segment member the filing actually tags.
@@ -352,23 +412,42 @@ def main():
         if enclosing is None:
             print("     WARNING: none of the known Microsoft segment "
                   "members is in this filing. Seen: %s" % ", ".join(seen))
+    azure_q = product_revenue(f["instance"], AZURE_MEMBER) if f else {}
+    quarters = {}
+    for end, row in azure_q.items():
+        quarters[end] = {"revenue": row["usd"], "start": row["start"]}
+    if quarters:
+        print("     Azure revenue IS tagged (%s)" % AZURE_MEMBER)
+        for end in sorted(quarters)[-2:]:
+            print("     %s  revenue $%s"
+                  % (end, "{:,}".format(quarters[end]["revenue"])))
+    else:
+        print("     WARNING: %s not found. Microsoft tagged it in the "
+              "quarter to 2026-09-30, so its absence is a change worth "
+              "looking at, not a default." % AZURE_MEMBER)
+
     out["clouds"][label] = {
-        "company": company, "cik": cik, "disclosed": False,
+        "company": company, "cik": cik,
+        # Revenue only. There is no Azure operating income anywhere, so the
+        # record says which half is disclosed rather than one flat boolean
+        # that would have to lie about one of them.
+        "disclosed": bool(quarters),
+        "revenue_disclosed": bool(quarters),
+        "operating_income_disclosed": False,
+        "quarters": quarters,
         "form": f["form"] if f else None,
         "filed": f["filed"] if f else None,
         "accession": f["accession"] if f else None,
         "growth": g,
         "enclosing_segment": enclosing,
         "segments_seen": seg_seen,
-        "why": ("Azure is not a reportable segment, so no figure is "
-                "required. US segment reporting obliges a company to "
-                "publish revenue and operating income for the segments its "
-                "management actually runs the business by, and Microsoft "
-                "runs it by larger groupings -- Azure is a product line "
-                "inside one of them, reported in commentary as a growth "
-                "rate against a base it does not give. AWS and Google "
-                "Cloud are each a reportable segment in their own right, "
-                "which is the only reason their figures exist."),
+        "why": ("Microsoft tags Azure revenue on the product axis of its "
+                "own 10-Q, so the figure is audited and comparable. What it "
+                "does not publish is an Azure operating income: Azure is a "
+                "product line, not a reportable segment, and only segments "
+                "carry a profit and loss. AWS and Google Cloud are each a "
+                "reportable segment, which is why those two have a margin "
+                "and this one does not."),
     }
     if g:
         print("     %s" % g["sentence"][:96])

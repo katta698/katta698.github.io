@@ -115,6 +115,20 @@ def load(path):
 
 
 def money_section(econ):
+    """Three cards. Each says exactly how much of itself is disclosed.
+
+    There used to be two shapes here -- "disclosed" and "not disclosed" --
+    and Azure was the second. That stopped being true in the quarter to
+    2026-09-30, when Microsoft began tagging msft:AzureMember on the
+    product axis of its own 10-Q. Revenue is now audited and comparable
+    for all three.
+
+    Operating income is NOT. Azure is a product line, not a reportable
+    segment, and only segments carry a profit and loss. So the card shows a
+    revenue figure and refuses a margin, which needs a third shape: the
+    boolean that used to drive this could only ever have lied about one
+    half or the other.
+    """
     order = ["AWS", "Azure", "Google Cloud"]
     cards = []
     for name in order:
@@ -123,109 +137,60 @@ def money_section(econ):
             continue
         colour = dict((n, col) for _, n, col, _dx, _dy in CLOUDS).get(
             name, "#C4A484")
-        if c.get("disclosed"):
-            qs = c.get("quarters", {})
-            ends = sorted(qs)
-            if not ends:
-                continue
-            latest = qs[ends[-1]]
-            prior = qs[ends[-2]] if len(ends) > 1 else None
-            rev = latest.get("revenue")
-            op = latest.get("operating_income")
-            growth = ""
-            if prior and prior.get("revenue"):
-                g = (rev - prior["revenue"]) / float(prior["revenue"]) * 100
-                growth = ("<span class=\"cl-growth\">%+.0f%% year on year</span>"
-                          % g)
-            margin = ""
-            if rev and op:
-                margin = ("<span class=\"cl-sub\">%.0f%% operating margin%s"
-                          "</span>"
-                          % (op / float(rev) * 100,
-                             " (derived)" if latest.get(
-                                 "operating_income_derived") else ""))
-            cards.append(
-                '<div class="cl-card"><div class="cl-bar" style="background:%s">'
-                '</div><h3>%s</h3>'
-                '<p class="cl-big">%s</p>'
-                '<p class="cl-meta">revenue, quarter to %s %s</p>'
-                '<p class="cl-op">%s operating income</p>%s'
-                '<p class="cl-src">%s, filed %s</p></div>'
-                % (colour, esc(name), usd(rev), esc(ends[-1]), growth,
-                   usd(op) if op else "not tagged", margin,
-                   esc(c.get("form", "")), esc(c.get("filed", ""))))
-        else:
-            g = c.get("growth") or {}
-            enc = c.get("enclosing_segment") or {}
-            ceiling = ""
-            if enc.get("revenue"):
-                # Deliberately NOT formatted like the two cards beside it.
-                # Made to look the same it would be read as Azure's own
-                # revenue, which is the one misreading this whole page
-                # exists to prevent.
-                days = enc.get("days") or 0
-                period = ("quarter to %s" % enc["end"] if days <= 100
-                          else ("year to %s" % enc["end"] if days > 300
-                                else "period to %s" % enc["end"]))
-                # What the segment contains is NOT asserted. Microsoft
-                # reorganised into Agents and Infra and Devices and Consumer
-                # during 2026, and listing the products inside a grouping
-                # whose composition this script cannot read would be
-                # inventing detail. The size comparison needs no such claim.
-                # The size comparison is COMPUTED, never written down.
-                # "larger than AWS and Google Cloud combined" was true by
-                # $0.1B on 2026-11-08 -- 76.795 against 76.693 -- and one
-                # quarter of ordinary growth would have turned that
-                # sentence into a false statement nobody was watching.
-                others = 0
-                for other in ("AWS", "Google Cloud"):
-                    oc = econ["clouds"].get(other) or {}
-                    oq = oc.get("quarters") or {}
-                    if oq:
-                        others += (oq[sorted(oq)[-1]].get("revenue") or 0)
-                compare = ""
-                if others and enc["revenue"] > others:
-                    compare = (" &mdash; larger than AWS and Google Cloud "
-                               "put together")
-                elif others:
-                    compare = (" &mdash; %.0f%% the size of AWS and Google "
-                               "Cloud put together"
-                               % (100.0 * enc["revenue"] / others))
-                ceiling = (
-                    '<p class="cl-ceiling"><b>What is disclosed:</b> %s, the '
-                    'reportable segment Azure sits inside, took <b>%s</b> '
-                    'revenue and %s operating income in the %s. That grouping '
-                    'is far wider than Azure%s &mdash; so it is a <b>ceiling '
-                    'on Azure, not a measure of it</b>.</p>'
-                    % (esc(enc.get("segment", "the enclosing segment")),
-                       usd(enc["revenue"]),
-                       usd(enc.get("operating_income", 0)), esc(period),
-                       compare))
-            # The quote is only shown when Microsoft actually said something.
-            # The old fallback printed "no Azure line found in the filing",
-            # which reads to a reader as this page being broken rather than
-            # as Microsoft declining to publish.
-            quote = ('<p class="cl-quote">&ldquo;%s&rdquo;</p>'
-                     % esc(g["sentence"])) if g.get("sentence") else ""
+        qs = c.get("quarters") or {}
+        ends = sorted(qs)
+        if not ends:
+            # Nothing at all. Kept rather than dropped: a cloud vanishing
+            # from this page should look deliberate, not like a gap.
             cards.append(
                 '<div class="cl-card cl-gap">'
                 '<div class="cl-bar" style="background:%s"></div><h3>%s</h3>'
-                '<p class="cl-big cl-none">not a reportable segment</p>'
-                '<p class="cl-meta">so no figure is required, and Microsoft '
-                'does not give one</p>'
-                '<p class="cl-why">A company must publish revenue and '
-                'operating income for the segments it actually runs the '
-                'business by. AWS is one of Amazon&rsquo;s. Google Cloud is '
-                'one of Alphabet&rsquo;s. Azure is a product line inside a '
-                'larger Microsoft segment, reported in commentary as a '
-                'growth rate against a base Microsoft never states &mdash; '
-                'so there is nothing here to compare, and a number invented '
-                'to fill the gap would be the least honest thing on this '
-                'page.</p>'
-                '%s%s'
+                '<p class="cl-big cl-none">not disclosed</p>'
+                '<p class="cl-why">%s</p>'
                 '<p class="cl-src">%s, filed %s</p></div>'
-                % (colour, esc(name), quote, ceiling,
+                % (colour, esc(name), esc(c.get("why", "")),
                    esc(c.get("form", "")), esc(c.get("filed", ""))))
+            continue
+
+        latest = qs[ends[-1]]
+        prior = qs[ends[-2]] if len(ends) > 1 else None
+        rev = latest.get("revenue")
+        op = latest.get("operating_income")
+
+        growth = ""
+        if prior and prior.get("revenue") and rev:
+            g = (rev - prior["revenue"]) / float(prior["revenue"]) * 100
+            growth = '<span class="cl-growth">%+.0f%% year on year</span>' % g
+
+        if op:
+            tail = ('<p class="cl-op">%s operating income</p>'
+                    '<span class="cl-sub">%.0f%% operating margin%s</span>'
+                    % (usd(op), op / float(rev) * 100,
+                       " (derived)" if latest.get("operating_income_derived")
+                       else ""))
+        else:
+            enc = c.get("enclosing_segment") or {}
+            extra = ""
+            if enc.get("revenue"):
+                extra = (" It sits inside %s, which took %s revenue in the "
+                         "same quarter &mdash; a ceiling on Azure, not a "
+                         "measure of it."
+                         % (esc(enc.get("segment", "a larger segment")),
+                            usd(enc["revenue"])))
+            tail = ('<p class="cl-op cl-none">operating income not '
+                    'disclosed</p>'
+                    '<p class="cl-why">%s%s</p>' % (esc(c.get("why", "")),
+                                                    extra))
+
+        cards.append(
+            '<div class="cl-card"><div class="cl-bar" style="background:%s">'
+            '</div><h3>%s</h3>'
+            '<p class="cl-big">%s</p>'
+            '<p class="cl-meta">revenue, quarter to %s %s</p>'
+            '%s'
+            '<p class="cl-src">%s, filed %s</p></div>'
+            % (colour, esc(name), usd(rev), esc(ends[-1]), growth, tail,
+               esc(c.get("form", "")), esc(c.get("filed", ""))))
     return "".join(cards)
 
 
@@ -1833,7 +1798,9 @@ CSS = """
 .cl-op{margin:.2rem 0 0;font-size:.95rem}
 .cl-sub,.cl-growth{display:block;color:var(--text-muted);font-size:.78rem;margin-top:.15rem}
 .cl-quote{font-size:.84rem;line-height:1.6;margin:.5rem 0 0;color:var(--text)}
-.cl-why{font-size:.8rem;line-height:1.62;margin:.55rem 0 0;color:var(--muted)}
+.cl-why{font-size:.8rem;line-height:1.62;margin:.5rem 0 0;
+          color:var(--text-muted)}
+.cl-why b{color:var(--text)}
 body.light .cl-card .cl-why{color:#605F5B}
 .cl-ceiling{font-size:.8rem;line-height:1.6;margin:.7rem 0 0;padding-top:.6rem;
             border-top:1px dashed var(--border);color:var(--text-muted)}
