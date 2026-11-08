@@ -76,17 +76,59 @@ MICROSOFT = ("Azure", "Microsoft", "0000789019")
 # SQL Server, Visual Studio and Enterprise Services, so it is an upper bound
 # on Azure and not a measure of it. Captured because "we cannot know anything
 # about Azure's size" would be a worse answer than "here is the ceiling".
-MSFT_SEGMENT = "msft:IntelligentCloudMember"
+# Microsoft renames its reportable segments, so this is a LIST and the
+# fetcher records what it actually found.
+#
+# It was a single hardcoded "msft:IntelligentCloudMember" until 2026-11-08.
+# Microsoft had by then reorganised into two reportable segments -- Agents
+# and Infra, and Devices and Consumer -- and Intelligent Cloud no longer
+# existed in the filing. Nothing failed. `enclosing_segment` simply came
+# back null, the page printed no ceiling for Azure, and the omission looked
+# exactly like Microsoft disclosing even less than before.
+#
+# Newest first. Older names are kept so a re-run over an archived filing
+# still resolves.
+MSFT_SEGMENT_CANDIDATES = [
+    ("msft:AgentsAndInfraMember", "Agents and Infra"),
+    ("msft:IntelligentCloudMember", "Intelligent Cloud"),
+]
+
+SEGMENT_AXIS = "StatementBusinessSegmentsAxis"
+
+
+def segment_members(instance_url):
+    """Every reportable-segment member the filing actually tags.
+
+    Recorded whether or not a candidate matches, so a rename is visible in
+    the data instead of arriving as a silent null.
+    """
+    root = ET.fromstring(get(instance_url))
+    out = set()
+    for c in root.iter(X + "context"):
+        for e in c.iter():
+            if not e.tag.endswith("explicitMember"):
+                continue
+            if SEGMENT_AXIS in (e.get("dimension") or "") and e.text:
+                out.add(e.text.strip())
+    return sorted(out)
+
+# Members that qualify a segment rather than naming another one. A context
+# carrying one of these alongside the segment member is still that segment.
+QUALIFIER_MEMBERS = {
+    "us-gaap:OperatingSegmentsMember",
+    "us-gaap:ReportableSegmentsMember",
+    "us-gaap:ReportableSubsegmentsMember",
+}
 
 CONCEPTS = {
     "RevenueFromContractWithCustomerExcludingAssessedTax": "revenue",
     "OperatingIncomeLoss": "operating_income",
-    # Alphabet does not tag OperatingIncomeLoss on the Google Cloud member --
-    # it tags the segment's total costs instead. Revenue minus costs is the
-    # same figure its own segment table prints, so it is derived rather than
-    # left blank, and marked `derived` with both inputs kept so the
-    # subtraction can be checked. Amazon tags OperatingIncomeLoss directly
-    # and is never derived.
+    # Costs are kept so operating income can be derived for a filer that
+    # tags segment expenses but not segment operating income. Alphabet DOES
+    # tag it -- see segment_facts on the two-member context that used to
+    # hide it -- so nothing is derived today. The fallback stays because a
+    # filer that stops tagging it should degrade to a checkable subtraction
+    # rather than to a blank.
     "CostsAndExpenses": "costs",
 }
 
@@ -133,17 +175,31 @@ def days_between(a, b):
 def segment_facts(instance_url, member):
     """Quarterly revenue and operating income for one reportable segment.
 
-    Only contexts whose ENTIRE dimension set is this one member count. A
-    context carrying two members is a roll-up -- Amazon files a combined
-    "North America and International" one -- and including those would
-    double-count.
+    A context counts when its members are this segment, plus at most the
+    qualifier members below.
+
+    The first rule here was "the entire dimension set must be this one
+    member", written to reject Amazon's combined "North America and
+    International" roll-up. It also silently threw away Alphabet's
+    operating income, which is tagged on TWO members --
+    us-gaap:OperatingSegmentsMember together with goog:GoogleCloudMember.
+    So the figure was absent, the caller derived it from revenue minus
+    costs, and the page apologised for an inference it never needed to
+    make. The derived value happened to equal the reported one to the
+    dollar, which is exactly why nobody noticed.
+
+    A qualifier says what KIND of thing the segment is. It does not add a
+    second entity, so it cannot double-count. Two real segment members
+    still do, and are still rejected.
     """
     root = ET.fromstring(get(instance_url))
     ctx = {}
     for c in root.iter(X + "context"):
         members = [e.text.strip() for e in c.iter()
                    if e.tag.endswith("explicitMember") and e.text]
-        if members != [member]:
+        if member not in members:
+            continue
+        if [m for m in members if m != member and m not in QUALIFIER_MEMBERS]:
             continue
         per = c.find(X + "period")
         start = per.findtext(X + "startDate")
@@ -184,7 +240,9 @@ def segment_facts_any(instance_url, member):
     for c in root.iter(X + "context"):
         members = [e.text.strip() for e in c.iter()
                    if e.tag.endswith("explicitMember") and e.text]
-        if members != [member]:
+        if member not in members:
+            continue
+        if [m for m in members if m != member and m not in QUALIFIER_MEMBERS]:
             continue
         per = c.find(X + "period")
         s, e = per.findtext(X + "startDate"), per.findtext(X + "endDate")
@@ -272,6 +330,7 @@ def main():
         time.sleep(0.4)
 
     label, company, cik = MICROSOFT
+    seg_seen = []
     print("  %s (%s)" % (label, company))
     f = latest_filing(cik)
     g = azure_growth(f["primary"]) if f else None
@@ -281,11 +340,18 @@ def main():
     # them in a row as though they were comparable.
     enclosing = None
     if f:
-        facts = segment_facts_any(f["instance"], MSFT_SEGMENT)
-        if facts:
-            end = sorted(facts)[-1]
-            enclosing = facts[end]
-            enclosing["segment"] = "Intelligent Cloud"
+        seg_seen = seen = segment_members(f["instance"])
+        for member, pretty in MSFT_SEGMENT_CANDIDATES:
+            facts = segment_facts_any(f["instance"], member)
+            if facts:
+                end = sorted(facts)[-1]
+                enclosing = facts[end]
+                enclosing["segment"] = pretty
+                enclosing["member"] = member
+                break
+        if enclosing is None:
+            print("     WARNING: none of the known Microsoft segment "
+                  "members is in this filing. Seen: %s" % ", ".join(seen))
     out["clouds"][label] = {
         "company": company, "cik": cik, "disclosed": False,
         "form": f["form"] if f else None,
@@ -293,9 +359,16 @@ def main():
         "accession": f["accession"] if f else None,
         "growth": g,
         "enclosing_segment": enclosing,
-        "why": ("Microsoft reports Azure as a growth rate only. Its "
-                "'Microsoft Cloud' figure bundles Office 365, Dynamics and "
-                "LinkedIn and is not comparable to AWS or Google Cloud."),
+        "segments_seen": seg_seen,
+        "why": ("Azure is not a reportable segment, so no figure is "
+                "required. US segment reporting obliges a company to "
+                "publish revenue and operating income for the segments its "
+                "management actually runs the business by, and Microsoft "
+                "runs it by larger groupings -- Azure is a product line "
+                "inside one of them, reported in commentary as a growth "
+                "rate against a base it does not give. AWS and Google "
+                "Cloud are each a reportable segment in their own right, "
+                "which is the only reason their figures exist."),
     }
     if g:
         print("     %s" % g["sentence"][:96])

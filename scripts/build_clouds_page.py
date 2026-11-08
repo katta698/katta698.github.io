@@ -160,32 +160,71 @@ def money_section(econ):
             ceiling = ""
             if enc.get("revenue"):
                 # Deliberately NOT formatted like the two cards beside it.
-                # It is a yearly figure for a wider segment; made to look the
-                # same it would be read as Azure's quarter, which is the one
-                # misreading this whole page exists to prevent.
-                yearly = ("year to %s" % enc["end"]) if enc.get("days", 0) > 300                     else ("period to %s" % enc["end"])
+                # Made to look the same it would be read as Azure's own
+                # revenue, which is the one misreading this whole page
+                # exists to prevent.
+                days = enc.get("days") or 0
+                period = ("quarter to %s" % enc["end"] if days <= 100
+                          else ("year to %s" % enc["end"] if days > 300
+                                else "period to %s" % enc["end"]))
+                # What the segment contains is NOT asserted. Microsoft
+                # reorganised into Agents and Infra and Devices and Consumer
+                # during 2026, and listing the products inside a grouping
+                # whose composition this script cannot read would be
+                # inventing detail. The size comparison needs no such claim.
+                # The size comparison is COMPUTED, never written down.
+                # "larger than AWS and Google Cloud combined" was true by
+                # $0.1B on 2026-11-08 -- 76.795 against 76.693 -- and one
+                # quarter of ordinary growth would have turned that
+                # sentence into a false statement nobody was watching.
+                others = 0
+                for other in ("AWS", "Google Cloud"):
+                    oc = econ["clouds"].get(other) or {}
+                    oq = oc.get("quarters") or {}
+                    if oq:
+                        others += (oq[sorted(oq)[-1]].get("revenue") or 0)
+                compare = ""
+                if others and enc["revenue"] > others:
+                    compare = (" &mdash; larger than AWS and Google Cloud "
+                               "put together")
+                elif others:
+                    compare = (" &mdash; %.0f%% the size of AWS and Google "
+                               "Cloud put together"
+                               % (100.0 * enc["revenue"] / others))
                 ceiling = (
-                    '<p class="cl-ceiling"><b>Upper bound:</b> %s, the segment '
-                    'Azure sits inside, reported <b>%s</b> revenue and %s '
-                    'operating income for the %s. It also contains Windows '
-                    'Server, SQL Server, Visual Studio and Enterprise '
-                    'Services &mdash; so it is a ceiling on Azure, not a '
-                    'measure of it, and it is a year where the other two '
-                    'cards are a quarter.</p>'
+                    '<p class="cl-ceiling"><b>What is disclosed:</b> %s, the '
+                    'reportable segment Azure sits inside, took <b>%s</b> '
+                    'revenue and %s operating income in the %s. That grouping '
+                    'is far wider than Azure%s &mdash; so it is a <b>ceiling '
+                    'on Azure, not a measure of it</b>.</p>'
                     % (esc(enc.get("segment", "the enclosing segment")),
                        usd(enc["revenue"]),
-                       usd(enc.get("operating_income", 0)), esc(yearly)))
+                       usd(enc.get("operating_income", 0)), esc(period),
+                       compare))
+            # The quote is only shown when Microsoft actually said something.
+            # The old fallback printed "no Azure line found in the filing",
+            # which reads to a reader as this page being broken rather than
+            # as Microsoft declining to publish.
+            quote = ('<p class="cl-quote">&ldquo;%s&rdquo;</p>'
+                     % esc(g["sentence"])) if g.get("sentence") else ""
             cards.append(
                 '<div class="cl-card cl-gap">'
                 '<div class="cl-bar" style="background:%s"></div><h3>%s</h3>'
-                '<p class="cl-big cl-none">not disclosed</p>'
-                '<p class="cl-meta">Microsoft publishes a growth rate, not a '
-                'figure</p>'
-                '<p class="cl-quote">&ldquo;%s&rdquo;</p>%s'
+                '<p class="cl-big cl-none">not a reportable segment</p>'
+                '<p class="cl-meta">so no figure is required, and Microsoft '
+                'does not give one</p>'
+                '<p class="cl-why">A company must publish revenue and '
+                'operating income for the segments it actually runs the '
+                'business by. AWS is one of Amazon&rsquo;s. Google Cloud is '
+                'one of Alphabet&rsquo;s. Azure is a product line inside a '
+                'larger Microsoft segment, reported in commentary as a '
+                'growth rate against a base Microsoft never states &mdash; '
+                'so there is nothing here to compare, and a number invented '
+                'to fill the gap would be the least honest thing on this '
+                'page.</p>'
+                '%s%s'
                 '<p class="cl-src">%s, filed %s</p></div>'
-                % (colour, esc(name),
-                   esc(g.get("sentence", "no Azure line found in the filing")),
-                   ceiling,
+                % (colour, esc(name), quote, ceiling,
                    esc(c.get("form", "")), esc(c.get("filed", ""))))
     return "".join(cards)
 
@@ -1794,6 +1833,8 @@ CSS = """
 .cl-op{margin:.2rem 0 0;font-size:.95rem}
 .cl-sub,.cl-growth{display:block;color:var(--text-muted);font-size:.78rem;margin-top:.15rem}
 .cl-quote{font-size:.84rem;line-height:1.6;margin:.5rem 0 0;color:var(--text)}
+.cl-why{font-size:.8rem;line-height:1.62;margin:.55rem 0 0;color:var(--muted)}
+body.light .cl-card .cl-why{color:#605F5B}
 .cl-ceiling{font-size:.8rem;line-height:1.6;margin:.7rem 0 0;padding-top:.6rem;
             border-top:1px dashed var(--border);color:var(--text-muted)}
 .cl-ceiling b{color:var(--text)}
