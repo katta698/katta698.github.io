@@ -51,6 +51,18 @@ verified_claims:
     source: https://docs.aws.amazon.com/ARG/latest/userguide/integrated-services-list.html
   - claim: "You can specify the sources and destinations for your network access requirements by using AWS Resource Groups"
     source: https://docs.aws.amazon.com/ARG/latest/userguide/integrated-services-list.html
+  - claim: "All AWS Resource Groups actions are logged in AWS CloudTrail"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/security_logging-monitoring.html
+  - claim: "AWS Resource Groups and Tag Editor are integrated with AWS CloudTrail, a service that provides a record of actions taken by a user, role, or an AWS service in Resource Groups or Tag Editor"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/security_logging-monitoring.html
+  - claim: "Tag Editor actions in the console are logged by CloudTrail, and are shown as events with the internal API endpoint resource-explorer as their source"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/security_logging-monitoring.html
+  - claim: "When activity occurs in Resource Groups, or in the Tag Editor console, that activity is recorded in a CloudTrail event along with other AWS service events in Event history"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/security_logging-monitoring.html
+  - claim: "Resource Groups actions in CloudTrail are shown as events with the API endpoint resource-groups.amazonaws.com as their source"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/security_logging-monitoring.html
+problem: "A resource group stores a query rather than a list of members, so the set an automation runs against is recomputed every time something reads the group. A tag edit on a single resource, or AWS adding support for a resource type, can change that set without anyone touching the group or the automation \u2014 and AWS warns that an all-supported-types group may run actions on many more resources than it originally held."
+builds: "A reading of Resource Groups as the place tags stop being metadata and become a control surface: the two query types and what moves each one, the AND semantics that make a more precise group a smaller one, what CloudTrail does and does not record about a membership change, and the quotas that pace any remediation built on the tagging API."
 catch: "A resource group stores a query, not a list, and the query is answered when something reads it. So the set your automation runs against can change with no edit to the group and no edit to the automation - a tag changed, or AWS adding support for a resource type. AWS documents the second one as a warning: the actions might run on many more resources than were in the group when you first created the group."
 ---
 <div id="jk-post">
@@ -109,6 +121,15 @@ catch: "A resource group stores a query, not a list, and the query is answered w
           management. The tag is a text field in a console, editable by anyone holding tagging permissions on
           the resource, and it is the thing that decides scope. The blast radius of a maintenance window is
           governed by whichever of the two controls is weaker, and it is not the one in Git.
+        </p>
+        <p>
+          That is a review gap, not an audit gap, and the distinction matters. The tagging call itself is
+          recorded: <em>&ldquo;All AWS Resource Groups actions are logged in AWS CloudTrail&rdquo;</em>, and
+          <em>&ldquo;Tag Editor actions in the console are logged by CloudTrail&rdquo;</em>. What no event
+          describes is the <em>consequence</em> &mdash; because membership is computed when the group is
+          read, there is no stored membership to change and so nothing emits a membership-changed event. The
+          trail will tell you who tagged what, and when. Joining that to which groups it silently moved a
+          resource into or out of, and which automations act on those groups, is work you have to do.
         </p>
         <span class="fix-label">Fix</span>
         <p>Where a group drives an action rather than a dashboard, treat its tag keys as part of the automation's interface and protect them accordingly &mdash; a tag policy from <a href="/blog/aws-architecture-tag-policies/">#104</a> for shape, and an IAM or service control policy condition on <code>aws:TagKeys</code> for who may change them. A tag that only feeds a cost report needs none of this; a tag that selects patch targets needs all of it.</p>
@@ -198,15 +219,26 @@ catch: "A resource group stores a query, not a list, and the query is answered w
       </tr>
       <tr>
         <td>Drift arrives via</td>
-        <td>A console edit nobody records as a change</td>
-        <td>A deployment, which is recorded</td>
+        <td>A tag change on a resource, which alters membership without modifying the group definition</td>
+        <td>A stack deployment, trackable through stack events and change management</td>
+      </tr>
+      <tr>
+        <td>What the audit trail holds</td>
+        <td colspan="2">Both leave evidence &mdash; <em>&ldquo;All AWS Resource Groups actions are logged in AWS CloudTrail&rdquo;</em>, Tag Editor console actions included. Neither emits an event for the membership change itself, and neither guarantees the automation consuming the group reviews it</td>
       </tr>
     </table>
     </div>
     <p>
-      The stack-based type is the more conservative of the two and it is the default, which is the right way
-      round. Its membership still moves, but it moves through a mechanism that leaves evidence. A tag-based
-      group's membership moves through an edit that looks like metadata maintenance.
+      Stack-based groups derive membership from a CloudFormation stack, which gives a deployment boundary
+      that can be tracked through stack events and change management. Tag-based groups derive membership
+      from resource tags, which may change independently of the group definition. Both kinds of underlying
+      change can leave audit evidence; neither guarantees that every downstream automation detects or
+      reviews the membership change that results.
+    </p>
+    <p>
+      So the stack-based type is the more conservative of the two, and it is the default, which is the right
+      way round &mdash; but the reason is the review boundary, not the audit trail. A deployment is a thing
+      somebody approves. A tag edit is a thing somebody records.
     </p>
 
     <h3>AND, not OR &mdash; so a more specific group is a smaller one</h3>
@@ -357,7 +389,7 @@ catch: "A resource group stores a query, not a list, and the query is answered w
       <tr>
         <td>Choosing between tag-based and stack-based</td>
         <td>Stack-based where the boundary really is a deployment</td>
-        <td>Its membership moves through a recorded change rather than a console edit</td>
+        <td>Its membership follows a deployment, which is a reviewed boundary. A tag change is recorded too, but as a tag change rather than as a membership change</td>
       </tr>
     </table>
     </div>
@@ -415,6 +447,7 @@ catch: "A resource group stores a query, not a list, and the query is answered w
       <li><a href="https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-resourcegroups-group-resourcequery.html" target="_blank" rel="noopener">AWS::ResourceGroups::Group ResourceQuery &#8212; the query that dynamically defines group members, the <code>TAG_FILTERS_1_0</code> and <code>CLOUDFORMATION_STACK_1_0</code> type values with the latter as the default, and the query maximum of 4096</a></li>
       <li><a href="https://docs.aws.amazon.com/general/latest/gr/arg.html" target="_blank" rel="noopener">AWS Resource Groups and Tagging endpoints and quotas &#8212; 100 resource groups per account in each supported Region and its adjustability, 15 <code>GetResources</code> calls per second, 5 calls per second for the tagging write operations and the note that these are not adjustable in the console, 50 user-created tags per resource, and the 128-character key and 256-character value limits</a></li>
       <li><a href="https://docs.aws.amazon.com/ARG/latest/userguide/integrated-services-list.html" target="_blank" rel="noopener">AWS services that work with AWS Resource Groups &#8212; Systems Manager bulk actions on groups, Network Access Analyzer using groups as scope sources and destinations, the Capacity Reservation group behaviour where a later matching reservation moves a running instance into reserved capacity, the CloudWatch single-group view, and AppRegistry creating groups automatically</a></li>
+      <li><a href="https://docs.aws.amazon.com/ARG/latest/userguide/security_logging-monitoring.html" target="_blank" rel="noopener">Logging and monitoring in Resource Groups &#8212; that all Resource Groups actions are logged in CloudTrail, that Resource Groups and Tag Editor are both integrated with it, that Tag Editor console actions are logged under the internal <code>resource-explorer</code> endpoint while Resource Groups actions appear under <code>resource-groups.amazonaws.com</code>, and that console activity is recorded in Event history</a></li>
       <li><a href="https://docs.aws.amazon.com/ARG/latest/userguide/gettingstarted-query.html" target="_blank" rel="noopener">Build queries and groups in AWS Resource Groups &#8212; further reading on query construction; no claims in this post are drawn from it</a></li>
     </ul>
   </div>
