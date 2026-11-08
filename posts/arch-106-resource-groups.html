@@ -1,0 +1,423 @@
+---
+title: "AWS Architecture Series #106 — The group you act on is not the group you made"
+date: '2026-11-07T09:00:00'
+slug: aws-architecture-resource-groups
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-07'
+verified_claims:
+  - claim: "A resource group is a collection of AWS resources that are all in the same AWS Region, and that match the criteria specified in the group's query"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/resource-groups.html
+  - claim: "The query used to dynamically define the members of a group"
+    source: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-resourcegroups-group-resourcequery.html
+  - claim: "The group specifies tag key names and values, and any resources with tags that match are automatically part of the group"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/supported-resources.html
+  - claim: "A resource group based on a query for All supported resource types can add members automatically over time, as new resources are supported by Resource Groups"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/supported-resources.html
+  - claim: "When you run automations or other bulk tasks on an existing resource group based on All supported resource types, be aware that the actions might run on many more resources than were in the group when you first created the group"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/supported-resources.html
+  - claim: "Tag-based queries assign an AND operator to tags, so any resource that matches the specified resource types and all specified tags is returned by the query"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/resource-groups.html
+  - claim: "You can base your query on only one CloudFormation stack"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/resource-groups.html
+  - claim: "Resource Groups feature permissions are at the account level"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/resource-groups.html
+  - claim: "Resource groups can be nested; a resource group can contain existing resource groups in the same region"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/resource-groups.html
+  - claim: "CLOUDFORMATION_STACK_1_0, the default, indicates that the group is a CloudFormation stack-based group"
+    source: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-resourcegroups-group-resourcequery.html
+  - claim: "TAG_FILTERS_1_0 indicates that the group is a tag-based group"
+    source: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-resourcegroups-group-resourcequery.html
+  - claim: "The Query property has a Maximum of 4096"
+    source: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-resourcegroups-group-resourcequery.html
+  - claim: "Resource groups per account | Each supported Region: 100 | Adjustable Yes"
+    source: https://docs.aws.amazon.com/general/latest/gr/arg.html
+  - claim: "Rate of calling the GetResources API operation | Maximum of 15 calls per second"
+    source: https://docs.aws.amazon.com/general/latest/gr/arg.html
+  - claim: "Rate of calling TagResources, UntagResources, GetTagKeys, GetTagValues | Maximum of 5 calls per second"
+    source: https://docs.aws.amazon.com/general/latest/gr/arg.html
+  - claim: "Tags attached per resource | 50 user created tags (AWS created tags don't count against this limit)"
+    source: https://docs.aws.amazon.com/general/latest/gr/arg.html
+  - claim: "Tag key name | Minimum of 1, maximum 128 Unicode characters in UTF-8"
+    source: https://docs.aws.amazon.com/general/latest/gr/arg.html
+  - claim: "Tag values | Minimum of 0, maximum of 256 Unicode characters in UTF-8"
+    source: https://docs.aws.amazon.com/general/latest/gr/arg.html
+  - claim: "A 14-account estate operating in 3 Regions holds 42 independent single-Region groups for one logical grouping"
+    derive: "14 * 3"
+    expect: "42"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/resource-groups.html
+  - claim: "Gather operational insights and take bulk actions on your applications that are based on resource groups"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/integrated-services-list.html
+  - claim: "If you later add a matching capacity reservation to the targeted group, the instance is automatically matched with and moved into the reserved capacity"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/integrated-services-list.html
+  - claim: "You can specify the sources and destinations for your network access requirements by using AWS Resource Groups"
+    source: https://docs.aws.amazon.com/ARG/latest/userguide/integrated-services-list.html
+catch: "A resource group stores a query, not a list, and the query is answered when something reads it. So the set your automation runs against can change with no edit to the group and no edit to the automation - a tag changed, or AWS adding support for a resource type. AWS documents the second one as a warning: the actions might run on many more resources than were in the group when you first created the group."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #106 &middot; Cost &amp; Governance</div>
+  <h1 class="post-title">The group you act on is not the group you made</h1>
+  <p class="post-subtitle">A resource group stores a query, not a list. Membership is worked out when something reads it, so the set your automation runs against can change without anyone editing the group, the automation, or the intent behind either.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Operational Excellence &middot; Security</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <a href="/blog/aws-architecture-tag-policies/">#104</a> governed the shape of tags.
+      <a href="/blog/aws-architecture-resource-explorer-indexes/">#105</a> measured which resources have none. Both
+      treat tags as metadata &mdash; something you report on. Resource Groups is where tags stop being
+      metadata and start being a control surface, because here a tag decides what an automation touches.
+    </p>
+    <p>
+      The definition is one sentence and every clause in it matters:
+      <em>&ldquo;A resource group is a collection of AWS resources that are all in the same AWS Region, and
+      that match the criteria specified in the group&rsquo;s query.&rdquo;</em>
+    </p>
+    <p>
+      Not the resources you added. The resources that <em>match</em>. CloudFormation's reference for the
+      same object is blunter: <em>&ldquo;The query used to dynamically define the members of a
+      group.&rdquo;</em> A group is a saved question, and the answer is computed at the moment something
+      asks.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>Editing a tag edits every group that queries it, and every automation behind them</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;The group specifies tag key names and values, and any resources with tags that match are
+          <strong>automatically</strong> part of the group.&rdquo;</em>
+        </p>
+        <p>
+          Read that in reverse, which is the direction that hurts. A resource whose tag stops matching stops
+          being part of the group, automatically. If that group is what Systems Manager patches &mdash;
+          <em>&ldquo;Gather operational insights and take bulk actions on your applications that are based on
+          resource groups&rdquo;</em> &mdash; then removing a tag removes a host from the target set. The
+          group is smaller, and nothing about that is an error condition &mdash; the next run simply has
+          fewer targets to act on.
+        </p>
+        <p>
+          This inverts the usual review model. The automation is in version control and goes through change
+          management. The tag is a text field in a console, editable by anyone holding tagging permissions on
+          the resource, and it is the thing that decides scope. The blast radius of a maintenance window is
+          governed by whichever of the two controls is weaker, and it is not the one in Git.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Where a group drives an action rather than a dashboard, treat its tag keys as part of the automation's interface and protect them accordingly &mdash; a tag policy from <a href="/blog/aws-architecture-tag-policies/">#104</a> for shape, and an IAM or service control policy condition on <code>aws:TagKeys</code> for who may change them. A tag that only feeds a cost report needs none of this; a tag that selects patch targets needs all of it.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>One group type grows when AWS ships, not when you deploy</strong></div>
+      <div class="challenge-body">
+        <p>
+          A group can be built on a query for all supported resource types, and AWS attaches a warning to
+          that choice which is worth quoting in full:
+        </p>
+        <p>
+          <em>&ldquo;A resource group based on a query for <strong>All supported resource types</strong> can
+          add members automatically over time, as new resources are supported by Resource Groups. When you
+          run automations or other bulk tasks on an existing resource group based on <strong>All supported
+          resource types</strong>, be aware that the actions <strong>might run on many more resources than
+          were in the group when you first created the group</strong>.&rdquo;</em>
+        </p>
+        <p>
+          The scope of your automation is now a function of AWS's release schedule. Nobody in your
+          organisation changes anything; Resource Groups adds support for a resource type; the next run of a
+          bulk task reaches a category of resource that did not exist in the group when the task was written
+          and reviewed.
+        </p>
+        <p>
+          This is a reasonable default for a console view, where seeing more is the point. It is a poor
+          default for anything that writes, and the two are the same object.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Enumerate resource types explicitly in any group that an automation acts on, in the documented <code>AWS::{service}::{resource}</code> form. Keep the all-supported-types query for human browsing and inventory, where new members arriving unannounced is a feature. The distinction is not between important and unimportant groups &mdash; it is between groups that are read and groups that are executed.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>There is no organisation-wide group, and nothing says so at the point of use</strong></div>
+      <div class="challenge-body">
+        <p>
+          Two clauses bound a group tightly. Region, from the definition:
+          <em>&ldquo;all in the same AWS Region&rdquo;</em>. Account, from the permissions model:
+          <em>&ldquo;Resource Groups feature permissions are at the account level.&rdquo;</em> Even nesting
+          stays inside the boundary &mdash; <em>&ldquo;Resource groups can be nested; a resource group can
+          contain existing resource groups in the same region.&rdquo;</em>
+        </p>
+        <p>
+          So an estate of 14 accounts operating in 3 Regions does not have a production group. It has 42 of
+          them: 42 independent queries, each created by a different person at a different time, all called
+          something like <code>prod</code>, and free to diverge in resource types, tag filters and membership
+          without any mechanism that compares them.
+        </p>
+        <p>
+          This is the exact inverse of <a href="/blog/aws-architecture-resource-explorer-indexes/">#105</a>. Resource
+          Explorer aggregates across Regions and accounts, and the risk there is that its answer is quietly
+          too small. Resource Groups cannot aggregate at all, and the risk is that you believe one name
+          refers to one thing.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Create groups from a template rather than by hand &mdash; the CloudFormation resource type exists for this, and a group defined in a stack is a group whose query is reviewable. Then audit the query rather than the name: two groups called <code>prod</code> in two Regions are the same group only if their resource type lists and tag filters match, and nothing in the console tells you whether they do.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-106-resource-groups.svg" alt="Diagram: An AWS resource group stores a query rather than a list of members, and AWS describes it as the query used to dynamically define the members of a group. A group is a collection of resources all in the same AWS Region that match the criteria specified in the group's query, and Resource Groups permissions are at the account level, so a 14-account estate in 3 Regions holds 42 independent groups for one logical grouping. There are two query types: TAG_FILTERS_1_0 for tag-based groups, where any resources with tags that match are automatically part of the group, and CLOUDFORMATION_STACK_1_0, the default, which bases membership on a single CloudFormation stack. Membership can change through three routes that involve no edit to the group: someone adding a matching tag, someone removing one, and AWS adding support for a new resource type, where AWS warns that actions might run on many more resources than were in the group when you first created the group. Tag-based queries assign an AND operator to tags, so adding a tag filter narrows the group rather than widening it. Services act on whatever the query currently returns, including Systems Manager bulk actions, VPC Network Access Analyzer scope sources and destinations, and EC2 Capacity Reservation groups, where an instance is automatically matched with and moved into reserved capacity when a matching reservation is later added. Quotas are 100 resource groups per account in each supported Region and adjustable, 15 GetResources calls per second, 5 calls per second for the tagging write operations, and 50 user created tags per resource.">
+
+    <h3>Two query types, two different kinds of drift</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Tag-based</th><th>CloudFormation stack-based</th></tr>
+      <tr>
+        <td>Type value</td>
+        <td><code>TAG_FILTERS_1_0</code></td>
+        <td><code>CLOUDFORMATION_STACK_1_0</code>, <em>&ldquo;the default&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Membership follows</td>
+        <td>Tags, which anyone holding tagging permissions on a resource can change</td>
+        <td>A stack, which changes through a deployment</td>
+      </tr>
+      <tr>
+        <td>Scope limit</td>
+        <td>The resource types you list, plus tag filters</td>
+        <td><em>&ldquo;You can base your query on only one CloudFormation stack&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Drift arrives via</td>
+        <td>A console edit nobody records as a change</td>
+        <td>A deployment, which is recorded</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The stack-based type is the more conservative of the two and it is the default, which is the right way
+      round. Its membership still moves, but it moves through a mechanism that leaves evidence. A tag-based
+      group's membership moves through an edit that looks like metadata maintenance.
+    </p>
+
+    <h3>AND, not OR &mdash; so a more specific group is a smaller one</h3>
+    <p>
+      <em>&ldquo;Tag-based queries assign an <code>AND</code> operator to tags, so any resource that matches
+      the specified resource types and <strong>all</strong> specified tags is returned by the query.&rdquo;</em>
+    </p>
+    <p>
+      Each tag filter you add narrows the result. For a dashboard that is obviously fine. For a patch group
+      it means the instinct to be precise &mdash; adding <code>Environment=prod</code> and
+      <code>Team=payments</code> and <code>Compliance=pci</code> &mdash; produces a group that excludes every
+      resource missing any one of the three. The resource carrying two of the three tags is not an error and
+      appears nowhere. It is simply not patched, and the group that was made more careful became less
+      complete.
+    </p>
+
+    <h3>What acts on a group, and what that costs when membership moves</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Service</th><th>What it does with the group</th><th>Consequence of a membership change</th></tr>
+      <tr>
+        <td>Systems Manager</td>
+        <td><em>&ldquo;take bulk actions on your applications that are based on resource groups&rdquo;</em></td>
+        <td>A host leaves the group and stops being acted on, with nothing in the group itself recording that it did</td>
+      </tr>
+      <tr>
+        <td>VPC Network Access Analyzer</td>
+        <td><em>&ldquo;You can specify the sources and destinations for your network access requirements by using AWS Resource Groups&rdquo;</em></td>
+        <td>A tag edit changes what a security analysis considers in scope</td>
+      </tr>
+      <tr>
+        <td>EC2 Capacity Reservations</td>
+        <td>Instances launch into a group holding reservations</td>
+        <td><em>&ldquo;If you later add a matching capacity reservation to the targeted group, the instance is automatically matched with and moved into the reserved capacity&rdquo;</em> &mdash; a billing change triggered by group membership</td>
+      </tr>
+      <tr>
+        <td>CloudWatch</td>
+        <td><em>&ldquo;Focus your view to display metrics and alarms from a single resource group&rdquo;</em></td>
+        <td>A dashboard silently narrows; the graph still looks healthy</td>
+      </tr>
+      <tr>
+        <td>Service Catalog AppRegistry</td>
+        <td><em>&ldquo;that service automatically creates an resource group for that application&rdquo;</em></td>
+        <td>Groups exist that nobody created by hand and nobody is reviewing</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The Network Access Analyzer row is the one worth sitting with. It is a security control whose scope is a
+      query over tags, which means <em>what did we analyse</em> has a different answer depending on when you
+      asked it. The Capacity Reservations row is the one that moves money.
+    </p>
+
+    <h3>The quotas, and the contrast with #105</h3>
+    <p>
+      <em>&ldquo;Resource groups per account | Each supported Region: 100&rdquo;</em>, and this one is
+      adjustable &mdash; which matters for the 42-group estate above, because a per-account, per-Region
+      ceiling of 100 is generous for a human and worth checking before a templated rollout starts creating
+      groups programmatically.
+    </p>
+    <p>
+      The tagging API is the tighter constraint. <em>&ldquo;Rate of calling the <code>GetResources</code> API
+      operation | Maximum of 15 calls per second&rdquo;</em>, and for the write path &mdash;
+      <code>TagResources</code>, <code>UntagResources</code>, <code>GetTagKeys</code>,
+      <code>GetTagValues</code> &mdash; <em>&ldquo;Maximum of 5 calls per second&rdquo;</em>, with the note
+      that these <em>&ldquo;limits are currently not adjustable using the Service Quotas console&rdquo;</em>.
+    </p>
+    <p>
+      So a remediation job that tags the untagged resources found by #105's <code>tag:none</code> query is
+      paced at 5 calls per second on the write side. That is the practical bridge between the two posts:
+      finding the gap runs against one quota, closing it runs against a tighter one.
+    </p>
+    <p>
+      The room you have per resource is <em>&ldquo;50 user created tags (AWS created tags don&rsquo;t count
+      against this limit)&rdquo;</em>, with keys to <em>&ldquo;maximum 128 Unicode characters in
+      UTF-8&rdquo;</em> and values to <em>&ldquo;maximum of 256 Unicode characters in UTF-8&rdquo;</em>. The
+      query itself carries a <em>&ldquo;Maximum&rdquo;</em> of <code>4096</code>, which bounds how many
+      resource types you can enumerate before an explicit list stops being practical &mdash; the point at
+      which people reach for all supported types, and inherit the warning in challenge 2.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>A stored list would be wrong faster than a stored query</h3>
+    <p>
+      The alternative design is static membership: you add resources, they stay. In an estate where an Auto
+      Scaling group replaces instances through the day, a static list is stale within the hour and silently
+      excludes every resource created after someone last maintained it. Dynamic membership is what makes a
+      group useful at all, and the failure mode it produces &mdash; too many members, or too few &mdash; is
+      the price of the thing working.
+    </p>
+
+    <h3>Single-Region scope matches the resources, not the org chart</h3>
+    <p>
+      Most of what a group contains is regional, and most of what acts on a group is regional. A group that
+      spanned Regions would have to resolve what a bulk action means when half its members sit in a Region
+      the caller is not operating in. Keeping the boundary where AWS keeps every other regional boundary is
+      consistent, even though it is the clause that produces the 42-group problem.
+    </p>
+
+    <h3>AWS wrote the warning in the right place</h3>
+    <p>
+      The all-supported-types caution is not in a footnote or a blog post &mdash; it is on the page listing
+      which resource types work, which is the page you are on when you make that choice. Documenting a risk
+      at the moment of the decision is the correct placement, and it is more than several of the controls in
+      this fortnight of posts managed.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Group that drives an automation</td>
+        <td>Enumerate resource types explicitly</td>
+        <td>All supported types grows with AWS releases &mdash; <em>&ldquo;might run on many more resources than were in the group when you first created the group&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Group that drives a dashboard</td>
+        <td>All supported types is fine, and better</td>
+        <td>New members arriving unannounced is what you want from a view</td>
+      </tr>
+      <tr>
+        <td>Protecting the tags a group queries</td>
+        <td>Condition on <code>aws:TagKeys</code> for the keys that select action targets</td>
+        <td>Membership is <em>&ldquo;automatically&rdquo;</em> whatever matches, so the tag is the control surface</td>
+      </tr>
+      <tr>
+        <td>Precision in a tag filter</td>
+        <td>Add filters deliberately, not defensively</td>
+        <td>Tags are combined with <code>AND</code>, so each filter shrinks the group</td>
+      </tr>
+      <tr>
+        <td>One logical grouping across the estate</td>
+        <td>Define groups in CloudFormation and deploy the same template everywhere</td>
+        <td>Groups are per-account and per-Region, so the only thing making them equivalent is a shared definition</td>
+      </tr>
+      <tr>
+        <td>Bulk tag remediation</td>
+        <td>Pace writes under 5 calls per second</td>
+        <td>The tagging write quota is not adjustable in the Service Quotas console</td>
+      </tr>
+      <tr>
+        <td>Choosing between tag-based and stack-based</td>
+        <td>Stack-based where the boundary really is a deployment</td>
+        <td>Its membership moves through a recorded change rather than a console edit</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List your groups and sort them into read and execute.</strong> For each group, find what
+      consumes it. A group feeding only a CloudWatch view carries almost no risk from drifting membership. A
+      group named in a maintenance window, an automation document, or a Network Access Scope is a control,
+      and should be treated like one.
+    </p>
+    <p>
+      <strong>Then check which of those execute groups use an all-supported-types query.</strong> That
+      combination &mdash; a query that grows on AWS's schedule, feeding something that writes &mdash; is the
+      specific pairing AWS warns about, and it is the one worth fixing first.
+    </p>
+    <p>
+      <strong>Finally, compare two groups with the same name in two accounts, query to query.</strong> Not
+      the member counts, which will legitimately differ. The resource type lists and the tag filters. If
+      those differ, the name is doing work the definition does not support, and every report that aggregates
+      the two is adding up answers to different questions.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      The thread through the last several posts has been controls that are narrower than their names. A tag
+      policy that cannot require a tag. A block that does not revoke. An index that answers completely and
+      partially in the same format. This one is different in kind: the group is not narrower than its name,
+      it is less fixed than its name. A group sounds like a set. It is a question.
+    </p>
+    <p>
+      That distinction is harmless right up to the moment something acts on it. A view computed fresh is
+      better than a view computed once. An action computed fresh is an action whose scope was decided by
+      whoever last edited a tag &mdash; or by an AWS release note.
+    </p>
+    <p>
+      The practical division is one line long and it resolves nearly all of this: groups you read can be
+      broad and dynamic, groups you execute should be explicit and reviewed. The two look identical in the
+      console, which is why the division has to be yours.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Cost &amp; Governance &mdash; AWS Service Catalog AppRegistry: the resource groups it creates on your behalf, what an application boundary means when the service defines it rather than you, and why an inventory you did not author is still an inventory you own.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/ARG/latest/userguide/resource-groups.html" target="_blank" rel="noopener">What are resource groups? &#8212; the definition and its same-Region clause, the two query types, the single-stack limit on CloudFormation stack-based queries, account-level permissions, nesting within a Region, and the <code>AND</code> operator applied to tag-based queries</a></li>
+      <li><a href="https://docs.aws.amazon.com/ARG/latest/userguide/supported-resources.html" target="_blank" rel="noopener">Resource types you can use with AWS Resource Groups and Tag Editor &#8212; that resources with matching tags are automatically part of the group, and the warning that an all-supported-types group adds members over time and may run actions on many more resources than it originally held</a></li>
+      <li><a href="https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-resourcegroups-group-resourcequery.html" target="_blank" rel="noopener">AWS::ResourceGroups::Group ResourceQuery &#8212; the query that dynamically defines group members, the <code>TAG_FILTERS_1_0</code> and <code>CLOUDFORMATION_STACK_1_0</code> type values with the latter as the default, and the query maximum of 4096</a></li>
+      <li><a href="https://docs.aws.amazon.com/general/latest/gr/arg.html" target="_blank" rel="noopener">AWS Resource Groups and Tagging endpoints and quotas &#8212; 100 resource groups per account in each supported Region and its adjustability, 15 <code>GetResources</code> calls per second, 5 calls per second for the tagging write operations and the note that these are not adjustable in the console, 50 user-created tags per resource, and the 128-character key and 256-character value limits</a></li>
+      <li><a href="https://docs.aws.amazon.com/ARG/latest/userguide/integrated-services-list.html" target="_blank" rel="noopener">AWS services that work with AWS Resource Groups &#8212; Systems Manager bulk actions on groups, Network Access Analyzer using groups as scope sources and destinations, the Capacity Reservation group behaviour where a later matching reservation moves a running instance into reserved capacity, the CloudWatch single-group view, and AppRegistry creating groups automatically</a></li>
+      <li><a href="https://docs.aws.amazon.com/ARG/latest/userguide/gettingstarted-query.html" target="_blank" rel="noopener">Build queries and groups in AWS Resource Groups &#8212; further reading on query construction; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

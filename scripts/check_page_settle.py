@@ -54,6 +54,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGES = ["/", "/blog/", "/intelligence/", "/intelligence/whats-new/",
          "/intelligence/status/", "/now.html", "/resume.html",
          "/intelligence/events/", "/intelligence/clouds/",
+         "/intelligence/services/",
          "/reinvent-2026/plan/"]
 WIDTHS = [390, 1024, 1440]
 # What the budget actually contains today, measured rather than guessed:

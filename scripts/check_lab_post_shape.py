@@ -65,9 +65,14 @@ SERIES_LABEL = "GCP Weekly Lab"
 # docs/MASTER_STANDARD.md; a series converges by changing its entry here when
 # it next touches those posts.
 SERIES = {
+    # Converged on 2026-11-06. GCP used build/security/takeaways across all
+    # twelve posts; every one was migrated to the canonical ids in the same
+    # change that made this entry true. GCP and AWS are now identical, which
+    # is what the comment above asks a series to do when it next touches its
+    # posts. Azure, below, is still the odd one out.
     "GCP Weekly Lab": ["overview", "services", "architecture", "prerequisites",
-                       "build", "validation", "security", "troubleshooting",
-                       "takeaways"],
+                       "implementation", "validation", "security-cost",
+                       "troubleshooting", "cleanup"],
     "AWS Weekly Lab": ["overview", "services", "architecture", "prerequisites",
                        "implementation", "validation", "security-cost",
                        "troubleshooting", "cleanup"],
@@ -79,8 +84,13 @@ SERIES = {
     # Note "prereqs" and "seccost": Azure diverges from both siblings, the
     # same drift the comment above describes. Converging the three is a
     # separate job; recording the truth here is not.
-    "Azure Weekly Lab": ["overview", "services", "architecture", "prereqs",
-                         "build", "validation", "seccost",
+    # Converged on 2026-11-06, the same day as GCP. All eleven Azure posts
+    # were migrated off prereqs/build/seccost in the change that made this
+    # entry true. All three series now declare the SAME nine ids, so the
+    # alias machinery above is an identity mapping and the drift the comment
+    # at the top of this block describes is closed.
+    "Azure Weekly Lab": ["overview", "services", "architecture", "prerequisites",
+                         "implementation", "validation", "security-cost",
                          "troubleshooting", "cleanup"],
 }
 

@@ -258,6 +258,11 @@ CHECKS = [
     # A stale "what's new" page is worse than no page -- it makes a claim about
     # the present out of the past, and a reader cannot tell.
     ("check_news.py",           True,  False, False, False),
+    # The job-to-service mapping behind /intelligence/services/. Editorial,
+    # so it rots when a cloud renames something -- and the first alias is
+    # also the cell's label, so a dead one prints a service that does not
+    # exist beside a real number. It found five on its first run.
+    ("check_services_jobs.py",  True,  False, False, False),
     ("check_deploy_triggers.py", True,  False, False, False),
     # The half of a post the other checks cannot see. verify_claims.py checks
     # quotations and validate_arch_post.py checks arithmetic that carries a

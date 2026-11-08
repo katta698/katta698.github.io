@@ -92,6 +92,117 @@ is what the backlog is for. See the never-repeat rules in CLAUDE.md.
 
 ---
 
+## 6 November 2026 — covered by post #71
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Individual strings in SUPER to 16,000,000 bytes, from 65,535. The finding is that the parameter turns on three things and the docs name a fourth it explicitly does not: CREATE TABLE with VARCHAR(MAX) still creates VARCHAR(65535), so SUPER is the only durable home for a large string. The opt-in also needs a cluster reboot and cannot be reset once set | Amazon Redshift | **#71** | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-redshift-expands-super-to-16-million-bytes/) |
+| An organization-wide SBOM inventory for compute resources. The first AWS-native answer to whether you are affected by a given CVE that does not start with a spreadsheet, and worth a post on what it actually covers, since its value is entirely a coverage question | AWS Security Hub | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/security-hub-sbom-inventory/) |
+| Capacity Blocks for ML upfront fees now amortised across each reservation. Changes the shape of a bill rather than its total, which silently invalidates a dashboard built on last month's line items | Cost Explorer / CUR 2.0 | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-ec2-capacity-blocks-ml/) |
+| Catalog-vended credentials in Apache Iceberg REST catalog federation | AWS Glue Data Catalog | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/glue-catalog-vended-credentials-iceberg/) |
+| Capacity Blocks and interruptible Capacity Reservations in Capacity Reservation Resource Groups, GovCloud (US). Pairs with arch #106 on a resource group as an action target | Amazon EC2 | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/capacity-reservation-resource-groups-support-in-aws-govcloud-regions) |
+| Kimi K3.1 Pro (Highspeed) now available on Amazon Bedrock | Amazon Bedrock | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/moonshot-ai-kimi-k3-1-pro-on-amazon-bedrock) |
+| Agent Registry is now generally available in AWS GovCloud (US-West) Region | Bedrock AgentCore | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/aws-agent-registry-govcloud-us-west/) |
+| Amazon MSK Replicator is now available in AWS GovCloud (US-East, US-West) Regions | Amazon MSK | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-msk-replicator-additional-aws-regions) |
+| Amazon Simple Email Service is now available in six new AWS Regions | Amazon SES | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-simple-email-service-new-aws-regions/) |
+| AWS Elemental MediaConvert adds a native integration with AWS Elemental Inference Smart Subtitles | AWS Elemental MediaConvert | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/mediaconvert-elemental-smart-subtitles/) |
+
+10 announcements.
+
+**Covered in weekly #14.** The 2–6 November window is now closed and written up as AWS Weekly
+Intelligence #14, with all 60 What's New announcements inventoried and every link verified 200.
+Dailies #67–#71 covered one announcement from each of the five working days, so nothing needed
+reconciling across the window edge. The week's spine was visibility: six separate launches, in six
+services, each adding a way to enumerate something you already owned.
+
+---
+
+## 5 November 2026 — covered by post #70
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Bulk writes from S3 into an existing table on a path that consumes no table capacity. The finding is that the capacity claim is precisely scoped and four other things still feel the write: streams at the operation's write rate, absent metrics, bypassed DAX, and one CloudTrail event for the whole operation | Amazon DynamoDB | **#70** | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-dynamodb-now-supports-bulk-put-items/) |
+| Automatic revocation checking via CRL distribution points. Closes a real gap, because revocation previously depended on somebody remembering to upload the CRL and a revoked certificate stayed usable until they did. The week's one item that shuts a live hole rather than improving visibility into one | IAM Roles Anywhere | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/iam-roles-anywhere-cdp/) |
+| A CloudWatch metric for which instances still allow IMDSv1. Tiny launch, outsized value: it turns a belief that the IMDSv2 migration finished into a number, where the honest answer previously needed a Config rule somebody set up or a script walking every account | Amazon EC2 | open | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/ec2-imdsv1enabled-cloudwatch-metric/) |
+| 192,000 metadata IOPS on Intelligent-Tiering, 16x the previous 12,000. Metadata IOPS is the limit that bites on training sets of millions of small files, and this lands on the tier that exists to be cheap | Amazon FSx for Lustre | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-fsx-for-lustre-intelligent-tiering-16x-higher-metadata-iops) |
+| 13 new parameter data types that validate values on create and update. Validation at write time is the right place for it: a malformed parameter found at deploy time is a deploy failure, and found at run time it is an incident | Systems Manager | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/aws-ssm-parameter-store-allows-organization-validation-with-new-data-types/) |
+| 99.99% monthly uptime SLA for the Plus feature plan, up from 99.9%. An order of magnitude less permitted downtime, tied to a paid tier | Amazon Cognito | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-cognito-sla-update/) |
+| Agent traces including OpenTelemetry. The item with real operational weight this day, because agent debugging has had no standard telemetry story | Amazon OpenSearch Service | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-opensearch-service-support-traces) |
+| Kerberos authentication against self-managed Active Directory, joining DB instances directly | Amazon RDS for Oracle | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/rds-oracle-kerberos-self-managed-ad/) |
+| Higher default quotas for running executions and API request rates on durable functions | AWS Lambda | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/lambda-durable-functions-default-quotas/) |
+| IAM Identity Center multi-Region replication, so Studio domains can sit in a different Region from the IdC instance's primary. Removes a genuine architectural constraint | Amazon SageMaker AI | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-sagemaker-ai-studio-iam/) |
+| Web Answer reaches general availability | Bedrock AgentCore | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/web-answer-amazon-bedrock/) |
+| AWS Interconnect - last mile announces new metro in Northern Virginia, USA | AWS Interconnect | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/interconnect-last-mile-northern-virginia/) |
+| AWS Network Load Balancer is now available in the AWS Phoenix Local Zone | Network Load Balancer | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-nlb-available-phx-local-zone/) |
+| AWS Security Hub Network Scanning now available in AWS GovCloud (US) | AWS Security Hub | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/security-hub-network-scanning-govcloud/) |
+| AWS CodeConnections is now available in the AWS GovCloud (US-West) Region | AWS CodeConnections | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/aws-codeconnections-govcloud-west/) |
+| AWS WAF AI traffic monetization now supports fiat payouts through Stripe | AWS WAF | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/aws-waf-stripe-fiat-payouts/) |
+| Renamed to the AWS assistant in the console and Console Mobile Apps. Housekeeping | Amazon Q Developer | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/q-developer-renamed-aws-assistant/) |
+
+17 announcements.
+
+---
+
+## 4 November 2026 — covered by post #69
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| Real-time supportability checks and capacity fulfilment metrics. The finding is that a supportability score is an assessment and not a reservation, so a High score guarantees nothing about capacity being there when you launch | Amazon EC2 | **#69** | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/ec2-capacity-manager-supportability-and-fulfillment/) |
+| Related resources now shown for all resource types in EC2, VPC and Global View. Previously partial, which meant an absent relationship told you nothing: the same completeness problem arch #105 covered for Resource Explorer | Amazon EC2 / VPC | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/ec2-vpc-related-resources-all-types/) |
+| Managed migration of Apache Hive tables to Apache Iceberg. The Iceberg consolidation continues at roughly one announcement a week | Amazon S3 Tables | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-s3-tables-managed-migration-hive-to-iceberg/) |
+| Cost allocation tag support | Amazon MWAA | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-mwaa-cost-allocation-tags/) |
+| json-file log driver on Managed Instances, plus log driver volumes for Managed Daemons | Amazon ECS | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-ecs-managed-instances-json-file-log-driver/) |
+| Option groups copied alongside cross-Region snapshot copies. The quiet improvement, because copying a snapshot without its option group has been a long-standing way to discover at restore time that your options are gone | Amazon RDS for Oracle | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-rds-oracle-cross-region-snapshot-copy-option-group/) |
+| Last mile in preview with Equinix. The more interesting of the week's two Interconnect items, because a partner integration changes who can sell it | AWS Interconnect | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/interconnect-last-mile-preview-equinix/) |
+| OIDC authentication for Google Cloud Storage and Azure Blob Storage locations in Enhanced mode | AWS DataSync | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/datasync-enhanced-oidc-google-azure/) |
+| Amazon DocumentDB (with MongoDB compatibility) is now available in the Asia Pacific (Taipei) and Asia Pacific (New Zealand) Regions | Amazon DocumentDB | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-documentdb-mongodb-compatibility-asia-pacific-taipei-new-zealand-regions/) |
+| Amazon Connect Customer now shows associated cases in contact records | Amazon Connect | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-connect-cases-contact-records/) |
+| RHEL 10, Rocky 10 and Ubuntu 26.04 Bundles for WorkSpaces | Amazon WorkSpaces | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/rhel-10-rocky-10-ubuntu-26-04-workspaces/) |
+
+11 announcements.
+
+---
+
+## 3 November 2026 — covered by post #68
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| 10 additional resource types including ElastiCache and QuickSight. The finding is that recording a new type is a pricing decision as much as a coverage one, because periodic configuration items cost four times continuous ones | AWS Config | **#68** | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/aws-config-new-resource-types) |
+| Bearer token authentication with API keys for sending OpenTelemetry traces to the X-Ray OTLP endpoint | Amazon CloudWatch | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-cloudwatch-api-keys-opentelemetry/) |
+| Latest Cumulative Update and GDR updates | Amazon RDS for SQL Server | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-rds-supports-latest-cumulative-update-gdr-microsoft-sql-server/) |
+| Argo CD Notifications in the EKS Argo CD Capability | Amazon EKS | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-eks-argo-cd-notifications) |
+| Amazon Connect Customer lets agents pause and resume emails | Amazon Connect | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/connect-pause-resume-email/) |
+| Amazon WorkSpaces for AI agents now supports Linux and Windows 11 cloud desktops | Amazon WorkSpaces | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/workspaces-ai-agents-linux-windows-11) |
+| Amazon Connect Customer prefills the email address for new threads started from cases | Amazon Connect | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-connect-cases-email-addresses/) |
+| AWS Transform for mainframe improves the reimagine modernization workflow | AWS Transform | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/aws-transform-mainframe-reimagine/) |
+| Amazon RDS for Oracle now supports M8i and R8i instances in additional AWS Regions | Amazon RDS for Oracle | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/rds-oracle-m8i-r8i-instances-new-regions/) |
+
+9 announcements.
+
+---
+
+## 2 November 2026 — covered by post #67
+
+| Item | Service | Status | Importance | Reference |
+| --- | --- | --- | --- | --- |
+| AMI vulnerability scanning without launching an instance. The finding is that Allowed AMIs governs which AMIs you may launch and not which you may build, so the control and the scan cover different populations | Amazon Inspector | **#67** | **High** | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/ec2-amis-scanned-through-inspector/) |
+| Per-snapshot billing for RDS snapshots. A billing-model change on a resource most estates hold hundreds of, so it is worth half an hour before the next invoice rather than after it | Amazon RDS | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-rds-per-snapshot-billing/) |
+| Queues for Apache Kafka in self-managed Kafka event source mappings, extending the queueing model beyond MSK to Confluent Cloud and self-run clusters | AWS Lambda | open | Med-High | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/aws-lambda-queue-kafka-esm/) |
+| MCP tools callable from customer experience flows through a new External Tool block. A contact flow with an extension point it did not have | Amazon Connect | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/connect-flows-mcp-tools/) |
+| 28 CloudFront quotas now viewable, monitorable and increasable through Service Quotas | Amazon CloudFront | open | Medium | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/cloudfront-self-service-quotas/) |
+| Updated text detection model, with better accuracy and multilingual table extraction | Amazon Textract | open | Low-Med | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/textract-text-detection-model/) |
+| Haiku 5.5 now available on Kiro in AWS GovCloud (US) | Kiro | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/kiro-haiku-5-5-aws-govcloud-us/) |
+| Amazon Quick on desktop now uses your organization's existing Amazon Quick sign-in | Amazon Quick | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-quick-desktop-organization-sign-in/) |
+| Amazon Aurora MySQL 8.4.10 is now generally available | Amazon Aurora MySQL | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-aurora-mysql-8410-available/) |
+| Amazon Aurora MySQL 3.14 (compatible with MySQL 8.0.46) is generally available | Amazon Aurora MySQL | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-aurora-mysql-314-available/) |
+| Amazon Connect Customer now supports Cases and External Tool events in the Wait block | Amazon Connect | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/10/connect-wait-block-cases-tool-events/) |
+| Amazon Textract now available in Asia Pacific (Tokyo) and Europe (Zurich) | Amazon Textract | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2026/11/textract-tokyo-zurich/) |
+| Announcing AWS for Fluent Bit 3.0.0 based on Fluent Bit 4.1.1 | AWS for Fluent Bit | skipped | Low | [link](https://aws.amazon.com/about-aws/whats-new/2025/10/aws-fluent-bit-3-0-0-based-4-1-1) |
+
+13 announcements.
+
+---
+
 ## 30 October 2026 — covered by post #66
 
 | Item | Service | Status | Importance | Reference |
