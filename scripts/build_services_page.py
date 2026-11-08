@@ -241,6 +241,60 @@ def spark(series, colour, w=70, h=18):
             'stroke-linejoin="round"/></svg>' % (w, h, pts, colour))
 
 
+def sources_html(items):
+    """One row per domain the announcements actually came from.
+
+    Derived from the stored rows, never a hand-kept list. A hand-kept list
+    of feeds goes stale the first time one is added or retired, silently,
+    and always in the direction of overstating coverage. The host here is
+    the one the items themselves link to, the count is what is held, and
+    the date is the newest thing seen -- so a feed that dies shows as a
+    stale date instead of disappearing.
+
+    This page had no sourcing at all when it shipped. It asks a reader to
+    accept thirteen rows of percentages about three companies; "measured
+    from the vendors' own feeds" is the kind of sentence that sounds like
+    sourcing without being it.
+    """
+    dom = {}
+    for i in items:
+        u = i.get("u") or ""
+        if not u.startswith("http"):
+            continue
+        host = u.split("/")[2]
+        d = dom.setdefault(host, {"clouds": set(), "n": 0, "last": ""})
+        d["clouds"].add({"aws": "AWS", "azure": "Azure",
+                         "gcp": "Google Cloud"}.get(i.get("c"), i.get("c")))
+        d["n"] += 1
+        if (i.get("d") or "") > d["last"]:
+            d["last"] = i.get("d") or ""
+    rows = []
+    for host, d in sorted(dom.items(), key=lambda kv: -kv[1]["n"]):
+        if d["n"] < 5:
+            continue
+        rows.append("<tr><th>%s</th><td>%s</td><td>%s</td><td>%s</td></tr>"
+                    % (esc(host), esc(", ".join(sorted(d["clouds"]))),
+                       "{:,}".format(d["n"]), esc(d["last"])))
+    return (
+        '<h2 class="sv-h2" id="sources">Where this comes from</h2>'
+        '<p class="sv-note">Every announcement counted here was read from a '
+        'feed published by the cloud itself &mdash; its release notes, its '
+        'product blogs, its security bulletins. Nothing is an analyst '
+        'estimate and nothing is scraped from a third party, with one '
+        'exception noted below. The table is built from the stored items, '
+        'so a feed that stops publishing shows up as a stale date rather '
+        'than quietly vanishing from the list.</p>'
+        '<div class="sv-scroll"><table class="sv-src"><thead><tr>'
+        '<th>Domain</th><th>Cloud</th><th>Items held</th><th>Newest</th>'
+        '</tr></thead><tbody>%s</tbody></table></div>'
+        '<p class="sv-note"><b>The exception:</b> the Azure side also reads '
+        'release feeds from GitHub &mdash; the Azure organisation&rsquo;s own '
+        'repositories, plus HashiCorp&rsquo;s Terraform AzureRM provider, '
+        'which is the only source on this page not published by the cloud '
+        'vendor. It is authoritative for its own releases and nothing '
+        'else.</p>' % "".join(rows))
+
+
 def grid_html(rows):
     b = ['<div class="sv-scroll"><table class="sv-grid">',
          "<thead><tr><th>The job</th>"]
@@ -301,6 +355,14 @@ STYLE = """
             color: var(--muted, #6C7671); }
   .sv-num b { font-weight: 500; color: var(--fg, #E8E4DC); }
   .sv-spk { width: 70px; height: 18px; margin-left: auto; flex: none; }
+  .sv-h2 { font-size: 1.05rem; font-weight: 500; margin: 2rem 0 .4rem; }
+  .sv-src { width: 100%; border-collapse: collapse; min-width: 520px;
+            font-size: .82rem; }
+  .sv-src th, .sv-src td { text-align: left; font-weight: 400;
+            padding: .45rem .6rem;
+            border-bottom: 1px solid var(--bd, #2F3131); }
+  .sv-src thead th { font-size: .68rem; letter-spacing: .07em;
+            text-transform: uppercase; color: var(--muted, #6C7671); }
   .sv-note { margin: 1.4rem 0 0; padding: .9rem 1rem;
              border: 1px solid var(--bd, #2F3131); border-radius: 8px;
              background: rgba(128,128,128,.05); font-size: .82rem;
@@ -395,6 +457,7 @@ def build():
              "enough to plot. A longer window would draw growth that belongs "
              "to this page, not to the services.</p>" % esc(months[0]))
     b.append("</div>")
+    b.append(sources_html(items))
     b.append("</main>")
 
     theme_first = ("<script>try{if(localStorage.getItem('theme')==='light')"

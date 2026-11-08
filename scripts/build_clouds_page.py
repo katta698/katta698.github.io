@@ -114,6 +114,69 @@ def load(path):
     return json.load(io.open(path, encoding="utf-8"))
 
 
+# What each figure is read from, named precisely enough to be checked.
+# A reader should be able to open the same filing and find the same number
+# without taking anything here on trust -- which is the only kind of
+# sourcing worth printing.
+READS = {
+    "AWS": ("amzn:AmazonWebServicesSegmentMember",
+            "reportable segment, on us-gaap:StatementBusinessSegmentsAxis"),
+    "Google Cloud": ("goog:GoogleCloudMember",
+                     "reportable segment, on "
+                     "us-gaap:StatementBusinessSegmentsAxis"),
+    "Azure": ("msft:AzureMember",
+              "product line, on us-gaap:ProductOrServiceAxis"),
+}
+
+
+def edgar_url(cik, accession):
+    """The filing's own index page on EDGAR."""
+    if not (cik and accession):
+        return ""
+    return ("https://www.sec.gov/Archives/edgar/data/%s/%s/%s-index.htm"
+            % (cik.lstrip("0"), accession.replace("-", ""), accession))
+
+
+def sources_section(econ):
+    """Every filing this page reads, linked.
+
+    The page quoted audited figures and printed "10-Q, filed 2026-10-30" as
+    plain text next to them -- the form and the date, with no way to reach
+    the document. Naming a source a reader cannot open is most of the way
+    to not citing it. Every row here links to the filing on EDGAR and names
+    the exact XBRL member the number was taken from.
+    """
+    rows = []
+    for name in ("AWS", "Azure", "Google Cloud"):
+        c = econ["clouds"].get(name)
+        if not c:
+            continue
+        member, where = READS.get(name, ("", ""))
+        url = edgar_url(c.get("cik"), c.get("accession"))
+        link = ('<a href="%s" rel="noopener">%s filed %s</a>'
+                % (esc(url), esc(c.get("form", "filing")),
+                   esc(c.get("filed", "")))) if url else esc(
+                       c.get("form", "not available"))
+        rows.append(
+            "<tr><th>%s</th><td>%s</td><td><code>%s</code><span>%s</span>"
+            "</td><td>%s</td></tr>"
+            % (esc(name), esc(c.get("company", "")), esc(member), esc(where),
+               link))
+    return (
+        '<section class="cl-sec"><h2 id="sources">Where this comes from</h2>'
+        '<p class="cl-note">Every figure above is read out of the company&rsquo;s '
+        'own filing with the SEC &mdash; the audited document, not a press '
+        'release, a summary page or an analyst estimate. The exact XBRL '
+        'member is named so the same number can be found in the same place '
+        'by anyone who wants to check it.</p>'
+        '<div class="cl-srcwrap"><table class="cl-srctable">'
+        '<thead><tr><th>Cloud</th><th>Filer</th><th>Read from</th>'
+        '<th>Filing</th></tr></thead><tbody>%s</tbody></table></div>'
+        '<p class="cl-note">Region counts come from each cloud&rsquo;s own '
+        'published region list. Refreshed weekly; the capture date is '
+        'printed beside the figures.</p></section>' % "".join(rows))
+
+
 def money_section(econ):
     """Three cards. Each says exactly how much of itself is disclosed.
 
@@ -505,7 +568,11 @@ def build():
         % esc(econ.get("captured", "")),
         '<div class="cl-cards">%s</div>' % money_section(econ),
         '<p class="cl-note cl-warn">%s</p>' % esc(econ.get("note", "")),
+        '<p class="cl-note"><a class="cl-jump" href="#sources">Where this '
+        'comes from &darr;</a></p>',
         "</section>",
+
+        sources_section(econ),
 
         '<section class="cl-sec"><h2>Where they are</h2>',
         '<p class="cl-note">%d of the %d regions the three publish. '
@@ -1810,6 +1877,17 @@ body.light .cl-card .cl-why{color:#605F5B}
             border-top:1px dashed var(--border);color:var(--text-muted)}
 .cl-ceiling b{color:var(--text)}
 body.light .cl-card .cl-ceiling{color:#605F5B}
+.cl-srcwrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.cl-srctable{width:100%;border-collapse:collapse;min-width:560px;font-size:.82rem}
+.cl-srctable th,.cl-srctable td{text-align:left;padding:.5rem .6rem;
+  border-bottom:1px solid var(--border);vertical-align:top;font-weight:400}
+.cl-srctable thead th{font-size:.68rem;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--text-muted)}
+.cl-srctable tbody th{white-space:nowrap}
+.cl-srctable code{font-family:var(--mono);font-size:.74rem;display:block}
+.cl-srctable span{display:block;color:var(--text-muted);font-size:.72rem;
+  margin-top:.15rem}
+.cl-jump{font-size:.8rem}
 .cl-src{color:var(--text-muted);font-size:.72rem;margin:.7rem 0 0;font-family:var(--mono)}
 /* These sit on the CARD, which is lighter than the page, so the shared
    --text-muted lands at 4.35:1 there while passing on the page itself.
