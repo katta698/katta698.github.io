@@ -57,6 +57,12 @@ ALLOWED = {
     "222233334444",
     # An Azure billing-profile id, which is not an AWS account at all.
     "100000000006",
+    # From AWS's AppRegistry documentation, quoted verbatim in the
+    # architecture notes as the shape of the awsApplication tag value:
+    #   arn:aws:resource-groups:us-east-1:234567891011:group/myExampleApp/...
+    # Sequential digits, and the claim citing it names the AWS page it came
+    # from.
+    "234567891011",
 }
 
 
