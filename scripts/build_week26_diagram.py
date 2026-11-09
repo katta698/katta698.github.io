@@ -1,18 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Week 26 — one table, two paths, one of them unchecked.
+"""Week 26 architecture diagram: one table, two paths, one of them unchecked.
 
-    python scripts/build_week26_diagram.py          # prints the SVG
+    python scripts/build_week26_diagram.py > frag.svg
 
-The diagram has one job: show that the SAME caller reaching the SAME table
-gets a different answer depending on which path it takes, and that the IAM
-condition only exists on one of those paths.
-
-On the DAX icon: the AWS Architecture Icons package in _assets/aws-icons has
-no standalone DynamoDB Accelerator mark -- AWS draws DAX as a resource within
-the DynamoDB family. So the cluster carries the official Amazon DynamoDB
-icon, labelled as the DAX cluster. That is the honest option: the alternative
-was inventing a mark and placing it beside real ones, which reads as though
-AWS ships it.
+The AWS icon package has no standalone DAX mark -- AWS draws DAX as a
+DynamoDB resource -- so the cluster carries the DynamoDB icon, labelled.
 """
 import os
 import sys
