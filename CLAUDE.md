@@ -652,6 +652,18 @@ Two files per post:
 
 **Always edit `blog/<slug>/index.html` for live fixes. `posts/` is for RAG only.**
 
+## Commits and comments are short — ALL series
+
+Commit messages: 1-3 lines. Subject, plus a sentence only if the diff does not
+explain itself. No sections, no bullet lists of what was considered.
+
+Comments and docstrings: a few lines. What it does, how to run it, the one
+non-obvious constraint. Keep "DAX caps cluster_name at 20 chars"; cut the
+paragraph around it.
+
+This is a lab, not a design document. Confirmed 2026-11-09 after commits
+averaging 25 lines and docstrings of 35-53.
+
 ## Never write about this publishing pipeline failing — ALL series
 
 **Standing instruction, confirmed with Jay 2026-08-21 and reconfirmed 2026-08-22.
