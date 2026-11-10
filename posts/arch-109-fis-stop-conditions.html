@@ -1,0 +1,433 @@
+---
+title: "AWS Architecture Series #109 — The stop condition halts the experiment, not the damage"
+date: '2026-11-10T09:00:00'
+slug: aws-architecture-fis-stop-conditions
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-10'
+problem: "AWS FIS runs fault injection experiments that carry out real actions on real AWS resources. Its guardrail is the stop condition, and three things about it are easy to miss: it is a CloudWatch alarm you supply, so an experiment that finished without tripping one tells you nothing unless you know what the alarm was watching; declining to have one is a documented, first-class value, source none; and when a stop condition does fire, FIS stops the experiment rather than undoing it, with no way to resume. Every FIS quota is non-adjustable, including five stop conditions against twenty actions per template."
+builds: "A reading of what an FIS experiment template commits you to: how targets are resolved and frozen at the start, what the three selection modes do and when they select nothing, why the same resource can be targeted twice, what a stop condition actually bounds, and the fully fixed quota set that shapes any experiment programme."
+verified_claims:
+  - claim: "AWS FIS carries out real actions on real AWS resources in your system"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/what-is.html
+  - claim: "An experiment template is the blueprint of your experiment. It contains the actions, targets, and stop conditions for the experiment"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/what-is.html
+  - claim: "A stop condition is a mechanism to stop an experiment if it reaches a threshold that you define as an Amazon CloudWatch alarm"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/stop-conditions.html
+  - claim: "If a stop condition is triggered during an experiment, AWS FIS stops the experiment. You cannot resume a stopped experiment"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/stop-conditions.html
+  - claim: "The following example indicates that the experiment template does not specify a stop condition, with source set to none"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/stop-conditions.html
+  - claim: "To create a stop condition, first define the steady state for your application or service"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/stop-conditions.html
+  - claim: "AWS FIS identifies all targets at the start of the experiment, before starting any of the actions in the actions set. AWS FIS uses the target resources that it selects for the entire experiment. If no targets are found, the experiment fails"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/targets.html
+  - claim: "If you specify more than one tag, all specified tags have to be present on the target resource for it to be selected (AND)"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/targets.html
+  - claim: "If you specify a resource tag with an empty tag value, it is not equivalent to a wildcard"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/targets.html
+  - claim: "ALL - Run the action on all targets"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/targets.html
+  - claim: "COUNT(n) - Run the action on the specified number of targets, chosen from the identified targets at random"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/targets.html
+  - claim: "PERCENT(n) - Run the action on the specified percentage of targets, chosen from the identified targets at random"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/targets.html
+  - claim: "If you have an odd number of resources and specify 50%, AWS FIS rounds down. For example, if you add five Amazon EC2 instances as targets and scope to 50%, AWS FIS rounds down to two instances"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/targets.html
+  - claim: "if you add four Amazon EC2 instances and scope to 5%, AWS FIS can't select an instance"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/targets.html
+  - claim: "If you define multiple targets using the same target resource type, AWS FIS can select the same resource multiple times"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/targets.html
+  - claim: "Regardless of which selection mode you use, if the scope that you specify identifies no resources, the experiment fails"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/targets.html
+  - claim: "If multiple filters are provided, including filters with the same path, all filters have to be matched for a resource to be selected - AND"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/targets.html
+  - claim: "You are charged per minute that an action runs, from start to finish, based on the number of target accounts for your experiment"
+    source: https://docs.aws.amazon.com/fis/latest/userguide/what-is.html
+  - claim: "Stop conditions per experiment template | Each supported Region: 5 | Not adjustable"
+    source: https://docs.aws.amazon.com/general/latest/gr/fis.html
+  - claim: "Actions per experiment template | Each supported Region: 20 | Not adjustable"
+    source: https://docs.aws.amazon.com/general/latest/gr/fis.html
+  - claim: "Active experiments | Each supported Region: 5 | Not adjustable"
+    source: https://docs.aws.amazon.com/general/latest/gr/fis.html
+  - claim: "Experiment templates | Each supported Region: 500 | Not adjustable"
+    source: https://docs.aws.amazon.com/general/latest/gr/fis.html
+  - claim: "Experiment duration in hours | Each supported Region: 12 | Not adjustable"
+    source: https://docs.aws.amazon.com/general/latest/gr/fis.html
+  - claim: "Parallel actions per experiment | Each supported Region: 10 | Not adjustable"
+    source: https://docs.aws.amazon.com/general/latest/gr/fis.html
+  - claim: "Completed experiment data retention in days | Each supported Region: 120 | Not adjustable"
+    source: https://docs.aws.amazon.com/general/latest/gr/fis.html
+  - claim: "Target Instances for aws:ec2:terminate-instances | Each supported Region: 300 | Not adjustable"
+    source: https://docs.aws.amazon.com/general/latest/gr/fis.html
+  - claim: "Target Instances for aws:ec2:reboot-instances | Each supported Region: 600 | Not adjustable"
+    source: https://docs.aws.amazon.com/general/latest/gr/fis.html
+  - claim: "Target Pods for aws:eks:pod-delete | Each supported Region: 1,000 | Not adjustable"
+    source: https://docs.aws.amazon.com/general/latest/gr/fis.html
+  - claim: "Twenty actions per template against five stop conditions is four actions per guardrail"
+    derive: "20 / 5"
+    expect: "4"
+    source: https://docs.aws.amazon.com/general/latest/gr/fis.html
+  - claim: "An experiment duration ceiling of 12 hours is 720 minutes of billable action time"
+    derive: "12 * 60"
+    expect: "720"
+    source: https://docs.aws.amazon.com/general/latest/gr/fis.html
+catch: "A stop condition is a CloudWatch alarm you supply, and declining to have one is a documented value - source none. So an experiment that completed without tripping an alarm is two different findings depending on what the alarm watched, or whether there was one. And when a stop condition does fire, FIS stops the experiment; it does not undo it, and you cannot resume it. Every FIS quota is non-adjustable, including five stop conditions against twenty actions."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #109 &middot; Reliability</div>
+  <h1 class="post-title">The stop condition halts the experiment, not the damage</h1>
+  <p class="post-subtitle">FIS is the service that turns #108's estimate into a measurement. Its guardrail is a CloudWatch alarm you write, declining to have one is a documented value, and when it fires it stops the experiment rather than undoing it.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Reliability &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <a href="/blog/aws-architecture-resilience-hub-estimates/">#108</a> ended on the gap AWS names inside
+      its own passing status: an estimate is not a timed recovery, so go and test it. FIS is the service that
+      closes that gap, and it opens with a warning rather than a feature list:
+    </p>
+    <p>
+      <em>&ldquo;AWS FIS carries out real actions on real AWS resources in your system.&rdquo;</em>
+    </p>
+    <p>
+      Which makes the guardrail the interesting part. An experiment template contains
+      <em>&ldquo;the actions, targets, and stop conditions for the experiment&rdquo;</em>, and the stop
+      condition is the only one of the three whose job is to limit harm. It is worth knowing exactly what it
+      bounds before running anything in production.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>The guardrail is optional, and its absence is a documented value</strong></div>
+      <div class="challenge-body">
+        <p>
+          A stop condition is not built in. It is something you supply:
+          <em>&ldquo;A stop condition is a mechanism to stop an experiment if it reaches a threshold that you
+          define as an Amazon CloudWatch alarm.&rdquo;</em> And you can decline. The documentation gives the
+          shape explicitly:
+        </p>
+        <p>
+          <code>"stopConditions": [ { "source": "none" } ]</code>
+        </p>
+        <p>
+          <em>&ldquo;The following example indicates that the experiment template does not specify a stop
+          condition.&rdquo;</em> That is a first-class, documented configuration &mdash; not an omission the
+          API rejects. An experiment template with no guardrail is a valid template.
+        </p>
+        <p>
+          This matters because of what an experiment report looks like afterwards. A completed experiment
+          with no stop condition triggered reads exactly like a completed experiment that had no stop
+          condition to trigger. The distinction lives in the template, not in the result.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Treat <code>"source": "none"</code> as a finding in template review, not a default. Then record, next to every experiment result, which alarms were armed &mdash; because that list is what turns <em>the experiment completed</em> into evidence. Without it the result is a statement that FIS finished running, which is true of a template targeting nothing in particular.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Completed without an alarm is two findings, and five alarms cover twenty actions</strong></div>
+      <div class="challenge-body">
+        <p>
+          AWS is clear about where a stop condition comes from:
+          <em>&ldquo;To create a stop condition, first define the steady state for your application or
+          service.&rdquo;</em> The alarm encodes your definition of steady state, so the experiment's verdict
+          inherits whatever that definition covers. An experiment that terminated instances and tripped
+          nothing tells you your application survived &mdash; or that the alarm watched CPU while the failure
+          was in a queue depth nobody graphed.
+        </p>
+        <p>
+          The budget is fixed and small.
+          <em>&ldquo;Stop conditions per experiment template | Each supported Region: 5&rdquo;</em> against
+          <em>&ldquo;Actions per experiment template | Each supported Region: 20&rdquo;</em> &mdash; four
+          actions per guardrail if you use the whole template, and neither number is adjustable. In fact no
+          FIS quota in the table is adjustable, which is unusual enough to plan around rather than discover.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Write the steady-state definition down before the template, and make it the thing under review rather than the action list. A useful test: name the signal that would move first if this experiment went badly, and check an armed alarm watches it. If the honest answer is that nobody knows which signal moves first, that is the experiment's actual finding and it is available before running anything.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>Stopping is not reverting, and you cannot resume</strong></div>
+      <div class="challenge-body">
+        <p>
+          <em>&ldquo;If a stop condition is triggered during an experiment, AWS FIS stops the experiment. You
+          cannot resume a stopped experiment.&rdquo;</em>
+        </p>
+        <p>
+          Both halves matter. Stopping ends the injection; it does not reverse what the injection already
+          did. An action that terminated instances has terminated them, and the stop condition's achievement
+          is that it terminated fewer. Recovery is whatever your Auto Scaling group, your Kubernetes
+          controller or your runbook does next &mdash; which is the thing the experiment was testing, now
+          running under a half-finished fault.
+        </p>
+        <p>
+          And because a stopped experiment cannot be resumed, a tripped guardrail costs you the run. The
+          experiment ends in a state that is neither the steady state nor the full fault, which is the
+          hardest state to draw a conclusion from.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Plan the recovery path as a deliverable of the experiment, not an afterthought &mdash; and pair the run with the SOP that #108's <em>Policy met</em> definition asks you to test and time, because this is where that timing actually gets measured. Then treat a stop-condition trigger as a result to investigate rather than a run to repeat: it is the one outcome that tells you an alarm you wrote fired on a fault you chose.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-109-fis-stop-conditions.svg" alt="Diagram: An AWS FIS experiment template contains actions, targets and stop conditions, and FIS carries out real actions on real AWS resources. The stop condition is the only one of the three whose job is to limit harm, and it is a CloudWatch alarm you define rather than something built in. Declining to have one is a documented first-class value, written as stopConditions with source set to none, so an experiment template with no guardrail is a valid template and a completed experiment with no alarm triggered reads identically to one that had no alarm to trigger. When a stop condition does fire, FIS stops the experiment and you cannot resume it, but stopping ends the injection rather than reversing what it already did. Targets are resolved once: FIS identifies all targets at the start of the experiment before starting any actions, and uses the resources it selected for the entire experiment, failing if none are found. Targets can be identified by resource ARNs, by tags where multiple tags are combined with AND and an empty tag value is not a wildcard, by filters where multiple filters are combined with AND and multiple values within one filter with OR, or by resource parameters. Three selection modes scope the result: ALL runs on all targets, COUNT of n runs on that many chosen at random, and PERCENT of n runs on that percentage chosen at random, rounding down, so five instances at fifty percent gives two and four instances at five percent selects nothing, and a scope identifying no resources fails the experiment. If multiple targets use the same resource type, FIS can select the same resource more than once. Every FIS quota is non-adjustable: five stop conditions and twenty actions per template, which is four actions per guardrail, ten parallel actions, five active experiments, five hundred templates, twelve hours maximum for an experiment or an action which is 720 minutes of billable action time, and 120-day retention of completed experiment data. Per-action target caps include 300 instances for terminate, 600 for reboot and 1,000 pods for pod delete. Billing is per minute that an action runs, from start to finish, based on the number of target accounts.">
+
+    <h3>Targets are resolved once, at the start, and frozen</h3>
+    <p>
+      <em>&ldquo;AWS FIS identifies all targets at the start of the experiment, before starting any of the
+      actions in the actions set. AWS FIS uses the target resources that it selects for the entire
+      experiment. If no targets are found, the experiment fails.&rdquo;</em>
+    </p>
+    <p>
+      This is the right design and worth contrasting with
+      <a href="/blog/aws-architecture-resource-groups/">#106</a>. A resource group is a query answered
+      whenever something reads it, so the set an automation acts on can change under it. An FIS experiment
+      resolves its targets once and holds them, which means the blast radius is fixed for the duration even
+      if somebody edits a tag mid-run. For a service that performs destructive actions, freezing the set is
+      the correct trade.
+    </p>
+    <p>
+      What it does not fix is the set being whatever the query returned at that instant. If targets came from
+      tags, the experiment's scope is the tag state at start time, and the <code>AND</code> semantics are the
+      same ones #106 described: <em>&ldquo;If you specify more than one tag, all specified tags have to be
+      present on the target resource for it to be selected (AND).&rdquo;</em> A fourth tag filter narrows the
+      experiment. So does a typo.
+    </p>
+
+    <h3>Three selection modes, and two ways to select nothing</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Mode</th><th>What it does</th><th>Edge</th></tr>
+      <tr>
+        <td><code>ALL</code></td>
+        <td><em>&ldquo;Run the action on all targets&rdquo;</em></td>
+        <td>Blast radius is whatever the query matched</td>
+      </tr>
+      <tr>
+        <td><code>COUNT(n)</code></td>
+        <td><em>&ldquo;the specified number of targets, chosen from the identified targets at random&rdquo;</em></td>
+        <td>Random, so two runs are not the same experiment</td>
+      </tr>
+      <tr>
+        <td><code>PERCENT(n)</code></td>
+        <td><em>&ldquo;the specified percentage of targets, chosen from the identified targets at random&rdquo;</em></td>
+        <td>Rounds down, and can round to nothing</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The rounding is documented with examples worth reading literally.
+      <em>&ldquo;If you have an odd number of resources and specify 50%, AWS FIS rounds down. For example, if
+      you add five Amazon EC2 instances as targets and scope to 50%, AWS FIS rounds down to two
+      instances.&rdquo;</em> And the floor:
+      <em>&ldquo;if you add four Amazon EC2 instances and scope to 5%, AWS FIS can't select an
+      instance.&rdquo;</em>
+    </p>
+    <p>
+      That second case does not quietly run on zero resources, which would be the dangerous outcome:
+      <em>&ldquo;Regardless of which selection mode you use, if the scope that you specify identifies no
+      resources, the experiment fails.&rdquo;</em> A failed experiment is a visible result. A green
+      experiment that touched nothing would not be.
+    </p>
+
+    <h3>The same resource can be targeted twice</h3>
+    <p>
+      <em>&ldquo;If you define multiple targets using the same target resource type, AWS FIS can select the
+      same resource multiple times.&rdquo;</em>
+    </p>
+    <p>
+      Two target definitions over the same resource type are two independent random draws from overlapping
+      populations. A template with <code>COUNT(1)</code> for a CPU stress action and <code>COUNT(1)</code>
+      for a network latency action can put both faults on one instance, which is a different experiment from
+      the one most people have in mind when they write two targets. Worth checking in any template that uses
+      more than one target of the same type.
+    </p>
+
+    <h3>The quotas, all of them fixed</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Quota</th><th>Default</th><th>Adjustable</th></tr>
+      <tr><td>Stop conditions per experiment template</td><td>5</td><td>No</td></tr>
+      <tr><td>Actions per experiment template</td><td>20</td><td>No</td></tr>
+      <tr><td>Parallel actions per experiment</td><td>10</td><td>No</td></tr>
+      <tr><td>Active experiments</td><td>5</td><td>No</td></tr>
+      <tr><td>Experiment templates</td><td>500</td><td>No</td></tr>
+      <tr><td>Experiment duration in hours</td><td>12</td><td>No</td></tr>
+      <tr><td>Completed experiment data retention in days</td><td>120</td><td>No</td></tr>
+    </table>
+    </div>
+    <p>
+      The retention one shapes a programme more than it looks. 120 days of completed experiment data, not
+      adjustable, means a quarterly resilience review can see the previous quarter and not the one before it.
+      If you report on experiment history, export it.
+    </p>
+    <p>
+      The per-action target caps are also fixed and vary by how destructive the action is, which reads as
+      deliberate: <em>&ldquo;Target Instances for aws:ec2:terminate-instances | Each supported Region:
+      300&rdquo;</em> against <em>&ldquo;Target Instances for aws:ec2:reboot-instances | Each supported
+      Region: 600&rdquo;</em>, and <em>&ldquo;Target Pods for aws:eks:pod-delete | Each supported Region:
+      1,000&rdquo;</em>. You may reboot twice as many instances as you may terminate.
+    </p>
+
+    <h3>What it costs, and the unit that surprises people</h3>
+    <p>
+      <em>&ldquo;You are charged per minute that an action runs, from start to finish, based on the number of
+      target accounts for your experiment.&rdquo;</em>
+    </p>
+    <p>
+      Per action-minute, multiplied by target accounts &mdash; not per experiment and not per resource. A
+      twelve-hour experiment is 720 minutes of billable action time per account, and ten parallel actions
+      bill as ten. A long soak across a large organisation is the shape that costs real money, and it is the
+      shape a team reaches for when testing slow degradation.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Opening with a warning instead of a benefit</h3>
+    <p>
+      The first callout on the service's front page is that FIS acts on real resources and that you should
+      run experiments in pre-production first. A chaos engineering service that led with its dashboard would
+      be easier to adopt and worse. Putting the risk in front of the feature is the correct ordering for a
+      tool whose entire function is to break things.
+    </p>
+
+    <h3>Freezing the target set is the right call for destructive actions</h3>
+    <p>
+      Resolving targets once and holding them means an experiment cannot grow mid-run because a deployment
+      added instances or someone edited a tag. The alternative &mdash; re-evaluating continuously, as a
+      resource group does &mdash; would make the blast radius unbounded in exactly the situation where you
+      least want that.
+    </p>
+
+    <h3>Failing on an empty target set rather than passing</h3>
+    <p>
+      An experiment that matched no resources fails. It would have been easy to let it complete with nothing
+      done, and that would have produced the worst artefact in this series: a green result that proves
+      nothing, indistinguishable from one that proves something. FIS declines to produce it.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Template with no stop condition</td>
+        <td>Treat <code>"source": "none"</code> as a review finding</td>
+        <td>It is a valid documented configuration, so nothing rejects it for you</td>
+      </tr>
+      <tr>
+        <td>Recording an experiment result</td>
+        <td>Record which alarms were armed alongside it</td>
+        <td>Completed-without-alarm means nothing until you know what the alarm watched</td>
+      </tr>
+      <tr>
+        <td>Allocating the five stop conditions</td>
+        <td>Arm the signals that move first, not the ones that are easiest to graph</td>
+        <td>Five is fixed against twenty actions, and not adjustable</td>
+      </tr>
+      <tr>
+        <td>Expecting a trigger to protect you</td>
+        <td>Plan the recovery path as part of the experiment</td>
+        <td>FIS stops the experiment; it does not reverse completed actions, and you cannot resume</td>
+      </tr>
+      <tr>
+        <td>Multiple targets of one resource type</td>
+        <td>Check whether they can overlap</td>
+        <td>FIS can select the same resource more than once across target definitions</td>
+      </tr>
+      <tr>
+        <td>Using <code>PERCENT</code> on a small fleet</td>
+        <td>Compute what it rounds to before running</td>
+        <td>It rounds down, and below one resource the experiment fails rather than runs</td>
+      </tr>
+      <tr>
+        <td>Reporting on experiment history</td>
+        <td>Export it on a schedule</td>
+        <td>120-day retention, not adjustable</td>
+      </tr>
+      <tr>
+        <td>Long soak experiments</td>
+        <td>Price them per action-minute per target account first</td>
+        <td>Twelve hours is 720 billable action-minutes, multiplied by parallel actions and accounts</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>List your experiment templates and grep for <code>"source": "none"</code>.</strong> Every hit
+      is an experiment that runs without a guardrail. Some of those will be deliberate and fine &mdash; a
+      read-only action in a sandbox account &mdash; but the list should be short and each entry should have a
+      reason somebody can state.
+    </p>
+    <p>
+      <strong>For the rest, open the alarms and ask what they measure.</strong> An alarm on instance CPU is
+      not a steady-state definition for a latency-sensitive API. This is the check that decides whether your
+      experiment results are evidence or just completion records.
+    </p>
+    <p>
+      <strong>Then look for templates with two or more targets of the same resource type.</strong> Work out
+      whether the populations overlap and whether you intended the same resource to be able to take both
+      faults. If you did, say so in the template description; if you did not, the fix is a filter.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      This run of posts has kept finding instruments whose output is narrower than it reads. #108 was the
+      sharpest case because the narrowing was a single word &mdash; <em>estimated</em>. FIS is the opposite
+      shape: it states its limits plainly and in the right places, and the risk is not that it overclaims
+      but that a reader under-reads.
+    </p>
+    <p>
+      The thing worth carrying is the asymmetry between the two halves of a guardrail. The half that stops
+      an experiment is automatic, fast and reliable. The half that decides <em>when</em> to stop is a
+      CloudWatch alarm somebody wrote on a Tuesday, against a definition of steady state that may never have
+      been reviewed. The service supplies the mechanism. You supply the judgement, and the judgement is the
+      part that determines whether a green experiment report means anything.
+    </p>
+    <p>
+      So the practical ending is the same shape as #108's: record what was watching, next to what happened.
+      An experiment result without its armed alarms is a log line. With them, it is a measurement &mdash;
+      which is the thing #108 said you still owed.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Reliability &mdash; Amazon Application Recovery Controller: what a readiness check actually checks, why zonal autoshift moves traffic on AWS's signal rather than yours, and what a routing control is when the thing it routes around is the control plane you would use to operate it.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/fis/latest/userguide/stop-conditions.html" target="_blank" rel="noopener">Stop conditions for AWS FIS &#8212; that a stop condition is a CloudWatch alarm you define, that FIS stops the experiment when one triggers and that a stopped experiment cannot be resumed, the <code>"source": "none"</code> form for a template with no stop condition, and the instruction to define steady state first</a></li>
+      <li><a href="https://docs.aws.amazon.com/fis/latest/userguide/targets.html" target="_blank" rel="noopener">Targets for AWS FIS &#8212; that all targets are identified at the start and held for the whole experiment, the <code>AND</code> semantics for multiple tags and filters, the three selection modes and their random selection, the rounding-down examples, that a scope matching no resources fails the experiment, and that the same resource can be selected by multiple targets</a></li>
+      <li><a href="https://docs.aws.amazon.com/fis/latest/userguide/what-is.html" target="_blank" rel="noopener">What is AWS Fault Injection Service? &#8212; the warning that FIS carries out real actions on real resources, the three parts of an experiment template, and the per-action-minute pricing based on target accounts</a></li>
+      <li><a href="https://docs.aws.amazon.com/general/latest/gr/fis.html" target="_blank" rel="noopener">AWS Fault Injection Service endpoints and quotas &#8212; five stop conditions and twenty actions per template, ten parallel actions, five active experiments, five hundred templates, twelve-hour experiment and action ceilings, 120-day completed-experiment retention, and the per-action target caps, none of which are adjustable</a></li>
+      <li><a href="https://docs.aws.amazon.com/fis/latest/userguide/fis-actions-reference.html" target="_blank" rel="noopener">AWS FIS actions reference &#8212; further reading on the available actions per resource type; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
