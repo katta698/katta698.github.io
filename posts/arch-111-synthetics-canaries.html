@@ -1,0 +1,420 @@
+---
+title: "AWS Architecture Series #111 — A stopped canary looks exactly like a healthy service"
+date: '2026-11-12T09:00:00'
+slug: aws-architecture-synthetics-canaries
+labels: [AWS, "AWS Architecture Series"]
+verified: '2026-11-12'
+problem: "A Synthetics canary proves something a metric alarm cannot: that a request path works when no customer is using it. But canary metrics are published by canary runs, so a canary that stops running publishes nothing - and by #110's default missing-data treatment, nothing means INSUFFICIENT_DATA, which fires no alarm action. A stopped canary and a healthy service produce the same silence. Separately, Failed counts runs that failed to execute, which is a statement about the canary rather than about the service, and SuccessPercent and SuccessPercentWithRetries answer different questions."
+builds: "A reading of what a canary's metrics actually assert: why synthetic monitoring covers the gap real traffic leaves, which metric describes the canary versus the service, how retries change the answer, why the available dimensions depend on the canary type, and what happens to the canary's own alarm when the canary stops."
+verified_claims:
+  - claim: "Canaries follow the same routes and perform the same actions as a customer, which makes it possible for you to continually verify your customer experience even when you don't have any customer traffic on your applications"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries.html
+  - claim: "You can use Amazon CloudWatch Synthetics to create canaries, configurable scripts that run on a schedule, to monitor your endpoints and APIs"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries.html
+  - claim: "They create Lambda functions in your account that use Node.js, Python, or Java as the runtime"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries.html
+  - claim: "You can run a canary once or on a regular schedule. Canaries can run as often as once per minute"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries.html
+  - claim: "By default, canaries create several CloudWatch metrics in the CloudWatchSynthetics namespace. These metrics have CanaryName as a dimension"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries.html
+  - claim: "Canaries check the availability and latency of your endpoints and can store load time data and screenshots of the UI"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries.html
+  - claim: "CloudWatch Synthetics is currently available in all commercial AWS Regions and the GovCloud Regions"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries.html
+  - claim: "Failed - The number of canary runs that failed to execute. These failures are related to the canary itself"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries_metrics.html
+  - claim: "SuccessPercent - The percentage of the runs of this canary that succeed and find no failures"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries_metrics.html
+  - claim: "SuccessPercentWithRetries - The percentage of the runs of this canary that succeed after all attempts"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries_metrics.html
+  - claim: "Failed requests - The number of HTTP requests executed by the canary on the target website that failed with no response"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries_metrics.html
+  - claim: "RetryCount - The number of times your canary retried. This metric is only displayed when there are retries"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries_metrics.html
+  - claim: "Duration - The duration in milliseconds of the canary run"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries_metrics.html
+  - claim: "For multi-browser canaries, browser-dimension metrics are enabled by default to provide visibility into performance across browsers like Chrome, Firefox and other browsers"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries_metrics.html
+  - claim: "For single-browser canaries, browser-dimension metrics are disabled by default to avoid redundancy. To see metrics broken down by browser, set browserDimension to true"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries_metrics.html
+  - claim: "VisualMonitoringSuccessPercent - The percentage of visual comparisons that successfully matched the baseline screenshots during a canary run"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries_metrics.html
+  - claim: "Canaries that use either the executeStep() or executeHttpStep() methods from the Synthetics library also publish SuccessPercent and Duration metrics with the dimensions CanaryName and StepName for each step"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries_metrics.html
+  - claim: "missing - If all data points in the alarm evaluation range are missing, the alarm transitions to INSUFFICIENT_DATA"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarms-and-missing-data.html
+  - claim: "The default behavior is missing"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarms-and-missing-data.html
+  - claim: "breaching - Missing data points are treated as bad and breaching the threshold"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarms-and-missing-data.html
+  - claim: "An alarm invokes actions only when the alarm changes state"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/AlarmThatSendsEmail.html
+  - claim: "A canary running once per minute produces 1,440 runs a day"
+    derive: "60 * 24"
+    expect: "1440"
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries.html
+catch: "A canary's metrics are published by its runs, so a canary that stops running publishes nothing - and by #110's default treatment, nothing becomes INSUFFICIENT_DATA, which fires no alarm action. A stopped canary and a healthy service look identical. Also worth separating: Failed counts runs that failed to execute, which describes the canary and not the service, and SuccessPercent and SuccessPercentWithRetries answer different questions about the same run."
+---
+<div id="jk-post">
+<style>#jk-post{}</style>
+
+<div class="post-header">
+  <div class="post-eyebrow">AWS Architecture Series &middot; #111 &middot; Reliability</div>
+  <h1 class="post-title">A stopped canary looks exactly like a healthy service</h1>
+  <p class="post-subtitle">A canary proves what a metric alarm cannot: that a path works when nobody is using it. But its metrics come from its runs, so when it stops running it publishes the same thing a healthy service does &mdash; nothing.</p>
+  <div class="post-meta">
+    <span>Jayanth Katta</span>
+    <span>Nov 2026</span>
+    <span>AWS Well-Architected &middot; Reliability &middot; Operational Excellence</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <a href="/blog/aws-architecture-alarm-states-missing-data/">#110</a> established that an alarm with no
+      data goes to INSUFFICIENT_DATA by default, and that INSUFFICIENT_DATA fires nothing. Canaries are
+      where that behaviour does the most damage, because of what a canary is for.
+    </p>
+    <p>
+      <em>&ldquo;Canaries follow the same routes and perform the same actions as a customer, which makes it
+      possible for you to continually verify your customer experience <strong>even when you don't have any
+      customer traffic</strong> on your applications.&rdquo;</em>
+    </p>
+    <p>
+      That is the genuine capability: a metric alarm can only tell you about traffic that happened, so it
+      cannot distinguish <em>working</em> from <em>unused</em>. A canary manufactures the traffic. The catch
+      is that the canary is now the thing that has to keep working.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>No runs means no datapoints, and no datapoints means no alarm</strong></div>
+      <div class="challenge-body">
+        <p>
+          Canary metrics are a product of canary runs.
+          <em>&ldquo;By default, canaries create several CloudWatch metrics in the
+          <code>CloudWatchSynthetics</code> namespace&rdquo;</em>, and the metrics themselves are defined
+          per run &mdash; <em>&ldquo;<code>Duration</code> &ndash; The duration in milliseconds of the canary
+          run&rdquo;</em>, <em>&ldquo;<code>SuccessPercent</code> &ndash; The percentage of the runs of this
+          canary that succeed and find no failures&rdquo;</em>.
+        </p>
+        <p>
+          So a canary that is stopped, paused, throttled, broken on a bad deployment of its own script, or
+          sitting behind an expired IAM role emits no new datapoints. Follow that into #110's rules: the
+          evaluation range fills with missing data, the default treatment is
+          <em>&ldquo;<code>missing</code>&rdquo;</em>, and
+          <em>&ldquo;If all data points in the alarm evaluation range are missing, the alarm transitions to
+          INSUFFICIENT_DATA.&rdquo;</em> Since
+          <em>&ldquo;An alarm invokes actions only when the alarm changes state&rdquo;</em>, the ALARM action
+          never fires.
+        </p>
+        <p>
+          The result is a dashboard on which a stopped canary and a perfectly healthy service are the same
+          picture. Worse than a false negative, because a false negative at least implies something was
+          measured.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Set the canary alarm's missing-data treatment to <code>breaching</code> &mdash; <em>&ldquo;Missing data points are treated as &ldquo;bad&rdquo; and breaching the threshold&rdquo;</em>. For a synthetic monitor this is almost always right: the whole point is that data should always be arriving, so its absence is itself the finding. Then add a second alarm on <code>Failed</code>, which catches the different failure in challenge 2.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Failed is about the canary; SuccessPercent is about the run</strong></div>
+      <div class="challenge-body">
+        <p>
+          Two metrics that read like synonyms and are not:
+        </p>
+        <p>
+          <em>&ldquo;<code>Failed</code> &ndash; The number of canary runs that failed to execute.
+          <strong>These failures are related to the canary itself.</strong>&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;<code>SuccessPercent</code> &ndash; The percentage of the runs of this canary that
+          succeed and find no failures.&rdquo;</em>
+        </p>
+        <p>
+          <code>Failed</code> counts the canary breaking. <code>SuccessPercent</code> counts runs that
+          completed <em>and</em> found nothing wrong. A script with a syntax error after an update, a canary
+          whose Lambda times out, a broken dependency in its own layer &mdash; those move
+          <code>Failed</code>, and they are statements about your monitoring, not about your service. Alarming
+          on one and reporting it as the other is how a monitoring outage gets filed as an application
+          incident, or the reverse.
+        </p>
+        <p>
+          There is a third reading of the same run:
+          <em>&ldquo;<code>SuccessPercentWithRetries</code> &ndash; The percentage of the runs of this canary
+          that succeed <strong>after all attempts</strong>&rdquo;</em>, with
+          <em>&ldquo;<code>RetryCount</code> &ndash; The number of times your canary retried. This metric is
+          only displayed when there are retries.&rdquo;</em> A path that fails and then succeeds on retry
+          scores badly on <code>SuccessPercent</code> and perfectly on
+          <code>SuccessPercentWithRetries</code>. Both numbers are true; they answer different questions, and
+          the second is the more forgiving one to put on a slide.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Alarm on all three deliberately and label them for what they measure: <code>Failed</code> as <em>monitoring is broken</em>, <code>SuccessPercent</code> as <em>first attempt failed</em>, <code>SuccessPercentWithRetries</code> as <em>the path is unusable</em>. Which one belongs in your SLO is a real decision &mdash; a customer who succeeds on a browser retry had a worse experience than the retried number suggests and a better one than the raw number does.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The dimensions that exist depend on the canary's own configuration</strong></div>
+      <div class="challenge-body">
+        <p>
+          An alarm names a metric and its dimensions. For canaries, which dimensions exist is not fixed:
+        </p>
+        <p>
+          <em>&ldquo;For multi-browser canaries, browser-dimension metrics are enabled by default to provide
+          visibility into performance across browsers like Chrome, Firefox and other browsers.&rdquo;</em>
+          And the inverse: <em>&ldquo;For single-browser canaries, browser-dimension metrics are disabled by
+          default to avoid redundancy. To see metrics broken down by browser, set
+          <code>browserDimension</code> to <code>true</code>.&rdquo;</em>
+        </p>
+        <p>
+          Step-level dimensions are conditional too:
+          <em>&ldquo;Canaries that use either the <code>executeStep()</code> or
+          <code>executeHttpStep()</code> methods from the Synthetics library also publish
+          <code>SuccessPercent</code> and <code>Duration</code> metrics with the dimensions
+          <code>CanaryName</code> and <code>StepName</code> for each step.&rdquo;</em>
+        </p>
+        <p>
+          So an alarm written against a <code>Browser</code> or <code>StepName</code> dimension depends on a
+          property of the canary's script and configuration. Convert a multi-browser canary to
+          single-browser, or refactor a script away from <code>executeStep()</code>, and the dimension stops
+          being published. #110 covers what happens next: no datapoints, INSUFFICIENT_DATA, no action &mdash;
+          and nothing in CloudWatch objects to an alarm on a dimension that no longer exists.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Alarm on the <code>CanaryName</code> dimension for the signal that must never go quiet, and treat <code>Browser</code> and <code>StepName</code> alarms as additional detail rather than the primary guard. If a script refactor is in scope, check the alarms that reference its step names in the same change &mdash; they are coupled to the code, and nothing links them.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+
+    <img src="/blog/assets/diagrams/arch-111-synthetics-canaries.svg" alt="Diagram: A CloudWatch Synthetics canary is a configurable script that runs on a schedule to monitor endpoints and APIs, and it proves something a metric alarm cannot, because canaries follow the same routes and perform the same actions as a customer, making it possible to verify customer experience even when there is no customer traffic. Canaries create Lambda functions in your account and can run as often as once per minute, which is 1,440 runs a day. Their metrics are published per run in the CloudWatchSynthetics namespace with CanaryName as a dimension. The central hazard follows from that: a canary that stops running publishes no new datapoints, so the alarm evaluation range fills with missing data, and because the default missing-data treatment is missing, the alarm transitions to INSUFFICIENT_DATA rather than ALARM, and since an alarm invokes actions only when it changes state, no action fires. A stopped canary and a healthy service therefore produce identical silence, which is why a canary alarm should usually treat missing data as breaching, where missing points are treated as bad and breaching the threshold. Three metrics read like synonyms and are not. Failed counts canary runs that failed to execute and those failures are related to the canary itself, so it describes the monitoring rather than the service. SuccessPercent is the percentage of runs that succeed and find no failures. SuccessPercentWithRetries is the percentage that succeed after all attempts, with RetryCount shown only when retries occur, so a path that fails then succeeds on retry scores badly on one and perfectly on the other. Available dimensions also depend on the canary's own configuration: browser-dimension metrics are enabled by default for multi-browser canaries and disabled by default for single-browser ones unless browserDimension is set to true, and step dimensions exist only for canaries using executeStep or executeHttpStep, so an alarm on a Browser or StepName dimension is coupled to the script and nothing links them. Other metrics include Duration for the run, Failed requests for HTTP requests that failed with no response, and VisualMonitoringSuccessPercent for visual comparisons against baseline screenshots. CloudWatch Synthetics is available in all commercial AWS Regions and the GovCloud Regions.">
+
+    <h3>What a canary proves that a metric alarm cannot</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Metric alarm on real traffic</th><th>Canary</th></tr>
+      <tr>
+        <td>Needs customers</td>
+        <td>Yes &mdash; no traffic, no signal</td>
+        <td>No &mdash; <em>&ldquo;even when you don't have any customer traffic&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Can distinguish working from unused</td>
+        <td>No</td>
+        <td>Yes</td>
+      </tr>
+      <tr>
+        <td>Covers the whole path</td>
+        <td>Only the hops that emit metrics</td>
+        <td>End to end, as the customer sees it</td>
+      </tr>
+      <tr>
+        <td>What goes quiet when it breaks</td>
+        <td>Nothing &mdash; the service is still emitting</td>
+        <td><strong>The signal itself</strong></td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The last row is the trade. A metric alarm's signal is produced by the thing being watched, so it keeps
+      arriving while the watcher is fine. A canary's signal is produced by the watcher, so it stops when
+      either one breaks &mdash; and the two cases are indistinguishable without a second alarm.
+    </p>
+
+    <h3>Three readings of one run</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Metric</th><th>What it counts</th><th>What it is a statement about</th></tr>
+      <tr>
+        <td><code>Failed</code></td>
+        <td>Runs that <em>&ldquo;failed to execute&rdquo;</em></td>
+        <td>Your monitoring &mdash; <em>&ldquo;related to the canary itself&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td><code>SuccessPercent</code></td>
+        <td>Runs that <em>&ldquo;succeed and find no failures&rdquo;</em></td>
+        <td>The first attempt against your service</td>
+      </tr>
+      <tr>
+        <td><code>SuccessPercentWithRetries</code></td>
+        <td>Runs that <em>&ldquo;succeed after all attempts&rdquo;</em></td>
+        <td>Whether the path is usable at all</td>
+      </tr>
+      <tr>
+        <td><code>Failed requests</code></td>
+        <td><em>&ldquo;HTTP requests executed by the canary on the target website that failed with no response&rdquo;</em></td>
+        <td>Individual requests, not runs</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      <code>Failed requests</code> is the one most likely to be misread, because it counts requests rather
+      than runs and it is scoped to <em>no response</em> &mdash; a 500 is not a failed request by this
+      definition, it is a <code>5xx</code>.
+    </p>
+
+    <h3>What else a canary can watch</h3>
+    <p>
+      Beyond availability and latency, canaries can compare what the page looks like:
+      <em>&ldquo;<code>VisualMonitoringSuccessPercent</code> &ndash; The percentage of visual comparisons
+      that successfully matched the baseline screenshots during a canary run.&rdquo;</em> And the broader
+      claim: <em>&ldquo;Canaries check the availability and latency of your endpoints and can store load time
+      data and screenshots of the UI.&rdquo;</em>
+    </p>
+    <p>
+      Visual monitoring is the capability with no metric-alarm equivalent at all. A service can return 200
+      with correct latency and a blank page, and nothing in a conventional metric notices. It is also the
+      capability most likely to produce alarm fatigue, because a baseline that drifts with every legitimate
+      design change needs maintaining.
+    </p>
+
+    <h3>The cost shape, which follows from the schedule</h3>
+    <p>
+      <em>&ldquo;Canaries can run as often as once per minute&rdquo;</em> &mdash; 1,440 runs a day, each one
+      a Lambda invocation, because
+      <em>&ldquo;They create Lambda functions in your account that use Node.js, Python, or Java as the
+      runtime.&rdquo;</em> A headless-browser canary is not a cheap Lambda, and the artefacts it stores
+      accumulate in S3.
+    </p>
+    <p>
+      So the per-minute schedule that makes a canary responsive is also the one that makes it the most
+      expensive monitoring you own per signal. The useful question is not <em>how often can it run</em> but
+      <em>how long are you willing not to know</em>, which for most paths is longer than a minute.
+    </p>
+  </div>
+
+  <div class="section" id="why">
+    <h2>Why This Architecture Holds Up</h2>
+
+    <h3>Manufacturing the traffic is the only way to answer the question</h3>
+    <p>
+      There is no passive way to know whether an unused path works. Either you wait for a customer to find
+      out, or you generate the request yourself. Synthetics takes the second option honestly, and the
+      consequence &mdash; that the monitor becomes a component with its own failure modes &mdash; is
+      inherent rather than a design flaw.
+    </p>
+
+    <h3>Separating Failed from SuccessPercent is the right distinction</h3>
+    <p>
+      It would have been easier to publish one success number and let canary failures contaminate it. Keeping
+      <em>&ldquo;failures &hellip; related to the canary itself&rdquo;</em> in a separate metric is what makes
+      it possible to tell a monitoring outage from an application outage at all. The names could be clearer;
+      the separation is correct.
+    </p>
+
+    <h3>Running on your own Lambda is a defensible trade</h3>
+    <p>
+      Canaries execute in your account, with your IAM role, in your VPC if you choose. That makes them
+      debuggable and lets them reach private endpoints, at the price of being your Lambda to keep working.
+      A fully managed prober could not reach anything private.
+    </p>
+  </div>
+
+  <div class="section" id="decisions">
+    <h2>Key Architecture Decisions</h2>
+
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Missing-data treatment on a canary alarm</td>
+        <td><code>breaching</code></td>
+        <td>Data should always be arriving, so its absence is the finding &mdash; the default sends it to INSUFFICIENT_DATA instead</td>
+      </tr>
+      <tr>
+        <td>Detecting a broken canary</td>
+        <td>A separate alarm on <code>Failed</code></td>
+        <td>Those failures are <em>&ldquo;related to the canary itself&rdquo;</em> and say nothing about the service</td>
+      </tr>
+      <tr>
+        <td>Which success metric goes in the SLO</td>
+        <td>Decide explicitly, and say which</td>
+        <td><code>SuccessPercent</code> and <code>SuccessPercentWithRetries</code> answer different questions</td>
+      </tr>
+      <tr>
+        <td>Alarming on <code>Browser</code> or <code>StepName</code></td>
+        <td>Treat as detail; guard on <code>CanaryName</code></td>
+        <td>Those dimensions depend on the canary type and the script's functions</td>
+      </tr>
+      <tr>
+        <td>Refactoring a canary script</td>
+        <td>Review the alarms naming its steps in the same change</td>
+        <td>Step dimensions are coupled to the code and nothing links them</td>
+      </tr>
+      <tr>
+        <td>Run frequency</td>
+        <td>Set it from how long you can afford not to know</td>
+        <td>Once a minute is 1,440 Lambda invocations a day per canary</td>
+      </tr>
+      <tr>
+        <td>Visual monitoring</td>
+        <td>Adopt where a blank page is a real risk</td>
+        <td>No metric alarm detects a 200 with broken rendering &mdash; but baselines need maintaining</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>Check the missing-data treatment on every canary alarm.</strong> If it is the default, that
+      alarm cannot tell you the canary stopped. This is the single highest-value check in this post and it is
+      a configuration field.
+    </p>
+    <p>
+      <strong>Then confirm something alarms on <code>Failed</code>.</strong> Without it, a canary that
+      breaks on its own script update is invisible, and the service it was watching is now unmonitored with
+      a green dashboard.
+    </p>
+    <p>
+      <strong>Finally, list your canary alarms by dimension.</strong> Anything on <code>Browser</code> or
+      <code>StepName</code> is coupled to a configuration or a function name that a routine change can
+      remove. Those are the alarms most likely to be quietly watching a metric that no longer exists.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      This run of posts has circled one idea from several directions: a signal's absence is not the same as
+      a signal of health, and most dashboards render them identically. #105 had an index that answered
+      partially. #108 had a compliance status that was an estimate. #110 had the alarm state that means
+      <em>I cannot tell</em>.
+    </p>
+    <p>
+      Canaries are the sharpest form of it, because here the absence is produced by the monitor rather than
+      the system. Every other signal in this series degrades when the thing being watched degrades. A
+      canary's signal degrades when <em>either</em> the service or the canary degrades, and the two look the
+      same from outside. That is not an argument against canaries &mdash; they answer a question nothing else
+      can &mdash; it is an argument for the second alarm.
+    </p>
+    <p>
+      So, two alarms per canary, always: one on the signal, treating missing data as breaching, and one on
+      <code>Failed</code>. The first tells you the service is unwell. The second tells you that the first one
+      has stopped being able to say so.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Operational Excellence &mdash; CloudWatch Logs Insights and log-based alarms: why a query that runs on a schedule is a different monitoring primitive from a metric filter, what an M-out-of-N evaluation means when the datapoints are query executions, and what it costs to alarm on data you have to scan.</p>
+    </div>
+  </div>
+
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries_metrics.html" target="_blank" rel="noopener">CloudWatch metrics published by canaries &#8212; the exact definitions of <code>Failed</code> as runs that failed to execute and related to the canary itself, <code>SuccessPercent</code>, <code>SuccessPercentWithRetries</code>, <code>Failed requests</code>, <code>RetryCount</code>, <code>Duration</code> and <code>VisualMonitoringSuccessPercent</code>, the browser-dimension defaults for multi- and single-browser canaries, and the conditional <code>StepName</code> dimension</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries.html" target="_blank" rel="noopener">Synthetic monitoring (canaries) &#8212; that canaries verify customer experience without customer traffic, that they create Lambda functions in your account, the once-per-minute floor on scheduling, the <code>CloudWatchSynthetics</code> namespace and <code>CanaryName</code> dimension, availability and latency checking with stored screenshots, and Region availability</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarms-and-missing-data.html" target="_blank" rel="noopener">Configuring how CloudWatch alarms treat missing data &#8212; that the default treatment is <code>missing</code> and sends an all-missing evaluation range to INSUFFICIENT_DATA, and that <code>breaching</code> treats absent points as breaching, which is the fix for a canary alarm</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/AlarmThatSendsEmail.html" target="_blank" rel="noopener">Using Amazon CloudWatch alarms &#8212; that an alarm invokes actions only when it changes state, which is why an alarm sitting in INSUFFICIENT_DATA delivers nothing</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/servicelens_canaries_security.html" target="_blank" rel="noopener">Security considerations for Synthetics canaries &#8212; further reading before running canaries against production endpoints; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>

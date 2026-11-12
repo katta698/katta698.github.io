@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AWS Architecture Series #111 — A stopped canary looks exactly like a healthy service | Jayanth Katta Blog</title>
+<meta name="description" content="A Synthetics canary proves something a metric alarm cannot: that a request path works when no customer is using it. But canary metrics are published by canary runs, so a canary that stops running publishes nothing - and by #110's default missing-data treatment, nothing means INSUFFICIENT_DATA, which fires no alarm action. A stopped canary and a healthy service produce the same silence. Separately, Failed counts runs that failed to execute, which is a statement about the canary rather than about the service, and SuccessPercent and SuccessPercentWithRetries answer different questions."/>
+<meta property="og:type" content="article"/>
+<meta property="og:site_name" content="Jayanth Katta"/>
+<!-- og:title is the post title WITHOUT the " | Jayanth Katta Blog" suffix. -->
+<meta property="og:title" content="A stopped canary looks exactly like a healthy service"/>
+<meta property="og:description" content="A Synthetics canary proves something a metric alarm cannot: that a request path works when no customer is using it. But canary metrics are published by canary runs, so a canary that stops running publishes nothing - and by #110's default missing-data treatment, nothing means INSUFFICIENT_DATA, which fires no alarm action. A stopped canary and a healthy service produce the same silence. Separately, Failed counts runs that failed to execute, which is a statement about the canary rather than about the service, and SuccessPercent and SuccessPercentWithRetries answer different questions."/>
+<meta property="og:url" content="https://jayanthkatta.com/blog/aws-architecture-synthetics-canaries/"/>
+<!-- Site image, never the post diagram: LinkedIn, X and Facebook do not render SVG. -->
+<meta property="og:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="A stopped canary looks exactly like a healthy service"/>
+<meta name="twitter:description" content="A Synthetics canary proves something a metric alarm cannot: that a request path works when no customer is using it. But canary metrics are published by canary runs, so a canary that stops running publishes nothing - and by #110's default missing-data treatment, nothing means INSUFFICIENT_DATA, which fires no alarm action. A stopped canary and a healthy service produce the same silence. Separately, Failed counts runs that failed to execute, which is a statement about the canary rather than about the service, and SuccessPercent and SuccessPercentWithRetries answer different questions."/>
+<meta name="twitter:image" content="https://jayanthkatta.com/favicon-transparent.png"/>
+<link rel="canonical" href="https://jayanthkatta.com/blog/aws-architecture-synthetics-canaries/"/>
+<!-- The blog's own feed. It has existed at /blog/rss.xml all along and
+     nothing advertised it, so no reader or browser extension could find
+     it: a feed nobody can discover is a feed nobody has. -->
+<link rel="alternate" type="application/rss+xml" title="Jayanth Katta — blog" href="/blog/rss.xml"/>
+<link rel="alternate" type="application/atom+xml" title="Cloud incidents — all three clouds" href="/intelligence/status/feed.xml"/>
+<link rel="icon" href="/favicon-transparent.png" type="image/png"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1D2322"/>
+<link rel="apple-touch-icon" href="/blog/assets/icons/apple-touch-icon.png"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Jayanth Katta"/>
+<link rel="stylesheet" href="/blog/assets/blog.css?v=51fe4ef5"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"/>
+<script src="/blog/assets/occasion-banner.js?v=c039b840" data-occasion-banner></script>
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/dm-sans-latin.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin
+      href="/blog/assets/fonts/playfair-latin.woff2">
+<link rel="stylesheet" data-site-footer-style href="/blog/assets/site-footer.css?v=c039b840">
+<script src="/blog/assets/site-footer.js?v=c039b840" data-site-footer defer></script>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-logo" href="/blog/" aria-label="Jayanth Katta blog home"><img class="brand-mark" src="/brand-mark-96.png" alt="" width="30" height="30" aria-hidden="true"><span class="brand-name">Jayanth Katta</span></a>
+  <div class="nav-spacer"></div>
+  <ul class="nav-links">
+    <li><a href="/">Portfolio</a></li>
+    <li><a href="/blog/" class="active" aria-current="page">Blog</a></li>
+    <li><a href="/intelligence/">Intelligence</a></li>
+    <li><a href="/intelligence/whats-new/">What&rsquo;s new</a></li>
+    <li><a href="/intelligence/status/">Live status</a></li>
+  </ul>
+  <button class="theme-toggle" id="nav-theme-btn" aria-label="Toggle dark mode">
+    <span id="theme-icon-moon">🌙</span><span id="theme-label-text">Dark</span>
+  </button>
+</nav>
+<div class="post-search-bar" id="post-search-bar">
+  <div class="search-bar-inner">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input id="post-search-input" type="search" placeholder="Search posts… (press Enter)" autocomplete="off"/>
+  </div>
+</div>
+<main class="post-page-layout">
+  <div class="post-breadcrumb">
+    <a href="/">Home</a><span class="post-breadcrumb-sep">›</span>
+    <a href="/blog/">Blog</a><span class="post-breadcrumb-sep">›</span>
+    <span>AWS Architecture Series #111 — A stopped canary looks exactly like a healthy service…</span>
+  </div>
+  <article>
+    <header class="post-header">
+      <div class="post-header-meta"><span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span></div>
+      <h1>AWS Architecture Series #111 — A stopped canary looks exactly like a healthy service</h1>
+      <p class="post-description">A Synthetics canary proves something a metric alarm cannot: that a request path works when no customer is using it. But canary metrics are published by canary runs, so a canary that stops running publishes nothing - and by #110's default missing-data treatment, nothing means INSUFFICIENT_DATA, which fires no alarm action. A stopped canary and a healthy service produce the same silence. Separately, Failed counts runs that failed to execute, which is a statement about the canary rather than about the service, and SuccessPercent and SuccessPercentWithRetries answer different questions.</p>
+      <div class="post-info">
+        <span>Nov 12, 2026</span>
+        <span class="post-info-dot"></span>
+        <span>12 min read</span>
+      </div>
+    </header>
+    <div class="verified-badge"><span class="verified-check" aria-hidden="true">&#10003;</span><span class="verified-text"><strong>Verified against current vendor documentation on 12 November 2026.</strong> Pricing, limits and API behaviour were checked against the official docs on that date. Cloud services change fast &mdash; if you are reading this much later, treat the specifics as a starting point and re-check the linked sources.</span></div>
+    <div class="quick-summary-mount" data-slug="aws-architecture-synthetics-canaries" data-topics="AWS,Architecture,AWS Architecture Series"></div>
+    <div class="post-divider"></div>
+    <div class="post-body"><div id="jk-post">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SHARED CSS — DO NOT MODIFY. Identical across all arch posts.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<style>
+#jk-post {
+  font-family: 'Amazon Ember', 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #0f1111;
+  max-width: 860px;
+  margin: 0 auto;
+  background: transparent;
+}
+#jk-post * { box-sizing: border-box; }
+#jk-post .post-header { border-bottom: 3px solid #C4A484; padding-bottom: 24px; margin-bottom: 36px; }
+#jk-post .post-eyebrow { font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+#jk-post .post-title { font-size: 28px; font-weight: 700; color: #0f1111; line-height: 1.25; margin-bottom: 12px; }
+#jk-post .post-subtitle { font-size: 16px; color: #3d3d3d; line-height: 1.6; margin-bottom: 14px; }
+#jk-post .post-meta { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: #6c757d; border-top: 1px solid #e5e5e5; padding-top: 12px; margin-top: 12px; }
+#jk-post .post-meta span::before { content: "· "; }
+#jk-post .post-meta span:first-child::before { content: ""; }
+#jk-post .container { padding: 0; }
+#jk-post .section { padding: 36px 0; border-bottom: 1px solid #e5e5e5; }
+#jk-post .section:last-child { border-bottom: none; }
+#jk-post h2 { font-size: 22px; font-weight: 700; color: #0f1111; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #C4A484; display: inline-block; }
+#jk-post h3 { font-size: 17px; font-weight: 700; color: #0f1111; margin: 28px 0 10px; }
+#jk-post h4 { font-size: 14px; font-weight: 700; color: #0f1111; margin: 16px 0 6px; }
+#jk-post p  { color: #3d3d3d; margin-bottom: 14px; }
+#jk-post ul, #jk-post ol { margin: 0 0 14px 24px; color: #3d3d3d; }
+#jk-post li { margin-bottom: 6px; }
+#jk-post .toc { background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #C4A484; border-radius: 4px; padding: 20px 24px; margin: 28px 0; }
+#jk-post .toc h3 { margin: 0 0 12px 0; font-size: 14px; color: #0f1111; }
+#jk-post .toc ol { margin: 0; padding-left: 20px; }
+#jk-post .toc li { font-size: 14px; margin-bottom: 4px; }
+#jk-post .toc a { color: #0066c0; text-decoration: none; }
+#jk-post .toc a:hover { text-decoration: underline; }
+#jk-post .callout { border-left: 3px solid #C4A484; background: #fffbf5; border-radius: 0 4px 4px 0; padding: 16px 20px; margin: 20px 0; }
+#jk-post .callout.amber { border-color: #d97706; background: #fffbeb; }
+#jk-post .callout.green { border-color: #1d8102; background: #f4fbf4; }
+#jk-post .callout.blue  { border-color: #0055cc; background: #eff6ff; }
+#jk-post .callout.red   { border-color: #cc0c39; background: #fff5f5; }
+#jk-post .callout strong { font-size: 14px; display: block; margin-bottom: 6px; color: #0f1111; }
+#jk-post .callout p { margin: 0; font-size: 14px; color: #3d3d3d; }
+#jk-post .flow { display: flex; flex-direction: column; gap: 0; margin: 24px 0; }
+#jk-post .flow-step { display: flex; gap: 16px; align-items: flex-start; padding: 14px 0; }
+#jk-post .flow-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #C4A484; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+#jk-post .flow-content h4 { font-size: 14px; font-weight: 700; margin: 8px 0 4px; }
+#jk-post .flow-content p  { font-size: 14px; color: #3d3d3d; margin: 0; }
+#jk-post .code-block { background: #1e293b; border-radius: 4px; overflow: hidden; margin: 16px 0; border: 1px solid #2d3748; }
+#jk-post .code-header { background: #0f172a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; }
+#jk-post .code-lang { font-size: 11px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px; }
+#jk-post .code-dots { display: flex; gap: 5px; }
+#jk-post .code-dot  { width: 9px; height: 9px; border-radius: 50%; }
+#jk-post .code-dot:nth-child(1) { background: #ef4444; }
+#jk-post .code-dot:nth-child(2) { background: #f59e0b; }
+#jk-post .code-dot:nth-child(3) { background: #10b981; }
+#jk-post pre { padding: 18px 20px; overflow-x: auto; font-family: 'Courier New', Consolas, monospace; font-size: 13px; line-height: 1.65; color: #e2e8f0; white-space: pre; margin: 0; }
+#jk-post :not(pre) > code { background: #f5f5f5; color: #0f1111; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', Consolas, monospace; font-size: 13px; border: 1px solid #e5e5e5; }
+#jk-post pre code { background: none; border: 0; padding: 0; color: inherit; font-size: inherit; border-radius: 0; }
+#jk-post .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+#jk-post .tag { display: flex; align-items: center; gap: 6px; background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 6px 12px; font-size: 13px; color: #3d3d3d; }
+#jk-post .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+#jk-post .card { border: 1px solid #e5e5e5; border-radius: 4px; padding: 18px; background: #fafafa; }
+#jk-post .card h4 { margin-top: 0; }
+#jk-post .card p  { font-size: 13px; margin-bottom: 0; }
+#jk-post .challenge-card { border: 1px solid #e5e5e5; border-radius: 4px; margin: 16px 0; overflow: hidden; }
+#jk-post .challenge-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+#jk-post .challenge-header .num { background: #cc0c39; color: #fff; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; min-width: 24px; }
+#jk-post .challenge-header strong { color: #0f1111; font-size: 14px; }
+#jk-post .challenge-body { padding: 14px 16px; }
+#jk-post .challenge-body p { font-size: 14px; margin-bottom: 8px; }
+#jk-post .fix-label { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #1d8102; margin-bottom: 6px; display: block; }
+#jk-post figure.screenshot { margin: 24px 0; border-radius: 4px; overflow: hidden; border: 1px solid #e5e5e5; }
+#jk-post figure.screenshot img { width: 100%; display: block; }
+#jk-post figure.screenshot figcaption { background: #fafafa; border-top: 1px solid #e5e5e5; padding: 8px 14px; font-size: 13px; color: #6c757d; font-style: italic; }
+#jk-post table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+#jk-post .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 16px 0; }
+#jk-post .table-scroll table { margin: 0; }
+#jk-post th { background: #fafafa; text-align: left; padding: 10px 14px; font-size: 13px; font-weight: 700; border-bottom: 2px solid #e5e5e5; color: #0f1111; }
+#jk-post td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #e5e5e5; color: #3d3d3d; }
+#jk-post tr:last-child td { border-bottom: none; }
+#jk-post tr:nth-child(even) td { background: #fafafa; }
+#jk-post .post-footer { background: #fafafa; border-top: 2px solid #C4A484; border-radius: 0 0 4px 4px; padding: 24px; text-align: center; font-size: 13px; color: #6c757d; margin-top: 36px; }
+#jk-post .post-footer p { color: #6c757d; margin-bottom: 0; }
+#jk-post .post-footer p + p { margin-top: 6px; }
+#jk-post .section-divider, #jk-post .separator { border: none; border-top: 2px solid #e5e5e5; margin: 32px 0; }
+#jk-post .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+#jk-post .stat-box { background: #fafafa; border: 1px solid #e5e5e5; border-radius: 4px; padding: 14px 18px; text-align: center; min-width: 120px; flex: 1; }
+#jk-post .stat-val { font-size: 1.6em; font-weight: 700; color: #C4A484; display: block; line-height: 1; }
+#jk-post .stat-lbl { font-size: 0.78em; color: #6c757d; margin-top: 4px; display: block; }
+@media (max-width: 640px) {
+  #jk-post .grid-2 { grid-template-columns: 1fr; }
+  #jk-post .post-title { font-size: 22px; }
+}
+</style>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     POST BODY — Replace everything between these markers with post content.
+     Structure:
+       <div class="container">
+         <div class="section" id="challenge">   ← Business Challenge
+         <div class="section" id="architecture"> ← Architecture
+         <div class="section" id="why-it-matters"> ← Why This Works
+         <div class="section" id="key-decisions"> ← Key Decisions
+         <div class="section" id="closing">     ← Closing Thought
+           (ends with .callout "Next in this series")
+         <div class="section" id="reference">   ← Official AWS Reference
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div class="section" id="challenge">
+    <h2>Business Challenge</h2>
+    <p>
+      <a href="/blog/aws-architecture-alarm-states-missing-data/">#110</a> established that an alarm with no
+      data goes to INSUFFICIENT_DATA by default, and that INSUFFICIENT_DATA fires nothing. Canaries are
+      where that behaviour does the most damage, because of what a canary is for.
+    </p>
+    <p>
+      <em>&ldquo;Canaries follow the same routes and perform the same actions as a customer, which makes it
+      possible for you to continually verify your customer experience <strong>even when you don't have any
+      customer traffic</strong> on your applications.&rdquo;</em>
+    </p>
+    <p>
+      That is the genuine capability: a metric alarm can only tell you about traffic that happened, so it
+      cannot distinguish <em>working</em> from <em>unused</em>. A canary manufactures the traffic. The catch
+      is that the canary is now the thing that has to keep working.
+    </p>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">1</span><strong>No runs means no datapoints, and no datapoints means no alarm</strong></div>
+      <div class="challenge-body">
+        <p>
+          Canary metrics are a product of canary runs.
+          <em>&ldquo;By default, canaries create several CloudWatch metrics in the
+          <code>CloudWatchSynthetics</code> namespace&rdquo;</em>, and the metrics themselves are defined
+          per run &mdash; <em>&ldquo;<code>Duration</code> &ndash; The duration in milliseconds of the canary
+          run&rdquo;</em>, <em>&ldquo;<code>SuccessPercent</code> &ndash; The percentage of the runs of this
+          canary that succeed and find no failures&rdquo;</em>.
+        </p>
+        <p>
+          So a canary that is stopped, paused, throttled, broken on a bad deployment of its own script, or
+          sitting behind an expired IAM role emits no new datapoints. Follow that into #110's rules: the
+          evaluation range fills with missing data, the default treatment is
+          <em>&ldquo;<code>missing</code>&rdquo;</em>, and
+          <em>&ldquo;If all data points in the alarm evaluation range are missing, the alarm transitions to
+          INSUFFICIENT_DATA.&rdquo;</em> Since
+          <em>&ldquo;An alarm invokes actions only when the alarm changes state&rdquo;</em>, the ALARM action
+          never fires.
+        </p>
+        <p>
+          The result is a dashboard on which a stopped canary and a perfectly healthy service are the same
+          picture. Worse than a false negative, because a false negative at least implies something was
+          measured.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Set the canary alarm's missing-data treatment to <code>breaching</code> &mdash; <em>&ldquo;Missing data points are treated as &ldquo;bad&rdquo; and breaching the threshold&rdquo;</em>. For a synthetic monitor this is almost always right: the whole point is that data should always be arriving, so its absence is itself the finding. Then add a second alarm on <code>Failed</code>, which catches the different failure in challenge 2.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">2</span><strong>Failed is about the canary; SuccessPercent is about the run</strong></div>
+      <div class="challenge-body">
+        <p>
+          Two metrics that read like synonyms and are not:
+        </p>
+        <p>
+          <em>&ldquo;<code>Failed</code> &ndash; The number of canary runs that failed to execute.
+          <strong>These failures are related to the canary itself.</strong>&rdquo;</em>
+        </p>
+        <p>
+          <em>&ldquo;<code>SuccessPercent</code> &ndash; The percentage of the runs of this canary that
+          succeed and find no failures.&rdquo;</em>
+        </p>
+        <p>
+          <code>Failed</code> counts the canary breaking. <code>SuccessPercent</code> counts runs that
+          completed <em>and</em> found nothing wrong. A script with a syntax error after an update, a canary
+          whose Lambda times out, a broken dependency in its own layer &mdash; those move
+          <code>Failed</code>, and they are statements about your monitoring, not about your service. Alarming
+          on one and reporting it as the other is how a monitoring outage gets filed as an application
+          incident, or the reverse.
+        </p>
+        <p>
+          There is a third reading of the same run:
+          <em>&ldquo;<code>SuccessPercentWithRetries</code> &ndash; The percentage of the runs of this canary
+          that succeed <strong>after all attempts</strong>&rdquo;</em>, with
+          <em>&ldquo;<code>RetryCount</code> &ndash; The number of times your canary retried. This metric is
+          only displayed when there are retries.&rdquo;</em> A path that fails and then succeeds on retry
+          scores badly on <code>SuccessPercent</code> and perfectly on
+          <code>SuccessPercentWithRetries</code>. Both numbers are true; they answer different questions, and
+          the second is the more forgiving one to put on a slide.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Alarm on all three deliberately and label them for what they measure: <code>Failed</code> as <em>monitoring is broken</em>, <code>SuccessPercent</code> as <em>first attempt failed</em>, <code>SuccessPercentWithRetries</code> as <em>the path is unusable</em>. Which one belongs in your SLO is a real decision &mdash; a customer who succeeds on a browser retry had a worse experience than the retried number suggests and a better one than the raw number does.</p>
+      </div>
+    </div>
+
+    <div class="challenge-card">
+      <div class="challenge-header"><span class="num">3</span><strong>The dimensions that exist depend on the canary's own configuration</strong></div>
+      <div class="challenge-body">
+        <p>
+          An alarm names a metric and its dimensions. For canaries, which dimensions exist is not fixed:
+        </p>
+        <p>
+          <em>&ldquo;For multi-browser canaries, browser-dimension metrics are enabled by default to provide
+          visibility into performance across browsers like Chrome, Firefox and other browsers.&rdquo;</em>
+          And the inverse: <em>&ldquo;For single-browser canaries, browser-dimension metrics are disabled by
+          default to avoid redundancy. To see metrics broken down by browser, set
+          <code>browserDimension</code> to <code>true</code>.&rdquo;</em>
+        </p>
+        <p>
+          Step-level dimensions are conditional too:
+          <em>&ldquo;Canaries that use either the <code>executeStep()</code> or
+          <code>executeHttpStep()</code> methods from the Synthetics library also publish
+          <code>SuccessPercent</code> and <code>Duration</code> metrics with the dimensions
+          <code>CanaryName</code> and <code>StepName</code> for each step.&rdquo;</em>
+        </p>
+        <p>
+          So an alarm written against a <code>Browser</code> or <code>StepName</code> dimension depends on a
+          property of the canary's script and configuration. Convert a multi-browser canary to
+          single-browser, or refactor a script away from <code>executeStep()</code>, and the dimension stops
+          being published. #110 covers what happens next: no datapoints, INSUFFICIENT_DATA, no action &mdash;
+          and nothing in CloudWatch objects to an alarm on a dimension that no longer exists.
+        </p>
+        <span class="fix-label">Fix</span>
+        <p>Alarm on the <code>CanaryName</code> dimension for the signal that must never go quiet, and treat <code>Browser</code> and <code>StepName</code> alarms as additional detail rather than the primary guard. If a script refactor is in scope, check the alarms that reference its step names in the same change &mdash; they are coupled to the code, and nothing links them.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="architecture">
+    <h2>Architecture</h2>
+    <img src="/blog/assets/diagrams/arch-111-synthetics-canaries.svg" alt="Diagram: A CloudWatch Synthetics canary is a configurable script that runs on a schedule to monitor endpoints and APIs, and it proves something a metric alarm cannot, because canaries follow the same routes and perform the same actions as a customer, making it possible to verify customer experience even when there is no customer traffic. Canaries create Lambda functions in your account and can run as often as once per minute, which is 1,440 runs a day. Their metrics are published per run in the CloudWatchSynthetics namespace with CanaryName as a dimension. The central hazard follows from that: a canary that stops running publishes no new datapoints, so the alarm evaluation range fills with missing data, and because the default missing-data treatment is missing, the alarm transitions to INSUFFICIENT_DATA rather than ALARM, and since an alarm invokes actions only when it changes state, no action fires. A stopped canary and a healthy service therefore produce identical silence, which is why a canary alarm should usually treat missing data as breaching, where missing points are treated as bad and breaching the threshold. Three metrics read like synonyms and are not. Failed counts canary runs that failed to execute and those failures are related to the canary itself, so it describes the monitoring rather than the service. SuccessPercent is the percentage of runs that succeed and find no failures. SuccessPercentWithRetries is the percentage that succeed after all attempts, with RetryCount shown only when retries occur, so a path that fails then succeeds on retry scores badly on one and perfectly on the other. Available dimensions also depend on the canary's own configuration: browser-dimension metrics are enabled by default for multi-browser canaries and disabled by default for single-browser ones unless browserDimension is set to true, and step dimensions exist only for canaries using executeStep or executeHttpStep, so an alarm on a Browser or StepName dimension is coupled to the script and nothing links them. Other metrics include Duration for the run, Failed requests for HTTP requests that failed with no response, and VisualMonitoringSuccessPercent for visual comparisons against baseline screenshots. CloudWatch Synthetics is available in all commercial AWS Regions and the GovCloud Regions.">
+
+    <h3>What a canary proves that a metric alarm cannot</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th></th><th>Metric alarm on real traffic</th><th>Canary</th></tr>
+      <tr>
+        <td>Needs customers</td>
+        <td>Yes &mdash; no traffic, no signal</td>
+        <td>No &mdash; <em>&ldquo;even when you don't have any customer traffic&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>Can distinguish working from unused</td>
+        <td>No</td>
+        <td>Yes</td>
+      </tr>
+      <tr>
+        <td>Covers the whole path</td>
+        <td>Only the hops that emit metrics</td>
+        <td>End to end, as the customer sees it</td>
+      </tr>
+      <tr>
+        <td>What goes quiet when it breaks</td>
+        <td>Nothing &mdash; the service is still emitting</td>
+        <td><strong>The signal itself</strong></td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      The last row is the trade. A metric alarm's signal is produced by the thing being watched, so it keeps
+      arriving while the watcher is fine. A canary's signal is produced by the watcher, so it stops when
+      either one breaks &mdash; and the two cases are indistinguishable without a second alarm.
+    </p>
+
+    <h3>Three readings of one run</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Metric</th><th>What it counts</th><th>What it is a statement about</th></tr>
+      <tr>
+        <td><code>Failed</code></td>
+        <td>Runs that <em>&ldquo;failed to execute&rdquo;</em></td>
+        <td>Your monitoring &mdash; <em>&ldquo;related to the canary itself&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td><code>SuccessPercent</code></td>
+        <td>Runs that <em>&ldquo;succeed and find no failures&rdquo;</em></td>
+        <td>The first attempt against your service</td>
+      </tr>
+      <tr>
+        <td><code>SuccessPercentWithRetries</code></td>
+        <td>Runs that <em>&ldquo;succeed after all attempts&rdquo;</em></td>
+        <td>Whether the path is usable at all</td>
+      </tr>
+      <tr>
+        <td><code>Failed requests</code></td>
+        <td><em>&ldquo;HTTP requests executed by the canary on the target website that failed with no response&rdquo;</em></td>
+        <td>Individual requests, not runs</td>
+      </tr>
+    </table>
+    </div>
+    <p>
+      <code>Failed requests</code> is the one most likely to be misread, because it counts requests rather
+      than runs and it is scoped to <em>no response</em> &mdash; a 500 is not a failed request by this
+      definition, it is a <code>5xx</code>.
+    </p>
+
+    <h3>What else a canary can watch</h3>
+    <p>
+      Beyond availability and latency, canaries can compare what the page looks like:
+      <em>&ldquo;<code>VisualMonitoringSuccessPercent</code> &ndash; The percentage of visual comparisons
+      that successfully matched the baseline screenshots during a canary run.&rdquo;</em> And the broader
+      claim: <em>&ldquo;Canaries check the availability and latency of your endpoints and can store load time
+      data and screenshots of the UI.&rdquo;</em>
+    </p>
+    <p>
+      Visual monitoring is the capability with no metric-alarm equivalent at all. A service can return 200
+      with correct latency and a blank page, and nothing in a conventional metric notices. It is also the
+      capability most likely to produce alarm fatigue, because a baseline that drifts with every legitimate
+      design change needs maintaining.
+    </p>
+
+    <h3>The cost shape, which follows from the schedule</h3>
+    <p>
+      <em>&ldquo;Canaries can run as often as once per minute&rdquo;</em> &mdash; 1,440 runs a day, each one
+      a Lambda invocation, because
+      <em>&ldquo;They create Lambda functions in your account that use Node.js, Python, or Java as the
+      runtime.&rdquo;</em> A headless-browser canary is not a cheap Lambda, and the artefacts it stores
+      accumulate in S3.
+    </p>
+    <p>
+      So the per-minute schedule that makes a canary responsive is also the one that makes it the most
+      expensive monitoring you own per signal. The useful question is not <em>how often can it run</em> but
+      <em>how long are you willing not to know</em>, which for most paths is longer than a minute.
+    </p>
+  </div>
+
+  <div class="section" id="why-it-matters">
+    <h2>Why This Architecture Holds Up</h2>
+    <h3>Manufacturing the traffic is the only way to answer the question</h3>
+    <p>
+      There is no passive way to know whether an unused path works. Either you wait for a customer to find
+      out, or you generate the request yourself. Synthetics takes the second option honestly, and the
+      consequence &mdash; that the monitor becomes a component with its own failure modes &mdash; is
+      inherent rather than a design flaw.
+    </p>
+
+    <h3>Separating Failed from SuccessPercent is the right distinction</h3>
+    <p>
+      It would have been easier to publish one success number and let canary failures contaminate it. Keeping
+      <em>&ldquo;failures &hellip; related to the canary itself&rdquo;</em> in a separate metric is what makes
+      it possible to tell a monitoring outage from an application outage at all. The names could be clearer;
+      the separation is correct.
+    </p>
+
+    <h3>Running on your own Lambda is a defensible trade</h3>
+    <p>
+      Canaries execute in your account, with your IAM role, in your VPC if you choose. That makes them
+      debuggable and lets them reach private endpoints, at the price of being your Lambda to keep working.
+      A fully managed prober could not reach anything private.
+    </p>
+  </div>
+
+  <div class="section" id="key-decisions">
+    <h2>Key Architecture Decisions</h2>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Decision</th><th>Choose this</th><th>Because</th></tr>
+      <tr>
+        <td>Missing-data treatment on a canary alarm</td>
+        <td><code>breaching</code></td>
+        <td>Data should always be arriving, so its absence is the finding &mdash; the default sends it to INSUFFICIENT_DATA instead</td>
+      </tr>
+      <tr>
+        <td>Detecting a broken canary</td>
+        <td>A separate alarm on <code>Failed</code></td>
+        <td>Those failures are <em>&ldquo;related to the canary itself&rdquo;</em> and say nothing about the service</td>
+      </tr>
+      <tr>
+        <td>Which success metric goes in the SLO</td>
+        <td>Decide explicitly, and say which</td>
+        <td><code>SuccessPercent</code> and <code>SuccessPercentWithRetries</code> answer different questions</td>
+      </tr>
+      <tr>
+        <td>Alarming on <code>Browser</code> or <code>StepName</code></td>
+        <td>Treat as detail; guard on <code>CanaryName</code></td>
+        <td>Those dimensions depend on the canary type and the script's functions</td>
+      </tr>
+      <tr>
+        <td>Refactoring a canary script</td>
+        <td>Review the alarms naming its steps in the same change</td>
+        <td>Step dimensions are coupled to the code and nothing links them</td>
+      </tr>
+      <tr>
+        <td>Run frequency</td>
+        <td>Set it from how long you can afford not to know</td>
+        <td>Once a minute is 1,440 Lambda invocations a day per canary</td>
+      </tr>
+      <tr>
+        <td>Visual monitoring</td>
+        <td>Adopt where a blank page is a real risk</td>
+        <td>No metric alarm detects a 200 with broken rendering &mdash; but baselines need maintaining</td>
+      </tr>
+    </table>
+    </div>
+
+    <h3>The audit worth running</h3>
+    <p>
+      <strong>Check the missing-data treatment on every canary alarm.</strong> If it is the default, that
+      alarm cannot tell you the canary stopped. This is the single highest-value check in this post and it is
+      a configuration field.
+    </p>
+    <p>
+      <strong>Then confirm something alarms on <code>Failed</code>.</strong> Without it, a canary that
+      breaks on its own script update is invisible, and the service it was watching is now unmonitored with
+      a green dashboard.
+    </p>
+    <p>
+      <strong>Finally, list your canary alarms by dimension.</strong> Anything on <code>Browser</code> or
+      <code>StepName</code> is coupled to a configuration or a function name that a routine change can
+      remove. Those are the alarms most likely to be quietly watching a metric that no longer exists.
+    </p>
+  </div>
+
+  <div class="section" id="closing">
+    <h2>Closing Thought</h2>
+    <p>
+      This run of posts has circled one idea from several directions: a signal's absence is not the same as
+      a signal of health, and most dashboards render them identically. #105 had an index that answered
+      partially. #108 had a compliance status that was an estimate. #110 had the alarm state that means
+      <em>I cannot tell</em>.
+    </p>
+    <p>
+      Canaries are the sharpest form of it, because here the absence is produced by the monitor rather than
+      the system. Every other signal in this series degrades when the thing being watched degrades. A
+      canary's signal degrades when <em>either</em> the service or the canary degrades, and the two look the
+      same from outside. That is not an argument against canaries &mdash; they answer a question nothing else
+      can &mdash; it is an argument for the second alarm.
+    </p>
+    <p>
+      So, two alarms per canary, always: one on the signal, treating missing data as breaching, and one on
+      <code>Failed</code>. The first tells you the service is unwell. The second tells you that the first one
+      has stopped being able to say so.
+    </p>
+
+    <div class="callout">
+      <strong>Next in this series</strong>
+      <p>Operational Excellence &mdash; CloudWatch Logs Insights and log-based alarms: why a query that runs on a schedule is a different monitoring primitive from a metric filter, what an M-out-of-N evaluation means when the datapoints are query executions, and what it costs to alarm on data you have to scan.</p>
+    </div>
+
+    <!-- REQUIRED: "Next in this series" callout — always last item in closing section -->
+  </div>
+
+  <!-- REQUIRED: section heading must be "Official AWS Reference", not "Reference" -->
+  <div class="section" id="reference">
+    <h2>Official AWS Reference</h2>
+    <ul>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries_metrics.html" target="_blank" rel="noopener">CloudWatch metrics published by canaries &#8212; the exact definitions of <code>Failed</code> as runs that failed to execute and related to the canary itself, <code>SuccessPercent</code>, <code>SuccessPercentWithRetries</code>, <code>Failed requests</code>, <code>RetryCount</code>, <code>Duration</code> and <code>VisualMonitoringSuccessPercent</code>, the browser-dimension defaults for multi- and single-browser canaries, and the conditional <code>StepName</code> dimension</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Synthetics_Canaries.html" target="_blank" rel="noopener">Synthetic monitoring (canaries) &#8212; that canaries verify customer experience without customer traffic, that they create Lambda functions in your account, the once-per-minute floor on scheduling, the <code>CloudWatchSynthetics</code> namespace and <code>CanaryName</code> dimension, availability and latency checking with stored screenshots, and Region availability</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarms-and-missing-data.html" target="_blank" rel="noopener">Configuring how CloudWatch alarms treat missing data &#8212; that the default treatment is <code>missing</code> and sends an all-missing evaluation range to INSUFFICIENT_DATA, and that <code>breaching</code> treats absent points as breaching, which is the fix for a canary alarm</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/AlarmThatSendsEmail.html" target="_blank" rel="noopener">Using Amazon CloudWatch alarms &#8212; that an alarm invokes actions only when it changes state, which is why an alarm sitting in INSUFFICIENT_DATA delivers nothing</a></li>
+      <li><a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/servicelens_canaries_security.html" target="_blank" rel="noopener">Security considerations for Synthetics canaries &#8212; further reading before running canaries against production endpoints; no claims in this post are drawn from it</a></li>
+    </ul>
+  </div>
+
+</div>
+</div>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     END POST BODY
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+    </div>
+    <div class="post-tags">
+      <span class="post-tags-label">Topics:</span>
+      <span class="tag-badge">AWS</span> <span class="tag-badge">Architecture</span> <span class="tag-badge">AWS Architecture Series</span>
+    </div>
+    <!-- post-nav: include prev and/or next links as applicable -->
+    <nav class="post-nav"><a href="/blog/aws-daily-intelligence-promql-alarms-autoscaling/" class="post-nav-link prev"><span class="post-nav-dir">← Previous</span><span class="post-nav-title">AWS Daily Intelligence #73 - Bring your own alarm, own its silence</span></a><a href="/blog/aws-daily-intelligence-cloud-wan-flow-logs/" class="post-nav-link next"><span class="post-nav-dir">Next →</span><span class="post-nav-title">AWS Daily Intelligence #74 - The Cloud WAN metadata is best effort</span></a></nav>
+  </article>
+  <div class="comments-section">
+  <h3>Comments</h3>
+  <div id="disqus_thread"></div>
+  <script>
+    var disqus_config = function () {
+      this.page.url = 'https://jayanthkatta.com/blog/aws-architecture-synthetics-canaries/';
+      this.page.identifier = 'aws-architecture-synthetics-canaries';
+    };
+    (function() {
+      var d = document, s = d.createElement('script');
+      s.src = 'https://jayanthkatta.disqus.com/embed.js';
+      s.setAttribute('data-timestamp', +new Date());
+      (d.head || d.body).appendChild(s);
+    })();
+  </script>
+  <noscript>Please enable JavaScript to view comments.</noscript>
+</div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     WIDGETS + SCRIPTS — DO NOT MODIFY
+     ═══════════════════════════════════════════════════════════════════════ -->
+<button class="fb-btn" id="fb-btn" aria-label="Give feedback" title="Give feedback">&#9733;</button>
+<div class="fb-overlay" id="fb-overlay" data-page="">
+  <div class="fb-modal" id="fb-modal">
+    <div class="fb-title">How was your experience?</div>
+    <div class="fb-sub">Your feedback helps improve this site.</div>
+    <div class="fb-stars" id="fb-stars">
+      <button class="fb-star" data-v="1" aria-label="1 star">&#9733;</button>
+      <button class="fb-star" data-v="2" aria-label="2 stars">&#9733;</button>
+      <button class="fb-star" data-v="3" aria-label="3 stars">&#9733;</button>
+      <button class="fb-star" data-v="4" aria-label="4 stars">&#9733;</button>
+      <button class="fb-star" data-v="5" aria-label="5 stars">&#9733;</button>
+    </div>
+    <div class="fb-labels"><span>Poor</span><span>Excellent</span></div>
+    <textarea class="fb-textarea" id="fb-text" placeholder="Any thoughts? (optional)"></textarea>
+    <div class="fb-footer">
+      <button class="fb-skip" id="fb-skip">Skip</button>
+      <button class="fb-send" id="fb-send">Send feedback</button>
+    </div>
+  </div>
+</div>
+<script src="/blog/assets/feedback.js?v=5f3acc71" defer></script>
+
+<button class="ask-launcher" id="ask-launcher" aria-label="Ask about me" title="Ask about me">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+    <path d="M12 2l1.6 4.8L18.4 8.4l-4.8 1.6L12 14.8l-1.6-4.8L5.6 8.4l4.8-1.6L12 2z"/>
+    <path d="M19.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z" opacity=".55"/>
+    <path d="M5 17.5l.6 1.9 1.9.6-1.9.6L5 22.5l-.6-1.9-1.9-.6 1.9-.6L5 17.5z" opacity=".35"/>
+  </svg>
+</button>
+<div class="ask-overlay" id="ask-overlay" role="dialog" aria-modal="true" aria-label="Ask about me">
+  <div class="ask-terminal">
+    <div class="ask-titlebar">
+      <span class="ask-dot ask-dot-red"></span>
+      <span class="ask-dot ask-dot-yellow"></span>
+      <span class="ask-dot ask-dot-green"></span>
+      <span class="ask-titlebar-label">ask-jay — about me</span>
+      <button class="ask-close" id="ask-close" aria-label="Close">✕</button>
+    </div>
+    <div class="ask-body">
+      <form id="ask-form">
+        <div class="ask-prompt-row">
+          <span class="ask-prompt-label">jay@me :~$</span>
+          <textarea class="ask-input" id="ask-input" rows="1" placeholder='ask "your question here"' autocomplete="off"></textarea>
+        </div>
+        <div class="ask-send-row">
+          <button class="ask-send-btn" id="ask-send" type="submit">Run ↵</button>
+        </div>
+      </form>
+    </div>
+    <div class="ask-output" id="ask-output"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/search';
+  var launcher=document.getElementById('ask-launcher'),overlay=document.getElementById('ask-overlay'),
+      closeBtn=document.getElementById('ask-close'),form=document.getElementById('ask-form'),
+      input=document.getElementById('ask-input'),sendBtn=document.getElementById('ask-send'),
+      output=document.getElementById('ask-output');
+  function openModal(){overlay.classList.add('open');document.body.style.overflow='hidden';setTimeout(function(){input.focus();},220);}
+  function closeModal(){overlay.classList.remove('open');document.body.style.overflow='';}
+  launcher.addEventListener('click',openModal);
+  closeBtn.addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)closeModal();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+  input.addEventListener('input',function(){this.style.height='auto';this.style.height=this.scrollHeight+'px';});
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.dispatchEvent(new Event('submit'));}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();var q=input.value.trim();if(!q)return;
+    sendBtn.disabled=true;output.className='ask-output visible';
+    output.innerHTML='<p class="ask-spinner">▌ thinking…</p>';
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        var answer=esc(data.answer).replace(/`([^`]+)`/g,'<code>$1</code>');
+        var src='';
+        if(data.sources&&data.sources.length){
+          src='<div class="ask-sources-label">Sources</div><div class="ask-sources">'+
+            data.sources.map(function(s){return '<a href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(s.title)+'</a>';}).join('')+'</div>';
+        }
+        output.innerHTML='<div class="ask-output-label">Answer</div><div class="ask-answer">'+answer+'</div>'+src;
+      })
+      .catch(function(){output.innerHTML='<p class="ask-error">Error — check your connection and try again.</p>';})
+      .finally(function(){sendBtn.disabled=false;});
+  });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<script>
+(function(){
+  var SUMMARY_API_URL = 'https://37arp5b92a.execute-api.us-east-1.amazonaws.com/summary';
+  var mount = document.querySelector('.quick-summary-mount');
+  if (!mount) return;
+  var slug = mount.getAttribute('data-slug');
+  if (!slug) return;
+  fetch(SUMMARY_API_URL + '?slug=' + encodeURIComponent(slug))
+    .then(function(r){
+      if (r.status === 404) { var e = new Error('no summary generated yet'); e.pending = true; throw e; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data){
+      var rows = [
+        ['Overview', data.overview],
+        ['Key detail', data.key_detail],
+        ['Takeaway', data.takeaway]
+      ].filter(function(r){ return r[1]; });
+      if (!rows.length) throw new Error('summary record has no overview, key detail or takeaway');
+      var rowsHtml = rows.map(function(r){
+        return '<div class="qs-row"><span class="qs-row-label">'+esc(r[0])+'</span><p class="qs-row-text">'+esc(r[1])+'</p></div>';
+      }).join('');
+      var topicsHtml = (mount.getAttribute('data-topics')||'').split(',').filter(Boolean).map(function(t){
+        return '<span class="quick-summary-topic">'+esc(t)+'</span>';
+      }).join('');
+      mount.outerHTML =
+        '<details class="quick-summary" open>' +
+        '<summary><span class="quick-summary-icon" aria-hidden="true">&#10022;</span>' +
+        '<span class="quick-summary-heading"><strong>At a glance</strong><small>What this post covers</small></span>' +
+        '<span class="quick-summary-toggle" aria-hidden="true"></span></summary>' +
+        '<div class="quick-summary-content"><div class="qs-rows">'+rowsHtml+'</div>' +
+        '<div class="quick-summary-topics">'+topicsHtml+'</div></div>' +
+        '</details>';
+    })
+    .catch(function(err){
+      // Never swallow this. An empty catch here meant a 404 on a brand-new post,
+      // a dead endpoint and a CORS failure all rendered identically as "the
+      // section does not exist" -- with nothing in the console, on every page,
+      // indefinitely. It had to be found by eye and then diagnosed by querying
+      // the API by hand.
+      var pending = !!(err && err.pending);
+      var detail = (err && err.message) || 'unknown error';
+      var msg = '[at-a-glance] ' + (pending ? 'pending' : 'FAILED') +
+                ' for "' + slug + '": ' + detail;
+      if (pending) { console.warn(msg); } else { console.error(msg); }
+      mount.innerHTML =
+        '<div class="quick-summary-status" style="font-size:12px;color:var(--text-muted);' +
+        'padding:8px 0;border-top:0.5px solid var(--border)">' +
+        esc(pending
+              ? 'At a glance is still being generated for this post.'
+              : 'At a glance could not be loaded: ' + detail) +
+        '</div>';
+    });
+  function esc(str){return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+})();
+</script>
+<button class="back-top" id="back-top" aria-label="Back to top">↑</button>
+<footer class="footer">
+  <p>&copy; <span data-current-year>2026</span> Jayanth Katta &mdash; <a href="https://jayanthkatta.com/">jayanthkatta.com</a></p>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="/blog/assets/blog.js?v=c039b840"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
